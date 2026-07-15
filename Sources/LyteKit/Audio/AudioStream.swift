@@ -31,6 +31,13 @@ public final class AudioStream: @unchecked Sendable {
     public private(set) var packetsReceived: UInt64 = 0
     public private(set) var framesDecoded: UInt64 = 0
     public private(set) var decryptFailures: UInt64 = 0
+    /// Arrival-jitter probe: audio packets arrive every ~5 ms on a healthy
+    /// path; a reception gap is the radio's fault regardless of buffering.
+    /// This is the objective AWDL/contention signal (doctor probe #1).
+    public private(set) var gapsOver20ms: UInt64 = 0
+    public private(set) var gapsOver50ms: UInt64 = 0
+    public private(set) var maxGapMs: Int = 0
+    private var lastArrivalUs: UInt64 = 0
     public var packetsRecovered: UInt64 { queue.packetsRecovered }
     public var packetsLost: UInt64 { queue.packetsLost }
     public var underruns: UInt64 { player.underruns }
@@ -156,6 +163,15 @@ public final class AudioStream: @unchecked Sendable {
             guard n >= RtpAudioQueue.rtpHeaderSize else { continue }
             receivedAny = true
             packetsReceived += 1
+
+            let nowUs = DispatchTime.now().uptimeNanoseconds / 1000
+            if lastArrivalUs > 0 {
+                let gapMs = Int((nowUs - lastArrivalUs) / 1000)
+                if gapMs > 20 { gapsOver20ms += 1 }
+                if gapMs > 50 { gapsOver50ms += 1 }
+                if gapMs > maxGapMs { maxGapMs = gapMs }
+            }
+            lastArrivalUs = nowUs
 
             let packet = Data(buffer[0..<n])
             if packetsToDrop > 0 {

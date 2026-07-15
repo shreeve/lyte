@@ -188,8 +188,8 @@ struct Stream: AsyncParsableCommand {
                        "\(s.framesEnqueued) enqueued, \(s.framesSkipped) skipped"
             if s.hasAudio {
                 line += " | audio: \(s.audioFrames) frames, \(s.audioRecovered) FEC, " +
-                        "\(s.audioLost) lost, \(s.audioUnderruns) underruns, \(s.audioQueuedMs)ms buffered, " +
-                        String(format: "peak %.2f", s.audioPeak)
+                        "\(s.audioLost) lost, \(s.audioUnderruns) underruns, \(s.audioQueuedMs)ms buffered" +
+                        " | radio gaps: \(s.audioGapsOver20ms)>20ms \(s.audioGapsOver50ms)>50ms max \(s.audioMaxGapMs)ms"
             }
             print(line)
         }

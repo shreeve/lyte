@@ -27,6 +27,9 @@ public final class LyteSession: @unchecked Sendable {
         public var audioUnderruns: UInt64 = 0
         public var audioQueuedMs: Int = 0
         public var audioPeak: Float = 0
+        public var audioGapsOver20ms: UInt64 = 0
+        public var audioGapsOver50ms: UInt64 = 0
+        public var audioMaxGapMs: Int = 0
         public var hasAudio = false
     }
 
@@ -166,6 +169,9 @@ public final class LyteSession: @unchecked Sendable {
             s.audioUnderruns = audio.underruns
             s.audioQueuedMs = audio.queuedMs
             s.audioPeak = audio.peak
+            s.audioGapsOver20ms = audio.gapsOver20ms
+            s.audioGapsOver50ms = audio.gapsOver50ms
+            s.audioMaxGapMs = audio.maxGapMs
         }
         return s
     }
