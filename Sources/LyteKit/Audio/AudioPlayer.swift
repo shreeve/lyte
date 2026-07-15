@@ -74,11 +74,24 @@ public final class AudioPlayer {
     /// the oldest audio so we never drift far behind video. Real pacing is M7.
     var targetDepthMs = 50
     private let depthSlackMs = 30
+    /// Adaptive growth: reception jitter (AWDL scans, shared-channel airtime)
+    /// shows up as underruns without packet loss. Grow the target ~10 ms per
+    /// second of continued underruns, up to a ceiling; the doctor (M6) will
+    /// own the root cause.
+    private let depthCeilingMs = 120
+    private var lastUnderrunCount: UInt64 = 0
+    private var enqueuesSinceGrowth = 0
 
     /// Push interleaved samples; drops the oldest data if the ring is full.
     func enqueue(_ samples: [Float]) {
         lock.lock()
         lastPeak = samples.reduce(into: Float(0)) { $0 = max($0, abs($1)) }
+        enqueuesSinceGrowth += 1
+        if underruns > lastUnderrunCount, enqueuesSinceGrowth >= 200 {   // ~1 s of frames
+            lastUnderrunCount = underruns
+            enqueuesSinceGrowth = 0
+            if targetDepthMs < depthCeilingMs { targetDepthMs += 10 }
+        }
         let maxSamples = (targetDepthMs + depthSlackMs) * 48 * channels
         if available > maxSamples {
             let trim = available - targetDepthMs * 48 * channels
