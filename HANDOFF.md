@@ -82,7 +82,21 @@ same day after M2 verified on the wire.*
   carrying a high buffer; Game Mode plist category shipped (games category —
   CPU/GPU priority; Apple may extend to Wi-Fi, see FB22389467/FB13512447);
   channel-149 trick is 5 GHz-only (AWDL social channels), N/A on 6 GHz.
-- **Next: M6, starting with the AWDL privileged helper** (Steve's explicit
+- **M6 CORE DONE (2026-07-15): helper + doctor both live, Steve-approved
+  ("MUCH BETTER").** AWDL helper: SMAppService daemon (lyte-helperd in the
+  app bundle), ad-hoc signing IS accepted (register() throws 'Operation not
+  permitted' but lands in requiresApproval → one-time Login Items toggle →
+  enabled); event-driven PF_ROUTE watchdog; XPC refcounted streamBegan/
+  streamEnded with invalidation cleanup; CLI borrows the daemon (honest
+  version-probe before claiming engagement — XPC proxies exist even with no
+  daemon, never trust them silently). `Lyte --register-helper` = headless
+  registration/status. Doctor v1: engine in LyteKit/Doctor (EMA rates,
+  loss-vs-stall discrimination, helper-aware fixes), status pill overlay in
+  the app, doctor lines in the CLI ticker. Audio polish: declick ramps at
+  underrun/trim seams (pops fix), honest underrun counting (skip startup
+  spin), kernel-timestamped gap probe (LYTE_GAP_LOG=1 for periodicity).
+- **M6 remaining:** preflight check, SSH host probes, Wake-on-LAN,
+  one-session-per-host guard, host-side DSCP patch for Sunshine. (Steve's explicit
   priority — ethernet is not an option): SMAppService root daemon in the app
   bundle, XPC (streamBegan/streamEnded), holds awdl0 down during streams,
   restores on end/crash (connection invalidation). Acceptance from the
