@@ -218,9 +218,19 @@ enum RecentConnections {
     }
 
     static func load() -> [(address: String, app: String)] {
-        (UserDefaults.standard.stringArray(forKey: key) ?? []).compactMap {
-            let parts = $0.split(separator: "|", maxSplits: 1).map(String.init)
-            return parts.count == 2 ? (parts[0], parts[1]) : nil
+        var seen = Set<String>()
+        return (UserDefaults.standard.stringArray(forKey: key) ?? []).compactMap {
+            let parts = $0.split(separator: "|", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2 else { return nil }
+            // Dedup on read too — stale duplicates from older builds or an
+            // address/name mismatch must never surface twice.
+            let key = "\(parts[0].lowercased())|\(parts[1].lowercased())"
+            guard seen.insert(key).inserted else { return nil }
+            return (parts[0], parts[1])
         }
+    }
+
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: key)
     }
 }

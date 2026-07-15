@@ -19,6 +19,7 @@ final class AwdlController: @unchecked Sendable {
 
     func retain() {
         queue.async {
+            self.idleExit?.cancel(); self.idleExit = nil
             self.holds += 1
             if self.holds == 1 { self.startHolding() }
         }
@@ -27,8 +28,32 @@ final class AwdlController: @unchecked Sendable {
     func release(_ n: Int = 1) {
         queue.async {
             self.holds = max(0, self.holds - n)
-            if self.holds == 0 { self.stopHolding() }
+            if self.holds == 0 {
+                self.stopHolding()
+                self.scheduleIdleExit()
+            }
         }
+    }
+
+    private var idleExit: DispatchSourceTimer?
+
+    /// A root daemon shouldn't loiter. When no stream has needed us for a
+    /// few seconds, exit — launchd relaunches on the next XPC connection.
+    private func scheduleIdleExit() {
+        idleExit?.cancel()
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 5)
+        t.setEventHandler {
+            guard self.holds == 0 else { return }
+            NSLog("lyte-helperd: idle — exiting (launchd will relaunch on demand)")
+            exit(0)
+        }
+        t.resume()
+        idleExit = t
+    }
+
+    func cancelIdleExit() {
+        queue.async { self.idleExit?.cancel(); self.idleExit = nil }
     }
 
     private func startHolding() {
