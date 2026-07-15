@@ -77,6 +77,11 @@ public final class AudioStream: @unchecked Sendable {
         _ = setsockopt(fd, SOL_SOCKET, 0x1116 /* SO_NET_SERVICE_TYPE */,
                        &serviceType, socklen_t(MemoryLayout<Int32>.size))
 
+        // Kernel arrival timestamps: gaps measured at recv() return blame the
+        // radio for our own thread stalls; SCM_TIMESTAMP marks NIC delivery.
+        var tsOn: Int32 = 1
+        _ = setsockopt(fd, SOL_SOCKET, SO_TIMESTAMP, &tsOn, socklen_t(MemoryLayout<Int32>.size))
+
         // Bursts deliver 4-20 packets at once after a radio stall; never let
         // the kernel turn jitter into loss.
         var rcvbuf: Int32 = 512 * 1024
@@ -160,9 +165,38 @@ public final class AudioStream: @unchecked Sendable {
         var packetsToDrop = 500 / packetDurationMs    // flush host's queued backlog
         var receivedAny = false
 
+        let gapLog = ProcessInfo.processInfo.environment["LYTE_GAP_LOG"] != nil
+        var lastGapEventUs: UInt64 = 0
+        var startedUs: UInt64 = 0
+        var control = [UInt8](repeating: 0, count: 64)
+
         while running.get() {
-            let n = buffer.withUnsafeMutableBufferPointer { buf in
-                recv(fd, buf.baseAddress, buf.count, 0)
+            var kernelUs: UInt64? = nil
+            let n = buffer.withUnsafeMutableBufferPointer { buf -> Int in
+                control.withUnsafeMutableBufferPointer { ctrl -> Int in
+                    var iov = iovec(iov_base: UnsafeMutableRawPointer(buf.baseAddress),
+                                    iov_len: buf.count)
+                    return withUnsafeMutablePointer(to: &iov) { iovPtr -> Int in
+                        var msg = msghdr()
+                        msg.msg_iov = iovPtr
+                        msg.msg_iovlen = 1
+                        msg.msg_control = UnsafeMutableRawPointer(ctrl.baseAddress)
+                        msg.msg_controllen = socklen_t(ctrl.count)
+                        let r = recvmsg(fd, &msg, 0)
+                        // Parse the single SCM_TIMESTAMP cmsg (timeval at
+                        // data offset 12: 4-byte len + 4-byte level + 4-byte type)
+                        if r > 0, msg.msg_controllen >= 12 + 16,
+                           let base = ctrl.baseAddress {
+                            let level = base.withMemoryRebound(to: Int32.self, capacity: 3) { ($0[1], $0[2]) }
+                            if level.0 == SOL_SOCKET, level.1 == SCM_TIMESTAMP {
+                                var tv = timeval()
+                                memcpy(&tv, base + 12, MemoryLayout<timeval>.size)
+                                kernelUs = UInt64(tv.tv_sec) * 1_000_000 + UInt64(tv.tv_usec)
+                            }
+                        }
+                        return r
+                    }
+                }
             }
             if n < 0 {
                 if errno == ECONNREFUSED { continue }
@@ -176,14 +210,26 @@ public final class AudioStream: @unchecked Sendable {
             receivedAny = true
             packetsReceived += 1
 
-            let nowUs = DispatchTime.now().uptimeNanoseconds / 1000
-            if lastArrivalUs > 0 {
-                let gapMs = Int((nowUs - lastArrivalUs) / 1000)
+            // Prefer kernel (NIC-delivery) timestamps: they see radio stalls
+            // even when our thread is late reading; userspace time is the
+            // fallback if the cmsg ever goes missing.
+            let arrivalUs = kernelUs ?? (DispatchTime.now().uptimeNanoseconds / 1000)
+            if startedUs == 0 { startedUs = arrivalUs }
+            if lastArrivalUs > 0, arrivalUs > lastArrivalUs {
+                let gapMs = Int((arrivalUs - lastArrivalUs) / 1000)
                 if gapMs > 20 { gapsOver20ms += 1 }
                 if gapMs > 50 { gapsOver50ms += 1 }
                 if gapMs > maxGapMs { maxGapMs = gapMs }
+                if gapLog, gapMs > 50 {
+                    let since = lastGapEventUs > 0
+                        ? String(format: "%.2fs since previous", Double(arrivalUs - lastGapEventUs) / 1e6)
+                        : "first"
+                    print(String(format: "gap: %dms (kernel-stamped) at +%.1fs — %@",
+                                 gapMs, Double(arrivalUs - startedUs) / 1e6, since))
+                    lastGapEventUs = arrivalUs
+                }
             }
-            lastArrivalUs = nowUs
+            lastArrivalUs = arrivalUs
 
             let packet = Data(buffer[0..<n])
             if packetsToDrop > 0 {
