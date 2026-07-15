@@ -50,6 +50,13 @@ struct LyteCommands: Commands {
 
             Divider()
 
+            Toggle("Network Doctor", isOn: Binding(
+                get: { connection?.showDoctor ?? false },
+                set: { connection?.showDoctor = $0 }
+            ))
+            .keyboardShortcut("d", modifiers: [.command, .option])
+            .disabled(connection?.session == nil)
+
             Button("Disconnect") { connection?.disconnect() }
                 .keyboardShortcut("d", modifiers: [.command])
                 .disabled(connection?.session == nil)

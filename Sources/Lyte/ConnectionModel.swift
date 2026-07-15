@@ -32,10 +32,13 @@ final class ConnectionModel {
     private var client: HostClient?
     var inputCapture: InputCapture?
 
-    // The doctor: sampled every 3 s while streaming (PLAN §5.5)
+    // The doctor: sampled every 3 s while streaming (PLAN §5.5). Silent by
+    // design — adjustments just happen; the panel appears only on request
+    // (Actions → Network Doctor).
     private let doctor = Doctor()
     private var doctorTask: Task<Void, Never>?
     var diagnosis: Diagnosis?
+    var showDoctor = false
 
     var windowTitle: String {
         switch phase {

@@ -14,7 +14,9 @@ struct ConnectionWindow: View {
             case .streaming:
                 StreamView(model: model)
                     .overlay(alignment: .topTrailing) {
-                        DoctorPill(diagnosis: model.diagnosis, policy: model.policy)
+                        if model.showDoctor {
+                            DoctorPill(diagnosis: model.diagnosis, policy: model.policy)
+                        }
                     }
             }
         }

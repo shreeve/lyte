@@ -7,7 +7,9 @@ import LyteKit
 struct DoctorPill: View {
     let diagnosis: Diagnosis?
     let policy: PolicyOutput?
-    @State private var expanded = false
+    // Shown only on explicit request (Actions → Network Doctor), so arrive
+    // with the full story open.
+    @State private var expanded = true
     @State private var hovering = false
 
     var body: some View {
