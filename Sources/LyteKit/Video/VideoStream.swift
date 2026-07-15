@@ -62,6 +62,12 @@ public final class VideoStream: @unchecked Sendable {
         var rcvbuf: Int32 = Int32(2048 * (packetSize + 16))
         _ = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, socklen_t(MemoryLayout<Int32>.size))
 
+        // Interactive-video service class (NET_SERVICE_TYPE_VI): classifies
+        // our TX (pings) and discourages RX power-save while the flow lives.
+        var serviceType: Int32 = 3   // NET_SERVICE_TYPE_VI (sys/socket.h)
+        _ = setsockopt(fd, SOL_SOCKET, 0x1116 /* SO_NET_SERVICE_TYPE */,
+                       &serviceType, socklen_t(MemoryLayout<Int32>.size))
+
         // 100ms receive timeout so stop() and timeout checks can run
         var tv = timeval(tv_sec: 0, tv_usec: 100_000)
         _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))

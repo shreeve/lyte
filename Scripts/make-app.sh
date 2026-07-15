@@ -51,6 +51,7 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>CFBundleVersion</key>          <string>5</string>
     <key>LSMinimumSystemVersion</key>   <string>15.0</string>
     <key>NSHighResolutionCapable</key>  <true/>
+    <key>LSApplicationCategoryType</key> <string>public.app-category.games</string>
     <key>NSHumanReadableCopyright</key> <string>© 2026 Steve Shreeve · GPL-3.0</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Lyte discovers and streams from Sunshine hosts on your local network.</string>

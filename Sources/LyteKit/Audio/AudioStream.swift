@@ -70,6 +70,18 @@ public final class AudioStream: @unchecked Sendable {
         var tv = timeval(tv_sec: 0, tv_usec: 100_000)
         _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
+        // Voice service class (NET_SERVICE_TYPE_VO): an actively-transmitting
+        // VO flow (our 500 ms pings) signals the Wi-Fi driver to curb RX
+        // power-save dozing — the supported lever against gaps-without-loss.
+        var serviceType: Int32 = 4   // NET_SERVICE_TYPE_VO (sys/socket.h)
+        _ = setsockopt(fd, SOL_SOCKET, 0x1116 /* SO_NET_SERVICE_TYPE */,
+                       &serviceType, socklen_t(MemoryLayout<Int32>.size))
+
+        // Bursts deliver 4-20 packets at once after a radio stall; never let
+        // the kernel turn jitter into loss.
+        var rcvbuf: Int32 = 512 * 1024
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, socklen_t(MemoryLayout<Int32>.size))
+
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         addr.sin_family = sa_family_t(AF_INET)

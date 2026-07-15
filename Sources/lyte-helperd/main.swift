@@ -34,17 +34,47 @@ final class AwdlController: @unchecked Sendable {
     private func startHolding() {
         NSLog("lyte-helperd: holding awdl0 down")
         setInterface("down")
+        // Event-driven counter-punch: watch kernel route messages and re-down
+        // awdl0 the moment the system re-raises it — before its channel scan
+        // starts. (A polling watchdog eats a latency spike on every re-raise.)
+        startRouteWatcher()
+        // Slow backstop in case a route message is ever missed
         let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + 1, repeating: 1)
+        t.schedule(deadline: .now() + 5, repeating: 5)
         t.setEventHandler { [weak self] in self?.setInterface("down") }
         t.resume()
         timer = t
+    }
+
+    private var routeSocket: Int32 = -1
+    private var routeSource: DispatchSourceRead?
+
+    private func startRouteWatcher() {
+        guard routeSocket < 0 else { return }
+        let fd = socket(PF_ROUTE, SOCK_RAW, 0)
+        guard fd >= 0 else { return }
+        routeSocket = fd
+        let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+        src.setEventHandler { [weak self] in
+            guard let self else { return }
+            var buf = [UInt8](repeating: 0, count: 2048)
+            _ = read(fd, &buf, buf.count)   // drain; content irrelevant —
+            if self.holds > 0 {             // any interface event re-asserts
+                self.setInterface("down")
+            }
+        }
+        src.setCancelHandler { close(fd) }
+        src.resume()
+        routeSource = src
     }
 
     private func stopHolding() {
         guard timer != nil else { return }
         timer?.cancel()
         timer = nil
+        routeSource?.cancel()
+        routeSource = nil
+        routeSocket = -1
         setInterface("up")
         NSLog("lyte-helperd: awdl0 restored")
     }

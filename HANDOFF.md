@@ -67,6 +67,21 @@ same day after M2 verified on the wire.*
 - **ONE SESSION PER HOST:** two Lyte clients against the same host = doubled/
   echoed audio (both ping, host sprays both). App auto-connects at launch —
   don't also run a CLI stream. UX guard is an M6 nicety.
+- **Jitter research synthesis (3-AI consult, 2026-07-15):** gaps-without-loss =
+  AP buffering while the client radio is unavailable; suspects are (1) AWDL
+  off-channel, (2) client 802.11 power-save dozing (under-suspected; the
+  supported fix is an actively-TRANSMITTING VO-classed socket — shipped:
+  SO_NET_SERVICE_TYPE VO on audio / VI on video, our pings keep the uplink
+  warm), (3) shared-channel airtime. Remaining playbook: host-side DSCP EF +
+  SO_PRIORITY 6 on Sunshine's audio socket (Linux maps skb->priority to the
+  EDCA queue; needs Sunshine patch or config); split the two hops across
+  bands (host 5 GHz, Mac 6 GHz — AP config, kills double airtime; USER
+  ACTION); doctor should fingerprint gap periodicity (AWDL ≈ rhythmic 1-2 s,
+  Location scans sparse 50-150 ms, doze correlates with quiet uplink/battery);
+  M7 audio: NetEQ-style time-scale playout (accelerate after bursts) beats
+  carrying a high buffer; Game Mode plist category shipped (games category —
+  CPU/GPU priority; Apple may extend to Wi-Fi, see FB22389467/FB13512447);
+  channel-149 trick is 5 GHz-only (AWDL social channels), N/A on 6 GHz.
 - **Next: M6, starting with the AWDL privileged helper** (Steve's explicit
   priority — ethernet is not an option): SMAppService root daemon in the app
   bundle, XPC (streamBegan/streamEnded), holds awdl0 down during streams,
