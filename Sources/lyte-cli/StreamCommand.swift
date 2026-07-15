@@ -3,23 +3,52 @@ import ArgumentParser
 @preconcurrency import AVFoundation
 import Foundation
 import LyteKit
+import LyteHelperProtocol
 import LyteUI
+
+/// Borrow the app-registered AWDL helper daemon if it's on this machine
+/// (Lyte.app registers it; approval in System Settings). Silent no-op when
+/// absent — the CLI falls back to Scripts/awdl-quiet.sh.
+enum HelperBridge {
+    nonisolated(unsafe) private static var connection: NSXPCConnection?
+
+    static func engage() -> Bool {
+        let c = NSXPCConnection(machServiceName: LyteHelper.machServiceName, options: .privileged)
+        c.remoteObjectInterface = NSXPCInterface(with: LyteHelperCommands.self)
+        c.resume()
+        guard let proxy = c.remoteObjectProxy as? LyteHelperCommands else {
+            c.invalidate()
+            return false
+        }
+        proxy.streamBegan()
+        connection = c
+        return true
+    }
+
+    static func disengage() {
+        guard let c = connection else { return }
+        (c.remoteObjectProxy as? LyteHelperCommands)?.streamEnded()
+        c.invalidate()
+        connection = nil
+    }
+}
 
 struct Stream: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Stream an app to a window (M3: HEVC video, no input/audio yet).")
+        abstract: "Stream an app to a window — video, audio, and input (the default subcommand: `lyte-cli pop` streams pop's desktop).")
 
-    @Argument(help: "Host address (IP or name)") var address: String
-    @Argument(help: "App name (e.g. Desktop) or numeric ID") var app: String = "Desktop"
+    @Argument(help: "Host: Bonjour name, hostname, or IP") var host: String
+    @Argument(help: "App on the host (default: the desktop)") var app: String = "Desktop"
     @Option(name: .long) var width: Int = 2048
     @Option(name: .long) var height: Int = 1280
     @Option(name: .long) var fps: Int = 60
     @Option(name: .long, help: "Bitrate in Kbps") var bitrate: Int = 40000
-    @Option(name: .long, help: "Seconds to stream (0 = until window closes)") var duration: Int = 30
+    @Option(name: .long, help: "Auto-quit after this many seconds (default: stream until the window closes)") var duration: Int = 0
 
     @MainActor
     func run() async throws {
         setvbuf(stdout, nil, _IOLBF, 0)   // line-buffer even when piped
+        let address = await HostAddress.resolve(host)
         let store = ClientStore.load()
         guard let host = store.host(address), let pinned = host.serverCertDER,
               let identity = store.identity() else {
@@ -74,6 +103,7 @@ struct Stream: AsyncParsableCommand {
             }
         }
         let cleanup: @Sendable () -> Void = {
+            HelperBridge.disengage()
             session.stop()
             let s = session.stats
             print("stats: \(s.videoPackets) pkts, \(s.videoFrames) frames, " +
@@ -87,6 +117,9 @@ struct Stream: AsyncParsableCommand {
             throw error
         }
         print("session live — streaming\(duration > 0 ? " for \(duration)s" : "") (close window to stop)")
+        if HelperBridge.engage() {
+            print("awdl: helper engaged — radio quiet for this stream")
+        }
 
         let delegate = WindowCloser(onClose: {
             cleanup()

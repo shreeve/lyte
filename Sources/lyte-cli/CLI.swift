@@ -7,10 +7,27 @@ import LyteUI
 struct LyteCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "lyte-cli",
-        abstract: "Lyte development CLI — M1: pair with a Sunshine host and list apps.",
-        subcommands: [Discover.self, Info.self, Pair.self, Apps.self, Launch.self, Stream.self, Quit.self, Unpair.self]
+        abstract: "Lyte development CLI — stream from, pair with, and poke Sunshine hosts.",
+        subcommands: [Discover.self, Info.self, Pair.self, Apps.self, Launch.self, Stream.self, Quit.self, Unpair.self],
+        defaultSubcommand: Stream.self
     )
 
+}
+
+/// Accept Bonjour names, .local names, hostnames, or IPs anywhere an address
+/// is expected: bare names that don't resolve in DNS are matched against
+/// discovered _nvstream._tcp services (so `lyte-cli pop` just works).
+enum HostAddress {
+    static func resolve(_ input: String) async -> String {
+        // IPs and dotted names go straight through (the system resolver
+        // handles mDNS for .local)
+        if input.contains(".") || input.contains(":") { return input }
+        let found = await LyteKit.Discovery.browse(duration: 2.0)
+        if let match = found.first(where: { $0.name.caseInsensitiveCompare(input) == .orderedSame }) {
+            return match.endpoint
+        }
+        return input
+    }
 }
 
 /// Custom entry point instead of `@main LyteCLI`. AppKit UI (the `stream`
@@ -24,7 +41,12 @@ struct LyteCLI: AsyncParsableCommand {
 @main
 enum Main {
     static func main() {
-        let wantsAppKit = CommandLine.arguments.dropFirst().contains("stream")
+        // `stream` is the default subcommand, so the UI path is "anything
+        // that isn't explicitly one of the non-UI subcommands (or help)".
+        let nonUI: Set<String> = ["discover", "info", "pair", "apps", "launch",
+                                  "quit", "unpair", "help", "--help", "-h", "--version"]
+        let firstArg = CommandLine.arguments.dropFirst().first ?? ""
+        let wantsAppKit = !firstArg.isEmpty && !nonUI.contains(firstArg)
         if wantsAppKit {
             // Unbundled binaries inherit the launcher's app identity in the
             // menu bar ("iTerm2" / "lyte-cli"). Rename the LaunchServices
@@ -76,9 +98,10 @@ struct Discover: AsyncParsableCommand {
 struct Info: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Query serverinfo.")
 
-    @Argument(help: "Host address (IP or name)") var address: String
+    @Argument(help: "Host: Bonjour name, hostname, or IP") var host: String
 
     func run() async throws {
+        let address = await HostAddress.resolve(host)
         let store = ClientStore.load()
         let identity = store.identity()
         let pinned = store.host(address)?.serverCertDER
@@ -101,9 +124,10 @@ struct Info: AsyncParsableCommand {
 struct Pair: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Pair with a Sunshine host.")
 
-    @Argument(help: "Host address (IP or name)") var address: String
+    @Argument(help: "Host: Bonjour name, hostname, or IP") var host: String
 
     func run() async throws {
+        let address = await HostAddress.resolve(host)
         var store = ClientStore.load()
         let identity: ClientIdentity
         if let existing = store.identity() {
@@ -139,9 +163,10 @@ struct Pair: AsyncParsableCommand {
 struct Apps: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "List apps on a paired host.")
 
-    @Argument(help: "Host address (IP or name)") var address: String
+    @Argument(help: "Host: Bonjour name, hostname, or IP") var host: String
 
     func run() async throws {
+        let address = await HostAddress.resolve(host)
         let store = ClientStore.load()
         guard let host = store.host(address), let pinned = host.serverCertDER else {
             throw ValidationError("Not paired with \(address) — run `lyte-cli pair \(address)` first.")
@@ -160,9 +185,10 @@ struct Apps: AsyncParsableCommand {
 struct Unpair: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Unpair from a host.")
 
-    @Argument(help: "Host address (IP or name)") var address: String
+    @Argument(help: "Host: Bonjour name, hostname, or IP") var host: String
 
     func run() async throws {
+        let address = await HostAddress.resolve(host)
         var store = ClientStore.load()
         guard let identity = store.identity() else {
             throw ValidationError("No client identity stored.")
@@ -179,7 +205,7 @@ struct Launch: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Launch an app and hold a live session (RTSP + control channel).")
 
-    @Argument(help: "Host address (IP or name)") var address: String
+    @Argument(help: "Host: Bonjour name, hostname, or IP") var host: String
     @Argument(help: "App name (e.g. Desktop) or numeric ID") var app: String = "Desktop"
     @Option(name: .long) var width: Int = 2048
     @Option(name: .long) var height: Int = 1280
@@ -188,6 +214,7 @@ struct Launch: AsyncParsableCommand {
     @Option(name: .long, help: "Seconds to hold the session") var duration: Int = 30
 
     func run() async throws {
+        let address = await HostAddress.resolve(host)
         let store = ClientStore.load()
         guard let host = store.host(address), let pinned = host.serverCertDER,
               let identity = store.identity() else {
@@ -260,9 +287,10 @@ struct Launch: AsyncParsableCommand {
 struct Quit: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Quit the running app on the host.")
 
-    @Argument(help: "Host address (IP or name)") var address: String
+    @Argument(help: "Host: Bonjour name, hostname, or IP") var host: String
 
     func run() async throws {
+        let address = await HostAddress.resolve(host)
         let store = ClientStore.load()
         guard let host = store.host(address), let pinned = host.serverCertDER,
               let identity = store.identity() else {

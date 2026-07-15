@@ -63,6 +63,7 @@ let package = Package(
             dependencies: [
                 "LyteKit",
                 "LyteUI",
+                "LyteHelperProtocol",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
