@@ -13,6 +13,9 @@ struct ConnectionWindow: View {
                 ConnectView(model: model)
             case .streaming:
                 StreamView(model: model)
+                    .overlay(alignment: .topTrailing) {
+                        DoctorPill(diagnosis: model.diagnosis, policy: model.policy)
+                    }
             }
         }
         .navigationTitle(model.windowTitle)

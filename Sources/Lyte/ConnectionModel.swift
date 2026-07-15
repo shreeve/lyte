@@ -32,6 +32,11 @@ final class ConnectionModel {
     private var client: HostClient?
     var inputCapture: InputCapture?
 
+    // The doctor: sampled every 3 s while streaming (PLAN §5.5)
+    private let doctor = Doctor()
+    private var doctorTask: Task<Void, Never>?
+    var diagnosis: Diagnosis?
+
     var windowTitle: String {
         switch phase {
         case .streaming:
@@ -156,6 +161,14 @@ final class ConnectionModel {
             if let hint = HelperClient.shared.streamBegan() {
                 statusLine = hint
             }
+            doctorTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(3))
+                    guard let self, let session = self.session else { return }
+                    self.diagnosis = self.doctor.sample(session.stats,
+                                                        helperEngaged: HelperClient.shared.engaged)
+                }
+            }
         } catch {
             phase = .failed("connect: \(error.localizedDescription)")
         }
@@ -171,6 +184,9 @@ final class ConnectionModel {
     }
 
     func endSession(reason: String?) {
+        doctorTask?.cancel()
+        doctorTask = nil
+        diagnosis = nil
         HelperClient.shared.streamEnded()
         inputCapture?.stop()
         inputCapture = nil

@@ -11,6 +11,7 @@ import LyteUI
 /// absent — the CLI falls back to Scripts/awdl-quiet.sh.
 enum HelperBridge {
     nonisolated(unsafe) private static var connection: NSXPCConnection?
+    static var isEngaged: Bool { connection != nil }
 
     static func engage() -> Bool {
         let c = NSXPCConnection(machServiceName: LyteHelper.machServiceName, options: .privileged)
@@ -181,7 +182,16 @@ struct Stream: AsyncParsableCommand {
         }
         let ticker = DispatchSource.makeTimerSource(queue: .global())
         ticker.schedule(deadline: .now() + 5, repeating: 5)
+        let doctor = Doctor()
+        let lastHeadline = Locked("")
         let printStats: @Sendable () -> Void = {
+            let diagnosis = doctor.sample(session.stats, helperEngaged: HelperBridge.isEngaged)
+            if diagnosis.headline != lastHeadline.value, diagnosis.headline != "Measuring…" {
+                lastHeadline.value = diagnosis.headline
+                print("doctor: \(diagnosis.headline)")
+                diagnosis.evidence.forEach { print("        · \($0)") }
+                diagnosis.fixes.forEach { print("        → \($0)") }
+            }
             let s = session.stats
             var line = "… \(s.videoFrames) frames, \(s.videoPackets) pkts, " +
                        "\(s.videoRecovered) recovered, \(s.videoFramesLost) lost, " +
@@ -208,6 +218,17 @@ struct Stream: AsyncParsableCommand {
     }
 }
 
+
+/// Tiny lock-boxed value for cross-queue closures.
+final class Locked<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: T
+    init(_ value: T) { stored = value }
+    var value: T {
+        get { lock.lock(); defer { lock.unlock() }; return stored }
+        set { lock.lock(); stored = newValue; lock.unlock() }
+    }
+}
 
 final class WindowCloser: NSObject, NSWindowDelegate {
     private let onClose: () -> Void

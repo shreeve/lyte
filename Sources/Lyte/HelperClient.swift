@@ -17,13 +17,18 @@ final class HelperClient {
 
     var status: SMAppService.Status { service.status }
 
-    /// Try to register at app launch; quiet no-op when already enabled.
+    /// Try to register at app launch; no-op when already enabled.
     func registerIfNeeded() {
         switch service.status {
         case .notRegistered, .notFound:
-            try? service.register()   // may flip straight to enabled or requiresApproval
+            do {
+                try service.register()   // may flip straight to enabled or requiresApproval
+                NSLog("lyte helper: registered, status now \(service.status.rawValue)")
+            } catch {
+                NSLog("lyte helper: register FAILED — \(error.localizedDescription)")
+            }
         default:
-            break
+            NSLog("lyte helper: status \(service.status.rawValue) (0=notReg 1=enabled 2=requiresApproval 3=notFound)")
         }
     }
 
