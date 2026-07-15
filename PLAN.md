@@ -45,7 +45,9 @@ else to configure. GPLv3.
 | Audio | Stereo + 5.1 from day one | The reference client decodes surround but hides it (MACOS.md §6 quirk); we won't repeat that. |
 | Multi-controller | Deferred | Reference supports one HID pad anyway. |
 | iOS/tvOS | Not now | Architecture keeps LyteKit platform-clean for later. |
-| Min macOS | **15 (Sequoia)** | Frees us to use latest SwiftUI/CryptoKit; only costs old-Mac users a version we don't have hardware to test anyway. *(Open question #1.)* |
+| Min macOS | **15 (Sequoia)** | Decided: latest SwiftUI/CryptoKit, zero compat tax. |
+| Encryption | **On by default, all cells** | Decided: hardware AES (AES-NI / FEAT_AES) makes it free; Lyte requests `ENCFLG_ALL` and sets Sunshine's LAN encryption expectations accordingly. |
+| Bundle ID | **`dev.shreeve.lyte`** | Decided: lowercase reverse-DNS; display name "Lyte". |
 
 ---
 
@@ -309,11 +311,14 @@ Ship signal: M5 is daily-drivable for Steve; M6 is the public-release bar.
 
 ## 8. Open questions
 
-1. **Min macOS:** 15-only proposed (newest SwiftUI, `CADisplayLink`). OK, or must we reach 14?
+Resolved 2026-07-15:
+
+1. ~~Min macOS~~ → **macOS 15+, newest APIs freely** (decided)
 2. **Gamepads at M4 or M8?** Plan says GCController basics at M4, deep HID at M8 — right priority for a Work-heavy user?
-3. **Encryption default for Local:** Sunshine LAN default is off; Lyte could default
-   Work·Local encrypted anyway (~free with AES-NI/FEAT_AES). Proposed: **on**.
-4. **App identity:** bundle id `dev.shreeve.Lyte`? Needed before Keychain/helper work.
+3. ~~Encryption default~~ → **ON for all cells, including Local** — hardware AES
+   (AES-NI / FEAT_AES) makes it effectively free (decided)
+4. ~~App identity~~ → bundle id **`dev.shreeve.lyte`** (lowercase per reverse-DNS
+   convention); display name **Lyte** (decided)
 5. **Telemetry retention:** doctor keeps rolling 24 h of session stats locally (never leaves the machine) — right?
 
 ---
