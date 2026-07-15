@@ -42,31 +42,14 @@ struct ConnectView: View {
     // MARK: - Hosts
 
     private var hostPicker: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: 28) {
             Spacer()
             Image(nsImage: LyteUIIconBridge.icon)
                 .resizable()
-                .frame(width: 72, height: 72)
+                .frame(width: 64, height: 64)
 
-            let recents = RecentConnections.load()
-            if !recents.isEmpty {
-                VStack(spacing: 8) {
-                    ForEach(recents.prefix(3), id: \.address) { entry in
-                        Button {
-                            Task {
-                                await model.selectHost(entry.address, name: nil)
-                            }
-                        } label: {
-                            Label("\(entry.app) on \(entry.address)", systemImage: "clock.arrow.circlepath")
-                                .frame(maxWidth: 320)
-                        }
-                        .controlSize(.large)
-                        .buttonStyle(.borderedProminent)
-                    }
-                }
-            }
-
-            VStack(spacing: 8) {
+            // Hosts are the hero: click one → the app-launch cards.
+            VStack(spacing: 10) {
                 if discovered.isEmpty && browsing {
                     ProgressView("Looking for hosts…")
                         .controlSize(.small)
@@ -78,14 +61,40 @@ struct ConnectView: View {
                     Button {
                         Task { await model.selectHost(host.endpoint, name: host.name) }
                     } label: {
-                        Label("\(host.name) — \(host.endpoint)", systemImage: "desktopcomputer")
-                            .frame(maxWidth: 320)
+                        HStack(spacing: 8) {
+                            Circle().fill(.green).frame(width: 8, height: 8)
+                            Text(host.name).fontWeight(.medium)
+                            Text(host.endpoint).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: 300)
                     }
                     .controlSize(.large)
+                    .buttonStyle(.borderedProminent)
                 }
                 Button("Search Again") { Task { await browse() } }
                     .controlSize(.small)
+                    .buttonStyle(.borderless)
                     .disabled(browsing)
+            }
+
+            // Recents: quiet quick-launch chips, secondary to picking a host.
+            let recents = RecentConnections.load()
+            if !recents.isEmpty {
+                VStack(spacing: 6) {
+                    Text("Resume")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                    ForEach(Array(recents.prefix(3).enumerated()), id: \.offset) { _, entry in
+                        Button {
+                            Task { await model.reconnect(address: entry.address, appTitle: entry.app) }
+                        } label: {
+                            Label(entry.app, systemImage: "clock.arrow.circlepath")
+                                .font(.callout)
+                        }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                    }
+                }
             }
             Spacer()
         }
