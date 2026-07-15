@@ -1,7 +1,7 @@
 # Roadmap
 
 - **M0 — Scaffold** ✅ repo, GPLv3, design docs, reference summaries (misc/)
-- **M1 — Pairing** LyteKit pairs with a Sunshine host: client cert generation
+- **M1 — Pairing** ✅ LyteKit pairs with a Sunshine host: client cert generation
   (Security/CryptoKit), PIN handshake, serverinfo/applist over HTTPS — guided by
   moonlight-common-c and the misc/ summaries
 - **M2 — Session** RTSP negotiation; launch/resume an app on the host

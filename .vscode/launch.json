@@ -1,0 +1,22 @@
+{
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:lyte}",
+            "name": "Debug lyte-cli",
+            "program": "${workspaceFolder:lyte}/.build/debug/lyte-cli",
+            "preLaunchTask": "swift: Build Debug lyte-cli"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:lyte}",
+            "name": "Release lyte-cli",
+            "program": "${workspaceFolder:lyte}/.build/release/lyte-cli",
+            "preLaunchTask": "swift: Build Release lyte-cli"
+        }
+    ]
+}
