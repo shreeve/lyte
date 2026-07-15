@@ -18,6 +18,10 @@ public final class AudioPlayer {
     public private(set) var underruns: UInt64 = 0
     /// Peak |sample| over the most recent enqueue — proves non-silence.
     public private(set) var lastPeak: Float = 0
+    /// Underruns only count once audio has actually flowed; the render
+    /// callback spins against an empty ring during startup (we discard the
+    /// host's ~500 ms backlog) and those aren't audible events.
+    private var hasReceivedAudio = false
 
     /// bufferDepthMs is the target queue depth; the ring holds up to 500 ms.
     init(channels: Int) {
@@ -36,7 +40,7 @@ public final class AudioPlayer {
             self.lock.lock()
             let framesAvailable = self.available / self.channels
             let framesToCopy = min(frames, framesAvailable)
-            if framesToCopy < frames { self.underruns += 1 }
+            if framesToCopy < frames, self.hasReceivedAudio { self.underruns += 1 }
 
             // Deinterleave ring → per-channel buffers; zero-fill shortfall
             for ch in 0..<min(self.channels, abl.count) {
@@ -87,6 +91,7 @@ public final class AudioPlayer {
     /// Push interleaved samples; drops the oldest data if the ring is full.
     func enqueue(_ samples: [Float]) {
         lock.lock()
+        hasReceivedAudio = true
         lastPeak = samples.reduce(into: Float(0)) { $0 = max($0, abs($1)) }
         enqueuesSinceGrowth += 1
         if underruns > lastUnderrunCount {
