@@ -17,6 +17,42 @@
             "name": "Release lyte-cli",
             "program": "${workspaceFolder:lyte}/.build/release/lyte-cli",
             "preLaunchTask": "swift: Build Release lyte-cli"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:lyte}",
+            "name": "Debug Lyte",
+            "program": "${workspaceFolder:lyte}/.build/debug/Lyte",
+            "preLaunchTask": "swift: Build Debug Lyte"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:lyte}",
+            "name": "Release Lyte",
+            "program": "${workspaceFolder:lyte}/.build/release/Lyte",
+            "preLaunchTask": "swift: Build Release Lyte"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:lyte}",
+            "name": "Debug lyte-helperd",
+            "program": "${workspaceFolder:lyte}/.build/debug/lyte-helperd",
+            "preLaunchTask": "swift: Build Debug lyte-helperd"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:lyte}",
+            "name": "Release lyte-helperd",
+            "program": "${workspaceFolder:lyte}/.build/release/lyte-helperd",
+            "preLaunchTask": "swift: Build Release lyte-helperd"
         }
     ]
 }

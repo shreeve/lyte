@@ -25,4 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ProcessName.set("Lyte")
         NSApp.applicationIconImage = AppIcon.shared
     }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Quietly register the AWDL helper; approval happens at first stream
+        HelperClient.shared.registerIfNeeded()
+    }
 }

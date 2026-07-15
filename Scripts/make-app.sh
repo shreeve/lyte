@@ -6,11 +6,36 @@ cd "$(dirname "$0")/.."
 
 CONFIG="${1:-release}"
 swift build -c "$CONFIG" --product Lyte
+swift build -c "$CONFIG" --product lyte-helperd
 
 APP=".build/Lyte.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Library/LaunchDaemons"
 cp ".build/$CONFIG/Lyte" "$APP/Contents/MacOS/Lyte"
+cp ".build/$CONFIG/lyte-helperd" "$APP/Contents/MacOS/lyte-helperd"
+
+# Privileged helper daemon (SMAppService): holds awdl0 down during streams
+cat > "$APP/Contents/Library/LaunchDaemons/dev.shreeve.lyte.helper.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.shreeve.lyte.helper</string>
+    <key>BundleProgram</key>
+    <string>Contents/MacOS/lyte-helperd</string>
+    <key>MachServices</key>
+    <dict>
+        <key>dev.shreeve.lyte.helper</key>
+        <true/>
+    </dict>
+    <key>AssociatedBundleIdentifiers</key>
+    <array>
+        <string>dev.shreeve.lyte</string>
+    </array>
+</dict>
+</plist>
+EOF
 
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -35,5 +60,6 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 </plist>
 EOF
 
+codesign --force --sign - "$APP/Contents/MacOS/lyte-helperd"
 codesign --force --sign - "$APP"
 echo "assembled $APP"

@@ -1,0 +1,113 @@
+import Foundation
+import LyteHelperProtocol
+
+/// Lyte's privileged helper: a launchd daemon (root) that holds awdl0 down
+/// while streams are active. AWDL re-raises itself whenever Continuity
+/// services stir, so "down" is a held state (re-applied every second), not
+/// a one-shot. Restores awdl0 when the last stream ends — or when a client
+/// connection dies, so a crashed app can never leave AirDrop broken.
+///
+/// Registered via SMAppService from Lyte.app (Contents/Library/LaunchDaemons).
+/// TODO(M6 hardening): setCodeSigningRequirement on connections once the app
+/// has a stable signing identity (ad-hoc dev builds can't be pinned).
+
+final class AwdlController: @unchecked Sendable {
+    static let shared = AwdlController()
+    private let queue = DispatchQueue(label: "dev.shreeve.lyte.helper.awdl")
+    private var holds = 0
+    private var timer: DispatchSourceTimer?
+
+    func retain() {
+        queue.async {
+            self.holds += 1
+            if self.holds == 1 { self.startHolding() }
+        }
+    }
+
+    func release(_ n: Int = 1) {
+        queue.async {
+            self.holds = max(0, self.holds - n)
+            if self.holds == 0 { self.stopHolding() }
+        }
+    }
+
+    private func startHolding() {
+        NSLog("lyte-helperd: holding awdl0 down")
+        setInterface("down")
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 1, repeating: 1)
+        t.setEventHandler { [weak self] in self?.setInterface("down") }
+        t.resume()
+        timer = t
+    }
+
+    private func stopHolding() {
+        guard timer != nil else { return }
+        timer?.cancel()
+        timer = nil
+        setInterface("up")
+        NSLog("lyte-helperd: awdl0 restored")
+    }
+
+    private func setInterface(_ state: String) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
+        p.arguments = ["awdl0", state]
+        try? p.run()
+        p.waitUntilExit()
+    }
+}
+
+/// One per XPC connection; tracks this client's holds so invalidation
+/// (app quit or crash) releases exactly what it contributed.
+final class ConnectionHandler: NSObject, LyteHelperCommands, @unchecked Sendable {
+    private let lock = NSLock()
+    private var contributed = 0
+
+    func streamBegan() {
+        lock.lock(); contributed += 1; lock.unlock()
+        AwdlController.shared.retain()
+    }
+
+    func streamEnded() {
+        lock.lock()
+        let had = contributed > 0
+        if had { contributed -= 1 }
+        lock.unlock()
+        if had { AwdlController.shared.release() }
+    }
+
+    func version(reply: @escaping @Sendable (String) -> Void) {
+        reply(LyteHelper.version)
+    }
+
+    func connectionInvalidated() {
+        lock.lock()
+        let n = contributed
+        contributed = 0
+        lock.unlock()
+        if n > 0 {
+            NSLog("lyte-helperd: client vanished with \(n) hold(s) — releasing")
+            AwdlController.shared.release(n)
+        }
+    }
+}
+
+final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
+    func listener(_ listener: NSXPCListener,
+                  shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
+        let handler = ConnectionHandler()
+        connection.exportedInterface = NSXPCInterface(with: LyteHelperCommands.self)
+        connection.exportedObject = handler
+        connection.invalidationHandler = { handler.connectionInvalidated() }
+        connection.resume()
+        return true
+    }
+}
+
+NSLog("lyte-helperd: starting (v\(LyteHelper.version))")
+let delegate = ListenerDelegate()
+let listener = NSXPCListener(machServiceName: LyteHelper.machServiceName)
+listener.delegate = delegate
+listener.resume()
+RunLoop.main.run()

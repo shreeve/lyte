@@ -153,6 +153,9 @@ final class ConnectionModel {
             try await session.start()
             phase = .streaming
             RecentConnections.remember(address: address, app: app.title)
+            if let hint = HelperClient.shared.streamBegan() {
+                statusLine = hint
+            }
         } catch {
             phase = .failed("connect: \(error.localizedDescription)")
         }
@@ -168,6 +171,7 @@ final class ConnectionModel {
     }
 
     func endSession(reason: String?) {
+        HelperClient.shared.streamEnded()
         inputCapture?.stop()
         inputCapture = nil
         session?.stop()

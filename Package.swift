@@ -53,6 +53,11 @@ let package = Package(
             name: "LyteUI",
             dependencies: ["LyteKit"]
         ),
+        .target(name: "LyteHelperProtocol"),
+        .executableTarget(
+            name: "lyte-helperd",
+            dependencies: ["LyteHelperProtocol"]
+        ),
         .executableTarget(
             name: "lyte-cli",
             dependencies: [
@@ -63,7 +68,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "Lyte",
-            dependencies: ["LyteKit", "LyteUI"]
+            dependencies: ["LyteKit", "LyteUI", "LyteHelperProtocol"]
         ),
         .testTarget(name: "LyteKitTests", dependencies: ["LyteKit"]),
     ]
