@@ -58,6 +58,7 @@ struct Stream: AsyncParsableCommand {
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.title = "Lyte — \(target.title) on \(address)"
+        window.collectionBehavior.insert(.fullScreenPrimary)   // enables Enter Full Screen
         let videoView = VideoLayerView(layer: displayLayer)
         window.contentView = videoView
         window.center()

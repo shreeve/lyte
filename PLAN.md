@@ -208,14 +208,21 @@ toggle. No preference labyrinth. See DESIGN.md D3.)
 
 ### 5.2 Screens
 
+**Revised 2026-07-15 (DESIGN.md D6): the window is the app.** No launcher or
+hosts screen gates the product — HostsView/AppsView become the *empty state*
+of a stream window, shown inside it until a session starts. ⌘N = new window;
+one window per host; relaunch reconnects each remembered window.
+
 ```
 LyteApp (SwiftUI @main, MenuBarExtra while streaming)
-├── HostsView          discovered + manual hosts, pair flow
-├── AppsView           box-art grid (Desktop, Steam, …), search, ⌘± scale
-├── StreamWindow       Window group per session; StreamSurfaceView (NSViewRepresentable)
-│   └── HUD overlay    mode pill · doctor pill · stats (⌃⌥⇧S)
-├── SettingsScene      one pane: mode, dial, host row (encryption ⋅ wake ⋅ unpair)
-└── DoctorView         live jitter sparkline, culprit cards, "Fix it" buttons
+└── StreamWindow       Window group; one connection per window
+    ├── ConnectState   empty state: discovered hosts (recents first), pair
+    │                  flow (PIN), then the host's app grid — melts away on launch
+    ├── StreamSurfaceView (NSViewRepresentable) — chrome-less, as in the M4 CLI
+    ├── Title-bar accessory (hidden by default): host · Work/Play · doctor dot · mute
+    └── HUD overlay    mode pill · doctor pill · stats (⌃⌥⇧S)
+plus SettingsScene     one pane: mode, dial, host row (encryption ⋅ wake ⋅ unpair)
+and DoctorView         live jitter sparkline, culprit cards, "Fix it" buttons
 ```
 
 - **HostsView:** `NWBrowser` for `_nvstream._tcp`, 5 s refresh while visible;
@@ -286,7 +293,7 @@ PolicyOutput = { w, h, fps, bitrate, codecPrefs, bufferMs, mouseMode,
 | M2 | Session | RTSP handshake + control ENet connect + launch/resume/quit | ✅ done — encrypted RTSP reaches PLAY on ice; control channel soaked 10 min; clean teardown |
 | M3 | Pixels | Video UDP → FEC → depacketize → ASBDL in a bare window | ✅ done — 310s soak at 2048×1280@60 clean; 5% induced loss: 1,087 pkts FEC-recovered, IDR re-request heals the rest |
 | M4 | Hands & ears | Input (free+locked mouse, keyboard, scroll) + Opus audio | ✅ done — type/scroll/click + audio approved live on pop; audio FEC recovered 187 pkts under 5% induced loss; ⌃⌥ mouse lock; ~50 ms audio depth cap |
-| M5 | App shell | SwiftUI Hosts/Apps/Stream/Settings, mode toggle, policy engine v1 | Cold start → paired → streaming in <60 s of user time; zero settings touched |
+| M5 | App shell | SwiftUI window-is-the-app shell (D6): connect empty-state, ⌘N windows, mode toggle, policy engine v1 | Cold start → paired → streaming in <60 s of user time; relaunch → pixels with zero clicks; zero settings touched |
 | M6 | Doctor | probes, signatures, awdl helper, SSH host checks | Reproduce the case study on demand: doctor names AWDL + power-save + shared-channel correctly, fixes the first two |
 | M7 | Polish | Metal/VTDecompression path, AV1, HDR, frame-pacing dial, MenuBarExtra, reconnect/resume | Play·Local end-to-end latency ≤ moonlight-qt on same hardware; HDR round-trips |
 | M8 | Deep input | IOKit HID module (port MACOS.md §7 knowledge), multi-pad, side buttons | DualSense + Xbox BT with rumble simultaneously |

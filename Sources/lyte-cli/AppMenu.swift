@@ -42,11 +42,11 @@ final class AppMenuController: NSObject, NSMenuItemValidation {
         actions.addItem(selfItem("Mute Audio", #selector(toggleMute), "m",
                                  modifiers: [.command, .shift], tag: .mute))
         actions.addItem(.separator())
-        actions.addItem(chainItem("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f",
-                                  modifiers: [.control, .command]))
         actions.addItem(selfItem("Actual Size", #selector(actualSize), "0"))
         actions.addItem(selfItem("Float on Top", #selector(toggleFloat), "t",
                                  modifiers: [.command, .option], tag: .float))
+        actions.addItem(chainItem("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f",
+                                  modifiers: [.control, .command]))
         addSubmenu(actions, to: main)
 
         NSApp.mainMenu = main

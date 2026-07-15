@@ -75,6 +75,31 @@ Prior art: moonlight clients ship AWDL helpers on macOS — validates the concep
 - AudioUnit + Opus; buffer depth is policy-derived.
 - CoreHID mouse path (relative + absolute), GameController for pads.
 
+## D6. Interaction model: the window is the app (decided 2026-07-15)
+
+No splash, no launcher, no hosts screen gating the product. The stream window
+is the unit of everything; the M5 "Hosts/Apps/Stream" screens collapse into
+*states of one window type*.
+
+- **Launch → window.** ⌘N makes another. Each window is one connection to one
+  host. Multiple windows = multiple hosts (Sunshine allows one streaming
+  session per host; the UI should make that constraint feel natural).
+- **The gate is the empty state.** A new window shows a quiet connect state
+  inside itself: Bonjour-discovered hosts, recents first, then the chosen
+  host's app list. Pick an app → the picker melts away and the window becomes
+  pure stream. First-run pairing (PIN) lives in the same empty state.
+  Safari's new-tab page, not a login wall.
+- **Relaunch = resume.** Each window remembers its host and reconnects at
+  launch. Daily experience: click Dock icon → your desktop appears. Beats the
+  M5 "<60 s cold start" metric by an order of magnitude.
+- **Toolbar as a whisper.** Slim title-bar accessory, hidden by default while
+  streaming (chrome-less look is the default), toggleable. Carries only live
+  state: host name, Work/Play toggle, network-health dot, mute. Choices live
+  in menus; derived numbers stay invisible (D2).
+- **Menus stay minimal** (shipped in M4): app menu = identity + housekeeping
+  only; a single Actions menu = every command with its shortcut, doubling as
+  the shortcut cheat-sheet.
+
 ## Case study (motivating session, 2026-07-14)
 
 Stock Sunshine (Linux, hybrid Intel/NVIDIA laptop "ice") + moonlight-qt on an M5 Mac
