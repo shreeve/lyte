@@ -1,0 +1,17 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+
+# macOS
+.DS_Store
+
+# Reference checkouts (summaries misc/*.md ARE tracked)
+misc/moonlight-common-c/
+misc/moonlight-macos/
