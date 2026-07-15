@@ -6,13 +6,29 @@ same day after M2 verified on the wire.*
 ## TL;DR of where we are
 
 - **M0 (scaffold), M1 (pairing), and M2 (session: RTSP + control channel) are DONE
-  and verified against the live Sunshine host `ice` (10.0.0.249).** The M2 blocker
+  and verified against the live Sunshine host `pop` (formerly `ice`) (10.0.0.249).** The M2 blocker
   was a one-liner: `RtspHandshake` wasn't passing `riKey` into `RtspClient`, so the
   encrypted-RTSP envelope was silently disabled. With that fixed, the full
   OPTIONS→DESCRIBE→SETUP×3→ANNOUNCE→PLAY handshake succeeds, the control channel
   connects (control-v2 GCM), pings run, and teardown is clean.
-- **Next milestone: M3 — first pixels** (RTP video depacketization → Reed-Solomon
-  FEC → VideoToolbox HEVC → CAMetalLayer in a bare window). See `PLAN.md §6`.
+- **M3 first pixels: WORKING (2026-07-15).** `lyte-cli stream <host> Desktop`
+  renders the remote desktop at ~60fps: RTP → nanors FEC → depacketize →
+  AVSampleBufferDisplayLayer (HEVC). Files: `Sources/LyteKit/Video/`,
+  `Sources/lyte-cli/StreamCommand.swift`, `Vendor/nanors/`.
+  **The hard-won lesson:** a CLI showing AppKit UI must run `NSApplication.run()`
+  on the raw C main thread — NOT inside an AsyncParsableCommand's `run()`
+  (a MainActor job). Doing so starves the main dispatch queue: events flow and
+  windows appear, but `DispatchQueue.main` work (incl. AVSampleBufferDisplayLayer
+  frame attachment) never executes → perfect stats, black window. A manual
+  nextEvent pump with `await` sleeps is NOT a fix (async-main runtime exits after
+  one iteration). See the custom `@main enum Main` in `CLI.swift`: parse sync,
+  run command as a Task, give main thread to `app.run()` / `dispatchMain()`.
+- **M3 acceptance MET (2026-07-15):** 310s soak at 2048×1280@60 — 18,132 frames
+  (~58.5fps), 143,865 pkts, 0 skipped, 10 lost (all pre-first-IDR at startup),
+  screenshots pixel-clean. Loss test via `LYTE_DROP_PCT=5` (client-side drop
+  hook in `VideoStream.receiveLoop`): 90s, 35,107 pkts, **1,087 FEC-recovered**,
+  10 unrecoverable frames all healed by IDR re-request, picture stayed clean.
+  Ready to commit as M3. Next: M4 (input + Opus audio). See `PLAN.md §6`.
 
 ## The project in one paragraph
 
@@ -25,7 +41,7 @@ Local/Remote, telemetry-derived settings, a "network doctor." Read these in orde
 
 ## Critical environment facts (easy to trip on)
 
-- **Host `ice` = 10.0.0.249**, reached via `ssh pop`. Sunshine version 7.1.431.-1
+- **Host `pop` (renamed from `ice`) = 10.0.0.249**, reached via `ssh pop`. Sunshine version 7.1.431.-1
   (the `-1` negative quad = Sunshine). Web UI / PIN entry: `https://10.0.0.249:47990/pin`.
 - **The host uses `rtspenc://` (encrypted RTSP).** Our `corever=1` launch param opts
   into this. It is CORRECT given our "encryption on by default" decision.
@@ -40,7 +56,7 @@ Local/Remote, telemetry-derived settings, a "network doctor." Read these in orde
   `ClientIdentity.createInKeychain()`. Certs travel in the client store (public);
   the private key is matched by public-key comparison, because macOS rewrites cert
   labels to the CN. Do not "simplify" this back to SecItemAdd — it will break.
-- **We ARE already paired with ice** (device name "Linux" on the host; the pairing
+- **We ARE already paired with pop** (device name "Linux" on the host; the pairing
   cert + pinned server cert are saved in `~/Library/Application Support/Lyte/client.json`
   and the key is in the login Keychain). `lyte-cli apps 10.0.0.249` works today.
 - **Stale sessions:** if the host says `SERVER_BUSY` or resume fails with "Failed to
@@ -49,7 +65,7 @@ Local/Remote, telemetry-derived settings, a "network doctor." Read these in orde
 ## What works right now (verified)
 
 ```
-./.build/debug/lyte-cli discover              # finds ice via Bonjour
+./.build/debug/lyte-cli discover              # finds pop via Bonjour
 ./.build/debug/lyte-cli info 10.0.0.249       # serverinfo (paired, mutual TLS)
 ./.build/debug/lyte-cli apps 10.0.0.249       # Desktop / Low Res Desktop / Steam Big Picture
 ./.build/debug/lyte-cli pair 10.0.0.249       # full 5-stage PIN pairing (done once already)
@@ -126,7 +142,7 @@ M6 network doctor · M7 polish/Metal/HDR · M8 deep HID. Full detail in `PLAN.md
 
 ## The origin story (why this project exists)
 
-Started as a debugging session: Sunshine on `ice` looked terrible in Moonlight on an
+Started as a debugging session: Sunshine on `ice` (host since renamed `pop`) looked terrible in Moonlight on an
 M5 MacBook Pro. Root causes (all now folded into the design as policy inputs / doctor
 signatures): ~7 Mbps auto-bitrate, resolution rescale blur, NVENC-on-hybrid-graphics
 fallback to VAAPI, and choppy audio from jitter (host Wi-Fi power-save + client AWDL

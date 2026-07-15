@@ -5,9 +5,10 @@
   (Security/CryptoKit), PIN handshake, serverinfo/applist over HTTPS — guided by
   moonlight-common-c and the misc/ summaries
 - **M2 — Session** ✅ RTSP negotiation (encrypted `rtspenc://`); launch/resume/quit;
-  ENet control channel with control-v2 encryption — verified live against Sunshine on ice
-- **M3 — First pixels** RTP video depacketization + Reed-Solomon FEC → VideoToolbox
-  (HEVC first) → CAMetalLayer in a bare window
+  ENet control channel with control-v2 encryption — verified live against Sunshine on pop
+- **M3 — First pixels** ✅ RTP video depacketization + Reed-Solomon FEC → VideoToolbox
+  (HEVC first) → AVSampleBufferDisplayLayer in a bare window — soaked 5 min at
+  2048×1280@60 on pop; FEC + IDR recovery verified under 5% induced loss
 - **M4 — Hands and ears** ENet control/input channel, CoreHID mouse (free + locked),
   keyboard; Opus → AudioUnit; usable end-to-end session
 - **M5 — Policy engine** the 2×2 (intent × detected network), telemetry-derived

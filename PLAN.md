@@ -277,14 +277,14 @@ PolicyOutput = { w, h, fps, bitrate, codecPrefs, bufferMs, mouseMode,
 
 ---
 
-## 6. Milestones (each ends runnable against `ice`)
+## 6. Milestones (each ends runnable against `pop`)
 
 | # | Name | Deliverable | Acceptance |
 |---|------|-------------|------------|
 | M0 | Scaffold | this plan, repo, references | ✅ done |
-| M1 | Pairing | LyteKit: discovery, cert gen, PIN pair, serverinfo/applist. CLI: `lyte-cli pair`, `lyte-cli apps` | Pairs with Sunshine on ice; applist prints; identity survives relaunch (Keychain) |
+| M1 | Pairing | LyteKit: discovery, cert gen, PIN pair, serverinfo/applist. CLI: `lyte-cli pair`, `lyte-cli apps` | Pairs with Sunshine on pop; applist prints; identity survives relaunch (Keychain) |
 | M2 | Session | RTSP handshake + control ENet connect + launch/resume/quit | ✅ done — encrypted RTSP reaches PLAY on ice; control channel soaked 10 min; clean teardown |
-| M3 | Pixels | Video UDP → FEC → depacketize → ASBDL in a bare window | 2048×1280@60 HEVC ≥5 min, zero visible corruption on clean LAN; IDR recovery works under induced 5% loss |
+| M3 | Pixels | Video UDP → FEC → depacketize → ASBDL in a bare window | ✅ done — 310s soak at 2048×1280@60 clean; 5% induced loss: 1,087 pkts FEC-recovered, IDR re-request heals the rest |
 | M4 | Hands & ears | Input (free+locked mouse, keyboard, scroll) + Opus audio | Type/scroll/click in Work mode; play a game in Play mode; A/V sync ±40 ms; audio survives induced jitter |
 | M5 | App shell | SwiftUI Hosts/Apps/Stream/Settings, mode toggle, policy engine v1 | Cold start → paired → streaming in <60 s of user time; zero settings touched |
 | M6 | Doctor | probes, signatures, awdl helper, SSH host checks | Reproduce the case study on demand: doctor names AWDL + power-save + shared-channel correctly, fixes the first two |
@@ -299,9 +299,9 @@ Ship signal: M5 is daily-drivable for Steve; M6 is the public-release bar.
 
 | Risk | Mitigation |
 |------|------------|
-| ENet fork subtleties (channel config, MTU) | Vendor the exact fork; integration-test against Sunshine nightly + `ice` |
+| ENet fork subtleties (channel config, MTU) | Vendor the exact fork; integration-test against Sunshine nightly + `pop` |
 | Audio FEC parity matrix mismatch | Vendor matrix verbatim; golden-packet tests captured from real sessions |
-| Depacketizer edge cases (multi-FEC blocks, frame-header variants) | Sunshine-only trims variants; fuzz the parser (COMMON.md §15 quality bar); capture-replay corpus from ice |
+| Depacketizer edge cases (multi-FEC blocks, frame-header variants) | Sunshine-only trims variants; fuzz the parser (COMMON.md §15 quality bar); capture-replay corpus from pop |
 | Pairing crypto byte-exactness | Golden transcripts captured from reference client ↔ Sunshine; unit-test each stage |
 | VideoToolbox HEVC quirks (parameter-set changes mid-stream) | Rebuild format description on VPS/SPS/PPS change (reference behavior); test host resolution changes |
 | Sandbox + UDP + ICMP + helper | Prototype entitlements in M1 CLI (network.client/server); SMAppService helper spike early in M6 |

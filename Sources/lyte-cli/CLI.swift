@@ -1,15 +1,58 @@
+import AppKit
 import ArgumentParser
 import Foundation
 import LyteKit
 
-@main
 struct LyteCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "lyte-cli",
         abstract: "Lyte development CLI — M1: pair with a Sunshine host and list apps.",
-        subcommands: [Discover.self, Info.self, Pair.self, Apps.self, Launch.self, Quit.self, Unpair.self]
+        subcommands: [Discover.self, Info.self, Pair.self, Apps.self, Launch.self, Stream.self, Quit.self, Unpair.self]
     )
 
+}
+
+/// Custom entry point instead of `@main LyteCLI`. AppKit UI (the `stream`
+/// window) requires NSApplication.run() on the raw main thread: if it runs
+/// inside a Swift-concurrency MainActor job (which is where an
+/// AsyncParsableCommand's `run()` executes), the main dispatch queue can never
+/// drain — AVSampleBufferDisplayLayer never attaches decoded frames (black
+/// window) and DispatchQueue.main work is silently dropped. So: parse
+/// synchronously, run the command as a Task, and give the main thread to
+/// AppKit (for `stream`) or to dispatchMain() (for everything else).
+@main
+enum Main {
+    static func main() {
+        let wantsAppKit = CommandLine.arguments.dropFirst().contains("stream")
+        if wantsAppKit {
+            let app = NSApplication.shared   // create on the main thread
+            Task { @MainActor in
+                await runParsedCommand()
+                // A UI command that returns keeps running until its exit paths
+                // (window close / duration timer) call exit().
+            }
+            app.run()
+        } else {
+            Task {
+                await runParsedCommand()
+                Foundation.exit(0)
+            }
+            dispatchMain()
+        }
+    }
+
+    private static func runParsedCommand() async {
+        do {
+            var command = try LyteCLI.parseAsRoot()
+            if var asyncCommand = command as? AsyncParsableCommand {
+                try await asyncCommand.run()
+            } else {
+                try command.run()
+            }
+        } catch {
+            LyteCLI.exit(withError: error)
+        }
+    }
 }
 
 struct Discover: AsyncParsableCommand {

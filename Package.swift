@@ -33,9 +33,15 @@ let package = Package(
             ]
         ),
         .target(
+            name: "CNanors",
+            path: "Vendor/nanors",
+            publicHeadersPath: "include"
+        ),
+        .target(
             name: "LyteKit",
             dependencies: [
                 "CEnet",
+                "CNanors",
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "_CryptoExtras", package: "swift-crypto"),
                 .product(name: "X509", package: "swift-certificates"),

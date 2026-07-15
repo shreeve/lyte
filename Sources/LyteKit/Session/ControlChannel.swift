@@ -123,6 +123,11 @@ public final class ControlChannel: @unchecked Sendable {
 
     // MARK: - Sending
 
+    /// Ask the host to encode an IDR frame (Gen7Enc: same message as Start A).
+    public func requestIdrFrame() {
+        try? send(type: Self.startAType, payload: Data([0, 0]))
+    }
+
     public func send(type: UInt16, payload: Data) throws {
         lock.lock()
         defer { lock.unlock() }
