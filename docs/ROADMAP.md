@@ -4,7 +4,8 @@
 - **M1 — Pairing** ✅ LyteKit pairs with a Sunshine host: client cert generation
   (Security/CryptoKit), PIN handshake, serverinfo/applist over HTTPS — guided by
   moonlight-common-c and the misc/ summaries
-- **M2 — Session** RTSP negotiation; launch/resume an app on the host
+- **M2 — Session** ✅ RTSP negotiation (encrypted `rtspenc://`); launch/resume/quit;
+  ENet control channel with control-v2 encryption — verified live against Sunshine on ice
 - **M3 — First pixels** RTP video depacketization + Reed-Solomon FEC → VideoToolbox
   (HEVC first) → CAMetalLayer in a bare window
 - **M4 — Hands and ears** ENet control/input channel, CoreHID mouse (free + locked),

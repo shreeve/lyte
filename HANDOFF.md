@@ -1,0 +1,134 @@
+# Lyte — Session Handoff
+
+*Written 2026-07-15 to survive a model restart (back to Claude Fable); updated
+same day after M2 verified on the wire.*
+
+## TL;DR of where we are
+
+- **M0 (scaffold), M1 (pairing), and M2 (session: RTSP + control channel) are DONE
+  and verified against the live Sunshine host `ice` (10.0.0.249).** The M2 blocker
+  was a one-liner: `RtspHandshake` wasn't passing `riKey` into `RtspClient`, so the
+  encrypted-RTSP envelope was silently disabled. With that fixed, the full
+  OPTIONS→DESCRIBE→SETUP×3→ANNOUNCE→PLAY handshake succeeds, the control channel
+  connects (control-v2 GCM), pings run, and teardown is clean.
+- **Next milestone: M3 — first pixels** (RTP video depacketization → Reed-Solomon
+  FEC → VideoToolbox HEVC → CAMetalLayer in a bare window). See `PLAN.md §6`.
+
+## The project in one paragraph
+
+Lyte is a GPLv3, SwiftUI-native macOS streaming client for Sunshine hosts speaking
+the Moonlight protocol. Pure-Swift protocol layer (LyteKit) with two vendored C leaf
+libs (enet now, nanors later). Design: one Work/Play toggle, auto-detected
+Local/Remote, telemetry-derived settings, a "network doctor." Read these in order:
+`README.md`, `PLAN.md` (the blueprint — milestones in §6), `docs/DESIGN.md`,
+`misc/COMMON.md` (protocol bible), `misc/MACOS.md` (macOS client patterns).
+
+## Critical environment facts (easy to trip on)
+
+- **Host `ice` = 10.0.0.249**, reached via `ssh pop`. Sunshine version 7.1.431.-1
+  (the `-1` negative quad = Sunshine). Web UI / PIN entry: `https://10.0.0.249:47990/pin`.
+- **The host uses `rtspenc://` (encrypted RTSP).** Our `corever=1` launch param opts
+  into this. It is CORRECT given our "encryption on by default" decision.
+- **Building/running requires the full Xcode toolchain, not just CLT:**
+  - Build: plain `swift build` works (uses CLT clang fine).
+  - **Tests: `DEVELOPER_DIR=/Applications/Xcode.app swift test`** (CLT lacks XCTest).
+  - **Running `lyte-cli` needs the sandbox DISABLED** (`dangerouslyDisableSandbox: true`
+    in Bash tool) because it touches the login Keychain and binds UDP sockets.
+- **Keychain quirk (macOS 26):** `SecItemAdd` of a private key is denied to unsigned
+  binaries (error -34018). We work around it by generating the key *inside* the
+  Keychain via `SecKeyCreateRandomKey(kSecAttrIsPermanent)`. See
+  `ClientIdentity.createInKeychain()`. Certs travel in the client store (public);
+  the private key is matched by public-key comparison, because macOS rewrites cert
+  labels to the CN. Do not "simplify" this back to SecItemAdd — it will break.
+- **We ARE already paired with ice** (device name "Linux" on the host; the pairing
+  cert + pinned server cert are saved in `~/Library/Application Support/Lyte/client.json`
+  and the key is in the login Keychain). `lyte-cli apps 10.0.0.249` works today.
+- **Stale sessions:** if the host says `SERVER_BUSY` or resume fails with "Failed to
+  initialize video capture," run `lyte-cli quit 10.0.0.249` first, then launch.
+
+## What works right now (verified)
+
+```
+./.build/debug/lyte-cli discover              # finds ice via Bonjour
+./.build/debug/lyte-cli info 10.0.0.249       # serverinfo (paired, mutual TLS)
+./.build/debug/lyte-cli apps 10.0.0.249       # Desktop / Low Res Desktop / Steam Big Picture
+./.build/debug/lyte-cli pair 10.0.0.249       # full 5-stage PIN pairing (done once already)
+./.build/debug/lyte-cli quit 10.0.0.249       # cancel running app
+```
+
+## THE IMMEDIATE NEXT STEP (resume here)
+
+**Start M3 (first pixels).** The working session smoke test is:
+
+```
+./.build/debug/lyte-cli quit 10.0.0.249       # ensure host is free first
+./.build/debug/lyte-cli launch 10.0.0.249 Desktop --duration 12
+```
+(Run with sandbox disabled.) Verified output: `launched Desktop`, `rtsp: OPTIONS ok`,
+`DESCRIBE ok (hevc:true av1:true encSupported:0x5)`, three `SETUP ok` lines,
+`ANNOUNCE ok (codec hevc, enc 0x5)`, `PLAY ok`, `control: connected`, holds the
+duration (host sends 0x10e HDR-info on connect), `session closed cleanly`.
+
+### Hard-won implementation notes (keep for reference)
+1. **Encrypted RTSP byte layout** (now wire-verified). Seal/unseal in `Rtsp.swift`:
+   `[typeAndLength BE32 | 0x80000000][seq BE32][tag 16][ciphertext]`, IV =
+   `LE32(seq) ‖ 0*6 ‖ 'C''R'` outbound / `'H''R'` inbound, AES-128-GCM with the
+   riKey. Reference: `misc/moonlight-common-c/src/RtspConnection.c`
+   `sealRtspMessage` / `unsealRtspMessage`.
+2. **encSeq monotonicity across transactions.** Each RTSP message opens a NEW TCP
+   connection but the encryption sequence number keeps incrementing across the
+   whole handshake (OPTIONS=1, DESCRIBE=2, …): one `SeqCounter(start:0)`.
+3. **SDP exactness.** `Sdp.swift` `ClientSdp.payload()` — the **trailing space
+   before each `\r\n`** and the **double space in `m=video <port>  \r\n`** are
+   load-bearing (ported from `SdpGenerator.c`).
+4. **Control channel encryption.** `ControlChannel.swift` uses control-v2 GCM
+   (12-byte IV, `'C''C'`/`'H''C'`). Sunshine 7.1.431 supports it (encSupported 0x5).
+
+## M2 files written this session (all under Sources/LyteKit/Session/)
+
+| File | Role | Status |
+|------|------|--------|
+| `LaunchAPI.swift` | `/launch`, `/resume`, `/cancel`; generates riKey/riKeyID; `StreamContext` | ✅ verified |
+| `Rtsp.swift` | RTSP-over-TCP transaction, response parser, **encrypted-RTSP AES-GCM envelope** | ✅ verified on wire |
+| `Sdp.swift` | `HostSdpInfo` (DESCRIBE parse), `ClientSdp` (ANNOUNCE builder), codec/enc enums | ✅ verified on wire |
+| `RtspHandshake.swift` | Orchestrates OPTIONS→DESCRIBE→SETUP×3→ANNOUNCE→PLAY; codec + encryption negotiation; `onPortsKnown` hook to start pings pre-PLAY | ✅ verified (fix: must pass `riKey` into `RtspClient`) |
+| `ControlChannel.swift` | ENet control (UDP 47999): connect, Start A/B, 100ms ping, encrypted NVCTL send/recv, termination decode | ✅ verified |
+| `UdpPinger.swift` | SS_PING (16-byte token + BE32 seq) every 500ms on audio/video UDP ports | ✅ verified (host accepts; session stays alive) |
+
+Vendored C: `Vendor/enet/` (cgutman fork copied from `misc/moonlight-common-c/enet`,
+win32.c removed). Needs the explicit `Vendor/enet/include/module.modulemap` (umbrella
+= `enet/enet.h` only) — SwiftPM's auto umbrella breaks because enet headers must be
+included through enet.h. `CEnet` target in `Package.swift` sets the HAS_* defines.
+
+## Architecture decisions locked (don't re-litigate)
+
+- License **GPLv3** (chosen after an MIT clean-room experiment was abandoned — we
+  read the GPL reference freely now). macOS **15+**. Encryption **ON by default, all
+  cells**. Bundle id **`dev.shreeve.lyte`** (lowercase), display name **Lyte**.
+- **Sunshine-only** (GFE generations dropped) — this is why the code has no ENet-RTSP,
+  no TCP-47995 control, no SHA-1 pairing. Keep it that way.
+- Two vendored C libs only (enet, nanors-later). Everything else is Swift. No OpenSSL
+  (CryptoKit + CommonCrypto + swift-certificates).
+
+## Roadmap position
+
+M0 ✅ · M1 ✅ · M2 ✅ · **M3 ◀ HERE (first pixels: RTP→FEC→VideoToolbox→CAMetalLayer)** ·
+M4 input+audio · M5 SwiftUI app ·
+M6 network doctor · M7 polish/Metal/HDR · M8 deep HID. Full detail in `PLAN.md §6`.
+
+## Housekeeping loose ends
+
+- Old GitHub repos `shreeve/lyte-foo` (abandoned MIT) and `shreeve/lyte-ORIG` (first
+  GPL scaffold) still exist — `gh` token lacks `delete_repo` scope. Delete via GitHub
+  UI or `gh auth refresh -h github.com -s delete_repo`. Local dirs `~/Data/Code/lyte-foo`
+  and `~/Data/Code/lyte-ORIG` can also be removed.
+- ~~When M2 verifies on the wire: commit, mark M2 ✅, update memory.~~ Done 2026-07-15.
+
+## The origin story (why this project exists)
+
+Started as a debugging session: Sunshine on `ice` looked terrible in Moonlight on an
+M5 MacBook Pro. Root causes (all now folded into the design as policy inputs / doctor
+signatures): ~7 Mbps auto-bitrate, resolution rescale blur, NVENC-on-hybrid-graphics
+fallback to VAAPI, and choppy audio from jitter (host Wi-Fi power-save + client AWDL
+radio-sharing spikes + shared 6 GHz channel). See `docs/DESIGN.md` case study. That
+session is why the "network doctor" is the signature feature.

@@ -7,7 +7,7 @@ struct LyteCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "lyte-cli",
         abstract: "Lyte development CLI — M1: pair with a Sunshine host and list apps.",
-        subcommands: [Discover.self, Info.self, Pair.self, Apps.self, Unpair.self]
+        subcommands: [Discover.self, Info.self, Pair.self, Apps.self, Launch.self, Quit.self, Unpair.self]
     )
 
 }
@@ -124,4 +124,111 @@ struct Unpair: AsyncParsableCommand {
         try store.save()
         print("Unpaired from \(address).")
     }
+}
+
+struct Launch: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Launch an app and hold a live session (RTSP + control channel).")
+
+    @Argument(help: "Host address (IP or name)") var address: String
+    @Argument(help: "App name (e.g. Desktop) or numeric ID") var app: String = "Desktop"
+    @Option(name: .long) var width: Int = 2048
+    @Option(name: .long) var height: Int = 1280
+    @Option(name: .long) var fps: Int = 60
+    @Option(name: .long, help: "Bitrate in Kbps") var bitrate: Int = 40000
+    @Option(name: .long, help: "Seconds to hold the session") var duration: Int = 30
+
+    func run() async throws {
+        let store = ClientStore.load()
+        guard let host = store.host(address), let pinned = host.serverCertDER,
+              let identity = store.identity() else {
+            throw ValidationError("Not paired with \(address).")
+        }
+        let client = HostClient(address: address, uniqueID: store.uniqueID,
+                                identity: identity, pinnedServerCertDER: pinned)
+
+        // Resolve app name -> ID
+        let apps = try await client.appList()
+        guard let target = apps.first(where: { $0.title.caseInsensitiveCompare(app) == .orderedSame || $0.id == app }) else {
+            throw ValidationError("App not found. Available: \(apps.map(\.title).joined(separator: ", "))")
+        }
+
+        // Launch or resume depending on host state
+        let info = try await client.serverInfo(https: true)
+        let context: StreamContext
+        if let current = info.currentGame, current != "0", !current.isEmpty {
+            print("Host busy (app \(current)) — resuming")
+            context = try await client.resume(appID: target.id, width: width, height: height,
+                                              fps: fps, bitrateKbps: bitrate)
+        } else {
+            context = try await client.launch(appID: target.id, width: width, height: height,
+                                              fps: fps, bitrateKbps: bitrate)
+        }
+        print("launched \(target.title): rtsp url \(context.rtspSessionURL)")
+        fflush(stdout)
+
+        // RTSP handshake, starting UDP pings once ports are known
+        let pingers = PingerBox()
+        let handshake = RtspHandshake(context: context)
+        let params = try await handshake.perform(onPortsKnown: { audioPort, videoPort, audioPing, videoPing in
+            if let audioPing {
+                let p = UdpPinger(host: context.localAddress, port: audioPort, pingPayload: audioPing)
+                p.start(); pingers.add(p)
+            }
+            if let videoPing {
+                let p = UdpPinger(host: context.localAddress, port: videoPort, pingPayload: videoPing)
+                p.start(); pingers.add(p)
+            }
+        }, log: { print("rtsp: \($0)"); fflush(stdout) })
+
+        // Control channel
+        let control = try ControlChannel(
+            host: context.localAddress, port: params.controlPort,
+            connectData: params.controlConnectData, riKey: context.riKey,
+            encryptionEnabled: params.encryptionEnabled | SSEnc.controlV2
+        ) { event in
+            switch event {
+            case .connected: print("control: connected")
+            case .hostMessage(let type, let payload):
+                print("control: host message 0x\(String(type, radix: 16)) (\(payload.count) bytes)")
+            case .terminated(let code): print("control: TERMINATED by host, code \(code)")
+            case .disconnected: print("control: disconnected")
+            }
+            fflush(stdout)
+        }
+        try control.start()
+        print("session live — holding for \(duration)s (pings on audio/video/control)")
+        fflush(stdout)
+
+        try await Task.sleep(for: .seconds(duration))
+
+        control.stop()
+        pingers.stopAll()
+        print("session closed cleanly after \(duration)s")
+    }
+}
+
+struct Quit: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Quit the running app on the host.")
+
+    @Argument(help: "Host address (IP or name)") var address: String
+
+    func run() async throws {
+        let store = ClientStore.load()
+        guard let host = store.host(address), let pinned = host.serverCertDER,
+              let identity = store.identity() else {
+            throw ValidationError("Not paired with \(address).")
+        }
+        let client = HostClient(address: address, uniqueID: store.uniqueID,
+                                identity: identity, pinnedServerCertDER: pinned)
+        try await client.cancel()
+        print("quit requested")
+    }
+}
+
+final class PingerBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pingers: [UdpPinger] = []
+    func add(_ p: UdpPinger) { lock.lock(); pingers.append(p); lock.unlock() }
+    func stopAll() { lock.lock(); pingers.forEach { $0.stop() }; pingers.removeAll(); lock.unlock() }
 }

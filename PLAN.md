@@ -283,7 +283,7 @@ PolicyOutput = { w, h, fps, bitrate, codecPrefs, bufferMs, mouseMode,
 |---|------|-------------|------------|
 | M0 | Scaffold | this plan, repo, references | ✅ done |
 | M1 | Pairing | LyteKit: discovery, cert gen, PIN pair, serverinfo/applist. CLI: `lyte-cli pair`, `lyte-cli apps` | Pairs with Sunshine on ice; applist prints; identity survives relaunch (Keychain) |
-| M2 | Session | RTSP handshake + control ENet connect + launch/resume/quit | `lyte-cli launch Desktop` reaches PLAY; control channel stays up 10 min; clean teardown |
+| M2 | Session | RTSP handshake + control ENet connect + launch/resume/quit | ✅ done — encrypted RTSP reaches PLAY on ice; control channel soaked 10 min; clean teardown |
 | M3 | Pixels | Video UDP → FEC → depacketize → ASBDL in a bare window | 2048×1280@60 HEVC ≥5 min, zero visible corruption on clean LAN; IDR recovery works under induced 5% loss |
 | M4 | Hands & ears | Input (free+locked mouse, keyboard, scroll) + Opus audio | Type/scroll/click in Work mode; play a game in Play mode; A/V sync ±40 ms; audio survives induced jitter |
 | M5 | App shell | SwiftUI Hosts/Apps/Stream/Settings, mode toggle, policy engine v1 | Cold start → paired → streaming in <60 s of user time; zero settings touched |

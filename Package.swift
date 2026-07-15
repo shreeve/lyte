@@ -16,8 +16,26 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "CEnet",
+            path: "Vendor/enet",
+            exclude: ["include/enet/win32.h"],
+            publicHeadersPath: "include",
+            cSettings: [
+                .define("HAS_FCNTL"),
+                .define("HAS_IOCTL"),
+                .define("HAS_POLL"),
+                .define("HAS_GETADDRINFO"),
+                .define("HAS_GETNAMEINFO"),
+                .define("HAS_INET_PTON"),
+                .define("HAS_INET_NTOP"),
+                .define("HAS_MSGHDR_FLAGS"),
+                .define("HAS_SOCKLEN_T"),
+            ]
+        ),
+        .target(
             name: "LyteKit",
             dependencies: [
+                "CEnet",
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "_CryptoExtras", package: "swift-crypto"),
                 .product(name: "X509", package: "swift-certificates"),
