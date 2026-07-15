@@ -22,6 +22,12 @@ public final class AudioPlayer {
     /// callback spins against an empty ring during startup (we discard the
     /// host's ~500 ms backlog) and those aren't audible events.
     private var hasReceivedAudio = false
+    /// Pre-roll: don't drain the ring until it first reaches its target depth.
+    /// Without this the render callback empties the buffer as fast as packets
+    /// arrive, so the cushion never forms and every jitter gap underruns.
+    /// Re-primes only after a full drain (one clean rebuffer beats a string
+    /// of micro-stutters).
+    private var primed = false
     /// Declick: frames of fade-in still to apply after a discontinuity
     /// (underrun recovery or a trim seam). Hard edges read as pops.
     private var fadeInRemaining = 0
@@ -43,10 +49,30 @@ public final class AudioPlayer {
             let frames = Int(frameCount)
 
             self.lock.lock()
+
+            // Pre-roll: hold output silent until the cushion has formed.
+            if !self.primed {
+                let targetFrames = self.targetDepthMs * 48
+                if self.available / self.channels >= targetFrames {
+                    self.primed = true
+                    self.fadeInRemaining = self.fadeInLength   // gentle first note
+                } else {
+                    for ch in 0..<min(self.channels, abl.count) {
+                        if let out = abl[ch].mData?.assumingMemoryBound(to: Float.self) {
+                            for f in 0..<frames { out[f] = 0 }
+                        }
+                    }
+                    self.lock.unlock()
+                    return noErr
+                }
+            }
+
             let framesAvailable = self.available / self.channels
             let framesToCopy = min(frames, framesAvailable)
             let underrunNow = framesToCopy < frames
             if underrunNow, self.hasReceivedAudio { self.underruns += 1 }
+            // Full drain → re-prime so the next audio starts with a cushion
+            if framesAvailable == 0, self.hasReceivedAudio { self.primed = false }
 
             // Declick gains: fade in after a seam, fade out into silence
             let fadeIn = self.fadeInRemaining
@@ -112,12 +138,12 @@ public final class AudioPlayer {
         lock.lock()
         hasReceivedAudio = true
         lastPeak = samples.reduce(into: Float(0)) { $0 = max($0, abs($1)) }
+        // Fast up, slow down (standard adaptive jitter buffer): jump the
+        // target the instant a gap underruns so the *next* gap of that size
+        // is hidden, then relax gently when the air stays clean.
         enqueuesSinceGrowth += 1
         if underruns > lastUnderrunCount {
-            if enqueuesSinceGrowth >= 200 {   // grow at most ~once per second
-                enqueuesSinceGrowth = 0
-                if targetDepthMs < depthCeilingMs { targetDepthMs += 10 }
-            }
+            if targetDepthMs < depthCeilingMs { targetDepthMs = min(depthCeilingMs, targetDepthMs + 20) }
             lastUnderrunCount = underruns
             cleanEnqueues = 0
         } else {
