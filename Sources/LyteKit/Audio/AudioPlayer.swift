@@ -79,18 +79,31 @@ public final class AudioPlayer {
     /// second of continued underruns, up to a ceiling; the doctor (M6) will
     /// own the root cause.
     private let depthCeilingMs = 120
+    private let depthFloorMs = 50            // policy base (Work mode)
     private var lastUnderrunCount: UInt64 = 0
     private var enqueuesSinceGrowth = 0
+    private var cleanEnqueues = 0
 
     /// Push interleaved samples; drops the oldest data if the ring is full.
     func enqueue(_ samples: [Float]) {
         lock.lock()
         lastPeak = samples.reduce(into: Float(0)) { $0 = max($0, abs($1)) }
         enqueuesSinceGrowth += 1
-        if underruns > lastUnderrunCount, enqueuesSinceGrowth >= 200 {   // ~1 s of frames
+        if underruns > lastUnderrunCount {
+            if enqueuesSinceGrowth >= 200 {   // grow at most ~once per second
+                enqueuesSinceGrowth = 0
+                if targetDepthMs < depthCeilingMs { targetDepthMs += 10 }
+            }
             lastUnderrunCount = underruns
-            enqueuesSinceGrowth = 0
-            if targetDepthMs < depthCeilingMs { targetDepthMs += 10 }
+            cleanEnqueues = 0
+        } else {
+            // Decay: after ~10 s without a single underrun, step back toward
+            // the policy base — past jitter shouldn't tax present latency.
+            cleanEnqueues += 1
+            if cleanEnqueues >= 2000 {
+                cleanEnqueues = 0
+                if targetDepthMs > depthFloorMs { targetDepthMs -= 5 }
+            }
         }
         let maxSamples = (targetDepthMs + depthSlackMs) * 48 * channels
         if available > maxSamples {
