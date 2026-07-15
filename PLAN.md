@@ -293,7 +293,7 @@ PolicyOutput = { w, h, fps, bitrate, codecPrefs, bufferMs, mouseMode,
 | M2 | Session | RTSP handshake + control ENet connect + launch/resume/quit | ✅ done — encrypted RTSP reaches PLAY on ice; control channel soaked 10 min; clean teardown |
 | M3 | Pixels | Video UDP → FEC → depacketize → ASBDL in a bare window | ✅ done — 310s soak at 2048×1280@60 clean; 5% induced loss: 1,087 pkts FEC-recovered, IDR re-request heals the rest |
 | M4 | Hands & ears | Input (free+locked mouse, keyboard, scroll) + Opus audio | ✅ done — type/scroll/click + audio approved live on pop; audio FEC recovered 187 pkts under 5% induced loss; ⌃⌥ mouse lock; ~50 ms audio depth cap |
-| M5 | App shell | SwiftUI window-is-the-app shell (D6): connect empty-state, ⌘N windows, mode toggle, policy engine v1 | Cold start → paired → streaming in <60 s of user time; relaunch → pixels with zero clicks; zero settings touched |
+| M5 | App shell | SwiftUI window-is-the-app shell (D6): connect empty-state, ⌘N windows, mode toggle, policy engine v1 | ✅ done — Lyte.app: click host → click app → pixels; relaunch → pixels with zero clicks (verified live); policy derives all parameters, zero settings touched |
 | M6 | Doctor | probes, signatures, awdl helper, SSH host checks | Reproduce the case study on demand: doctor names AWDL + power-save + shared-channel correctly, fixes the first two |
 | M7 | Polish | Metal/VTDecompression path, AV1, HDR, frame-pacing dial, MenuBarExtra, reconnect/resume | Play·Local end-to-end latency ≤ moonlight-qt on same hardware; HDR round-trips |
 | M8 | Deep input | IOKit HID module (port MACOS.md §7 knowledge), multi-pad, side buttons | DualSense + Xbox BT with rumble simultaneously |

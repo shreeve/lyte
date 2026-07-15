@@ -13,8 +13,12 @@
   free + locked mouse, hi-res scroll, clipboard paste); Opus audio via RTP 4+2
   FEC → AES-CBC → system decoder → AVAudioEngine; app menu/identity/icon —
   usable end-to-end session, approved on pop
-- **M5 — Policy engine** the 2×2 (intent × detected network), telemetry-derived
-  settings, the single quality⇄latency dial
+- **M5 — App shell** ✅ Lyte.app (SwiftUI, D6 window-is-the-app): connect
+  empty-state with resolved Bonjour hosts + PIN pairing + launch cards,
+  relaunch-reconnect, Actions commands, policy engine v1 deriving all stream
+  parameters from Work/Play intent — verified live on pop
+- **M5.5 — Policy engine full** the 2×2 (intent × detected network),
+  telemetry-derived settings, the single quality⇄latency dial
 - **M6 — Network doctor** continuous probes, culprit signatures (AWDL, host power
   save, shared channel, uplink retries), in-stream banner + fixes
 - **M7 — Expert & polish** JSON profiles, per-host overrides, frame pacing, AV1,

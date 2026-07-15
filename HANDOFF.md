@@ -45,8 +45,34 @@ same day after M2 verified on the wire.*
   icon in `AppIcon.swift`; minimal two-menu design (Lyte + Actions).
   **Beep gotcha:** the stream view must accept first responder and no-op
   keyDown/keyUp/flagsChanged or every keystroke funks (NSBeep on unhandled keys).
-- **Next: M5 — SwiftUI app shell** (Hosts/Apps/Stream/Settings, Work/Play
-  toggle, policy engine v1). See `PLAN.md §6`.
+- **M5 DONE (2026-07-15, verified live by Steve).** Lyte.app (SwiftPM target
+  `Lyte` + `Scripts/make-app.sh` ad-hoc bundle): D6 window-is-the-app — connect
+  empty-state (resolved Bonjour hosts, recents, PIN pairing, gradient launch
+  cards), relaunch-reconnect (first window replays most recent connection; ⌥
+  skips; ⌘N = fresh picker), Actions via SwiftUI commands + focused-window
+  model, policy v1 derives all parameters. Key gotchas: `@Entry` macro needs
+  Xcode toolchain (hand-write FocusedValueKey for CLT builds); UNBUNDLED
+  SwiftUI apps don't get activation (menu bar doesn't follow clicks) — the
+  .app bundle is required, which also obviates the LS rename hack; killing
+  the app (vs ⌘Q) corrupts saved-state → phantom restored windows (delete
+  ~/Library/Saved Application State/dev.shreeve.lyte.savedState).
+- **Audio jitter calibration (doctor gold, measured 2026-07-15):** Wi-Fi↔Wi-Fi,
+  both on 6 GHz channel 69 (pop: wlp0s20f3, powersave off; client awdl0 up).
+  Fixed 50 ms buffer: ~8 underruns/s of audible chop with near-zero packet
+  loss. Adaptive buffer (grow 10 ms/s under underruns to 120 ms ceiling,
+  decay 5 ms/10 s clean — AudioPlayer.swift): AWDL up ⇒ equilibrium pegged
+  ~120-145 ms; `Scripts/awdl-quiet.sh` (holds awdl0 down) ⇒ ~85-95 ms;
+  residual ~0.14 underruns/s floor either way = shared-channel airtime
+  (no software fix; ethernet not an option for pop). **AWDL tax ≈ 50 ms.**
+- **ONE SESSION PER HOST:** two Lyte clients against the same host = doubled/
+  echoed audio (both ping, host sprays both). App auto-connects at launch —
+  don't also run a CLI stream. UX guard is an M6 nicety.
+- **Next: M6, starting with the AWDL privileged helper** (Steve's explicit
+  priority — ethernet is not an option): SMAppService root daemon in the app
+  bundle, XPC (streamBegan/streamEnded), holds awdl0 down during streams,
+  restores on end/crash (connection invalidation). Acceptance from the
+  calibration: engaging must drop buffer equilibrium ~50 ms. Then the rest
+  of the doctor. See `PLAN.md §5.5/§6`.
 - **Repo convention:** NO Claude/AI attribution trailers in commits (Steve's
   explicit request; history was rewritten 2026-07-15 to scrub them).
 
