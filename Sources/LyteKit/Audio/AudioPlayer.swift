@@ -22,6 +22,11 @@ public final class AudioPlayer {
     /// callback spins against an empty ring during startup (we discard the
     /// host's ~500 ms backlog) and those aren't audible events.
     private var hasReceivedAudio = false
+    /// Declick: frames of fade-in still to apply after a discontinuity
+    /// (underrun recovery or a trim seam). Hard edges read as pops.
+    private var fadeInRemaining = 0
+    private let fadeInLength = 256      // ~5 ms at 48 kHz
+    private let fadeOutLength = 64      // ~1.3 ms into silence
 
     /// bufferDepthMs is the target queue depth; the ring holds up to 500 ms.
     init(channels: Int) {
@@ -40,7 +45,12 @@ public final class AudioPlayer {
             self.lock.lock()
             let framesAvailable = self.available / self.channels
             let framesToCopy = min(frames, framesAvailable)
-            if framesToCopy < frames, self.hasReceivedAudio { self.underruns += 1 }
+            let underrunNow = framesToCopy < frames
+            if underrunNow, self.hasReceivedAudio { self.underruns += 1 }
+
+            // Declick gains: fade in after a seam, fade out into silence
+            let fadeIn = self.fadeInRemaining
+            let fadeOutStart = underrunNow ? max(0, framesToCopy - self.fadeOutLength) : frames
 
             // Deinterleave ring → per-channel buffers; zero-fill shortfall
             for ch in 0..<min(self.channels, abl.count) {
@@ -48,13 +58,22 @@ public final class AudioPlayer {
                 var idx = self.readIndex + ch
                 for f in 0..<frames {
                     if f < framesToCopy {
-                        out[f] = self.ring[idx % self.ring.count]
+                        var sample = self.ring[idx % self.ring.count]
+                        if f < fadeIn {
+                            sample *= Float(self.fadeInLength - fadeIn + f) / Float(self.fadeInLength)
+                        }
+                        if f >= fadeOutStart, framesToCopy > fadeOutStart {
+                            sample *= Float(framesToCopy - f) / Float(framesToCopy - fadeOutStart)
+                        }
+                        out[f] = sample
                         idx += self.channels
                     } else {
                         out[f] = 0
                     }
                 }
             }
+            self.fadeInRemaining = max(0, fadeIn - framesToCopy)
+            if underrunNow { self.fadeInRemaining = self.fadeInLength }   // fade back in on recovery
             self.readIndex = (self.readIndex + framesToCopy * self.channels) % self.ring.count
             self.available -= framesToCopy * self.channels
             self.lock.unlock()
@@ -115,6 +134,7 @@ public final class AudioPlayer {
             let trim = available - targetDepthMs * 48 * channels
             readIndex = (readIndex + trim) % ring.count
             available -= trim
+            fadeInRemaining = fadeInLength   // declick the trim seam
         }
         for s in samples {
             ring[writeIndex] = s
