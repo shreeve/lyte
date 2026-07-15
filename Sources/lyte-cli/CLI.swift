@@ -2,6 +2,7 @@ import AppKit
 import ArgumentParser
 import Foundation
 import LyteKit
+import LyteUI
 
 struct LyteCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(

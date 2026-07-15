@@ -3,6 +3,7 @@ import ArgumentParser
 @preconcurrency import AVFoundation
 import Foundation
 import LyteKit
+import LyteUI
 
 struct Stream: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -63,12 +64,20 @@ struct Stream: AsyncParsableCommand {
         window.contentView = videoView
         window.center()
 
-        let session = StreamSession(context: context, displayLayer: displayLayer)
+        let session = LyteSession(context: context, displayLayer: displayLayer) { event in
+            switch event {
+            case .log(let line): print(line); fflush(stdout)
+            case .connected: print("control: connected"); fflush(stdout)
+            case .terminated(let reason):
+                print("session TERMINATED — \(reason)"); fflush(stdout)
+                Foundation.exit(1)
+            }
+        }
         let cleanup: @Sendable () -> Void = {
             session.stop()
-            let s = session.stats()
-            print("stats: \(s.packets) pkts, \(s.frames) frames, " +
-                  "\(s.recovered) FEC-recovered pkts, \(s.lostFrames) lost frames")
+            let s = session.stats
+            print("stats: \(s.videoPackets) pkts, \(s.videoFrames) frames, " +
+                  "\(s.videoRecovered) FEC-recovered pkts, \(s.videoFramesLost) lost frames")
         }
 
         do {
@@ -125,14 +134,14 @@ struct Stream: AsyncParsableCommand {
         let ticker = DispatchSource.makeTimerSource(queue: .global())
         ticker.schedule(deadline: .now() + 5, repeating: 5)
         let printStats: @Sendable () -> Void = {
-            let s = session.stats()
-            var line = "… \(s.frames) frames, \(s.packets) pkts, " +
-                       "\(s.recovered) recovered, \(s.lostFrames) lost, " +
-                       "\(session.diag.enqueued) enqueued, \(session.diag.skipped) skipped"
-            if let a = session.audioStats() {
-                line += " | audio: \(a.decoded) frames, \(a.recovered) FEC, " +
-                        "\(a.lost) lost, \(a.underruns) underruns, \(a.queuedMs)ms buffered, " +
-                        String(format: "peak %.2f", a.peak)
+            let s = session.stats
+            var line = "… \(s.videoFrames) frames, \(s.videoPackets) pkts, " +
+                       "\(s.videoRecovered) recovered, \(s.videoFramesLost) lost, " +
+                       "\(s.framesEnqueued) enqueued, \(s.framesSkipped) skipped"
+            if s.hasAudio {
+                line += " | audio: \(s.audioFrames) frames, \(s.audioRecovered) FEC, " +
+                        "\(s.audioLost) lost, \(s.audioUnderruns) underruns, \(s.audioQueuedMs)ms buffered, " +
+                        String(format: "peak %.2f", s.audioPeak)
             }
             print(line)
         }
@@ -151,172 +160,6 @@ struct Stream: AsyncParsableCommand {
     }
 }
 
-/// Everything that keeps an M3 session alive: RTSP handshake, control channel,
-/// audio pinger, video stream → sample factory → display layer.
-final class StreamSession: @unchecked Sendable {
-    private let context: StreamContext
-    private let displayLayer: AVSampleBufferDisplayLayer
-
-    private var video: VideoStream?
-    private var control: ControlChannel?
-    private var audio: AudioStream?
-    private let factory = VideoSampleFactory(codec: .hevc)
-    let diag = RenderDiagnostics()
-
-    init(context: StreamContext, displayLayer: AVSampleBufferDisplayLayer) {
-        self.context = context
-        self.displayLayer = displayLayer
-    }
-
-    func start() async throws {
-        let renderer = displayLayer.sampleBufferRenderer
-        let controlBox = ControlBox()
-
-        // M3 is HEVC-only; force it in negotiation
-        let handshake = RtspHandshake(context: context, preferredCodecs: [.hevc])
-        let params = try await handshake.perform(onPortsKnown: { [self] audioPort, videoPort, audioPing, videoPing in
-            // Sunshine learns our RTP address from these pings, and the video
-            // ping socket is the video receive socket — so both must start
-            // before PLAY.
-            if let audioPing,
-               let a = AudioStream(host: context.localAddress, port: audioPort,
-                                   pingPayload: audioPing,
-                                   riKey: context.riKey, riKeyId: context.riKeyID) {
-                try? a.startPinging()   // must ping before PLAY
-                audio = a
-            }
-            let v = VideoStream(
-                host: context.localAddress, port: videoPort,
-                pingPayload: videoPing ?? Data(count: 16),
-                codec: .hevc, packetSize: context.packetSize,
-                onDecodeUnit: { [factory, diag] du in
-                    if renderer.requiresFlushToResumeDecoding {
-                        diag.note("renderer required flush (status \(renderer.status.rawValue), error: \(String(describing: renderer.error)))")
-                        renderer.flush()
-                        controlBox.control?.requestIdrFrame()
-                        return
-                    }
-                    do {
-                        if let sample = try factory.makeSampleBuffer(from: du) {
-                            renderer.enqueue(sample)
-                            diag.enqueued += 1
-                            if renderer.status == .failed {
-                                diag.note("renderer FAILED after enqueue: \(String(describing: renderer.error))")
-                            }
-                        } else {
-                            diag.skipped += 1
-                        }
-                    } catch {
-                        diag.note("sample factory error: \(error)")
-                    }
-                },
-                onRequestIdr: { controlBox.control?.requestIdrFrame() },
-                onTerminate: { reason in
-                    print("video: TERMINATED — \(reason)")
-                    Foundation.exit(1)
-                })
-            try? v.start()
-            video = v
-        }, log: { print("rtsp: \($0)"); fflush(stdout) })
-
-        let control = try ControlChannel(
-            host: context.localAddress, port: params.controlPort,
-            connectData: params.controlConnectData, riKey: context.riKey,
-            encryptionEnabled: params.encryptionEnabled | SSEnc.controlV2
-        ) { event in
-            switch event {
-            case .connected: print("control: connected")
-            case .hostMessage: break
-            case .terminated(let code):
-                print("control: TERMINATED by host, code \(code)")
-                Foundation.exit(1)
-            case .disconnected: print("control: disconnected")
-            }
-            fflush(stdout)
-        }
-        try control.start()
-        self.control = control
-        controlBox.control = control
-
-        // Audio playback starts once encryption negotiation is known
-        if let audio {
-            try audio.start(encrypted: params.encryptionEnabled & SSEnc.audio != 0)
-        }
-    }
-
-    func stop() {
-        video?.stop()
-        control?.stop()
-        audio?.stop()
-    }
-
-    func sendInput(_ packet: Data, channel: UInt8) {
-        control?.sendInput(packet, channel: channel)
-    }
-
-    func requestIdr() {
-        control?.requestIdrFrame()
-    }
-
-    func setAudioMuted(_ muted: Bool) {
-        audio?.setMuted(muted)
-    }
-
-    func stats() -> (packets: UInt64, frames: UInt64, recovered: UInt64, lostFrames: UInt64) {
-        guard let video else { return (0, 0, 0, 0) }
-        return (video.packetsReceived, video.framesDelivered,
-                video.packetsRecovered, video.framesLost)
-    }
-
-    func audioStats() -> (decoded: UInt64, recovered: UInt64, lost: UInt64,
-                          underruns: UInt64, queuedMs: Int, peak: Float)? {
-        guard let audio else { return nil }
-        return (audio.framesDecoded, audio.packetsRecovered, audio.packetsLost,
-                audio.underruns, audio.queuedMs, audio.peak)
-    }
-}
-
-/// Control channel becomes available only after the RTSP handshake that the
-/// video stream starts inside of — late-bind it.
-final class ControlBox: @unchecked Sendable {
-    var control: ControlChannel?
-}
-
-/// Rendering counters + de-duplicated one-shot notes (receive-thread written).
-final class RenderDiagnostics: @unchecked Sendable {
-    var enqueued: UInt64 = 0
-    var skipped: UInt64 = 0
-    private var seen = Set<String>()
-    private let lock = NSLock()
-
-    func note(_ message: String) {
-        lock.lock(); defer { lock.unlock() }
-        let key = String(message.prefix(40))
-        guard !seen.contains(key) else { return }
-        seen.insert(key)
-        print("render: \(message)")
-    }
-}
-
-final class VideoLayerView: NSView {
-    init(layer: AVSampleBufferDisplayLayer) {
-        super.init(frame: .zero)
-        // Layer-hosting view: the layer MUST be set before wantsLayer,
-        // otherwise AppKit treats it as layer-backed and swaps in its own.
-        self.layer = layer
-        wantsLayer = true
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    // Terminate key events silently: anything not consumed by InputCapture's
-    // monitor (or a menu) would otherwise fall off the responder chain and
-    // trigger NSBeep on every keystroke.
-    override var acceptsFirstResponder: Bool { true }
-    override func keyDown(with event: NSEvent) {}
-    override func keyUp(with event: NSEvent) {}
-    override func flagsChanged(with event: NSEvent) {}
-}
 
 final class WindowCloser: NSObject, NSWindowDelegate {
     private let onClose: () -> Void

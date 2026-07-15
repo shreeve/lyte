@@ -1,18 +1,19 @@
 import AppKit
 import LyteKit
+import LyteUI
 
 /// Main menu for the stream window. The CLI is unbundled, so without this the
 /// menu bar keeps the launching app's identity (e.g. "iTerm2").
 @MainActor
 final class AppMenuController: NSObject, NSMenuItemValidation {
     private weak var window: NSWindow?
-    private let session: StreamSession
+    private let session: LyteSession
     private let input: InputCapture
     private var muted = false
     private var floating = false
     private let streamSize: NSSize
 
-    init(window: NSWindow, session: StreamSession, input: InputCapture, streamSize: NSSize) {
+    init(window: NSWindow, session: LyteSession, input: InputCapture, streamSize: NSSize) {
         self.window = window
         self.session = session
         self.input = input

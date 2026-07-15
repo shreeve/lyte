@@ -5,8 +5,8 @@ import Foundation
 /// executables); the only way to change it is the private LS display-name
 /// call — the same one Chromium and Qt use. Resolved via dlsym so we fail
 /// soft if the symbol ever disappears. The bundled app (M5) won't need this.
-enum ProcessName {
-    static func set(_ name: String) {
+public enum ProcessName {
+    public static func set(_ name: String) {
         typealias GetASN = @convention(c) () -> CFTypeRef?
         typealias SetItem = @convention(c) (Int32, CFTypeRef?, CFString, CFString, UnsafeMutablePointer<CFDictionary?>?) -> OSStatus
 

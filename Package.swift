@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "LyteKit", targets: ["LyteKit"]),
         .executable(name: "lyte-cli", targets: ["lyte-cli"]),
+        .executable(name: "Lyte", targets: ["Lyte"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.8.0"),
@@ -48,12 +49,21 @@ let package = Package(
                 .product(name: "SwiftASN1", package: "swift-asn1"),
             ]
         ),
+        .target(
+            name: "LyteUI",
+            dependencies: ["LyteKit"]
+        ),
         .executableTarget(
             name: "lyte-cli",
             dependencies: [
                 "LyteKit",
+                "LyteUI",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
+        ),
+        .executableTarget(
+            name: "Lyte",
+            dependencies: ["LyteKit", "LyteUI"]
         ),
         .testTarget(name: "LyteKitTests", dependencies: ["LyteKit"]),
     ]

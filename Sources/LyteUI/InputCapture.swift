@@ -6,7 +6,7 @@ import LyteKit
 /// monitors. ⌘-chorded keys stay local (window management shortcuts must not
 /// leak to the host); everything else is consumed and forwarded.
 @MainActor
-final class InputCapture {
+public final class InputCapture {
     private weak var view: NSView?
     private weak var window: NSWindow?
     private let send: (Data, UInt8) -> Void
@@ -14,11 +14,11 @@ final class InputCapture {
 
     /// Play-mode mouse lock: relative deltas, hidden + frozen local cursor.
     /// Toggled with the ⌃⌥ chord (PLAN §4.3 release recipe).
-    private(set) var locked = false
+    public private(set) var locked = false
     private var chordArmed = true   // rearm after both chord keys release
     private var baseTitle = ""
 
-    init(view: NSView, window: NSWindow, send: @escaping (Data, UInt8) -> Void) {
+    public init(view: NSView, window: NSWindow, send: @escaping (Data, UInt8) -> Void) {
         self.view = view
         self.window = window
         self.send = send
@@ -26,7 +26,7 @@ final class InputCapture {
         baseTitle = window.title
     }
 
-    func start() {
+    public func start() {
         let mouseEvents: NSEvent.EventTypeMask = [
             .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
             .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
@@ -40,13 +40,13 @@ final class InputCapture {
         } as Any)
     }
 
-    func stop() {
+    public func stop() {
         if locked { setLocked(false) }
         monitors.forEach { NSEvent.removeMonitor($0) }
         monitors.removeAll()
     }
 
-    func toggleLock() {
+    public func toggleLock() {
         setLocked(!locked)
     }
 

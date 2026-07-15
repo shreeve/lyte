@@ -3,8 +3,8 @@ import AppKit
 /// Programmatic app icon for the unbundled dev CLI: an indigo→blue squircle
 /// with a white bolt. Used for the Dock and the About panel until M5 ships a
 /// real asset-catalog icon.
-enum AppIcon {
-    static let shared: NSImage = make()
+public enum AppIcon {
+    public static let shared: NSImage = make()
 
     private static func make() -> NSImage {
         let canvas = NSSize(width: 512, height: 512)
