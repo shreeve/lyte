@@ -38,6 +38,7 @@ public final class ControlChannel: @unchecked Sendable {
     private static let startBType: UInt16 = 0x0307
     private static let periodicPingType: UInt16 = 0x0200
     private static let terminationType: UInt16 = 0x0109
+    private static let inputDataType: UInt16 = 0x0206
 
     public init(host: String, port: UInt16, connectData: UInt32, riKey: Data,
                 encryptionEnabled: UInt32,
@@ -128,7 +129,14 @@ public final class ControlChannel: @unchecked Sendable {
         try? send(type: Self.startAType, payload: Data([0, 0]))
     }
 
-    public func send(type: UInt16, payload: Data) throws {
+    /// Send an input event (InputPacket payload) on its device channel.
+    /// Input rides the encrypted control stream on Sunshine (Gen7Enc); there
+    /// is no separate per-packet input cipher.
+    public func sendInput(_ packet: Data, channel: UInt8) {
+        try? send(type: Self.inputDataType, payload: packet, channel: channel)
+    }
+
+    public func send(type: UInt16, payload: Data, channel: UInt8 = 0) throws {
         lock.lock()
         defer { lock.unlock() }
         guard let client, let peer else { throw LyteError.host("control: not connected") }
@@ -167,7 +175,7 @@ public final class ControlChannel: @unchecked Sendable {
             enet_packet_create(bytes.baseAddress, bytes.count, ENET_PACKET_FLAG_RELIABLE.rawValue)
         }
         guard let enetPacket else { throw LyteError.host("control: packet create failed") }
-        guard enet_peer_send(UnsafeMutablePointer(peer), 0, enetPacket) >= 0 else {
+        guard enet_peer_send(UnsafeMutablePointer(peer), channel, enetPacket) >= 0 else {
             enet_packet_destroy(enetPacket)
             throw LyteError.host("control: send failed")
         }

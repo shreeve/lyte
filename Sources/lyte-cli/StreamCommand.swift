@@ -58,7 +58,8 @@ struct Stream: AsyncParsableCommand {
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.title = "Lyte — \(target.title) on \(address)"
-        window.contentView = VideoLayerView(layer: displayLayer)
+        let videoView = VideoLayerView(layer: displayLayer)
+        window.contentView = videoView
         window.center()
 
         let session = StreamSession(context: context, displayLayer: displayLayer)
@@ -83,7 +84,34 @@ struct Stream: AsyncParsableCommand {
         })
         window.delegate = delegate
         window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(videoView)
         nsApp.activate(ignoringOtherApps: true)
+
+        let input = InputCapture(view: videoView, window: window) { packet, channel in
+            session.sendInput(packet, channel: channel)
+        }
+        input.start()
+
+        // Debug: LYTE_INPUT_TEST=1 sweeps the host cursor diagonally and
+        // right-clicks — verifies the input wire format end-to-end (the host's
+        // rendered cursor + context menu appear in the video).
+        if ProcessInfo.processInfo.environment["LYTE_INPUT_TEST"] != nil {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(5))
+                for i in 0...20 {
+                    let p = InputPacket.mouseMoveAbsolute(x: Int16(100 + i * 40), y: Int16(100 + i * 22),
+                                                          width: 1024, height: 640)
+                    session.sendInput(p, channel: InputPacket.channelMouse)
+                    try? await Task.sleep(for: .milliseconds(40))
+                }
+                session.sendInput(InputPacket.mouseButton(down: true, button: .right),
+                                  channel: InputPacket.channelMouse)
+                try? await Task.sleep(for: .milliseconds(120))
+                session.sendInput(InputPacket.mouseButton(down: false, button: .right),
+                                  channel: InputPacket.channelMouse)
+                print("input-test: sweep + right-click sent")
+            }
+        }
 
         // Exit timer and stats ticker live off the main queue so they fire
         // regardless of what the AppKit run loop is doing.
@@ -97,9 +125,15 @@ struct Stream: AsyncParsableCommand {
         ticker.schedule(deadline: .now() + 5, repeating: 5)
         let printStats: @Sendable () -> Void = {
             let s = session.stats()
-            print("… \(s.frames) frames, \(s.packets) pkts, " +
-                  "\(s.recovered) recovered, \(s.lostFrames) lost, " +
-                  "\(session.diag.enqueued) enqueued, \(session.diag.skipped) skipped")
+            var line = "… \(s.frames) frames, \(s.packets) pkts, " +
+                       "\(s.recovered) recovered, \(s.lostFrames) lost, " +
+                       "\(session.diag.enqueued) enqueued, \(session.diag.skipped) skipped"
+            if let a = session.audioStats() {
+                line += " | audio: \(a.decoded) frames, \(a.recovered) FEC, " +
+                        "\(a.lost) lost, \(a.underruns) underruns, \(a.queuedMs)ms buffered, " +
+                        String(format: "peak %.2f", a.peak)
+            }
+            print(line)
         }
         ticker.setEventHandler(handler: printStats)
         ticker.resume()
@@ -108,7 +142,11 @@ struct Stream: AsyncParsableCommand {
         // Main.main) — returning here leaves the session streaming until an
         // exit path fires (window close / duration timer). Keep strong
         // references to everything AppKit only holds weakly.
-        streamRetainer.append(contentsOf: [delegate, ticker, session, window])
+        let menu = AppMenuController(window: window, session: session, input: input,
+                                     streamSize: NSSize(width: width, height: height))
+        menu.install()
+
+        streamRetainer.append(contentsOf: [delegate, ticker, session, window, input, menu])
     }
 }
 
@@ -120,7 +158,7 @@ final class StreamSession: @unchecked Sendable {
 
     private var video: VideoStream?
     private var control: ControlChannel?
-    private var audioPinger: UdpPinger?
+    private var audio: AudioStream?
     private let factory = VideoSampleFactory(codec: .hevc)
     let diag = RenderDiagnostics()
 
@@ -139,10 +177,12 @@ final class StreamSession: @unchecked Sendable {
             // Sunshine learns our RTP address from these pings, and the video
             // ping socket is the video receive socket — so both must start
             // before PLAY.
-            if let audioPing {
-                let p = UdpPinger(host: context.localAddress, port: audioPort, pingPayload: audioPing)
-                p.start()
-                audioPinger = p
+            if let audioPing,
+               let a = AudioStream(host: context.localAddress, port: audioPort,
+                                   pingPayload: audioPing,
+                                   riKey: context.riKey, riKeyId: context.riKeyID) {
+                try? a.startPinging()   // must ping before PLAY
+                audio = a
             }
             let v = VideoStream(
                 host: context.localAddress, port: videoPort,
@@ -196,18 +236,42 @@ final class StreamSession: @unchecked Sendable {
         try control.start()
         self.control = control
         controlBox.control = control
+
+        // Audio playback starts once encryption negotiation is known
+        if let audio {
+            try audio.start(encrypted: params.encryptionEnabled & SSEnc.audio != 0)
+        }
     }
 
     func stop() {
         video?.stop()
         control?.stop()
-        audioPinger?.stop()
+        audio?.stop()
+    }
+
+    func sendInput(_ packet: Data, channel: UInt8) {
+        control?.sendInput(packet, channel: channel)
+    }
+
+    func requestIdr() {
+        control?.requestIdrFrame()
+    }
+
+    func setAudioMuted(_ muted: Bool) {
+        audio?.setMuted(muted)
     }
 
     func stats() -> (packets: UInt64, frames: UInt64, recovered: UInt64, lostFrames: UInt64) {
         guard let video else { return (0, 0, 0, 0) }
         return (video.packetsReceived, video.framesDelivered,
                 video.packetsRecovered, video.framesLost)
+    }
+
+    func audioStats() -> (decoded: UInt64, recovered: UInt64, lost: UInt64,
+                          underruns: UInt64, queuedMs: Int, peak: Float)? {
+        guard let audio else { return nil }
+        return (audio.framesDecoded, audio.packetsRecovered, audio.packetsLost,
+                audio.underruns, audio.queuedMs, audio.peak)
     }
 }
 
@@ -243,6 +307,14 @@ final class VideoLayerView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    // Terminate key events silently: anything not consumed by InputCapture's
+    // monitor (or a menu) would otherwise fall off the responder chain and
+    // trigger NSBeep on every keystroke.
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with event: NSEvent) {}
+    override func keyUp(with event: NSEvent) {}
+    override func flagsChanged(with event: NSEvent) {}
 }
 
 final class WindowCloser: NSObject, NSWindowDelegate {

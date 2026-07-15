@@ -25,7 +25,12 @@ enum Main {
     static func main() {
         let wantsAppKit = CommandLine.arguments.dropFirst().contains("stream")
         if wantsAppKit {
+            // Unbundled binaries inherit the launcher's app identity in the
+            // menu bar ("iTerm2" / "lyte-cli"). Rename the LaunchServices
+            // registration before AppKit spins up so the menu bar says Lyte.
+            ProcessInfo.processInfo.processName = "Lyte"
             let app = NSApplication.shared   // create on the main thread
+            ProcessName.set("Lyte")          // must run after LS registration exists
             Task { @MainActor in
                 await runParsedCommand()
                 // A UI command that returns keeps running until its exit paths

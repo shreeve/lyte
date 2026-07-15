@@ -9,8 +9,10 @@
 - **M3 — First pixels** ✅ RTP video depacketization + Reed-Solomon FEC → VideoToolbox
   (HEVC first) → AVSampleBufferDisplayLayer in a bare window — soaked 5 min at
   2048×1280@60 on pop; FEC + IDR recovery verified under 5% induced loss
-- **M4 — Hands and ears** ENet control/input channel, CoreHID mouse (free + locked),
-  keyboard; Opus → AudioUnit; usable end-to-end session
+- **M4 — Hands and ears** ✅ input over the encrypted control channel (keyboard,
+  free + locked mouse, hi-res scroll, clipboard paste); Opus audio via RTP 4+2
+  FEC → AES-CBC → system decoder → AVAudioEngine; app menu/identity/icon —
+  usable end-to-end session, approved on pop
 - **M5 — Policy engine** the 2×2 (intent × detected network), telemetry-derived
   settings, the single quality⇄latency dial
 - **M6 — Network doctor** continuous probes, culprit signatures (AWDL, host power

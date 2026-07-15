@@ -28,7 +28,27 @@ same day after M2 verified on the wire.*
   screenshots pixel-clean. Loss test via `LYTE_DROP_PCT=5` (client-side drop
   hook in `VideoStream.receiveLoop`): 90s, 35,107 pkts, **1,087 FEC-recovered**,
   10 unrecoverable frames all healed by IDR re-request, picture stayed clean.
-  Ready to commit as M3. Next: M4 (input + Opus audio). See `PLAN.md §6`.
+- **M4 DONE, approved by Steve (2026-07-15).** Input: Moonlight packets
+  (`LyteKit/Input/InputPackets.swift`, wire format from Input.h) ride the
+  already-encrypted control stream as NVCTL 0x0206 on per-device ENet channels
+  (kbd 0x02, mouse 0x03, UTF-8 0x06) — NO separate input cipher on Sunshine
+  Gen7Enc. NSEvent capture in `lyte-cli/InputCapture.swift`: absolute mouse
+  (Work), ⌃⌥-toggled locked relative mouse (Play; CGAssociate + NSCursor.hide,
+  modifier-ups on release), ~85-key kVK→VK map, hi-res scroll (trackpad ×4,
+  wheel ×40). Audio: `LyteKit/Audio/` — RtpAudioQueue port (4+2 RS FEC, Nvidia
+  parity `77 40 38 0e c7 a7 0d 6c` patched into nanors `rs->p`), AES-128-CBC
+  (IV = BE32(riKeyId+seq)), Opus via system AudioConverter (stereo; libopus
+  only needed for surround later), AVAudioEngine + ring buffer with ~50ms
+  policy depth cap. Audio FEC verified: 187 pkts recovered @ 5% drop.
+  App identity: menu bar name needs the private `_LSSetApplicationInformationItem`
+  (see `ProcessName.swift`) — ProcessInfo.processName is NOT enough; programmatic
+  icon in `AppIcon.swift`; minimal two-menu design (Lyte + Actions).
+  **Beep gotcha:** the stream view must accept first responder and no-op
+  keyDown/keyUp/flagsChanged or every keystroke funks (NSBeep on unhandled keys).
+- **Next: M5 — SwiftUI app shell** (Hosts/Apps/Stream/Settings, Work/Play
+  toggle, policy engine v1). See `PLAN.md §6`.
+- **Repo convention:** NO Claude/AI attribution trailers in commits (Steve's
+  explicit request; history was rewritten 2026-07-15 to scrub them).
 
 ## The project in one paragraph
 
