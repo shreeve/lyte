@@ -16,7 +16,22 @@ enum HelperBridge {
         let c = NSXPCConnection(machServiceName: LyteHelper.machServiceName, options: .privileged)
         c.remoteObjectInterface = NSXPCInterface(with: LyteHelperCommands.self)
         c.resume()
-        guard let proxy = c.remoteObjectProxy as? LyteHelperCommands else {
+        // XPC proxies are optimistic: they exist even when no daemon does,
+        // and messages vanish silently. Demand a version() round-trip before
+        // believing anything.
+        let sema = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var alive = false
+        guard let proxy = c.remoteObjectProxyWithErrorHandler({ _ in sema.signal() })
+                as? LyteHelperCommands else {
+            c.invalidate()
+            return false
+        }
+        proxy.version { _ in
+            alive = true
+            sema.signal()
+        }
+        _ = sema.wait(timeout: .now() + 1.0)
+        guard alive else {
             c.invalidate()
             return false
         }
