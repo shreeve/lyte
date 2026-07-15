@@ -1,0 +1,203 @@
+import SwiftUI
+@preconcurrency import AVFoundation
+import LyteKit
+import LyteUI
+
+/// Per-window connection state machine: pick host → (pair) → pick app →
+/// connect → stream. Owns the session, display layer, and input capture.
+@MainActor
+@Observable
+final class ConnectionModel {
+    enum Phase {
+        case pickHost
+        case pairing(address: String, pin: String)
+        case apps(address: String, hostName: String, apps: [NvApp])
+        case connecting(String)
+        case streaming
+        case failed(String)
+    }
+
+    var phase: Phase = .pickHost
+    var mode: StreamMode = .work
+    var muted = false { didSet { session?.setAudioMuted(muted) } }
+    var statusLine = ""
+
+    private(set) var hostAddress: String?
+    private(set) var hostName: String?
+    private(set) var appTitle: String?
+    private(set) var session: LyteSession?
+    private(set) var policy: PolicyOutput?
+    let displayLayer = AVSampleBufferDisplayLayer()
+
+    private var client: HostClient?
+    var inputCapture: InputCapture?
+
+    var windowTitle: String {
+        switch phase {
+        case .streaming:
+            return "\(appTitle ?? "Stream") on \(hostName ?? hostAddress ?? "host")"
+        default:
+            return "Lyte"
+        }
+    }
+
+    // MARK: - Host selection & pairing
+
+    func selectHost(_ address: String, name: String?) async {
+        var store = ClientStore.load()
+        hostAddress = address
+        hostName = name ?? store.host(address)?.name ?? address
+
+        if let host = store.host(address), host.serverCertDER != nil, store.identity() != nil {
+            await loadApps(address: address)
+            return
+        }
+
+        // Not paired — run the PIN dance (client shows PIN; user types it
+        // into the Sunshine web UI).
+        let identity: ClientIdentity
+        do {
+            if let existing = store.identity() {
+                identity = existing
+            } else {
+                identity = try ClientIdentity.create()
+                store.clientCertPEM = identity.certificatePEM
+                try store.save()
+            }
+        } catch {
+            phase = .failed("identity: \(error.localizedDescription)")
+            return
+        }
+
+        let pin = PairingSession.generatePIN()
+        phase = .pairing(address: address, pin: pin)
+        do {
+            let client = HostClient(address: address, uniqueID: store.uniqueID)
+            let result = try await PairingSession(client: client, identity: identity).pair(pin: pin)
+            let paired = HostClient(address: address, uniqueID: store.uniqueID,
+                                    identity: identity, pinnedServerCertDER: result.serverCertDER)
+            let info = try await paired.serverInfo(https: true)
+            store.upsert(ClientStore.Host(name: info.hostname, address: address,
+                                          serverCertPEM: result.serverCertPEM, mac: info.mac),
+                         key: address)
+            try store.save()
+            hostName = info.hostname
+            await loadApps(address: address)
+        } catch {
+            phase = .failed("pairing: \(error.localizedDescription)")
+        }
+    }
+
+    private func loadApps(address: String) async {
+        let store = ClientStore.load()
+        guard let host = store.host(address), let pinned = host.serverCertDER,
+              let identity = store.identity() else {
+            phase = .failed("not paired with \(address)")
+            return
+        }
+        let client = HostClient(address: address, uniqueID: store.uniqueID,
+                                identity: identity, pinnedServerCertDER: pinned)
+        self.client = client
+        do {
+            let apps = try await client.appList()
+            phase = .apps(address: address, hostName: hostName ?? address, apps: apps)
+        } catch {
+            phase = .failed("app list: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Streaming
+
+    func connect(app: NvApp) async {
+        guard let client, let address = hostAddress else { return }
+        appTitle = app.title
+
+        // Desktop ⇒ Work, anything game-like ⇒ Play (auto-intent, dismissible later)
+        mode = app.title.localizedCaseInsensitiveContains("desktop") ? .work : .play
+
+        let panel = NSScreen.main.map {
+            (width: Int($0.frame.width * $0.backingScaleFactor),
+             height: Int($0.frame.height * $0.backingScaleFactor))
+        }
+        let derived = Policy.derive(PolicyInput(mode: mode, clientPanel: panel))
+        policy = derived
+        phase = .connecting("Launching \(app.title)…")
+
+        do {
+            let info = try await client.serverInfo(https: true)
+            let context: StreamContext
+            if let current = info.currentGame, current != "0", !current.isEmpty {
+                context = try await client.resume(appID: app.id, width: derived.width,
+                                                  height: derived.height, fps: derived.fps,
+                                                  bitrateKbps: derived.bitrateKbps)
+            } else {
+                context = try await client.launch(appID: app.id, width: derived.width,
+                                                  height: derived.height, fps: derived.fps,
+                                                  bitrateKbps: derived.bitrateKbps)
+            }
+
+            displayLayer.videoGravity = .resizeAspect
+            displayLayer.backgroundColor = CGColor(gray: 0, alpha: 1)
+
+            let session = LyteSession(context: context, displayLayer: displayLayer) { [weak self] event in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    switch event {
+                    case .log(let line): self.statusLine = line
+                    case .connected: break
+                    case .terminated(let reason): self.endSession(reason: reason)
+                    }
+                }
+            }
+            self.session = session
+            try await session.start()
+            phase = .streaming
+            RecentConnections.remember(address: address, app: app.title)
+        } catch {
+            phase = .failed("connect: \(error.localizedDescription)")
+        }
+    }
+
+    /// Relaunch-reconnect (D6): host → apps → the remembered app, no clicks.
+    func reconnect(address: String, appTitle: String) async {
+        await selectHost(address, name: nil)
+        if case .apps(_, _, let apps) = phase,
+           let app = apps.first(where: { $0.title == appTitle }) {
+            await connect(app: app)
+        }
+    }
+
+    func endSession(reason: String?) {
+        inputCapture?.stop()
+        inputCapture = nil
+        session?.stop()
+        session = nil
+        if let reason {
+            phase = .failed(reason)
+        } else {
+            phase = .pickHost
+        }
+    }
+
+    func disconnect() {
+        endSession(reason: nil)
+    }
+}
+
+/// Recents, persisted in UserDefaults ("address|app" strings, most recent first).
+enum RecentConnections {
+    private static let key = "recentConnections"
+
+    static func remember(address: String, app: String) {
+        var entries = load().filter { !($0.address == address && $0.app == app) }
+        entries.insert((address, app), at: 0)
+        UserDefaults.standard.set(entries.prefix(6).map { "\($0.address)|\($0.app)" }, forKey: key)
+    }
+
+    static func load() -> [(address: String, app: String)] {
+        (UserDefaults.standard.stringArray(forKey: key) ?? []).compactMap {
+            let parts = $0.split(separator: "|", maxSplits: 1).map(String.init)
+            return parts.count == 2 ? (parts[0], parts[1]) : nil
+        }
+    }
+}
