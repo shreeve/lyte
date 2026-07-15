@@ -17,6 +17,16 @@ final class HelperClient {
 
     var status: SMAppService.Status { service.status }
 
+    var statusDescription: String {
+        switch service.status {
+        case .notRegistered: return "notRegistered — registration didn't stick"
+        case .enabled: return "enabled — daemon ready"
+        case .requiresApproval: return "requiresApproval — waiting for System Settings → Login Items"
+        case .notFound: return "notFound — plist/binary missing from bundle or registration rejected"
+        @unknown default: return "unknown (\(service.status.rawValue))"
+        }
+    }
+
     /// Try to register at app launch; no-op when already enabled.
     func registerIfNeeded() {
         switch service.status {

@@ -8,6 +8,16 @@ import LyteUI
 struct LyteApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
+    init() {
+        // Headless helper registration: lets tooling (and CI) drive the
+        // SMAppService dance without opening windows or streams.
+        if CommandLine.arguments.contains("--register-helper") {
+            HelperClient.shared.registerIfNeeded()
+            print("helper status: \(HelperClient.shared.statusDescription)")
+            exit(0)
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             ConnectionWindow()
