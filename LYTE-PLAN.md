@@ -49,8 +49,16 @@ The client alone, however good, is capped by what Sunshine ships. Concretely:
    Upstream closed the proposal for exactly this feature. A separate
    side-car agent (`lyte-agent`) was considered and **rejected** — we don't
    want users installing an extra piece. The host itself must be ours.
-2. **4:4:4 exists in Sunshine but sits unreleased.** With our own host, chroma
-   fidelity is a capability negotiation, not a wait on someone's tag.
+2. **4:4:4 exists in Sunshine but sits unreleased for our host.** Windows
+   NVENC 4:4:4 shipped in 2025; Linux hardware 4:4:4 (CUDA/CUDA-GL, fixing
+   the silent 4:2:0 fallback of #4836) was merged to master on 2026-06-16
+   (PR #4965) but as of July 2026 has not appeared in a release — so `pop`
+   cannot serve 4:4:4 today regardless of what the client requests. With our
+   own host, chroma fidelity is a capability negotiation, not a wait on
+   someone's tag. (Protocol note: the wire offers exactly two chroma modes —
+   `chromaSamplingType` 0 = 4:2:0, 1 = 4:4:4; there is no 4:2:2 — and it is
+   fixed at ANNOUNCE, so switching means a reconnect, not a midstream
+   change.)
 3. **Every future desktop feature** (file channels, printing, cursor
    metadata, display control, mic forwarding) becomes a message type on a
    connection we control — no forks to rebase, no private patches to a C++
@@ -111,7 +119,7 @@ convenience. Hit that and there's a clear reason to switch.
 | Language | **Swift, both ends** | Client proven pure-Swift + two vendored C leaf libs (enet, nanors). Host follows the same rule: Swift core, C only at hardware/OS leaves (VAAPI/NVENC/PipeWire bindings). Swift is official on Linux and Windows. |
 | License | **GPLv3, whole repo** | Deliberate (D5): full freedom to study GPL reference code. Relicensing later remains legally ours to decide (single copyright holder) — but GPLv3 is the working assumption, not a placeholder. |
 | Video codecs | **HEVC primary, H.264 fallback; AV1 as a negotiated hook, later** | No MJPEG, no codec zoo. Modern hardware HEVC compresses static desktops to near-nothing and handles motion instantly — it beats VNC at VNC's own game once tuned (4:4:4 + rate control), and does full-motion video for free. |
-| Chroma | **4:4:4 as a first-class negotiated capability** | The desktop-text differentiator. Client decode path already targets it (Local·Work policy, D2). |
+| Chroma | **4:4:4 as a first-class negotiated capability** | The desktop-text differentiator. Client decode path already targets it (Local·Work policy, D2). Connect-time only in the Moonlight lineage (fixed at ANNOUNCE; a chroma change = reconnect) — policy must treat it as a session parameter, not a live dial. Full color fidelity also needs the CSC upgrade: the client still requests Rec.601 limited (`encoderCscMode 0`), the likely cause of the "washed out" look — BT.709/full-range is a cheap client-side fix independent of the host work. |
 | Audio | **Opus over RTP, 4+2 FEC, AES-CBC** | Shipping today; host side mirrors it. Mic-back channel is a future message type, not v1. |
 | Transport | **One UDP-first, latency-optimized transport; payload-agnostic** | Codec negotiated at connect; feature channels independent of video. No VNC mode, no RDP mode — policy ("text sharpness vs bandwidth") replaces transport switching. |
 | Encryption | **On by default, everywhere, no cell exceptions** | Locked decision. CryptoKit/CommonCrypto/swift-certificates; no OpenSSL anywhere. |
@@ -159,6 +167,13 @@ work, applies to every channel):
 - Size ceilings from day one (clipboard v1: 256 KiB; raise deliberately).
 - Session-scoped: state clears when the stream ends.
 - Never log payload contents.
+
+Prior art worth a deliberate look before freezing the clipboard framing: the
+Foundation-Sunshine / Moonlight-VPlus fork ecosystem already runs a private
+clipboard extension as control packet `IDX_CLIPBOARD` (0x5508) with v1 text
+frames and capability bits. We owe them nothing wire-wise, but if their
+framing is sane, matching it buys interop with forked hosts for free; if
+not, we diverge knowingly rather than accidentally.
 
 ---
 
