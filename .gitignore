@@ -12,6 +12,6 @@ Package.resolved
 # macOS
 .DS_Store
 
-# Reference checkouts (summaries misc/*.md ARE tracked)
+# Reference checkouts (study summaries live tracked in docs/)
 misc/moonlight-common-c/
 misc/moonlight-macos/
