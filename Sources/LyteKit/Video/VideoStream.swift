@@ -145,6 +145,17 @@ public final class VideoStream: @unchecked Sendable {
         // exercise FEC recovery and IDR-request recovery without real loss.
         let dropPercent = ProcessInfo.processInfo.environment["LYTE_DROP_PCT"].flatMap(Int.init) ?? 0
 
+        // Debug: LYTE_GAP_SIM="15:45" discards ALL video packets from 15s
+        // after the first frame for 45s — simulates a silent/idle host
+        // (harsher than true idle: resume exposes a frame-index jump).
+        let gapSim: (startUs: UInt64, endUs: UInt64)? = ProcessInfo.processInfo
+            .environment["LYTE_GAP_SIM"].flatMap { spec in
+                let parts = spec.split(separator: ":").compactMap { UInt64($0) }
+                guard parts.count == 2 else { return nil }
+                return (parts[0] * 1_000_000, (parts[0] + parts[1]) * 1_000_000)
+            }
+        var firstFrameAtNs: UInt64 = 0
+
         let receiveSize = packetSize + 16
         var buffer = [UInt8](repeating: 0, count: receiveSize + 64)
         var receivedAny = false
@@ -192,11 +203,18 @@ public final class VideoStream: @unchecked Sendable {
 
             packetsReceived += 1
             if dropPercent > 0, Int.random(in: 0..<100) < dropPercent { continue }
+            if let gapSim, firstFrameAtNs > 0 {
+                let sinceFirstFrameUs = (DispatchTime.now().uptimeNanoseconds - firstFrameAtNs) / 1000
+                if sinceFirstFrameUs >= gapSim.startUs && sinceFirstFrameUs < gapSim.endUs { continue }
+            }
             let raw = Array(buffer[0..<n])
             let nowUs = DispatchTime.now().uptimeNanoseconds / 1000
             let (_, frame) = queue.addPacket(raw, receiveTimeUs: nowUs)
             if let frame {
-                receivedFullFrame = true
+                if !receivedFullFrame {
+                    receivedFullFrame = true
+                    firstFrameAtNs = DispatchTime.now().uptimeNanoseconds
+                }
                 for entry in frame {
                     depacketizer.processEntry(entry)
                 }

@@ -12,15 +12,6 @@ it was deferred, so the next touch of that code picks it up naturally.*
   anything) when next touching the headroom code. (From the 2026-07-20 review
   of the M5.5 seed commit `762efc7`.)
 
-## Server plan — open verification (before H2 acceptance is finalized)
-
-- **Verify the client tolerates ≤1 fps idle video.** The server plan makes
-  idle silence (static desktop ⇒ ~1 fps keepalive) an H2 acceptance gate, but
-  the technical review could not confirm the shipping client is happy with
-  long frame gaps — check `VideoStream.swift` receive timeouts / IDR
-  re-request logic and `Doctor.swift` stall heuristics, or simply measure
-  live against a throttled test host. (2026-07-20 plan review, open item.)
-
 ## Input capture (`Sources/LyteUI/InputCapture.swift`)
 
 - **`videoSize` should come from the decoded stream, not the request.** It is
