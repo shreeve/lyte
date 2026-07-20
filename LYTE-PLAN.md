@@ -48,13 +48,16 @@ The client alone, however good, is capped by what Sunshine ships. Concretely:
    Upstream closed the proposal for exactly this feature. A separate
    side-car agent (`lyte-agent`) was considered and **rejected** — we don't
    want users installing an extra piece. The host itself must be ours.
-2. **4:4:4 exists in Sunshine but sits unreleased for our host.** Windows
-   NVENC 4:4:4 shipped in 2025; Linux hardware 4:4:4 (CUDA/CUDA-GL, fixing
-   the silent 4:2:0 fallback of #4836) was merged to master on 2026-06-16
-   (PR #4965) but as of July 2026 has not appeared in a release — so `pop`
-   cannot serve 4:4:4 today regardless of what the client requests. With our
-   own host, chroma fidelity is a capability negotiation, not a wait on
-   someone's tag. (Protocol note: the wire offers exactly two chroma modes —
+2. **4:4:4 arrives with or without us — the moat is elsewhere.** Windows
+   NVENC 4:4:4 shipped in 2025; Linux NVENC 4:4:4 (CUDA/CUDA-GL, fixing
+   the silent 4:2:0 fallback of #4836) merged to Sunshine's master on
+   2026-06-16 (PR #4965). It hasn't appeared in a release yet, but `pop`
+   could serve 4:4:4 today from a source build — so the host is not the
+   only road to crisp text, and honesty says so. What owning the host
+   actually buys is the feature channel (points 1 and 3) and roadmap
+   ownership: chroma fidelity becomes a capability negotiation on our
+   schedule rather than a wait on someone's tag — the accelerant, not the
+   reason. (Protocol note: the wire offers exactly two chroma modes —
    `chromaSamplingType` 0 = 4:2:0, 1 = 4:4:4; there is no 4:2:2 — and it is
    fixed at ANNOUNCE, so switching means a reconnect, not a midstream
    change.)
@@ -180,7 +183,11 @@ not, we diverge knowingly rather than accidentally.
 
 Linux is the first host target because that's the machine on the other end
 today (`pop`), and because it's the platform where owning the host pays off
-immediately (Wayland clipboard, 4:4:4 via VAAPI).
+immediately (Wayland clipboard, 4:4:4 via NVENC on `pop`).
+
+Implementation detail and evidence for these choices:
+[docs/SERVER-PATH.md](docs/SERVER-PATH.md) (recommendation + adopted review
+amendments).
 
 ### Architecture
 
@@ -190,9 +197,10 @@ lyte (host role)
 ├── PairServer/     PIN approval, client cert pinning (mirror of client Pairing/)
 ├── SessionServer/  RTSP/control server side; one session per display, N feature channels
 ├── Capture/        Linux: PipeWire/portal (Wayland), KMS; macOS: ScreenCaptureKit
-├── Encode/         VAAPI / NVENC / VideoToolbox behind one Swift facade; HEVC⇄H.264; 4:4:4
+├── Encode/         NVENC / VAAPI / VideoToolbox behind one Swift facade; HEVC⇄H.264; 4:4:4
+│                   (NVENC is the `pop` path and the 4:4:4-capable one; VAAPI banked for Intel hosts)
 ├── AudioCap/       PipeWire capture → Opus encode → RTP+FEC
-├── InputInject/    uinput/libei (Wayland) — keyboard, mouse, scroll
+├── InputInject/    portal RemoteDesktop primary, uinput fallback — keyboard, mouse, scroll
 ├── Features/       clipboard watcher/setter, print interception, file channel
 └── Telemetry/      encoder queue depth, capture latency, per-client loss — feeds the doctor
 ```
@@ -205,23 +213,42 @@ Privileged bits, if ever needed, follow the client's helper pattern
 
 ### Host milestones
 
-- **H0 — Spike: pixels off a Linux box.** PipeWire capture → VAAPI HEVC →
-  RTP with our FEC → the existing Lyte client renders it. Hardcoded
-  everything; success = the client window shows a live Linux desktop.
+- **H0a — Spike: first pixels.** Portal/PipeWire capture → NVENC HEVC (a
+  libavcodec leaf) → RTP with our FEC → a *debug-mode* client renders it
+  (client-side gating relaxed for the spike). Hardcoded everything; success
+  = a client window showing the live `pop` desktop.
+- **H0b — Honest handshake.** Serverinfo identity, canned RTSP with the
+  Session header and `X-SS-Ping-Payload`, SS_PING-gated sending, and a
+  minimal ENet control-v2 host — the shipping client hard-requires
+  control-v2 and fails the session without it, so it cannot wait for H1.
+  Acceptance: the **unmodified shipping client** renders the live `pop`
+  desktop. H0a+H0b together are a 4–8 week build, not a weekend spike.
 - **H1 — Session server.** Pairing (PIN + cert pinning), encrypted RTSP
-  server side, ENet control host side — the client connects to a Lyte host
-  exactly as it does to Sunshine. The client's own protocol code reviewed
-  from the other side.
-- **H2 — Input + audio.** Keyboard/mouse injection (uinput/libei), PipeWire
-  audio → Opus → RTP. Bar: a full working session indistinguishable from
-  Sunshine for daily driving.
+  server side, full ENet control host side — the client connects to a Lyte
+  host exactly as it does to Sunshine. The client's own protocol code
+  reviewed from the other side. Acceptance is byte-exact: `rtspenc://`
+  end-to-end; SS_PING payload matching; SCM bits per docs/SERVER.md §4;
+  golden-transcript pairing tests; audio timestamps in Sunshine's
+  packetDuration units.
+- **H2 — Input + audio.** Keyboard/mouse injection via portal RemoteDesktop
+  as primary (we already hold that portal session open for capture; no udev
+  rule on the happy path), uinput as fallback; PipeWire monitor capture of
+  the real desktop → Opus → RTP. Bar: a full working session
+  indistinguishable from Sunshine for daily driving — plus idle silence as
+  an acceptance gate: static desktop ≤ ~1 fps keepalive, measured (pending
+  the TODO.md verification that the shipping client tolerates long frame
+  gaps).
 - **H3 — Feature channel + clipboard.** Stage-2 negotiation; bidirectional
   text clipboard with the loop-prevention discipline above. The first thing
   Sunshine can't do.
-- **H4 — 4:4:4 + policy integration.** Chroma negotiation wired into
-  Local·Work; encoder rate control tuned for static-desktop-with-bursts;
-  host-side telemetry feeding the client's doctor (encoder stalls become a
-  named culprit, like AWDL is today).
+- **H4 — 4:4:4 + policy integration.** 4:4:4 lands NVENC-first — the
+  RGB→YUV444 conversion is the real work item; VAAPI-444 is banked for
+  Intel hosts. Chroma negotiation wired into Local·Work; encoder rate
+  control tuned for static-desktop-with-bursts; loss-driven adaptation (the
+  client already reports loss every ~50 ms and both incumbents ignore it)
+  and pacing to the negotiated bitrate, not an assumed gigabit; host-side
+  telemetry feeding the client's doctor (encoder stalls become a named
+  culprit, like AWDL is today).
 - **H5 — Desktop conveniences.** File transfer channel; printing v1
   (intercept host print jobs → deliver as PDF → print locally on the
   client). Drag-and-drop rides the file channel when it lands — nice, not
@@ -239,6 +266,9 @@ The existing ladder stands: **M5.5** (policy engine full), **M6 remainder**
 (preflight, SSH host probes, WoL, one-session guard, DSCP), **M7** (profiles,
 frame pacing, AV1, HDR, reconnect/resume). Client work
 that touches the wire keeps Stage-1 compatibility as its contract.
+
+**Freeze rule:** M5.5–M7 are paused during H0–H2, critical fixes excepted.
+One maintainer, one front at a time.
 
 ---
 
@@ -315,6 +345,8 @@ that touches the wire keeps Stage-1 compatibility as its contract.
 | Risk | Mitigation |
 |------|-----------|
 | Wayland capture/input fragmentation across distros/compositors | Target PipeWire + portals + libei (the modern common path); study Sunshine's fallbacks; state supported environments explicitly rather than chasing every compositor. |
+| COSMIC portal immaturity — Pop!_OS is migrating from GNOME to COSMIC, whose ScreenCast/RemoteDesktop portals are young | Pin H0–H2 to GNOME/Mutter on `pop`; COSMIC and non-NVIDIA are explicitly unsupported at that stage, failing loudly rather than silently; KMS stays the documented fallback backend for later. |
+| Login-screen blackout — portal capture needs a logged-in session, so a rebooted host is dark until someone logs in | A stated limitation and a named doctor diagnosis until a KMS/login-manager story exists — never a silent capture failure. |
 | Hardware encoder variance (VAAPI quirks, NVENC licensing surface, hybrid-GPU traps) | One Swift encode facade with capability probes; the `pop` case study already caught the hybrid-GPU silent-fallback trap — probe results become doctor diagnoses. |
 | Swift-on-Linux ecosystem gaps (no Foundation surprises, C interop volume) | The client already proved the pure-Swift + C-leaf pattern; keep the C boundary at hardware libraries only. |
 | Two-ends scope creep | The H-ladder is strictly serial; a milestone ships only when verified live against the shipping client; features land as negotiated channels, never as forks of the media path. |
