@@ -15,3 +15,6 @@ Package.resolved
 # Reference checkouts (study summaries live tracked in docs/)
 misc/moonlight-common-c/
 misc/moonlight-macos/
+
+# Session handoff notes — working scratch for AI sessions, not repo history
+HANDOFF.md
