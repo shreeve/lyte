@@ -57,9 +57,9 @@ SwiftUI app (settings, hosts, policy engine, network doctor)
 ## References
 
 Being GPL, Lyte reads, ports, and — where it beats rewriting — links the ecosystem's
-battle-tested code. Study summaries live in [misc/COMMON.md](misc/COMMON.md)
-(protocol core) and [misc/MACOS.md](misc/MACOS.md) (macOS client frameworks and
-patterns); the reference checkouts sit alongside them in `misc/` (untracked).
+battle-tested code. Study summaries live in [docs/COMMON.md](docs/COMMON.md)
+(protocol core) and [docs/MACOS.md](docs/MACOS.md) (macOS client frameworks and
+patterns); the reference checkouts sit in `misc/` (untracked).
 The [Wolf protocol docs](https://games-on-whales.github.io/wolf/stable/protocols/index.html)
 remain a useful written spec.
 

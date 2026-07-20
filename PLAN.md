@@ -4,8 +4,8 @@
 structured, and the order we build it in.*
 
 Companion docs: [docs/DESIGN.md](docs/DESIGN.md) (product decisions),
-[misc/COMMON.md](misc/COMMON.md) (protocol core analysis),
-[misc/MACOS.md](misc/MACOS.md) (macOS client analysis). This plan assumes both
+[docs/COMMON.md](docs/COMMON.md) (protocol core analysis),
+[docs/MACOS.md](docs/MACOS.md) (macOS client analysis). This plan assumes both
 analyses; wire-format byte layouts not reproduced here live in the reference
 checkouts under `misc/`.
 
@@ -335,7 +335,7 @@ Resolved 2026-07-15:
 | Topic | Authority |
 |-------|-----------|
 | Product decisions | docs/DESIGN.md |
-| Wire protocol details | misc/COMMON.md → misc/moonlight-common-c/src |
-| macOS platform tricks | misc/MACOS.md → misc/moonlight-macos/Limelight |
+| Wire protocol details | docs/COMMON.md → misc/moonlight-common-c/src |
+| macOS platform tricks | docs/MACOS.md → misc/moonlight-macos/Limelight |
 | Written protocol spec (second opinion) | Wolf docs (games-on-whales.github.io/wolf) |
 | Milestones & status | this file §6 |

@@ -64,7 +64,7 @@ Prior art: moonlight clients ship AWDL helpers on macOS — validates the concep
   written with the C reference open on the other monitor, and linking C pieces
   (enet, FEC) where rewriting adds risk without value.
 - Reference checkouts live untracked in `misc/`; study summaries are committed:
-  `misc/COMMON.md` (protocol core), `misc/MACOS.md` (macOS client patterns).
+  `docs/COMMON.md` (protocol core), `docs/MACOS.md` (macOS client patterns).
   Wolf's MIT protocol docs remain a good written spec.
 - Framework map (extracted from the shipping client binary): SwiftUI/Combine,
   VideoToolbox, CoreMedia/CoreVideo, Metal(+FX/Kit), CoreHID, GameController,

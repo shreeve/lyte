@@ -112,7 +112,7 @@ the Moonlight protocol. Pure-Swift protocol layer (LyteKit) with two vendored C 
 libs (enet now, nanors later). Design: one Work/Play toggle, auto-detected
 Local/Remote, telemetry-derived settings, a "network doctor." Read these in order:
 `README.md`, `PLAN.md` (the blueprint — milestones in §6), `docs/DESIGN.md`,
-`misc/COMMON.md` (protocol bible), `misc/MACOS.md` (macOS client patterns).
+`docs/COMMON.md` (protocol bible), `docs/MACOS.md` (macOS client patterns).
 
 ## Critical environment facts (easy to trip on)
 
