@@ -3,7 +3,7 @@ import Security
 
 /// The 5-stage Moonlight pairing handshake (Sunshine / Gen 7+, SHA-256).
 ///
-/// Reference: docs/MACOS.md §8, misc/moonlight-macos PairManager, Sunshine nvhttp.
+/// Reference: docs/moonlight-macos.md §8, misc/moonlight-macos PairManager, Sunshine nvhttp.
 ///
 ///  1. getservercert (+salt, +client cert PEM)      → server cert   [blocks on PIN]
 ///  2. clientchallenge (AES-ECB encrypted)          → challengeresponse

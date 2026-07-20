@@ -241,6 +241,9 @@ struct Launch: AsyncParsableCommand {
                                               fps: fps, bitrateKbps: bitrate)
         }
         print("launched \(target.title): rtsp url \(context.rtspSessionURL)")
+        // Session key material — pairs a packet capture with the bytes needed
+        // to unseal it (golden-transcript rig, PLAN §7 / SERVER-PATH §4).
+        print("rikey \(context.riKey.hexString) rikeyid \(context.riKeyID)")
         fflush(stdout)
 
         // RTSP handshake, starting UDP pings once ports are known

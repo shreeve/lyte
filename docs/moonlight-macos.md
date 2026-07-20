@@ -2,7 +2,7 @@
 
 Deep technical analysis of `moonlight-macos/`, a native AppKit Moonlight client (fork of moonlight-ios, **not** Mac Catalyst). Goal: understand architecture, moonlight-common integration, and **macOS-specific tricks** well enough to design a **better macOS client**.
 
-**Related:** [`COMMON.md`](COMMON.md) (client protocol library)
+**Related:** [`moonlight-common-c.md`](moonlight-common-c.md) (client protocol library)
 
 ---
 
@@ -88,7 +88,7 @@ main.m → NSApplication → AppDelegateForAppKit
 ## 4. moonlight-common Integration
 
 ### Build
-Static library from limelight-common-c submodule + bundled ENet + nanors. Public C API: `Limelight.h` (see `COMMON.md`).
+Static library from limelight-common-c submodule + bundled ENet + nanors. Public C API: `Limelight.h` (see `moonlight-common-c.md`).
 
 ### Call path
 UI never calls common directly. Pattern:
@@ -429,7 +429,7 @@ From README + code:
 1. Async `URLSession` + structured concurrency instead of sync semaphore HTTP
 2. Optional per-host uniqueId
 3. Sunshine-first feature detection (not only GFE XML assumptions)
-4. Richer reconnect UX using common improvements from `COMMON.md`
+4. Richer reconnect UX using common improvements from `moonlight-common-c.md`
 
 ### Architecture
 1. **One settings source of truth** — kill Core Data ↔ UserDefaults dual bridge

@@ -2,7 +2,7 @@
 
 Deep technical analysis of `moonlight-common-c/`, the shared C streaming core used by Moonlight clients (Qt, Android, iOS/macOS, Chrome). Goal: understand the wire protocol, API surface, and operational quirks well enough to design **better versions**.
 
-**Related:** [`MACOS.md`](MACOS.md) (macOS client)
+**Related:** [`moonlight-macos.md`](moonlight-macos.md) (macOS client)
 
 ---
 
@@ -10,7 +10,7 @@ Deep technical analysis of `moonlight-common-c/`, the shared C streaming core us
 
 **What this library is:** the post-launch GameStream / Sunshine **session client**. It owns RTSP negotiation, UDP video/audio receive + FEC, ENet/TCP control, encrypted input, and decoder/audio callback plumbing.
 
-**What this library is not:** host discovery (mDNS), HTTPS pairing, `/serverinfo`, `/applist`, `/launch`, `/resume`, certificate management, or UI. Those live in each client app (see `MACOS.md` for the macOS client's half).
+**What this library is not:** host discovery (mDNS), HTTPS pairing, `/serverinfo`, `/applist`, `/launch`, `/resume`, certificate management, or UI. Those live in each client app (see `moonlight-macos.md` for the macOS client's half).
 
 **Checkout notes:** `enet/` and `nanors/` are git submodules and may be empty until `git submodule update --init`. Builds require the **forked** ENet (ABI-incompatible with stock libenet).
 

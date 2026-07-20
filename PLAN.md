@@ -4,8 +4,8 @@
 structured, and the order we build it in.*
 
 Companion docs: [docs/DESIGN.md](docs/DESIGN.md) (product decisions),
-[docs/COMMON.md](docs/COMMON.md) (protocol core analysis),
-[docs/MACOS.md](docs/MACOS.md) (macOS client analysis). This plan assumes both
+[docs/moonlight-common-c.md](docs/moonlight-common-c.md) (protocol core analysis),
+[docs/moonlight-macos.md](docs/moonlight-macos.md) (macOS client analysis). This plan assumes both
 analyses; wire-format byte layouts not reproduced here live in the reference
 checkouts under `misc/`.
 
@@ -29,7 +29,7 @@ else to configure. GPLv3.
    the single biggest simplification available to a new client.
 4. **Modern library architecture.** Session actor instead of C globals, async/await
    instead of blocking handshakes, structured errors, first-class stats — the
-   improvement list from COMMON.md §15, applied to a Swift implementation of the
+   improvement list from moonlight-common-c.md §15, applied to a Swift implementation of the
    *existing* wire protocol (we are wire-compatible with Sunshine; we are NOT
    designing a new protocol).
 
@@ -39,10 +39,10 @@ else to configure. GPLv3.
 
 | Decision | Choice | Why |
 |----------|--------|-----|
-| Host support | **Sunshine only** (GFE dropped) | GFE is EOL; kills Gen 3–6 branches: ENet RTSP, TCP-47995 control, 47996 first-frame trigger, SHA1 pairing, unencrypted input. Detection: keep the negative `AppVersionQuad[3]` convention (COMMON.md §3). |
-| Codecs | HEVC first, then AV1, H.264 fallback | M5-class VideoToolbox decodes all three; Sunshine VAAPI/NVENC encode all three. Negotiation priority AV1 → HEVC → H.264 (COMMON.md §8). |
-| Gamepads | GameController.framework only at first | MACOS.md's 1850-line IOKit HID driver is the deep well we drink from *later* (M8). GCController covers Xbox/PS/Switch on modern macOS well. |
-| Audio | Stereo + 5.1 from day one | The reference client decodes surround but hides it (MACOS.md §6 quirk); we won't repeat that. |
+| Host support | **Sunshine only** (GFE dropped) | GFE is EOL; kills Gen 3–6 branches: ENet RTSP, TCP-47995 control, 47996 first-frame trigger, SHA1 pairing, unencrypted input. Detection: keep the negative `AppVersionQuad[3]` convention (moonlight-common-c.md §3). |
+| Codecs | HEVC first, then AV1, H.264 fallback | M5-class VideoToolbox decodes all three; Sunshine VAAPI/NVENC encode all three. Negotiation priority AV1 → HEVC → H.264 (moonlight-common-c.md §8). |
+| Gamepads | GameController.framework only at first | moonlight-macos.md's 1850-line IOKit HID driver is the deep well we drink from *later* (M8). GCController covers Xbox/PS/Switch on modern macOS well. |
+| Audio | Stereo + 5.1 from day one | The reference client decodes surround but hides it (moonlight-macos.md §6 quirk); we won't repeat that. |
 | Multi-controller | Deferred | Reference supports one HID pad anyway. |
 | iOS/tvOS | Not now | Architecture keeps LyteKit platform-clean for later. |
 | Min macOS | **15 (Sequoia)** | Decided: latest SwiftUI/CryptoKit, zero compat tax. |
@@ -54,7 +54,7 @@ else to configure. GPLv3.
 ## 3. LyteKit — the protocol layer (Swift)
 
 Swift package, no UI dependencies. One `Session` actor per connection — the C core's
-biggest architectural sin is process-global single-session state (COMMON.md §10);
+biggest architectural sin is process-global single-session state (moonlight-common-c.md §10);
 we don't repeat it.
 
 ### 3.0 Module map
@@ -77,11 +77,11 @@ LyteKit/
 
 Implement (Sunshine/Gen-7+ paths only):
 
-- TCP RTSP on 48010, CSeq starting at 0 (host-bug workaround, COMMON.md §6)
+- TCP RTSP on 48010, CSeq starting at 0 (host-bug workaround, moonlight-common-c.md §6)
 - SETUP audio → video → control; `X-SS-Ping-Payload`, `X-SS-Connect-Data`
 - Client SDP: encoder bitrate = 80% of user bitrate, FEC 20%, `x-ss-*`/`x-ml-*`
   attributes, `&corever=1` launch hint
-- ENet control on UDP 47999, 48 channels (map in COMMON.md §7.3)
+- ENet control on UDP 47999, 48 channels (map in moonlight-common-c.md §7.3)
 - Video UDP 47998: RTP + multi-block RS-FEC, `NV_VIDEO_PACKET` parse, Annex-B →
   AVCC length-prefix conversion, IDR request after gap; AES-128-GCM when negotiated
 - Audio UDP 48000: ping-before-PLAY (hard requirement), drop first ~500 ms,
@@ -89,7 +89,7 @@ Implement (Sunshine/Gen-7+ paths only):
 - Input: AES-128-GCM encrypted events on control channels (keyboard 0x02, mouse
   0x03, UTF-8 0x06, pads 0x10+)
 - Loss stats every ~50 ms; periodic ping; `SS_PING` 16-byte + BE32 seq every 500 ms
-- Pairing: 4-digit PIN, SHA-256 challenge flow (5 stages, MACOS.md §8), client cert
+- Pairing: 4-digit PIN, SHA-256 challenge flow (5 stages, moonlight-macos.md §8), client cert
   via **swift-certificates + swift-crypto**; private key in Keychain
 
 Skip entirely: ENet RTSP (`rtspru://`), TCP 47995/47996, SHA-1 pairing, GFE audio
@@ -104,7 +104,7 @@ Skip entirely: ENet RTSP (`rtspru://`), TCP 47995/47996, SHA-1 pairing, GFE audi
 | AES-128-ECB (pairing challenge) | CommonCrypto `CCCrypt(kCCOptionECBMode)` |
 | SHA-256, HMAC | CryptoKit |
 | Client certificate + RSA/EC key | swift-certificates / swift-crypto, Security.framework for Keychain |
-| TLS with pinned peer cert | `URLSession` delegate trust override (MACOS.md §8 pattern) |
+| TLS with pinned peer cert | `URLSession` delegate trust override (moonlight-macos.md §8 pattern) |
 
 ### 3.3 The C we keep (and why)
 
@@ -115,7 +115,7 @@ Two leaf libraries are vendored as SPM C targets, everything above them is Swift
   Reimplementing reliability protocols is where schedules go to die. Revisit a
   Swift port post-1.0.
 - **nanors + the Nvidia audio parity matrix** — Reed-Solomon with a hardcoded
-  host-specific matrix (COMMON.md §14.6). Bit-exact compatibility beats purity.
+  host-specific matrix (moonlight-common-c.md §14.6). Bit-exact compatibility beats purity.
 
 Everything else — RTSP, SDP, depacketizer, FEC orchestration, queues, crypto,
 input encoding — is new Swift. Reference C stays open on the other monitor (GPL).
@@ -130,10 +130,10 @@ for await event in session.events {          // AsyncStream<SessionEvent>
 }
 ```
 
-- Stages mirror the C core's 11 (COMMON.md §5) for familiar diagnostics, but start
+- Stages mirror the C core's 11 (moonlight-common-c.md §5) for familiar diagnostics, but start
   is cancellable and non-blocking; teardown is `await session.stop()` — no
   interrupt-then-join dance, no detached-thread termination hack.
-- Errors are typed: `stage + underlying + portHint + isRecoverable` (COMMON.md §15.8).
+- Errors are typed: `stage + underlying + portHint + isRecoverable` (moonlight-common-c.md §15.8).
 - Frame delivery: `AsyncStream<CMSampleBuffer>` — LyteKit produces *decode-ready*
   sample buffers (format descriptions built from VPS/SPS/PPS, length-prefixed,
   timestamps from the 90 kHz RTP clock via `CMTimeMake(ts, 90000)`).
@@ -154,13 +154,13 @@ for await event in session.events {          // AsyncStream<SessionEvent>
 ### 4.1 Video: two-stage plan
 
 - **Stage 1 (M3): `AVSampleBufferDisplayLayer`** hosted in an NSView. Proven path
-  (MACOS.md §5), minimal code: enqueue CMSampleBuffers with DisplayImmediately for
+  (moonlight-macos.md §5), minimal code: enqueue CMSampleBuffers with DisplayImmediately for
   Play-mode latency; recreate layer off-main on failure + request IDR.
 - **Stage 2 (M7): `VTDecompressionSession` → IOSurface → `CAMetalLayer`** for
   zero-copy, EDR/HDR control, and MetalFX upscaling headroom. The framework map of
   the shipping enhanced client (SwiftUI, Metal+FX, CoreHID — extracted via otool)
   confirms this is the endgame.
-- **Frame pacing** (the thing the reference stores but never wired, MACOS.md §14.7):
+- **Frame pacing** (the thing the reference stores but never wired, moonlight-macos.md §14.7):
   CVDisplayLink (later `CADisplayLink` on macOS 15) tied to the stream window's
   screen; pull loop keeps ≤1 queued frame when refresh ≈ stream fps; Work mode
   biases to smoothness (2-frame cushion), Play mode to immediacy (0–1).
@@ -169,17 +169,17 @@ for await event in session.events {          // AsyncStream<SessionEvent>
 
 Opus (SPM libopus build) → **`AVAudioEngine` + `AVAudioSourceNode`**, float PCM.
 - Buffer depth is *policy-derived*: Play·Local ~10–20 ms; Work modes 40–60 ms —
-  not the reference's fixed 80 ms iPod-heritage ring (MACOS.md §6).
+  not the reference's fixed 80 ms iPod-heritage ring (moonlight-macos.md §6).
 - Underrun counter feeds the doctor (audio chop was the original sin that started
   this project — see DESIGN.md case study).
-- 5.1/7.1 exposed when the host offers it; channel remap per COMMON.md §6 quirks.
+- 5.1/7.1 exposed when the host offers it; channel remap per moonlight-common-c.md §6 quirks.
 
 ### 4.3 Input
 
 - **Free Mouse (Work):** absolute-position events (`LiSendMousePosition` semantics);
   local cursor visible; pointer escapes window edges naturally.
 - **Locked (Play):** `CGAssociateMouseAndMouseCursorPosition(false)` + `NSCursor.hide`
-  + warp-to-center — the proven capture recipe (MACOS.md §7), with the same
+  + warp-to-center — the proven capture recipe (moonlight-macos.md §7), with the same
   release chord (⌃⌥ together) and the ⌘-shortcut passthrough list (⌘W, ⌘H, ⌘F,
   ⌃⌘F, ⌘Tab never leak to the host).
 - Keyboard: Carbon `kVK_*` → Windows VK table (port the ~80-entry map);
@@ -187,7 +187,7 @@ Opus (SPM libopus build) → **`AVAudioEngine` + `AVAudioSourceNode`**, float PC
 - Scroll: high-resolution scroll events, natural-direction aware.
 - Pads: GCController extended profile → multi-controller events; CoreHaptics rumble.
 - Display sleep blocked during stream via IOPMAssertion; re-capture after
-  fullscreen/Space transitions (observer pattern from MACOS.md §7).
+  fullscreen/Space transitions (observer pattern from moonlight-macos.md §7).
 
 ---
 
@@ -245,7 +245,7 @@ and DoctorView         live jitter sparkline, culprit cards, "Fix it" buttons
 - `@Observable` app model; per-host state in one **SwiftData** store (hosts, pairing
   identity refs, per-host-per-cell profile overrides). *One* source of truth — the
   reference app's triple settings system (UserDefaults + Core Data + MASPreferences,
-  MACOS.md §9) is the anti-pattern we're burying.
+  moonlight-macos.md §9) is the anti-pattern we're burying.
 - Client cert/key in Keychain; per-install random `uniqueId` (drop the shared
   `"0123456789ABCDEF"`, accept that only our client quits our sessions).
 
@@ -296,7 +296,7 @@ PolicyOutput = { w, h, fps, bitrate, codecPrefs, bufferMs, mouseMode,
 | M5 | App shell | SwiftUI window-is-the-app shell (D6): connect empty-state, ⌘N windows, mode toggle, policy engine v1 | ✅ done — Lyte.app: click host → click app → pixels; relaunch → pixels with zero clicks (verified live); policy derives all parameters, zero settings touched |
 | M6 | Doctor | probes, signatures, awdl helper, SSH host checks | Reproduce the case study on demand: doctor names AWDL + power-save + shared-channel correctly, fixes the first two |
 | M7 | Polish | Metal/VTDecompression path, AV1, HDR, frame-pacing dial, MenuBarExtra, reconnect/resume | Play·Local end-to-end latency ≤ moonlight-qt on same hardware; HDR round-trips |
-| M8 | Deep input | IOKit HID module (port MACOS.md §7 knowledge), multi-pad, side buttons | DualSense + Xbox BT with rumble simultaneously |
+| M8 | Deep input | IOKit HID module (port moonlight-macos.md §7 knowledge), multi-pad, side buttons | DualSense + Xbox BT with rumble simultaneously |
 
 Ship signal: M5 is daily-drivable for Steve; M6 is the public-release bar.
 
@@ -308,7 +308,7 @@ Ship signal: M5 is daily-drivable for Steve; M6 is the public-release bar.
 |------|------------|
 | ENet fork subtleties (channel config, MTU) | Vendor the exact fork; integration-test against Sunshine nightly + `pop` |
 | Audio FEC parity matrix mismatch | Vendor matrix verbatim; golden-packet tests captured from real sessions |
-| Depacketizer edge cases (multi-FEC blocks, frame-header variants) | Sunshine-only trims variants; fuzz the parser (COMMON.md §15 quality bar); capture-replay corpus from pop |
+| Depacketizer edge cases (multi-FEC blocks, frame-header variants) | Sunshine-only trims variants; fuzz the parser (moonlight-common-c.md §15 quality bar); capture-replay corpus from pop |
 | Pairing crypto byte-exactness | Golden transcripts captured from reference client ↔ Sunshine; unit-test each stage |
 | VideoToolbox HEVC quirks (parameter-set changes mid-stream) | Rebuild format description on VPS/SPS/PPS change (reference behavior); test host resolution changes |
 | Sandbox + UDP + ICMP + helper | Prototype entitlements in M1 CLI (network.client/server); SMAppService helper spike early in M6 |
@@ -335,7 +335,7 @@ Resolved 2026-07-15:
 | Topic | Authority |
 |-------|-----------|
 | Product decisions | docs/DESIGN.md |
-| Wire protocol details | docs/COMMON.md → misc/moonlight-common-c/src |
-| macOS platform tricks | docs/MACOS.md → misc/moonlight-macos/Limelight |
+| Wire protocol details | docs/moonlight-common-c.md → misc/moonlight-common-c/src |
+| macOS platform tricks | docs/moonlight-macos.md → misc/moonlight-macos/Limelight |
 | Written protocol spec (second opinion) | Wolf docs (games-on-whales.github.io/wolf) |
 | Milestones & status | this file §6 |

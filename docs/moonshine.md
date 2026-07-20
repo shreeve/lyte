@@ -2,7 +2,7 @@
 
 Deep technical analysis of `misc/moonshine/` (v**0.11.0**, commit `ff59fd6`, 2026-07-10), a Sunshine-compatible Moonlight-protocol host written in Rust by **Hans Gaiser**. Goal: mine architecture lessons, protocol completeness, and Linux capture/encode/input specifics before building the **Lyte host** (Swift, Linux-first, H0–H6).
 
-**Related:** [`SERVER.md`](SERVER.md) (Sunshine — closest analogue), [`COMMON.md`](COMMON.md) (client wire formats), [`LYTE-PLAN.md`](../LYTE-PLAN.md) (§2, §5, §6)
+**Related:** [`sunshine-v2026.715.205118.md`](sunshine-v2026.715.205118.md) (Sunshine — closest analogue), [`moonlight-common-c.md`](moonlight-common-c.md) (client wire formats), [`LYTE-PLAN.md`](../LYTE-PLAN.md) (§2, §5, §6)
 
 ---
 
@@ -683,7 +683,7 @@ Concrete design choices worth copying into the Swift Lyte host:
 1. **No desktop capture** — wrong architecture for Lyte H0–H2 as currently planned (PipeWire/portal of the logged-in session).
 2. **No encrypted RTSP** — Lyte/Sunshine baseline includes it; Moonshine skipped it (security README even warns GameStream isn't fully encrypted).
 3. **Legacy-only UDP PING** — modern SS_PING / ping-payload path absent; breaks Sunshine-era clients that don't fall back.
-4. **Wrong SCM 444 bit values** — do not copy `ServerCodecModeSupport` enum from Moonshine; copy from Sunshine/`SERVER.md` §4 / COMMON.
+4. **Wrong SCM 444 bit values** — do not copy `ServerCodecModeSupport` enum from Moonshine; copy from Sunshine/`sunshine-v2026.715.205118.md` §4 / COMMON.
 5. **Video encryption off by default** — and optional; Lyte's "encrypt always" policy is stricter.
 6. **RFI silently → IDR** — same as most Sunshine encoders; don't advertise refPicInvalidation as real RFI unless implemented.
 7. **One session, gaming focus** — no multi-monitor desktop, no placebo "Desktop" app that streams the existing session, no clipboard/file/print channels.
@@ -732,7 +732,7 @@ Mapping onto LYTE-PLAN §6 milestones:
 ### H1 — Session server
 **De-risks:** pairing crypto, mTLS fingerprint pin, lenient cert verify, RTSP ANNOUNCE surface, control-v2 GCM, StartB gating, session state machine, resume/key rotation.
 **Must not copy:** missing `rtspenc://`, missing ping-payload/SS_PING, wrong SCM 444 bits, stub unpair.
-**Revision:** H1 acceptance tests should include (a) encrypted RTSP, (b) SS_PING with `X-SS-Ping-Payload`, (c) SCM bits matching SERVER.md — Moonshine proves these are easy to get subtly wrong while still working with stock Moonlight.
+**Revision:** H1 acceptance tests should include (a) encrypted RTSP, (b) SS_PING with `X-SS-Ping-Payload`, (c) SCM bits matching sunshine-v2026.715.205118.md — Moonshine proves these are easy to get subtly wrong while still working with stock Moonlight.
 
 ### H2 — Input + audio
 **De-risks:** Opus CBR + 4+2 FEC + CBC IV construction + Nvidia parity matrix; surround-params DESCRIBE quirk; gamepad via inputtino including feedback; hold-to-Home as optional UX.
@@ -743,7 +743,7 @@ Mapping onto LYTE-PLAN §6 milestones:
 **No help.** Moonshine has no feature channel, no clipboard. Prior art remains Foundation-Sunshine / Moonlight-VPlus (`IDX_CLIPBOARD` 0x5508) as noted in LYTE-PLAN §5.
 
 ### H4 — 4:4:4 + policy
-**Partial help:** Moonshine negotiates `chromaSamplingType` and feeds `PixelFormat::Yuv444` / `YUV444P10` into pixelforge — evidence the Vulkan Video path can do 444 on capable GPUs. SCM advertisement is **wrong** — fix against SERVER.md. Does not help VAAPI 4:4:4 (Sunshine §8 gap remains).
+**Partial help:** Moonshine negotiates `chromaSamplingType` and feeds `PixelFormat::Yuv444` / `YUV444P10` into pixelforge — evidence the Vulkan Video path can do 444 on capable GPUs. SCM advertisement is **wrong** — fix against sunshine-v2026.715.205118.md. Does not help VAAPI 4:4:4 (Sunshine §8 gap remains).
 **Idle/rate-control lesson:** 1 s static skip + single-frame VBV CBR is a starting point; Lyte still wants damage-driven true silence + loss-driven adaptation.
 
 ### H5 — Desktop conveniences
@@ -751,7 +751,7 @@ Mapping onto LYTE-PLAN §6 milestones:
 
 ### H6 — Single-binary + macOS host toggle
 **De-risks:** embedded mDNS (no avahi); rustls-only TLS; "one binary + system GPU/PipeWire" packaging story. systemd-as-hard-dep is a caution — keep app lifecycle optional for copy-one-file UX.
-**macOS host:** Moonshine is Linux-only; no VideoToolbox/ScreenCaptureKit lessons. Stick with SERVER.md §11 + LYTE-PLAN H6.
+**macOS host:** Moonshine is Linux-only; no VideoToolbox/ScreenCaptureKit lessons. Stick with sunshine-v2026.715.205118.md §11 + LYTE-PLAN H6.
 
 ### Cross-cutting revisions suggested by this analysis
 1. **Keep Sunshine as the desktop-capture reference; Moonshine as the "clean-room protocol + Vulkan encode" reference.** Neither alone is the Lyte host.

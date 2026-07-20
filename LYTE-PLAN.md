@@ -227,7 +227,7 @@ Privileged bits, if ever needed, follow the client's helper pattern
   server side, full ENet control host side — the client connects to a Lyte
   host exactly as it does to Sunshine. The client's own protocol code
   reviewed from the other side. Acceptance is byte-exact: `rtspenc://`
-  end-to-end; SS_PING payload matching; SCM bits per docs/SERVER.md §4;
+  end-to-end; SS_PING payload matching; SCM bits per docs/sunshine-v2026.715.205118.md §4;
   golden-transcript pairing tests; audio timestamps in Sunshine's
   packetDuration units.
 - **H2 — Input + audio.** Keyboard/mouse injection via portal RemoteDesktop

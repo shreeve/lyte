@@ -61,6 +61,8 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 </plist>
 EOF
 
-codesign --force --sign - "$APP/Contents/MacOS/lyte-helperd"
-codesign --force --sign - "$APP"
+# Sign with the stable "Lyte Dev" identity (falls back to ad-hoc with a warning
+# if setup-dev-signing.sh hasn't been run). A stable signature keeps the
+# Keychain "Always Allow" grant for the pairing key valid across rebuilds.
+"$(dirname "$0")/sign-dev.sh" "$APP/Contents/MacOS/lyte-helperd" "$APP"
 echo "assembled $APP"

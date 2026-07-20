@@ -2,7 +2,7 @@
 
 Deep technical analysis of `sunshine-v2026.715.205118/` (master @ `9d2409f`, the newest tree containing Linux YUV 4:4:4 from PR #4965), the GPLv3 C++ host that serves the Moonlight protocol. Goal: understand the host side of the wire — capture, encode, packetize, serve, inject — well enough to design a **better host** (the Lyte host, in Swift).
 
-**Related:** [`COMMON.md`](COMMON.md) (client protocol library — the other end of every wire format here), [`MACOS.md`](MACOS.md) (macOS client)
+**Related:** [`moonlight-common-c.md`](moonlight-common-c.md) (client protocol library — the other end of every wire format here), [`moonlight-macos.md`](moonlight-macos.md) (macOS client)
 
 ---
 
@@ -12,7 +12,7 @@ Deep technical analysis of `sunshine-v2026.715.205118/` (master @ `9d2409f`, the
 
 **Version notes:** this tree is newer than any stable release — it includes Linux NVENC/CUDA 4:4:4 (PR #4965), a Vulkan encoder, PipeWire/portal/KWin capture backends, and a Qualcomm MediaFoundation encoder. Stable v2026.516 has none of the 4:4:4 work.
 
-**Checkout notes:** submodules (moonlight-common-c, Simple-Web-Server, inputtino, tray, nanors…) are **not** checked out in our clone — it is reference-only, not buildable. Constants sourced from moonlight-common-c are marked `[MCC]` (cross-checked against `COMMON.md`).
+**Checkout notes:** submodules (moonlight-common-c, Simple-Web-Server, inputtino, tray, nanors…) are **not** checked out in our clone — it is reference-only, not buildable. Constants sourced from moonlight-common-c are marked `[MCC]` (cross-checked against `moonlight-common-c.md`).
 
 ---
 
@@ -102,12 +102,12 @@ Required: `rikey` (16-byte AES-128 session key for *everything*), `rikeyid` (→
 - **DESCRIBE** advertises: `x-ss-general.featureFlags` (pen/touch 0x01, controller-touch 0x02), encryption supported/requested bits (`SS_ENC_CONTROL_V2/VIDEO/AUDIO` = 1/2/4), RFI support, Opus surround `fmtp` lines (5.1/7.1 mappings rotated left from index 3 — GFE-bug compat), and two magic sentinels clients grep for: `sprop-parameter-sets=AAAAAU` (= HEVC supported) and `a=rtpmap:98 AV1/90000`.
 - **SETUP** returns fake `Session: DEADBEEFCAFE;timeout = 90`, `Transport: server_port=<port>` (only field read), plus `X-SS-Ping-Payload` (audio/video) or `X-SS-Connect-Data` (control).
 - **ANNOUNCE** parses the client SDP into `config_t` — the complete negotiation surface: resolution/fps/bitrate, `packetSize` (host may clamp; bounds 200–65535), FEC minimum shards, `x-nv-vqos[0].bitStreamFormat` (0=H264 1=HEVC 2=AV1, rejected if codec disabled), `x-ss-video[0].chromaSamplingType` (0=4:2:0, 1=**4:4:4**), `encoderCscMode` (colorspace+range), `dynamicRangeMode`, slices, numRefFrames, intraRefresh, audio channels/mask/quality/packetDuration, encryption flags. Bitrate adjustment: client `configuredBitrateKbps` scaled down for FEC%, minus audio bitrate, minus 500 Kbps control overhead (rtsp.cpp:1254–1274).
-- Stereo audio-quality trick, host side: HIGH_QUALITY = RTSP `Host:` header does **not** contain `0.0.0.0` (the client-side counterpart is documented in COMMON.md §6).
+- Stereo audio-quality trick, host side: HIGH_QUALITY = RTSP `Host:` header does **not** contain `0.0.0.0` (the client-side counterpart is documented in moonlight-common-c.md §6).
 - **PLAY** is a pure 200 no-op — streaming was armed at ANNOUNCE; actual start is gated on UDP pings.
 
 ---
 
-## 6. Streaming Core (host side of COMMON.md §7)
+## 6. Streaming Core (host side of moonlight-common-c.md §7)
 
 ### Ping gating
 Session start sets video/audio peers to (RTSP client address, **port 0**) and blocks in `recv_ping` (10 s timeout) before capturing anything. The recv thread demuxes incoming UDP: modern clients send `SS_PING` matched by the 16-char `av_ping_payload`; the **source address AND port of that ping become the send destination** (NAT-safe). Only then does capture/encode spin up.
@@ -302,7 +302,7 @@ Negative version quad (`x.y.z.-1`); SCM bit values; pairing crypto exactly (SHA2
 7. Kill the web UI: pairing approval, client management, and status belong in the agent (menu bar/tray) — collapses confighttp, Basic auth, CSRF, and the self-signed browser warning in one move.
 8. Config: Sunshine's 95 keys → Lyte's policy grid + a handful of overrides. One encoder path per OS deletes ~40% of the surface immediately.
 9. Single-instance guard (flock/Unix socket); live config as messages, not re-exec.
-10. Session resilience: resume tokens + control-channel reconnect instead of death-on-timeout (pairs with COMMON.md §15.11).
+10. Session resilience: resume tokens + control-channel reconnect instead of death-on-timeout (pairs with moonlight-common-c.md §15.11).
 11. Replicate the hard-won traps: DRM master oracle, hybrid-GPU card filtering (vaapi↔NVIDIA exclusion), Intel+NVIDIA no-dmabuf-into-CUDA rule, x265 Info-SEI quirk, VT H.264 ref-frames bug, cursor-plane Q16.16, capture-permission preflights.
 
 ---
