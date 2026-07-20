@@ -186,7 +186,7 @@ today (`pop`), and because it's the platform where owning the host pays off
 immediately (Wayland clipboard, 4:4:4 via NVENC on `pop`).
 
 Implementation detail and evidence for these choices:
-[docs/SERVER-PATH.md](docs/SERVER-PATH.md) (recommendation + adopted review
+[docs/HOST-PLAN.md](docs/HOST-PLAN.md) (recommendation + adopted review
 amendments).
 
 ### Architecture
@@ -194,8 +194,8 @@ amendments).
 ```
 lyte (host role)
 ├── Advertise/      Bonjour _lyte._tcp; identity, capabilities
-├── PairServer/     PIN approval, client cert pinning (mirror of client Pairing/)
-├── SessionServer/  RTSP/control server side; one session per display, N feature channels
+├── PairHost/       PIN approval, client cert pinning (mirror of client Pairing/)
+├── SessionHost/    RTSP/control host side; one session per display, N feature channels
 ├── Capture/        Linux: PipeWire/portal (Wayland), KMS; macOS: ScreenCaptureKit
 ├── Encode/         NVENC / VAAPI / VideoToolbox behind one Swift facade; HEVC⇄H.264; 4:4:4
 │                   (NVENC is the `pop` path and the 4:4:4-capable one; VAAPI banked for Intel hosts)
@@ -223,8 +223,8 @@ Privileged bits, if ever needed, follow the client's helper pattern
   control-v2 and fails the session without it, so it cannot wait for H1.
   Acceptance: the **unmodified shipping client** renders the live `pop`
   desktop. H0a+H0b together are a 4–8 week build, not a weekend spike.
-- **H1 — Session server.** Pairing (PIN + cert pinning), encrypted RTSP
-  server side, full ENet control host side — the client connects to a Lyte
+- **H1 — Session host.** Pairing (PIN + cert pinning), encrypted RTSP
+  host side, full ENet control host side — the client connects to a Lyte
   host exactly as it does to Sunshine. The client's own protocol code
   reviewed from the other side. Acceptance is byte-exact: `rtspenc://`
   end-to-end; SS_PING payload matching; SCM bits per docs/sunshine-v2026.715.205118.md §4;

@@ -234,7 +234,7 @@ public struct ClientIdentity: Sendable {
     }
 }
 
-/// PEM utilities for server certificates received during pairing.
+/// PEM utilities for host certificates received during pairing.
 public enum PEM {
     public static func der(fromPEM pem: String) throws -> Data {
         let lines = pem.split(whereSeparator: \.isNewline)

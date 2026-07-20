@@ -3,7 +3,7 @@ import Network
 import Crypto
 
 /// RTSP over TCP, one connection per transaction (matching the reference client:
-/// connect, send, read until the server closes, parse).
+/// connect, send, read until the host closes, parse).
 ///
 /// Supports encrypted RTSP (`rtspenc://`): each message is wrapped in an
 /// AES-128-GCM envelope keyed by the session riKey. Envelope (RtspConnection.c):

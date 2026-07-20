@@ -5,7 +5,7 @@ import Security
 ///
 /// - Plain HTTP on 47989: pairing steps 1–4, unpaired serverinfo.
 /// - HTTPS on 47984: everything after pairing. TLS is mutual — we present the
-///   client identity, and we pin the server certificate learned during pairing
+///   client identity, and we pin the host certificate learned during pairing
 ///   (the host uses a self-signed cert; trust *is* the pin).
 public final class NvHTTP: NSObject, @unchecked Sendable {
     public let address: String

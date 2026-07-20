@@ -5,11 +5,11 @@ import Security
 ///
 /// Reference: docs/moonlight-macos.md §8, misc/moonlight-macos PairManager, Sunshine nvhttp.
 ///
-///  1. getservercert (+salt, +client cert PEM)      → server cert   [blocks on PIN]
+///  1. getservercert (+salt, +client cert PEM)      → host cert   [blocks on PIN]
 ///  2. clientchallenge (AES-ECB encrypted)          → challengeresponse
-///  3. serverchallengeresp (hash of server challenge ‖ our cert sig ‖ client secret)
+///  3. serverchallengeresp (hash of host challenge ‖ our cert sig ‖ client secret)
 ///                                                   → pairingsecret (secret ‖ RSA sig)
-///  4. verify server signature + expected-response hash (detects wrong PIN)
+///  4. verify host signature + expected-response hash (detects wrong PIN)
 ///  5. clientpairingsecret (secret ‖ our RSA sig), then pairchallenge over HTTPS
 public struct PairingSession {
     public let client: HostClient

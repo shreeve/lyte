@@ -242,7 +242,7 @@ struct Launch: AsyncParsableCommand {
         }
         print("launched \(target.title): rtsp url \(context.rtspSessionURL)")
         // Session key material — pairs a packet capture with the bytes needed
-        // to unseal it (golden-transcript rig, PLAN §7 / SERVER-PATH §4).
+        // to unseal it (golden-transcript rig, PLAN §7 / HOST-PLAN §4).
         print("rikey \(context.riKey.hexString) rikeyid \(context.riKeyID)")
         fflush(stdout)
 
