@@ -17,14 +17,20 @@ public struct PolicyInput: Sendable {
     public var hostDisplay: (width: Int, height: Int, fps: Int)?
     /// Client panel in device pixels, aspect-fit target for Play.
     public var clientPanel: (width: Int, height: Int)?
+    /// Measured bitrate ceiling for this host (kbps), learned from sessions
+    /// that hit FEC-exceeded loss. nil = no measurement yet (D2: bitrate is
+    /// f(measured headroom), and this is the measurement arriving).
+    public var bitrateCeilingKbps: Int?
 
     public init(mode: StreamMode, dial: Double = 0,
                 hostDisplay: (width: Int, height: Int, fps: Int)? = nil,
-                clientPanel: (width: Int, height: Int)? = nil) {
+                clientPanel: (width: Int, height: Int)? = nil,
+                bitrateCeilingKbps: Int? = nil) {
         self.mode = mode
         self.dial = max(-1, min(1, dial))
         self.hostDisplay = hostDisplay
         self.clientPanel = clientPanel
+        self.bitrateCeilingKbps = bitrateCeilingKbps
     }
 }
 
@@ -71,8 +77,12 @@ public enum Policy {
         let pixelRate = Double(width * height * fps)
         let base = pixelRate / 1_000_000 * 0.28          // ≈44 Mbps at 2048×1280@60
         let dialFactor = 1.0 + input.dial * 0.6
-        let bitrateKbps = Int((base * dialFactor).rounded()) * 1000
+        var bitrateKbps = Int((base * dialFactor).rounded()) * 1000
         why.append("bitrate \(bitrateKbps / 1000) Mbps: pixel-rate base ×\(String(format: "%.1f", dialFactor)) dial")
+        if let ceiling = input.bitrateCeilingKbps, ceiling < bitrateKbps {
+            bitrateKbps = ceiling
+            why.append("bitrate lowered to \(ceiling / 1000) Mbps: this host dropped packets at higher rates")
+        }
 
         // Audio buffer: Work rides comfort, Play rides the edge (PLAN §4.2).
         let audioBufferMs: Int

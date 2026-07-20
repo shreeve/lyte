@@ -15,6 +15,18 @@ public struct Diagnosis: Sendable, Equatable {
     public let headline: String
     public let evidence: [String]
     public let fixes: [String]
+    /// True when genuine packet loss (FEC exceeded) is the diagnosis — the
+    /// signal the policy engine records as a bitrate ceiling for this host.
+    public let lossy: Bool
+
+    public init(level: Level, headline: String, evidence: [String], fixes: [String],
+                lossy: Bool = false) {
+        self.level = level
+        self.headline = headline
+        self.evidence = evidence
+        self.fixes = fixes
+        self.lossy = lossy
+    }
 }
 
 public final class Doctor: @unchecked Sendable {
@@ -63,7 +75,7 @@ public final class Doctor: @unchecked Sendable {
             evidence.append(String(format: "losing %.1f video frames/s (FEC exceeded)", videoLossRate))
             fixes.append("Congestion or weak signal — check bitrate headroom and signal strength")
             return Diagnosis(level: .poor, headline: "Packet loss — network is dropping data",
-                             evidence: evidence, fixes: fixes)
+                             evidence: evidence, fixes: fixes, lossy: true)
         }
 
         // Radio weather: arrival stalls without loss
@@ -78,6 +90,10 @@ public final class Doctor: @unchecked Sendable {
                                    underrunRate * 60))
         }
 
+        // The headline must not claim absorption the evidence disproves:
+        // "absorbed/covered" only when blips are actually negligible.
+        let absorbed = underrunRate * 60 < 1   // < 1 audible blip/min
+
         if gap50Rate > 1.0 || underrunRate > 0.5 {
             if !helperEngaged {
                 fixes.append("Enable the Lyte helper (System Settings → Login Items) to quiet AWDL during streams")
@@ -85,7 +101,9 @@ public final class Doctor: @unchecked Sendable {
                 fixes.append("Radio quiet is active; remaining stalls are channel contention — put the host and this Mac on different Wi-Fi bands, or wire one of them")
             }
             return Diagnosis(level: .poor,
-                             headline: "Rough radio weather — buffering is covering for it",
+                             headline: absorbed
+                                 ? "Rough radio weather — buffering is covering for it"
+                                 : "Rough radio weather — blips are getting through",
                              evidence: evidence, fixes: fixes)
         }
 
@@ -94,7 +112,9 @@ public final class Doctor: @unchecked Sendable {
                 fixes.append("Enabling the Lyte helper may reduce stalls (quiets AWDL)")
             }
             return Diagnosis(level: .fair,
-                             headline: "Occasional radio stalls — absorbed by the buffer",
+                             headline: absorbed
+                                 ? "Occasional radio stalls — absorbed by the buffer"
+                                 : "Occasional radio stalls — a few blips getting through",
                              evidence: evidence, fixes: fixes)
         }
 

@@ -39,6 +39,9 @@ final class ConnectionModel {
     private var doctorTask: Task<Void, Never>?
     var diagnosis: Diagnosis?
     var showDoctor = false
+    /// Set when the doctor sees FEC-exceeded loss this session; teaches
+    /// HostHeadroom a lower ceiling at session end.
+    private var sessionSawLoss = false
 
     var windowTitle: String {
         switch phase {
@@ -127,8 +130,10 @@ final class ConnectionModel {
             (width: Int($0.frame.width * $0.backingScaleFactor),
              height: Int($0.frame.height * $0.backingScaleFactor))
         }
-        let derived = Policy.derive(PolicyInput(mode: mode, clientPanel: panel))
+        let derived = Policy.derive(PolicyInput(mode: mode, clientPanel: panel,
+                                                bitrateCeilingKbps: HostHeadroom.ceiling(for: address)))
         policy = derived
+        sessionSawLoss = false
         phase = .connecting("Launching \(app.title)…")
 
         do {
@@ -160,6 +165,7 @@ final class ConnectionModel {
             self.session = session
             try await session.start()
             phase = .streaming
+            AgentState.shared.streamBegan()
             RecentConnections.remember(address: address, app: app.title)
             if let hint = HelperClient.shared.streamBegan() {
                 statusLine = hint
@@ -170,9 +176,15 @@ final class ConnectionModel {
                     guard let self, let session = self.session else { return }
                     self.diagnosis = self.doctor.sample(session.stats,
                                                         helperEngaged: HelperClient.shared.engaged)
+                    if self.diagnosis?.lossy == true { self.sessionSawLoss = true }
                 }
             }
         } catch {
+            // Never reached .streaming: drop the session here so endSession's
+            // accounting (agent stream count, headroom learning) can't run
+            // for a stream that never was.
+            session?.stop()
+            session = nil
             phase = .failed("connect: \(error.localizedDescription)")
         }
     }
@@ -193,6 +205,18 @@ final class ConnectionModel {
         HelperClient.shared.streamEnded()
         inputCapture?.stop()
         inputCapture = nil
+        if session != nil {
+            AgentState.shared.streamEnded()
+            // Headroom learning (D2): loss teaches a lower ceiling; a clean
+            // session earns a little back.
+            if let address = hostAddress {
+                if sessionSawLoss, let bitrate = policy?.bitrateKbps {
+                    HostHeadroom.recordLoss(address: address, atKbps: bitrate)
+                } else {
+                    HostHeadroom.recordClean(address: address)
+                }
+            }
+        }
         session?.stop()
         session = nil
         if let reason {
@@ -204,6 +228,32 @@ final class ConnectionModel {
 
     func disconnect() {
         endSession(reason: nil)
+    }
+}
+
+/// Measured per-host bitrate ceilings (the M5.5 seed): a session that hit
+/// FEC-exceeded loss pulls the next connect's bitrate to 70% of what dropped;
+/// each clean session earns 10% back, so the policy re-probes upward over
+/// time instead of pinning the host low forever. Keyed by address.
+enum HostHeadroom {
+    private static let key = "hostBitrateCeilingsKbps"
+
+    static func ceiling(for address: String) -> Int? {
+        (UserDefaults.standard.dictionary(forKey: key) as? [String: Int])?[address]
+    }
+
+    static func recordLoss(address: String, atKbps bitrate: Int) {
+        var map = (UserDefaults.standard.dictionary(forKey: key) as? [String: Int]) ?? [:]
+        let cut = max(5_000, (Int(Double(bitrate) * 0.7) + 500) / 1000 * 1000)
+        map[address] = min(map[address] ?? .max, cut)
+        UserDefaults.standard.set(map, forKey: key)
+    }
+
+    static func recordClean(address: String) {
+        var map = (UserDefaults.standard.dictionary(forKey: key) as? [String: Int]) ?? [:]
+        guard let current = map[address] else { return }
+        map[address] = min((Int(Double(current) * 1.1) + 500) / 1000 * 1000, 100_000)
+        UserDefaults.standard.set(map, forKey: key)
     }
 }
 
