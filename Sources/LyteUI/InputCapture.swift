@@ -12,6 +12,12 @@ public final class InputCapture {
     private let send: (Data, UInt8) -> Void
     private var monitors: [Any] = []
 
+    /// Host stream dimensions. Absolute coordinates must be relative to the
+    /// video area (the aspect-fit rect), not the whole view — the layer draws
+    /// with resizeAspect, so any letterbox/pillarbox bars would otherwise
+    /// scale-and-shift the mapping and the host cursor lands pixels off.
+    public var videoSize: CGSize = .zero
+
     /// Play-mode mouse lock: relative deltas, hidden + frozen local cursor.
     /// Toggled with the ⌃⌥ chord (PLAN §4.3 release recipe).
     public private(set) var locked = false
@@ -70,6 +76,16 @@ public final class InputCapture {
 
     // MARK: - Mouse
 
+    /// The aspect-fit rect the video actually occupies (resizeAspect math);
+    /// falls back to the full bounds until the stream size is known.
+    private func videoRect(in bounds: CGRect) -> CGRect {
+        guard videoSize.width > 0, videoSize.height > 0 else { return bounds }
+        let scale = min(bounds.width / videoSize.width, bounds.height / videoSize.height)
+        let size = CGSize(width: videoSize.width * scale, height: videoSize.height * scale)
+        return CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
+                      width: size.width, height: size.height)
+    }
+
     private func handleMouse(_ event: NSEvent) -> NSEvent? {
         guard let view, let window, event.window === window, window.isKeyWindow else { return event }
 
@@ -86,11 +102,13 @@ public final class InputCapture {
             }
             let p = view.convert(event.locationInWindow, from: nil)
             guard view.bounds.contains(p) || event.type != .mouseMoved else { return event }
-            let w = view.bounds.width, h = view.bounds.height
-            guard w > 1, h > 1 else { return event }
-            let x = Int16(min(max(p.x, 0), w))
-            let y = Int16(min(max(h - p.y, 0), h))   // flip to top-left origin
-            send(InputPacket.mouseMoveAbsolute(x: x, y: y, width: Int16(w), height: Int16(h)),
+            let r = videoRect(in: view.bounds)
+            guard r.width > 1, r.height > 1 else { return event }
+            let x = Int16(min(max(p.x - r.minX, 0), r.width).rounded())
+            let y = Int16(min(max(r.maxY - p.y, 0), r.height).rounded())   // flip to top-left origin
+            send(InputPacket.mouseMoveAbsolute(x: x, y: y,
+                                               width: Int16(r.width.rounded()),
+                                               height: Int16(r.height.rounded())),
                  InputPacket.channelMouse)
             return nil
 

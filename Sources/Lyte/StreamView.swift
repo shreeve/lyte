@@ -18,6 +18,9 @@ struct StreamView: NSViewRepresentable {
             let capture = InputCapture(view: view, window: window) { packet, channel in
                 session.sendInput(packet, channel: channel)
             }
+            if let policy = model.policy {
+                capture.videoSize = CGSize(width: policy.width, height: policy.height)
+            }
             capture.start()
             if model.policy?.mouseLockedByDefault == true {
                 capture.toggleLock()
