@@ -2,9 +2,8 @@
 
 *The one linear plan: what Lyte is becoming, why we're building both ends in
 Swift, and the order we get there. This is the strategy document; the client
-implementation blueprint lives in [PLAN.md](PLAN.md), product decisions in
-[docs/DESIGN.md](docs/DESIGN.md), and the client milestone ledger in
-[docs/ROADMAP.md](docs/ROADMAP.md).*
+implementation blueprint lives in [PLAN.md](PLAN.md) and product decisions in
+[docs/DESIGN.md](docs/DESIGN.md).*
 
 ---
 
@@ -238,7 +237,7 @@ next begins — the same discipline that carried M0–M6.
 
 The existing ladder stands: **M5.5** (policy engine full), **M6 remainder**
 (preflight, SSH host probes, WoL, one-session guard, DSCP), **M7** (profiles,
-frame pacing, AV1, HDR, reconnect/resume) — see docs/ROADMAP.md. Client work
+frame pacing, AV1, HDR, reconnect/resume). Client work
 that touches the wire keeps Stage-1 compatibility as its contract.
 
 ---

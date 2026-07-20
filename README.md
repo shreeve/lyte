@@ -66,7 +66,7 @@ remain a useful written spec.
 ## Status
 
 Pre-alpha. See [docs/DESIGN.md](docs/DESIGN.md) for the decisions and
-[docs/ROADMAP.md](docs/ROADMAP.md) for milestones.
+[LYTE-PLAN.md](LYTE-PLAN.md) for the strategy and milestones.
 
 ## License
 
