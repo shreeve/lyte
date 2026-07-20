@@ -19,12 +19,18 @@ struct LyteApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "connection") {
             ConnectionWindow()
         }
         .defaultSize(width: 1024, height: 640)
         .commands {
             LyteCommands()
+        }
+
+        // The agent (A0): always-on menu-bar presence — status, new
+        // connections, resume, and the future host toggle.
+        MenuBarExtra("Lyte", systemImage: "bolt.fill") {
+            AgentMenu()
         }
     }
 }

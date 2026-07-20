@@ -24,6 +24,14 @@ struct ConnectionWindow: View {
         .focusedSceneValue(\.connection, model)
         .frame(minWidth: 480, minHeight: 320)
         .task {
+            // Agent-menu resume (A0): a window opened from the menu bar
+            // carries its target via PendingConnect and skips the picker.
+            if let target = PendingConnect.target {
+                PendingConnect.target = nil
+                LaunchReconnect.consumed = true
+                await model.reconnect(address: target.address, appTitle: target.app)
+                return
+            }
             // Relaunch = resume (D6): the first window auto-reconnects to the
             // most recent session. ⌘N windows (and ⌥ at launch) get the picker.
             guard !LaunchReconnect.consumed else { return }
