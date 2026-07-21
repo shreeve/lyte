@@ -34,6 +34,11 @@ targets += [
         pkgConfig: "libavcodec",
         providers: [.apt(["libavcodec-dev", "libavutil-dev"])]
     ),
+    .systemLibrary(
+        name: "COpus",
+        pkgConfig: "opus",
+        providers: [.apt(["libopus-dev"])]
+    ),
     // C leaf: PipeWire stream consumption (SPA pod construction is macro-based
     // and unreachable from Swift; this is the hardware/OS boundary).
     .target(
@@ -44,6 +49,18 @@ targets += [
     .target(
         name: "CHevcEncode",
         dependencies: ["CLibAV"]
+    ),
+    // C leaf: pw_stream capture of the default sink's monitor
+    // (stream.capture.sink), F32 48 kHz stereo, graph-clock timestamps.
+    .target(
+        name: "CPipeWireAudio",
+        dependencies: ["CPipeWire"]
+    ),
+    // C leaf: libopus pinned to the dialect (CELT restricted-lowdelay,
+    // 48 kHz stereo, 5 ms frames, DTX off) + the loop-decode half.
+    .target(
+        name: "COpusEncode",
+        dependencies: ["COpus"]
     ),
     // C leaf: nonblocking UDP with sendmmsg/recvmmsg, per-packet TOS cmsgs,
     // and SO_TIMESTAMPING TX stamps (CMSG macros are unreachable from Swift;
@@ -62,6 +79,18 @@ targets += [
     .executableTarget(
         name: "lyte-pace-check",
         dependencies: ["HostCore", "CNetIO"]
+    ),
+    // HS-14 verification harness: default-sink monitor → 5 ms Opus packets
+    // → decode-back WAV; prints cadence/size/timestamp stats and exits
+    // nonzero if the gate (200 pkt/s, monotonic graph-clock ts, clean loop
+    // decode) is violated.
+    .executableTarget(
+        name: "lyte-audio-check",
+        dependencies: ["CPipeWireAudio", "COpusEncode"],
+        linkerSettings: [
+            .linkedLibrary("pipewire-0.3"),
+            .linkedLibrary("opus"),
+        ]
     ),
     .executableTarget(
         name: "lyte-host",
