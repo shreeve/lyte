@@ -10,10 +10,11 @@ byte-exact equality on both platforms is part of gate W-G1.
 vector ever disagree, that is a wire-contract break to investigate — never a
 prompt to regenerate. New cases append; changed semantics mean a new file
 version (`envelope-v2.json`) and a wire-version discussion first. The
-authoring tool (`swift run lyte-wire-vectorgen <envelope|fec> <path>`)
+authoring tool (`swift run lyte-wire-vectorgen <envelope|fec|video> <path>`)
 exists for adding files, and its output is anchored against hand-computed
 bytes in `EnvelopeTests`/`FecFieldTests` (and the k=1,m=1 parity-identity
-case in `FecCoderTests`) so the codec never grades its own homework.
+case in `FecCoderTests`, the hand-walked datagram in
+`VideoPacketizerTests`) so the codec never grades its own homework.
 
 ## Files
 
@@ -21,6 +22,11 @@ case in `FecCoderTests`) so the codec never grades its own homework.
   version 1, plus the (chan, seq) serial-arithmetic table.
 - `fec-v1.json` — fec-field codec vectors, the resiliency §5.2 parity
   ladder as data, and RS recovery matrices (W1).
+- `video-v1.json` — video-interior vectors (W2): packetize vectors
+  (frame → frozen shard datagrams) and assembly scenarios (scripted
+  delivery → expected DecodeUnits and decision outputs).
+- `video-corpus-v1/` — real HEVC access units from the H0a host, the
+  golden corpus the video vectors pin by sha256 (own README inside).
 
 ## The 24-byte envelope (wire v1)
 
@@ -168,3 +174,48 @@ Encode rejects: `shard-over-budget` (1113 B), `payload-over-budget`
 
 Decode rejects: `truncated-envelope` (23 B), `truncated-tlv-block`,
 `oversize-datagram` (1153 B).
+
+## File format: video-v1.json
+
+Top-level: `format` ("lyte-wire-video-vectors"), `formatVersion` (1),
+`wireVersion` (1), `frames`, `scenarios`.
+
+`frames` are packetize vectors: `VideoPacketizer` on the source bytes
+(with the vector's frameNumber, `timestampHex` µs, isIDR, regime,
+firstSeq) must produce exactly the listed shards — seq and `fecHex`
+field-exact, full `--insecure` datagram (header + bare shard) matching
+`datagramSha256`, and `datagramHex` byte-exact where present. Inline
+sources carry `annexBHex` (counting-byte filler, auditable by eye);
+corpus sources name a `video-corpus-v1/` file pinned by sha256 —
+hash-only to keep the repo lean, with the hash covering the whole
+datagram (envelope bytes included), so header drift is as loud as
+payload drift. Seq allocation is contiguous ascending in shard-index
+order across each frame's k+m shards — that contiguity is wire contract
+(the assembler infers a group's full seq range from any one shard).
+
+`scenarios` are assembly scripts over those frames: deliver `steps`
+(frame name + shardIndex; omitted indices are lost, repeats are
+duplicate datagrams) in order at one injected instant into a
+default-config `VideoAssembler`, then one `evictStale` tick at
+`finalTickMicroseconds` when set. Assertions: decoded units come out
+exactly as `expectDecoded` in that order, each byte-identical to its
+source with the vector's frameNumber/timestamp/isIDR; the
+`expectFecImpossible` frames (and only they) raise the fec-impossible
+event. Anchored against the hand-walked datagram in
+`VideoPacketizerTests.testHandWalkedTinyFrame`.
+
+## Vector inventory (video-v1.json, 9 frames + 10 scenarios)
+
+Frames: `inline-tiny-idr` (48 B, k=1 m=1), `inline-p-k3` /
+`inline-p-k3-lossy` (2500 B, k=3 m=2 both regimes), `inline-p-tail`
+(follow-on traffic), `inline-p-seq-wrap` (k=2 m=1 across the u16 wrap,
+seqs 0xFFFF 0x0000 0x0001), `corpus-idr` (18400 B, k=17 m=3, carries
+VPS/SPS/PPS), `corpus-p-large` (20786 B, k=19 m=3), `corpus-p-small`
+(4367 B, k=4 m=2), `corpus-p-small-lossy` (same bytes, lossy regime).
+
+Scenarios: `in-order-tiny-idr`, `shuffled-k3`, `loss-at-parity-limit-k3`,
+`duplicates-k3`, `seq-wrap-loss`, `interleaved-frames-emit-in-order`
+(late stragglers must not draw a write-off), `fec-impossible-then-eviction`
+(the CL-3 IDR-request trigger plus stale eviction), `corpus-idr-in-order`,
+`corpus-sequence-with-loss` (parity-limit loss under G4-model reorder),
+`corpus-small-p-lossy-regime`.

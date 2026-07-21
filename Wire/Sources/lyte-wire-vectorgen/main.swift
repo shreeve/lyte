@@ -4,7 +4,15 @@
 // prompt to regenerate. See Vectors/README.md for the freeze policy and
 // each file's anchor against hand-computed bytes.
 //
-// Usage: swift run lyte-wire-vectorgen <envelope|fec> <output-path>
+// Usage: swift run lyte-wire-vectorgen <envelope|fec|video> <output-path>
+//   `video` reads the corpus from <output-dir>/video-corpus-v1/.
+//
+// The `video-roundtrip` subcommand is not an authoring tool but the
+// W-G3 decode-evidence harness: it packetizes an Annex-B file, runs the
+// shards through seeded shuffle + per-group loss at the parity limit,
+// assembles, verifies byte-exactness, and writes the reassembled stream
+// for an external `ffmpeg -f null -` decode check.
+// Usage: swift run lyte-wire-vectorgen video-roundtrip <in.hevc> <out.hevc>
 
 import Foundation
 import LyteWire
@@ -19,8 +27,11 @@ func die(_ message: String) -> Never {
     exit(64)
 }
 
-guard CommandLine.arguments.count == 3 else {
-    die("usage: lyte-wire-vectorgen <envelope|fec> <output-path>")
+guard (3...4).contains(CommandLine.arguments.count) else {
+    die("""
+    usage: lyte-wire-vectorgen <envelope|fec|video> <output-path>
+           lyte-wire-vectorgen video-roundtrip <input.hevc> <output.hevc>
+    """)
 }
 
 let encoder = JSONEncoder()
@@ -38,8 +49,23 @@ case "fec":
     json = try encoder.encode(file)
     count = file.fieldVectors.count + file.geometryRows.count
         + file.recoveryMatrices.count
+case "video":
+    let outputDir = URL(fileURLWithPath: CommandLine.arguments[2])
+        .deletingLastPathComponent().path
+    let file = try makeVideoVectorFile(
+        corpusDirectory: outputDir + "/video-corpus-v1"
+    )
+    json = try encoder.encode(file)
+    count = file.frames.count + file.scenarios.count
+case "video-roundtrip":
+    try runVideoRoundTrip(
+        inputPath: CommandLine.arguments[2],
+        outputPath: CommandLine.arguments.count > 3
+            ? CommandLine.arguments[3] : CommandLine.arguments[2] + ".roundtrip"
+    )
+    exit(0)
 default:
-    die("unknown vector kind '\(CommandLine.arguments[1])' — expected envelope or fec")
+    die("unknown vector kind '\(CommandLine.arguments[1])' — expected envelope, fec, video, or video-roundtrip")
 }
 
 try (json + Data("\n".utf8)).write(
