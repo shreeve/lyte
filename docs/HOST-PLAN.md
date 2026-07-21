@@ -1,5 +1,19 @@
 # Lyte Host: Strategic Recommendation (host strategist, 2026-07-20)
 
+> **Supersession notice (2026-07-20, evening).** This document's
+> wire-protocol mandate — the byte-exact Sunshine dialect, the golden-packet
+> acceptance gates, and the handshake-shaped H0b/H1 ladder — is
+> **superseded** by
+> [20260720-215100-lyte-udp-decision.md](20260720-215100-lyte-udp-decision.md):
+> lyte-host speaks only Lyte-UDP and never implements the GameStream
+> dialect. What remains authoritative here: the capture fork (§1–§2), the
+> encode path and facade (§3), the codebase-lifting guide (§5, minus the
+> dialect-specific items), and the platform risks (§7). §4 and the ladder
+> amendments in §6 are kept as historical record — the protocol knowledge in
+> them still documents the payload interiors Lyte-UDP reuses (HEVC
+> depacketization layout, RS-FEC math, Opus framing) and what the frozen
+> client scaffolding speaks until it is deleted.
+
 ## TL;DR
 
 **Build the Sunshine-shaped host with Moonshine's internal architecture.** Desktop capture via PipeWire portal, NVENC encode for H0 (not VAAPI — LYTE-PLAN's H0 wording is wrong for `pop`), Vulkan Video as the deliberate end state, and a byte-exact Sunshine-dialect wire from day one because our own client is the first customer and Moonshine proves how easy it is to build a host that *feels* complete but silently never sends a frame to a Sunshine-era client. The H-ladder survives; four amendments below.
@@ -53,6 +67,14 @@ Carry Sunshine's **empirical probe discipline** regardless of backend: real test
 
 ## 4. Protocol serving order: build to the byte-exact checklist, in client-unblocking order
 
+*(Superseded by
+[20260720-215100-lyte-udp-decision.md](20260720-215100-lyte-udp-decision.md) —
+lyte-host never implements this dialect. Retained as historical record and
+as the reference for the payload interiors that carry into Lyte-UDP: the
+video packetization layout in item 6 and the audio framing/FEC constants in
+item 7 describe the interior formats the new envelope wraps. Items 1–5 —
+serverinfo, pairing, RTSP, ping demux, control-v2 — are dead for the host.)*
+
 Moonshine is the cautionary tale here, and it's worth stating why: it is protocol-complete for stock Moonlight yet **our shipping client cannot stream from it at all** (moonshine.md §11, "Verdict: No"). The failure is silent — no error, just no media — because Moonshine omits `X-SS-Ping-Payload` and only learns the client address from a literal ASCII `"PING"`, which our client never sends. Media gating on the ping handshake is the single most dangerous silent-failure mode in the whole stack: **everything else can be perfect and zero packets flow.** That reframes H0/H1 sequencing: the wire features our client *requires* are not H1 polish, they're prerequisites for H0's acceptance test.
 
 Implementation order, each step unblocking the next client behavior:
@@ -91,6 +113,12 @@ This is sunshine-v2026.715.205118.md §15's "byte-exact compatibility checklist"
 
 ## 6. H-ladder revisions
 
+*(Superseded: the H-ladder was reshaped again by the Lyte-UDP decision —
+the current ladder of record is LYTE-PLAN §6 as amended per
+[20260720-215100-lyte-udp-decision.md](20260720-215100-lyte-udp-decision.md).
+The capture/encode/input substance of these amendments survives in it; the
+dialect-shaped acceptance criteria do not.)*
+
 The ladder's shape survives contact with the evidence — strictly serial, verified live against the shipping client, capture-the-desktop-first. Four concrete amendments:
 
 - **H0 (amended stack + amended scope).** Replace "PipeWire capture → VAAPI HEVC" with "**PipeWire portal capture → NVENC HEVC (FFmpeg/CUDA leaf) → RTP+FEC**" — the written stack cannot run on `pop` (sunshine-v2026.715.205118.md §7/§10; see §3 above). Expand "hardcoded everything" to *include* a minimal SETUP/ping path: serverinfo identity, one canned RTSP exchange with `X-SS-Ping-Payload`, and SS_PING-gated sending. Without it the shipping client won't start audio and may never reveal its media address (moonshine.md §11) — a "spike" that bypasses ping gating validates nothing about the real client path. Acceptance stays: the client window shows the live `pop` desktop.
@@ -117,11 +145,22 @@ H3, H5, H6 stand as written. Moonshine offers nothing for H3/H5 (no clipboard, n
 
 ## If you start H0 tomorrow, do exactly this
 
+*(Historical — written for the Sunshine-dialect plan. The capture/encode
+half of this recipe was executed as H0a slices 1–2; the handshake/RTP half
+is superseded by the Lyte-UDP decision and will never be built.)*
+
 Stand up a Swift executable on `pop` that: opens an xdg-desktop-portal ScreenCast session (RemoteDesktop+ScreenCast combined, `persist_mode=UNTIL_REVOKED`, restore token persisted) and consumes the PipeWire stream with DMA-BUF negotiation and `SPA_META_VideoDamage` requested; feeds frames through a Swift `Encode` facade whose only backend is libavcodec `hevc_nvenc` configured with Sunshine's exact low-latency recipe (CBR, single-frame VBV, GOP INT_MAX, zero B-frames, reorder 0, P1/ULL, one frame in flight — sunshine-v2026.715.205118.md §7/§16); packetizes per sunshine-v2026.715.205118.md §6 field-for-field (frame header, `seq<<8`, `fecInfo` packing, ≤4 FEC blocks, RTP `0x90`); serves a hardcoded but *real* handshake — serverinfo with `"7.1.431.-1"` and correct SCM bits, one canned RTSP exchange returning `X-SS-Ping-Payload`, and send gating on a matched SS_PING (accepting legacy `"PING"` too) — and declares victory when the unmodified shipping Lyte client, pointed at `pop`, renders the live desktop. Port Moonshine's session state machine and StartB gating as the process skeleton while you're in there (it's BSD; translate freely), write the golden-packet tests for the ping/FEC/SCM bytes as you implement each, and leave VAAPI, Vulkan Video, KMS, and every compositor thought firmly on the shelf.
 
 ---
 
 ## Review amendments (adopted 2026-07-20)
+
+*(Partially superseded: the "H0b — honest handshake" milestone below is
+void — there is no GameStream handshake to make honest. Everything else
+stands: the H0a scope, the honesty corrections, the product fixes (portal
+input primary, named environments, login-blackout limitation), the
+M5.5–M7 freeze, and the idle-tolerance verification — the last is now a
+default Lyte-UDP behavior rather than a compat obligation.)*
 
 Three independent reviews — pragmatism, technical correctness, and product/POLS — all returned **adopt with changes**; none called for a rethink. The changes below are adopted and folded into LYTE-PLAN's H-ladder.
 

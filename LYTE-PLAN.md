@@ -33,8 +33,10 @@ Not a conferencing tool, not another VNC. Using another computer as if it were
 local.
 
 Everything is Swift. Everything is GPLv3. The transport is one
-latency-optimized protocol that carries negotiated payloads — we do not
-implement VNC or RDP compatibility, ever.
+latency-optimized protocol that carries negotiated payloads — **Lyte-UDP,
+our own protocol, the only one either end speaks** (decision of 2026-07-20:
+[docs/20260720-215100-lyte-udp-decision.md](docs/20260720-215100-lyte-udp-decision.md)).
+We do not implement VNC, RDP, or GameStream compatibility, ever.
 
 ---
 
@@ -122,41 +124,51 @@ convenience. Hit that and there's a clear reason to switch.
 | License | **GPLv3, whole repo** | Deliberate (D5): full freedom to study GPL reference code. Relicensing later remains legally ours to decide (single copyright holder) — but GPLv3 is the working assumption, not a placeholder. |
 | Video codecs | **HEVC primary, H.264 fallback; AV1 as a negotiated hook, later** | No MJPEG, no codec zoo. Modern hardware HEVC compresses static desktops to near-nothing and handles motion instantly — it beats VNC at VNC's own game once tuned (4:4:4 + rate control), and does full-motion video for free. |
 | Chroma | **4:4:4 as a first-class negotiated capability** | The desktop-text differentiator. Client decode path already targets it (Local·Work policy, D2). Connect-time only in the Moonlight lineage (fixed at ANNOUNCE; a chroma change = reconnect) — policy must treat it as a session parameter, not a live dial. Full color fidelity also needs the CSC upgrade: the client still requests Rec.601 limited (`encoderCscMode 0`), the likely cause of the "washed out" look — BT.709/full-range is a cheap client-side fix independent of the host work. |
-| Audio | **Opus over RTP, 4+2 FEC, AES-CBC** | Shipping today; host side mirrors it. Mic-back channel is a future message type, not v1. |
-| Transport | **One UDP-first, latency-optimized transport; payload-agnostic** | Codec negotiated at connect; feature channels independent of video. No VNC mode, no RDP mode — policy ("text sharpness vs bandwidth") replaces transport switching. |
-| Encryption | **On by default, everywhere, no cell exceptions** | Locked decision. CryptoKit/CommonCrypto/swift-certificates; no OpenSSL anywhere. |
+| Audio | **Opus, 4+2 RS FEC, Lyte-UDP datagrams** | Payload framing carries over from the proven client path; envelope and crypto are Lyte-UDP's (Noise AEAD). Mic-back channel is a future message type, not v1. |
+| Transport | **Lyte-UDP: our own protocol over plain UDP; payload-agnostic** | The only protocol either end speaks (2026-07-20 decision). Codec negotiated at connect; feature channels independent of video. No VNC mode, no RDP mode — policy ("text sharpness vs bandwidth") replaces transport switching. |
+| Encryption | **On by default, everywhere, no cell exceptions** | Locked decision. Noise-based end-to-end per the transport pillar; CryptoKit/swift-crypto family; no OpenSSL anywhere. |
 | Discovery | **Bonjour on LAN** | Shipping in the client today. Host advertises; clients see it appear in the connect empty-state. |
-| Remote reach | **Rendezvous + STUN hole punching, direct P2P only** | A tiny rendezvous service brokers introductions; media always flows peer-to-peer. **No TURN relay in v1** — if hole punching fails, the network is unsupported. The protocol reserves room (relay address family in the handshake) so a relay can be added later *without protocol surgery*. |
+| Remote reach | **v1: Tailscale or port-forward; LAN is direct UDP** | Plain UDP traverses Tailscale natively — that is the v1 remote answer (2026-07-20 decision). No rendezvous service, no TURN relay in v1; a rendezvous/hole-punching layer remains a later option, addable *without protocol surgery*. |
 | UI | SwiftUI on macOS; thin native shells elsewhere | The host role needs almost no UI — a toggle, a pairing approval, a status pill. |
 
 ---
 
-## 5. Protocol strategy — evolve, don't big-bang
+## 5. Protocol strategy — one protocol, ours
 
-Owning both ends does *not* mean a day-one clean-slate protocol. The client's
-Moonlight-compatible implementation is tested, hardened, and talks to a
-known-good host (Sunshine) — that interop is our permanent test oracle and
-the user's bridge during the transition.
+*(The staged evolve-don't-big-bang plan that previously lived here — Stage 1
+Moonlight-compatible base, Stage 2 extension channel over the GameStream
+wire, Stage 3 divergence — is superseded by
+[docs/20260720-215100-lyte-udp-decision.md](docs/20260720-215100-lyte-udp-decision.md).)*
 
-**Stage 1 — Moonlight-compatible base (where we are).**
-Client speaks Sunshine's dialect: HTTPS pairing, encrypted RTSP, ENet
-control, RTP video/audio with RS-FEC. This never breaks; Sunshine hosts
-remain supported.
+**Lyte speaks exactly one protocol: Lyte-UDP.** Homegrown, over plain UDP
+datagrams, specified by the four pillar docs (image quality, timing,
+resiliency, transport — `docs/20260720-19170*.md`) as reconciled by the
+capstone overview (`docs/20260720-193000`), with the QUIC and compat-dialect
+assumptions in those docs overridden by the decision record. lyte-host never
+implements the GameStream dialect — no RTSP, no ENet, no GameStream RTP, no
+HTTPS pairing, no Moonlight compatibility. The end state is pure Lyte-UDP
+everywhere, client included: no long-term dual-protocol ambition.
 
-**Stage 2 — Lyte extension channel over the same wire.**
-When both ends are Lyte, capability negotiation (the same connect-time
-mechanism that picks codecs) opens an authenticated, encrypted **feature
-channel**: a generic bidirectional message stream multiplexed alongside
-media. Clipboard, file transfer, printing, cursor metadata, display control —
-all just message types on this channel. The client connecting to plain
-Sunshine simply never negotiates it. This stage delivers the headline
-features without forking the media path.
+Lyte-UDP v1 is a **new skeleton around proven organs**: the envelope,
+handshake (Noise + PIN-PAKE), channels, and reliable sublayer are new; the
+media payload interiors — the client's soak-tested HEVC depacketization
+layout, the Reed-Solomon FEC math (nanors-compatible), the Opus audio
+framing — carry over intact. Idle silence and damage-only video (reliable
+sparse idle frames, IDR-on-wake) are default behavior, not negotiated
+extras. Feature channels (clipboard, files, printing, cursor metadata,
+display control) are message streams on the same connection, gated by
+capability negotiation.
 
-**Stage 3 — Lyte protocol v2.**
-Once the Lyte host is the primary host and the extension channel is proven,
-we are free to diverge: collapse the pairing/RTSP legacy into a single
-handshake, unify session control, tighten framing. v2 is earned by running
-code, not designed in advance. Nothing in stages 1–2 may paint us out of it.
+**The transition.** The client's existing GameStream stack is frozen
+scaffolding: zero new work, kept compiling only because it is the working
+streaming path against Sunshine while Lyte-UDP comes up. It is deleted as
+soon as it stops being load-bearing (target: H0b/H1, when the Lyte-UDP
+client path streams end-to-end; at the latest at H2 parity) — deletion is
+the default, not a decision point. Sunshine's only remaining role is
+bootstrap crutch on the host machine until Lyte↔Lyte streams; then it is
+uninstalled. Rationale: dual support is a split brain — the two envelopes
+share the media-pipeline interior, so every refactor and bug carries double
+surface. One protocol, one host, one client per platform is the product.
 
 **Feature-channel message discipline** (learned from the clipboard design
 work, applies to every channel):
@@ -170,12 +182,11 @@ work, applies to every channel):
 - Session-scoped: state clears when the stream ends.
 - Never log payload contents.
 
-Prior art worth a deliberate look before freezing the clipboard framing: the
-Foundation-Sunshine / Moonlight-VPlus fork ecosystem already runs a private
-clipboard extension as control packet `IDX_CLIPBOARD` (0x5508) with v1 text
-frames and capability bits. We owe them nothing wire-wise, but if their
-framing is sane, matching it buys interop with forked hosts for free; if
-not, we diverge knowingly rather than accidentally.
+*(A prior-art note on the Foundation-Sunshine `IDX_CLIPBOARD` fork framing
+stood here; with GameStream interop dropped there is no forked-host interop
+to buy, so the clipboard framing is designed on our own wire without
+reference to it — superseded by
+docs/20260720-215100-lyte-udp-decision.md.)*
 
 ---
 
@@ -187,19 +198,21 @@ immediately (Wayland clipboard, 4:4:4 via NVENC on `pop`).
 
 Implementation detail and evidence for these choices:
 [docs/HOST-PLAN.md](docs/HOST-PLAN.md) (recommendation + adopted review
-amendments).
+amendments; its Sunshine-dialect wire mandate is superseded by
+[docs/20260720-215100-lyte-udp-decision.md](docs/20260720-215100-lyte-udp-decision.md) —
+the capture/encode/input recommendations stand).
 
 ### Architecture
 
 ```
 lyte (host role)
-├── Advertise/      Bonjour _lyte._tcp; identity, capabilities
-├── PairHost/       PIN approval, client cert pinning (mirror of client Pairing/)
-├── SessionHost/    RTSP/control host side; one session per display, N feature channels
+├── Advertise/      Bonjour _lyte._udp; identity, capabilities
+├── PairHost/       PIN-PAKE approval, Noise static-key pinning (per the transport pillar)
+├── SessionHost/    Lyte-UDP session/control host side; one session per display, N feature channels
 ├── Capture/        Linux: PipeWire/portal (Wayland), KMS; macOS: ScreenCaptureKit
 ├── Encode/         NVENC / VAAPI / VideoToolbox behind one Swift facade; HEVC⇄H.264; 4:4:4
 │                   (NVENC is the `pop` path and the 4:4:4-capable one; VAAPI banked for Intel hosts)
-├── AudioCap/       PipeWire capture → Opus encode → RTP+FEC
+├── AudioCap/       PipeWire capture → Opus encode → Lyte-UDP datagrams + FEC
 ├── InputInject/    portal RemoteDesktop primary, uinput fallback — keyboard, mouse, scroll
 ├── Features/       clipboard watcher/setter, print interception, file channel
 └── Telemetry/      encoder queue depth, capture latency, per-client loss — feeds the doctor
@@ -213,42 +226,43 @@ Privileged bits, if ever needed, follow the client's helper pattern
 
 ### Host milestones
 
-- **H0a — Spike: first pixels.** Portal/PipeWire capture → NVENC HEVC (a
-  libavcodec leaf) → RTP with our FEC → a *debug-mode* client renders it
-  (client-side gating relaxed for the spike). Hardcoded everything; success
-  = a client window showing the live `pop` desktop.
-- **H0b — Honest handshake.** Serverinfo identity, canned RTSP with the
-  Session header and `X-SS-Ping-Payload`, SS_PING-gated sending, and a
-  minimal ENet control-v2 host — the shipping client hard-requires
-  control-v2 and fails the session without it, so it cannot wait for H1.
-  Acceptance: the **unmodified shipping client** renders the live `pop`
-  desktop. H0a+H0b together are a 4–8 week build, not a weekend spike.
-- **H1 — Session host.** Pairing (PIN + cert pinning), encrypted RTSP
-  host side, full ENet control host side — the client connects to a Lyte
-  host exactly as it does to Sunshine. The client's own protocol code
-  reviewed from the other side. Acceptance is byte-exact: `rtspenc://`
-  end-to-end; SS_PING payload matching; SCM bits per docs/sunshine-v2026.715.205118.md §4;
-  golden-transcript pairing tests; audio timestamps in Sunshine's
-  packetDuration units.
-- **H2 — Input + audio.** Keyboard/mouse injection via portal RemoteDesktop
-  as primary (we already hold that portal session open for capture; no udev
-  rule on the happy path), uinput as fallback; PipeWire monitor capture of
-  the real desktop → Opus → RTP. Bar: a full working session
-  indistinguishable from Sunshine for daily driving — plus idle silence as
-  an acceptance gate: static desktop ≤ ~1 fps keepalive, measured (pending
-  the TODO.md verification that the shipping client tolerates long frame
-  gaps).
-- **H3 — Feature channel + clipboard.** Stage-2 negotiation; bidirectional
-  text clipboard with the loop-prevention discipline above. The first thing
-  Sunshine can't do.
+*(This ladder was rewritten 2026-07-20 when the GameStream dialect was
+dropped from the host roadmap — decision and rationale in
+[docs/20260720-215100-lyte-udp-decision.md](docs/20260720-215100-lyte-udp-decision.md).
+H0a is unchanged and partially complete; everything after it is
+Lyte-UDP-shaped.)*
+
+- **H0a — Spike: first pixels into a file (in progress; slices 1–2
+  committed).** Portal/PipeWire capture → NVENC HEVC (a libavcodec leaf) →
+  Annex-B file, proven headless on `pop`. The formerly planned
+  "Sunshine-dialect RTP+FEC into the debug client" slice is dropped.
+  Remaining H0a work: the quality-ratchet prototype on the existing
+  file-output host (already approved).
+- **H0b — First pixels, Lyte-UDP.** Envelope v1 + the video datagram
+  channel + RS FEC on the host; a Lyte-UDP receive module in the client
+  (debug mode) rendering the live desktop. Acceptance: the client renders
+  lyte-host's desktop over the LAN.
+- **H1 — Honest session.** Noise handshake, PIN-PAKE pairing, discovery
+  (Bonjour + manual host:port), session lifecycle, the control channel on
+  the reliable sublayer, the idle/active state machine — idle silence,
+  reliable sparse idle frames, IDR-on-wake — and the liveness beacon.
+- **H2 — Parity.** Input injection via portal RemoteDesktop as primary (we
+  already hold that portal session open for capture; no udev rule on the
+  happy path), uinput as fallback; PipeWire monitor capture of the real
+  desktop → Opus, with the audio-continuity doc's send pacing and
+  per-packet DSCP (48 audio / 40 video); the congestion/resiliency
+  machinery (app-level CC, NACK, FROZEN/RECOVERY). Exit criteria: Sunshine
+  is uninstalled from `pop`, and the client's GameStream stack is deleted
+  (earlier if H0b/H1 already made it non-load-bearing).
+- **H3 — Feature channel + clipboard.** Capability-negotiated feature
+  channel over Lyte-UDP; bidirectional text clipboard with the
+  loop-prevention discipline above. The first thing Sunshine can't do.
 - **H4 — 4:4:4 + policy integration.** 4:4:4 lands NVENC-first — the
   RGB→YUV444 conversion is the real work item; VAAPI-444 is banked for
-  Intel hosts. Chroma negotiation wired into Local·Work; encoder rate
-  control tuned for static-desktop-with-bursts; loss-driven adaptation (the
-  client already reports loss every ~50 ms and both incumbents ignore it)
-  and pacing to the negotiated bitrate, not an assumed gigabit; host-side
-  telemetry feeding the client's doctor (encoder stalls become a named
-  culprit, like AWDL is today).
+  Intel hosts. Chroma negotiation wired into Local·Work; the full quality
+  ratchet; encoder rate control tuned for static-desktop-with-bursts;
+  host-side telemetry feeding the client's doctor (encoder stalls become a
+  named culprit, like AWDL is today).
 - **H5 — Desktop conveniences.** File transfer channel; printing v1
   (intercept host print jobs → deliver as PDF → print locally on the
   client). Drag-and-drop rides the file channel when it lands — nice, not
@@ -257,15 +271,21 @@ Privileged bits, if ever needed, follow the client's helper pattern
   executable; "Be a host" toggle in the macOS app (ScreenCaptureKit +
   VideoToolbox encode — the same H0–H2 ladder, much shorter on home turf).
 
-Each H-milestone is verified live against the shipping client before the
-next begins — the same discipline that carried M0–M6.
+All of H3–H6 rides Lyte-UDP feature channels. Each H-milestone is verified
+live against the Lyte client before the next begins — the same discipline
+that carried M0–M6, with the Lyte-UDP client path replacing the GameStream
+one as the verifier from H0b on.
 
 ### Client milestones (continuing, in parallel)
 
 The existing ladder stands: **M5.5** (policy engine full), **M6 remainder**
 (preflight, SSH host probes, WoL, one-session guard, DSCP), **M7** (profiles,
-frame pacing, AV1, HDR, reconnect/resume). Client work
-that touches the wire keeps Stage-1 compatibility as its contract.
+frame pacing, AV1, HDR, reconnect/resume) — all on the Lyte-UDP path.
+
+**The GameStream stack is frozen scaffolding** (per the 2026-07-20
+decision): zero new work, kept compiling only as the working path against
+Sunshine during the transition, deleted as soon as the Lyte-UDP client path
+is load-bearing (H0b/H1 target; H2 at the latest).
 
 **Freeze rule:** M5.5–M7 are paused during H0–H2, critical fixes excepted.
 One maintainer, one front at a time.
@@ -274,26 +294,31 @@ One maintainer, one front at a time.
 
 ## 7. Networking beyond the LAN
 
-- **v1 is LAN + direct P2P.** Bonjour finds local hosts. For remote hosts, a
-  minimal rendezvous service (stateless introduction + STUN-style address
-  discovery) lets both ends hole-punch UDP. Most home/small-office NATs
-  allow this; where they don't, we say "unsupported" plainly rather than
-  ship a relay fleet.
-- **The rendezvous service never sees media.** It brokers a handshake;
-  encryption is end-to-end between paired devices; pairing trust is
-  cert-pinning established on first PIN exchange, same as today.
-- **Relay-shaped hole in the protocol, no relay in the product.** The
-  connection setup enumerates candidate paths (local, reflexive, *relay*);
-  v1 simply never produces relay candidates. Adding TURN later is a service
+*(Posture updated 2026-07-20 with the Lyte-UDP decision.)*
+
+- **LAN: direct UDP.** Bonjour finds local hosts; manual host:port works
+  everywhere.
+- **Remote, v1: Tailscale or a port-forward.** Plain UDP is exactly what
+  these carry best; no rendezvous service, no STUN, no relay fleet ships in
+  v1. Where neither is available, we say "unsupported" plainly.
+- **Browsers, future: a dumb datagram relay.** The Caddy bridge
+  (docs/20260720-184200) becomes a WebTransport-datagram ↔ UDP-packet relay
+  (CONNECT-UDP shape). End-to-end Noise encryption means the bridge — like
+  any future rendezvous or relay — never sees plaintext; it is untrusted by
+  construction.
+- **Relay-shaped hole in the protocol, no relay in the product.** A
+  rendezvous/hole-punching layer remains addable later as a service
   decision, not a protocol change.
 
 ---
 
 ## 8. Security model
 
-- **Pairing is the root of trust**: PIN once, mutual certificate pinning
-  forever after (shipping). The host role reuses the identical model in
-  reverse — a host approves a client once.
+- **Pairing is the root of trust**: PIN once, mutual key pinning forever
+  after. On Lyte-UDP that means PIN-as-PAKE and pinned static Noise keys
+  (transport pillar §4) — same UX as the shipping cert-pinning model, better
+  crypto. The host role reuses the identical model in reverse — a host
+  approves a client once.
 - **Everything encrypted, always** (locked decision). No plaintext cells, no
   "LAN is safe" exceptions.
 - **Per-feature consent, per session.** View-only vs. control is an explicit
@@ -331,8 +356,11 @@ One maintainer, one front at a time.
   experience.
 - **No MJPEG**, except possibly as a debug tool, never a product path.
 - **No TURN/relay service in v1** (see §7).
-- **No GFE/GeForce-Experience support** — Sunshine-generation hosts only,
-  and eventually Lyte hosts primarily.
+- **No GameStream/Moonlight compatibility, either direction.** lyte-host
+  speaks only Lyte-UDP; no Moonlight client ever connects to it unless a
+  compat leaf is deliberately added later (2026-07-20 decision — the honest
+  cost is recorded there). The client's GameStream stack is transition
+  scaffolding slated for deletion, not a supported mode.
 - **No conferencing features.** Lyte is not a meeting tool.
 - **No settings sprawl.** The 2×2 policy grid and one dial survive the host
   expansion; the host role gets the same treatment (capabilities on/off,
@@ -349,20 +377,22 @@ One maintainer, one front at a time.
 | Login-screen blackout — portal capture needs a logged-in session, so a rebooted host is dark until someone logs in | A stated limitation and a named doctor diagnosis until a KMS/login-manager story exists — never a silent capture failure. |
 | Hardware encoder variance (VAAPI quirks, NVENC licensing surface, hybrid-GPU traps) | One Swift encode facade with capability probes; the `pop` case study already caught the hybrid-GPU silent-fallback trap — probe results become doctor diagnoses. |
 | Swift-on-Linux ecosystem gaps (no Foundation surprises, C interop volume) | The client already proved the pure-Swift + C-leaf pattern; keep the C boundary at hardware libraries only. |
-| Two-ends scope creep | The H-ladder is strictly serial; a milestone ships only when verified live against the shipping client; features land as negotiated channels, never as forks of the media path. |
-| Solo-maintainer bandwidth | Stage 1 compatibility means Sunshine keeps working the whole time — there is never a broken middle where nothing streams. |
+| Two-ends scope creep | The H-ladder is strictly serial; a milestone ships only when verified live against the Lyte client; features land as negotiated channels, never as forks of the media path. |
+| Solo-maintainer bandwidth | Sunshine stays installed as the bootstrap crutch until Lyte↔Lyte streams — there is never a broken middle where nothing streams. The client's frozen GameStream path is that bridge; it is deleted only once Lyte-UDP is load-bearing. |
+| Owning the wire ourselves (post-2026-07-20) | The reliable sublayer's ARQ correctness and the pre-handshake DoS posture are ours alone — no RFC 9000 lineage. Mitigations: the sublayer's scope is deliberately tiny (control, sparse idle frames, final ratchet frame); adversarial/netem tests are acceptance gates; the `LyteTransport` facade keeps QUIC re-adoptable if the ecosystem matures. Debugging has no off-the-shelf dissector — a small `lyte sniff` tool is the ledgered answer. |
 
 ---
 
 ## 12. The linear path, in one breath
 
-Client works (done) → keep Sunshine compatibility as the permanent baseline →
-stand up a narrow Swift Linux host that the existing client can stream from
-(H0–H2) → open the negotiated feature channel and ship clipboard, the first
-impossible-with-Sunshine feature (H3) → land 4:4:4 and host telemetry (H4) →
-files and printing (H5) → macOS host + one-binary UX (H6) → rendezvous +
-hole-punched P2P for remote reach → then, with both ends ours and proven,
-collapse the legacy into Lyte protocol v2 — and somewhere along the way, the
-product stops being "a Moonlight client" and becomes what it was always
-aimed at: **your other computers, one click away, indistinguishable from
-local.**
+Client works (done) → keep Sunshine as the bootstrap crutch while the host
+comes up on Lyte-UDP, our own and only protocol (H0a capture/encode is
+proven; H0b puts first pixels on the new wire; H1 makes the session honest) →
+reach parity, retire Sunshine, delete the client's GameStream scaffolding
+(H2) → open the negotiated feature channel and ship clipboard, the first
+impossible-with-Sunshine feature (H3) → land 4:4:4 and the quality ratchet
+(H4) → files and printing (H5) → macOS host + one-binary UX (H6) → remote
+reach via Tailscale/port-forward today, a browser bridge and rendezvous
+later — and somewhere along the way, the product stops being "a Moonlight
+client" and becomes what it was always aimed at: **your other computers, one
+click away, indistinguishable from local.**
