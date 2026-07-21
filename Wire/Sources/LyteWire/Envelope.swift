@@ -11,8 +11,8 @@
 //   8      8    timestamp  µs; host PipeWire monotonic domain on host-sent
 //                          datagrams, client monotonic on client-sent —
 //                          apply WireTimestamp<Domain> at the ends
-//   16     8    fec        opaque FEC field (layout owned by resiliency;
-//                          codec lands at W1)
+//   16     8    fec        FEC field; interior layout and codec in
+//                          FecField.swift (W1)
 //   24     …    [TLV block when flags bit0] then payload
 //
 // The header (fixed 24 bytes plus any TLV block) rides as AAD; the payload
@@ -26,7 +26,8 @@ public struct Envelope: Hashable, Sendable {
     public var frame: FrameNumber
     /// Raw µs value of the sender's clock domain; see the layout comment.
     public var timestamp: UInt64
-    /// Opaque 8-byte FEC field, carried as its little-endian u64 image.
+    /// The 8-byte FEC field as its little-endian u64 image; the interior
+    /// layout is `FecField`'s (decode on demand — most channels carry 0).
     public var fec: UInt64
     /// TLV extensions, in wire order, unknown types preserved verbatim.
     public var extensions: [WireExtension]

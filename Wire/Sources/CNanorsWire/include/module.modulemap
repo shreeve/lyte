@@ -1,0 +1,4 @@
+module CNanorsWire {
+    header "rs.h"
+    export *
+}
