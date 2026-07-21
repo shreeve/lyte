@@ -81,9 +81,10 @@ static inline int __builtin_cpu_supports(const char *feature)
 extern "C" {
 #endif
 
-void obl_swap(uint8_t *a, uint8_t *b, unsigned k);
-void *obl_alloc(size_t num_rows, size_t row_size, size_t alignment);
-void obl_free(void *ptr);
+/* Distinct linker names — see the note in rs.h (CNanorsWire coexistence). */
+void obl_swap(uint8_t *a, uint8_t *b, unsigned k) __asm__("_lyte_client_obl_swap");
+void *obl_alloc(size_t num_rows, size_t row_size, size_t alignment) __asm__("_lyte_client_obl_alloc");
+void obl_free(void *ptr) __asm__("_lyte_client_obl_free");
 
 #ifdef __cplusplus
 }

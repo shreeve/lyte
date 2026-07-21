@@ -19,7 +19,8 @@ struct oblas_impl {
     size_t align_size;
 };
 
-void oblas_get_impl(struct oblas_impl *impl);
+/* Distinct linker name — see the note in rs.h (CNanorsWire coexistence). */
+void oblas_get_impl(struct oblas_impl *impl) __asm__("_lyte_client_oblas_get_impl");
 
 typedef uint8_t u8;
 typedef uint16_t u16;

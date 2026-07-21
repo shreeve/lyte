@@ -14,6 +14,9 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
+        // The sans-IO wire core (envelope, channels, vocabulary) shared with
+        // the host; the frozen Vectors/ files are the contract CL-1 codes to.
+        .package(path: "Wire"),
     ],
     targets: [
         .target(
@@ -49,6 +52,15 @@ let package = Package(
                 .product(name: "SwiftASN1", package: "swift-asn1"),
             ]
         ),
+        // The Lyte-UDP client shell (CL-1): owns the receive socket, decodes
+        // envelopes via LyteWire, demuxes (chan, seq). Grows into the module
+        // that replaces the frozen GameStream stack; never imports LyteKit.
+        .target(
+            name: "LyteTransport",
+            dependencies: [
+                .product(name: "LyteWire", package: "Wire"),
+            ]
+        ),
         .target(
             name: "LyteUI",
             dependencies: ["LyteKit"]
@@ -64,6 +76,8 @@ let package = Package(
                 "LyteKit",
                 "LyteUI",
                 "LyteHelperProtocol",
+                "LyteTransport",
+                .product(name: "LyteWire", package: "Wire"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
@@ -72,5 +86,13 @@ let package = Package(
             dependencies: ["LyteKit", "LyteUI", "LyteHelperProtocol"]
         ),
         .testTarget(name: "LyteKitTests", dependencies: ["LyteKit"]),
+        .testTarget(
+            name: "LyteTransportTests",
+            dependencies: [
+                "LyteTransport",
+                .product(name: "LyteWire", package: "Wire"),
+                .product(name: "LyteWireTestKit", package: "Wire"),
+            ]
+        ),
     ]
 )

@@ -8,7 +8,7 @@ struct LyteCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "lyte-cli",
         abstract: "Lyte development CLI — stream from, pair with, and poke Sunshine hosts.",
-        subcommands: [Discover.self, Info.self, Pair.self, Apps.self, Launch.self, Stream.self, Quit.self, Unpair.self],
+        subcommands: [Discover.self, Info.self, Pair.self, Apps.self, Launch.self, Stream.self, Quit.self, Unpair.self, WireListen.self],
         defaultSubcommand: Stream.self
     )
 
@@ -44,7 +44,8 @@ enum Main {
         // `stream` is the default subcommand, so the UI path is "anything
         // that isn't explicitly one of the non-UI subcommands (or help)".
         let nonUI: Set<String> = ["discover", "info", "pair", "apps", "launch",
-                                  "quit", "unpair", "help", "--help", "-h", "--version"]
+                                  "quit", "unpair", "wire-listen",
+                                  "help", "--help", "-h", "--version"]
         let firstArg = CommandLine.arguments.dropFirst().first ?? ""
         let wantsAppKit = !firstArg.isEmpty && !nonUI.contains(firstArg)
         if wantsAppKit {
