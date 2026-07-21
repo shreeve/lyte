@@ -496,7 +496,7 @@ final class SessionGateTests: XCTestCase {
         )
         XCTAssertEqual(echoEvents, [.beaconEchoAccepted(
             beaconSeq: 0,
-            offsetMicroseconds: (3_000 + (-3_500)) / 2,
+            offsetMicroseconds: Int64(3_000 + (-3_500)) / 2,
             rttMicroseconds: 6_500
         )])
         XCTAssertEqual(session.clock.samples, 1)

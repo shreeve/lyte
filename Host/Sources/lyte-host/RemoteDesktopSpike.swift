@@ -675,7 +675,7 @@ final class RemoteDesktopSpike {
 private func rdFrameTrampoline(user: UnsafeMutableRawPointer?,
                                data: UnsafePointer<UInt8>?, size: UInt32,
                                stride: Int32, width: UInt32, height: UInt32,
-                               fmt: lyte_pixfmt) {
+                               fmt: lyte_pixfmt, graphUs: UInt64) {
     guard let user, let data else { return }
     let spike = Unmanaged<RemoteDesktopSpike>.fromOpaque(user).takeUnretainedValue()
     spike.onFrame(data: data, size: size, stride: stride, width: width, height: height)
