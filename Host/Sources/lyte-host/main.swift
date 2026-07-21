@@ -524,6 +524,13 @@ func run() throws {
     exit(0)
 }
 
+// CP-5 spike subcommand: `lyte-host rd-spike ...` branches into the
+// RemoteDesktop headless-injection probe (RemoteDesktopSpike.swift) and never
+// returns. Everything else is the H0a capture path.
+if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "rd-spike" {
+    rdSpikeMain(Array(CommandLine.arguments.dropFirst(2)))
+}
+
 do {
     try run()
 } catch {
