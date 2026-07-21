@@ -45,6 +45,16 @@ targets += [
         name: "CHevcEncode",
         dependencies: ["CLibAV"]
     ),
+    // C leaf: nonblocking UDP with sendmmsg/recvmmsg, per-packet TOS cmsgs,
+    // and SO_TIMESTAMPING TX stamps (CMSG macros are unreachable from Swift;
+    // plain Linux syscalls, no system library).
+    .target(name: "CNetIO"),
+    // HS-4 verification harness: loopback batch send with per-packet DSCP,
+    // received-TOS readback, TX-timestamp drain. Exits nonzero on mismatch.
+    .executableTarget(
+        name: "lyte-netio-check",
+        dependencies: ["CNetIO"]
+    ),
     .executableTarget(
         name: "lyte-host",
         dependencies: ["HostCore", "CDBus", "CPipeWireCapture", "CHevcEncode"],
