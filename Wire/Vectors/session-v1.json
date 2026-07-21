@@ -1,0 +1,97 @@
+{
+  "format" : "lyte-wire-session-vectors",
+  "formatVersion" : 1,
+  "vectors" : [
+    {
+      "codec" : "pathChallenge",
+      "description" : "10-byte challenge: type 0x03, flags 0, token u64 LE — the hand-computed anchor.",
+      "kind" : "roundtrip",
+      "messageHex" : "03000807060504030201",
+      "name" : "path-challenge-nominal",
+      "tokenHex" : "0x102030405060708"
+    },
+    {
+      "codec" : "pathResponse",
+      "description" : "The well-formed echo: type 0x04, token verbatim.",
+      "kind" : "roundtrip",
+      "messageHex" : "04000807060504030201",
+      "name" : "path-response-nominal",
+      "tokenHex" : "0x102030405060708"
+    },
+    {
+      "codec" : "pathChallenge",
+      "description" : "9 bytes: the message is exactly its layout.",
+      "error" : "truncated",
+      "kind" : "decodeReject",
+      "messageHex" : "030008070605040302",
+      "name" : "path-challenge-truncated"
+    },
+    {
+      "codec" : "pathResponse",
+      "description" : "A challenge fed to the response decoder rejects with what it found — they never cross-decode.",
+      "error" : "unexpectedType",
+      "kind" : "decodeReject",
+      "messageHex" : "03000807060504030201",
+      "name" : "path-response-cross-type"
+    },
+    {
+      "coalescedCount" : 5,
+      "codec" : "idrRequest",
+      "description" : "10-byte IDR request: type 0x10, requestSeq 3, frame 123456, coalescedCount 5 — the reconciled CL-3\/HS-7 codec's hand-computed anchor.",
+      "frame" : 123456,
+      "kind" : "roundtrip",
+      "messageHex" : "100300000040e2010005",
+      "name" : "idr-request-nominal",
+      "requestSeq" : 3
+    },
+    {
+      "codec" : "idrRequest",
+      "description" : "9 bytes reject.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "100300000040e20100",
+      "name" : "idr-request-truncated"
+    },
+    {
+      "codec" : "idrRequest",
+      "description" : "11 bytes reject — exactly its fixed size.",
+      "error" : "trailingBytes",
+      "kind" : "decodeReject",
+      "messageHex" : "100300000040e201000500",
+      "name" : "idr-request-trailing-byte"
+    },
+    {
+      "codec" : "idrRequest",
+      "description" : "A beacon-echo type byte at IDR-request length rejects with what it found.",
+      "error" : "unexpectedType",
+      "kind" : "decodeReject",
+      "messageHex" : "020300000040e2010005",
+      "name" : "idr-request-foreign-type"
+    },
+    {
+      "codec" : "connectionIdTlv",
+      "connectionIdHex" : "a1b2c3d4e5f60718",
+      "description" : "A video datagram carrying TLV 0x01 with the 8 identity bytes; ConnectionId.decode over the decoded extensions must yield exactly connectionIdHex.",
+      "kind" : "roundtrip",
+      "messageHex" : "020107000300000040420f00000000000000000000000000010108a1b2c3d4e5f60718010203",
+      "name" : "connid-tagged-datagram"
+    },
+    {
+      "codec" : "connectionIdTlv",
+      "description" : "TLV 0x01 with a 1-byte value: the envelope decodes, the identity codec rejects loudly.",
+      "error" : "invalidValueLength",
+      "kind" : "decodeReject",
+      "messageHex" : "020107000300000040420f00000000000000000000000000010101aa010203",
+      "name" : "connid-wrong-width"
+    },
+    {
+      "codec" : "connectionIdTlv",
+      "description" : "Two identity claims in one envelope is ambiguity, not a tie.",
+      "error" : "duplicateTlv",
+      "kind" : "decodeReject",
+      "messageHex" : "020107000300000040420f00000000000000000000000000020108a1b2c3d4e5f6071801081807f6e5d4c3b2a1010203",
+      "name" : "connid-duplicate-tlv"
+    }
+  ],
+  "wireVersion" : 1
+}

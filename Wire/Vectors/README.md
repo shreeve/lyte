@@ -33,6 +33,16 @@ case in `FecCoderTests`, the hand-walked datagram in
   `Noise_IK_25519_ChaChaPoly_SHA256` handshake vectors (snow +
   cacophony) plus the pinned Lyte transport-extension vectors
   (extended-counter nonces, epoch rekey). Provenance rules below.
+- `session-v1.json` — the promoted end-side session codecs (the
+  codec-unification slice): path challenge/response CTRL 0x03/0x04
+  (HS-12), the IDR request CTRL 0x10 (CL-3/HS-7, reconciled), and the
+  conn-id TLV 0x01 value codec riding whole envelope datagrams. Format
+  mirrors the beacon file (`roundtrip`/`decodeReject` over `messageHex`,
+  typed fields per codec, `error` = the codec's error-case name);
+  anchored against the hand-computed bytes in `SessionCodecTests`. The
+  Noise handshake carriage 0x05/0x06 needs no vectors of its own — the
+  payload is the type byte followed by the raw Noise message, whose
+  bytes noise-v1.json already pins.
 
 ## The 24-byte envelope (wire v1)
 
