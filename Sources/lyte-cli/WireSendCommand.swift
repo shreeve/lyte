@@ -318,7 +318,7 @@ private final class HostStandIn: @unchecked Sendable {
             lock.unlock()
             print("wire-send: beacon echo #\(echo.beaconSeq) — offset " +
                   "\(sample.offsetMicroseconds) µs, rtt \(sample.rttMicroseconds) µs")
-        case ClientCtrlMessageType.idrRequest:
+        case CtrlMessageType.idrRequest:
             guard let request = try? IdrRequest.decode(payload) else {
                 lock.lock(); malformed += 1; lock.unlock()
                 return

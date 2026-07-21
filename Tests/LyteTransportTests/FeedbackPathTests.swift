@@ -294,28 +294,9 @@ final class FeedbackPathTests: XCTestCase {
         XCTAssertEqual(sender.snapshotStats().sealFailures, 1)
     }
 
-    // MARK: - IDR request: codec and coalescing
-
-    func testIdrRequestCodecRoundTripsAndRejects() throws {
-        let request = IdrRequest(
-            requestSeq: 7, frame: FrameNumber(rawValue: 123), coalescedCount: 3)
-        let bytes = request.encode()
-        XCTAssertEqual(bytes.count, IdrRequest.encodedByteCount)
-        XCTAssertEqual(bytes[0], ClientCtrlMessageType.idrRequest)
-        XCTAssertEqual(try IdrRequest.decode(bytes), request)
-
-        XCTAssertThrowsError(try IdrRequest.decode(Array(bytes.dropLast()))) {
-            XCTAssertEqual($0 as? IdrRequestError, .truncatedMessage)
-        }
-        XCTAssertThrowsError(try IdrRequest.decode(bytes + [0])) {
-            XCTAssertEqual($0 as? IdrRequestError, .trailingBytes)
-        }
-        var foreign = bytes
-        foreign[0] = 0x02
-        XCTAssertThrowsError(try IdrRequest.decode(foreign)) {
-            XCTAssertEqual($0 as? IdrRequestError, .unexpectedType(0x02))
-        }
-    }
+    // MARK: - IDR request coalescing
+    // (The codec round-trip/reject test moved to Wire's SessionCodecTests
+    // with the codec promotion; the policy tests stay here.)
 
     func testIdrRequestsCoalesceInsideTheRateWindow() {
         let emitted = LockedRequests()
