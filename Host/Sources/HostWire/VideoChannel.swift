@@ -56,19 +56,30 @@ public struct VideoChannelConfig: Sendable {
     /// session ceiling is the honest default (Pacer's own rule).
     public var rateBitsPerSecond: Int
     public var pacerQuantumNS: UInt64
+    /// HS-12: when set, EVERY outgoing datagram carries the connection-ID
+    /// TLV (type 0x01) so the client can attribute datagrams to the
+    /// session regardless of source 4-tuple — QUIC's every-packet rule,
+    /// chosen over first-packet-only because datagrams are independently
+    /// lossy. Cost: 11 B/datagram (count + TLV header + 8 B value),
+    /// ≈1% of a full shard; the worst case 24+11+1112 = 1147 B still
+    /// clears the 1152 B budget, and `Envelope.encode` keeps enforcing
+    /// it. Nil (default) sends the pre-HS-12 bare envelope.
+    public var connectionId: ConnectionId?
 
     public init(
         channel: ChannelId = .videoActive,
         firstSeq: ChannelSeq = ChannelSeq(rawValue: 0),
         regime: FecRegime = .clean,
         rateBitsPerSecond: Int,
-        pacerQuantumNS: UInt64 = 1_000_000
+        pacerQuantumNS: UInt64 = 1_000_000,
+        connectionId: ConnectionId? = nil
     ) {
         self.channel = channel
         self.firstSeq = firstSeq
         self.regime = regime
         self.rateBitsPerSecond = rateBitsPerSecond
         self.pacerQuantumNS = pacerQuantumNS
+        self.connectionId = connectionId
     }
 }
 
@@ -142,8 +153,12 @@ public final class VideoChannel {
             regime: config.regime
         )
         for shard in shards {
+            var envelope = shard.envelope
+            if let connectionId = config.connectionId {
+                envelope.extensions.append(connectionId.wireExtension)
+            }
             let datagram = VideoChannelDatagram(
-                bytes: try shard.encodeDatagram(),
+                bytes: try envelope.encode(plaintextShard: shard.payload),
                 pacerClass: .freshVideo,
                 frameNumber: frameNumber,
                 seq: shard.envelope.seq,
