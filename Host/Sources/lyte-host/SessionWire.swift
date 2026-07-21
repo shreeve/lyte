@@ -24,11 +24,11 @@
 // stalls beacons between damage frames — a documented stub limitation the
 // host event-loop era removes.
 //
-// Deferred with the rest of the HS-12 Linux rebind (pop's return): media
-// re-routing executes .promoted by connect()ing to the new tuple, but a
-// challenge aimed at an unvalidated tuple needs sendto-with-address,
-// which CNetIO does not expose yet — those sends are counted and logged
-// loudly, not silently dropped.
+// HS-12 rebind wiring: media re-routing executes .promoted by
+// connect()ing to the new tuple, and challenges to unvalidated tuples
+// ride lyte_netio_send_to (per-datagram address + TOS on the connected
+// socket) — the exact-tuple rule §6 demands. The live G7 roam run is
+// still owed when a second client address exists to roam to.
 
 import CNetIO
 import Foundation
@@ -81,7 +81,7 @@ final class SessionWire {
     private(set) var framesSent = 0
     private(set) var datagramsSent = 0
     private(set) var bytesSent = 0
-    private(set) var undeliverableChallenges = 0
+    private(set) var challengesSentOffPrimary = 0
     private(set) var lastSendError: String?
 
     var counters: VideoChannelCounters { session.videoCounters }
@@ -368,19 +368,34 @@ final class SessionWire {
         defer { outbox.removeAll(keepingCapacity: true) }
         var err = [CChar](repeating: 0, count: 256)
 
-        // Challenges to unvalidated tuples need sendto-with-address;
-        // CNetIO is connect()ed. Deferred with the HS-12 Linux rebind —
-        // counted loudly, never silent (header comment).
+        // Challenges to unvalidated tuples ride sendmsg-with-address on
+        // the connected socket (lyte_netio_send_to): the challenge MUST
+        // travel on the exact probed tuple — that is what it proves.
         let deliverable = outbox.filter { datagram in
-            if let destination = datagram.destination,
-               destination != session.validator.primary.tuple {
-                undeliverableChallenges += 1
-                print("path: challenge to \(destination.remoteAddress):"
-                    + "\(destination.remotePort) undeliverable until CNetIO "
-                    + "grows sendto (deferred with the HS-12 rebind)")
-                return false
+            guard let destination = datagram.destination,
+                  destination != session.validator.primary.tuple
+            else { return true }
+            let rc = datagram.bytes.withUnsafeBufferPointer { buf -> Int32 in
+                var pkt = lyte_netio_pkt(
+                    data: buf.baseAddress, len: buf.count,
+                    tos: tos(for: datagram.pacerClass))
+                return lyte_netio_send_to(
+                    netio, &pkt,
+                    destination.remoteAddress, destination.remotePort,
+                    &err, err.count)
             }
-            return true
+            if rc == 1 {
+                challengesSentOffPrimary += 1
+                datagramsSent += 1
+                bytesSent += datagram.bytes.count
+                print("path: challenge sent to \(destination.remoteAddress):"
+                    + "\(destination.remotePort) (off-primary sendto)")
+            } else {
+                lastSendError = errString(err)
+                print("path: challenge to \(destination.remoteAddress):"
+                    + "\(destination.remotePort) failed: \(errString(err))")
+            }
+            return false
         }
 
         var staged = 0

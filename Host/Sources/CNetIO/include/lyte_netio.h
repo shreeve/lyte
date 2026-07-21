@@ -80,6 +80,18 @@ int lyte_netio_enable_tx_timestamps(lyte_netio *n, char *err, size_t errlen);
 int lyte_netio_send_batch(lyte_netio *n, const lyte_netio_pkt *pkts, int count,
                           uint32_t *first_pkt_id, char *err, size_t errlen);
 
+/* Sends ONE datagram to an explicit address, bypassing the connect()ed
+   peer — the HS-12 path-validation leaf: a challenge must travel on the
+   exact unvalidated 4-tuple being probed while media stays on the
+   primary. Linux permits per-datagram addresses on a connected UDP
+   socket (sendmsg with msg_name overrides the peer for that datagram).
+   Carries the same per-packet IP_TOS cmsg as send_batch and counts
+   against the TX-timestamp pkt_id stream. Returns 1 on success, 0 if
+   the socket would block, -1 with `err` filled. */
+int lyte_netio_send_to(lyte_netio *n, const lyte_netio_pkt *pkt,
+                       const char *ip, uint16_t port,
+                       char *err, size_t errlen);
+
 /* Receives up to `count` (≤ LYTE_NETIO_MAX_BATCH) datagrams in one
    recvmmsg call. Returns the number received (0 if the socket would
    block), -1 with `err` filled. */

@@ -186,6 +186,52 @@ int lyte_netio_send_batch(lyte_netio *n, const lyte_netio_pkt *pkts, int count,
     return sent;
 }
 
+int lyte_netio_send_to(lyte_netio *n, const lyte_netio_pkt *pkt,
+                       const char *ip, uint16_t port,
+                       char *err, size_t errlen)
+{
+    struct sockaddr_in sa;
+    if (parse_addr(ip, port, &sa, err, errlen) != 0)
+        return -1;
+
+    struct msghdr msg;
+    struct iovec iov;
+    union {
+        char buf[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr align;
+    } ctrl;
+
+    memset(&msg, 0, sizeof(msg));
+    iov.iov_base = (void *)pkt->data;
+    iov.iov_len = pkt->len;
+    msg.msg_name = &sa;
+    msg.msg_namelen = sizeof(sa);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = ctrl.buf;
+    msg.msg_controllen = sizeof(ctrl.buf);
+
+    struct cmsghdr *cm = CMSG_FIRSTHDR(&msg);
+    cm->cmsg_level = IPPROTO_IP;
+    cm->cmsg_type = IP_TOS;
+    cm->cmsg_len = CMSG_LEN(sizeof(int));
+    int tos = pkt->tos;
+    memcpy(CMSG_DATA(cm), &tos, sizeof(tos));
+
+    ssize_t sent = sendmsg(n->fd, &msg, 0);
+    if (sent < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return 0;
+        sys_err(err, errlen, "sendmsg(to) failed");
+        return -1;
+    }
+    /* The kernel's OPT_ID counter ticks for this send too — keep the
+       local mirror aligned so batch pkt_ids stay matchable. */
+    if (n->tx_timestamps_armed)
+        n->sent_since_arm += 1;
+    return 1;
+}
+
 int lyte_netio_recv_batch(lyte_netio *n, lyte_netio_slot *slots, int count,
                           char *err, size_t errlen)
 {
