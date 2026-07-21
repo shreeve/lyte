@@ -1,18 +1,40 @@
 // swift-tools-version:6.0
 import PackageDescription
 
-// HostCore (pure Swift bitstream helpers) and its tests build everywhere,
-// including macOS, so the Annex-B contract is testable without a Linux GUI.
-// The capture/encode leaves exist only on Linux: they bind PipeWire, D-Bus,
-// and libavcodec through pkg-config system libraries.
+// HostCore (pure Swift bitstream helpers), HostWire (the wiring layer that
+// marries HostCore mechanisms to LyteWire codecs — HS-5), and their tests
+// build everywhere, including macOS, so the Annex-B contract and the video
+// channel pipeline are testable without a Linux GUI. The capture/encode
+// leaves exist only on Linux: they bind PipeWire, D-Bus, and libavcodec
+// through pkg-config system libraries.
 
 var products: [Product] = [
     .library(name: "HostCore", targets: ["HostCore"]),
+    .library(name: "HostWire", targets: ["HostWire"]),
 ]
 
 var targets: [Target] = [
     .target(name: "HostCore"),
     .testTarget(name: "HostCoreTests", dependencies: ["HostCore"]),
+    // HS-5: encoded Annex-B frames → packetizer + FEC → paced datagram
+    // blobs, plus the `lyte sniff` header formatter. Cross-platform on
+    // purpose: the macOS integration test is this slice's gate.
+    .target(
+        name: "HostWire",
+        dependencies: [
+            "HostCore",
+            .product(name: "LyteWire", package: "Wire"),
+        ]
+    ),
+    .testTarget(
+        name: "HostWireTests",
+        dependencies: [
+            "HostWire",
+            "HostCore",
+            .product(name: "LyteWire", package: "Wire"),
+            .product(name: "LyteWireTestKit", package: "Wire"),
+        ]
+    ),
 ]
 
 #if os(Linux)
@@ -94,7 +116,15 @@ targets += [
     ),
     .executableTarget(
         name: "lyte-host",
-        dependencies: ["HostCore", "CDBus", "CPipeWireCapture", "CHevcEncode"],
+        dependencies: [
+            "HostCore",
+            "HostWire",
+            "CDBus",
+            "CPipeWireCapture",
+            "CHevcEncode",
+            "CNetIO",
+            .product(name: "LyteWire", package: "Wire"),
+        ],
         linkerSettings: [
             .linkedLibrary("dbus-1"),
             .linkedLibrary("pipewire-0.3"),
@@ -107,6 +137,12 @@ targets += [
 
 let package = Package(
     name: "LyteHost",
+    platforms: [.macOS(.v15)],
     products: products,
+    dependencies: [
+        // First cross-package integration on the host side (HS-5): the
+        // sans-IO protocol core every end codes against.
+        .package(path: "../Wire"),
+    ],
     targets: targets
 )

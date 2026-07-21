@@ -18,10 +18,14 @@ typedef enum {
 } lyte_pixfmt;
 
 /* Called on the capture loop thread for every dequeued video frame.
-   `data` points at the mapped buffer; valid only for the duration of the call. */
+   `data` points at the mapped buffer; valid only for the duration of the
+   call. `graph_us` is the frame's capture timestamp in graph-clock
+   microseconds (CLOCK_MONOTONIC domain): the buffer's spa_meta_header
+   pts when the compositor stamps it, the stream's pw_time position
+   otherwise, monotonic-now as the last resort — never wall clock. */
 typedef void (*lyte_pw_frame_cb)(void *user, const uint8_t *data, uint32_t size,
                                  int32_t stride, uint32_t width, uint32_t height,
-                                 lyte_pixfmt fmt);
+                                 lyte_pixfmt fmt, uint64_t graph_us);
 
 /* Called on the capture loop thread at the interval given to
    lyte_pw_capture_set_tick. Serialized with frame callbacks (same thread,

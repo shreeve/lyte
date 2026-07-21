@@ -1,6 +1,8 @@
 // lyte-host capture spike (H0a slice 1): portal ScreenCast → PipeWire frames
-// → NVENC HEVC (libavcodec leaf) → Annex-B file. Proves capture + encode in
-// isolation; no RTP, no protocol.
+// → NVENC HEVC (libavcodec leaf) → Annex-B file. HS-5 adds the wire mode:
+// `--wire-out HOST:PORT` streams the same encode output through
+// HostWire.VideoChannel (packetize + FEC + pacer) → CNetIO instead of the
+// file, with the PipeWire graph-clock capture stamp in every envelope.
 
 import CHevcEncode
 import CPipeWireCapture
@@ -23,6 +25,11 @@ struct Options {
     var connector = ""
     var idleFloor = true
     var ratchet = false
+    /// HS-5: stream shards to this peer instead of writing the file.
+    var wireOut: (host: String, port: UInt16)?
+    /// Pacer rate for the wire mode. No negotiation exists yet (HS-16),
+    /// so the configured ceiling is the honest default, per Pacer's rule.
+    var wireRateMbps = 20.0
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
@@ -59,11 +66,29 @@ struct Options {
                 opts.idleFloor = false
             case "--ratchet":
                 opts.ratchet = true
+            case "--wire-out":
+                i += 1
+                guard i < args.count else {
+                    throw HostError("--wire-out needs HOST:PORT")
+                }
+                let parts = args[i].split(separator: ":")
+                guard parts.count == 2, let port = UInt16(parts[1]), port > 0
+                else {
+                    throw HostError("--wire-out needs HOST:PORT (got \(args[i]))")
+                }
+                opts.wireOut = (String(parts[0]), port)
+            case "--wire-rate-mbps":
+                i += 1
+                guard i < args.count, let v = Double(args[i]), v > 0 else {
+                    throw HostError("--wire-rate-mbps needs a positive number")
+                }
+                opts.wireRateMbps = v
             case "--help", "-h":
                 print("""
                 usage: lyte-host [--out PATH] [--seconds N] [--bitrate-mbps N]
                                  [--backend portal|mutter] [--connector NAME]
                                  [--no-idle-floor] [--ratchet]
+                                 [--wire-out HOST:PORT] [--wire-rate-mbps N]
                 Captures the desktop and writes Annex-B HEVC (hevc_nvenc) to
                 PATH (default /tmp/lyte-h0a.hevc).
                   --backend portal  xdg-desktop-portal ScreenCast (primary;
@@ -80,6 +105,14 @@ struct Options {
                                     fraction of fps until quality converges
                                     at the visually-lossless floor, then go
                                     silent (replaces the steady idle floor)
+                  --wire-out H:P    HS-5 wire mode: stream Lyte-UDP video
+                                    shards (packetizer + FEC + pacer, per-
+                                    packet TOS 0xA0) to HOST:PORT instead
+                                    of writing the file
+                  --wire-rate-mbps  pacer rate in the wire mode (default 20)
+
+                subcommands: lyte-host sniff --port PORT  (header dissector)
+                             lyte-host rd-spike …         (CP-5 input probe)
                 """)
                 exit(0)
             default:
@@ -97,7 +130,10 @@ final class Sink {
     let opts: Options
     var capture: OpaquePointer?
     var encoder: OpaquePointer?
-    var file: UnsafeMutablePointer<FILE>
+    /// Exactly one of these is the packet destination: the Annex-B file
+    /// (H0a spike) or the Lyte-UDP wire leg (HS-5 `--wire-out`).
+    var file: UnsafeMutablePointer<FILE>?
+    var wireOut: WireOut?
 
     var framesIn = 0
     var damageFrames = 0
@@ -118,6 +154,15 @@ final class Sink {
     var lastFrame: [UInt8] = []
     var lastStride: Int32 = 0
     var encodedSinceTick = false
+
+    // Capture-timestamp plumbing (HS-5): the graph-clock µs of the frame
+    // an encode call is about to consume; onPacket forwards it into the
+    // envelope (encode is synchronous — NVENC runs zero-delay, 1-in-1-out).
+    // A repeated/ratcheted frame carries the RETAINED frame's stamp: the
+    // timestamp says when the pixels were captured, not when they were
+    // re-encoded.
+    var pendingCaptureUs: UInt64 = 0
+    var lastFrameGraphUs: UInt64 = 0
 
     // Quality-ratchet prototype (--ratchet). The encoder runs capped-CQ VBR
     // with qmin pinned at the floor; each re-encode of the retained frame
@@ -147,9 +192,10 @@ final class Sink {
     var lastPacketBytes = 0
     var lastPacketQP = -1
 
-    init(opts: Options, file: UnsafeMutablePointer<FILE>) {
+    init(opts: Options, file: UnsafeMutablePointer<FILE>?, wireOut: WireOut?) {
         self.opts = opts
         self.file = file
+        self.wireOut = wireOut
     }
 
     static func pixFmtName(_ fmt: lyte_pixfmt) -> String? {
@@ -168,7 +214,8 @@ final class Sink {
     }
 
     func onFrame(data: UnsafePointer<UInt8>, size: UInt32, stride: Int32,
-                 width: UInt32, height: UInt32, fmt: lyte_pixfmt) {
+                 width: UInt32, height: UInt32, fmt: lyte_pixfmt,
+                 graphUs: UInt64) {
         if lastError != nil { return }
 
         if encoder == nil {
@@ -207,7 +254,9 @@ final class Sink {
                 dst.copyMemory(from: UnsafeRawBufferPointer(start: data, count: count))
             }
             lastStride = stride
+            lastFrameGraphUs = graphUs
         }
+        pendingCaptureUs = graphUs
 
         // Fresh damage abandons any ratchet in progress; the episode restarts
         // once damage goes quiet again.
@@ -247,6 +296,7 @@ final class Sink {
             return
         }
 
+        pendingCaptureUs = lastFrameGraphUs
         let ok = lastFrame.withUnsafeBufferPointer { buf in
             encode(data: buf.baseAddress!, stride: lastStride)
         }
@@ -267,6 +317,7 @@ final class Sink {
         guard ratchetTickCount % Ratchet.paceDivisor == 0 else { return }
 
         if ratchetTriggeredAt == nil { ratchetTriggeredAt = now }
+        pendingCaptureUs = lastFrameGraphUs
         let ok = lastFrame.withUnsafeBufferPointer { buf in
             encode(data: buf.baseAddress!, stride: lastStride)
         }
@@ -325,7 +376,18 @@ final class Sink {
         if firstPacket.isEmpty {
             firstPacket = Array(UnsafeBufferPointer(start: data, count: size))
         }
-        fwrite(data, 1, size, file)
+        if let wireOut {
+            do {
+                try wireOut.sendFrame(data: data, size: size,
+                                      isKeyframe: keyframe,
+                                      captureMicros: pendingCaptureUs)
+            } catch {
+                fail("wire-out failed at packet \(packetsOut): \(error)")
+                return
+            }
+        } else if let file {
+            fwrite(data, 1, size, file)
+        }
         packetsOut += 1
         bytesOut += size
         if keyframe { keyframes += 1 }
@@ -363,11 +425,11 @@ func monotonicNow() -> Double {
 private func frameTrampoline(user: UnsafeMutableRawPointer?,
                              data: UnsafePointer<UInt8>?, size: UInt32,
                              stride: Int32, width: UInt32, height: UInt32,
-                             fmt: lyte_pixfmt) {
+                             fmt: lyte_pixfmt, graphUs: UInt64) {
     guard let user, let data else { return }
     let sink = Unmanaged<Sink>.fromOpaque(user).takeUnretainedValue()
     sink.onFrame(data: data, size: size, stride: stride,
-                 width: width, height: height, fmt: fmt)
+                 width: width, height: height, fmt: fmt, graphUs: graphUs)
 }
 
 private func tickTrampoline(user: UnsafeMutableRawPointer?) {
@@ -401,8 +463,10 @@ func run() throws {
             + "logged-in user session")
     }
 
-    print("lyte-host H0a capture spike — \(opts.backend.rawValue) → PipeWire → "
-        + "hevc_nvenc → \(opts.outputPath)")
+    let destination = opts.wireOut.map { "lyte-udp://\($0.host):\($0.port)" }
+        ?? opts.outputPath
+    print("lyte-host — \(opts.backend.rawValue) → PipeWire → "
+        + "hevc_nvenc → \(destination)")
 
     // Both backends must stay alive for the whole capture: dropping them
     // closes their D-Bus connection, which closes the portal/Mutter session
@@ -427,17 +491,29 @@ func run() throws {
         _ = portal // retained until capture completes
     }
 
-    guard let file = fopen(opts.outputPath, "wb") else {
-        throw HostError("cannot open \(opts.outputPath) for writing")
+    var file: UnsafeMutablePointer<FILE>?
+    var wireOut: WireOut?
+    if let peer = opts.wireOut {
+        wireOut = try WireOut(
+            host: peer.host, port: peer.port,
+            rateBitsPerSecond: Int(opts.wireRateMbps * 1_000_000)
+        )
+        print("wire-out: shards to \(peer.host):\(peer.port), pacer "
+            + "\(opts.wireRateMbps) Mbps, TOS 0xA0 per video datagram")
+    } else {
+        guard let f = fopen(opts.outputPath, "wb") else {
+            throw HostError("cannot open \(opts.outputPath) for writing")
+        }
+        file = f
     }
 
-    let sink = Sink(opts: opts, file: file)
+    let sink = Sink(opts: opts, file: file, wireOut: wireOut)
     var err = [CChar](repeating: 0, count: 256)
     let user = Unmanaged.passUnretained(sink).toOpaque()
     guard let capture = lyte_pw_capture_new(stream.pipewireFd, stream.nodeId,
                                             frameTrampoline, user,
                                             &err, err.count) else {
-        fclose(file)
+        if let file { fclose(file) }
         throw HostError("pipewire capture setup failed: \(errString(err))")
     }
     sink.capture = capture
@@ -448,7 +524,7 @@ func run() throws {
     if opts.idleFloor {
         let interval = UInt64(1_000_000_000) / UInt64(opts.fps)
         guard lyte_pw_capture_set_tick(capture, interval, tickTrampoline, user) == 0 else {
-            fclose(file)
+            if let file { fclose(file) }
             throw HostError("failed to arm the idle-floor tick timer")
         }
     }
@@ -458,7 +534,7 @@ func run() throws {
     let rc = lyte_pw_capture_run(capture, opts.seconds + 15.0, &err, err.count)
 
     try sink.flushEncoder()
-    fclose(file)
+    if let file { fclose(file) }
     sink.freeEncoder()
     mutter?.stop()
 
@@ -515,7 +591,19 @@ func run() throws {
             + " — the bitstream is not stream-startable")
     }
     print("first packet starts with parameter sets + IDR: OK")
-    print("output: \(opts.outputPath)")
+    if let wireOut = sink.wireOut {
+        let t = wireOut.pacerTelemetry
+        let c = wireOut.counters
+        print("""
+        wire-out: \(c.framesIngested) frames → \(c.shardsEnqueued) shards → \
+        \(wireOut.datagramsSent) datagrams (\(wireOut.bytesSent) B) in \
+        \(t.batches) paced batches; max batch wire time \
+        \(t.maxBatchWireTimeNS) ns (quantum 1000000); freshVideo max queue \
+        delay \(t[.freshVideo].maxQueueDelayNS) ns
+        """)
+    } else {
+        print("output: \(opts.outputPath)")
+    }
 
     // The capture leaf is not freed here: PipeWire loop/context teardown can
     // block on the compositor after the stream is done, and the spike's
@@ -524,11 +612,15 @@ func run() throws {
     exit(0)
 }
 
-// CP-5 spike subcommand: `lyte-host rd-spike ...` branches into the
-// RemoteDesktop headless-injection probe (RemoteDesktopSpike.swift) and never
-// returns. Everything else is the H0a capture path.
+// Subcommands, each of which never returns: `rd-spike` is the CP-5
+// RemoteDesktop headless-injection probe (RemoteDesktopSpike.swift);
+// `sniff` is the HS-5 Lyte-UDP header dissector (Sniff.swift).
+// Everything else is the capture path.
 if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "rd-spike" {
     rdSpikeMain(Array(CommandLine.arguments.dropFirst(2)))
+}
+if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "sniff" {
+    sniffMain(Array(CommandLine.arguments.dropFirst(2)))
 }
 
 do {

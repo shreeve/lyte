@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 struct lyte_pw_capture {
     struct pw_main_loop *loop;
@@ -98,16 +99,51 @@ static void on_stream_param_changed(void *data, uint32_t id, const struct spa_po
     c->have_format = 1;
 
     /* Restrict buffers to memory the client can mmap: no DMA-BUF in this
-       slice. MAP_BUFFERS makes MemFd arrive pre-mapped. */
+       slice. MAP_BUFFERS makes MemFd arrive pre-mapped. Also ask for the
+       spa_meta_header on each buffer: the compositor stamps its `pts`
+       with the frame's presentation time in the graph clock domain
+       (CLOCK_MONOTONIC ns) — the capture timestamp HS-5 puts in the
+       envelope. The meta is optional; process() falls back when absent. */
     uint8_t buffer[1024];
     struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
-    const struct spa_pod *params[1];
+    const struct spa_pod *params[2];
     params[0] = spa_pod_builder_add_object(&b,
         SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
         SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(4, 2, 8),
         SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int(
             (1 << SPA_DATA_MemFd) | (1 << SPA_DATA_MemPtr)));
-    pw_stream_update_params(c->stream, params, 1);
+    params[1] = spa_pod_builder_add_object(&b,
+        SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
+        SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Header),
+        SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_header)));
+    pw_stream_update_params(c->stream, params, 2);
+}
+
+/* The frame's capture timestamp in graph-clock µs, best source first
+   (mirrors the audio leaf's graph-clock rule: never wall clock):
+   1. spa_meta_header.pts — the compositor's presentation stamp for THIS
+      buffer, CLOCK_MONOTONIC ns.
+   2. pw_time — the stream's last graph-cycle position, converted through
+      its rate.
+   3. CLOCK_MONOTONIC now — same domain as the graph clock, merely "when
+      the callback ran" instead of "when the pixels were presented". */
+static uint64_t frame_graph_us(struct lyte_pw_capture *c, struct spa_buffer *buf)
+{
+    struct spa_meta_header *h = spa_buffer_find_meta_data(
+        buf, SPA_META_Header, sizeof(*h));
+    if (h != NULL && h->pts > 0)
+        return (uint64_t)h->pts / SPA_NSEC_PER_USEC;
+
+    struct pw_time t;
+    if (pw_stream_get_time_n(c->stream, &t, sizeof(t)) == 0 &&
+        t.rate.denom != 0 && t.ticks != 0)
+        return t.ticks * (uint64_t)SPA_USEC_PER_SEC *
+               t.rate.num / t.rate.denom;
+
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * SPA_USEC_PER_SEC +
+           (uint64_t)ts.tv_nsec / SPA_NSEC_PER_USEC;
 }
 
 static void on_stream_process(void *data)
@@ -129,7 +165,8 @@ static void on_stream_process(void *data)
                     d->chunk->stride,
                     c->format.size.width,
                     c->format.size.height,
-                    fmt);
+                    fmt,
+                    frame_graph_us(c, buf));
     }
 
     pw_stream_queue_buffer(c->stream, b);
