@@ -22,6 +22,7 @@ struct Options {
     var backend: Backend = .portal
     var connector = ""
     var idleFloor = true
+    var ratchet = false
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
@@ -56,11 +57,13 @@ struct Options {
                 opts.connector = args[i]
             case "--no-idle-floor":
                 opts.idleFloor = false
+            case "--ratchet":
+                opts.ratchet = true
             case "--help", "-h":
                 print("""
                 usage: lyte-host [--out PATH] [--seconds N] [--bitrate-mbps N]
                                  [--backend portal|mutter] [--connector NAME]
-                                 [--no-idle-floor]
+                                 [--no-idle-floor] [--ratchet]
                 Captures the desktop and writes Annex-B HEVC (hevc_nvenc) to
                 PATH (default /tmp/lyte-h0a.hevc).
                   --backend portal  xdg-desktop-portal ScreenCast (primary;
@@ -71,6 +74,12 @@ struct Options {
                                     (e.g. DP-1); empty records the primary
                   --no-idle-floor   disable the steady-rate supply (encode
                                     only damage-driven frames; debugging aid)
+                  --ratchet         quality-ratchet prototype: capped-CQ VBR
+                                    instead of CBR; after 250ms of damage
+                                    quiet, re-encode the retained frame at a
+                                    fraction of fps until quality converges
+                                    at the visually-lossless floor, then go
+                                    silent (replaces the steady idle floor)
                 """)
                 exit(0)
             default:
@@ -110,6 +119,34 @@ final class Sink {
     var lastStride: Int32 = 0
     var encodedSinceTick = false
 
+    // Quality-ratchet prototype (--ratchet). The encoder runs capped-CQ VBR
+    // with qmin pinned at the floor; each re-encode of the retained frame
+    // lets nvenc walk the frame QP one rung down, so the ladder emerges from
+    // rate control — Swift only decides when to feed passes and when to stop.
+    enum Ratchet {
+        static let floorQP = 12       // visually-lossless target (spec §3)
+        static let settle = 0.25      // damage-quiet time before ratcheting
+        static let paceDivisor = 4    // passes run at fps/paceDivisor
+        static let skipBytes = 2048   // pass this small is ~all-skip: done
+        static let stableRatio = 0.01 // <1% byte delta counts as stable
+        static let stablePasses = 3   // stable passes at the floor: done
+    }
+    var lastDamageAt: Double?
+    var ratchetTriggeredAt: Double?
+    var ratchetConverged = false
+    var ratchetTickCount = 0
+    var ratchetStep = 0
+    var ratchetStableCount = 0
+    var ratchetPrevBytes = 0
+    var ratchetEpisodeBytes = 0
+    var ratchetFrames = 0
+    var ratchetBytes = 0
+
+    // Most recent packet's stats, recorded by onPacket for the ratchet pass
+    // that synchronously produced it.
+    var lastPacketBytes = 0
+    var lastPacketQP = -1
+
     init(opts: Options, file: UnsafeMutablePointer<FILE>) {
         self.opts = opts
         self.file = file
@@ -142,22 +179,26 @@ final class Sink {
                 return
             }
             var err = [CChar](repeating: 0, count: 256)
+            let cq: Int32 = opts.ratchet ? Int32(Ratchet.floorQP) : 0
             guard let enc = lyte_hevc_enc_new(Int32(width), Int32(height), name,
-                                              opts.fps, opts.bitrate,
+                                              opts.fps, opts.bitrate, cq,
                                               &err, err.count) else {
                 fail("encoder init failed: \(errString(err))")
                 return
             }
             encoder = enc
             negotiated = (width, height, name)
+            let rcDesc = opts.ratchet
+                ? "capped-CQ vbr cq=\(Ratchet.floorQP), cap \(opts.bitrate / 1_000_000) Mbps"
+                : "cbr \(opts.bitrate / 1_000_000) Mbps"
             print("capture: \(width)x\(height) \(name), stride \(stride) — "
-                + "encoding hevc_nvenc @ \(opts.bitrate / 1_000_000) Mbps")
+                + "encoding hevc_nvenc (\(rcDesc))")
         }
 
         let now = monotonicNow()
         if firstFrameAt == nil { firstFrameAt = now }
 
-        if opts.idleFloor {
+        if opts.idleFloor || opts.ratchet {
             let count = Int(size)
             if lastFrame.count != count {
                 lastFrame = [UInt8](repeating: 0, count: count)
@@ -168,6 +209,16 @@ final class Sink {
             lastStride = stride
         }
 
+        // Fresh damage abandons any ratchet in progress; the episode restarts
+        // once damage goes quiet again.
+        lastDamageAt = now
+        ratchetTriggeredAt = nil
+        ratchetConverged = false
+        ratchetStep = 0
+        ratchetStableCount = 0
+        ratchetPrevBytes = 0
+        ratchetEpisodeBytes = 0
+
         guard encode(data: data, stride: stride) else { return }
         damageFrames += 1
         encodedSinceTick = true
@@ -177,7 +228,8 @@ final class Sink {
 
     /// Idle-floor tick, on the PipeWire loop thread at the fps interval:
     /// when no fresh frame was encoded since the previous tick, re-encode
-    /// the retained copy so output flows at a steady rate.
+    /// the retained copy so output flows at a steady rate. In ratchet mode
+    /// the same tick instead drives quality-refinement passes.
     func onTick() {
         if lastError != nil { return }
 
@@ -190,10 +242,61 @@ final class Sink {
         }
         guard !lastFrame.isEmpty else { return } // nothing to repeat yet
 
+        if opts.ratchet {
+            ratchetTick(now)
+            return
+        }
+
         let ok = lastFrame.withUnsafeBufferPointer { buf in
             encode(data: buf.baseAddress!, stride: lastStride)
         }
         if ok { repeatedFrames += 1 }
+    }
+
+    /// One ratchet opportunity: after damage has been quiet for the settle
+    /// time, re-encode the retained frame at fps/paceDivisor. Each pass lets
+    /// capped-CQ rate control step the frame QP down; stop on convergence —
+    /// an ~all-skip pass, or byte-stable passes once the QP floor is reached.
+    /// After convergence: true silence until new damage.
+    private func ratchetTick(_ now: Double) {
+        guard !ratchetConverged else { return }
+        guard let quietSince = lastDamageAt,
+              now - quietSince >= Ratchet.settle else { return }
+
+        ratchetTickCount += 1
+        guard ratchetTickCount % Ratchet.paceDivisor == 0 else { return }
+
+        if ratchetTriggeredAt == nil { ratchetTriggeredAt = now }
+        let ok = lastFrame.withUnsafeBufferPointer { buf in
+            encode(data: buf.baseAddress!, stride: lastStride)
+        }
+        guard ok else { return }
+
+        ratchetStep += 1
+        ratchetFrames += 1
+        ratchetBytes += lastPacketBytes
+        ratchetEpisodeBytes += lastPacketBytes
+        let sinceTrigger = (now - ratchetTriggeredAt!) * 1000
+        print(String(format: "ratchet: step %2d  qp=%2d  bytes=%7d  t+%.0f ms",
+                     ratchetStep, lastPacketQP, lastPacketBytes, sinceTrigger))
+
+        if lastPacketBytes <= Ratchet.skipBytes {
+            ratchetConverged = true
+        } else if lastPacketQP <= Ratchet.floorQP, ratchetPrevBytes > 0,
+                  abs(lastPacketBytes - ratchetPrevBytes)
+                      <= Int(Double(ratchetPrevBytes) * Ratchet.stableRatio) {
+            ratchetStableCount += 1
+            ratchetConverged = ratchetStableCount >= Ratchet.stablePasses
+        } else {
+            ratchetStableCount = 0
+        }
+        ratchetPrevBytes = lastPacketBytes
+
+        if ratchetConverged {
+            print(String(format: "ratchet: converged after %d passes, "
+                + "%d bytes, %.0f ms — going silent", ratchetStep,
+                ratchetEpisodeBytes, sinceTrigger))
+        }
     }
 
     /// Encodes one frame; pts advances monotonically per encoded frame and
@@ -218,7 +321,7 @@ final class Sink {
         }
     }
 
-    func onPacket(data: UnsafePointer<UInt8>, size: Int, keyframe: Bool) {
+    func onPacket(data: UnsafePointer<UInt8>, size: Int, keyframe: Bool, avgQP: Int) {
         if firstPacket.isEmpty {
             firstPacket = Array(UnsafeBufferPointer(start: data, count: size))
         }
@@ -226,6 +329,8 @@ final class Sink {
         packetsOut += 1
         bytesOut += size
         if keyframe { keyframes += 1 }
+        lastPacketBytes = size
+        lastPacketQP = avgQP
     }
 
     func flushEncoder() throws {
@@ -273,10 +378,11 @@ private func tickTrampoline(user: UnsafeMutableRawPointer?) {
 
 private func packetTrampoline(user: UnsafeMutableRawPointer?,
                               data: UnsafePointer<UInt8>?, size: Int,
-                              keyframe: Int32) {
+                              keyframe: Int32, avgQP: Int32) {
     guard let user, let data else { return }
     let sink = Unmanaged<Sink>.fromOpaque(user).takeUnretainedValue()
-    sink.onPacket(data: data, size: size, keyframe: keyframe != 0)
+    sink.onPacket(data: data, size: size, keyframe: keyframe != 0,
+                  avgQP: Int(avgQP))
 }
 
 // MARK: - Main
@@ -356,6 +462,17 @@ func run() throws {
     sink.freeEncoder()
     mutter?.stop()
 
+    // Measurement aid: dump the final retained raw frame (stride-packed
+    // BGRx as delivered by PipeWire) so decoded output can be PSNR'd
+    // against ground truth. Env-gated; not a product surface.
+    if let rawPath = ProcessInfo.processInfo.environment["LYTE_DUMP_RAW"],
+       !sink.lastFrame.isEmpty {
+        FileManager.default.createFile(atPath: rawPath,
+                                       contents: Data(sink.lastFrame))
+        print("raw reference dumped: \(rawPath) "
+            + "(\(sink.lastFrame.count) bytes, stride \(sink.lastStride))")
+    }
+
     if let failure = sink.lastError {
         throw HostError(failure)
     }
@@ -374,10 +491,16 @@ func run() throws {
     print("""
 
     done: \(sink.framesIn) frames encoded (\(sink.damageFrames) damage, \
-    \(sink.repeatedFrames) repeated), \(sink.packetsOut) packets out \
+    \(sink.repeatedFrames) repeated, \(sink.ratchetFrames) ratchet), \
+    \(sink.packetsOut) packets out \
     (\(sink.keyframes) IDR), \(sink.bytesOut) bytes over \(String(format: "%.1f", captured))s
     resolution \(n.width)x\(n.height), input format \(n.format)
     """)
+    if opts.ratchet {
+        print("ratchet total: \(sink.ratchetFrames) passes, "
+            + "\(sink.ratchetBytes) bytes"
+            + (sink.ratchetConverged ? ", converged" : ", NOT converged"))
+    }
     if rc == 1 {
         print("note: capture ended at the safety timeout — the desktop was mostly "
             + "static, so frames arrived only on damage")

@@ -15,18 +15,30 @@ void lyte_stdout_flush(void);
 typedef struct lyte_hevc_enc lyte_hevc_enc;
 
 /* Called for every encoded packet. `data` is Annex-B bytes, valid only for
-   the duration of the call. `keyframe` is nonzero for IDR packets. */
+   the duration of the call. `keyframe` is nonzero for IDR packets. `avg_qp`
+   is the frame-average QP nvenc reports for the packet (-1 if unknown) —
+   the ratchet policy layer reads convergence off it. */
 typedef void (*lyte_hevc_packet_cb)(void *user, const uint8_t *data,
-                                    size_t size, int keyframe);
+                                    size_t size, int keyframe, int avg_qp);
 
-/* Opens hevc_nvenc with the Sunshine low-latency recipe: true CBR
-   (max=min=bitrate), single-frame VBV, GOP INT_MAX, zero B-frames, preset
-   p1 + ull tuning, zero reorder delay, one surface in flight.
+/* Opens hevc_nvenc with the Sunshine low-latency recipe: preset p1 + ull
+   tuning, multipass qres, GOP INT_MAX, zero B-frames, zero reorder delay,
+   one surface in flight.
+   Rate control by `cq`:
+     cq == 0: true CBR (max=min=bitrate), single-frame VBV, qmin 23 —
+              the committed slice-2 recipe.
+     cq  > 0: capped-CQ VBR — rc=vbr with constant-quality target `cq` and
+              `bit_rate` as the hard max-rate cap. FFmpeg's nvenc wrapper
+              discards avg-bitrate/VBV in CQ mode and honors only the cap.
+              Under this mode nvenc itself walks QP down toward `cq` across
+              repeated identical frames (the quality-ratchet mechanism);
+              note the walk overshoots a few QP below `cq` — `cq` is a soft
+              target, not a floor.
    `pix_fmt_name` is an FFmpeg pixel format name ("bgr0", "bgra", "rgb0",
    "rgba"). Returns NULL with `err` filled on failure. */
 lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
                                  const char *pix_fmt_name,
-                                 int fps, int64_t bit_rate,
+                                 int fps, int64_t bit_rate, int cq,
                                  char *err, size_t errlen);
 
 /* Encodes one packed-RGB frame (single plane, `src_stride` bytes per row).

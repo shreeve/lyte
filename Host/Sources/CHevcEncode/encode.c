@@ -1,6 +1,7 @@
 #include "lyte_hevc_encode.h"
 
 #include <libavcodec/avcodec.h>
+#include <libavutil/intreadwrite.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 
@@ -40,7 +41,7 @@ static void averr(char *err, size_t errlen, const char *what, int rc)
 
 lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
                                  const char *pix_fmt_name,
-                                 int fps, int64_t bit_rate,
+                                 int fps, int64_t bit_rate, int cq,
                                  char *err, size_t errlen)
 {
     const AVCodec *codec = avcodec_find_encoder_by_name("hevc_nvenc");
@@ -80,21 +81,35 @@ lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
     ctx->framerate = (AVRational){fps, 1};
 
     /* Sunshine's low-latency recipe (docs/sunshine-v2026.715.205118.md §7). */
-    ctx->bit_rate = bit_rate;
-    ctx->rc_max_rate = bit_rate;
-    ctx->rc_min_rate = bit_rate;
-    ctx->rc_buffer_size = (int)(bit_rate / fps); /* single-frame VBV */
     ctx->gop_size = INT_MAX;
     ctx->keyint_min = INT_MAX;
     ctx->max_b_frames = 0;
     ctx->flags |= AV_CODEC_FLAG_CLOSED_GOP | AV_CODEC_FLAG_LOW_DELAY;
-    /* Sunshine's HEVC min-QP floor (nvenc 19/23/23 per codec) — bounds how
-       far CBR may refine quality per block. */
-    ctx->qmin = 23;
+
+    if (cq > 0) {
+        /* Capped-CQ VBR (the quality-ratchet mode): a constant-quality
+           target with `bit_rate` as the hard cap. FFmpeg's nvenc wrapper
+           zeroes avg-bitrate/VBV in CQ mode and keeps only max-rate.
+           qmin pins nvenc's downward QP walk at `cq` — without it the walk
+           overshoots ~3 QP below the target (measured on real hardware). */
+        ctx->rc_max_rate = bit_rate;
+        av_opt_set_int(ctx->priv_data, "qmin", cq, 0);
+        av_opt_set(ctx->priv_data, "rc", "vbr", 0);
+        av_opt_set_int(ctx->priv_data, "cq", cq, 0);
+    } else {
+        /* True CBR (the committed slice-2 recipe). */
+        ctx->bit_rate = bit_rate;
+        ctx->rc_max_rate = bit_rate;
+        ctx->rc_min_rate = bit_rate;
+        ctx->rc_buffer_size = (int)(bit_rate / fps); /* single-frame VBV */
+        /* Sunshine's HEVC min-QP floor (nvenc 19/23/23 per codec) — bounds
+           how far CBR may refine quality per block. */
+        ctx->qmin = 23;
+        av_opt_set(ctx->priv_data, "rc", "cbr", 0);
+    }
 
     av_opt_set(ctx->priv_data, "preset", "p1", 0);
     av_opt_set(ctx->priv_data, "tune", "ull", 0);
-    av_opt_set(ctx->priv_data, "rc", "cbr", 0);
     /* Sunshine's two-pass quarter-res rate control. Besides better bit
        placement, it lets CBR go quiet on static content (~4.5x fewer bytes
        measured on a repeated still) instead of burning budget re-refining. */
@@ -126,6 +141,18 @@ fail:
     return NULL;
 }
 
+/* Frame-average QP from the packet's quality-stats side data (nvenc reports
+   frameAvgQP there, stored as (qp-1)*FF_QP2LAMBDA). -1 if absent. */
+static int packet_avg_qp(const AVPacket *pkt)
+{
+    size_t size = 0;
+    const uint8_t *sd =
+        av_packet_get_side_data(pkt, AV_PKT_DATA_QUALITY_STATS, &size);
+    if (!sd || size < 4)
+        return -1;
+    return (int)(AV_RL32(sd) / FF_QP2LAMBDA) + 1;
+}
+
 static int drain(lyte_hevc_enc *e, lyte_hevc_packet_cb cb, void *user,
                  char *err, size_t errlen)
 {
@@ -138,7 +165,7 @@ static int drain(lyte_hevc_enc *e, lyte_hevc_packet_cb cb, void *user,
             return -1;
         }
         cb(user, e->pkt->data, (size_t)e->pkt->size,
-           (e->pkt->flags & AV_PKT_FLAG_KEY) != 0);
+           (e->pkt->flags & AV_PKT_FLAG_KEY) != 0, packet_avg_qp(e->pkt));
         av_packet_unref(e->pkt);
     }
 }
