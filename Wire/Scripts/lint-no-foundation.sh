@@ -29,4 +29,32 @@ if [ -n "$violations" ]; then
     exit 1
 fi
 
-echo "no-Foundation lint OK: $dir is Foundation-free"
+# Crypto confinement (core plan §1, W5): `import Crypto` may appear only
+# under Crypto/ — the rest of the module sees the five-function internal
+# surface, so a WASM backend swap stays a leaf swap. CryptoKit is
+# forbidden everywhere: it is Apple-only, and swift-crypto's `Crypto`
+# vends the identical API on Linux too.
+crypto_pattern='^[[:space:]]*(@[A-Za-z_]+[[:space:]]+)*import([[:space:]]+(class|struct|enum|protocol|typealias|func|var|let))?[[:space:]]+(Crypto|CryptoKit)([^A-Za-z0-9_]|$)'
+
+crypto_violations=$(
+    grep -rnE "$crypto_pattern" --include='*.swift' "$dir" \
+        | grep -v "^$dir/Crypto/" \
+        || true
+)
+cryptokit_pattern='^[[:space:]]*(@[A-Za-z_]+[[:space:]]+)*import([[:space:]]+(class|struct|enum|protocol|typealias|func|var|let))?[[:space:]]+CryptoKit([^A-Za-z0-9_]|$)'
+cryptokit_violations=$(
+    grep -rnE "$cryptokit_pattern" --include='*.swift' "$dir" || true
+)
+
+if [ -n "$crypto_violations" ]; then
+    echo "crypto-confinement lint FAILED — import Crypto outside $dir/Crypto/:" >&2
+    echo "$crypto_violations" >&2
+    exit 1
+fi
+if [ -n "$cryptokit_violations" ]; then
+    echo "crypto-confinement lint FAILED — CryptoKit is Apple-only, use swift-crypto's Crypto:" >&2
+    echo "$cryptokit_violations" >&2
+    exit 1
+fi
+
+echo "no-Foundation lint OK: $dir is Foundation-free (Crypto confined to Crypto/)"

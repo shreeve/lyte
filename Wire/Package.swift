@@ -15,6 +15,15 @@ let package = Package(
         .library(name: "LyteWire", targets: ["LyteWire"]),
         .library(name: "LyteWireTestKit", targets: ["LyteWireTestKit"]),
     ],
+    dependencies: [
+        // The ONE sanctioned dependency (core plan §1): swift-crypto's
+        // `Crypto` module is the crypto provider on ALL platforms — a thin
+        // CryptoKit shim on Apple, vendored BoringSSL on Linux — so the
+        // same Noise code compiles everywhere. Never import CryptoKit
+        // directly. Confinement: `import Crypto` appears only under
+        // Sources/LyteWire/Crypto/ (lint-enforced).
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.8.0"),
+    ],
     targets: [
         // The vendored nanors RS-FEC leaf (W1), copied from the root
         // package's Vendor/nanors. Module name CNanorsWire — distinct from
@@ -22,7 +31,13 @@ let package = Package(
         // in one build graph until the root drops its copy (CL-2 era).
         // Confinement: only NanorsBackend.swift imports it.
         .target(name: "CNanorsWire", publicHeadersPath: "include"),
-        .target(name: "LyteWire", dependencies: ["CNanorsWire"]),
+        .target(
+            name: "LyteWire",
+            dependencies: [
+                "CNanorsWire",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ]
+        ),
         .target(name: "LyteWireTestKit", dependencies: ["LyteWire"]),
         // Authoring tool for Vectors/ — run once, commit, freeze. See
         // Vectors/README.md for the regeneration policy.

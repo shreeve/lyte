@@ -29,6 +29,10 @@ case in `FecCoderTests`, the hand-walked datagram in
   golden corpus the video vectors pin by sha256 (own README inside).
 - `beacon-v1.json` — the W4a codecs: CTRL clock-beacon pair and the
   chan=3 feedback report, plus the offset/RTT worked example.
+- `noise-v1.json` — the W5 crypto layer (gate W-G6): external published
+  `Noise_IK_25519_ChaChaPoly_SHA256` handshake vectors (snow +
+  cacophony) plus the pinned Lyte transport-extension vectors
+  (extended-counter nonces, epoch rekey). Provenance rules below.
 
 ## The 24-byte envelope (wire v1)
 
@@ -358,3 +362,77 @@ Feedback decode rejects: `feedback-truncated-header` (20 B),
 `feedback-nack-bitmap-count-zero`, `feedback-nack-bitmap-count-oversize`
 (33), `feedback-nack-bitmap-noncanonical` (zero final byte),
 `feedback-trailing-bytes`, `feedback-truncated-tlv`.
+
+## The Noise layer (wire v1)
+
+Suite: **`Noise_IK_25519_ChaChaPoly_SHA256`** — the IK pattern
+(initiator knows the responder's static from pairing; mutual
+authentication, 1-RTT, forward secrecy), X25519, ChaCha20-Poly1305,
+SHA-256, all via swift-crypto (the one sanctioned dependency; `import
+Crypto` is lint-confined to `Sources/LyteWire/Crypto/`).
+
+Handshake on the wire: message 1 = `e(32) ‖ enc(s)(48) ‖ enc(payload)`;
+message 2 = `e(32) ‖ enc(payload)`. There is no ALPN (Lyte-UDP decision
+§8.3), so the first payload byte each way is the **wire major version**
+— mismatch aborts with `versionMismatch` before any transport key
+exists. The post-handshake transcript hash `h` is exposed as the
+handshake hash the W6 PAKE binds to (§8.2).
+
+Transport phase (the Lyte extension — this is NOT plain Noise transport
+nonce discipline): the envelope header (24 B + TLVs) rides as AAD; the
+AEAD nonce is `chan u8 ‖ epoch u24 LE ‖ extendedCounter u64 LE`, where
+the extended counter is reconstructed from the u16 envelope seq
+SRTP-ROC-style (serial distance from the last-seen position; first
+datagram on a channel anchors at its raw seq). Receiver policy: 64-deep
+sliding replay window per channel — each counter admitted exactly once,
+reorder inside the window fine, older rejects `staleSequence`, repeats
+reject `replayedSequence`; window state commits only after the tag
+verifies. Rekey = Noise REKEY + epoch increment; the receive side keeps
+the previous epoch's key as a grace key (trial-decrypt, tag arbitrates)
+so in-flight datagrams survive. Budgets enforced at the seam: plaintext
+≤ 1112 B, ciphertext+tag ≤ 1128 B.
+
+## File format: noise-v1.json
+
+Top-level: `format` ("lyte-wire-noise-vectors"), `formatVersion` (1),
+`wireVersion` (1), `handshakeVectors`, `transportVectors`.
+
+**Provenance honesty — two sections, two strengths.**
+
+`handshakeVectors` are **external canonical vectors**, transcribed
+verbatim from the two independent published implementations that carry
+this suite, with `source` URL and `sourceSha256` of the exact upstream
+file recorded per vector (fetched 2026-07-21):
+
+- `snow-ik-25519-chachapoly-sha256` — snow (Rust), 4 messages.
+- `cacophony-ik-25519-chachapoly-sha256` — cacophony (Haskell), 6
+  messages plus `handshakeHashHex`.
+
+The standard fields (`initStaticHex`, `initEphemeralHex`,
+`respStaticHex`, … `messages[]` of `payloadHex`/`ciphertextHex`) drive
+both roles byte-for-byte: message writes must equal the published
+ciphertext exactly, reads must recover the payloads, and messages [2…]
+verify the Split transport keys under sequential Noise nonces
+(alternating directions, initiator first). A divergence is an
+implementation bug — these files never regenerate.
+
+`transportVectors` cover the Lyte nonce/rekey extension, which no
+published set can cover because the discipline is ours. They are
+**pinned self-consistent**: generated once by `lyte-wire-vectorgen
+noise` from this implementation and frozen as a regression pin —
+honestly weaker than an external oracle (each vector says so in its
+`provenance` field), with the AEAD/handshake beneath them externally
+verified by the section above. Each vector fixes both statics and
+ephemerals (counting-byte private keys, auditable by eye), freezes
+`message1Hex`/`message2Hex`/`handshakeHashHex`, then applies `steps` in
+order: `seal` steps carry the envelope fields (whose `encode` output is
+the AAD) and the exact expected `wirePayloadHex`; `rekey` steps bump
+the named direction's epoch on both ends.
+
+## Vector inventory (noise-v1.json, 2 external + 1 pinned)
+
+`ik-transport-nominal` (pinned): CTRL and video both directions, a
+1112 B max-budget shard sealing to exactly 1128 B, the u16 seq wrap on
+chan 1 (anchored at 65534, walking 65535 → 0 → 1), a client→host rekey
+to epoch 1, and post-rekey sends both ways proving the epoch key change
+while host→client stays on epoch 0.

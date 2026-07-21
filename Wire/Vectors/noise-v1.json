@@ -1,0 +1,209 @@
+{
+  "format" : "lyte-wire-noise-vectors",
+  "formatVersion" : 1,
+  "handshakeVectors" : [
+    {
+      "initEphemeralHex" : "dae68498c41315cff7e4a34dded8d973199d8f0cf3fcb8b6651c169de77de8be",
+      "initPrologueHex" : "5468657265206973206e6f20726967687420616e642077726f6e672e2054686572652773206f6e6c792066756e20616e6420626f72696e672e",
+      "initRemoteStaticHex" : "2ea5942829bac414e25aa4cbb1bcc43394816ebb1bd12550d7d0eb4415e42951",
+      "initStaticHex" : "f49f93c5112c0787acc808d61716d7e090e076a58f15a3f78d92773f8dcb473b",
+      "messages" : [
+        {
+          "ciphertextHex" : "6d21fec9141f3f37cc464e936a48b2d9521b5a44e0f3d960895d3c3fba30282f731f445c25e898e2534ac0536715b24308c108fc46bd260c887b36c3f68e3a05654fc8295c068ed53fb2022560961224e0b10b0835e1efc82fc587cd50f7178fe3d9eb06e0351c6e7334162c10bed670bfa2a105f7b2768a140b3fd597782601",
+          "payloadHex" : "95a8f51c435a9530ff1f30868ed7b23ec952eb513c26a0774fed82d2978a8c81"
+        },
+        {
+          "ciphertextHex" : "e64e1fb8701c4f4bc3850b255fea657d4d835338b059c89acc99628fbe52473b41a4e79e3c1e6abc46bf80f078a005e15d8a3e04f989af3e6cb99b52031165006163ac3e17b928af8c116009d7bf4fb2",
+          "payloadHex" : "b866b807a6d8b83182b884dbfedc861843c5082bd6e480cb54e4245a72083041"
+        },
+        {
+          "ciphertextHex" : "2bebe19102169cdfe79cf41e38930bfd20a5b2fc78ccf33e853ddd939c0983174656eb27b61464a607762848892ca1c0",
+          "payloadHex" : "e3a4937faef391028f759758b428b57652e0069a8dee64dfed01b60846938740"
+        },
+        {
+          "ciphertextHex" : "c7c56da33b45d12f4754e17978bd49999c9c8f51d00db460f902aba2e6e245d0c46662f507915de8596f43b1d175f1db",
+          "payloadHex" : "693972f27b0cb98aeac1fb54d782125431e7540e0cb2fa882cf51a8184d724fd"
+        }
+      ],
+      "name" : "snow-ik-25519-chachapoly-sha256",
+      "protocolName" : "Noise_IK_25519_ChaChaPoly_SHA256",
+      "respEphemeralHex" : "c0875a5b59c8492bd2135e5432d7d484f938e0a1f5009428c4bcb70b2f69f69f",
+      "respPrologueHex" : "5468657265206973206e6f20726967687420616e642077726f6e672e2054686572652773206f6e6c792066756e20616e6420626f72696e672e",
+      "respStaticHex" : "b790546f98b1e933c48cd01f17e7b281469d46fcacc9a3b584ae65b1d6272e8e",
+      "source" : "https:\/\/raw.githubusercontent.com\/mcginty\/snow\/master\/tests\/vectors\/snow.txt",
+      "sourceSha256" : "69da433305fd045f6c9f01b656662a389d022688986fd39fbe7af009cd402fd3"
+    },
+    {
+      "handshakeHashHex" : "0b0f68fb0c27e03ce9b97565995ed4838cc0581b762ef72b062f6a546419fad7",
+      "initEphemeralHex" : "893e28b9dc6ca8d611ab664754b8ceb7bac5117349a4439a6b0569da977c464a",
+      "initPrologueHex" : "4a6f686e2047616c74",
+      "initRemoteStaticHex" : "31e0303fd6418d2f8c0e78b91f22e8caed0fbe48656dcf4767e4834f701b8f62",
+      "initStaticHex" : "e61ef9919cde45dd5f82166404bd08e38bceb5dfdfded0a34c8df7ed542214d1",
+      "messages" : [
+        {
+          "ciphertextHex" : "ca35def5ae56cec33dc2036731ab14896bc4c75dbb07a61f879f8e3afa4c7944718da798efbcd91528520204f904b9bd6c7413dccdc214d951e15253e39987f18146e8cd0873654207148333479d4d16c289f0294b29960a72f48e0b7bba2e89083169825e59642148d492020664ccf7",
+          "payloadHex" : "4c756477696720766f6e204d69736573"
+        },
+        {
+          "ciphertextHex" : "95ebc60d2b1fa672c1f46a8aa265ef51bfe38e7ccb39ec5be34069f1448088435361e70b2ed446e6c9ec387d1d6b3b840f194e373979d241b203c4acafccf5",
+          "payloadHex" : "4d757272617920526f746862617264"
+        },
+        {
+          "ciphertextHex" : "050e9f3c8fac16b68dbce8f8c4bfbf6617c897f9ada4aa29aa19c8",
+          "payloadHex" : "462e20412e20486179656b"
+        },
+        {
+          "ciphertextHex" : "344233a6cabb7141d80f3da2fedc311d9646bbb0f505afe403a667",
+          "payloadHex" : "4361726c204d656e676572"
+        },
+        {
+          "ciphertextHex" : "62cdeeb172ad7ade7aa7d9e069da5790f12331bfa00177787a1d0810c67dc3b2b4",
+          "payloadHex" : "4a65616e2d426170746973746520536179"
+        },
+        {
+          "ciphertextHex" : "029bead1b40992327044d409d9a1f3ad8f36c3c452775d557e18bbeb2e8dfcead32d514024",
+          "payloadHex" : "457567656e2042f6686d20766f6e2042617765726b"
+        }
+      ],
+      "name" : "cacophony-ik-25519-chachapoly-sha256",
+      "protocolName" : "Noise_IK_25519_ChaChaPoly_SHA256",
+      "respEphemeralHex" : "bbdb4cdbd309f1a1f2e1456967fe288cadd6f712d65dc7b7793d5e63da6b375b",
+      "respPrologueHex" : "4a6f686e2047616c74",
+      "respStaticHex" : "4a3acbfdb163dec651dfa3194dece676d437029c62a408b4c5ea9114246e4893",
+      "source" : "https:\/\/raw.githubusercontent.com\/haskell-cryptography\/cacophony\/master\/vectors\/cacophony.txt",
+      "sourceSha256" : "3bde7c09a6f349ee11c825c50fcc02649f8f02a47c857a459206b357f9386cae"
+    }
+  ],
+  "transportVectors" : [
+    {
+      "description" : "Fixed-key IK session, both directions, max-budget shard, u16 seq wrap on chan 1, client→host rekey to epoch 1",
+      "handshakeHashHex" : "fb5f126f3513f4b62054c74394ad15a046f0eaa28c77d2a03eb330524f1671a0",
+      "initEphemeralHex" : "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "initStaticHex" : "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "message1Hex" : "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd16625499e7c5c4c49ae50484740a421a60040e3504bf81b6e158414a9e29bc06c0793ba3b9e9a74156f1e484f418c43d6450ea82f45bd5a052812917b155bdf925c92bd2",
+      "message2Hex" : "79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a585ad403ebdea1cc765e78f6d569155309",
+      "name" : "ik-transport-nominal",
+      "prologueHex" : "6c7974652d756470",
+      "provenance" : "pinned-self-consistent",
+      "respEphemeralHex" : "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "respStaticHex" : "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+      "steps" : [
+        {
+          "channel" : 0,
+          "direction" : "clientToHost",
+          "fecHex" : "0x0",
+          "frame" : 0,
+          "kind" : "seal",
+          "plaintextHex" : "000102030405060708090a0b0c0d0e0f",
+          "seq" : 0,
+          "timestampHex" : "0x1020304",
+          "wirePayloadHex" : "52bc24a9990e93235fd9e46c51d5b107bd606acc19af2d4b4416bd4c30712065"
+        },
+        {
+          "channel" : 2,
+          "direction" : "hostToClient",
+          "fecHex" : "0x0",
+          "frame" : 1,
+          "kind" : "seal",
+          "plaintextHex" : "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+          "seq" : 0,
+          "timestampHex" : "0x11223344",
+          "wirePayloadHex" : "0f553275e69abe7abb67dc14e142185df4744d56d635ffc39ad30f28708b995c421516617bcf83cbbd7d2149b20d483910f70b2c550f0e70cae3c87498899781"
+        },
+        {
+          "channel" : 0,
+          "direction" : "clientToHost",
+          "fecHex" : "0x0",
+          "frame" : 0,
+          "kind" : "seal",
+          "plaintextHex" : "030405060708090a0b0c0d0e0f101112131415161718191a",
+          "seq" : 1,
+          "timestampHex" : "0x1020405",
+          "wirePayloadHex" : "974598aaacaa9e9d74f79f477eaef658c06894a2229617479e66944f6ffdb67e28bdfc3a8ed4668c"
+        },
+        {
+          "channel" : 2,
+          "direction" : "hostToClient",
+          "fecHex" : "0x0",
+          "frame" : 2,
+          "kind" : "seal",
+          "plaintextHex" : "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f9091929394959697",
+          "seq" : 1,
+          "timestampHex" : "0x11224455",
+          "wirePayloadHex" : "7c3761a29d5fda32fefa0bd8a23de5f9056ed3642c1494224b4d0488b970046e7dc524b33423d35cb1fa7b184d010a9163b7f9dded4eaf9246bcb107e68a79b61589f780d9074129cf8e67d161f7fc0d12e9a57bcf445bfa1909e6ba44d902878a3607580ddf8fe60b137f6f5c8583750965e7cec080ace2def1a6c08d72351f9ac52ad962cf8f53cd4ab4564bc57d59a900c4c28c86319c8e7a827e54c73adc6e9e2095b2979522409ce43cd60d83a514997955b2452ef7d6175c26943671c1b14def1e57243429f4b24a7c13e3c2d72d1ac5b2e8a085589853f93360e529ae5060445d7938bda51d80b6681bb283f1c65cb62d49ced018c0c9e716bd8785ec46c16649fa91c7a805ea31fa792c5672ed6e26ce93b4b28b855537a757b4c38944cc908ba1e9347d2cd97664ca0266823ea8fca662bd055c4b265fc20ed989acb6fdf4b64ba83949b1cd5bb3f924eff457076fe7d3671fd3d538b30d1b5df664438671147a8fa1c603dfe3ee53008e31dfed16171159ce9f5e5d84258f923fbea37ac8c629c8ae9b4b4174f81ba1abdf0520c43320cab180b94d4f73af7cf8dca044532f58079865f1c92ad653d3e0b1a551980f7e48c4014e3381ca7408edc4e038e37cf284de4f3b9b968985db058227533369a1848c4d4ff2d2718bfe6f91995de5fa61e0e5918f33b0bc68e98ac6a8570784cf35a19869a5a2459904f019119abf81ce94cea5ec7d01d7212bf185c92100e5729ffc573da0e2e4f7d1a7aaca755f0d3291728d0935c9488a09d9c110253a4be8430e5fa0a7fcb5684cadea14f7316c94d9c04c65cdef41ae317ddd90fad3bf3afaee819860a36da5f782ef0c09ffd1c794625425ecca8e3aa7e6d299faff07c245eae3005a5303fd04214389cc75211b494252b59469256c3666ea9b0d303d747b7bb668ee44450dc64d9a51e9161db4899cd698f0dc6a0107abbdd5c3310866ffdde6d0e98bd5e77a99ff6849e51a0b040efd97d5d856ba21d4e9ca62cda1098cfe3eea3f30f10facb5bf77717a4fd13f62b444e1cc7bc4cec681e62b2a02fef1da7b44a72a7ad2003ad23d3f71e4fa980b9e157d5720d9c701789cd83e0936c1c714d652215626eca97475d0089a7bcce18fcd30806f4b9258b637fad9bf3f69f7a015e17342edb65098340692a53ac4fec1bfa5c8463a3d28131639d5330312da2de288b87b7cacb23e1e5e31675b0a45ce1306d66434b8641c5a3be60e76d9498f589990b4290a2df51d245e3fbd405ef7dae7be0e31508d9bff22dca581f3729daeb44887f233ec76f0f738f182363e9536e3998a84ed56eadd73f8c53ec5ec187445a484c98670946c160968337502ac778dc60c6d70fa75c5ab21a77e0a5d9daf0013859603e7ddd5faf0373f3043735d367ae0f5e451789359a420d0fcca1f19b1a769662d516db59388126ba705fe9cf6371fc4352dd35f7392533385b2b930cb20795cdcc628bc34d97c1e0aac7a91b80777be55e7d32d12e62a49fd34980b1c8e8d8e98120eaec1d9a3259a180827c3497e90f49a83daa1cdd007246d1d623d76277c0ee039f11a79f610f909f9"
+        },
+        {
+          "channel" : 1,
+          "direction" : "hostToClient",
+          "fecHex" : "0x0",
+          "frame" : 0,
+          "kind" : "seal",
+          "plaintextHex" : "000102030405060708090a0b0c0d0e0f10111213",
+          "seq" : 65534,
+          "timestampHex" : "0x2000",
+          "wirePayloadHex" : "f616a41931efc971ef1098b0c63f26ed42676bc83b5778e009af487e190650f14b6ed768"
+        },
+        {
+          "channel" : 1,
+          "direction" : "hostToClient",
+          "fecHex" : "0x0",
+          "frame" : 1,
+          "kind" : "seal",
+          "plaintextHex" : "0102030405060708090a0b0c0d0e0f1011121314",
+          "seq" : 65535,
+          "timestampHex" : "0x2001",
+          "wirePayloadHex" : "8d9c9b7fd6a4a963815195571fc7a8fad0fe14cf32516225905d98a8a275699d38830180"
+        },
+        {
+          "channel" : 1,
+          "direction" : "hostToClient",
+          "fecHex" : "0x0",
+          "frame" : 2,
+          "kind" : "seal",
+          "plaintextHex" : "02030405060708090a0b0c0d0e0f101112131415",
+          "seq" : 0,
+          "timestampHex" : "0x2002",
+          "wirePayloadHex" : "e330fb0f78b051520eb8f8b4c1ed20fc6c16a11182697f5ead61d7b10f21b0ee26c6f843"
+        },
+        {
+          "channel" : 1,
+          "direction" : "hostToClient",
+          "fecHex" : "0x0",
+          "frame" : 3,
+          "kind" : "seal",
+          "plaintextHex" : "030405060708090a0b0c0d0e0f10111213141516",
+          "seq" : 1,
+          "timestampHex" : "0x2003",
+          "wirePayloadHex" : "5e64e0ef878860a32fe635f941ac8d11f08306d7ca938a896e7ad27a3ac9ae5d9209b995"
+        },
+        {
+          "direction" : "clientToHost",
+          "kind" : "rekey"
+        },
+        {
+          "channel" : 0,
+          "direction" : "clientToHost",
+          "fecHex" : "0x0",
+          "frame" : 0,
+          "kind" : "seal",
+          "plaintextHex" : "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223242526",
+          "seq" : 2,
+          "timestampHex" : "0x1020506",
+          "wirePayloadHex" : "cfcee4929e362ef45db9671c3db478251cf8643b57e6947d836658d4278c62505095e71f46cf670c882a57de0d825528"
+        },
+        {
+          "channel" : 2,
+          "direction" : "hostToClient",
+          "fecHex" : "0x0",
+          "frame" : 3,
+          "kind" : "seal",
+          "plaintextHex" : "909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7",
+          "seq" : 2,
+          "timestampHex" : "0x11225566",
+          "wirePayloadHex" : "c7a8a06f7b23753ad2b48e987a57e8f7610ad18184fb3d872cf6dbe4f0f0de3beeae74e970bbb9c058f6c5c3cda780a841cea8382080c4ab"
+        }
+      ]
+    }
+  ],
+  "wireVersion" : 1
+}
