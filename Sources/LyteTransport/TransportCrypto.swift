@@ -1,18 +1,21 @@
-// The crypto seam W5 fills. The envelope header (fixed 24 bytes + any TLV
+// The crypto seam W5 filled. The envelope header (fixed 24 bytes + any TLV
 // block) is AAD-shaped already: `unseal` receives the exact received header
 // bytes as `aad` and the envelope for nonce material (chan, seq feed the
-// extended-counter nonce per the master plan §4.1), so the Noise impl slots
-// in without touching the receive path. Until W5 lands, the only working
-// mode is the CP-3 recorded `--insecure` fallback — passthrough, loudly
-// labeled, mandatory re-gate when real Noise arrives.
+// extended-counter nonce per the master plan §4.1), so the Noise impl
+// (NoiseTransportCrypto.swift) slots in without touching the receive path.
+// InsecureTransportCrypto is the CP-3 recorded `--insecure` fallback —
+// passthrough, loudly labeled.
 
 import LyteWire
 
 public enum TransportCryptoError: Error, Equatable, Sendable {
-    /// The Noise implementation does not exist yet (W5 pending).
-    case noisePending(String)
-    /// AEAD open failed (tag mismatch, replay, bad epoch) — real cases
-    /// arrive with W5; the type exists now so counters have a home.
+    /// The `--host-key` argument (or a config key) is not a 32-byte hex
+    /// X25519 public key.
+    case invalidHostKey(String)
+    /// The Noise IK handshake could not complete (no answer, message 2
+    /// rejected, transport used before open).
+    case handshakeFailed(String)
+    /// AEAD open failed (tag mismatch, replay, stale sequence).
     case unsealFailed(String)
 }
 
@@ -53,14 +56,13 @@ public protocol TransportCrypto: Sendable {
 }
 
 /// INSECURE passthrough — the CP-3 recorded fallback (master plan §4.1).
-/// No confidentiality, no integrity: the payload is returned as-is. Only
-/// for LAN debugging before W5; J-G1 runs with it at most once and re-runs
-/// with Noise on.
+/// No confidentiality, no integrity: the payload is returned as-is. LAN
+/// debugging only; the default is Noise.
 public struct InsecureTransportCrypto: TransportCrypto {
     public init() {}
 
     public var modeDescription: String {
-        "INSECURE passthrough (CP-3 fallback — no crypto, re-gate when W5 lands)"
+        "INSECURE passthrough (CP-3 fallback — no crypto)"
     }
 
     public func open() throws {}
@@ -82,34 +84,3 @@ public struct InsecureTransportCrypto: TransportCrypto {
     }
 }
 
-/// The real thing, pending W5 (Noise IK, extended-counter nonce/epoch,
-/// rekey). Every entry point fails loudly so nothing silently streams
-/// unauthenticated bytes through a seam that promises Noise.
-public struct NoiseTransportCrypto: TransportCrypto {
-    public init() {}
-
-    public var modeDescription: String {
-        "Noise IK (unimplemented — W5 pending)"
-    }
-
-    public func open() throws {
-        throw TransportCryptoError.noisePending(
-            "Noise transport-open unimplemented — W5 pending; use --insecure for the recorded CP-3 fallback")
-    }
-
-    public func unseal(
-        wirePayload: ArraySlice<UInt8>,
-        aad: ArraySlice<UInt8>,
-        envelope: Envelope
-    ) throws -> ArraySlice<UInt8> {
-        throw TransportCryptoError.noisePending("Noise unseal unimplemented — W5 pending")
-    }
-
-    public func seal(
-        plaintext: ArraySlice<UInt8>,
-        aad: ArraySlice<UInt8>,
-        envelope: Envelope
-    ) throws -> [UInt8] {
-        throw TransportCryptoError.noisePending("Noise seal unimplemented — W5 pending")
-    }
-}

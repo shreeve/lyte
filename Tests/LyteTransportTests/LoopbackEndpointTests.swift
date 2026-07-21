@@ -10,12 +10,18 @@ import LyteWireTestKit
 
 final class LoopbackEndpointTests: XCTestCase {
 
-    func testNoiseTransportOpenFailsUntilW5() {
+    func testNoiseEndpointFailsLoudlyWhenNoHostAnswers() throws {
+        // A dead loopback port: the handshake must retry, then refuse the
+        // whole endpoint start — Noise mode never falls open.
+        let crypto = try NoiseTransportCrypto(
+            hostAddress: "127.0.0.1", hostPort: 9,
+            hostStaticPublicKey: NoiseKeyPair.generate().publicKey,
+            attempts: 2, attemptTimeoutMilliseconds: 40)
         let endpoint = UdpReceiveEndpoint(
-            port: 0, bindAddress: "127.0.0.1", crypto: NoiseTransportCrypto())
+            port: 0, bindAddress: "127.0.0.1", crypto: crypto)
         XCTAssertThrowsError(try endpoint.start()) { error in
-            guard case TransportCryptoError.noisePending = error else {
-                return XCTFail("expected noisePending, got \(error)")
+            guard case TransportCryptoError.handshakeFailed = error else {
+                return XCTFail("expected handshakeFailed, got \(error)")
             }
         }
     }

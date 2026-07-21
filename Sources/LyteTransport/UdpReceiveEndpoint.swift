@@ -66,8 +66,15 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
 
     /// Transport-open, then bind and start the receive thread. The crypto
     /// seam gates the socket: no datagram is read before `open()` succeeds.
+    /// A handshaking crypto (Noise) inverts the first step — it needs the
+    /// bound socket to run the IK exchange, so the endpoint binds first,
+    /// drives `performHandshake` over the socket, and only then starts the
+    /// receive thread (open() then merely asserts the transport exists).
     public func start() throws {
-        try crypto.open()
+        let handshaking = crypto as? any HandshakingTransportCrypto
+        if handshaking == nil {
+            try crypto.open()
+        }
 
         let fd = socket(AF_INET, SOCK_DGRAM, 0)
         guard fd >= 0 else { throw TransportEndpointError.socketFailed(errno: errno) }
@@ -123,6 +130,28 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
             }
         }
         boundPort = UInt16(bigEndian: bound.sin_port)
+
+        if let handshaking {
+            do {
+                let io = try SocketHandshakeIO(
+                    fd: fd,
+                    host: handshaking.hostAddress,
+                    port: handshaking.hostPort
+                )
+                try handshaking.performHandshake(io: io)
+                // The host tuple is the peer from the first byte, so the
+                // return leg (feedback ticks before any sealed host
+                // datagram arrives) has somewhere to go.
+                peerLock.lock()
+                peerAddress = io.hostSockaddr
+                peerLock.unlock()
+            } catch {
+                close(fd)
+                self.fd = -1
+                throw error
+            }
+            try crypto.open()
+        }
 
         running.set(true)
         let recv = Thread { [weak self] in self?.receiveLoop() }
@@ -241,6 +270,75 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         peerLock.lock()
         defer { peerLock.unlock() }
         return peerAddress != nil
+    }
+}
+
+/// Blocking datagram IO over the endpoint's bound socket for the
+/// pre-thread Noise handshake window: sends aim at the resolved host
+/// tuple, receives poll() with the caller's timeout. Single-threaded by
+/// construction (the receive thread does not exist yet).
+final class SocketHandshakeIO: NoiseHandshakeIO {
+    private let fd: Int32
+    let hostSockaddr: sockaddr_in
+
+    init(fd: Int32, host: String, port: UInt16) throws {
+        self.fd = fd
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        if inet_pton(AF_INET, host, &addr.sin_addr) != 1 {
+            var hints = addrinfo()
+            hints.ai_family = AF_INET
+            hints.ai_socktype = SOCK_DGRAM
+            var result: UnsafeMutablePointer<addrinfo>?
+            guard getaddrinfo(host, nil, &hints, &result) == 0,
+                  let info = result,
+                  let sa = info.pointee.ai_addr else {
+                throw TransportEndpointError.badAddress(host)
+            }
+            memcpy(
+                &addr.sin_addr,
+                UnsafeRawPointer(sa)
+                    + MemoryLayout<sockaddr_in>.offset(of: \sockaddr_in.sin_addr)!,
+                MemoryLayout<in_addr>.size
+            )
+            freeaddrinfo(result)
+        }
+        hostSockaddr = addr
+    }
+
+    func sendToHost(_ datagram: [UInt8]) throws {
+        var peer = hostSockaddr
+        let sent = datagram.withUnsafeBufferPointer { buf -> Int in
+            withUnsafePointer(to: &peer) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                    sendto(fd, buf.baseAddress, buf.count, 0,
+                           sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
+        guard sent == datagram.count else {
+            throw TransportEndpointError.socketFailed(errno: errno)
+        }
+    }
+
+    func receiveDatagram(timeoutMilliseconds: Int) throws -> [UInt8]? {
+        var pollfds = [pollfd(fd: fd, events: Int16(POLLIN), revents: 0)]
+        let ready = poll(&pollfds, 1, Int32(timeoutMilliseconds))
+        guard ready > 0, pollfds[0].revents & Int16(POLLIN) != 0 else {
+            return nil
+        }
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        let n = buffer.withUnsafeMutableBufferPointer { buf in
+            recv(fd, buf.baseAddress, buf.count, 0)
+        }
+        guard n > 0 else {
+            // ECONNREFUSED bounced off the host between sends is
+            // transient; timeouts and empties are the caller's retry.
+            return nil
+        }
+        return Array(buffer[0..<n])
     }
 }
 

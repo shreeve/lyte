@@ -279,16 +279,18 @@ final class FeedbackPathTests: XCTestCase {
         XCTAssertEqual(seqs[2].0, .feedback); XCTAssertEqual(seqs[2].1, 1)
     }
 
-    func testNoiseSealFailsLoudlyUntilW5() {
-        let sender = TransportSender(crypto: NoiseTransportCrypto(),
-                                     transmit: { _ in true })
+    func testNoiseSealRefusesBeforeHandshake() throws {
+        let crypto = try NoiseTransportCrypto(
+            hostAddress: "127.0.0.1", hostPort: 9,
+            hostStaticPublicKey: NoiseKeyPair.generate().publicKey)
+        let sender = TransportSender(crypto: crypto, transmit: { _ in true })
         XCTAssertThrowsError(try sender.send(
             channel: .feedback,
             timestamp: ClientTimestamp(microseconds: 0),
             plaintext: [1])
         ) { error in
-            guard case TransportCryptoError.noisePending = error else {
-                return XCTFail("expected noisePending, got \(error)")
+            guard case TransportCryptoError.handshakeFailed = error else {
+                return XCTFail("expected handshakeFailed, got \(error)")
             }
         }
         XCTAssertEqual(sender.snapshotStats().sealFailures, 1)

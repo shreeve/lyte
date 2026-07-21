@@ -13,24 +13,49 @@ struct WireListen: AsyncParsableCommand {
 
     @Argument(help: "UDP port to bind (0 picks a free port)") var port: UInt16
     @Option(name: .long, help: "Address to bind") var bind: String = "0.0.0.0"
-    @Flag(name: .long, help: "CP-3 recorded fallback: accept payloads with NO crypto (until W5 lands)")
+    @Flag(name: .long, help: "CP-3 recorded fallback: accept payloads with NO crypto")
     var insecure = false
+    @Option(name: .long, help: "Noise mode: the host's static public key, 64 hex digits")
+    var hostKey: String?
+    @Option(name: .long, help: "Noise mode: the host's address")
+    var host: String = "10.0.0.249"
+    @Option(name: .long, help: "Noise mode: the host's --wire-listen port (default: the bind port)")
+    var hostPort: UInt16 = 0
     @Option(name: .long, help: "Auto-exit after this many seconds (default: until Ctrl-C)")
     var duration: Int = 0
+
+    func validate() throws {
+        if insecure, hostKey != nil {
+            throw ValidationError("--insecure and --host-key are mutually exclusive")
+        }
+        if !insecure, hostKey == nil {
+            throw ValidationError(
+                "Noise mode needs --host-key <64-hex host static>, or pass --insecure for the recorded CP-3 fallback")
+        }
+    }
 
     func run() async throws {
         setvbuf(stdout, nil, _IOLBF, 0)   // line-buffer even when piped
 
-        let crypto: any TransportCrypto = insecure
-            ? InsecureTransportCrypto() : NoiseTransportCrypto()
+        let crypto: any TransportCrypto
+        if insecure {
+            crypto = InsecureTransportCrypto()
+        } else {
+            crypto = try NoiseTransportCrypto(
+                hostAddress: host,
+                hostPort: hostPort == 0 ? port : hostPort,
+                hostStaticPublicKey: NoiseTransportCrypto.parseKeyHex(hostKey!))
+        }
         let endpoint = UdpReceiveEndpoint(port: port, bindAddress: bind, crypto: crypto)
         do {
             try endpoint.start()
         } catch let error as TransportCryptoError {
-            if case .noisePending(let message) = error {
+            switch error {
+            case .invalidHostKey(let message), .handshakeFailed(let message):
+                throw ValidationError("Noise: \(message)")
+            case .unsealFailed(let message):
                 throw ValidationError(message)
             }
-            throw error
         }
         print("wire-listen: bound \(bind):\(endpoint.boundPort) — \(crypto.modeDescription)")
         if insecure {
