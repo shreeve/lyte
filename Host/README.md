@@ -31,9 +31,12 @@ On macOS use `DEVELOPER_DIR=/Applications/Xcode.app swift test` (CLT lacks XCTes
 
 ## Build and run on the Linux host (`pop`)
 
-Source lives in this repo; sync it to the host and build there:
+Source lives in this repo; sync it to the host and build there. This package
+depends on the sibling `Wire/` package (`.package(path: "../Wire")`), so both
+must be synced as siblings on the host:
 
 ```
+rsync -a --delete --exclude .build Wire/ pop:src/Wire/
 rsync -a --delete --exclude .build Host/ pop:src/lyte-host/
 ssh pop 'cd ~/src/lyte-host && \
   LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat /usr/local/bin/swift build'
