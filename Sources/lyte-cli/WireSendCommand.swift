@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import LyteTransport
 import LyteWire
 
 /// CL-2's loopback test rig and tomorrow's J-G1 sanity tool: read corpus
@@ -8,10 +9,20 @@ import LyteWire
 /// frame rate — with an optional seeded drop rate so the receive side's
 /// FEC recovery can be exercised without a lossy network. Insecure
 /// framing only (the crypto seam is W5's; re-gate when it lands).
+///
+/// CL-3 makes it the two-sided host stand-in (pop is down; this is the
+/// smoke's far end until J-G1): it RECEIVES on its connected socket and
+/// logs the client's return traffic — chan=3 feedback reports (ledgers,
+/// dispersion sample counts), beacon echoes (computing offset/RTT with a
+/// locally measured t4, exactly what HS-16/CL-10 will consume), and IDR
+/// requests. It also emits the 1 Hz CTRL ClockBeacon (HS-7's job) so the
+/// client's echo path has something to answer, and it HEALS on an IDR
+/// request by resending the corpus IDR frame — the §4.7 heal path,
+/// demonstrated end to end on loopback.
 struct WireSend: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "wire-send",
-        abstract: "DEBUG: packetize corpus frames and send them as Lyte-UDP video (loopback rig for wire-view).")
+        abstract: "DEBUG: packetize corpus frames and send them as Lyte-UDP video (loopback rig + host stand-in for wire-view).")
 
     @Argument(help: "Destination host (IP or name)") var host: String
     @Argument(help: "Destination UDP port") var port: UInt16
@@ -63,10 +74,16 @@ struct WireSend: AsyncParsableCommand {
         let sender = try UdpSender(host: host, port: port)
         defer { sender.close() }
 
+        // CL-3: the host stand-in half — receive/log the client's return
+        // traffic on the same connected socket, and beacon at 1 Hz.
+        let standIn = HostStandIn(fd: sender.fileDescriptor)
+        standIn.start()
+        defer { standIn.stop() }
+
         var packetizer = VideoPacketizer()
         var rng = SendSplitMix64(seed: seed)
         var frameNumber = FrameNumber(rawValue: 0)
-        var sentShards = 0, droppedShards = 0, sentFrames = 0
+        var sentShards = 0, droppedShards = 0, sentFrames = 0, healFrames = 0
         let interval = Duration.seconds(1) / fps
 
         var stop = false
@@ -82,6 +99,31 @@ struct WireSend: AsyncParsableCommand {
             loop += 1
             for annexB in accessUnits {
                 if stopFlag.value { stop = true; break }
+
+                // The §4.7 heal path: an IDR request from the client is
+                // answered with the corpus IDR at the next frame slot,
+                // exempt from simulated drop (the real host paces a
+                // forced IDR urgently; re-dropping the heal would make
+                // the smoke a coin flip).
+                if standIn.takeIdrHealRequest() {
+                    let idrShards = try packetizer.packetize(
+                        frame: accessUnits[0],
+                        frameNumber: frameNumber,
+                        captureTimestamp: HostTimestamp(
+                            microseconds: DispatchTime.now().uptimeNanoseconds / 1000),
+                        isIDR: true,
+                        regime: fecRegime)
+                    print("wire-send: HEAL — IDR request answered with fresh IDR " +
+                          "(frame \(frameNumber.rawValue), \(idrShards.count) shards, drop-exempt)")
+                    frameNumber = frameNumber.next
+                    for shard in idrShards {
+                        try sender.send(shard.encodeDatagram())
+                        sentShards += 1
+                    }
+                    healFrames += 1
+                    try await Task.sleep(for: interval)
+                }
+
                 let shards = try packetizer.packetize(
                     frame: annexB,
                     frameNumber: frameNumber,
@@ -108,10 +150,219 @@ struct WireSend: AsyncParsableCommand {
         }
         var summary = "wire-send: done — \(sentFrames) frames, \(sentShards) shards sent, " +
                       "\(droppedShards) dropped (simulated), \(loop) loop(s)"
+        if healFrames > 0 { summary += ", \(healFrames) heal IDR(s)" }
         if sender.refused > 0 {
             summary += ", \(sender.refused) refused (receiver gone?)"
         }
         print(summary)
+        print(standIn.finalSummary())
+    }
+}
+
+/// The host's CL-3-facing half, stood in on the sender's connected socket:
+/// receives and logs feedback reports, beacon echoes, and IDR requests;
+/// emits the 1 Hz CTRL ClockBeacon (HS-7's job) with the lastEcho mirror
+/// populated so the client can compute symmetric clock samples. Insecure
+/// framing, like the send half — the crypto seam re-gates at W5.
+private final class HostStandIn: @unchecked Sendable {
+    private let fd: Int32
+    private let lock = NSLock()
+    private var thread: Thread?
+    private var beaconTimer: DispatchSourceTimer?
+    private let running = LockedCell(false)
+
+    // Receive-side tallies.
+    private var feedbackReports: UInt64 = 0
+    private var dispersionSamples: UInt64 = 0
+    private var nackEntries: UInt64 = 0
+    private var echoes: UInt64 = 0
+    private var idrRequests: UInt64 = 0
+    private var malformed: UInt64 = 0
+    private var lastOffsetMicroseconds: Int64?
+    private var lastRttMicroseconds: Int64?
+
+    // Send-side state.
+    private var beaconSeq: UInt32 = 0
+    private var ctrlSeq = ChannelSeq(rawValue: 0)
+    private var lastEchoMirror: ClockBeacon.LastEcho?
+
+    // The heal flag the send loop polls.
+    private var idrHealPending = false
+
+    init(fd: Int32) {
+        self.fd = fd
+    }
+
+    func start() {
+        // 100 ms receive timeout so stop() can interrupt the loop.
+        var tv = timeval(tv_sec: 0, tv_usec: 100_000)
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+        running.value = true
+        let receiver = Thread { [weak self] in self?.receiveLoop() }
+        receiver.name = "wire-send-standin-recv"
+        receiver.start()
+        thread = receiver
+
+        // The 1 Hz beacon (plus one at start, per §4.6).
+        let timer = DispatchSource.makeTimerSource(queue: .global())
+        timer.schedule(deadline: .now() + .milliseconds(200), repeating: 1)
+        timer.setEventHandler { [weak self] in self?.sendBeacon() }
+        timer.resume()
+        beaconTimer = timer
+    }
+
+    func stop() {
+        running.value = false
+        beaconTimer?.cancel()
+        beaconTimer = nil
+    }
+
+    /// True at most once per received IDR request burst: the send loop
+    /// consumes the flag and answers with a fresh IDR.
+    func takeIdrHealRequest() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let pending = idrHealPending
+        idrHealPending = false
+        return pending
+    }
+
+    func finalSummary() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        var s = "wire-send: stand-in received \(feedbackReports) feedback reports " +
+                "(\(dispersionSamples) dispersion samples, \(nackEntries) NACK entries), " +
+                "\(echoes) beacon echoes, \(idrRequests) IDR requests"
+        if let offset = lastOffsetMicroseconds, let rtt = lastRttMicroseconds {
+            s += String(format: ", last clock sample offset %+d µs rtt %d µs", offset, rtt)
+        }
+        if malformed > 0 { s += ", \(malformed) malformed" }
+        return s
+    }
+
+    // MARK: - Receive
+
+    private func receiveLoop() {
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while running.value {
+            let n = buffer.withUnsafeMutableBufferPointer { buf in
+                recv(fd, buf.baseAddress, buf.count, 0)
+            }
+            if n < 0 {
+                if errno == EAGAIN || errno == EWOULDBLOCK { continue }
+                if errno == ECONNREFUSED { continue }
+                return   // socket closed
+            }
+            guard n > 0 else { continue }
+            handle(datagram: buffer[0..<n])
+        }
+    }
+
+    private func handle(datagram: ArraySlice<UInt8>) {
+        guard let (envelope, payload) = try? Envelope.decode(datagram) else {
+            lock.lock(); malformed += 1; lock.unlock()
+            return
+        }
+        switch envelope.channel {
+        case .feedback:
+            guard let report = try? FeedbackReport.decode(Array(payload)) else {
+                lock.lock(); malformed += 1; lock.unlock()
+                return
+            }
+            lock.lock()
+            feedbackReports += 1
+            dispersionSamples += UInt64(report.dispersion?.samples.count ?? 0)
+            nackEntries += UInt64(report.nacks.count)
+            let count = feedbackReports
+            lock.unlock()
+            // The first report and one per second at 40 ms cadence —
+            // evidence without flooding.
+            if count == 1 || count % 25 == 0 {
+                var line = "wire-send: feedback #\(count) — "
+                line += report.channels.map { c in
+                    "chan\(c.channel.rawValue): \(c.received) rx/\(c.missing) miss/\(c.duplicates) dup"
+                }.joined(separator: ", ")
+                if let d = report.dispersion {
+                    line += " | \(d.samples.count) dispersion samples"
+                }
+                line += " | \(report.nacks.count) NACKs (v1: empty until HS-17)"
+                print(line)
+            }
+        case .ctrl:
+            handleCtrl(payload: Array(payload))
+        default:
+            lock.lock(); malformed += 1; lock.unlock()
+        }
+    }
+
+    private func handleCtrl(payload: [UInt8]) {
+        switch CtrlMessageType.peek(payload) {
+        case CtrlMessageType.beaconEcho:
+            guard let echo = try? BeaconEcho.decode(payload) else {
+                lock.lock(); malformed += 1; lock.unlock()
+                return
+            }
+            // t4 measured locally at arrival — never on the wire.
+            let t4 = HostTimestamp(
+                microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
+            let sample = echo.clockSample(hostReceive: t4)
+            lock.lock()
+            echoes += 1
+            lastOffsetMicroseconds = sample.offsetMicroseconds
+            lastRttMicroseconds = sample.rttMicroseconds
+            lastEchoMirror = ClockBeacon.LastEcho(
+                beaconSeq: echo.beaconSeq,
+                clientSend: echo.clientSend,
+                hostReceive: t4)
+            lock.unlock()
+            print("wire-send: beacon echo #\(echo.beaconSeq) — offset " +
+                  "\(sample.offsetMicroseconds) µs, rtt \(sample.rttMicroseconds) µs")
+        case ClientCtrlMessageType.idrRequest:
+            guard let request = try? IdrRequest.decode(payload) else {
+                lock.lock(); malformed += 1; lock.unlock()
+                return
+            }
+            lock.lock()
+            idrRequests += 1
+            idrHealPending = true
+            lock.unlock()
+            print("wire-send: IDR-REQUEST #\(request.requestSeq) received " +
+                  "(frame \(request.frame.rawValue), coalesced \(request.coalescedCount)) " +
+                  "— healing at next frame slot")
+        default:
+            lock.lock(); malformed += 1; lock.unlock()
+        }
+    }
+
+    // MARK: - Beacon
+
+    private func sendBeacon() {
+        lock.lock()
+        let seq = beaconSeq
+        beaconSeq &+= 1
+        let ctrl = ctrlSeq
+        ctrlSeq = ctrlSeq.next
+        let mirror = lastEchoMirror
+        lock.unlock()
+
+        let nowUs = DispatchTime.now().uptimeNanoseconds / 1000
+        let beacon = ClockBeacon(
+            beaconSeq: seq,
+            hostSend: HostTimestamp(microseconds: nowUs),
+            lastEcho: mirror)
+        let envelope = Envelope(
+            channel: .ctrl,
+            seq: ctrl,
+            frame: FrameNumber(rawValue: 0),
+            timestamp: nowUs,
+            fec: 0)
+        guard let datagram = try? envelope.encode(plaintextShard: beacon.encode()) else {
+            return
+        }
+        _ = datagram.withUnsafeBufferPointer { buf in
+            Darwin.send(fd, buf.baseAddress, buf.count, 0)
+        }
     }
 }
 
@@ -157,6 +408,10 @@ private final class UdpSender {
             throw ValidationError("connect failed: errno \(e)")
         }
     }
+
+    /// The connected socket, shared with the stand-in's receive/beacon
+    /// half (datagram sends are atomic; concurrent send is safe).
+    var fileDescriptor: Int32 { fd }
 
     /// Datagrams refused (ICMP unreachable bounced off a stopped
     /// receiver) — tolerated, counted: the rig outliving its viewer is

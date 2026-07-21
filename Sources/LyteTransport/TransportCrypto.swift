@@ -16,10 +16,13 @@ public enum TransportCryptoError: Error, Equatable, Sendable {
     case unsealFailed(String)
 }
 
-/// Receive-side crypto for one transport session. `open()` is the transport-
-/// open step: it must complete before any payload is accepted (Noise IK
-/// handshake once W5 lands; immediate in insecure mode). `unseal` maps a
-/// wire payload (ciphertext + 16 B tag, or the bare shard) to plaintext.
+/// Both directions of one transport session's crypto. `open()` is the
+/// transport-open step: it must complete before any payload is accepted
+/// (Noise IK handshake once W5 lands; immediate in insecure mode). `unseal`
+/// maps a wire payload (ciphertext + 16 B tag, or the bare shard) to
+/// plaintext; `seal` is the mirror the CL-3 send path added — same AAD
+/// discipline, same envelope-derived nonce material, so W5's Noise slots
+/// into both directions without touching either path.
 public protocol TransportCrypto: Sendable {
     /// Human-readable mode label for logs and the CLI banner.
     var modeDescription: String { get }
@@ -36,6 +39,17 @@ public protocol TransportCrypto: Sendable {
         aad: ArraySlice<UInt8>,
         envelope: Envelope
     ) throws -> ArraySlice<UInt8>
+
+    /// Seals one outbound plaintext shard. `aad` is the exact header bytes
+    /// that will precede the payload on the wire (fixed envelope + TLV
+    /// block); `envelope` carries the (chan, seq, frame) the nonce derives
+    /// from. Returns the wire payload (ciphertext + tag with Noise, the
+    /// shard unchanged in insecure mode).
+    func seal(
+        plaintext: ArraySlice<UInt8>,
+        aad: ArraySlice<UInt8>,
+        envelope: Envelope
+    ) throws -> [UInt8]
 }
 
 /// INSECURE passthrough — the CP-3 recorded fallback (master plan §4.1).
@@ -57,6 +71,14 @@ public struct InsecureTransportCrypto: TransportCrypto {
         envelope: Envelope
     ) throws -> ArraySlice<UInt8> {
         wirePayload
+    }
+
+    public func seal(
+        plaintext: ArraySlice<UInt8>,
+        aad: ArraySlice<UInt8>,
+        envelope: Envelope
+    ) throws -> [UInt8] {
+        Array(plaintext)
     }
 }
 
@@ -81,5 +103,13 @@ public struct NoiseTransportCrypto: TransportCrypto {
         envelope: Envelope
     ) throws -> ArraySlice<UInt8> {
         throw TransportCryptoError.noisePending("Noise unseal unimplemented — W5 pending")
+    }
+
+    public func seal(
+        plaintext: ArraySlice<UInt8>,
+        aad: ArraySlice<UInt8>,
+        envelope: Envelope
+    ) throws -> [UInt8] {
+        throw TransportCryptoError.noisePending("Noise seal unimplemented — W5 pending")
     }
 }

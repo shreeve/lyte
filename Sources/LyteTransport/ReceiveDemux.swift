@@ -51,13 +51,32 @@ public struct DemuxTotals: Sendable {
     public var malformed: UInt64 = 0
     public var reservedDropped: UInt64 = 0
     public var unsealFailures: UInt64 = 0
+    /// Arrival samples dropped because a feedback drain fell behind.
+    public var arrivalSamplesDropped: UInt64 = 0
+}
+
+/// One accepted datagram's arrival record — the raw material of the
+/// feedback report's dispersion section (resiliency §2.2: paced bursts are
+/// packet trains; per-packet arrival spacing is the host estimator's
+/// delivery-rate and queue-gradient sample).
+public struct ArrivalSample: Sendable {
+    public var channel: UInt8
+    public var seq: UInt16
+    /// Client arrival instant, kernel stamp when available (CL-1's craft).
+    public var arrivalMicroseconds: UInt64
 }
 
 public final class ReceiveDemux: @unchecked Sendable {
+    /// Arrival samples retained between feedback drains. Sized for several
+    /// 25–50 ms windows of worst-case traffic (an ~100-shard IDR train plus
+    /// audio) so a late drain decimates rather than misses whole trains.
+    public static let maxRetainedArrivalSamples = 512
+
     private let crypto: TransportCrypto
     private let lock = NSLock()
     private var channels: [UInt8: ChannelAccount] = [:]
     private var totals = DemuxTotals()
+    private var arrivals: [ArrivalSample] = []
 
     public init(crypto: TransportCrypto) {
         self.crypto = crypto
@@ -107,7 +126,27 @@ public final class ReceiveDemux: @unchecked Sendable {
         channels[envelope.channel.rawValue, default: ChannelAccount()]
             .record(envelope, payloadByteCount: plaintext.count,
                     arrivalMicroseconds: arrivalMicroseconds)
+        if arrivals.count < Self.maxRetainedArrivalSamples {
+            arrivals.append(ArrivalSample(
+                channel: envelope.channel.rawValue,
+                seq: envelope.seq.rawValue,
+                arrivalMicroseconds: arrivalMicroseconds))
+        } else {
+            // The estimator weights trains, it does not need every packet
+            // (FeedbackBounds rationale) — drop the newest, count honestly.
+            totals.arrivalSamplesDropped += 1
+        }
         return .accepted(envelope: envelope, payload: Array(plaintext))
+    }
+
+    /// Removes and returns the arrival samples accumulated since the last
+    /// drain, in arrival order — the FeedbackSender's per-cadence pull.
+    public func drainArrivalSamples() -> [ArrivalSample] {
+        lock.lock()
+        defer { lock.unlock() }
+        let drained = arrivals
+        arrivals.removeAll(keepingCapacity: true)
+        return drained
     }
 
     public func snapshotTotals() -> DemuxTotals {

@@ -115,6 +115,37 @@ final class LoopbackEndpointTests: XCTestCase {
                      "reserved channels must never accumulate accepted stats")
     }
 
+    // MARK: CL-3's return leg
+
+    func testSendToPeerReachesTheDatagramSource() throws {
+        let endpoint = UdpReceiveEndpoint(
+            port: 0, bindAddress: "127.0.0.1", crypto: InsecureTransportCrypto())
+        try endpoint.start()
+        defer { endpoint.stop() }
+
+        // No peer yet: sends report false instead of throwing.
+        XCTAssertFalse(endpoint.hasPeer)
+        XCTAssertFalse(endpoint.sendToPeer([1, 2, 3]),
+                       "no datagram has arrived, so there is nobody to reply to")
+
+        // A connected sender (wire-send's shape): its one datagram
+        // teaches the endpoint the reply address.
+        let sender = try LoopbackSender(port: endpoint.boundPort)
+        defer { sender.close() }
+        let hello = try Envelope(
+            channel: .ctrl, seq: ChannelSeq(rawValue: 0),
+            frame: FrameNumber(rawValue: 0), timestamp: 0, fec: 0
+        ).encode(payload: [0x7F])
+        try sender.send(hello)
+        try waitUntil(timeoutSeconds: 5) { endpoint.hasPeer }
+
+        // The reply leaves from the endpoint's bound socket and lands on
+        // the sender's connected socket.
+        let reply: [UInt8] = [0xC0, 0xFF, 0xEE]
+        XCTAssertTrue(endpoint.sendToPeer(reply))
+        XCTAssertEqual(try sender.receive(timeoutSeconds: 5), reply)
+    }
+
     // MARK: Helpers
 
     private func waitUntil(
@@ -162,6 +193,22 @@ private final class LoopbackSender {
         guard sent == bytes.count else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
+    }
+
+    /// Blocks for one datagram on the connected socket (the CL-3 return
+    /// leg lands here).
+    func receive(timeoutSeconds: Double) throws -> [UInt8] {
+        var tv = timeval(tv_sec: Int(timeoutSeconds),
+                         tv_usec: Int32((timeoutSeconds.truncatingRemainder(dividingBy: 1)) * 1_000_000))
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        let n = buffer.withUnsafeMutableBufferPointer { buf in
+            recv(fd, buf.baseAddress, buf.count, 0)
+        }
+        guard n > 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        return Array(buffer[0..<n])
     }
 
     func close() {

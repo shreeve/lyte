@@ -11,6 +11,13 @@ import LyteWire
 /// into an AVSampleBufferDisplayLayer window — the H0b debug harness's
 /// video leg. Prints the CL-1 demux stats plus per-frame render stats.
 ///
+/// CL-3: the mouth. The same endpoint now talks back on the socket it
+/// listens on — chan=3 feedback reports on a 25–50 ms cadence
+/// (FeedbackSender), beacon echoes for every CTRL ClockBeacon
+/// (BeaconEchoResponder), and coalesced IDR requests when the assembler
+/// writes a frame off as FEC-impossible (IdrRequester). wire-send is the
+/// host stand-in that receives and logs all three until pop returns.
+///
 /// AppKit rule (HANDOFF, hard-won): NSApplication.run() must own the raw
 /// C main thread — Main.main treats every subcommand not on its non-UI
 /// list as a UI command, so this file only has to keep its `run()` off
@@ -53,6 +60,15 @@ struct WireView: AsyncParsableCommand {
         window.contentView = videoView
         window.center()
 
+        // Construction order fights two reference cycles (pipeline needs
+        // the IDR requester, endpoint needs the echo responder, both need
+        // the sender, the sender needs the endpoint): late-bound boxes.
+        let idrBox = LockedCell<IdrRequester?>(nil)
+        let echoBox = LockedCell<BeaconEchoResponder?>(nil)
+        let clientNow: @Sendable () -> ClientTimestamp = {
+            ClientTimestamp(microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
+        }
+
         // The render path: assembled DecodeUnits become samples on the
         // receive thread and enqueue straight into the layer's renderer
         // (present-ASAP; the frozen stack enqueues from its receive
@@ -62,17 +78,26 @@ struct WireView: AsyncParsableCommand {
                 renderer.enqueue(sample)
             },
             onFecImpossible: { frame, lostData, bestParity in
-                // CL-3's IDR-request seam — today it only testifies.
+                // CL-3: the seam is live — this verdict becomes a
+                // (coalesced) IDR request on CTRL.
                 print("wire-view: frame \(frame.rawValue) FEC-IMPOSSIBLE " +
                       "(\(lostData) data shards presumed lost, best-case parity \(bestParity)) " +
-                      "— CL-3 will request an IDR here")
+                      "— requesting IDR")
+                idrBox.value?.recordFecImpossible(frame: frame, now: clientNow())
             })
         pipeline.start()
 
         let endpoint = UdpReceiveEndpoint(
             port: port, bindAddress: bind, crypto: crypto,
-            onDatagram: { outcome in
-                if case .accepted(let envelope, let payload) = outcome {
+            onDatagram: { outcome, _ in
+                guard case .accepted(let envelope, let payload) = outcome else { return }
+                if envelope.channel == .ctrl {
+                    // t2 in the client-monotonic domain, taken here on the
+                    // receive thread (the kernel stamp is wall-clock).
+                    echoBox.value?.handleCtrlPayload(
+                        payload,
+                        arrivalMicroseconds: clientNow().microseconds)
+                } else {
                     pipeline.ingest(envelope: envelope, payload: payload)
                 }
             })
@@ -89,11 +114,38 @@ struct WireView: AsyncParsableCommand {
             print("wire-view: *** INSECURE MODE — payloads are neither encrypted nor authenticated ***")
         }
 
+        // The return leg: everything client→host seals through the same
+        // crypto seam and leaves from the listening socket, aimed at the
+        // last datagram's source (wire-send today, the host tomorrow).
+        let sender = TransportSender(crypto: crypto, transmit: { datagram in
+            endpoint.sendToPeer(datagram)
+        })
+        let echoResponder = BeaconEchoResponder(now: clientNow, emit: { echo in
+            _ = try? sender.send(channel: .ctrl, timestamp: clientNow(),
+                                 plaintext: echo.encode())
+        })
+        echoBox.value = echoResponder
+        let idrRequester = IdrRequester(emit: { request in
+            print("wire-view: IDR-REQUEST #\(request.requestSeq) → host " +
+                  "(frame \(request.frame.rawValue), coalesced \(request.coalescedCount))")
+            _ = try? sender.send(channel: .ctrl, timestamp: clientNow(),
+                                 plaintext: request.encode())
+        })
+        idrBox.value = idrRequester
+        let feedback = FeedbackSender(
+            demux: endpoint.demux, sender: sender,
+            onTick: { now in idrRequester.flushIfDue(now: now) })
+        feedback.start()
+        print("wire-view: feedback cadence \(feedback.cadenceMilliseconds) ms, " +
+              "beacon echo + IDR-request on CTRL (NACK section empty until HS-17)")
+
         // The renderer's own verdict is the honest render evidence: it
         // goes .failed (with the VideoToolbox error) if enqueued samples
         // don't actually decode — enqueue counts alone can't lie-detect.
         let printer = WireViewStatsPrinter(
             demux: endpoint.demux, pipeline: pipeline,
+            sender: sender, feedback: feedback,
+            echoResponder: echoResponder, idrRequester: idrRequester,
             rendererState: { @Sendable in
                 switch renderer.status {
                 case .rendering: return "rendering"
@@ -119,6 +171,7 @@ struct WireView: AsyncParsableCommand {
             guard !already else { return }
             print("wire-view: finishing (\(trigger))")
             ticker.cancel()
+            feedback.stop()
             endpoint.stop()
             pipeline.stop()
             printer.printFinal()
@@ -146,22 +199,36 @@ struct WireView: AsyncParsableCommand {
 
         // NSApplication.run() owns the main thread (Main.main) — keep
         // strong refs to everything AppKit only holds weakly and return.
-        streamRetainer.append(contentsOf: [delegate, ticker, sigint, endpoint, pipeline, window])
+        streamRetainer.append(contentsOf: [
+            delegate, ticker, sigint, endpoint, pipeline, window,
+            sender, feedback, echoResponder, idrRequester,
+        ])
     }
 }
 
-/// The CL-1 demux stats plus the CL-2 render stats, one tick per second
-/// with new arrivals, full summary at exit.
+/// The CL-1 demux stats plus the CL-2 render stats plus the CL-3
+/// return-path stats, one tick per second with new arrivals, full summary
+/// at exit.
 final class WireViewStatsPrinter: Sendable {
     private let demux: ReceiveDemux
     private let pipeline: LyteVideoPipeline
+    private let sender: TransportSender
+    private let feedback: FeedbackSender
+    private let echoResponder: BeaconEchoResponder
+    private let idrRequester: IdrRequester
     private let rendererState: @Sendable () -> String
     private let lastCount = LockedCell<UInt64>(0)
 
     init(demux: ReceiveDemux, pipeline: LyteVideoPipeline,
+         sender: TransportSender, feedback: FeedbackSender,
+         echoResponder: BeaconEchoResponder, idrRequester: IdrRequester,
          rendererState: @escaping @Sendable () -> String) {
         self.demux = demux
         self.pipeline = pipeline
+        self.sender = sender
+        self.feedback = feedback
+        self.echoResponder = echoResponder
+        self.idrRequester = idrRequester
         self.rendererState = rendererState
     }
 
@@ -200,6 +267,26 @@ final class WireViewStatsPrinter: Sendable {
         }
         render += " | layer \(rendererState())"
         print(render)
+
+        // The CL-3 return leg: what went back to the host.
+        let out = sender.snapshotStats()
+        let fb = feedback.snapshotStats()
+        let echo = echoResponder.snapshotStats()
+        let idr = idrRequester.snapshotStats()
+        var back = "\(prefix)   sent: \(fb.reportsSent) feedback " +
+                   "(\(fb.dispersionSamplesReported) dispersion samples), " +
+                   "\(echo.echoesSent) echoes, \(idr.requestsSent) IDR-requests " +
+                   "(\(idr.verdicts) verdicts)"
+        if echo.clockSamples > 0 {
+            back += ", \(echo.clockSamples) clock samples"
+            if let last = echoResponder.snapshotClockSamples().last {
+                back += String(format: " (last offset %+d µs, rtt %d µs)",
+                               last.offsetMicroseconds, last.rttMicroseconds)
+            }
+        }
+        if out.sendFailures > 0 { back += ", \(out.sendFailures) send-failed" }
+        if out.sealFailures > 0 { back += ", \(out.sealFailures) seal-failed" }
+        print(back)
     }
 }
 

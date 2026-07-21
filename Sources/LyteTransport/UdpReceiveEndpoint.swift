@@ -6,6 +6,17 @@
 // gap measurements blame the radio rather than our own thread stalls, a
 // 100 ms SO_RCVTIMEO so stop() unblocks the loop, and ECONNREFUSED
 // tolerance. One receive thread runs decode + demux inline.
+//
+// CL-3 adds the return leg: the receive loop captures each datagram's
+// source address, and `sendToPeer` fires client→host datagrams (feedback,
+// beacon echoes, IDR requests) back at the most recent source from the
+// same socket — so replies carry this endpoint's bound port as their
+// source and land inside the host's connected-socket filter. Until the
+// first datagram arrives there is no peer and sends report false; every
+// CL-3 message is telemetry-class, superseded by its next cadence, so
+// "no peer yet" is a counted non-event, not an error. IP_TOS is set
+// best-effort (Mac senders benefit little; the Linux host is the end
+// that cares — its own send path handles DSCP).
 
 import Foundation
 import LyteWire
@@ -22,11 +33,20 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
     private let requestedPort: UInt16
     private let bindAddress: String
     private let crypto: TransportCrypto
-    private let onDatagram: (@Sendable (IngestOutcome) -> Void)?
+    /// Per-datagram hook, with the same arrival stamp the demux got
+    /// (kernel SCM_TIMESTAMP wall-clock µs when available, monotonic µs
+    /// otherwise). Consumers needing a monotonic instant (the beacon
+    /// echo's t2) take their own stamp — the hook runs inline on the
+    /// receive thread, so it is within microseconds of true arrival.
+    private let onDatagram: (@Sendable (IngestOutcome, _ arrivalMicroseconds: UInt64) -> Void)?
 
     private var fd: Int32 = -1
     private var receiveThread: Thread?
     private let running = TransportAtomicFlag()
+
+    // The last datagram's source address — the peer replies go to.
+    private let peerLock = NSLock()
+    private var peerAddress: sockaddr_in?
 
     /// The actual bound port — differs from the request when it was 0.
     public private(set) var boundPort: UInt16 = 0
@@ -35,7 +55,7 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         port: UInt16,
         bindAddress: String = "0.0.0.0",
         crypto: TransportCrypto,
-        onDatagram: (@Sendable (IngestOutcome) -> Void)? = nil
+        onDatagram: (@Sendable (IngestOutcome, _ arrivalMicroseconds: UInt64) -> Void)? = nil
     ) {
         self.requestedPort = port
         self.bindAddress = bindAddress
@@ -69,6 +89,11 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         // 100 ms receive timeout so stop() can interrupt the loop.
         var tv = timeval(tv_sec: 0, tv_usec: 100_000)
         _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+        // Outbound TOS (DSCP CS5-ish), best-effort on Mac — the return
+        // leg's datagrams are small and rare, but marked is still better.
+        var tos: Int32 = 0xA0
+        _ = setsockopt(fd, IPPROTO_IP, IP_TOS, &tos, socklen_t(MemoryLayout<Int32>.size))
 
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
@@ -126,29 +151,39 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
 
         while running.get() {
             var kernelUs: UInt64? = nil
+            var source = sockaddr_in()
+            var sourceCaptured = false
             let n = buffer.withUnsafeMutableBufferPointer { buf -> Int in
                 control.withUnsafeMutableBufferPointer { ctrl -> Int in
                     var iov = iovec(iov_base: UnsafeMutableRawPointer(buf.baseAddress),
                                     iov_len: buf.count)
                     return withUnsafeMutablePointer(to: &iov) { iovPtr -> Int in
-                        var msg = msghdr()
-                        msg.msg_iov = iovPtr
-                        msg.msg_iovlen = 1
-                        msg.msg_control = UnsafeMutableRawPointer(ctrl.baseAddress)
-                        msg.msg_controllen = socklen_t(ctrl.count)
-                        let r = recvmsg(fd, &msg, 0)
-                        // Single SCM_TIMESTAMP cmsg: timeval at data offset
-                        // 12 (4-byte len + 4-byte level + 4-byte type).
-                        if r > 0, msg.msg_controllen >= 12 + 16,
-                           let base = ctrl.baseAddress {
-                            let level = base.withMemoryRebound(to: Int32.self, capacity: 3) { ($0[1], $0[2]) }
-                            if level.0 == SOL_SOCKET, level.1 == SCM_TIMESTAMP {
-                                var tv = timeval()
-                                memcpy(&tv, base + 12, MemoryLayout<timeval>.size)
-                                kernelUs = UInt64(tv.tv_sec) * 1_000_000 + UInt64(tv.tv_usec)
+                        withUnsafeMutablePointer(to: &source) { srcPtr -> Int in
+                            var msg = msghdr()
+                            msg.msg_name = UnsafeMutableRawPointer(srcPtr)
+                            msg.msg_namelen = socklen_t(MemoryLayout<sockaddr_in>.size)
+                            msg.msg_iov = iovPtr
+                            msg.msg_iovlen = 1
+                            msg.msg_control = UnsafeMutableRawPointer(ctrl.baseAddress)
+                            msg.msg_controllen = socklen_t(ctrl.count)
+                            let r = recvmsg(fd, &msg, 0)
+                            if r > 0, msg.msg_namelen >= socklen_t(MemoryLayout<sockaddr_in>.size),
+                               srcPtr.pointee.sin_family == sa_family_t(AF_INET) {
+                                sourceCaptured = true
                             }
+                            // Single SCM_TIMESTAMP cmsg: timeval at data offset
+                            // 12 (4-byte len + 4-byte level + 4-byte type).
+                            if r > 0, msg.msg_controllen >= 12 + 16,
+                               let base = ctrl.baseAddress {
+                                let level = base.withMemoryRebound(to: Int32.self, capacity: 3) { ($0[1], $0[2]) }
+                                if level.0 == SOL_SOCKET, level.1 == SCM_TIMESTAMP {
+                                    var tv = timeval()
+                                    memcpy(&tv, base + 12, MemoryLayout<timeval>.size)
+                                    kernelUs = UInt64(tv.tv_sec) * 1_000_000 + UInt64(tv.tv_usec)
+                                }
+                            }
+                            return r
                         }
-                        return r
                     }
                 }
             }
@@ -159,11 +194,53 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
                 return   // socket closed by stop()
             }
 
+            if sourceCaptured {
+                peerLock.lock()
+                peerAddress = source
+                peerLock.unlock()
+            }
+
             let arrivalUs = kernelUs ?? (DispatchTime.now().uptimeNanoseconds / 1000)
             let outcome = demux.ingest(datagram: buffer[0..<n],
                                        arrivalMicroseconds: arrivalUs)
-            onDatagram?(outcome)
+            onDatagram?(outcome, arrivalUs)
         }
+    }
+
+    // MARK: - Send path (CL-3)
+
+    /// Sends one encoded datagram back at the most recent datagram source,
+    /// from the same socket (so the source port matches what the peer's
+    /// connected socket filters for). Returns false when no peer is known
+    /// yet, the socket is closed, or the kernel refused — all counted by
+    /// the caller (TransportSender), none fatal for telemetry-class
+    /// datagrams.
+    @discardableResult
+    public func sendToPeer(_ datagram: [UInt8]) -> Bool {
+        peerLock.lock()
+        guard var peer = peerAddress else {
+            peerLock.unlock()
+            return false
+        }
+        peerLock.unlock()
+        guard fd >= 0 else { return false }
+
+        let sent = datagram.withUnsafeBufferPointer { buf -> Int in
+            withUnsafePointer(to: &peer) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                    sendto(fd, buf.baseAddress, buf.count, 0,
+                           sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
+        return sent == datagram.count
+    }
+
+    /// True once at least one datagram has arrived (a reply address exists).
+    public var hasPeer: Bool {
+        peerLock.lock()
+        defer { peerLock.unlock() }
+        return peerAddress != nil
     }
 }
 
