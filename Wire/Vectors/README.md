@@ -27,6 +27,8 @@ case in `FecCoderTests`, the hand-walked datagram in
   delivery → expected DecodeUnits and decision outputs).
 - `video-corpus-v1/` — real HEVC access units from the H0a host, the
   golden corpus the video vectors pin by sha256 (own README inside).
+- `beacon-v1.json` — the W4a codecs: CTRL clock-beacon pair and the
+  chan=3 feedback report, plus the offset/RTT worked example.
 
 ## The 24-byte envelope (wire v1)
 
@@ -219,3 +221,140 @@ Scenarios: `in-order-tiny-idr`, `shuffled-k3`, `loss-at-parity-limit-k3`,
 (the CL-3 IDR-request trigger plus stale eviction), `corpus-idr-in-order`,
 `corpus-sequence-with-loss` (parity-limit loss under G4-model reorder),
 `corpus-small-p-lossy-regime`.
+
+## The CTRL message-type registry and the clock-beacon pair (wire v1)
+
+Every CTRL (chan 0) payload starts with one message-type byte — in
+today's bare datagrams and, once W3 lands, at the start of each
+ARQ-framed message body alike. Types pinned at W4a: `0x00` invalid
+(never assigned, the zero-fill rule), `0x01` clock beacon, `0x02` beacon
+echo. The beacon pair is ARQ-exempt fire-and-forget by design (master
+plan §4.6): clock mapping wants fresh timestamps, not reliable old ones —
+a lost beacon is superseded by the next 1 Hz send. It is the ONE beacon
+(clock mapping + slow liveness); the 350 ms blackout detector is
+feedback-stream silence, a different mechanism.
+
+ClockBeacon (host→client, 1 Hz plus session start), fixed 34 bytes,
+little-endian:
+
+| offset | size | field | notes |
+|---|---|---|---|
+| 0 | 1 | type | 0x01 |
+| 1 | 1 | flags | bit0: lastEcho populated; bits 1–7 reserved — 0 on send, ignored on receive |
+| 2 | 4 | beaconSeq | u32, from 0 at session start |
+| 6 | 8 | hostSend | t1: host PipeWire monotonic µs at send |
+| 14 | 4 | lastEchoBeaconSeq | the echo this beacon reports |
+| 18 | 8 | lastEchoClientSend | its t3, echoed verbatim (client µs) |
+| 26 | 8 | lastEchoHostReceive | its t4, measured at arrival (host µs) |
+
+With flags bit0 clear the lastEcho fields MUST be zero; non-zero bytes
+there reject (the fec-field none rule). Truncation and trailing bytes
+reject — the message is exactly its layout.
+
+BeaconEcho (client→host, one per beacon), fixed 29 bytes:
+
+| offset | size | field | notes |
+|---|---|---|---|
+| 0 | 1 | type | 0x02 |
+| 1 | 4 | beaconSeq | copied from the beacon |
+| 5 | 8 | hostSend | t1, copied verbatim |
+| 13 | 8 | clientReceive | t2: client µs at beacon arrival |
+| 21 | 8 | clientSend | t3: client µs at echo send |
+
+t4 (host receive) is measured locally by the host, never on the wire.
+Offset and RTT from one pair, the classic four-timestamp shape feeding
+CL-10's HostClockModel (min-filtered offset + regression skew):
+
+```
+rtt    = (t4 − t1) − (t3 − t2)
+offset = ((t2 − t1) + (t3 − t4)) / 2        (client − host, µs)
+```
+
+Worked example (`clockWorkedExample` in the file, checked by test): true
+offset 250,000 µs, forward path 3,000 µs, reverse 5,000 µs, turnaround
+500 µs → t1=1,000,000 t2=1,253,000 t3=1,253,500 t4=1,008,500, so
+rtt = 8,500 − 500 = **8,000 µs** and offset = (253,000 + 245,000) / 2 =
+**249,000 µs** — 1,000 µs shy of truth, exactly the path asymmetry / 2
+the timing doc's min-filter accepts.
+
+## The chan=3 feedback report (wire v1)
+
+The whole payload of every 25–50 ms client→host feedback datagram
+(telemetry class, unreliable by design — a lost report is superseded).
+Fixed 21-byte header, little-endian:
+
+| offset | size | field | notes |
+|---|---|---|---|
+| 0 | 1 | pathId | 0 in v1 (resiliency §6), carried verbatim |
+| 1 | 1 | flags | bit0: TLV block present; bits 1–7 reserved |
+| 2 | 8 | clientTimestamp | client µs at report build |
+| 10 | 8 | dispersionBase | client µs base for sample deltas; MUST be 0 when sampleCount is 0 |
+| 18 | 1 | channelBlockCount | 0…8 |
+| 19 | 1 | sampleCount | 0…112 |
+| 20 | 1 | nackCount | 0…6 |
+
+then, in order: channel blocks (15 B each: `chan:u8 highestSeq:u16
+received:u32 missing:u32 duplicates:u32`, cumulative session counters),
+dispersion samples (6 B each: `chan:u8 seq:u16 arrivalDelta:u24` µs past
+the base — RFC 8888-style per-packet arrivals for the burst-dispersion
+estimator), NACK entries (`frame:u32 bitmapByteCount:u8 bitmap`, bit n
+set = shard index n missing; 1…32 bytes, canonical: sized by the highest
+set bit, zero final byte rejects), and the envelope's exact TLV scheme
+when flags bit0 (`count:u8 (type:u8 len:u8 value)*`, unknown types
+skipped by consumers, preserved by the codec) — the v1.x escape hatch.
+Trailing bytes reject; over-bounds counts reject on the count byte.
+
+Bounds rationale: 112 samples cover a worst-case protected IDR train
+(~80 data + ~20 parity shards) plus the 10-packet audio probe of a 50 ms
+window; 6 NACK entries — more FEC-impossible frames in flight than that
+is IDR-request territory; 8 channel blocks = 5 registered channels plus
+feature headroom. All bounds maxed the structural encoding is **1035 B**
+(21 + 8×15 + 112×6 + 6×37), inside the 1112 B plaintext shard budget
+with 77 B of TLV headroom; encode additionally enforces the 1112 B
+ceiling against fat TLV sets.
+
+## File format: beacon-v1.json
+
+Top-level: `format` ("lyte-wire-beacon-vectors"), `formatVersion` (1),
+`wireVersion` (1), `beaconVectors`, `feedbackVectors`,
+`clockWorkedExample`.
+
+`beaconVectors` carry `decoder` ("beacon" or "echo") plus the envelope
+file's kinds (`roundtrip`, `decodeLenient`, `decodeReject`) over
+`messageHex`; struct fields ride as `beacon`/`echo` objects with hex
+u64 timestamps. `feedbackVectors` mirror the envelope kinds including
+`encodeReject` over `report`/`reportHex`. `error` names are
+`BeaconError`/`FeedbackError` case names. `clockWorkedExample` pins the
+computation above: decoding `echoHex` plus the local `hostReceiveHex`
+must yield exactly `offsetMicroseconds`/`rttMicroseconds`.
+
+## Vector inventory (beacon-v1.json, 13 beacon + 19 feedback + 1 example)
+
+Beacon round trips: `beacon-first` (session start, no echo, flags 0),
+`beacon-steady` (the hand-computed anchor), `beacon-seq-max` (u32/u64
+maxima), `echo-nominal` (the anchor), `echo-worked-example`.
+
+Beacon lenient decode: `beacon-reserved-flags-ignored`.
+
+Beacon decode rejects: `beacon-truncated` (33 B), `beacon-trailing-byte`
+(35 B), `beacon-bad-type` (echo type at beacon length),
+`beacon-nonzero-absent-echo`, `echo-truncated`, `echo-trailing-byte`,
+`echo-bad-type` (0x7f).
+
+Feedback round trips: `feedback-nominal` (the hand-computed anchor,
+80 B), `feedback-empty-sections` (21 B header only),
+`feedback-bounds-maxed` (1035 B structural ceiling),
+`feedback-full-budget` (maxed + 74 B TLV = exactly 1112 B).
+
+Feedback lenient decode: `feedback-reserved-flags-ignored`.
+
+Feedback encode rejects: `feedback-too-many-channels` (9),
+`feedback-too-many-samples` (113), `feedback-too-many-nacks` (7),
+`feedback-delta-overflow` (2²⁴ µs), `feedback-over-budget-tlv` (1113 B).
+
+Feedback decode rejects: `feedback-truncated-header` (20 B),
+`feedback-truncated-sections`, `feedback-sample-count-over-bounds`
+(count byte 200), `feedback-nonzero-base-no-samples`,
+`feedback-nack-bitmap-count-zero`, `feedback-nack-bitmap-count-oversize`
+(33), `feedback-nack-bitmap-noncanonical` (zero final byte),
+`feedback-trailing-bytes`, `feedback-truncated-tlv`.
