@@ -294,7 +294,7 @@ public final class Session {
                 return events
             }
             guard envelope.channel == .ctrl,
-                  payload.first == HostCtrlMessageType.noiseHandshake1
+                  payload.first == CtrlMessageType.noiseHandshake1
             else {
                 counters.dropped += 1
                 events.append(.dropped(.notEstablished(envelope.channel.rawValue)))
@@ -459,7 +459,7 @@ public final class Session {
         do {
             let message2 = try responder.writeMessage2()
             try sendCtrl(
-                body: [HostCtrlMessageType.noiseHandshake2] + message2,
+                body: [CtrlMessageType.noiseHandshake2] + message2,
                 sealed: false,
                 now: now, hostMicroseconds: hostMicroseconds
             )
@@ -498,7 +498,7 @@ public final class Session {
                 return [.dropped(.malformedCtrl)]
             }
             return accept(echo: echo, hostMicroseconds: hostMicroseconds)
-        case HostCtrlMessageType.pathResponse:
+        case CtrlMessageType.pathResponse:
             guard let response = try? PathResponse.decode(payload) else {
                 counters.dropped += 1
                 return [.dropped(.malformedCtrl)]
@@ -509,7 +509,7 @@ public final class Session {
                 ),
                 now: now, hostMicroseconds: hostMicroseconds
             )
-        case HostCtrlMessageType.idrRequest:
+        case CtrlMessageType.idrRequest:
             guard let request = try? IdrRequest.decode(payload) else {
                 counters.dropped += 1
                 return [.dropped(.malformedCtrl)]

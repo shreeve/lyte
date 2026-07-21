@@ -61,90 +61,9 @@ final class PathMigrationGateTests: XCTestCase {
     /// 24 B envelope + 11 B TLV block + 1112 B shard.
     private static let fullDatagramBytes = 1_147
 
-    // MARK: Conn-id TLV value codec
-
-    func testConnectionIdRoundTripsThroughEnvelopeTlv() throws {
-        let connId = makeConnectionId()
-        let envelope = Envelope(
-            channel: .videoActive,
-            seq: ChannelSeq(rawValue: 7),
-            frame: FrameNumber(rawValue: 3),
-            timestamp: 1_000_000,
-            fec: 0,
-            extensions: [
-                // An unknown type rides alongside: skipped, not tripped on.
-                try WireExtension(type: 0x7F, value: [0xEE]),
-                connId.wireExtension,
-            ]
-        )
-        let wire = try envelope.encode(plaintextShard: [1, 2, 3])
-        let (decoded, payload) = try Envelope.decode(wire)
-        XCTAssertEqual(
-            try ConnectionId.decode(extensions: decoded.extensions), connId
-        )
-        XCTAssertEqual(Array(payload), [1, 2, 3])
-
-        // Absent TLV is a legal envelope: nil, not an error.
-        XCTAssertNil(try ConnectionId.decode(extensions: [
-            try WireExtension(type: 0x7F, value: [0xEE])
-        ]))
-        XCTAssertNil(try ConnectionId.decode(extensions: []))
-    }
-
-    func testConnectionIdDecodeIsLoudOnHostileValues() throws {
-        // Wrong width: the W0 vector pins 8 bytes.
-        XCTAssertThrowsError(try ConnectionId(bytes: [1, 2, 3])) {
-            XCTAssertEqual(
-                $0 as? ConnectionIdError, .invalidValueLength(3)
-            )
-        }
-        // Two identity claims in one envelope is ambiguity, not a tie.
-        let connId = makeConnectionId()
-        XCTAssertThrowsError(try ConnectionId.decode(extensions: [
-            connId.wireExtension,
-            makeConnectionId(seed: 0xBAD).wireExtension,
-        ])) {
-            XCTAssertEqual($0 as? ConnectionIdError, .duplicateTlv)
-        }
-        // A malformed value inside the reserved type is loud too.
-        XCTAssertThrowsError(try ConnectionId.decode(extensions: [
-            try WireExtension(
-                type: WireExtension.ReservedType.connectionId,
-                value: [0xAA]
-            )
-        ])) {
-            XCTAssertEqual(
-                $0 as? ConnectionIdError, .invalidValueLength(1)
-            )
-        }
-    }
-
-    // MARK: Challenge/response codec
-
-    func testPathMessageCodecsRoundTripAndReject() throws {
-        let challenge = PathChallenge(token: 0x0102_0304_0506_0708)
-        let challengeWire = challenge.encode()
-        XCTAssertEqual(challengeWire.count, PathChallenge.encodedByteCount)
-        XCTAssertEqual(challengeWire[0], HostCtrlMessageType.pathChallenge)
-        XCTAssertEqual(try PathChallenge.decode(challengeWire), challenge)
-
-        let response = PathResponse(echoing: challenge)
-        XCTAssertEqual(response.token, challenge.token)
-        let responseWire = response.encode()
-        XCTAssertEqual(responseWire[0], HostCtrlMessageType.pathResponse)
-        XCTAssertEqual(try PathResponse.decode(responseWire), response)
-
-        // Truncation and type confusion reject; they never cross-decode.
-        XCTAssertThrowsError(
-            try PathChallenge.decode(Array(challengeWire.dropLast()))
-        )
-        XCTAssertThrowsError(try PathResponse.decode(challengeWire)) {
-            XCTAssertEqual(
-                $0 as? PathMessageError,
-                .unexpectedType(HostCtrlMessageType.pathChallenge)
-            )
-        }
-    }
+    // NOTE: the conn-id TLV and path-message CODEC tests moved to
+    // Wire/Tests/LyteWireTests/SessionCodecTests.swift with the codec
+    // promotion; what stays here is the PathValidator behavior.
 
     // MARK: The gate — mid-stream rebind
 

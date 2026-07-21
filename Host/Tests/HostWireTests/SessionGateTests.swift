@@ -82,7 +82,7 @@ final class SessionGateTests: XCTestCase {
         mutating func message1Datagram(clientMicros: UInt64) throws -> [UInt8] {
             let message1 = try noise.writeMessage1()
             return try ctrlDatagram(
-                body: [HostCtrlMessageType.noiseHandshake1] + message1,
+                body: [CtrlMessageType.noiseHandshake1] + message1,
                 sealed: false,
                 clientMicros: clientMicros
             )
@@ -122,7 +122,7 @@ final class SessionGateTests: XCTestCase {
             let (envelope, payload) = try Envelope.decode(bytes)
             if transport == nil {
                 guard envelope.channel == .ctrl,
-                      payload.first == HostCtrlMessageType.noiseHandshake2
+                      payload.first == CtrlMessageType.noiseHandshake2
                 else {
                     XCTFail("expected bare message 2 first, got chan "
                         + "\(envelope.channel.rawValue)")
@@ -201,7 +201,7 @@ final class SessionGateTests: XCTestCase {
         XCTAssertTrue(sent.allSatisfy { $0.pacerClass == .control })
 
         let (_, message2Payload) = try client.absorb(sent[0].bytes)
-        XCTAssertEqual(message2Payload.first, HostCtrlMessageType.noiseHandshake2)
+        XCTAssertEqual(message2Payload.first, CtrlMessageType.noiseHandshake2)
         XCTAssertNotNil(client.transport)
         XCTAssertEqual(client.transport!.handshakeHash.count, 32,
                        "the transcript hash the W6 PAKE will bind to")
