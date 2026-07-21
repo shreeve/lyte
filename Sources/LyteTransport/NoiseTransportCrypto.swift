@@ -136,16 +136,22 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         let started = DispatchTime.now()
         var lastFailure = "no response from \(hostAddress):\(hostPort) "
             + "after \(attempts) attempts"
+        // ONE session, ONE message 1, retransmitted verbatim across the
+        // retry window (classic handshake-retransmit semantics). The
+        // first live run proved why: a Wi-Fi host waking from power save
+        // can deliver message 1 seconds late — the host completes and
+        // starts streaming against THAT message, and a client that
+        // already rolled to a fresh ephemeral can never read the answer
+        // (the host, established, drops all later message 1s). Resending
+        // the same bytes keeps every host answer valid for this
+        // transcript, however late it lands.
+        var session = try NoiseSession(
+            role: .initiator,
+            staticKeys: NoiseKeyPair.generate(),
+            remoteStaticPublicKey: hostStaticPublicKey
+        )
+        let message1 = try session.writeMessage1()
         for _ in 0..<attempts {
-            // Fresh session per attempt: a stale message 2 (from a lost
-            // earlier exchange) fails authentication against the new
-            // ephemeral instead of completing the wrong transcript.
-            var session = try NoiseSession(
-                role: .initiator,
-                staticKeys: NoiseKeyPair.generate(),
-                remoteStaticPublicKey: hostStaticPublicKey
-            )
-            let message1 = try session.writeMessage1()
             try io.sendToHost(encodeCarriage(
                 type: CtrlMessageType.noiseHandshake1, message: message1))
 
