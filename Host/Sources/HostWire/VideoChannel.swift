@@ -1,33 +1,42 @@
-// VideoChannel: the host's video-channel wiring (HS-5). One encoded
-// Annex-B frame in — from the NVENC packet callback on Linux, from the
-// corpus in the macOS gate test — Lyte-UDP datagram byte-blobs out, in
-// pacer order, each tagged with its PacerClass so the send loop can map
-// classes to per-packet TOS (video 0xA0 CS5). Sans-IO in the HostCore
-// style: no sockets, no threads, no clock — `now` is injected monotonic
-// nanoseconds everywhere and the caller owns scheduling and syscalls.
+// VideoChannel: the host's video-channel wiring (HS-5), now the session's
+// paced send channel (HS-7). One encoded Annex-B frame in — from the NVENC
+// packet callback on Linux, from the corpus in the macOS gate test —
+// Lyte-UDP datagram byte-blobs out, in pacer order, each tagged with its
+// PacerClass so the send loop can map classes to per-packet TOS (video
+// 0xA0 CS5, control 0xC0 CS6). Sans-IO in the HostCore style: no sockets,
+// no threads, no clock — `now` is injected monotonic nanoseconds
+// everywhere and the caller owns scheduling and syscalls.
 //
-// Composition, nothing invented here: LyteWire's VideoPacketizer owns the
-// per-channel seq and the FEC geometry (ladder per regime); Envelope
-// encode enforces the §4.2 budgets (1112 B shard, 1152 B datagram);
-// HostCore's Pacer owns batch timing and strict priority. This layer only
-// marries them — packetize, encode, enqueue, and hand drained datagrams
-// to the sink.
+// Crypto seam (§4.1), filled at HS-7: `seal` is injected — the Session's
+// NoiseTransport (or the `--insecure` passthrough) turns each plaintext
+// shard into the wire payload with the exact header bytes (fixed envelope
+// + TLV block) as AAD, the same discipline the client's TransportSender
+// pins. Nil (the pre-session HS-5 shape) keeps bare-plaintext framing.
 //
-// Crypto seam (§4.1): datagrams leave as envelope + bare plaintext shard
-// (`--insecure` framing). When Noise lands at HS-7, sealing happens where
-// `encodeDatagram()` is called today — the FEC geometry, budgets, and
-// pacer math are identical with and without crypto by design, so nothing
-// upstream of that call site moves.
+// Shard budget, the HS-7 accounting fix: the frozen Wire geometry table
+// fills shards to 1112 B, which is exact only for a bare envelope —
+// 24 + 1112 + 16 (tag) = 1152. With the HS-12 conn-id TLV block (11 B)
+// on every datagram, a full shard would burst the budget
+// (24 + 11 + 1112 + 16 = 1163), so the geometry here derives from the
+// same parity ladder but with the real headroom: shard ≤ 1128 − tag −
+// TLV block (1101 B with the conn-id, 1112 B without). The tag is
+// reserved in `--insecure` mode too, so FEC geometry never depends on
+// the crypto mode (the §4.2 rule). This is why packetization moved
+// in-house from LyteWire.VideoPacketizer: the table cannot be told about
+// TLV headroom and Wire/ is not this slice's territory. Everything else
+// (balanced split, FecField interior, contiguous ascending seq per
+// frame) is byte-identical to the W2 packetizer — the HS-5 gate test
+// still proves it against the frozen corpus.
 //
 // Pacer-class ruling for this slice, deliberately simple: EVERY shard of
 // every frame — data and parity alike — is `.freshVideo`; shards of a
 // keyframe (IDR/parameter sets) additionally enqueue `urgent`, which jumps
 // only their own class's FIFO (the Pacer's IDR-on-demand semantics) and
-// never starves audio or control. The fresh/tail split (first-quantum
-// heuristics, refinement demotion) only becomes meaningful when the
-// ratchet and NACK-retransmit paths exist to *produce* tail traffic —
-// that is the HS-17/ratchet era's call, and guessing it now would just be
-// policy without a consumer. Documented simplification, not an oversight.
+// never starves audio or control. Control datagrams (beacons, path
+// challenges, handshake) enter through `enqueueControl` and outrank video
+// structurally — HS-6's strict priority, all traffic classes through one
+// schedule. The fresh/tail split waits for the ratchet/NACK era, which is
+// what would produce tail traffic.
 
 import HostCore
 import LyteWire
@@ -36,15 +45,28 @@ import LyteWire
 /// routing metadata the send loop needs (class → TOS mapping lives in the
 /// caller, matching lyte-pace-check's precedent).
 public struct VideoChannelDatagram: Hashable, Sendable {
-    /// The full wire image (24 B envelope + shard), ≤ 1152 B by
-    /// construction — `Envelope.encode` enforced it before this existed.
+    /// The full wire image (24 B envelope [+ TLV block] + wire payload),
+    /// ≤ 1152 B by construction — `Envelope.encode` enforced it.
     public let bytes: [UInt8]
     public let pacerClass: PacerClass
     public let frameNumber: FrameNumber
     public let seq: ChannelSeq
     /// True for shards of an IDR/parameter-set frame (enqueued urgent).
     public let isKeyframe: Bool
+    /// Where this datagram must go: nil is the session's primary path
+    /// (the connected peer); set only for path-validation challenges,
+    /// which must travel on the exact unvalidated tuple (HS-12).
+    public let destination: FourTuple?
 }
+
+/// The HS-7 crypto seam: exact header bytes as AAD, envelope for nonce
+/// material, plaintext in, wire payload (ciphertext ‖ tag, or the shard
+/// unchanged in `--insecure`) out. Mirrors the client seam's shape.
+public typealias VideoChannelSealer = (
+    _ plaintext: ArraySlice<UInt8>,
+    _ aad: ArraySlice<UInt8>,
+    _ envelope: Envelope
+) throws -> [UInt8]
 
 public struct VideoChannelConfig: Sendable {
     public var channel: ChannelId
@@ -60,10 +82,11 @@ public struct VideoChannelConfig: Sendable {
     /// TLV (type 0x01) so the client can attribute datagrams to the
     /// session regardless of source 4-tuple — QUIC's every-packet rule,
     /// chosen over first-packet-only because datagrams are independently
-    /// lossy. Cost: 11 B/datagram (count + TLV header + 8 B value),
-    /// ≈1% of a full shard; the worst case 24+11+1112 = 1147 B still
-    /// clears the 1152 B budget, and `Envelope.encode` keeps enforcing
-    /// it. Nil (default) sends the pre-HS-12 bare envelope.
+    /// lossy. Cost: 11 B/datagram (count + TLV header + 8 B value) plus
+    /// a shard budget of 1101 B instead of 1112 B (see the header
+    /// comment); the worst case 24 + 11 + 1101 + 16 = 1152 B lands
+    /// exactly on the budget, and `Envelope.encode` keeps enforcing it.
+    /// Nil (default) sends the bare envelope with full-size shards.
     public var connectionId: ConnectionId?
 
     public init(
@@ -80,6 +103,24 @@ public struct VideoChannelConfig: Sendable {
         self.rateBitsPerSecond = rateBitsPerSecond
         self.pacerQuantumNS = pacerQuantumNS
         self.connectionId = connectionId
+    }
+
+    /// The TLV block bytes every datagram of this config carries:
+    /// count byte + type/length header + the 8-byte conn-id value.
+    var tlvBlockByteCount: Int {
+        connectionId == nil ? 0 : 1 + 2 + ConnectionId.byteCount
+    }
+
+    /// The plaintext shard budget under this config's real per-datagram
+    /// overhead. The AEAD tag is reserved unconditionally so geometry is
+    /// identical with and without crypto (§4.2).
+    public var shardBudgetByteCount: Int {
+        min(
+            WireBudget.maxPlaintextShardByteCount,
+            WireBudget.maxWirePayloadByteCount
+                - WireBudget.aeadTagByteCount
+                - tlvBlockByteCount
+        )
     }
 }
 
@@ -99,14 +140,21 @@ public final class VideoChannel {
     public let config: VideoChannelConfig
     public private(set) var counters = VideoChannelCounters()
 
-    /// The pacer is owned here for now: video is the only paced traffic
-    /// on the host until the audio channel (HS-15 era) joins the send
-    /// loop, at which point the Pacer lifts out to a shared owner and
-    /// token tags get a channel-routing scheme. Owning keeps this slice's
-    /// tag space trivially collision-free.
+    /// The pacer is owned here for now: this channel is the session's
+    /// only paced sender until the audio channel (HS-15 era) joins the
+    /// send loop, at which point the Pacer lifts out to a shared owner.
+    /// Control traffic already rides it via `enqueueControl`, so the
+    /// HS-6 strict-priority schedule covers every class the session
+    /// emits today.
     private let pacer: Pacer
-    private var packetizer: VideoPacketizer
     private let send: (VideoChannelDatagram) -> Void
+    private let seal: VideoChannelSealer?
+
+    /// The next seq the packetization below will allocate — contiguous
+    /// ascending in shard-index order across each frame's k+m shards
+    /// (wire contract: the assembler infers a frame's seq range from any
+    /// one shard).
+    public private(set) var nextSeq: ChannelSeq
 
     /// Datagrams waiting in the pacer, keyed by their token tag.
     private var pending: [UInt64: VideoChannelDatagram] = [:]
@@ -115,6 +163,7 @@ public final class VideoChannel {
     public init(
         config: VideoChannelConfig,
         now: UInt64,
+        seal: VideoChannelSealer? = nil,
         send: @escaping (VideoChannelDatagram) -> Void
     ) {
         self.config = config
@@ -123,18 +172,18 @@ public final class VideoChannel {
             quantumNS: config.pacerQuantumNS,
             now: now
         )
-        self.packetizer = VideoPacketizer(
-            channel: config.channel, firstSeq: config.firstSeq
-        )
+        self.nextSeq = config.firstSeq
+        self.seal = seal
         self.send = send
     }
 
     /// Packetizes one encoded frame and enqueues every shard. Throws what
-    /// the packetizer/envelope throw (non-frame-shaped bytes, a lying
-    /// keyframe flag, an unprotectable frame size, a budget breach) —
-    /// loud, per the W2 rule. Returns the number of shards enqueued.
-    /// `captureTimestampMicroseconds` is the PipeWire graph-clock capture
-    /// stamp; it rides the envelope timestamp field verbatim.
+    /// the packetization/envelope/seal steps throw (non-frame-shaped
+    /// bytes, a lying keyframe flag, an unprotectable frame size, a
+    /// budget breach, a seal refusal) — loud, per the W2 rule. Returns
+    /// the number of shards enqueued. `captureTimestampMicroseconds` is
+    /// the PipeWire graph-clock capture stamp; it rides the envelope
+    /// timestamp field verbatim.
     @discardableResult
     public func ingest(
         frame annexB: [UInt8],
@@ -143,43 +192,70 @@ public final class VideoChannel {
         isKeyframe: Bool,
         now: UInt64
     ) throws -> Int {
-        let shards = try packetizer.packetize(
+        let shards = try packetize(
             frame: annexB,
             frameNumber: frameNumber,
-            captureTimestamp: HostTimestamp(
-                microseconds: captureTimestampMicroseconds
-            ),
-            isIDR: isKeyframe,
-            regime: config.regime
+            captureTimestampMicroseconds: captureTimestampMicroseconds,
+            isKeyframe: isKeyframe
         )
-        for shard in shards {
-            var envelope = shard.envelope
-            if let connectionId = config.connectionId {
-                envelope.extensions.append(connectionId.wireExtension)
-            }
+        for (envelope, payload) in shards {
             let datagram = VideoChannelDatagram(
-                bytes: try envelope.encode(plaintextShard: shard.payload),
+                bytes: try encodeSealed(envelope: envelope, plaintext: payload),
                 pacerClass: .freshVideo,
                 frameNumber: frameNumber,
-                seq: shard.envelope.seq,
-                isKeyframe: isKeyframe
+                seq: envelope.seq,
+                isKeyframe: isKeyframe,
+                destination: nil
             )
-            let tag = nextTag
-            nextTag &+= 1
-            pending[tag] = datagram
-            pacer.enqueue(
-                .freshVideo,
-                bytes: datagram.bytes.count,
-                frameID: frameNumber.rawValue,
-                urgent: isKeyframe,
-                tag: tag,
-                now: now
-            )
+            enqueue(datagram, urgent: isKeyframe,
+                    frameID: frameNumber.rawValue, now: now)
         }
         counters.framesIngested += 1
         if isKeyframe { counters.keyframesIngested += 1 }
         counters.shardsEnqueued += shards.count
         return shards.count
+    }
+
+    /// HS-7: one already-encoded control datagram (beacon, handshake
+    /// message, path challenge) through the same pacer, class `.control`
+    /// — strict priority puts it ahead of every queued video shard
+    /// without starving in-flight batches. The bytes are the full wire
+    /// image; sealing (or not — handshake messages travel bare) already
+    /// happened at the session layer, which owns the CTRL seq space.
+    public func enqueueControl(
+        _ bytes: [UInt8],
+        seq: ChannelSeq,
+        destination: FourTuple? = nil,
+        now: UInt64
+    ) {
+        let datagram = VideoChannelDatagram(
+            bytes: bytes,
+            pacerClass: .control,
+            frameNumber: FrameNumber(rawValue: 0),
+            seq: seq,
+            isKeyframe: false,
+            destination: destination
+        )
+        enqueue(datagram, urgent: false, frameID: nil, now: now)
+    }
+
+    private func enqueue(
+        _ datagram: VideoChannelDatagram,
+        urgent: Bool,
+        frameID: UInt32?,
+        now: UInt64
+    ) {
+        let tag = nextTag
+        nextTag &+= 1
+        pending[tag] = datagram
+        pacer.enqueue(
+            datagram.pacerClass,
+            bytes: datagram.bytes.count,
+            frameID: frameID,
+            urgent: urgent,
+            tag: tag,
+            now: now
+        )
     }
 
     /// Drains every batch the pacer will emit at `now`, handing each
@@ -219,9 +295,70 @@ public final class VideoChannel {
         pacer.telemetry
     }
 
-    /// The seq the next packetized shard will carry — resumption and
-    /// wrap-test visibility, mirroring the packetizer's own exposure.
-    public var nextSeq: ChannelSeq {
-        packetizer.nextSeq
+    // MARK: Packetization (W2 semantics, HS-7 headroom)
+
+    /// The W2 packetizer's exact behavior — frame-shape and IDR-claim
+    /// cross-checks, the parity ladder, balanced split, FecField
+    /// interior, contiguous seq allocation — over the config's real
+    /// shard budget (header comment). With a bare envelope the geometry
+    /// is bit-identical to `FecGeometryTable.geometry`, which the HS-5
+    /// gate test still asserts against the frozen corpus.
+    private func packetize(
+        frame annexB: [UInt8],
+        frameNumber: FrameNumber,
+        captureTimestampMicroseconds: UInt64,
+        isKeyframe: Bool
+    ) throws -> [(envelope: Envelope, payload: [UInt8])] {
+        guard AnnexBCheck.isFrameShaped(annexB) else {
+            throw VideoError.frameNotFrameShaped
+        }
+        let derivedIdr = AnnexBCheck.containsIrap(annexB)
+        guard isKeyframe == derivedIdr else {
+            throw VideoError.idrFlagMismatch(
+                claimed: isKeyframe, derived: derivedIdr
+            )
+        }
+
+        let budget = config.shardBudgetByteCount
+        let k = (annexB.count + budget - 1) / budget
+        let m = try FecGeometryTable.parityShards(
+            forDataShards: k, regime: config.regime
+        )
+        let geometry = try FecGeometry(
+            dataShards: k, parityShards: m, groupByteCount: annexB.count
+        )
+        let payloads = try FecEncoder.encode(group: annexB, geometry: geometry)
+
+        var shards: [(envelope: Envelope, payload: [UInt8])] = []
+        shards.reserveCapacity(payloads.count)
+        for (index, payload) in payloads.enumerated() {
+            let field = try FecField.reedSolomonShard(index, of: geometry)
+            var envelope = Envelope(
+                channel: config.channel,
+                seq: nextSeq,
+                frame: frameNumber,
+                timestamp: captureTimestampMicroseconds,
+                fec: field.encoded
+            )
+            if let connectionId = config.connectionId {
+                envelope.extensions.append(connectionId.wireExtension)
+            }
+            shards.append((envelope, payload))
+            nextSeq = nextSeq.next
+        }
+        return shards
+    }
+
+    /// Header bytes double as AAD — exactly what the receiver slices off
+    /// ahead of the payload (the TransportSender rule, mirrored).
+    private func encodeSealed(
+        envelope: Envelope, plaintext: [UInt8]
+    ) throws -> [UInt8] {
+        guard let seal else {
+            return try envelope.encode(plaintextShard: plaintext)
+        }
+        let header = try envelope.encode(payload: [])
+        let sealed = try seal(plaintext[...], header[...], envelope)
+        return try envelope.encode(payload: sealed)
     }
 }

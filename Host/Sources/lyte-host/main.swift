@@ -1,8 +1,11 @@
 // lyte-host capture spike (H0a slice 1): portal ScreenCast → PipeWire frames
-// → NVENC HEVC (libavcodec leaf) → Annex-B file. HS-5 adds the wire mode:
-// `--wire-out HOST:PORT` streams the same encode output through
-// HostWire.VideoChannel (packetize + FEC + pacer) → CNetIO instead of the
-// file, with the PipeWire graph-clock capture stamp in every envelope.
+// → NVENC HEVC (libavcodec leaf) → Annex-B file. HS-5 added the wire mode;
+// HS-7 turns it into a real session: `--wire-out HOST:PORT` (or
+// `--wire-listen PORT`) runs HostWire.Session — Noise IK responder
+// handshake against a connecting client (default) or the `--insecure`
+// CP-3 passthrough — then capture → encode → VideoChannel → seal → Pacer
+// → CNetIO, with 1 Hz beacons, conn-id TLVs, and inbound handling
+// (echoes, IDR requests, path challenges) on the same loop.
 
 import CHevcEncode
 import CPipeWireCapture
@@ -25,11 +28,16 @@ struct Options {
     var connector = ""
     var idleFloor = true
     var ratchet = false
-    /// HS-5: stream shards to this peer instead of writing the file.
+    /// HS-5/HS-7: run a session to this peer instead of writing the file.
     var wireOut: (host: String, port: UInt16)?
+    /// HS-7: bind here and await a connecting client (Noise mode).
+    var wireListen: UInt16?
     /// Pacer rate for the wire mode. No negotiation exists yet (HS-16),
     /// so the configured ceiling is the honest default, per Pacer's rule.
     var wireRateMbps = 20.0
+    /// CP-3 fallback (§4.1): passthrough seal, stream to the fixed peer
+    /// without a handshake. The default is real Noise.
+    var insecure = false
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
@@ -83,6 +91,14 @@ struct Options {
                     throw HostError("--wire-rate-mbps needs a positive number")
                 }
                 opts.wireRateMbps = v
+            case "--wire-listen":
+                i += 1
+                guard i < args.count, let port = UInt16(args[i]), port > 0 else {
+                    throw HostError("--wire-listen needs a port")
+                }
+                opts.wireListen = port
+            case "--insecure":
+                opts.insecure = true
             case "--help", "-h":
                 print("""
                 usage: lyte-host [--out PATH] [--seconds N] [--bitrate-mbps N]
@@ -105,10 +121,16 @@ struct Options {
                                     fraction of fps until quality converges
                                     at the visually-lossless floor, then go
                                     silent (replaces the steady idle floor)
-                  --wire-out H:P    HS-5 wire mode: stream Lyte-UDP video
-                                    shards (packetizer + FEC + pacer, per-
-                                    packet TOS 0xA0) to HOST:PORT instead
-                                    of writing the file
+                  --wire-out H:P    session mode: Noise IK handshake with
+                                    the client at HOST:PORT, then sealed
+                                    Lyte-UDP shards (packetizer + FEC +
+                                    pacer + 1 Hz beacon, per-packet TOS)
+                                    instead of writing the file
+                  --wire-listen P   session mode, but bind port P and adopt
+                                    whichever client completes message 1
+                  --insecure        CP-3 fallback: no handshake, passthrough
+                                    seal, stream to the --wire-out peer
+                                    immediately (re-gate with Noise later)
                   --wire-rate-mbps  pacer rate in the wire mode (default 20)
 
                 subcommands: lyte-host sniff --port PORT  (header dissector)
@@ -131,9 +153,9 @@ final class Sink {
     var capture: OpaquePointer?
     var encoder: OpaquePointer?
     /// Exactly one of these is the packet destination: the Annex-B file
-    /// (H0a spike) or the Lyte-UDP wire leg (HS-5 `--wire-out`).
+    /// (H0a spike) or the Lyte-UDP session leg (HS-7 `--wire-out`).
     var file: UnsafeMutablePointer<FILE>?
-    var wireOut: WireOut?
+    var wire: SessionWire?
 
     var framesIn = 0
     var damageFrames = 0
@@ -192,10 +214,10 @@ final class Sink {
     var lastPacketBytes = 0
     var lastPacketQP = -1
 
-    init(opts: Options, file: UnsafeMutablePointer<FILE>?, wireOut: WireOut?) {
+    init(opts: Options, file: UnsafeMutablePointer<FILE>?, wire: SessionWire?) {
         self.opts = opts
         self.file = file
-        self.wireOut = wireOut
+        self.wire = wire
     }
 
     static func pixFmtName(_ fmt: lyte_pixfmt) -> String? {
@@ -278,9 +300,14 @@ final class Sink {
     /// Idle-floor tick, on the PipeWire loop thread at the fps interval:
     /// when no fresh frame was encoded since the previous tick, re-encode
     /// the retained copy so output flows at a steady rate. In ratchet mode
-    /// the same tick instead drives quality-refinement passes.
+    /// the same tick instead drives quality-refinement passes. In session
+    /// mode the tick is also the between-frames service point — inbound
+    /// datagrams (echoes, IDR requests, path messages) and the 1 Hz
+    /// beacon timer run here, on the same thread as everything else.
     func onTick() {
         if lastError != nil { return }
+
+        wire?.service()
 
         let now = monotonicNow()
         quitIfElapsed(now)
@@ -350,13 +377,16 @@ final class Sink {
         }
     }
 
-    /// Encodes one frame; pts advances monotonically per encoded frame and
-    /// only frame 0 is a forced IDR (repeats are normal P-frames).
+    /// Encodes one frame; pts advances monotonically per encoded frame.
+    /// Frame 0 is a forced IDR, and in session mode so is any frame the
+    /// session demands one for (HS-12 path promotion or a client 0x10 —
+    /// the takeFreshKeyframeRequest poll, consulted per encode).
     private func encode(data: UnsafePointer<UInt8>, stride: Int32) -> Bool {
         var err = [CChar](repeating: 0, count: 256)
         let user = Unmanaged.passUnretained(self).toOpaque()
+        let forceIdr = framesIn == 0 || (wire?.takeForcedIdr() ?? false)
         let rc = lyte_hevc_enc_send(encoder, data, stride, Int64(framesIn),
-                                    framesIn == 0 ? 1 : 0,
+                                    forceIdr ? 1 : 0,
                                     packetTrampoline, user, &err, err.count)
         if rc != 0 {
             fail("encode failed at frame \(framesIn): \(errString(err))")
@@ -376,13 +406,13 @@ final class Sink {
         if firstPacket.isEmpty {
             firstPacket = Array(UnsafeBufferPointer(start: data, count: size))
         }
-        if let wireOut {
+        if let wire {
             do {
-                try wireOut.sendFrame(data: data, size: size,
-                                      isKeyframe: keyframe,
-                                      captureMicros: pendingCaptureUs)
+                try wire.sendFrame(data: data, size: size,
+                                   isKeyframe: keyframe,
+                                   captureMicros: pendingCaptureUs)
             } catch {
-                fail("wire-out failed at packet \(packetsOut): \(error)")
+                fail("session send failed at packet \(packetsOut): \(error)")
                 return
             }
         } else if let file {
@@ -463,10 +493,40 @@ func run() throws {
             + "logged-in user session")
     }
 
-    let destination = opts.wireOut.map { "lyte-udp://\($0.host):\($0.port)" }
-        ?? opts.outputPath
+    let sessionMode = opts.wireOut != nil || opts.wireListen != nil
+    let destination = sessionMode
+        ? "lyte-udp session ("
+            + (opts.wireOut.map { "\($0.host):\($0.port)" }
+                ?? "listen :\(opts.wireListen!)")
+            + (opts.insecure ? ", INSECURE" : ", noise") + ")"
+        : opts.outputPath
     print("lyte-host — \(opts.backend.rawValue) → PipeWire → "
         + "hevc_nvenc → \(destination)")
+
+    // The session comes up BEFORE capture: in Noise mode the host blocks
+    // here for the client's handshake (printing the static public key the
+    // client must hold), so no frames are encoded for nobody and the
+    // first encoded frame is the session's first IDR.
+    var wire: SessionWire?
+    if sessionMode {
+        if opts.insecure, opts.wireOut == nil {
+            throw HostError("--insecure streams to a fixed peer; "
+                + "give --wire-out HOST:PORT")
+        }
+        let w = try SessionWire(
+            listenPort: opts.wireListen,
+            peer: opts.wireOut,
+            insecure: opts.insecure,
+            rateBitsPerSecond: Int(opts.wireRateMbps * 1_000_000)
+        )
+        if !opts.insecure {
+            let hostStatic = try HostStaticKey.loadOrCreate()
+            try w.awaitClient(hostStatic: hostStatic, timeoutSeconds: 120)
+        }
+        wire = w
+        print("session: up — pacer \(opts.wireRateMbps) Mbps, per-packet "
+            + "TOS (video 0xA0 / control 0xC0), 1 Hz beacon on CTRL")
+    }
 
     // Both backends must stay alive for the whole capture: dropping them
     // closes their D-Bus connection, which closes the portal/Mutter session
@@ -492,22 +552,14 @@ func run() throws {
     }
 
     var file: UnsafeMutablePointer<FILE>?
-    var wireOut: WireOut?
-    if let peer = opts.wireOut {
-        wireOut = try WireOut(
-            host: peer.host, port: peer.port,
-            rateBitsPerSecond: Int(opts.wireRateMbps * 1_000_000)
-        )
-        print("wire-out: shards to \(peer.host):\(peer.port), pacer "
-            + "\(opts.wireRateMbps) Mbps, TOS 0xA0 per video datagram")
-    } else {
+    if !sessionMode {
         guard let f = fopen(opts.outputPath, "wb") else {
             throw HostError("cannot open \(opts.outputPath) for writing")
         }
         file = f
     }
 
-    let sink = Sink(opts: opts, file: file, wireOut: wireOut)
+    let sink = Sink(opts: opts, file: file, wire: wire)
     var err = [CChar](repeating: 0, count: 256)
     let user = Unmanaged.passUnretained(sink).toOpaque()
     guard let capture = lyte_pw_capture_new(stream.pipewireFd, stream.nodeId,
@@ -591,15 +643,21 @@ func run() throws {
             + " — the bitstream is not stream-startable")
     }
     print("first packet starts with parameter sets + IDR: OK")
-    if let wireOut = sink.wireOut {
-        let t = wireOut.pacerTelemetry
-        let c = wireOut.counters
+    if let wire = sink.wire {
+        let t = wire.pacerTelemetry
+        let c = wire.counters
+        let s = wire.sessionCounters
         print("""
-        wire-out: \(c.framesIngested) frames → \(c.shardsEnqueued) shards → \
-        \(wireOut.datagramsSent) datagrams (\(wireOut.bytesSent) B) in \
+        session: \(c.framesIngested) frames → \(c.shardsEnqueued) shards → \
+        \(wire.datagramsSent) datagrams (\(wire.bytesSent) B) in \
         \(t.batches) paced batches; max batch wire time \
         \(t.maxBatchWireTimeNS) ns (quantum 1000000); freshVideo max queue \
         delay \(t[.freshVideo].maxQueueDelayNS) ns
+        session: \(s.beaconsSent) beacons, \(s.beaconEchoes) echoes \
+        (last offset \(wire.clock.lastOffsetMicroseconds.map(String.init) ?? "—") µs, \
+        min rtt \(wire.clock.minRttMicroseconds.map(String.init) ?? "—") µs), \
+        \(s.idrRequests) IDR requests, \(s.unsealFailures) unseal failures, \
+        \(s.feedbackDatagrams) feedback datagrams
         """)
     } else {
         print("output: \(opts.outputPath)")

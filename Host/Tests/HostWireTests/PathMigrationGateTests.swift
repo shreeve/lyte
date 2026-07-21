@@ -409,7 +409,7 @@ final class PathMigrationGateTests: XCTestCase {
         )
         let config = validator.config
 
-        // A 10 B runt: 3 × 10 = 30 < the 45 B challenge — withheld.
+        // A 10 B runt: 3 × 10 = 30 < the 61 B challenge — withheld.
         let runt = validator.datagramReceived(
             from: Self.tupleB, connectionId: connId, byteCount: 10, now: 0
         )

@@ -82,9 +82,11 @@ func sniffMain(_ args: [String]) -> Never {
     let storage = UnsafeMutablePointer<UInt8>.allocate(
         capacity: Int(LYTE_NETIO_MAX_BATCH) * slotCap)
     defer { storage.deallocate() }
-    var slots = (0..<Int(LYTE_NETIO_MAX_BATCH)).map { k in
-        lyte_netio_slot(data: storage.advanced(by: k * slotCap),
-                        cap: slotCap, len: 0, tos: 0)
+    var slots = (0..<Int(LYTE_NETIO_MAX_BATCH)).map { k -> lyte_netio_slot in
+        var slot = lyte_netio_slot()
+        slot.data = storage.advanced(by: k * slotCap)
+        slot.cap = slotCap
+        return slot
     }
 
     var seen = 0

@@ -110,9 +110,11 @@ func run() throws {
     let rxCap = 2048
     let rxStorage = UnsafeMutablePointer<UInt8>.allocate(capacity: count * rxCap)
     defer { rxStorage.deallocate() }
-    var slots = (0..<count).map { i in
-        lyte_netio_slot(data: rxStorage.advanced(by: i * rxCap), cap: rxCap,
-                        len: 0, tos: 0)
+    var slots = (0..<count).map { i -> lyte_netio_slot in
+        var slot = lyte_netio_slot()
+        slot.data = rxStorage.advanced(by: i * rxCap)
+        slot.cap = rxCap
+        return slot
     }
     var received = 0
     var lastRecvAt = sendStartMono

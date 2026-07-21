@@ -109,14 +109,17 @@ public struct PathValidatorConfig: Sendable {
     /// Pre-validation send cap: ≤ factor × bytes received on that tuple.
     public var amplificationFactor: Int
     /// What one challenge costs against the budget on the wire: 24 B
-    /// envelope + 11 B conn-id TLV block + 10 B body = 45 B.
+    /// envelope + 11 B conn-id TLV block + 10 B body + 16 B AEAD tag
+    /// = 61 B (HS-7: challenges are sealed like every post-handshake
+    /// datagram; `--insecure` spends 16 B less than accounted, which
+    /// errs the safe way for a reflection budget).
     public var challengeDatagramByteCount: Int
 
     public init(
         validationTimeoutNS: UInt64 = 1_000_000_000,
         fallbackRetentionNS: UInt64 = 3_000_000_000,
         amplificationFactor: Int = 3,
-        challengeDatagramByteCount: Int = 45
+        challengeDatagramByteCount: Int = 61
     ) {
         self.validationTimeoutNS = validationTimeoutNS
         self.fallbackRetentionNS = fallbackRetentionNS

@@ -197,6 +197,7 @@ int lyte_netio_recv_batch(lyte_netio *n, lyte_netio_slot *slots, int count,
 
     struct mmsghdr msgs[LYTE_NETIO_MAX_BATCH];
     struct iovec iovs[LYTE_NETIO_MAX_BATCH];
+    struct sockaddr_in srcs[LYTE_NETIO_MAX_BATCH];
     union {
         char buf[CMSG_SPACE(sizeof(int))];
         struct cmsghdr align;
@@ -210,6 +211,8 @@ int lyte_netio_recv_batch(lyte_netio *n, lyte_netio_slot *slots, int count,
         msgs[i].msg_hdr.msg_iovlen = 1;
         msgs[i].msg_hdr.msg_control = ctrl[i].buf;
         msgs[i].msg_hdr.msg_controllen = sizeof(ctrl[i].buf);
+        msgs[i].msg_hdr.msg_name = &srcs[i];
+        msgs[i].msg_hdr.msg_namelen = sizeof(srcs[i]);
     }
 
     int got = recvmmsg(n->fd, msgs, (unsigned int)count, 0, NULL);
@@ -223,6 +226,14 @@ int lyte_netio_recv_batch(lyte_netio *n, lyte_netio_slot *slots, int count,
     for (int i = 0; i < got; i++) {
         slots[i].len = msgs[i].msg_len;
         slots[i].tos = 0;
+        slots[i].src_ip[0] = '\0';
+        slots[i].src_port = 0;
+        if (msgs[i].msg_hdr.msg_namelen >= sizeof(struct sockaddr_in)
+            && srcs[i].sin_family == AF_INET) {
+            inet_ntop(AF_INET, &srcs[i].sin_addr, slots[i].src_ip,
+                      sizeof(slots[i].src_ip));
+            slots[i].src_port = ntohs(srcs[i].sin_port);
+        }
         for (struct cmsghdr *cm = CMSG_FIRSTHDR(&msgs[i].msg_hdr); cm;
              cm = CMSG_NXTHDR(&msgs[i].msg_hdr, cm)) {
             /* Delivered as IP_TOS (one byte) — glibc also names it

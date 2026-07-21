@@ -28,12 +28,18 @@ typedef struct {
 } lyte_netio_pkt;
 
 /* One receive slot. Caller supplies `data`/`cap`; the receive call fills
-   `len` and `tos` (the TOS byte the datagram arrived with, IP_RECVTOS). */
+   `len`, `tos` (the TOS byte the datagram arrived with, IP_RECVTOS), and
+   the datagram's source address (HS-7: the session learns the client's
+   4-tuple from message 1's arrival, and HS-12's demux trigger attributes
+   every datagram to its source tuple — recvmmsg reports msg_name even on
+   a connected socket). */
 typedef struct {
     uint8_t *data;
     size_t cap;
     size_t len;
     uint8_t tos;
+    char src_ip[16];   /* dotted quad, NUL-terminated */
+    uint16_t src_port; /* host order */
 } lyte_netio_slot;
 
 /* One TX timestamp drained from the socket error queue. `pkt_id` counts
