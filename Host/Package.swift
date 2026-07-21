@@ -55,6 +55,14 @@ targets += [
         name: "lyte-netio-check",
         dependencies: ["CNetIO"]
     ),
+    // HS-6 verification harness: the pure Pacer schedule driving CNetIO
+    // sendmmsg batches on loopback with per-class TOS; TX timestamps
+    // measure batch spacing, IDR drain, and audio wait. Exits nonzero if
+    // a gate bound is violated.
+    .executableTarget(
+        name: "lyte-pace-check",
+        dependencies: ["HostCore", "CNetIO"]
+    ),
     .executableTarget(
         name: "lyte-host",
         dependencies: ["HostCore", "CDBus", "CPipeWireCapture", "CHevcEncode"],
