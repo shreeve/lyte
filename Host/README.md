@@ -10,7 +10,8 @@ The Swift Linux host (LYTE-PLAN §6, `docs/HOST-PLAN.md`). This is the H0a
 - `Sources/CDBus`, `Sources/CPipeWire`, `Sources/CLibAV` — pkg-config
   systemLibrary modules (Linux only).
 - `Sources/CPipeWireCapture` — C leaf: a PipeWire input stream that hands mapped
-  RGB frames to a callback (SPA pod building is macro-only, hence C).
+  RGB frames to a callback (SPA pod building is macro-only, hence C), plus an
+  optional repeating tick on the same loop thread for the steady-rate supply.
 - `Sources/CHevcEncode` — C leaf: libavcodec `hevc_nvenc` with Sunshine's
   low-latency recipe (true CBR, single-frame VBV, GOP INT_MAX, zero B-frames,
   preset p1 + ull, zero reorder, one surface). Annex-B packets out.
@@ -68,3 +69,14 @@ ffmpeg -v error -i /tmp/lyte-h0a.hevc -f null - # decodes with no errors
 The tool also self-checks that the first encoded packet begins with
 VPS/SPS/PPS + an IDR, and rejects loudly (naming a locked session) if the
 portal inhibits capture.
+
+PipeWire delivery is damage-driven (a static desktop yields ~1–2 fps), so the
+host applies Sunshine's idle floor by default: when no fresh frame arrives
+within a frame interval it re-encodes the last captured frame, giving a
+steady ~fps supply. A 5-second run therefore reports ~300 frames encoded —
+e.g. `301 frames encoded (7 damage, 294 repeated), 301 packets out (1 IDR)` —
+instead of a handful. Repeats are ordinary P-frames; note that CBR rate
+control keeps spending budget refining the static scene (Sunshine's
+documented "idle ≠ quiet" behavior), so bytes track the bitrate rather than
+the damage rate. `--no-idle-floor` restores pure damage-driven output for
+debugging.

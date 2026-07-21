@@ -88,10 +88,17 @@ lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
     ctx->keyint_min = INT_MAX;
     ctx->max_b_frames = 0;
     ctx->flags |= AV_CODEC_FLAG_CLOSED_GOP | AV_CODEC_FLAG_LOW_DELAY;
+    /* Sunshine's HEVC min-QP floor (nvenc 19/23/23 per codec) — bounds how
+       far CBR may refine quality per block. */
+    ctx->qmin = 23;
 
     av_opt_set(ctx->priv_data, "preset", "p1", 0);
     av_opt_set(ctx->priv_data, "tune", "ull", 0);
     av_opt_set(ctx->priv_data, "rc", "cbr", 0);
+    /* Sunshine's two-pass quarter-res rate control. Besides better bit
+       placement, it lets CBR go quiet on static content (~4.5x fewer bytes
+       measured on a repeated still) instead of burning budget re-refining. */
+    av_opt_set(ctx->priv_data, "multipass", "qres", 0);
     av_opt_set_int(ctx->priv_data, "zerolatency", 1, 0);
     av_opt_set_int(ctx->priv_data, "delay", 0, 0);
     av_opt_set_int(ctx->priv_data, "forced-idr", 1, 0);

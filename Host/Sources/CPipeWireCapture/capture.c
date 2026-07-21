@@ -18,6 +18,11 @@ struct lyte_pw_capture {
     struct pw_stream *stream;
     struct spa_hook stream_listener;
     struct spa_source *timer;
+    struct spa_source *tick_timer;
+
+    lyte_pw_tick_cb tick_cb;
+    void *tick_user;
+    uint64_t tick_interval_ns;
 
     /* Registry scan state used to resolve the target node's object.serial. */
     uint32_t target_node_id;
@@ -143,6 +148,14 @@ static void on_timeout(void *data, uint64_t expirations)
     (void)expirations;
     c->exit_reason = 1;
     pw_main_loop_quit(c->loop);
+}
+
+static void on_tick(void *data, uint64_t expirations)
+{
+    struct lyte_pw_capture *c = data;
+    (void)expirations;
+    if (c->tick_cb)
+        c->tick_cb(c->tick_user);
 }
 
 /* Registry scan: find the target node's object.serial. pw_stream_connect's
@@ -351,6 +364,17 @@ fail:
     return NULL;
 }
 
+int lyte_pw_capture_set_tick(lyte_pw_capture *c, uint64_t interval_ns,
+                             lyte_pw_tick_cb tick_cb, void *user)
+{
+    if (!c || !tick_cb || interval_ns == 0)
+        return -1;
+    c->tick_cb = tick_cb;
+    c->tick_user = user;
+    c->tick_interval_ns = interval_ns;
+    return 0;
+}
+
 int lyte_pw_capture_run(lyte_pw_capture *c, double timeout_sec,
                         char *err, size_t errlen)
 {
@@ -362,6 +386,19 @@ int lyte_pw_capture_run(lyte_pw_capture *c, double timeout_sec,
         };
         pw_loop_update_timer(pw_main_loop_get_loop(c->loop), c->timer,
                              &value, NULL, false);
+    }
+
+    if (c->tick_cb) {
+        c->tick_timer = pw_loop_add_timer(pw_main_loop_get_loop(c->loop),
+                                          on_tick, c);
+        if (c->tick_timer) {
+            struct timespec interval = {
+                .tv_sec = (time_t)(c->tick_interval_ns / 1000000000ull),
+                .tv_nsec = (long)(c->tick_interval_ns % 1000000000ull),
+            };
+            pw_loop_update_timer(pw_main_loop_get_loop(c->loop), c->tick_timer,
+                                 &interval, &interval, false);
+        }
     }
 
     pw_main_loop_run(c->loop);

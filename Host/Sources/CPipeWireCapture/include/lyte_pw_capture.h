@@ -23,6 +23,11 @@ typedef void (*lyte_pw_frame_cb)(void *user, const uint8_t *data, uint32_t size,
                                  int32_t stride, uint32_t width, uint32_t height,
                                  lyte_pixfmt fmt);
 
+/* Called on the capture loop thread at the interval given to
+   lyte_pw_capture_set_tick. Serialized with frame callbacks (same thread,
+   same loop), so callers need no locking between the two. */
+typedef void (*lyte_pw_tick_cb)(void *user);
+
 typedef struct lyte_pw_capture lyte_pw_capture;
 
 /* Connects to the PipeWire remote on `pipewire_fd` (from the portal's
@@ -31,6 +36,13 @@ typedef struct lyte_pw_capture lyte_pw_capture;
 lyte_pw_capture *lyte_pw_capture_new(int pipewire_fd, uint32_t node_id,
                                      lyte_pw_frame_cb frame_cb, void *user,
                                      char *err, size_t errlen);
+
+/* Optional repeating tick, armed when lyte_pw_capture_run starts. Call
+   before lyte_pw_capture_run. The policy (what a tick means) is the
+   caller's; this leaf only guarantees delivery on the loop thread.
+   Returns 0 on success, -1 on bad arguments. */
+int lyte_pw_capture_set_tick(lyte_pw_capture *c, uint64_t interval_ns,
+                             lyte_pw_tick_cb tick_cb, void *user);
 
 /* Runs the capture loop on the calling thread.
    Returns 0 when quit via lyte_pw_capture_quit,

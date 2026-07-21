@@ -21,6 +21,7 @@ struct Options {
     var fps: Int32 = 60
     var backend: Backend = .portal
     var connector = ""
+    var idleFloor = true
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
@@ -53,10 +54,13 @@ struct Options {
                 i += 1
                 guard i < args.count else { throw HostError("--connector needs a name") }
                 opts.connector = args[i]
+            case "--no-idle-floor":
+                opts.idleFloor = false
             case "--help", "-h":
                 print("""
                 usage: lyte-host [--out PATH] [--seconds N] [--bitrate-mbps N]
                                  [--backend portal|mutter] [--connector NAME]
+                                 [--no-idle-floor]
                 Captures the desktop and writes Annex-B HEVC (hevc_nvenc) to
                 PATH (default /tmp/lyte-h0a.hevc).
                   --backend portal  xdg-desktop-portal ScreenCast (primary;
@@ -65,6 +69,8 @@ struct Options {
                                     spike fallback for headless/ssh runs)
                   --connector NAME  monitor connector for the mutter backend
                                     (e.g. DP-1); empty records the primary
+                  --no-idle-floor   disable the steady-rate supply (encode
+                                    only damage-driven frames; debugging aid)
                 """)
                 exit(0)
             default:
@@ -85,6 +91,8 @@ final class Sink {
     var file: UnsafeMutablePointer<FILE>
 
     var framesIn = 0
+    var damageFrames = 0
+    var repeatedFrames = 0
     var packetsOut = 0
     var bytesOut = 0
     var keyframes = 0
@@ -92,6 +100,15 @@ final class Sink {
     var lastError: String?
     var firstPacket: [UInt8] = []
     var negotiated: (width: UInt32, height: UInt32, format: String)?
+
+    // Idle-floor state. The PipeWire buffer is only valid inside the frame
+    // callback, so the most recent frame is retained by copy; on a tick with
+    // no fresh frame since the previous tick, that copy is re-encoded as an
+    // ordinary P-frame. Ticks and frame callbacks share the PipeWire loop
+    // thread, so no locking is needed.
+    var lastFrame: [UInt8] = []
+    var lastStride: Int32 = 0
+    var encodedSinceTick = false
 
     init(opts: Options, file: UnsafeMutablePointer<FILE>) {
         self.opts = opts
@@ -140,6 +157,48 @@ final class Sink {
         let now = monotonicNow()
         if firstFrameAt == nil { firstFrameAt = now }
 
+        if opts.idleFloor {
+            let count = Int(size)
+            if lastFrame.count != count {
+                lastFrame = [UInt8](repeating: 0, count: count)
+            }
+            lastFrame.withUnsafeMutableBytes { dst in
+                dst.copyMemory(from: UnsafeRawBufferPointer(start: data, count: count))
+            }
+            lastStride = stride
+        }
+
+        guard encode(data: data, stride: stride) else { return }
+        damageFrames += 1
+        encodedSinceTick = true
+
+        quitIfElapsed(now)
+    }
+
+    /// Idle-floor tick, on the PipeWire loop thread at the fps interval:
+    /// when no fresh frame was encoded since the previous tick, re-encode
+    /// the retained copy so output flows at a steady rate.
+    func onTick() {
+        if lastError != nil { return }
+
+        let now = monotonicNow()
+        quitIfElapsed(now)
+
+        if encodedSinceTick {
+            encodedSinceTick = false
+            return
+        }
+        guard !lastFrame.isEmpty else { return } // nothing to repeat yet
+
+        let ok = lastFrame.withUnsafeBufferPointer { buf in
+            encode(data: buf.baseAddress!, stride: lastStride)
+        }
+        if ok { repeatedFrames += 1 }
+    }
+
+    /// Encodes one frame; pts advances monotonically per encoded frame and
+    /// only frame 0 is a forced IDR (repeats are normal P-frames).
+    private func encode(data: UnsafePointer<UInt8>, stride: Int32) -> Bool {
         var err = [CChar](repeating: 0, count: 256)
         let user = Unmanaged.passUnretained(self).toOpaque()
         let rc = lyte_hevc_enc_send(encoder, data, stride, Int64(framesIn),
@@ -147,10 +206,13 @@ final class Sink {
                                     packetTrampoline, user, &err, err.count)
         if rc != 0 {
             fail("encode failed at frame \(framesIn): \(errString(err))")
-            return
+            return false
         }
         framesIn += 1
+        return true
+    }
 
+    private func quitIfElapsed(_ now: Double) {
         if let start = firstFrameAt, now - start >= opts.seconds, let capture {
             lyte_pw_capture_quit(capture)
         }
@@ -201,6 +263,12 @@ private func frameTrampoline(user: UnsafeMutableRawPointer?,
     let sink = Unmanaged<Sink>.fromOpaque(user).takeUnretainedValue()
     sink.onFrame(data: data, size: size, stride: stride,
                  width: width, height: height, fmt: fmt)
+}
+
+private func tickTrampoline(user: UnsafeMutableRawPointer?) {
+    guard let user else { return }
+    let sink = Unmanaged<Sink>.fromOpaque(user).takeUnretainedValue()
+    sink.onTick()
 }
 
 private func packetTrampoline(user: UnsafeMutableRawPointer?,
@@ -268,6 +336,17 @@ func run() throws {
     }
     sink.capture = capture
 
+    // Steady-rate supply: a repeating tick on the capture loop thread at the
+    // fps interval; the Sink re-encodes the last frame when no fresh one
+    // arrived, so output flows at ~fps regardless of desktop activity.
+    if opts.idleFloor {
+        let interval = UInt64(1_000_000_000) / UInt64(opts.fps)
+        guard lyte_pw_capture_set_tick(capture, interval, tickTrampoline, user) == 0 else {
+            fclose(file)
+            throw HostError("failed to arm the idle-floor tick timer")
+        }
+    }
+
     // Grace beyond the capture window covers stream negotiation and a
     // sparse damage-driven frame supply.
     let rc = lyte_pw_capture_run(capture, opts.seconds + 15.0, &err, err.count)
@@ -294,7 +373,8 @@ func run() throws {
     let n = sink.negotiated!
     print("""
 
-    done: \(sink.framesIn) frames in, \(sink.packetsOut) packets out \
+    done: \(sink.framesIn) frames encoded (\(sink.damageFrames) damage, \
+    \(sink.repeatedFrames) repeated), \(sink.packetsOut) packets out \
     (\(sink.keyframes) IDR), \(sink.bytesOut) bytes over \(String(format: "%.1f", captured))s
     resolution \(n.width)x\(n.height), input format \(n.format)
     """)
