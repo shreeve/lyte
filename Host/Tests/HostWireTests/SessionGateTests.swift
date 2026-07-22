@@ -197,7 +197,10 @@ final class SessionGateTests: XCTestCase {
         ])
 
         _ = drain(session, from: 0, horizon: Self.frameIntervalNS)
-        XCTAssertEqual(sent.count, 2, "message 2 then the session-start beacon")
+        XCTAssertEqual(
+            sent.count, 3,
+            "message 2, the session-start beacon, the capability declaration"
+        )
         XCTAssertTrue(sent.allSatisfy { $0.pacerClass == .control })
 
         let (_, message2Payload) = try client.absorb(sent[0].bytes)
@@ -212,6 +215,27 @@ final class SessionGateTests: XCTestCase {
         XCTAssertEqual(beacon0.beaconSeq, 0)
         XCTAssertEqual(beacon0.hostSend.microseconds, t1Beacon0)
         XCTAssertNil(beacon0.lastEcho, "no echo has happened yet")
+
+        // The W7 declaration is the first ARQ-carried word: an ARQ
+        // segment whose message body is `0x0F ‖ deterministic CBOR` —
+        // the host's wireDefault capability set.
+        let (_, declarationPlain) = try client.absorb(sent[2].bytes)
+        XCTAssertEqual(declarationPlain.first, CtrlMessageType.arqSegment)
+        let declarationFrames = try ArqFrame.decodeAll(declarationPlain)
+        guard case .segment(let declarationSegment)? = declarationFrames.first
+        else {
+            return XCTFail("expected the declaration's ARQ segment")
+        }
+        XCTAssertEqual(
+            declarationSegment.body.first,
+            CtrlMessageType.capabilityDeclaration,
+            "the capability declaration must be the first reliable message"
+        )
+        XCTAssertEqual(
+            try CapabilityDeclaration.decode(Array(declarationSegment.body))
+                .capabilities,
+            Capabilities.wireDefault
+        )
 
         // ── Echo: one NTP-style sample updates the host's estimate ─────
         // Client clock = host clock + 2.5 s; 5 ms transit each way,
@@ -317,7 +341,13 @@ final class SessionGateTests: XCTestCase {
             ),
             from: Self.tupleA, now: clock, hostMicroseconds: t4 + 1_000
         )
-        XCTAssertEqual(idrEvents, [.idrRequested(request)])
+        // The long feedback-free drain froze the lifecycle machine (the
+        // 350 ms detector — no chan-3 traffic exists in this harness);
+        // this first returning CTRL evidence is also the RECOVERY exit.
+        XCTAssertEqual(idrEvents, [
+            .lifecycleChanged(.recovery),
+            .idrRequested(request),
+        ])
         XCTAssertTrue(session.takeFreshKeyframeRequest(),
                       "the 0x10 must raise the keyframe poll")
         XCTAssertFalse(session.takeFreshKeyframeRequest(),
@@ -339,12 +369,29 @@ final class SessionGateTests: XCTestCase {
 
         // ── 1 Hz beacon with the W4a mirror of the last echo ───────────
         let t1Beacon1: UInt64 = 2_000_000
+        let preBeaconCount = sent.count
         let beaconEvents = session.advance(
             now: 1_000_000_000, hostMicroseconds: t1Beacon1
         )
-        XCTAssertEqual(beaconEvents, [.beaconSent(beaconSeq: 1)])
+        // RECOVERY without feedback re-freezes 350 ms later by design
+        // (this harness has no chan-3 stream), so the wake may carry a
+        // lifecycle event alongside the beacon.
+        XCTAssertEqual(beaconEvents.first, .beaconSent(beaconSeq: 1))
         session.pump(now: 1_000_000_000)
-        let (_, beacon1Plain) = try client.absorb(sent[sent.count - 1].bytes)
+        // The unacknowledged declaration may PTO-retransmit alongside
+        // the beacon (this harness client has no ARQ endpoint to ack
+        // it) — absorb everything new, keep the beacon.
+        var beacon1Plain: [UInt8]?
+        for datagram in sent[preBeaconCount...]
+        where datagram.pacerClass == .control {
+            let (_, plain) = try client.absorb(datagram.bytes)
+            if plain.first == CtrlMessageType.clockBeacon {
+                beacon1Plain = plain
+            }
+        }
+        guard let beacon1Plain else {
+            return XCTFail("no beacon left on the 1 s advance")
+        }
         let beacon1 = try ClockBeacon.decode(beacon1Plain)
         XCTAssertEqual(beacon1.beaconSeq, 1)
         XCTAssertEqual(beacon1.hostSend.microseconds, t1Beacon1)
@@ -428,12 +475,19 @@ final class SessionGateTests: XCTestCase {
         XCTAssertEqual(session.phase, .established,
                        "insecure mode has no handshake to wait for")
 
-        // Session-start beacon on the first timer wake, plaintext.
+        // First timer wake: the capability declaration (insecure mode
+        // reaches establishment without a handshake, so the first wake
+        // is where the W7 first-word rule lands) and the session-start
+        // beacon, both plaintext.
         let startEvents = session.advance(now: 0, hostMicroseconds: 77_000)
         XCTAssertEqual(startEvents, [.beaconSent(beaconSeq: 0)])
         session.pump(now: 0)
-        XCTAssertEqual(sent.count, 1)
-        let (beaconEnvelope, beaconPayload) = try Envelope.decode(sent[0].bytes)
+        XCTAssertEqual(sent.count, 2, "capability declaration + beacon")
+        let (declarationEnvelope, declarationPayload) =
+            try Envelope.decode(sent[0].bytes)
+        XCTAssertEqual(declarationEnvelope.channel, .ctrl)
+        XCTAssertEqual(declarationPayload.first, CtrlMessageType.arqSegment)
+        let (beaconEnvelope, beaconPayload) = try Envelope.decode(sent[1].bytes)
         XCTAssertEqual(beaconEnvelope.channel, .ctrl)
         let beacon = try ClockBeacon.decode(beaconPayload)
         XCTAssertEqual(beacon.beaconSeq, 0)
@@ -494,11 +548,16 @@ final class SessionGateTests: XCTestCase {
             try echoEnvelope.encode(payload: echo.encode()),
             from: Self.tupleA, now: clock, hostMicroseconds: 84_000
         )
-        XCTAssertEqual(echoEvents, [.beaconEchoAccepted(
-            beaconSeq: 0,
-            offsetMicroseconds: Int64(3_000 + (-3_500)) / 2,
-            rttMicroseconds: 6_500
-        )])
+        // The feedback-free drain froze the machine; this first CTRL
+        // evidence is also the RECOVERY exit (the Noise gate's pattern).
+        XCTAssertEqual(echoEvents, [
+            .lifecycleChanged(.recovery),
+            .beaconEchoAccepted(
+                beaconSeq: 0,
+                offsetMicroseconds: Int64(3_000 + (-3_500)) / 2,
+                rttMicroseconds: 6_500
+            ),
+        ])
         XCTAssertEqual(session.clock.samples, 1)
 
         print("HS-7 gate (--insecure): \(units.count) frames byte-exact, "

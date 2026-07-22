@@ -176,6 +176,8 @@ int lyte_netio_send_batch(lyte_netio *n, const lyte_netio_pkt *pkts, int count,
     if (sent < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK)
             return 0;
+        if (errno == ECONNREFUSED)
+            return LYTE_NETIO_PEER_GONE;
         sys_err(err, errlen, "sendmmsg failed");
         return -1;
     }
@@ -222,6 +224,8 @@ int lyte_netio_send_to(lyte_netio *n, const lyte_netio_pkt *pkt,
     if (sent < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK)
             return 0;
+        if (errno == ECONNREFUSED)
+            return LYTE_NETIO_PEER_GONE;
         sys_err(err, errlen, "sendmsg(to) failed");
         return -1;
     }
@@ -265,6 +269,8 @@ int lyte_netio_recv_batch(lyte_netio *n, lyte_netio_slot *slots, int count,
     if (got < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK)
             return 0;
+        if (errno == ECONNREFUSED)
+            return LYTE_NETIO_PEER_GONE;
         sys_err(err, errlen, "recvmmsg failed");
         return -1;
     }

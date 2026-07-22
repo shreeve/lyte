@@ -246,6 +246,10 @@ final class Sink {
     // that synchronously produced it.
     var lastPacketBytes = 0
     var lastPacketQP = -1
+    // HS-11: the most recent encoded packet's bytes, retained only in
+    // ratchet+session mode — on convergence this IS the final converged
+    // frame, re-sent on a reliable one-shot before the idle flip.
+    var lastEncodedPacket: [UInt8] = []
 
     init(opts: Options, file: UnsafeMutablePointer<FILE>?, wire: SessionWire?) {
         self.opts = opts
@@ -323,6 +327,12 @@ final class Sink {
         ratchetPrevBytes = 0
         ratchetEpisodeBytes = 0
 
+        // HS-11: fresh damage into the lifecycle machine BEFORE the
+        // encode — in IDLE this is the WAKE (mode=active + this frame
+        // owed as an IDR, which encode()'s forced-IDR poll consumes);
+        // in ACTIVE it aborts a pending idle flip.
+        wire?.noteDamage()
+
         guard encode(data: data, stride: stride) else { return }
         damageFrames += 1
         encodedSinceTick = true
@@ -341,6 +351,13 @@ final class Sink {
         if lastError != nil { return }
 
         wire?.service()
+
+        // The session is over (peer gone, teardown, liveness): stop the
+        // capture loop cleanly — the HS-11 graceful exit.
+        if wire?.sessionEnded == true, let capture {
+            lyte_pw_capture_quit(capture)
+            return
+        }
 
         let now = monotonicNow()
         quitIfElapsed(now)
@@ -407,6 +424,15 @@ final class Sink {
             print(String(format: "ratchet: converged after %d passes, "
                 + "%d bytes, %.0f ms — going silent", ratchetStep,
                 ratchetEpisodeBytes, sinceTrigger))
+            // HS-11: the all-skip stop is the machine's ratchetConverged
+            // input — the final converged frame rides a reliable
+            // one-shot, and its acknowledgment flips the mode to IDLE.
+            if let wire, !lastEncodedPacket.isEmpty {
+                wire.noteRatchetConverged(
+                    finalFrame: lastEncodedPacket,
+                    captureMicros: lastFrameGraphUs
+                )
+            }
         }
     }
 
@@ -456,6 +482,11 @@ final class Sink {
         if keyframe { keyframes += 1 }
         lastPacketBytes = size
         lastPacketQP = avgQP
+        if opts.ratchet, wire != nil {
+            lastEncodedPacket = Array(
+                UnsafeBufferPointer(start: data, count: size)
+            )
+        }
     }
 
     func flushEncoder() throws {
@@ -733,6 +764,11 @@ func run() throws {
     sink.freeEncoder()
     mutter?.stop()
 
+    // HS-11: the orderly exit — a typed SessionTeardown on the reliable
+    // stream (retransmitted until acknowledged or patience runs out), so
+    // the client learns the session ended instead of inferring it.
+    sink.wire?.shutdown(reason: .shuttingDown)
+
     // Measurement aid: dump the final retained raw frame (stride-packed
     // BGRx as delivered by PipeWire) so decoded output can be PSNR'd
     // against ground truth. Env-gated; not a product surface.
@@ -802,6 +838,10 @@ func run() throws {
         \(s.idrRequests) IDR requests, \(s.unsealFailures) unseal failures, \
         \(s.feedbackDatagrams) feedback datagrams, \
         \(s.handshakesThrottled) msg1 throttled
+        lifecycle: \(s.modeTransitionsSent) mode transitions, \
+        \(s.videoFramesSuppressed) frames suppressed (FROZEN/closed), \
+        final state \(wire.lifecycleState.map { "\($0)" } ?? "—") \
+        (wire mode \(wire.currentWireMode.map { "\($0)" } ?? "—"))
         """)
     } else {
         print("output: \(opts.outputPath)")

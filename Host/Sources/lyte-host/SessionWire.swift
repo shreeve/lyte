@@ -90,11 +90,23 @@ final class SessionWire {
     private(set) var bytesSent = 0
     private(set) var challengesSentOffPrimary = 0
     private(set) var lastSendError: String?
+    /// ECONNREFUSED evidence (LYTE_NETIO_PEER_GONE): the client's socket
+    /// is closed — session-ending, not an I/O failure (HS-11).
+    private(set) var peerGone = false
+
+    /// True once nothing more can usefully happen: the peer's socket is
+    /// closed, or the lifecycle machine reached `closed` (teardown either
+    /// way, or the 30 s liveness timeout). The capture loop quits on it.
+    var sessionEnded: Bool {
+        peerGone || session?.lifecycleState == .closed
+    }
 
     var counters: VideoChannelCounters { session.videoCounters }
     var sessionCounters: SessionCounters { session.counters }
     var clock: SessionClockStats { session.clock }
     var pacerTelemetry: PacerTelemetry { session.pacerTelemetry }
+    var lifecycleState: SessionState? { session?.lifecycleState }
+    var currentWireMode: SessionWireMode? { session?.wireMode }
 
     /// - Parameters:
     ///   - listenPort: bind here and await a connecting client (nil =
@@ -231,10 +243,70 @@ final class SessionWire {
             + "the printed static key?")
     }
 
-    /// The encoder-loop poll (HS-12 promotion or a client 0x10): consult
-    /// before each encode; true forces the next frame to IDR.
+    /// The encoder-loop poll (HS-12 promotion, a client 0x10, or the
+    /// lifecycle machine's WAKE/RECOVERY demand): consult before each
+    /// encode; true forces the next frame to IDR.
     func takeForcedIdr() -> Bool {
         session?.takeFreshKeyframeRequest() ?? false
+    }
+
+    /// HS-11: a FRESH damage frame arrived from capture (never the
+    /// idle-floor repeats). In IDLE this is the WAKE — mode=active on
+    /// the reliable stream, the damage frame owed as an IDR; in ACTIVE
+    /// it aborts a pending idle flip.
+    func noteDamage() {
+        guard let session, session.phase == .established else { return }
+        for event in session.noteDamage(
+            now: monotonicNS(), hostMicroseconds: monotonicMicros()
+        ) {
+            log(event)
+        }
+    }
+
+    /// HS-11: the ratchet converged (the all-skip stop). The final
+    /// converged frame rides a reliable one-shot; its acknowledgment
+    /// flips the wire mode to IDLE and datagram video stops.
+    func noteRatchetConverged(finalFrame: [UInt8], captureMicros: UInt64) {
+        guard let session, session.phase == .established else { return }
+        for event in session.noteRatchetConverged(
+            finalFrame: finalFrame,
+            captureTimestampMicroseconds: captureMicros,
+            now: monotonicNS(), hostMicroseconds: monotonicMicros()
+        ) {
+            log(event)
+        }
+        service() // the one-shot leaves now, not at the next tick
+    }
+
+    /// HS-11: the orderly close — SessionTeardown 0x0A on the reliable
+    /// stream, then a bounded linger so the segment can be delivered and
+    /// acknowledged before the process exits (the graceful-exit half of
+    /// the ECONNREFUSED fix: the client learns the session ended instead
+    /// of inferring it from silence).
+    func shutdown(reason: SessionTeardownReason, lingerSeconds: Double = 0.5) {
+        guard let session, session.phase == .established,
+              session.lifecycleState != .closed, !peerGone else { return }
+        for event in session.beginTeardown(
+            reason: reason,
+            now: monotonicNS(), hostMicroseconds: monotonicMicros()
+        ) {
+            log(event)
+        }
+        let deadline = monotonicNS() + UInt64(lingerSeconds * 1e9)
+        while !session.arqIsQuiescent, !peerGone, monotonicNS() < deadline {
+            do {
+                try serviceOnce()
+                try flushOutbox()
+            } catch {
+                lastSendError = String(describing: error)
+                break
+            }
+            usleep(2_000)
+        }
+        print(session.arqIsQuiescent
+            ? "session: teardown acknowledged — clean close"
+            : "session: teardown sent, unacknowledged after "
+                + "\(Int(lingerSeconds * 1000)) ms — closing anyway")
     }
 
     /// One encoded Annex-B packet → sealed shards on the wire. Runs on
@@ -274,11 +346,21 @@ final class SessionWire {
     /// as sendmmsg batches. The sleep is capped: while the pacer holds
     /// bytes its wake is ≤ one quantum away, and the session's other
     /// timers (a beacon up to 1 s out) must never stall the encoder.
+    /// ECONNREFUSED evidence, once: the client's socket is closed. The
+    /// peer that would read a teardown is gone, so nothing is sent
+    /// (W4b's liveness rule); the loop just ends cleanly.
+    private func notePeerGone() {
+        guard !peerGone else { return }
+        peerGone = true
+        print("session: client unreachable (ICMP port closed — it exited) "
+            + "— closing cleanly")
+    }
+
     private func drainToIdle() throws {
         while true {
             try serviceOnce()
             try flushOutbox()
-            if session.isIdle { return }
+            if peerGone || session.isIdle { return }
             let now = monotonicNS()
             if let wake = session.nextWake(now: now), wake > now {
                 usleep(UInt32(min((wake - now) / 1_000 + 1, 2_000)))
@@ -319,6 +401,10 @@ final class SessionWire {
             let got = slots.withUnsafeMutableBufferPointer { s in
                 lyte_netio_recv_batch(netio, s.baseAddress, Int32(s.count),
                                       &err, err.count)
+            }
+            if got == LYTE_NETIO_PEER_GONE {
+                notePeerGone()
+                return
             }
             if got < 0 {
                 throw HostError("recv failed: \(errString(err))")
@@ -418,11 +504,49 @@ final class SessionWire {
             print("drop: \(reason)")
         case .sendFailed(let what):
             print("send-failed: \(what)")
+        case .capabilitiesAgreed(let agreed):
+            print("capabilities: agreed — wire minor \(agreed.wireMinor), "
+                + "codecs \(agreed.videoCodecs), chroma \(agreed.chromaModes), "
+                + "idle-silence \(agreed.idleSilence), "
+                + "max datagram \(agreed.maxDatagramBytes) B")
+        case .capabilitiesFailed(let why):
+            print("capabilities: NO WORKABLE INTERSECTION (\(why)) — "
+                + "typed teardown follows")
+        case .capabilityUpdateAcknowledged(let accepted):
+            print("capabilities: update "
+                + (accepted ? "accepted" : "rejected") + " by the client")
+        case .modeTransitionSent(let mode):
+            print("mode: → \(mode == .idle ? "IDLE" : "ACTIVE") "
+                + "(0x09 on the reliable stream)")
+        case .finalFrameSent(let group):
+            print("mode: converged frame riding one-shot group "
+                + "\(group.rawValue) — its ack is the idle flip")
+        case .teardownSent(let reason):
+            print("session: teardown 0x0A queued (\(reason))")
+        case .lifecycleChanged(let state):
+            switch state {
+            case .frozen:
+                print("lifecycle: FROZEN — 350 ms of media-path silence; "
+                    + "datagram video suspended, CTRL stays alive")
+            case .recovery:
+                print("lifecycle: RECOVERY — evidence returned; fresh IDR "
+                    + "at the half-stale rate, sends resume")
+            case .active, .idle:
+                print("lifecycle: \(state)")
+            case .closed:
+                break // .sessionClosed carries the reason
+            }
+        case .sessionClosed(let reason):
+            print("session: CLOSED (\(reason))")
         }
     }
 
     private func flushOutbox() throws {
         guard !outbox.isEmpty else { return }
+        if peerGone {
+            outbox.removeAll(keepingCapacity: true)
+            return
+        }
         defer { outbox.removeAll(keepingCapacity: true) }
         var err = [CChar](repeating: 0, count: 256)
 
@@ -448,6 +572,8 @@ final class SessionWire {
                 bytesSent += datagram.bytes.count
                 print("path: challenge sent to \(destination.remoteAddress):"
                     + "\(destination.remotePort) (off-primary sendto)")
+            } else if rc == LYTE_NETIO_PEER_GONE {
+                notePeerGone()
             } else {
                 lastSendError = errString(err)
                 print("path: challenge to \(destination.remoteAddress):"
@@ -483,6 +609,10 @@ final class SessionWire {
                     lyte_netio_send_batch(netio, buf.baseAddress,
                                           Int32(buf.count), nil,
                                           &err, err.count)
+                }
+                if sent == LYTE_NETIO_PEER_GONE {
+                    notePeerGone()
+                    return
                 }
                 if sent < 0 {
                     lastSendError = errString(err)

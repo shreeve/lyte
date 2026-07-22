@@ -264,10 +264,28 @@ final class PairingGateTests: XCTestCase {
         XCTAssertEqual(session.phase, .established)
         session.pump(now: 0)
         let handshake = sent()
-        XCTAssertEqual(handshake.count, 2, "message 2 + session-start beacon")
+        XCTAssertEqual(handshake.count, 3,
+                       "message 2, session-start beacon, capability declaration")
         try client.absorb(handshake[0].bytes, nowMicros: 600)
         try client.absorb(handshake[1].bytes, nowMicros: 700)
+        try client.absorb(handshake[2].bytes, nowMicros: 800)
         XCTAssertNotNil(client.transport)
+        // The W7 declaration rides ahead of everything (HS-8's deferred
+        // capabilities item); ack it so the pairing legs start from a
+        // quiescent reliable stream.
+        XCTAssertEqual(client.delivered.count, 1)
+        XCTAssertEqual(client.delivered.first?.first,
+                       CtrlMessageType.capabilityDeclaration)
+        client.delivered.removeAll()
+        for datagram in try client.pollOut(nowMicros: 900) {
+            shell.handle(
+                session.receive(
+                    datagram, from: Self.tupleA,
+                    now: 2_000_000, hostMicroseconds: 2_000
+                ),
+                nowNS: 2_000_000
+            )
+        }
         return (shell, client)
     }
 

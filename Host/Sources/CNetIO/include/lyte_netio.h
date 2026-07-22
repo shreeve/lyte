@@ -18,6 +18,13 @@ typedef struct lyte_netio lyte_netio;
 /* Largest batch one send/receive call accepts (bounds the stack arrays). */
 #define LYTE_NETIO_MAX_BATCH 64
 
+/* Distinct return for ECONNREFUSED on a connect()ed socket (send or
+   receive): a previous send drew ICMP port-unreachable — the peer's
+   socket is CLOSED, not merely quiet. This is session-ending evidence
+   (the client exited), not an I/O failure; the caller closes cleanly
+   instead of dying on "recvmmsg failed" (HS-11's graceful-exit rule). */
+#define LYTE_NETIO_PEER_GONE (-2)
+
 /* One datagram to send. `tos` is the raw IPv4 TOS byte (DSCP << 2):
    audio 0xC0 (CS6/DSCP 48), video 0xA0 (CS5/DSCP 40). Every packet in a
    batch may carry its own value — that is the point of this leaf. */

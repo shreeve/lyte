@@ -96,6 +96,14 @@ public struct SessionConfig: Sendable {
     /// The pre-handshake flood throttle (HS-9): message 1s beyond this
     /// budget are dropped before any Noise state is allocated.
     public var handshakeGate: HandshakeGate.Config
+    /// What this host declares in the W7 capability exchange. The
+    /// declaration is the session's FIRST ARQ-carried message
+    /// post-establishment; the agreed set is the intersection with the
+    /// client's declaration.
+    public var capabilities: Capabilities
+    /// The W4b lifecycle machine's knobs: the 350 ms blackout detector,
+    /// the 30 s liveness clock, RECOVERY's clean-window count.
+    public var lifecycle: SessionMachineConfig
 
     public init(
         crypto: SessionCryptoMode,
@@ -106,7 +114,9 @@ public struct SessionConfig: Sendable {
         path: PathValidatorConfig = PathValidatorConfig(),
         arq: ArqConfig = ArqConfig(),
         allowedClientStaticPublicKeys: [[UInt8]]? = nil,
-        handshakeGate: HandshakeGate.Config = HandshakeGate.Config()
+        handshakeGate: HandshakeGate.Config = HandshakeGate.Config(),
+        capabilities: Capabilities = .wireDefault,
+        lifecycle: SessionMachineConfig = SessionMachineConfig()
     ) {
         self.crypto = crypto
         self.rateBitsPerSecond = rateBitsPerSecond
@@ -117,6 +127,8 @@ public struct SessionConfig: Sendable {
         self.arq = arq
         self.allowedClientStaticPublicKeys = allowedClientStaticPublicKeys
         self.handshakeGate = handshakeGate
+        self.capabilities = capabilities
+        self.lifecycle = lifecycle
     }
 }
 
@@ -156,6 +168,32 @@ public enum SessionEvent: Equatable, Sendable {
     /// budget breach) — loud, because control sends must never fail
     /// silently, but never fatal to the session.
     case sendFailed(String)
+    /// The W7 exchange settled: both declarations met, this is the
+    /// session's agreed set (the intersection).
+    case capabilitiesAgreed(Capabilities)
+    /// The peer's declaration produced an unworkable intersection (no
+    /// common video codec / chroma mode) — the typed teardown follows
+    /// in the same event batch.
+    case capabilitiesFailed(String)
+    /// The client answered our outstanding renegotiation proposal
+    /// (0x12). On accept the operative datagram ceiling already moved;
+    /// apply at the next IDR boundary.
+    case capabilityUpdateAcknowledged(accepted: Bool)
+    /// A ModeTransition (0x09) left on the reliable stream — the
+    /// mediaSender's ACTIVE⇄IDLE flip, as the wire hears it.
+    case modeTransitionSent(SessionWireMode)
+    /// The converged ratchet frame left on its reliable one-shot group
+    /// (HS-11). Its `.reliableOneShotAcknowledged` is the idle flip.
+    case finalFrameSent(ArqGroupId)
+    /// A typed SessionTeardown (0x0A) left on the reliable stream.
+    case teardownSent(SessionTeardownReason)
+    /// The W4b machine changed state (wire modes and the local
+    /// FROZEN/RECOVERY overlay both surface here).
+    case lifecycleChanged(SessionState)
+    /// The session reached `closed`: a teardown either way, or the
+    /// 30 s liveness timeout (which sends nothing — the peer that
+    /// would read the message is the one that died).
+    case sessionClosed(SessionCloseReason)
 }
 
 /// Why an inbound datagram went no further. Counted and surfaced, never
@@ -213,6 +251,11 @@ public struct SessionCounters: Equatable, Sendable {
     public var feedbackDatagrams = 0
     /// Message 1s the HandshakeGate refused (HS-9's flood evidence).
     public var handshakesThrottled = 0
+    /// Video frames the lifecycle machine refused to put on the wire
+    /// (FROZEN's freezeDatagramSends, or a closed session).
+    public var videoFramesSuppressed = 0
+    /// ModeTransitions emitted (HS-11's live evidence).
+    public var modeTransitionsSent = 0
 
     public init() {}
 }
@@ -265,6 +308,47 @@ public final class Session {
     private var lastEcho: ClockBeacon.LastEcho?
     private var clientKeyframePending = false
 
+    // MARK: HS-11 lifecycle + W7 capabilities state
+
+    /// The W4b machine, mediaSender role — nil until establishment
+    /// (the machine "begins at establishment, in ACTIVE").
+    private var machine: SessionStateMachine<HostClock>?
+    /// The machine's next poll deadline, in the `now` ns domain.
+    private var machineDeadlineNS: UInt64?
+    /// The W7 negotiation machine, host role.
+    private var negotiator: CapabilityNegotiator
+    private var capabilitiesDeclared = false
+    /// FROZEN's freezeDatagramSends: video ingest suppressed until
+    /// RECOVERY's resume.
+    private var videoFrozen = false
+    /// A machine-demanded IDR (WAKE's arm or RECOVERY's force), merged
+    /// into `takeFreshKeyframeRequest`. The pacing name is retained for
+    /// the HS-16 estimator; until it exists the pacer rate is the
+    /// configured ceiling either way.
+    private var machineIdrPacing: IdrPacing?
+    /// The converged ratchet frame awaiting its one-shot ride.
+    private var convergedFrame:
+        (annexB: [UInt8], frame: FrameNumber, captureMicros: UInt64)?
+    /// The in-flight final-frame one-shot; its full acknowledgment is
+    /// the machine's `.finalFrameAcknowledged`.
+    private var finalFrameGroup: ArqGroupId?
+    /// One-shot group ids are session-allocated, serially ascending.
+    private var nextOneShotGroup: UInt16 = 1
+    /// The RECOVERY window stub's last window boundary (see
+    /// `recoveryWindowTick`).
+    private var recoveryWindowNS: UInt64?
+
+    /// The lifecycle machine's state; nil before establishment.
+    public var lifecycleState: SessionState? { machine?.state }
+    /// The wire mode beneath any overlay; nil before establishment.
+    public var wireMode: SessionWireMode? { machine?.wireMode }
+    /// Why the session closed, once it has.
+    public var sessionCloseReason: SessionCloseReason? { machine?.closeReason }
+    /// The agreed capability set; nil until the client's declaration
+    /// lands (the CL-7 client does not send one yet — nil is the
+    /// grandfathered pre-W7 posture, not an error).
+    public var agreedCapabilities: Capabilities? { negotiator.agreed }
+
     /// - Parameters:
     ///   - clientTuple: the peer's 4-tuple at session start — the
     ///     validator's initial (trusted) path. In Noise mode this is
@@ -300,6 +384,9 @@ public final class Session {
         )
         self.arq = ArqEndpoint(channel: .ctrl, config: arqConfig)
         self.handshakeGate = HandshakeGate(config: config.handshakeGate)
+        self.negotiator = CapabilityNegotiator(
+            role: .host, local: config.capabilities
+        )
         self.validator = PathValidator(
             connectionId: connectionId,
             initialPath: clientTuple,
@@ -311,10 +398,15 @@ public final class Session {
         case .noise:
             self.phase = .awaitingHandshake
         case .insecure:
-            // No handshake to wait for; the session-start beacon leaves
-            // on the first `advance`.
+            // No handshake to wait for; the session-start beacon (and
+            // the capability declaration) leave on the first `advance`.
             self.phase = .established
             self.nextBeaconAt = now
+            self.machine = SessionStateMachine(
+                role: .mediaSender,
+                config: config.lifecycle,
+                now: HostTimestamp(microseconds: now / 1_000)
+            )
         }
         self.channel = VideoChannel(
             config: VideoChannelConfig(
@@ -421,12 +513,25 @@ public final class Session {
 
         switch envelope.channel {
         case .ctrl:
+            // Any authenticated CTRL arrival is liveness/FROZEN-exit
+            // evidence, but deliberately NOT the 350 ms detector's
+            // (W4b: 1 Hz beacons cannot drive a 350 ms detector).
+            events += runMachine(
+                .ctrlEvidence, now: now, hostMicroseconds: hostMicroseconds
+            )
             events += dispatchCtrl(
                 plaintext, from: tuple,
                 now: now, hostMicroseconds: hostMicroseconds
             )
         case .feedback:
             counters.feedbackDatagrams += 1
+            // The media-path proof stream: feeds the blackout detector.
+            events += runMachine(
+                .mediaPathEvidence, now: now, hostMicroseconds: hostMicroseconds
+            )
+            events += recoveryWindowTick(
+                now: now, hostMicroseconds: hostMicroseconds
+            )
         default:
             counters.dropped += 1
             events.append(.dropped(.unhandledChannel(envelope.channel.rawValue)))
@@ -460,6 +565,14 @@ public final class Session {
         guard phase == .established else {
             throw SessionError.notEstablished
         }
+        // FROZEN's freezeDatagramSends (and the terminal state): the
+        // encoder may keep producing, the wire goes quiet. Suppressed
+        // frames are counted, never thrown — the loop must not die
+        // because the path did.
+        if videoFrozen || machine?.state == .closed {
+            counters.videoFramesSuppressed += 1
+            return 0
+        }
         let shards = try channel.ingest(
             frame: annexB,
             frameNumber: nextVideoFrameNumber,
@@ -472,13 +585,83 @@ public final class Session {
     }
 
     /// The encoder-loop poll (one per tick, before encoding): true when
-    /// a fresh IDR is owed — either HS-12's path promotion or a client
-    /// 0x10 IDR request. Clears both sources; fires once per demand.
+    /// a fresh IDR is owed — HS-12's path promotion, a client 0x10 IDR
+    /// request, or the lifecycle machine's demand (WAKE's
+    /// armNextDamageAsIdr, RECOVERY's forceIdr). Clears every source;
+    /// fires once per demand.
     public func takeFreshKeyframeRequest() -> Bool {
         let fromValidator = validator.takeFreshKeyframeRequest()
         let fromClient = clientKeyframePending
+        let fromMachine = machineIdrPacing != nil
         clientKeyframePending = false
-        return fromValidator || fromClient
+        machineIdrPacing = nil
+        return fromValidator || fromClient || fromMachine
+    }
+
+    // MARK: Lifecycle inputs (HS-11)
+
+    /// The encoder loop's damage note: call when a FRESH damage frame
+    /// arrives from capture, BEFORE encoding it. In IDLE this is the
+    /// WAKE — mode=active leaves on the reliable stream and the damage
+    /// frame is owed as an IDR (`takeFreshKeyframeRequest` turns true,
+    /// paced at the healthy-path rate once HS-16 owns numbers). In
+    /// ACTIVE it aborts a pending idle flip: new damage during the
+    /// convergence handoff means the session never left ACTIVE.
+    public func noteDamage(
+        now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        convergedFrame = nil
+        return runMachine(.damage, now: now, hostMicroseconds: hostMicroseconds)
+    }
+
+    /// The HS-13 seam: an injected input event pre-arms the wake IDR
+    /// before its damage exists (W4b's pre-arm rule — a keypress during
+    /// a blackout persists through FROZEN and is consumed exactly once
+    /// by RECOVERY's IDR). No caller until input lands.
+    public func notePreArmInput(
+        now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        runMachine(.preArmInput, now: now, hostMicroseconds: hostMicroseconds)
+    }
+
+    /// The ratchet's all-skip stop (HS-3's detector via HS-11): retains
+    /// the final converged frame and starts the idle handoff — the
+    /// frame rides a reliable one-shot group, and ONLY its full
+    /// acknowledgment flips the wire mode to IDLE (the receiver must
+    /// hold the converged frame before it learns the session went
+    /// idle). When the agreed capabilities say the client does not
+    /// speak idle silence, the session stays ACTIVE.
+    public func noteRatchetConverged(
+        finalFrame annexB: [UInt8],
+        captureTimestampMicroseconds: UInt64,
+        now: UInt64,
+        hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        if let agreed = negotiator.agreed, !agreed.idleSilence { return [] }
+        guard !annexB.isEmpty, nextVideoFrameNumber.rawValue > 0 else {
+            return []
+        }
+        convergedFrame = (
+            annexB,
+            FrameNumber(rawValue: nextVideoFrameNumber.rawValue &- 1),
+            captureTimestampMicroseconds
+        )
+        return runMachine(
+            .ratchetConverged, now: now, hostMicroseconds: hostMicroseconds
+        )
+    }
+
+    /// An orderly local close: the typed SessionTeardown leaves on the
+    /// reliable stream and the machine closes. The teardown segment
+    /// retransmits until acknowledged — keep servicing `advance` until
+    /// `arqIsQuiescent` (or patience runs out) before exiting.
+    public func beginTeardown(
+        reason: SessionTeardownReason, now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        runMachine(
+            .teardownRequest(reason),
+            now: now, hostMicroseconds: hostMicroseconds
+        )
     }
 
     // MARK: Reliable CTRL (HS-8)
@@ -527,21 +710,269 @@ public final class Session {
     }
 
     /// Ingest events → session events, with the counters kept honest.
+    /// Lifecycle (0x09/0x0A) and capability (0x0F/0x11/0x12) messages
+    /// are consumed here — the session IS their registered consumer
+    /// (the HS-9 dispatch pattern, one layer down); everything else
+    /// (the pairing quartet, future types) surfaces as `.reliableCtrl`
+    /// for the shell.
     private func absorbArq(
-        _ events: [ArqEvent]
+        _ arqEvents: [ArqEvent], now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        events.map { event in
+        var events: [SessionEvent] = []
+        for event in arqEvents {
             switch event {
             case .message(let group, let bytes):
                 counters.arqMessages += 1
-                return .reliableCtrl(group: group, message: bytes)
+                if let consumed = consumeReliable(
+                    bytes, now: now, hostMicroseconds: hostMicroseconds
+                ) {
+                    events += consumed
+                } else {
+                    events.append(.reliableCtrl(group: group, message: bytes))
+                }
             case .oneShotAcknowledged(let group):
-                return .reliableOneShotAcknowledged(group)
+                events.append(.reliableOneShotAcknowledged(group))
+                if group == finalFrameGroup {
+                    // The converged frame landed: this ack IS the
+                    // idle-flip signal (W4b's ordering rule).
+                    finalFrameGroup = nil
+                    convergedFrame = nil
+                    events += runMachine(
+                        .finalFrameAcknowledged,
+                        now: now, hostMicroseconds: hostMicroseconds
+                    )
+                }
             case .ignored(let reason):
                 counters.arqIgnored += 1
-                return .arqIgnored(reason)
+                events.append(.arqIgnored(reason))
             }
         }
+        return events
+    }
+
+    /// The session's own reliable-CTRL consumers. Returns nil when the
+    /// type byte belongs to some other consumer (the shell dispatches
+    /// those). Never throws: hostile bytes become drop events.
+    private func consumeReliable(
+        _ message: [UInt8], now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent]? {
+        switch message.first {
+        case CtrlMessageType.sessionTeardown:
+            guard let teardown = try? SessionTeardown.decode(message) else {
+                counters.dropped += 1
+                return [.dropped(.malformedCtrl)]
+            }
+            return runMachine(
+                .teardownMessage(teardown.reason),
+                now: now, hostMicroseconds: hostMicroseconds
+            )
+        case CtrlMessageType.capabilityDeclaration:
+            return receiveDeclaration(
+                message, now: now, hostMicroseconds: hostMicroseconds
+            )
+        case CtrlMessageType.capabilityUpdateAck:
+            guard let ack = try? CapabilityUpdateAck.decode(message),
+                  let event = try? negotiator.receive(ack) else {
+                counters.dropped += 1
+                return [.dropped(.malformedCtrl)]
+            }
+            switch event {
+            case .updateAccepted:
+                return [.capabilityUpdateAcknowledged(accepted: true)]
+            case .updateRejected:
+                return [.capabilityUpdateAcknowledged(accepted: false)]
+            case .agreed, .answerUpdate:
+                counters.dropped += 1 // unreachable from receive(ack)
+                return [.dropped(.malformedCtrl)]
+            }
+        case CtrlMessageType.modeTransition, CtrlMessageType.capabilityUpdate:
+            // Receiver-role messages arriving at the mediaSender /
+            // sole proposer: hostile or confused. Dropped loud.
+            counters.dropped += 1
+            return [.dropped(.unexpectedCtrlType(message.first!))]
+        default:
+            return nil
+        }
+    }
+
+    /// The client's 0x0F: the intersection settles the session — or
+    /// proves it unworkable, in which case the typed teardown is the
+    /// answer (never silence: the client must learn why).
+    private func receiveDeclaration(
+        _ message: [UInt8], now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        let declaration: CapabilityDeclaration
+        do {
+            declaration = try CapabilityDeclaration.decode(message)
+        } catch {
+            counters.dropped += 1
+            return [.dropped(.malformedCtrl)]
+        }
+        do {
+            guard case .agreed(let agreed) = try negotiator.receive(declaration)
+            else {
+                counters.dropped += 1 // unreachable from receive(declaration)
+                return [.dropped(.malformedCtrl)]
+            }
+            return [.capabilitiesAgreed(agreed)]
+        } catch let failure as CapabilityNegotiationError
+            where failure == .noCommonVideoCodec
+                || failure == .noCommonChromaMode {
+            var events: [SessionEvent] = [
+                .capabilitiesFailed(String(describing: failure))
+            ]
+            events += runMachine(
+                .teardownRequest(.shuttingDown),
+                now: now, hostMicroseconds: hostMicroseconds
+            )
+            return events
+        } catch {
+            // A duplicate declaration or other protocol violation:
+            // dropped loud, never fatal.
+            counters.dropped += 1
+            return [.dropped(.malformedCtrl)]
+        }
+    }
+
+    // MARK: The lifecycle machine's runner (HS-11)
+
+    /// Applies one input (nil = timers only), polls, executes the
+    /// resulting actions, and surfaces state changes. The machine's own
+    /// doctrine: apply never fires timers, so poll always follows.
+    private func runMachine(
+        _ input: SessionInput?, now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        guard machine != nil else { return [] }
+        let before = machine!.state
+        var actions: [SessionAction] = []
+        if let input {
+            actions += machine!.apply(input, now: arqInstant(now))
+        }
+        let (polled, deadline) = machine!.poll(now: arqInstant(now))
+        actions += polled
+        machineDeadlineNS = deadline.map { $0.microseconds &* 1_000 }
+        var events: [SessionEvent] = []
+        if machine!.state != before {
+            events.append(.lifecycleChanged(machine!.state))
+        }
+        events += execute(actions, now: now, hostMicroseconds: hostMicroseconds)
+        return events
+    }
+
+    /// Everything the machine can ask for, done.
+    private func execute(
+        _ actions: [SessionAction], now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        var events: [SessionEvent] = []
+        for action in actions {
+            switch action {
+            case .sendModeMessage(let mode):
+                do {
+                    try sendReliable(
+                        ModeTransition(mode: mode).encode(),
+                        now: now, hostMicroseconds: hostMicroseconds
+                    )
+                    counters.modeTransitionsSent += 1
+                    events.append(.modeTransitionSent(mode))
+                } catch {
+                    events.append(.sendFailed("mode transition: \(error)"))
+                }
+            case .sendTeardownMessage(let reason):
+                do {
+                    try sendReliable(
+                        SessionTeardown(reason: reason).encode(),
+                        now: now, hostMicroseconds: hostMicroseconds
+                    )
+                    events.append(.teardownSent(reason))
+                } catch {
+                    events.append(.sendFailed("teardown: \(error)"))
+                }
+            case .sendFinalFrameReliably:
+                events += sendFinalFrame(
+                    now: now, hostMicroseconds: hostMicroseconds
+                )
+            case .armNextDamageAsIdr(let pacing), .forceIdr(let pacing):
+                machineIdrPacing = pacing
+            case .freezeDatagramSends:
+                videoFrozen = true
+            case .resumeDatagramSends:
+                videoFrozen = false
+            case .sessionClosed(let reason):
+                events.append(.sessionClosed(reason))
+            }
+        }
+        return events
+    }
+
+    /// The converged frame onto its one-shot group. A refused send is
+    /// loud, not fatal: the pending flip simply never completes, and
+    /// the next damage/convergence cycle starts fresh.
+    private func sendFinalFrame(
+        now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        guard let converged = convergedFrame else {
+            return [.sendFailed("final frame: no converged frame retained")]
+        }
+        let message = IdleFrame(
+            frame: converged.frame,
+            captureTimestampMicroseconds: converged.captureMicros,
+            annexB: converged.annexB
+        ).encode()
+        let group = ArqGroupId(rawValue: nextOneShotGroup)
+        do {
+            try sendReliableOneShot(
+                message, group: group,
+                now: now, hostMicroseconds: hostMicroseconds
+            )
+            nextOneShotGroup &+= 1
+            if nextOneShotGroup == 0 { nextOneShotGroup = 1 }
+            finalFrameGroup = group
+            return [.finalFrameSent(group)]
+        } catch {
+            return [.sendFailed("final frame one-shot: \(error)")]
+        }
+    }
+
+    /// The W7 declaration: the session's first ARQ-carried message.
+    private func declareCapabilities(
+        now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        guard !capabilitiesDeclared else { return [] }
+        capabilitiesDeclared = true
+        do {
+            try sendReliable(
+                try negotiator.start().encode(),
+                now: now, hostMicroseconds: hostMicroseconds
+            )
+            return []
+        } catch {
+            return [.sendFailed("capability declaration: \(error)")]
+        }
+    }
+
+    /// HS-16's estimator will own window verdicts; until it exists, a
+    /// feedback arrival ≥25 ms after the previous one while in RECOVERY
+    /// counts as one clean window — enough to graduate a genuinely
+    /// flowing path, and honest about what is measurable today (loss
+    /// judgment needs the estimator; absence of feedback re-freezes via
+    /// the silence detector regardless).
+    private func recoveryWindowTick(
+        now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        guard machine?.state == .recovery else {
+            recoveryWindowNS = nil
+            return []
+        }
+        guard let start = recoveryWindowNS else {
+            recoveryWindowNS = now
+            return []
+        }
+        guard now &- start >= 25_000_000 else { return [] }
+        recoveryWindowNS = now
+        return runMachine(
+            .feedbackWindow(clean: true),
+            now: now, hostMicroseconds: hostMicroseconds
+        )
     }
 
     /// Polls the endpoint and puts its output on the wire: repack to
@@ -612,14 +1043,23 @@ public final class Session {
     // MARK: Timers and pumping
 
     /// Clock advance with no datagram — the loop's timer wake. Emits due
-    /// beacons, services the ARQ's retransmit timers, and runs the
-    /// validator's expiries.
+    /// beacons, services the ARQ's retransmit timers, runs the
+    /// lifecycle machine's timers (the 350 ms blackout detector, the
+    /// 30 s liveness clock), and runs the validator's expiries.
     public func advance(now: UInt64, hostMicroseconds: UInt64) -> [SessionEvent] {
         var events = process(
             validator.advance(now: now),
             now: now, hostMicroseconds: hostMicroseconds
         )
         guard phase == .established else { return events }
+        // Insecure mode reaches establishment without a handshake; the
+        // declaration leaves on the first wake (Noise mode declared at
+        // `completeHandshake`, so this is a no-op there).
+        if !capabilitiesDeclared {
+            events += declareCapabilities(
+                now: now, hostMicroseconds: hostMicroseconds
+            )
+        }
         if let due = nextBeaconAt, now >= due {
             events += emitBeacon(now: now, hostMicroseconds: hostMicroseconds)
             // Re-arm from the due instant so cadence does not drift; a
@@ -630,6 +1070,12 @@ public final class Session {
         }
         if let due = nextArqWakeNS, now >= due {
             events += serviceArq(now: now, hostMicroseconds: hostMicroseconds)
+        }
+        if let machine, machine.state != .closed,
+           machineDeadlineNS.map({ now >= $0 }) ?? true {
+            events += runMachine(
+                nil, now: now, hostMicroseconds: hostMicroseconds
+            )
         }
         return events
     }
@@ -645,7 +1091,10 @@ public final class Session {
     /// deadline. The loop sleeps until this (Pacer semantics).
     public func nextWake(now: UInt64) -> UInt64? {
         var wake = channel.nextWake(now: now)
-        for candidate in [nextBeaconAt, nextArqWakeNS, validator.nextDeadline] {
+        for candidate in [
+            nextBeaconAt, nextArqWakeNS, machineDeadlineNS,
+            validator.nextDeadline,
+        ] {
             guard let candidate else { continue }
             wake = wake.map { min($0, candidate) } ?? candidate
         }
@@ -707,6 +1156,19 @@ public final class Session {
         // derive its transport before the first sealed datagram lands.
         events += emitBeacon(now: now, hostMicroseconds: hostMicroseconds)
         nextBeaconAt = now + config.beaconIntervalNS
+        // The machine begins at establishment, in ACTIVE (W4b), and the
+        // capability declaration is the first ARQ-carried word (W7) —
+        // beacons are ARQ-exempt, so it is first on the reliable stream
+        // by construction.
+        machine = SessionStateMachine(
+            role: .mediaSender,
+            config: config.lifecycle,
+            now: arqInstant(now)
+        )
+        events += declareCapabilities(
+            now: now, hostMicroseconds: hostMicroseconds
+        )
+        events += runMachine(nil, now: now, hostMicroseconds: hostMicroseconds)
         return events
     }
 
@@ -730,7 +1192,8 @@ public final class Session {
             // ingest owes (and any fast retransmit it triggered)
             // leaves in this same service pass.
             var events = absorbArq(
-                arq.ingest(payload: payload[...], now: arqInstant(now))
+                arq.ingest(payload: payload[...], now: arqInstant(now)),
+                now: now, hostMicroseconds: hostMicroseconds
             )
             events += serviceArq(now: now, hostMicroseconds: hostMicroseconds)
             return events

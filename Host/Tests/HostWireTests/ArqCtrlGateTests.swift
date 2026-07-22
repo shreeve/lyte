@@ -155,7 +155,10 @@ final class ArqCtrlGateTests: XCTestCase {
     /// Handshake, run directly (fault injection starts after — retry
     /// under handshake loss is the client's timer, not this slice).
     /// Returns the session, the client with its transport live, the
-    /// sink, and the virtual instant the setup finished at.
+    /// sink, and the virtual instant the setup finished at. The W4b
+    /// lifecycle machine's timers are pushed past the horizon by
+    /// default: this suite gates the ARQ sublayer, and the machine has
+    /// its own gate (SessionLifecycleGateTests).
     private func establish(
         arqConfig: ArqConfig = ArqConfig(),
         beaconIntervalNS: UInt64 = 1_000_000_000,
@@ -168,7 +171,11 @@ final class ArqCtrlGateTests: XCTestCase {
                 crypto: .noise(hostStatic: hostStatic),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: beaconIntervalNS,
-                arq: arqConfig
+                arq: arqConfig,
+                lifecycle: SessionMachineConfig(
+                    blackoutSilenceMicroseconds: 1 << 44,
+                    livenessTimeoutMicroseconds: 1 << 45
+                )
             ),
             clientTuple: Self.tupleA,
             now: 0,
@@ -189,10 +196,27 @@ final class ArqCtrlGateTests: XCTestCase {
             session.pump(now: now)
         }
         let handshake = sent()
-        XCTAssertEqual(handshake.count, 2, "message 2 + session-start beacon")
+        XCTAssertEqual(handshake.count, 3,
+                       "message 2, session-start beacon, capability declaration")
         try client.absorb(handshake[0].bytes, nowMicros: 600)
         try client.absorb(handshake[1].bytes, nowMicros: 700)
+        try client.absorb(handshake[2].bytes, nowMicros: 800)
         XCTAssertNotNil(client.transport)
+        // The W7 declaration is the host's first reliable word (HS-8's
+        // deferred capabilities item). Acknowledge it and clear the
+        // baseline so the gates below start from a quiescent stream.
+        XCTAssertEqual(client.received.count, 1)
+        XCTAssertEqual(client.received.first?.bytes.first,
+                       CtrlMessageType.capabilityDeclaration)
+        client.received.removeAll()
+        for datagram in try client.pollOut(nowMicros: 900) {
+            _ = session.receive(
+                datagram, from: Self.tupleA,
+                now: 2_000_000, hostMicroseconds: 2_000
+            )
+        }
+        XCTAssertTrue(session.arqIsQuiescent,
+                      "declaration acked — quiescent baseline")
         return (session, client)
     }
 
