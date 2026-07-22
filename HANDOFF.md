@@ -557,14 +557,90 @@ are LANDED, GATED, COMMITTED (not pushed):
   free, no lyte-host, Sunshine active, portal_token/noise_static.key/
   paired_clients shas byte-identical. Logs /tmp/h1gate-* (Mac + pup).
 
+- **HS-16 congestion estimator** (`44b39ab`, Host/): the wire listens
+  back — the last host H2 slice. RateEstimator (HostWire, sans-IO,
+  injected clock): a send ledger tapped at the pacer's sink (channel,
+  seq → send-ns, wire bytes; 8192-deep ring) matches the chan-3
+  reports' dispersion samples into TRAINS split by send spacing (gap
+  scales with the standing rate — a fixed gap starved the climb at
+  the floor, caught live) → delivery-rate samples (10 s windowed MAX,
+  <8-packet trains weighted ×0.5); queuing delay = per-CHANNEL
+  min-baseline inflation (per-channel deliberately: a DSCP fast lane
+  for audio must not mask a growing video queue; GCC's trendline
+  swapped for min-baseline inflation — same sensor family, fewer
+  moving parts, flagged for revisit); loss = ledger deltas over a
+  rolling 1 s window, PRE-FEC (the wire's post-FEC evidence is the
+  NACK section, empty until HS-17). Control law: overuse (2
+  consecutive inflated reports > 15 ms) → 0.85 × MEASURED delivery,
+  ≤1 fall/500 ms; loss in GCC's three bands — <2% clean, **2–10%
+  HELD (FEC's band; resiliency G1 says a 5% path keeps streaming —
+  crashing on it would be dishonest)**, >10% falls ×(1−loss/2); rises
+  ONLY on fresh delivery evidence ≤10%/s toward the ceiling (= the
+  session config rate; W7 carries no bitrate key in v1), 1 s
+  hold-down after falls, floor 500 kbps. Note at the seam: the
+  standing rate deliberately rides ABOVE btlRate×0.8 on clean paths —
+  paced sends self-limit the measurement to ≈R, so a standing 0.8 cap
+  would spiral; 0.85×delivery applies at the overuse fall, where the
+  pillar needs it. Seams closed: W4b's 25 ms RECOVERY window STUB
+  retired — the estimator judges windows (loss inside a window HOLDS
+  RECOVERY where presence used to graduate; lifecycle test now sends
+  real empty FeedbackReports); IdrPacing has NUMBERS (WAKE =
+  min(btlRate, lastGoodRate), RECOVERY = max(floor, ½ stale), applied
+  to the shared pacer inside `execute` the moment the machine
+  demands); frameByteCeiling(fps) = R×B/8 − reserves at the LIVE rate
+  (59,937 B @ 20 Mbps/60 fps — the HS-6 figure), exposed on Session +
+  the final stats line. New: SessionEvent.rateChanged(reason:
+  overuse/loss/evidence/idrPacing), counters feedbackReportsParsed/
+  Malformed/rateChanges, drop reason .malformedFeedback (hostile
+  chan-3 still feeds the blackout detector, never the estimator).
+  Gate: Host 81 → **93/93 Mac AND pup** (RateEstimatorGateTests: 10
+  legs — measured-not-hoped delivery, short-train downweight,
+  unmatched-sample refusal, 5%-held/20%-falls loss bands, floor/
+  ceiling pins, floor-climb evidence, overuse anchored to delivery,
+  IdrPacing numbers, recovery-verdicts-through-Session, R-G8 cadence
+  re-run WITH a mid-stream crash: p99 deviation 0.024 ms). LIVE on
+  pup :41041 (loopback, portal, probe ~/src/hs16-probe sending REAL
+  FeedbackReports — ledgers + dispersion — every 30 ms, IDR chirp
+  every 2 s): (A) 800 ms probe blackout → FROZEN → RECOVERY with
+  `rate: → (IDR pacing halfStaleEstimate)` on the pacer → blackout
+  gap read as loss (honest: those datagrams died) → falls → climbed
+  back to the 20 Mbps ceiling, graduated ACTIVE on estimator
+  verdicts; (B) video-scoped netem 6 Mbit squeeze (tos 0xa0 + dport
+  filter) 30 s → 4 overuse falls anchored at measured delivery
+  (~4.9–5.2 Mbps × 0.85 shapes), evidence climbs between, full
+  re-convergence after release; (C) 20 s of 20% netem loss → 12+
+  multiplicative falls (~×0.9 each), then climbed back to 15.6 Mbps
+  by run end (still climbing at horizon); audio inter-arrival p50
+  4.7 / p99 5.9 ms in runs A+B (through squeeze AND blackout;
+  run C's p99 16 ms is the netem dropping audio datagrams — arrival
+  gaps, not send cadence; host max audio queue delay ≤ 0.76 ms in
+  A/B), 0 unseal failures anywhere (51k/85k/58k datagrams). Cleanup
+  verified: no lyte-host/probe/tcpdump, 41041/41061 free, lo noqueue,
+  Sunshine active, all three config shas byte-identical. Logs
+  pup:/tmp/hs16-host{A2,B,C,C2}.log + /tmp/hs16-probe{A2,B,C,C2}.log.
+  Deferred: encoder VBV doesn't consume frameByteCeiling yet (no
+  NVENC reconfig call in CHevcEncode — the number is computed, logged,
+  and test-pinned; wire it when the encoder leaf grows reconfigure),
+  post-FEC loss + FEC-regime step on rung 3 (needs HS-17's NACK
+  consumption + a per-frame regime switch on VideoChannel), pacer
+  audio-cadence physics below ~4.6 Mbps (a full-size video datagram
+  occupies >2 ms of wire there; smaller video datagrams via DPLPMTUD-
+  down is the fix if a real path ever pins us that low — audio+control
+  reserves fit under the 500 kbps floor by construction), estimator
+  wants a client-clock skew term if reports ever ride >10 s baselines
+  (50 ppm bounds it <1 ms today). WIRE WANTS (deferred, no bytes
+  moved): an RFC 8888-style per-report ECN/marking field and an
+  explicit receive-window/buffer-fill hint would sharpen verdicts —
+  both are wire-version items, parked.
+
 IN FLIGHT / NEXT: CL-7 reconnect/takeover UX (needs a host
 session-busy story), HS-9 cookie-mode enforcement (W8 landed; the
 client leg is live in every dial), 0x15/idle-frame promotion into
 Wire/ (now joined by 0x16/0x17/TLV-0x03 at CL-9 and the HS-15 audio
 interior at CL-11 — mirrors in place and byte-pinned), CL-11 M7 audio
 receiver (HS-15's wire side is live — the host streams audio TODAY).
-Ports used tonight: 41000–41011 + 41021/41022 (41009 CL-8, 41010
-HS-13, 41011 CL-9, 41021+41022 HS-15).
+Ports used tonight: 41000–41011 + 41021/41022 + 41031 (H1 joint gate)
++ 41041/41061 (HS-16 host/probe).
 Subagent stall pattern persists — 7-min watchdog + interrupt-kick works
 (W4b needed two kicks; check any silent worker's transcript mtime).
 
