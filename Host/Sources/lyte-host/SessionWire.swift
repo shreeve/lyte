@@ -85,6 +85,16 @@ final class SessionWire {
     private let recvScratch: UnsafeMutablePointer<UInt8>
     private static let recvSlotCapacity = 2_048
 
+    /// HS-13: the injection sink for client input events. Nil = input
+    /// disabled (counted loud, never fatal). Set by main after the
+    /// backend policy runs.
+    var inputInjector: InputInjector?
+    /// receive→inject per event, µs (the HS-13 p99 < 2 ms gate edge).
+    private(set) var inputLatency = Histogram()
+    private(set) var inputInjected = 0
+    private(set) var inputInjectFailures = 0
+    private var inputNoInjectorWarned = false
+
     private(set) var framesSent = 0
     private(set) var datagramsSent = 0
     private(set) var bytesSent = 0
@@ -538,7 +548,48 @@ final class SessionWire {
             }
         case .sessionClosed(let reason):
             print("session: CLOSED (\(reason))")
+        case .inputReceived(let event, let rxMicros):
+            injectInput(event, receivedAtMicroseconds: rxMicros)
         }
+    }
+
+    /// One delivered input event → the injector → the session's echo
+    /// buffer (flushed as 0x17 on the next service pass). Failures are
+    /// counted and loud, never fatal — a stuck injector must not kill
+    /// the stream carrying the user's screen.
+    private func injectInput(
+        _ event: InputEvent, receivedAtMicroseconds rxMicros: UInt64
+    ) {
+        guard let injector = inputInjector else {
+            if !inputNoInjectorWarned {
+                inputNoInjectorWarned = true
+                print("input: event seq \(event.seq) arrived but no "
+                    + "injection backend is active — input is OFF this run")
+            }
+            inputInjectFailures += 1
+            return
+        }
+        do {
+            try injector.inject(event)
+        } catch {
+            inputInjectFailures += 1
+            print("input: inject seq \(event.seq) failed: \(error)")
+            return
+        }
+        let injectMicros = monotonicMicros()
+        inputInjected += 1
+        inputLatency.record(injectMicros &- rxMicros)
+        session.noteInputInjected(
+            seq: event.seq,
+            receivedAtMicroseconds: rxMicros,
+            injectedAtMicroseconds: injectMicros
+        )
+    }
+
+    /// Capture negotiation → the injector's absolute-coordinate scaling
+    /// (the uinput tablet needs the monitor size; Mutter ignores it).
+    func noteMonitorExtent(width: UInt32, height: UInt32) {
+        inputInjector?.noteMonitorExtent(width: width, height: height)
     }
 
     private func flushOutbox() throws {

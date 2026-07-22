@@ -88,6 +88,10 @@ targets += [
     // and SO_TIMESTAMPING TX stamps (CMSG macros are unreachable from Swift;
     // plain Linux syscalls, no system library).
     .target(name: "CNetIO"),
+    // C leaf (HS-13, fallback only): virtual evdev devices over
+    // /dev/uinput — keyboard, relative mouse, absolute tablet. The
+    // ioctl surface; policy stays in Swift.
+    .target(name: "CInputUinput"),
     // HS-4 verification harness: loopback batch send with per-packet DSCP,
     // received-TOS readback, TX-timestamp drain. Exits nonzero on mismatch.
     .executableTarget(
@@ -123,6 +127,7 @@ targets += [
             "CPipeWireCapture",
             "CHevcEncode",
             "CNetIO",
+            "CInputUinput",
             .product(name: "LyteWire", package: "Wire"),
             // HS-10: one SHA-256 for the advertised identity hash
             // (IdentityHash.swift is the confined import site). Already

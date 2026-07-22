@@ -194,6 +194,14 @@ public enum SessionEvent: Equatable, Sendable {
     /// 30 s liveness timeout (which sends nothing — the peer that
     /// would read the message is the one that died).
     case sessionClosed(SessionCloseReason)
+    /// A client input event (0x16) arrived on the reliable stream —
+    /// exactly once, in order (HS-13). The shell injects it into the
+    /// desktop session and reports back via `noteInputInjected`;
+    /// `receivedAtMicroseconds` is the host µs the carrying datagram
+    /// arrived at (the echo tuple's rx stamp). The machine's pre-arm
+    /// already ran: a keypress in IDLE is the WAKE, one during FROZEN
+    /// persists until RECOVERY's IDR consumes it (W4b).
+    case inputReceived(InputEvent, receivedAtMicroseconds: UInt64)
 }
 
 /// Why an inbound datagram went no further. Counted and surfaced, never
@@ -256,6 +264,10 @@ public struct SessionCounters: Equatable, Sendable {
     public var videoFramesSuppressed = 0
     /// ModeTransitions emitted (HS-11's live evidence).
     public var modeTransitionsSent = 0
+    /// Client input events delivered off the reliable stream (HS-13).
+    public var inputEventsReceived = 0
+    /// (seq, rx, inject) tuples sent back in 0x17 echo messages.
+    public var inputEchoTuplesSent = 0
 
     public init() {}
 }
@@ -337,6 +349,18 @@ public final class Session {
     /// The RECOVERY window stub's last window boundary (see
     /// `recoveryWindowTick`).
     private var recoveryWindowNS: UInt64?
+
+    // MARK: HS-13 input state
+
+    /// The seq of the last input event the shell REPORTED injected —
+    /// stamped on every subsequent video frame's shards as TLV 0x03
+    /// (the overview's "stamps lastInputSeq into the next frame"),
+    /// which is what lets the client close per-keystroke
+    /// input-to-photon. Nil until the first injection; never cleared.
+    public private(set) var lastInputSeq: UInt32?
+    /// Echo tuples awaiting their 0x17 ride; flushed on `advance` (and
+    /// eagerly once a full message accumulates).
+    private var pendingEchoTuples: [InputEchoTuple] = []
 
     /// The lifecycle machine's state; nil before establishment.
     public var lifecycleState: SessionState? { machine?.state }
@@ -578,6 +602,7 @@ public final class Session {
             frameNumber: nextVideoFrameNumber,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
             isKeyframe: isKeyframe,
+            lastInputSeq: lastInputSeq,
             now: now
         )
         nextVideoFrameNumber = nextVideoFrameNumber.next
@@ -614,14 +639,65 @@ public final class Session {
         return runMachine(.damage, now: now, hostMicroseconds: hostMicroseconds)
     }
 
-    /// The HS-13 seam: an injected input event pre-arms the wake IDR
-    /// before its damage exists (W4b's pre-arm rule — a keypress during
-    /// a blackout persists through FROZEN and is consumed exactly once
-    /// by RECOVERY's IDR). No caller until input lands.
+    /// The HS-13 seam, now wired: an injected input event pre-arms the
+    /// wake IDR before its damage exists (W4b's pre-arm rule — a
+    /// keypress during a blackout persists through FROZEN and is
+    /// consumed exactly once by RECOVERY's IDR). `consumeReliable`'s
+    /// 0x16 arm calls this on every delivered input event; it stays
+    /// public for shells with input paths of their own.
     public func notePreArmInput(
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
         runMachine(.preArmInput, now: now, hostMicroseconds: hostMicroseconds)
+    }
+
+    /// The shell's injection report (HS-13): the event with `seq` was
+    /// handed to the desktop session at `injectedAtMicroseconds` (host
+    /// µs, the beacon domain). Buffers one echo tuple — flushed as 0x17
+    /// messages (≤ 32 tuples each) on the next `advance` — and moves
+    /// the lastInputSeq stamp every later video frame carries.
+    /// Buffering only, no sends: safe to call while iterating the very
+    /// events that delivered the input.
+    public func noteInputInjected(
+        seq: UInt32,
+        receivedAtMicroseconds: UInt64,
+        injectedAtMicroseconds: UInt64
+    ) {
+        lastInputSeq = seq
+        pendingEchoTuples.append(InputEchoTuple(
+            seq: seq,
+            receivedMicroseconds: receivedAtMicroseconds,
+            injectedMicroseconds: injectedAtMicroseconds
+        ))
+    }
+
+    /// Pending tuples onto the reliable stream, ≤ maxTupleCount per
+    /// 0x17 message. A refused send is loud, not fatal, and the tuples
+    /// stay queued for the next flush.
+    private func flushInputEchoes(
+        now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        guard phase == .established, !pendingEchoTuples.isEmpty else {
+            return []
+        }
+        var events: [SessionEvent] = []
+        while !pendingEchoTuples.isEmpty {
+            let batch = Array(
+                pendingEchoTuples.prefix(InputEcho.maxTupleCount)
+            )
+            do {
+                try sendReliable(
+                    InputEcho(tuples: batch).encode(),
+                    now: now, hostMicroseconds: hostMicroseconds
+                )
+            } catch {
+                events.append(.sendFailed("input echo: \(error)"))
+                break
+            }
+            pendingEchoTuples.removeFirst(batch.count)
+            counters.inputEchoTuplesSent += batch.count
+        }
+        return events
     }
 
     /// The ratchet's all-skip stop (HS-3's detector via HS-11): retains
@@ -785,9 +861,28 @@ public final class Session {
                 counters.dropped += 1 // unreachable from receive(ack)
                 return [.dropped(.malformedCtrl)]
             }
-        case CtrlMessageType.modeTransition, CtrlMessageType.capabilityUpdate:
+        case HostCtrlMessageType.inputEvent:
+            guard let event = try? InputEvent.decode(message) else {
+                counters.dropped += 1
+                return [.dropped(.malformedCtrl)]
+            }
+            counters.inputEventsReceived += 1
+            // Pre-arm BEFORE the shell injects: the wake/pre-arm
+            // semantics belong to the event's arrival, not to the
+            // injection call's success (W4b — a keypress during a
+            // blackout must persist even if injection is deferred).
+            var events = runMachine(
+                .preArmInput, now: now, hostMicroseconds: hostMicroseconds
+            )
+            events.append(.inputReceived(
+                event, receivedAtMicroseconds: hostMicroseconds
+            ))
+            return events
+        case CtrlMessageType.modeTransition, CtrlMessageType.capabilityUpdate,
+             HostCtrlMessageType.inputEcho:
             // Receiver-role messages arriving at the mediaSender /
-            // sole proposer: hostile or confused. Dropped loud.
+            // sole proposer / echo emitter: hostile or confused.
+            // Dropped loud.
             counters.dropped += 1
             return [.dropped(.unexpectedCtrlType(message.first!))]
         default:
@@ -1068,6 +1163,7 @@ public final class Session {
             if next <= now { next = now + config.beaconIntervalNS }
             nextBeaconAt = next
         }
+        events += flushInputEchoes(now: now, hostMicroseconds: hostMicroseconds)
         if let due = nextArqWakeNS, now >= due {
             events += serviceArq(now: now, hostMicroseconds: hostMicroseconds)
         }

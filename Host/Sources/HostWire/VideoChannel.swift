@@ -108,18 +108,35 @@ public struct VideoChannelConfig: Sendable {
     /// The TLV block bytes every datagram of this config carries:
     /// count byte + type/length header + the 8-byte conn-id value.
     var tlvBlockByteCount: Int {
-        connectionId == nil ? 0 : 1 + 2 + ConnectionId.byteCount
+        tlvBlockByteCount(extraTlvByteCount: 0)
+    }
+
+    /// The TLV block under this config plus `extraTlvByteCount` bytes of
+    /// per-frame TLVs (HS-13's lastInputSeq stamp): the count byte is
+    /// paid once, by whichever TLV arrives first.
+    func tlvBlockByteCount(extraTlvByteCount: Int) -> Int {
+        let connIdBytes =
+            connectionId == nil ? 0 : 2 + ConnectionId.byteCount
+        let bodyBytes = connIdBytes + extraTlvByteCount
+        return bodyBytes == 0 ? 0 : 1 + bodyBytes
     }
 
     /// The plaintext shard budget under this config's real per-datagram
     /// overhead. The AEAD tag is reserved unconditionally so geometry is
     /// identical with and without crypto (§4.2).
     public var shardBudgetByteCount: Int {
+        shardBudgetByteCount(extraTlvByteCount: 0)
+    }
+
+    /// The budget with per-frame TLVs on top (geometry is per-frame
+    /// anyway — the assembler reads it from the fec field, never assumes
+    /// a shard size).
+    public func shardBudgetByteCount(extraTlvByteCount: Int) -> Int {
         min(
             WireBudget.maxPlaintextShardByteCount,
             WireBudget.maxWirePayloadByteCount
                 - WireBudget.aeadTagByteCount
-                - tlvBlockByteCount
+                - tlvBlockByteCount(extraTlvByteCount: extraTlvByteCount)
         )
     }
 }
@@ -183,20 +200,26 @@ public final class VideoChannel {
     /// budget breach, a seal refusal) — loud, per the W2 rule. Returns
     /// the number of shards enqueued. `captureTimestampMicroseconds` is
     /// the PipeWire graph-clock capture stamp; it rides the envelope
-    /// timestamp field verbatim.
+    /// timestamp field verbatim. `lastInputSeq` (HS-13), when set, rides
+    /// every shard of THIS frame as the host-pinned TLV 0x03 — per-shard
+    /// like the conn-id, because shards are independently lossy — and
+    /// the frame's geometry derives from the correspondingly smaller
+    /// shard budget.
     @discardableResult
     public func ingest(
         frame annexB: [UInt8],
         frameNumber: FrameNumber,
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
+        lastInputSeq: UInt32? = nil,
         now: UInt64
     ) throws -> Int {
         let shards = try packetize(
             frame: annexB,
             frameNumber: frameNumber,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe
+            isKeyframe: isKeyframe,
+            lastInputSeq: lastInputSeq
         )
         for (envelope, payload) in shards {
             let datagram = VideoChannelDatagram(
@@ -307,7 +330,8 @@ public final class VideoChannel {
         frame annexB: [UInt8],
         frameNumber: FrameNumber,
         captureTimestampMicroseconds: UInt64,
-        isKeyframe: Bool
+        isKeyframe: Bool,
+        lastInputSeq: UInt32?
     ) throws -> [(envelope: Envelope, payload: [UInt8])] {
         guard AnnexBCheck.isFrameShaped(annexB) else {
             throw VideoError.frameNotFrameShaped
@@ -319,7 +343,10 @@ public final class VideoChannel {
             )
         }
 
-        let budget = config.shardBudgetByteCount
+        let budget = config.shardBudgetByteCount(
+            extraTlvByteCount: lastInputSeq == nil
+                ? 0 : LastInputSeqTlv.encodedByteCount
+        )
         let k = (annexB.count + budget - 1) / budget
         let m = try FecGeometryTable.parityShards(
             forDataShards: k, regime: config.regime
@@ -342,6 +369,11 @@ public final class VideoChannel {
             )
             if let connectionId = config.connectionId {
                 envelope.extensions.append(connectionId.wireExtension)
+            }
+            if let lastInputSeq {
+                envelope.extensions.append(
+                    LastInputSeqTlv.wireExtension(seq: lastInputSeq)
+                )
             }
             shards.append((envelope, payload))
             nextSeq = nextSeq.next

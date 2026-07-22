@@ -51,6 +51,9 @@ struct Options {
     /// HS-9 enforcement: only statics already in paired_clients may
     /// complete the handshake (the "1-RTT reconnect" half of the gate).
     var requirePaired = false
+    /// HS-13 injection backend: auto = Mutter RemoteDesktop, falling
+    /// back to uinput; off disables input for the run.
+    var input: InputBackendChoice = .auto
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
@@ -118,6 +121,15 @@ struct Options {
                 opts.pair = true
             case "--require-paired":
                 opts.requirePaired = true
+            case "--input":
+                i += 1
+                guard i < args.count,
+                      let choice = InputBackendChoice(rawValue: args[i])
+                else {
+                    throw HostError(
+                        "--input must be auto, mutter, uinput, or off")
+                }
+                opts.input = choice
             case "--help", "-h":
                 print("""
                 usage: lyte-host [--out PATH] [--seconds N] [--bitrate-mbps N]
@@ -164,6 +176,10 @@ struct Options {
                   --require-paired  only clients already in paired_clients
                                     may complete the Noise handshake
                                     (reconnects are plain 1-RTT IK)
+                  --input MODE      injection backend for client input
+                                    events (HS-13): auto (default —
+                                    Mutter RemoteDesktop, uinput
+                                    fallback), mutter, uinput, off
 
                 subcommands: lyte-host sniff --port PORT  (header dissector)
                              lyte-host rd-spike …         (CP-5 input probe)
@@ -294,6 +310,7 @@ final class Sink {
             }
             encoder = enc
             negotiated = (width, height, name)
+            wire?.noteMonitorExtent(width: width, height: height)
             let rcDesc = opts.ratchet
                 ? "capped-CQ vbr cq=\(Ratchet.floorQP), cap \(opts.bitrate / 1_000_000) Mbps"
                 : "cbr \(opts.bitrate / 1_000_000) Mbps"
@@ -700,6 +717,15 @@ func run() throws {
         wire = w
         print("session: up — pacer \(opts.wireRateMbps) Mbps, per-packet "
             + "TOS (video 0xA0 / control 0xC0), 1 Hz beacon on CTRL")
+
+        // HS-13: the injection backend comes up with the session — the
+        // Mutter RemoteDesktop session is independent of the portal
+        // capture (CP-5 Q6: the video token is never touched).
+        if let injector = makeInputInjector(opts.input) {
+            w.inputInjector = injector
+            print("input: injection via \(injector.name) "
+                + "(echo tuples + lastInputSeq stamping active)")
+        }
     }
 
     // Both backends must stay alive for the whole capture: dropping them
@@ -768,6 +794,9 @@ func run() throws {
     // stream (retransmitted until acknowledged or patience runs out), so
     // the client learns the session ended instead of inferring it.
     sink.wire?.shutdown(reason: .shuttingDown)
+    // HS-13: close the Mutter RemoteDesktop session (uinput devices die
+    // with the process either way).
+    sink.wire?.inputInjector?.stop()
 
     // Measurement aid: dump the final retained raw frame (stride-packed
     // BGRx as delivered by PipeWire) so decoded output can be PSNR'd
@@ -842,6 +871,13 @@ func run() throws {
         \(s.videoFramesSuppressed) frames suppressed (FROZEN/closed), \
         final state \(wire.lifecycleState.map { "\($0)" } ?? "—") \
         (wire mode \(wire.currentWireMode.map { "\($0)" } ?? "—"))
+        input: \(s.inputEventsReceived) events received, \
+        \(wire.inputInjected) injected \
+        (\(wire.inputInjectFailures) failed), \
+        \(s.inputEchoTuplesSent) echo tuples sent; receive→inject \
+        p50 \(wire.inputLatency.p50.map(String.init) ?? "—") µs / \
+        p99 \(wire.inputLatency.p99.map(String.init) ?? "—") µs / \
+        max \(wire.inputLatency.maxValue.map(String.init) ?? "—") µs
         """)
     } else {
         print("output: \(opts.outputPath)")
