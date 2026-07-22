@@ -93,6 +93,9 @@ public struct SessionConfig: Sendable {
     /// honest for the stub: pairing (W6 PIN-PAKE) is what mints this
     /// set, and J-G1 runs statics-pinned-out-of-band in both directions.
     public var allowedClientStaticPublicKeys: [[UInt8]]?
+    /// The pre-handshake flood throttle (HS-9): message 1s beyond this
+    /// budget are dropped before any Noise state is allocated.
+    public var handshakeGate: HandshakeGate.Config
 
     public init(
         crypto: SessionCryptoMode,
@@ -102,7 +105,8 @@ public struct SessionConfig: Sendable {
         beaconIntervalNS: UInt64 = 1_000_000_000,
         path: PathValidatorConfig = PathValidatorConfig(),
         arq: ArqConfig = ArqConfig(),
-        allowedClientStaticPublicKeys: [[UInt8]]? = nil
+        allowedClientStaticPublicKeys: [[UInt8]]? = nil,
+        handshakeGate: HandshakeGate.Config = HandshakeGate.Config()
     ) {
         self.crypto = crypto
         self.rateBitsPerSecond = rateBitsPerSecond
@@ -112,6 +116,7 @@ public struct SessionConfig: Sendable {
         self.path = path
         self.arq = arq
         self.allowedClientStaticPublicKeys = allowedClientStaticPublicKeys
+        self.handshakeGate = handshakeGate
     }
 }
 
@@ -167,6 +172,9 @@ public enum SessionDropReason: Equatable, Sendable {
     case unhandledChannel(UInt8)
     case handshakeFailed(String)
     case duplicateConnectionIdTlv
+    /// A message 1 beyond the HandshakeGate budget: dropped unread,
+    /// before any Noise state was allocated (HS-9's flood posture).
+    case handshakeThrottled
 }
 
 public enum SessionError: Error, Equatable, Sendable {
@@ -203,6 +211,8 @@ public struct SessionCounters: Equatable, Sendable {
     public var arqDatagramsSent = 0
     /// Chan 3 arrivals: counted, not parsed — the estimator is HS-16.
     public var feedbackDatagrams = 0
+    /// Message 1s the HandshakeGate refused (HS-9's flood evidence).
+    public var handshakesThrottled = 0
 
     public init() {}
 }
@@ -223,6 +233,11 @@ public final class Session {
     public private(set) var clock = SessionClockStats()
     public private(set) var counters = SessionCounters()
 
+    /// The completed Noise handshake's transcript hash — the sid the
+    /// W6 pairing run binds to (decision §8.2). Nil before
+    /// establishment and in insecure mode (nothing to pair against).
+    public var handshakeHash: [UInt8]? { transport?.handshakeHash }
+
     private var channel: VideoChannel!
     /// Nil until the handshake completes; always nil in insecure mode.
     private var transport: NoiseTransport?
@@ -241,6 +256,9 @@ public final class Session {
     /// TLV block and the AEAD tag both on every datagram (the HS-7
     /// accounting fix). ARQ poll output repacks to this.
     private let arqPayloadBudget: Int
+
+    /// Message-1 admissions, consulted before any handshake allocation.
+    private var handshakeGate: HandshakeGate
 
     private var beaconSeq: UInt32 = 0
     private var nextBeaconAt: UInt64?
@@ -281,6 +299,7 @@ public final class Session {
             arqPayloadBudget - ArqBounds.segmentHeaderByteCount
         )
         self.arq = ArqEndpoint(channel: .ctrl, config: arqConfig)
+        self.handshakeGate = HandshakeGate(config: config.handshakeGate)
         self.validator = PathValidator(
             connectionId: connectionId,
             initialPath: clientTuple,
@@ -372,6 +391,12 @@ public final class Session {
             else {
                 counters.dropped += 1
                 events.append(.dropped(.notEstablished(envelope.channel.rawValue)))
+                return events
+            }
+            guard handshakeGate.admit(now: now) else {
+                counters.dropped += 1
+                counters.handshakesThrottled += 1
+                events.append(.dropped(.handshakeThrottled))
                 return events
             }
             events += completeHandshake(

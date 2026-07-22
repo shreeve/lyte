@@ -63,6 +63,13 @@ final class SessionWire {
     private var session: Session!
     private let insecure: Bool
     private let rateBitsPerSecond: Int
+    /// HS-9: non-nil = only these client statics may complete message 1
+    /// (the paired set, loaded from the keystore by --require-paired).
+    private let allowedClientStatics: [[UInt8]]?
+    /// HS-9: non-nil = pairing mode. The service consumes the pairing
+    /// CTRL types off the reliable stream; replies ride sendReliable.
+    private let pairing: PairingResponderService?
+    private let onPairingEvent: (PairingResponderService.Event) -> Void
 
     /// Datagrams handed over by the session's paced sink, flushed as
     /// sendmmsg batches.
@@ -98,12 +105,19 @@ final class SessionWire {
         listenPort: UInt16?,
         peer: (host: String, port: UInt16)?,
         insecure: Bool,
-        rateBitsPerSecond: Int
+        rateBitsPerSecond: Int,
+        allowedClientStatics: [[UInt8]]? = nil,
+        pairing: PairingResponderService? = nil,
+        onPairingEvent: @escaping (PairingResponderService.Event) -> Void
+            = { _ in }
     ) throws {
         precondition(listenPort != nil || peer != nil,
                      "a session needs a port to listen on or a peer")
         self.insecure = insecure
         self.rateBitsPerSecond = rateBitsPerSecond
+        self.allowedClientStatics = allowedClientStatics
+        self.pairing = pairing
+        self.onPairingEvent = onPairingEvent
 
         var err = [CChar](repeating: 0, count: 256)
         guard let n = lyte_netio_new("0.0.0.0", listenPort ?? 0,
@@ -155,7 +169,8 @@ final class SessionWire {
         session = Session(
             config: SessionConfig(
                 crypto: crypto,
-                rateBitsPerSecond: rateBitsPerSecond
+                rateBitsPerSecond: rateBitsPerSecond,
+                allowedClientStaticPublicKeys: allowedClientStatics
             ),
             clientTuple: clientTuple,
             now: monotonicNS()
@@ -335,6 +350,15 @@ final class SessionWire {
         case .handshakeCompleted(let remote):
             print("noise: handshake complete — client static "
                 + HostStaticKey.hex(remote))
+            // HS-9: the pairing run binds to THIS session's transcript
+            // and statics; a re-handshake rebinds (and keeps the guess
+            // budget — reconnecting never refills it).
+            if let pairing, let hash = session.handshakeHash {
+                pairing.sessionEstablished(
+                    clientStaticPublicKey: remote,
+                    noiseHandshakeHash: hash
+                )
+            }
         case .beaconSent:
             break // 1 Hz; the final stats line carries the count
         case .beaconEchoAccepted(let seq, let offset, let rtt):
@@ -342,6 +366,28 @@ final class SessionWire {
                 print("beacon: echo \(seq) offset \(offset) µs rtt \(rtt) µs")
             }
         case .reliableCtrl(let group, let message):
+            // The pairing service claims its four CTRL types; nil means
+            // the message is some other consumer's (none exist yet —
+            // capabilities land with W7).
+            if let pairing,
+               let output = pairing.handleReliableCtrl(
+                   message, now: monotonicNS()
+               ) {
+                for reply in output.replies {
+                    do {
+                        try session.sendReliable(
+                            reply, now: monotonicNS(),
+                            hostMicroseconds: monotonicMicros()
+                        )
+                    } catch {
+                        print("pairing: reply send failed: \(error)")
+                    }
+                }
+                for pairingEvent in output.events {
+                    onPairingEvent(pairingEvent)
+                }
+                return
+            }
             print("ctrl-arq: message group \(group.rawValue) "
                 + "(\(message.count) B, type "
                 + "0x\(String(message.first ?? 0, radix: 16)))")
@@ -364,6 +410,10 @@ final class SessionWire {
                     print("path: rebind connect failed: \(errString(err))")
                 }
             }
+        case .dropped(.handshakeThrottled):
+            // A flood would print per datagram; the final stats line
+            // carries the handshakesThrottled count instead.
+            break
         case .dropped(let reason):
             print("drop: \(reason)")
         case .sendFailed(let what):

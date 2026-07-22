@@ -11,6 +11,7 @@ import CHevcEncode
 import CPipeWireCapture
 import Foundation
 import HostCore
+import HostWire
 
 // MARK: - Options
 
@@ -42,6 +43,13 @@ struct Options {
     /// default in `--wire-listen` Noise mode; Avahi being unavailable
     /// degrades to manual host:port, never a failure.
     var advertise = true
+    /// HS-9 pairing mode: mint a 6-digit PIN, print it, and run the
+    /// CPace responder over the session's reliable CTRL stream; on
+    /// success the client's static is pinned to paired_clients.
+    var pair = false
+    /// HS-9 enforcement: only statics already in paired_clients may
+    /// complete the handshake (the "1-RTT reconnect" half of the gate).
+    var requirePaired = false
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
@@ -105,6 +113,10 @@ struct Options {
                 opts.insecure = true
             case "--no-advertise":
                 opts.advertise = false
+            case "--pair":
+                opts.pair = true
+            case "--require-paired":
+                opts.requirePaired = true
             case "--help", "-h":
                 print("""
                 usage: lyte-host [--out PATH] [--seconds N] [--bitrate-mbps N]
@@ -141,6 +153,16 @@ struct Options {
                   --wire-rate-mbps  pacer rate in the wire mode (default 20)
                   --no-advertise    skip the Avahi _lyte._udp advertisement
                                     in --wire-listen mode
+                  --pair            pairing mode (with --wire-listen): mint
+                                    and print a 6-digit PIN, run the CPace
+                                    PAKE over the sealed reliable CTRL
+                                    stream, and pin the paired client's
+                                    static to ~/.config/lyte-host/
+                                    paired_clients (3 wrong guesses burn
+                                    the PIN; rerun --pair for a fresh one)
+                  --require-paired  only clients already in paired_clients
+                                    may complete the Noise handshake
+                                    (reconnects are plain 1-RTT IK)
 
                 subcommands: lyte-host sniff --port PORT  (header dissector)
                              lyte-host rd-spike …         (CP-5 input probe)
@@ -450,6 +472,58 @@ final class Sink {
     }
 }
 
+// MARK: - Pairing surface (HS-9)
+
+/// The H1-era PIN surface is this console line: 6 CSPRNG digits,
+/// zero-padded (10⁶ space; with the service's 3-guess budget an online
+/// attacker has 3-in-a-million odds per displayed PIN, and CPace makes
+/// the PIN untestable offline).
+func mintPairingPin() -> String {
+    var rng = SystemRandomNumberGenerator()
+    return String(format: "%06d", rng.next(upperBound: UInt32(1_000_000)))
+}
+
+/// The pairing service's events, executed: `.paired` is the keystore
+/// write; everything else is the gate's loud console evidence.
+func handlePairingEvent(_ event: PairingResponderService.Event) {
+    switch event {
+    case .attemptOpened(let attempt, let of):
+        print("pairing: attempt \(attempt)/\(of) — share B sent")
+    case .paired(let key):
+        let hex = HostStaticKey.hex(key)
+        do {
+            var store = try PairedClients.load()
+            if store.pin(key, note: "paired "
+                + ISO8601DateFormatter().string(from: Date())) {
+                try PairedClients.save(store)
+                print("pairing: PAIRED — client static \(hex) pinned → "
+                    + PairedClients.path.path)
+            } else {
+                print("pairing: PAIRED — client static \(hex) was "
+                    + "already pinned")
+            }
+        } catch {
+            // The trust decision is made; only the persistence failed.
+            // Loud enough to pin by hand, not fatal to the session.
+            print("pairing: PAIRED but the keystore write FAILED "
+                + "(\(error)) — pin \(hex) by hand")
+        }
+    case .rejected(let reason, let remaining):
+        print("pairing: REJECTED (\(reason)) — \(remaining) attempt(s) "
+            + "remain on this PIN")
+    case .clientAborted(let reason):
+        print("pairing: client aborted (\(reason)) — its PIN entry "
+            + "disagreed with ours")
+    case .throttled:
+        print("pairing: attempt inside the 1 s throttle window — dropped")
+    case .pinBurned:
+        print("pairing: PIN BURNED — guess budget spent; pairing stays "
+            + "silent until a rerun of --pair mints a fresh PIN")
+    case .malformed:
+        print("pairing: malformed pairing bytes dropped")
+    }
+}
+
 /// Decodes a NUL-terminated C error buffer.
 func errString(_ buf: [CChar]) -> String {
     let bytes = buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
@@ -519,19 +593,61 @@ func run() throws {
     // first encoded frame is the session's first IDR.
     var wire: SessionWire?
     var advertiser: AvahiAdvertiser?
+    var pairingService: PairingResponderService?
     if sessionMode {
         if opts.insecure, opts.wireOut == nil {
             throw HostError("--insecure streams to a fixed peer; "
                 + "give --wire-out HOST:PORT")
         }
+        if opts.insecure, opts.pair || opts.requirePaired {
+            throw HostError("pairing binds to the Noise session that "
+                + "carries it — drop --insecure")
+        }
+        if opts.pair, opts.requirePaired {
+            throw HostError("--pair admits a not-yet-paired client; "
+                + "--require-paired contradicts it")
+        }
+
+        // HS-9 setup happens before the socket exists so a bad keystore
+        // fails the run instead of a live session.
+        var hostStatic: NoiseKeyPair?
+        var allowed: [[UInt8]]?
+        if !opts.insecure {
+            let keys = try HostStaticKey.loadOrCreate()
+            hostStatic = keys
+            if opts.requirePaired {
+                let store = try PairedClients.load()
+                guard !store.entries.isEmpty else {
+                    throw HostError("--require-paired with an empty "
+                        + "keystore would lock every client out — run "
+                        + "--pair once first")
+                }
+                allowed = store.publicKeys
+                print("pairing: enforcing \(store.entries.count) paired "
+                    + "client static(s) from \(PairedClients.path.path)")
+            }
+            if opts.pair {
+                let pin = mintPairingPin()
+                pairingService = PairingResponderService(
+                    pin: Array(pin.utf8),
+                    hostStaticPublicKey: keys.publicKey
+                )
+                print("pairing: PIN \(pin) — enter it on the client "
+                    + "(3 wrong guesses burn it; rerun --pair for a "
+                    + "fresh one)")
+            }
+        }
+
         let w = try SessionWire(
             listenPort: opts.wireListen,
             peer: opts.wireOut,
             insecure: opts.insecure,
-            rateBitsPerSecond: Int(opts.wireRateMbps * 1_000_000)
+            rateBitsPerSecond: Int(opts.wireRateMbps * 1_000_000),
+            allowedClientStatics: allowed,
+            pairing: pairingService,
+            onPairingEvent: handlePairingEvent
         )
-        if !opts.insecure {
-            let hostStatic = try HostStaticKey.loadOrCreate()
+        if let hostStatic {
             // HS-10: the advertisement goes up BEFORE the handshake wait,
             // so a browsing client can find the host and then connect to
             // it — commit-and-retain is all Avahi needs (the entry group
@@ -683,10 +799,21 @@ func run() throws {
         (last offset \(wire.clock.lastOffsetMicroseconds.map(String.init) ?? "—") µs, \
         min rtt \(wire.clock.minRttMicroseconds.map(String.init) ?? "—") µs), \
         \(s.idrRequests) IDR requests, \(s.unsealFailures) unseal failures, \
-        \(s.feedbackDatagrams) feedback datagrams
+        \(s.feedbackDatagrams) feedback datagrams, \
+        \(s.handshakesThrottled) msg1 throttled
         """)
     } else {
         print("output: \(opts.outputPath)")
+    }
+    if let pairing = pairingService {
+        if let key = pairing.pairedClientStaticPublicKey {
+            print("pairing: result — PAIRED, client "
+                + HostStaticKey.hex(key))
+        } else if pairing.isBurned {
+            print("pairing: result — PIN burned, nothing pinned")
+        } else {
+            print("pairing: result — no client paired this run")
+        }
     }
 
     // The capture leaf is not freed here: PipeWire loop/context teardown can
