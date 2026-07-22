@@ -29,6 +29,25 @@
 //     encoder-loop poll.
 //   • HS-6 integration: all traffic classes through one Pacer schedule
 //     (VideoChannel owns it; control enters via `enqueueControl`).
+//   • HS-8 integration: reliable CTRL rides an `ArqEndpoint` (W3).
+//     `sendReliable`/`sendReliableOneShot` queue messages; inbound
+//     payloads whose first byte is 0x07/0x08 route wholly to
+//     `ArqEndpoint.ingest` (the one-byte peek); delivered messages and
+//     one-shot acknowledgments surface as events. ARQ datagrams are
+//     sealed CTRL like everything else — conn-id TLV, header-as-AAD,
+//     the control pacer class — which is why the endpoint's output
+//     repacks to the session's real 1101 B plaintext budget (the HS-7
+//     accounting fix, applied to the reliable sublayer: poll packs to
+//     the bare 1112 B table, exact only without TLV + tag). The
+//     deliberately ARQ-EXEMPT registry traffic is untouched: beacons
+//     and echoes are time-sensitive samples (a late beacon is a lie),
+//     path messages must travel on the exact unvalidated tuple
+//     (HS-12), handshake datagrams predate the transport, and a lost
+//     IDR request is superseded by the requester's next coalesced
+//     emission. ARQ retransmit timers ride the session's wake
+//     machinery: `nextWake` folds the endpoint's PTO deadline in, and
+//     `advance` services it — on the Linux host that is the idle-floor
+//     tick, the between-frames service point.
 //
 // Sans-IO in the house style: no sockets, no threads, no clock. Entry
 // points take `now` (monotonic ns — the pacer/validator domain) and
@@ -64,6 +83,11 @@ public struct SessionConfig: Sendable {
     /// §4.6: 1 Hz. A beacon also goes out at establishment.
     public var beaconIntervalNS: UInt64
     public var path: PathValidatorConfig
+    /// The reliable-CTRL sublayer's knobs (HS-8). The session clamps
+    /// `maxSegmentBodyByteCount` to its own CTRL plaintext budget
+    /// (1101 B with the conn-id TLV + AEAD tag) at init — a caller
+    /// cannot configure a segment that would burst a datagram.
+    public var arq: ArqConfig
     /// When set, a completing handshake whose authenticated client
     /// static is not in this set is rejected. Nil accepts any static —
     /// honest for the stub: pairing (W6 PIN-PAKE) is what mints this
@@ -77,6 +101,7 @@ public struct SessionConfig: Sendable {
         pacerQuantumNS: UInt64 = 1_000_000,
         beaconIntervalNS: UInt64 = 1_000_000_000,
         path: PathValidatorConfig = PathValidatorConfig(),
+        arq: ArqConfig = ArqConfig(),
         allowedClientStaticPublicKeys: [[UInt8]]? = nil
     ) {
         self.crypto = crypto
@@ -85,6 +110,7 @@ public struct SessionConfig: Sendable {
         self.pacerQuantumNS = pacerQuantumNS
         self.beaconIntervalNS = beaconIntervalNS
         self.path = path
+        self.arq = arq
         self.allowedClientStaticPublicKeys = allowedClientStaticPublicKeys
     }
 }
@@ -106,6 +132,19 @@ public enum SessionEvent: Equatable, Sendable {
     )
     /// A client 0x10 arrived; `takeFreshKeyframeRequest()` is now true.
     case idrRequested(IdrRequest)
+    /// The ARQ delivered one reliable CTRL message — exactly once, in
+    /// order within its group (HS-8). The bytes start with the
+    /// message's own CTRL type byte; dispatch registers types as the
+    /// reliable consumers (capabilities at W7, mode transitions at
+    /// HS-11) land.
+    case reliableCtrl(group: ArqGroupId, message: [UInt8])
+    /// A one-shot group this session sent is fully acknowledged — the
+    /// HS-11 "final frame landed, flip to IDLE" signal, surfaced.
+    case reliableOneShotAcknowledged(ArqGroupId)
+    /// The ARQ endpoint ignored (part of) an ingested payload. Some
+    /// reasons are routine protocol weather (a duplicate from a
+    /// retransmit crossing its ACK); the shell decides what to log.
+    case arqIgnored(ArqIgnoreReason)
     case path(PathValidatorEvent)
     case dropped(SessionDropReason)
     /// An outbound build step refused (seal before establishment, a
@@ -155,6 +194,13 @@ public struct SessionCounters: Equatable, Sendable {
     public var beaconsSent = 0
     public var beaconEchoes = 0
     public var idrRequests = 0
+    /// Reliable CTRL messages the ARQ delivered (HS-8).
+    public var arqMessages = 0
+    /// Ingested ARQ bytes the endpoint refused or deduplicated.
+    public var arqIgnored = 0
+    /// Sealed CTRL datagrams carrying ARQ frames, both fresh and
+    /// retransmit — the loss-gate's retransmission evidence.
+    public var arqDatagramsSent = 0
     /// Chan 3 arrivals: counted, not parsed — the estimator is HS-16.
     public var feedbackDatagrams = 0
 
@@ -184,6 +230,18 @@ public final class Session {
     private var ctrlSeq = ChannelSeq(rawValue: 0)
     private var nextVideoFrameNumber = FrameNumber(rawValue: 0)
 
+    /// The reliable CTRL sublayer (HS-8). Host clock domain: the
+    /// endpoint's instants derive from the loop's monotonic `now`
+    /// (µs = ns/1000) — the same CLOCK_MONOTONIC family the host-µs
+    /// beacon/envelope domain bottoms out in on Linux.
+    private var arq: ArqEndpoint<HostClock>
+    /// The endpoint's next PTO deadline, in the `now` ns domain.
+    private var nextArqWakeNS: UInt64?
+    /// The session's CTRL plaintext ceiling: 1101 B with the conn-id
+    /// TLV block and the AEAD tag both on every datagram (the HS-7
+    /// accounting fix). ARQ poll output repacks to this.
+    private let arqPayloadBudget: Int
+
     private var beaconSeq: UInt32 = 0
     private var nextBeaconAt: UInt64?
     private var lastEcho: ClockBeacon.LastEcho?
@@ -207,6 +265,22 @@ public final class Session {
         var rng = rng
         self.config = config
         self.connectionId = ConnectionId.random(using: &rng)
+        // Every session datagram carries the conn-id TLV (11 B) and
+        // reserves the AEAD tag (16 B) — insecure mode included, the
+        // §4.2 geometry rule — so the reliable sublayer's segments must
+        // fit 1101 B, not the bare table's 1112 B.
+        self.arqPayloadBudget = min(
+            WireBudget.maxPlaintextShardByteCount,
+            WireBudget.maxWirePayloadByteCount
+                - WireBudget.aeadTagByteCount
+                - (1 + 2 + ConnectionId.byteCount)
+        )
+        var arqConfig = config.arq
+        arqConfig.maxSegmentBodyByteCount = min(
+            arqConfig.maxSegmentBodyByteCount,
+            arqPayloadBudget - ArqBounds.segmentHeaderByteCount
+        )
+        self.arq = ArqEndpoint(channel: .ctrl, config: arqConfig)
         self.validator = PathValidator(
             connectionId: connectionId,
             initialPath: clientTuple,
@@ -382,10 +456,139 @@ public final class Session {
         return fromValidator || fromClient
     }
 
+    // MARK: Reliable CTRL (HS-8)
+
+    /// Queues one message on the reliable ordered CTRL stream (ARQ
+    /// group 0): exactly-once, in-order delivery, RTT-adaptive
+    /// retransmit until acknowledged. The message must start with its
+    /// own CTRL type byte (the registry rule). Throws
+    /// `SessionError.notEstablished` before the transport exists —
+    /// reliable CTRL is sealed traffic — and `ArqSendError` for an
+    /// empty or over-budget message.
+    public func sendReliable(
+        _ message: [UInt8], now: UInt64, hostMicroseconds: UInt64
+    ) throws {
+        guard phase == .established else {
+            throw SessionError.notEstablished
+        }
+        try arq.send(message: message, now: arqInstant(now))
+        _ = serviceArq(now: now, hostMicroseconds: hostMicroseconds)
+    }
+
+    /// Queues one one-shot group's single message (non-zero, serially
+    /// ascending group ids — caller-allocated). The group retransmits
+    /// independently of the ordered stream and of every other one-shot;
+    /// full acknowledgment surfaces as `.reliableOneShotAcknowledged`.
+    public func sendReliableOneShot(
+        _ message: [UInt8],
+        group: ArqGroupId,
+        now: UInt64,
+        hostMicroseconds: UInt64
+    ) throws {
+        guard phase == .established else {
+            throw SessionError.notEstablished
+        }
+        try arq.sendOneShot(message: message, group: group, now: arqInstant(now))
+        _ = serviceArq(now: now, hostMicroseconds: hostMicroseconds)
+    }
+
+    /// True when the reliable sublayer has nothing left to send,
+    /// retransmit, or acknowledge (the W-G4 termination property,
+    /// exposed for the loop's idle accounting and the gate tests).
+    public var arqIsQuiescent: Bool { arq.isQuiescent }
+
+    private func arqInstant(_ now: UInt64) -> HostTimestamp {
+        HostTimestamp(microseconds: now / 1_000)
+    }
+
+    /// Ingest events → session events, with the counters kept honest.
+    private func absorbArq(
+        _ events: [ArqEvent]
+    ) -> [SessionEvent] {
+        events.map { event in
+            switch event {
+            case .message(let group, let bytes):
+                counters.arqMessages += 1
+                return .reliableCtrl(group: group, message: bytes)
+            case .oneShotAcknowledged(let group):
+                return .reliableOneShotAcknowledged(group)
+            case .ignored(let reason):
+                counters.arqIgnored += 1
+                return .arqIgnored(reason)
+            }
+        }
+    }
+
+    /// Polls the endpoint and puts its output on the wire: repack to
+    /// the session's 1101 B plaintext budget (poll packs to the bare
+    /// 1112 B table — exact only without TLV + tag; frames are
+    /// self-delimiting, so re-cutting datagram boundaries is
+    /// protocol-neutral), then each datagram sealed through the
+    /// control class like every other CTRL send. Re-arms the PTO wake.
+    private func serviceArq(
+        now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        guard phase == .established else { return [] }
+        let (payloads, deadline) = arq.poll(now: arqInstant(now))
+        nextArqWakeNS = deadline.map { $0.microseconds &* 1_000 }
+        guard !payloads.isEmpty else { return [] }
+
+        var events: [SessionEvent] = []
+        do {
+            for payload in try repackArq(payloads) {
+                try sendCtrl(
+                    body: payload, sealed: true,
+                    now: now, hostMicroseconds: hostMicroseconds
+                )
+                counters.arqDatagramsSent += 1
+            }
+        } catch {
+            // Segments the poll marked sent stay armed on their PTO
+            // timers — a refused send here heals like a lost datagram.
+            events.append(.sendFailed("arq: \(error)"))
+        }
+        return events
+    }
+
+    /// Re-cuts the endpoint's datagram payloads at the session's real
+    /// budget. Every frame fits alone by construction: segment bodies
+    /// were clamped at init (≤ budget − 8) and an ACK frame's ceiling
+    /// (3 + 16·38 B) is far below it.
+    private func repackArq(_ payloads: [[UInt8]]) throws -> [[UInt8]] {
+        var out: [[UInt8]] = []
+        var current: [UInt8] = []
+        for payload in payloads {
+            if payload.count <= arqPayloadBudget {
+                // Already within budget — keep the endpoint's packing
+                // (ACK piggybacked ahead of segments) byte-verbatim.
+                if !current.isEmpty {
+                    out.append(current)
+                    current = []
+                }
+                out.append(payload)
+                continue
+            }
+            for frame in try ArqFrame.decodeAll(payload) {
+                let bytes = frame.encode()
+                if !current.isEmpty,
+                   current.count + bytes.count > arqPayloadBudget {
+                    out.append(current)
+                    current = []
+                }
+                current.append(contentsOf: bytes)
+            }
+        }
+        if !current.isEmpty {
+            out.append(current)
+        }
+        return out
+    }
+
     // MARK: Timers and pumping
 
     /// Clock advance with no datagram — the loop's timer wake. Emits due
-    /// beacons and the validator's expiries.
+    /// beacons, services the ARQ's retransmit timers, and runs the
+    /// validator's expiries.
     public func advance(now: UInt64, hostMicroseconds: UInt64) -> [SessionEvent] {
         var events = process(
             validator.advance(now: now),
@@ -400,6 +603,9 @@ public final class Session {
             if next <= now { next = now + config.beaconIntervalNS }
             nextBeaconAt = next
         }
+        if let due = nextArqWakeNS, now >= due {
+            events += serviceArq(now: now, hostMicroseconds: hostMicroseconds)
+        }
         return events
     }
 
@@ -410,11 +616,11 @@ public final class Session {
     }
 
     /// The earliest instant anything here has work: the pacer's wake,
-    /// the next beacon, or a validator deadline. The loop sleeps until
-    /// this (Pacer semantics).
+    /// the next beacon, the ARQ's retransmit deadline, or a validator
+    /// deadline. The loop sleeps until this (Pacer semantics).
     public func nextWake(now: UInt64) -> UInt64? {
         var wake = channel.nextWake(now: now)
-        for candidate in [nextBeaconAt, validator.nextDeadline] {
+        for candidate in [nextBeaconAt, nextArqWakeNS, validator.nextDeadline] {
             guard let candidate else { continue }
             wake = wake.map { min($0, candidate) } ?? candidate
         }
@@ -492,6 +698,17 @@ public final class Session {
             return [.dropped(.malformedCtrl)]
         }
         switch type {
+        case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
+            // The one-byte peek: a payload starting with either ARQ
+            // byte is wholly ARQ — a sequence of self-delimiting
+            // frames. Ingest, then poll immediately: the ACK the
+            // ingest owes (and any fast retransmit it triggered)
+            // leaves in this same service pass.
+            var events = absorbArq(
+                arq.ingest(payload: payload[...], now: arqInstant(now))
+            )
+            events += serviceArq(now: now, hostMicroseconds: hostMicroseconds)
+            return events
         case CtrlMessageType.beaconEcho:
             guard let echo = try? BeaconEcho.decode(payload) else {
                 counters.dropped += 1

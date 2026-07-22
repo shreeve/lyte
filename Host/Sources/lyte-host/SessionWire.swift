@@ -341,6 +341,14 @@ final class SessionWire {
             if seq % 10 == 0 {
                 print("beacon: echo \(seq) offset \(offset) µs rtt \(rtt) µs")
             }
+        case .reliableCtrl(let group, let message):
+            print("ctrl-arq: message group \(group.rawValue) "
+                + "(\(message.count) B, type "
+                + "0x\(String(message.first ?? 0, radix: 16)))")
+        case .reliableOneShotAcknowledged(let group):
+            print("ctrl-arq: one-shot group \(group.rawValue) acknowledged")
+        case .arqIgnored(let reason):
+            print("ctrl-arq: ignored \(reason)")
         case .idrRequested(let request):
             print("ctrl: IDR request seq \(request.requestSeq) "
                 + "(frame \(request.frame.rawValue), "
