@@ -1,11 +1,13 @@
 import SwiftUI
 import LyteKit
+import LyteTransport
 
 /// The window's empty state (D6): discovered hosts + recents; pairing PIN;
 /// the chosen host's app list. Melts away when the stream starts.
 struct ConnectView: View {
     @Bindable var model: ConnectionModel
     @State private var discovered: [Discovery.FoundHost] = []
+    @State private var lyteHosts: [DiscoveredLyteHost] = []
     @State private var browsing = false
 
     var body: some View {
@@ -50,12 +52,33 @@ struct ConnectView: View {
 
             // Hosts are the hero: click one → the app-launch cards.
             VStack(spacing: 10) {
-                if discovered.isEmpty && browsing {
+                if discovered.isEmpty && lyteHosts.isEmpty && browsing {
                     ProgressView("Looking for hosts…")
                         .controlSize(.small)
-                } else if discovered.isEmpty {
-                    Text("No Sunshine hosts found on this network")
+                } else if discovered.isEmpty && lyteHosts.isEmpty {
+                    Text("No hosts found on this network")
                         .foregroundStyle(.secondary)
+                }
+                // CL-5 dual-browse: Lyte-UDP hosts (_lyte._udp) listed
+                // beside the Sunshine ones until the H2 demolition retires
+                // the latter. Session flow over Lyte-UDP is CL-7; until
+                // then these rows announce presence (and pin identity),
+                // they don't launch.
+                ForEach(lyteHosts, id: \.address) { host in
+                    HStack(spacing: 8) {
+                        Circle().fill(.indigo).frame(width: 8, height: 8)
+                        Text(host.name).fontWeight(.medium)
+                        Text("\(host.address):\(String(host.port))")
+                            .foregroundStyle(.secondary)
+                        Text("Lyte")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.indigo.opacity(0.18)))
+                            .foregroundStyle(.indigo)
+                    }
+                    .frame(maxWidth: 300)
+                    .help(lyteHostTooltip(host))
                 }
                 ForEach(discovered, id: \.endpoint) { host in
                     Button {
@@ -103,8 +126,21 @@ struct ConnectView: View {
 
     private func browse() async {
         browsing = true
-        discovered = await Discovery.browse(duration: 3.0)
+        async let sunshine = Discovery.browse(duration: 3.0)
+        async let lyte = LyteDiscovery.browse(duration: 3.0)
+        discovered = await sunshine
+        lyteHosts = await lyte
         browsing = false
+    }
+
+    private func lyteHostTooltip(_ host: DiscoveredLyteHost) -> String {
+        var parts = ["Lyte-UDP host"]
+        if let v = host.wireVersion { parts.append("wire v\(v)") }
+        if let pkh = host.publicKeyHash {
+            parts.append("identity \(pkh.prefix(8))…")
+        }
+        parts.append("connect flow arrives with pairing (CL-6/CL-7)")
+        return parts.joined(separator: " — ")
     }
 
     // MARK: - Pairing

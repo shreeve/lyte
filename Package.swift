@@ -59,6 +59,10 @@ let package = Package(
             name: "LyteTransport",
             dependencies: [
                 .product(name: "LyteWire", package: "Wire"),
+                // The sanctioned crypto provider, for exactly one digest:
+                // LyteDiscovery's pkh identity hash (LyteWire's SHA-256 is
+                // internal to its Crypto/ leaf).
+                .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
         .target(
@@ -83,7 +87,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "Lyte",
-            dependencies: ["LyteKit", "LyteUI", "LyteHelperProtocol"]
+            // LyteTransport joins at CL-5 for the dual-browse (Lyte hosts
+            // beside Sunshine hosts in ConnectView); LyteKit leaves at the
+            // H2 demolition, LyteTransport is what remains.
+            dependencies: ["LyteKit", "LyteUI", "LyteHelperProtocol", "LyteTransport"]
         ),
         .testTarget(name: "LyteKitTests", dependencies: ["LyteKit"]),
         .testTarget(
