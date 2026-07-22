@@ -779,19 +779,88 @@ are LANDED, GATED, COMMITTED (not pushed):
   wire-policy call), per-NACK-entry pacing if a hostile client ever
   matters (today bounded by store size + one-attempt).
 
+- **CL-12 client targeted repair** (`63924d5` Wire/ + `3552091` root):
+  HS-17's other half — the H2 CC/NACK parity item closes. WIRE SEAM
+  (the deferred ledger's named item): VideoAssembler now ACCEPTS
+  fresh-seq repair shards — matching geometry under a foreign seq base
+  slots in by FEC shard index (`.repairShardAccepted`) and completes
+  the group byte-exact; only a GEOMETRY lie stays `.inconsistentGroup`;
+  the group's own seq base keeps anchoring presumption, and a
+  repairs-only group can still open and complete (base then anchors to
+  the repair — under-presumes, documented, W-G3's shape check still
+  gates every byte). `nackCandidates` grew the whole per-frame picture
+  (all missing indices, parityShards, frame age) so the client policy
+  never duplicates assembler state. RECEIVE-SIDE ONLY: zero codec
+  bytes moved, no vector regenerated — all 11 vector shas byte-
+  identical Mac AND pup (a326b835…, a902805d…, 7b81dab0…, etc.); Wire
+  suite 366 → **372/372 Mac AND pup**. CLIENT POLICY (root): NackPolicy
+  (sans-IO, injected clock) runs §1.1 as written — rule 1: ask only
+  PAST PARITY (missing > m; below it FEC owns the frame); rule 3
+  mirrored: ask iff frameAge + minRTT < the assembler's 250 ms stale
+  horizon (a repair landing after group eviction is wasted), refusal
+  permanent; rule 4: asked-but-uncompleted frames escalate to the
+  EXISTING coalesced IdrRequester after 250 ms (fec-impossible
+  verdicts DEFER while an ask is live — without that, threshold-10
+  fires before any repair's RTT and the IDR always wins); dedupe
+  once-EVER per (frame, shard) — a lost report is answered by rule 4,
+  never re-asked. Asks ride W4a's NACK section: FeedbackSender grew
+  the pending queue (6-entry bound, spill next beat) + an immediate
+  out-of-cadence report per emission (the host's 33 ms freeze budget
+  is tighter than the 25–50 ms cadence). Pipeline forwards enriched
+  events through a repair-signal seam; wire-view grew the nack line.
+  Gate root 103 → **109/109**: past-parity → real chan-3 NACK →
+  HS-17-shaped repairs → byte-exact through the real receive path,
+  zero IDRs; stale → no ask + IDR; policy discipline pinned; section
+  bounds/spill; seeded 12% SimNet storm heals with zero duplicate
+  asks. LIVE vs pup :41081 (host at committed HEAD `4b93e7e` via git
+  archive at ~/src/cl12gate; 15% netem VIDEO-scoped — dsfield 0xa0 +
+  dport 41081 on wlp0s20f3 egress, removed after): 75 s wire-view
+  --audio run, handshake 17.0 ms, 33,069 datagrams ALL ok / **0
+  unseal failures both ends**; video 15.5% delivered loss (1,971
+  missing) — **client emitted 64 NACK entries (251 shards) and the
+  host consumed EXACTLY 64 entries / counted EXACTLY 251 post-FEC
+  shards (1:1 wire correlation); host honored 20 → 54 videoTail
+  repair datagrams, judged 44 stale (40 budgetExceeded, 4
+  olderThanIdr) → 40 IDR-armed; client accepted 17 repair shards → 7
+  frames HEALED BY REPAIR; 2 asks rule-3-suppressed client-side, 28
+  rule-4 expiries → IDR; 129 IDR requests sent = 129 seen on the
+  host, video continuously .rendering (700 frames decoded)**. Honest
+  dynamics on this run's rough Wi-Fi (host SRTT 47.7 ms vs the 33 ms
+  budget): most asks fell to rule 3 and IDR-healed — the pillar's
+  designed degradation ("on a 50 ms path the gate usually fails …
+  degrades gracefully to FEC+IDR"); sustained 15% also drove 35
+  rung-3 downshifts to the 500 kbps floor (final regime lossy), so
+  late repairs queued behind the squeezed pacer and dropped stale
+  client-side (17 of 54 accepted). Audio concurrent throughout:
+  22,234 dg → 14,826 pkts, PLC 113 (0.76%), depth p50/p99 21/41 pkts
+  (target 20), stream continuous through loss + repair + floor.
+  Cleanup verified: netem removed (noqueue), no lyte-host, 41081
+  free, Sunshine active, portal_token/noise_static/paired_clients
+  shas byte-identical. Logs /tmp/cl12-client.log (Mac),
+  /tmp/cl12-host.log (Mac copy + pup). Operational note: pup dropped
+  off-network ~1 min AFTER the run's clean close (known pattern, no
+  reboot — back in ~7 min; evidence unaffected, cleanup done after).
+  Deferred: repair-lane DSCP (HS-17's row — under a floor squeeze the
+  videoTail queue is where repairs die; a tail-class marking or
+  repair-priority call would change the 17/54 figure), client
+  ask-budget awareness of the HOST's srtt (the client's min-RTT mirror
+  passed while the host's 47 ms SRTT refused — harmless asks today at
+  ~40 B each, revisit only if ask volume ever matters), promotion
+  slice items unchanged (0x15/0x16/0x17/TLV-0x03/audio interior).
+
 IN FLIGHT / NEXT: CL-7 reconnect/takeover UX (needs a host
 session-busy story), HS-9 cookie-mode enforcement (W8 landed; the
 client leg is live in every dial), 0x15/idle-frame promotion into
 Wire/ (now joined by 0x16/0x17/TLV-0x03 at CL-9 and the HS-15+CL-11
 audio interior — mirrors in place and byte-pinned on BOTH ends).
 CL-11 is LANDED — H2's client audio row closes; HS-17 is LANDED —
-H2's congestion-II host row closes (CC/NACK/FROZEN-RECOVERY: HS-18's
-rows landed inside HS-11/HS-16; the client NACK-emission half + the
-input/audio/congestion joint legs + the LyteKit deletion checklist
-remain for the H2 gate).
+H2's congestion-II host row closes; **CL-12 is LANDED — the client
+NACK-emission half closes H2's CC/NACK parity item** (remaining for
+the H2 gate: the input/audio/congestion joint legs + the LyteKit
+deletion checklist).
 Ports used tonight: 41000–41011 + 41021/41022 + 41031 (H1 joint gate)
 + 41041/41061 (HS-16 host/probe) + 41051 (CL-11) + 41071/41072
-(HS-17 host/probe).
+(HS-17 host/probe) + 41081 (CL-12 live gate).
 Subagent stall pattern persists — 7-min watchdog + interrupt-kick works
 (W4b needed two kicks; check any silent worker's transcript mtime).
 
