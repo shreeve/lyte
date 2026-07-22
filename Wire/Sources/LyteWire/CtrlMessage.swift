@@ -48,9 +48,17 @@ public enum CtrlMessageType {
     public static let noiseHandshake1: UInt8 = 0x05
     /// Host→client Noise IK message 2, bare (pre-transport).
     public static let noiseHandshake2: UInt8 = 0x06
+    /// ARQ data segment (W3, ArqFrames). A reliable-channel payload
+    /// starting with 0x07 or 0x08 is wholly ARQ — a sequence of frames,
+    /// not a single message; route it to `ArqEndpoint.ingest`. Messages
+    /// the ARQ delivers start with their own CTRL type byte.
+    public static let arqSegment: UInt8 = 0x07
+    /// ARQ ACK frame (W3): cumulative + bitmap receive state per
+    /// (chan, group). Itself ARQ-exempt — a lost ACK is superseded.
+    public static let arqAck: UInt8 = 0x08
     /// Client→host IDR request (IdrRequest). Sealed, ARQ-exempt; 0x10 is
     /// CL-3's original pin, clear of the 0x07…0x0F range left for W3's
-    /// session machinery.
+    /// session machinery (0x07/0x08 now taken by the ARQ frames).
     public static let idrRequest: UInt8 = 0x10
 
     /// The type byte of a CTRL payload, nil when the payload is empty.

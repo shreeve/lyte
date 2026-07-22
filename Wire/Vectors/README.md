@@ -43,6 +43,9 @@ case in `FecCoderTests`, the hand-walked datagram in
   Noise handshake carriage 0x05/0x06 needs no vectors of its own — the
   payload is the type byte followed by the raw Noise message, whose
   bytes noise-v1.json already pins.
+- `arq-v1.json` — the W3 reliable-sublayer frame formats: the data
+  segment 0x07, the ACK 0x08, and the frame-sequence payload rule.
+  Anchored against the hand-computed bytes in `ArqCodecTests`.
 
 ## The 24-byte envelope (wire v1)
 
@@ -372,6 +375,94 @@ Feedback decode rejects: `feedback-truncated-header` (20 B),
 `feedback-nack-bitmap-count-zero`, `feedback-nack-bitmap-count-oversize`
 (33), `feedback-nack-bitmap-noncanonical` (zero final byte),
 `feedback-trailing-bytes`, `feedback-truncated-tlv`.
+
+## The ARQ frames (wire v1)
+
+The reliable ordered-retransmit sublayer (W3) that CTRL, video-idle,
+and the feature channels ride. Two frame types in the CTRL type space,
+used identically on every reliable channel: a reliable-channel datagram
+payload starting with 0x07 or 0x08 is wholly ARQ — a SEQUENCE of
+self-delimiting frames (an ACK piggybacks ahead of fresh segments in
+one datagram). Messages the ARQ delivers start with their own CTRL
+type byte; ARQ-exempt CTRL traffic (beacons, path messages, handshake
+carriage, IDR requests) never starts with 0x07/0x08, so the shell's
+one-byte peek routes cleanly.
+
+Sequencing is **group-scoped**, not channel-scoped: envelope seqs on a
+reliable channel are shared with ARQ-exempt traffic, so each group
+numbers its own segments with a serial u16 from 0 (wire v1). Group 0 is
+the channel's long-lived ordered message stream; non-zero groups are
+independent one-shot message groups (sparse idle frames, the final
+ratchet frame), ids caller-allocated ascending per direction — a
+fully-lost group leaves no hole in any other group's sequence space,
+which is the no-cross-group-HOL ruling (decision record §8.1) as
+arithmetic. Retransmission unit is the SEGMENT, re-sent byte-identical
+inside a fresh datagram (fresh envelope seq, fresh AEAD nonce) — the
+core-plan pin §2.2's guarantees (no nonce reuse, single admission, no
+ACK ambiguity) preserved while clearing the Noise replay-window
+liveness hazard a byte-identical datagram resend would hit.
+
+Data segment (type 0x07), fixed 8-byte header then body, little-endian:
+
+| offset | size | field | notes |
+|---|---|---|---|
+| 0 | 1 | type | 0x07 |
+| 1 | 1 | flags | bit0: endOfMessage; bits 1–7 reserved — 0 on send, ignored on receive |
+| 2 | 2 | group | u16; 0 = ordered stream, non-zero = one-shot |
+| 4 | 2 | segSeq | u16 group-scoped serial |
+| 6 | 2 | bodyLen | 1…1104 (zero-length bodies reject — the fill-bug rule) |
+| 8 | … | body | |
+
+ACK (type 0x08), 3-byte header then 1…16 blocks. ACKs are themselves
+ARQ-exempt: a lost ACK is superseded by the next (the receiver re-ACKs
+on every arrival, duplicates included).
+
+| offset | size | field | notes |
+|---|---|---|---|
+| 0 | 1 | type | 0x08 |
+| 1 | 1 | flags | reserved — 0 on send, ignored on receive |
+| 2 | 1 | blockCount | 1…16 |
+
+Block (6 + bitmapLen bytes): `chan:u8 group:u16 cumulative:u16
+bitmapLen:u8 bitmap`. Every segSeq serially ≤ cumulative was received
+("nothing yet" = initial − 1); bitmap bit n (byte n/8, bit n%8) set
+means segSeq cumulative+1+n received. Canonical: sized by the highest
+set bit, zero final byte rejects; 32 bytes cap the describable receive
+window at 256 segments. A truncated frame, an unknown frame type where
+a frame must start, and trailing garbage after the last frame all
+reject — the payload is exactly its frames.
+
+## File format: arq-v1.json
+
+Top-level: `format` ("lyte-wire-arq-vectors"), `formatVersion` (1),
+`wireVersion` (1), `vectors`. Each vector's `payloadHex` is a whole
+reliable-channel datagram payload; `roundtrip` decodes to exactly the
+typed `frames` (each `{segment:{group, seq, endOfMessage, bodyHex}}` or
+`{ack:{blocks:[{chan, group, cumulative, bitmapHex}]}}`) and re-encodes
+byte-exactly; `decodeLenient` decodes (reserved flag bits set) but
+re-encodes differently; `decodeReject` throws `error`, an
+`ArqFrameError` case name.
+
+## Vector inventory (arq-v1.json, 21 vectors)
+
+Round trips: `segment-nominal` (the hand-computed anchor),
+`segment-stream-first` (group 0, seq 0, mid-message),
+`segment-max-body` (1104 B — the frame fills the 1112 B shard budget
+exactly), `segment-seq-wrap-high` (seq 0xFFFF), `ack-nominal` (the
+hand-computed anchor: cumulative + bitmap bits 0 and 2),
+`ack-nothing-in-order` (cumulative = initial − 1 with an out-of-order
+bit), `ack-two-blocks`, `coalesced-ack-then-segments` (the
+frame-sequence rule as bytes).
+
+Lenient decodes: `segment-reserved-flags-ignored`,
+`ack-reserved-flags-ignored`.
+
+Decode rejects: `empty-payload`, `unknown-frame-type`,
+`segment-truncated-header`, `segment-truncated-body`,
+`segment-zero-length-body`, `trailing-garbage-after-frame`,
+`ack-zero-blocks`, `ack-too-many-blocks` (17), `ack-bitmap-too-long`
+(33), `ack-bitmap-noncanonical` (zero final byte),
+`ack-truncated-block`.
 
 ## The Noise layer (wire v1)
 

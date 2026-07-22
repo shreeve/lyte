@@ -1,0 +1,286 @@
+{
+  "format" : "lyte-wire-arq-vectors",
+  "formatVersion" : 1,
+  "vectors" : [
+    {
+      "description" : "One-shot group 5, seq 0x0203, endOfMessage, 3-byte body — the hand-computed anchor.",
+      "frames" : [
+        {
+          "segment" : {
+            "bodyHex" : "aabbcc",
+            "endOfMessage" : true,
+            "group" : 5,
+            "seq" : 515
+          }
+        }
+      ],
+      "kind" : "roundtrip",
+      "name" : "segment-nominal",
+      "payloadHex" : "0701050003020300aabbcc"
+    },
+    {
+      "description" : "The ordered stream's first segment: group 0, seq 0, mid-message (endOfMessage clear).",
+      "frames" : [
+        {
+          "segment" : {
+            "bodyHex" : "0102030405060708090a0b0c0d0e0f10",
+            "endOfMessage" : false,
+            "group" : 0,
+            "seq" : 0
+          }
+        }
+      ],
+      "kind" : "roundtrip",
+      "name" : "segment-stream-first",
+      "payloadHex" : "07000000000010000102030405060708090a0b0c0d0e0f10"
+    },
+    {
+      "description" : "A 1104-byte body: the frame fills the 1112 B plaintext shard budget exactly.",
+      "frames" : [
+        {
+          "segment" : {
+            "bodyHex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+            "endOfMessage" : true,
+            "group" : 1,
+            "seq" : 7
+          }
+        }
+      ],
+      "kind" : "roundtrip",
+      "name" : "segment-max-body",
+      "payloadHex" : "0701010007005004000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f"
+    },
+    {
+      "description" : "seq 0xFFFF — the serial u16's wrap edge.",
+      "frames" : [
+        {
+          "segment" : {
+            "bodyHex" : "11",
+            "endOfMessage" : false,
+            "group" : 9,
+            "seq" : 65535
+          }
+        }
+      ],
+      "kind" : "roundtrip",
+      "name" : "segment-seq-wrap-high",
+      "payloadHex" : "07000900ffff010011"
+    },
+    {
+      "description" : "CTRL group 5 received through 0x0203 plus bitmap 0x05 = seqs 0x0204 and 0x0206 (bits 0 and 2 past the cumulative) — the hand-computed anchor.",
+      "frames" : [
+        {
+          "ack" : {
+            "blocks" : [
+              {
+                "bitmapHex" : "05",
+                "chan" : 0,
+                "cumulative" : 515,
+                "group" : 5
+              }
+            ]
+          }
+        }
+      ],
+      "kind" : "roundtrip",
+      "name" : "ack-nominal",
+      "payloadHex" : "08000100050003020105"
+    },
+    {
+      "description" : "cumulative 0xFFFF = initial − 1 (nothing in order yet); the bitmap's bit 0 names seq 0 received out of order.",
+      "frames" : [
+        {
+          "ack" : {
+            "blocks" : [
+              {
+                "bitmapHex" : "01",
+                "chan" : 4,
+                "cumulative" : 65535,
+                "group" : 12
+              }
+            ]
+          }
+        }
+      ],
+      "kind" : "roundtrip",
+      "name" : "ack-nothing-in-order",
+      "payloadHex" : "080001040c00ffff0101"
+    },
+    {
+      "description" : "One frame reporting two groups: the stream clean through 41 (empty bitmap), one-shot 7 with seqs 3…10 and 18 received past cumulative 2.",
+      "frames" : [
+        {
+          "ack" : {
+            "blocks" : [
+              {
+                "bitmapHex" : "",
+                "chan" : 0,
+                "cumulative" : 41,
+                "group" : 0
+              },
+              {
+                "bitmapHex" : "ff80",
+                "chan" : 0,
+                "cumulative" : 2,
+                "group" : 7
+              }
+            ]
+          }
+        }
+      ],
+      "kind" : "roundtrip",
+      "name" : "ack-two-blocks",
+      "payloadHex" : "080002000000290000000700020002ff80"
+    },
+    {
+      "description" : "One datagram payload = ACK frame then two stream segments; decodeAll yields the sequence in order and re-encodes byte-exactly.",
+      "frames" : [
+        {
+          "ack" : {
+            "blocks" : [
+              {
+                "bitmapHex" : "05",
+                "chan" : 0,
+                "cumulative" : 515,
+                "group" : 5
+              }
+            ]
+          }
+        },
+        {
+          "segment" : {
+            "bodyHex" : "4041424344454647",
+            "endOfMessage" : false,
+            "group" : 0,
+            "seq" : 3
+          }
+        },
+        {
+          "segment" : {
+            "bodyHex" : "48494a4b",
+            "endOfMessage" : true,
+            "group" : 0,
+            "seq" : 4
+          }
+        }
+      ],
+      "kind" : "roundtrip",
+      "name" : "coalesced-ack-then-segments",
+      "payloadHex" : "0800010005000302010507000000030008004041424344454647070100000400040048494a4b"
+    },
+    {
+      "description" : "Reserved segment flag bits set: decodes (bit0 still read), re-encode differs.",
+      "frames" : [
+        {
+          "segment" : {
+            "bodyHex" : "aabbcc",
+            "endOfMessage" : true,
+            "group" : 5,
+            "seq" : 515
+          }
+        }
+      ],
+      "kind" : "decodeLenient",
+      "name" : "segment-reserved-flags-ignored",
+      "payloadHex" : "07ff050003020300aabbcc"
+    },
+    {
+      "description" : "Reserved ACK flag byte set: decodes, re-encode differs.",
+      "frames" : [
+        {
+          "ack" : {
+            "blocks" : [
+              {
+                "bitmapHex" : "05",
+                "chan" : 0,
+                "cumulative" : 515,
+                "group" : 5
+              }
+            ]
+          }
+        }
+      ],
+      "kind" : "decodeLenient",
+      "name" : "ack-reserved-flags-ignored",
+      "payloadHex" : "087f0100050003020105"
+    },
+    {
+      "description" : "A zero-byte payload where a frame was promised.",
+      "error" : "emptyPayload",
+      "kind" : "decodeReject",
+      "name" : "empty-payload",
+      "payloadHex" : ""
+    },
+    {
+      "description" : "0x7F where a frame must start.",
+      "error" : "unknownFrameType",
+      "kind" : "decodeReject",
+      "name" : "unknown-frame-type",
+      "payloadHex" : "7f"
+    },
+    {
+      "description" : "7 bytes of an 8-byte segment header.",
+      "error" : "truncatedFrame",
+      "kind" : "decodeReject",
+      "name" : "segment-truncated-header",
+      "payloadHex" : "07010500030203"
+    },
+    {
+      "description" : "bodyLen promises 3 bytes, payload carries 2.",
+      "error" : "truncatedFrame",
+      "kind" : "decodeReject",
+      "name" : "segment-truncated-body",
+      "payloadHex" : "0701050003020300aabb"
+    },
+    {
+      "description" : "bodyLen 0 — a segment that carries nothing is a fill bug, kept loud.",
+      "error" : "zeroLengthSegmentBody",
+      "kind" : "decodeReject",
+      "name" : "segment-zero-length-body",
+      "payloadHex" : "0701050003020000"
+    },
+    {
+      "description" : "A well-formed segment followed by a byte that is not a frame type: the payload is exactly its frames.",
+      "error" : "unknownFrameType",
+      "kind" : "decodeReject",
+      "name" : "trailing-garbage-after-frame",
+      "payloadHex" : "0701050003020300aabbcc00"
+    },
+    {
+      "description" : "blockCount 0 — an ACK reporting nothing is a fill bug.",
+      "error" : "zeroAckBlocks",
+      "kind" : "decodeReject",
+      "name" : "ack-zero-blocks",
+      "payloadHex" : "080000"
+    },
+    {
+      "description" : "blockCount 17 rejects on the count byte.",
+      "error" : "tooManyAckBlocks",
+      "kind" : "decodeReject",
+      "name" : "ack-too-many-blocks",
+      "payloadHex" : "08001100050003020105"
+    },
+    {
+      "description" : "bitmapLen 33 — past the 256-seq window an ACK can describe.",
+      "error" : "ackBitmapTooLong",
+      "kind" : "decodeReject",
+      "name" : "ack-bitmap-too-long",
+      "payloadHex" : "08000100050003022105"
+    },
+    {
+      "description" : "A zero final bitmap byte: the bitmap is sized by its highest set bit, so a zero tail means the sender miscounted.",
+      "error" : "nonCanonicalAckBitmap",
+      "kind" : "decodeReject",
+      "name" : "ack-bitmap-noncanonical",
+      "payloadHex" : "0800010005000302020500"
+    },
+    {
+      "description" : "The block promises a bitmap byte the payload does not carry.",
+      "error" : "truncatedFrame",
+      "kind" : "decodeReject",
+      "name" : "ack-truncated-block",
+      "payloadHex" : "080001000500030201"
+    }
+  ],
+  "wireVersion" : 1
+}
