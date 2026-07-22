@@ -6,7 +6,7 @@ import LyteWireTestKit
 
 // THE GATE (build plan HS-12 row): rebind mid-stream → resume ≤ 400 ms,
 // run deterministically on the Mac against the sans-IO PathValidator (the
-// live rebind on pop is the Linux send loop's thin job, deferred). The
+// live rebind on the host is the Linux send loop's thin job, deferred). The
 // simulation feeds the machine datagrams from 4-tuple A, then the same
 // connection ID from 4-tuple B, and asserts: a challenge is issued on B
 // and never before; the anti-amplification cap holds pre-validation; the

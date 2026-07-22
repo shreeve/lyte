@@ -12,7 +12,7 @@
 // generator, and outputs are value-typed events the send loop executes
 // (send this challenge datagram on that tuple; switch the peer address;
 // force a keyframe). The Linux send loop that actually rebinds the socket
-// is deliberately thin and lands when `pop` returns; everything decidable
+// is deliberately thin and lands when the host box returns; everything decidable
 // is decided here, on the Mac, under test.
 //
 // The state machine, per candidate 4-tuple relative to one session:

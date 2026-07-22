@@ -1,6 +1,6 @@
 // CP-5 spike (throwaway): uinput fallback feasibility probe.
 //
-// Answers HS-13 fallback question 5: can an unprivileged process on pop
+// Answers HS-13 fallback question 5: can an unprivileged process on the host
 // create a virtual keyboard via /dev/uinput and have the kernel actually
 // emit the injected key? We create a device, then read the events back
 // from the kernel-assigned /dev/input/eventN node (evtest-style readback)

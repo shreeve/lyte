@@ -4,7 +4,7 @@ import LyteWire
 
 // The Mac-testable half of `lyte sniff`: exact line formats for the
 // dissector, anchored so the Linux socket loop's output is known before
-// pop can run it.
+// the host can run it.
 
 final class SniffFormatTests: XCTestCase {
 

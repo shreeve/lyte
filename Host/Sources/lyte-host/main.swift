@@ -610,7 +610,7 @@ func run() throws {
     if sink.framesIn == 0 {
         throw HostError("no frames arrived from PipeWire within \(Int(opts.seconds + 15))s. "
             + "The portal granted the stream, so likely causes: the consent dialog "
-            + "on pop's physical screen is still pending, or the compositor is not "
+            + "on the host's physical screen is still pending, or the compositor is not "
             + "producing frames. Nothing was written.")
     }
 

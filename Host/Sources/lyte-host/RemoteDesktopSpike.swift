@@ -397,14 +397,14 @@ final class RemoteDesktopSpike {
             onWaiting: {
                 consentHint = true
                 print("RemoteDesktop.Start: waiting… if this blocks, a one-time "
-                    + "consent dialog is pending on pop's PHYSICAL screen"
+                    + "consent dialog is pending on the host's PHYSICAL screen"
                     + (hadToken ? " (unexpected: we presented a restore token)" : ""))
             })
         print("RemoteDesktop.Start → Response code \(code)"
             + (consentHint ? "  (waited: dialog may have been required)" : "  (immediate)"))
         guard code == 0 else {
             throw HostError("Start failed (code \(code)) — "
-                + (code == 1 ? "cancelled/denied on pop's screen"
+                + (code == 1 ? "cancelled/denied on the host's screen"
                              : "portal refused; a physical consent click is likely required"))
         }
         return (results.streamNodeIds, results.restoreToken)

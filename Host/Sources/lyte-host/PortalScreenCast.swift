@@ -95,7 +95,7 @@ final class PortalScreenCast {
             requestPath: requestPath, timeout: 120,
             onWaiting: {
                 print("portal: waiting for Start response — if this is the first "
-                    + "run, an on-screen consent dialog on pop must be approved")
+                    + "run, an on-screen consent dialog on the host must be approved")
             })
         try rejectIfDenied(code, phase: "Start")
 
@@ -143,7 +143,7 @@ final class PortalScreenCast {
             if sessionLooksLocked() {
                 throw HostError("portal \(phase) failed (response \(code)): the GNOME "
                     + "session is LOCKED, which inhibits screen capture "
-                    + "(\"Session creation inhibited\"). Unlock the session on pop "
+                    + "(\"Session creation inhibited\"). Unlock the session on the host "
                     + "(loginctl unlock-session 1) and retry.")
             }
             throw HostError("portal \(phase) failed (response \(code)): the portal "
