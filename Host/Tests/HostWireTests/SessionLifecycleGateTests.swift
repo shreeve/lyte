@@ -101,11 +101,19 @@ final class SessionLifecycleGateTests: XCTestCase {
         }
 
         /// The 25–50 ms chan-3 report the client emits continuously —
-        /// the host counts it and feeds its blackout detector; the
-        /// interior stays unparsed until HS-16.
+        /// media-path evidence for the blackout detector AND, since
+        /// HS-16, the estimator's diet: a real (empty) FeedbackReport,
+        /// the shape FeedbackSender builds when a window saw nothing
+        /// worth sampling. No ledgers, no loss — reads clean.
         mutating func feedbackDatagram(clientMicros: UInt64) throws -> [UInt8] {
             try datagram(
-                channel: .feedback, body: [0x00], sealed: true,
+                channel: .feedback,
+                body: try FeedbackReport(
+                    clientTimestamp: ClientTimestamp(
+                        microseconds: clientMicros
+                    )
+                ).encode(),
+                sealed: true,
                 clientMicros: clientMicros
             )
         }
@@ -553,8 +561,10 @@ final class SessionLifecycleGateTests: XCTestCase {
         )
         XCTAssertGreaterThan(flowing, 0, "RECOVERY: sends may flow again")
 
-        // Two clean 25 ms feedback windows graduate back to ACTIVE
-        // (the window verdict is a stub until HS-16's estimator).
+        // Two clean 25 ms feedback windows graduate back to ACTIVE —
+        // the verdicts are the HS-16 estimator's now (clean reports,
+        // no loss deltas, no delay inflation). The dirty-window leg
+        // (loss holds RECOVERY) lives in RateEstimatorGateTests.
         t += 30_000
         try loop.feedback(t: t)
         t += 30_000

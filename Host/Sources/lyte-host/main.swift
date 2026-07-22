@@ -34,8 +34,9 @@ struct Options {
     var wireOut: (host: String, port: UInt16)?
     /// HS-7: bind here and await a connecting client (Noise mode).
     var wireListen: UInt16?
-    /// Pacer rate for the wire mode. No negotiation exists yet (HS-16),
-    /// so the configured ceiling is the honest default, per Pacer's rule.
+    /// The session rate ceiling for the wire mode. HS-16's estimator
+    /// starts here and moves the live pacer rate inside
+    /// [500 kbps, this] on feedback evidence.
     var wireRateMbps = 20.0
     /// CP-3 fallback (§4.1): passthrough seal, stream to the fixed peer
     /// without a handshake. The default is real Noise.
@@ -930,6 +931,23 @@ func run() throws {
         \(wire.audioSendFailures) send failures, \
         \(wire.audioPacketsDroppedPreSession) dropped pre-session; \
         max audio queue delay \(t[.audio].maxQueueDelayNS) ns
+        estimator: rate \(wire.estimatedRate / 1_000) kbps \
+        (pacer \(wire.pacerRate / 1_000) kbps, ceiling \
+        \(Int(opts.wireRateMbps * 1_000)) kbps), delivery \
+        \(wire.deliveryRate.map { "\($0 / 1_000) kbps" } ?? "—"), \
+        queuing delay \(wire.queuingDelayMicros.map { "\($0) µs" } ?? "—"); \
+        \(wire.estimatorStats.reportsIngested) reports \
+        (\(s.feedbackReportsParsed) parsed, \
+        \(s.feedbackReportsMalformed) malformed), \
+        \(wire.estimatorStats.deliverySamples) delivery samples \
+        (\(wire.estimatorStats.dispersionSamplesMatched) matched / \
+        \(wire.estimatorStats.dispersionSamplesUnmatched) unmatched), \
+        \(wire.estimatorStats.downshifts) downshifts \
+        (\(wire.estimatorStats.lossDownshifts) loss, \
+        \(wire.estimatorStats.overuseVerdicts) overuse verdicts), \
+        \(wire.estimatorStats.upshifts) upshifts, \
+        \(s.rateChanges) pacer moves; frameByteCeiling@\(opts.fps)fps \
+        \(wire.frameByteCeiling(fps: Int(opts.fps))) B
         """)
         if let audio = audioWire {
             print("audio: \(audio.packetsEncoded) packets encoded "

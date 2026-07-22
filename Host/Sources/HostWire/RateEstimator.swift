@@ -1,0 +1,707 @@
+// RateEstimator: the HS-16 congestion estimator — the component the
+// pacer's setRate seam, W4b's RECOVERY window verdicts, and the IdrPacing
+// policies have been waiting for. Sans-IO in the house style: no sockets,
+// no threads, no clock — every entry point takes `now` (monotonic ns, the
+// pacer domain) and the caller owns scheduling.
+//
+// The design is resiliency §2.2 made code, sized to what the wire
+// actually carries today (CL-3/CL-8's FeedbackSender every 25–50 ms):
+//
+//   • SEND LEDGER — the session records every outbound datagram's
+//     (channel, seq) → (send instant, wire bytes) at pump time. This is
+//     the sender half of the packet-train measurement: dispersion
+//     samples name (channel, seq), the ledger supplies when it left and
+//     how big it was.
+//   • DELIVERY RATE — matched dispersion samples are segmented into
+//     trains by SEND spacing (a paced frame drains as back-to-back ≤1 ms
+//     batches, so a ≤2 ms send gap keeps one frame's shards together);
+//     each train ≥3 packets yields one delivery-rate sample:
+//     (bytes behind the first arrival) / (arrival span). Samples ride a
+//     10 s windowed-MAX filter (BBR's shape) → btlRate. Trains shorter
+//     than 8 packets are weighted ×0.5 before the max (resiliency §2.2:
+//     Wi-Fi aggregation makes short-train dispersion noisy — they may
+//     inform, they rarely win). Client-side decimation only ever drops
+//     interior samples, so the measurement errs LOW — measured delivery,
+//     never configured hope.
+//   • QUEUING DELAY — per matched sample, delay = client arrival µs −
+//     host send µs: an unknown constant clock offset plus the real
+//     one-way delay. Each report contributes its PER-CHANNEL minimum
+//     (the least self-queued packet of that channel's trains); a 10 s
+//     rolling min per channel is the baseline; the inflation estimate
+//     is the MAX inflation across channels with samples. Per-channel,
+//     deliberately: DSCP-aware bottlenecks (Wi-Fi EDCA, any
+//     prio qdisc) give audio a fast lane, so a global min would let
+//     clean audio samples mask a growing video queue — the exact
+//     congestion the estimator exists to catch. The offset cancels in
+//     the subtraction and 50 ppm skew moves it < 1 ms per window.
+//     This is the timing pillar's min-filter idea pointed at queue
+//     growth instead of clock offset. (GCC's trendline slope was
+//     considered; the min-baseline inflation detector is the same
+//     delay-gradient family with far fewer moving parts in virtual-time
+//     tests — revisit if live evidence wants the slope.)
+//   • LOSS — the report's cumulative per-channel ledgers, differenced
+//     against the previous report (the codec's documented consumption),
+//     over a rolling 1 s window: post-arrival loss fraction.
+//   • CONTROL LAW — capped CBR with downshift/upshift (§2.2 rule 4):
+//     - overuse (inflation > threshold on 2 consecutive reports) →
+//       rate = 0.85 × measured delivery rate (GCC's REMB shape: anchor
+//       the fall to what the path actually delivered), at most one
+//       downshift per 500 ms;
+//     - loss over the rolling 1 s window, GCC's three-band law on the
+//       PRE-FEC missing counts the wire actually carries: < 2% clean
+//       (may rise), 2–10% HOLD (FEC's parity absorbs this band —
+//       resiliency G1 pins that a 5% uniform path keeps streaming, so
+//       crashing the rate on it would be dishonest), > 10% fall
+//       ×(1 − loss/2), same 500 ms limiter. Resiliency rung 3 names
+//       POST-FEC loss; the wire's post-FEC evidence is the NACK
+//       section, which CL-3 deliberately leaves empty until HS-17 —
+//       consuming it (and the FEC-regime step that goes with the
+//       fall) is deferred with that slice;
+//     - clean + fresh delivery evidence → upshift ≤10%/s toward the
+//       negotiated ceiling, held for 1 s after any downshift so the
+//       queue can drain. The standing rate is deliberately allowed
+//       above btlRate×0.8: paced sends at rate R self-limit the
+//       measurement to ≈R, so a standing 0.8×btlRate cap would spiral
+//       every clean path to the floor. The 0.8 factor applies where
+//       the pillar needs it — at the overuse fall.
+//     Floor 500 kbps (a paced IDR within 2 s even on a terrible path),
+//     ceiling = the negotiated session rate (W7 carries no bitrate key
+//     in v1, so the session config IS the negotiated ceiling).
+//   • RECOVERY VERDICTS — W4b's `.feedbackWindow(clean:)` input, owned
+//     here now (the 25 ms stub in Session retires): while the machine
+//     is in RECOVERY every parsed report closes windows of ≥25 ms;
+//     a window is clean iff it saw no fresh loss and no overuse
+//     verdict. Absence of feedback re-freezes via the silence detector
+//     regardless — this only judges evidence that returned.
+//   • IDR PACING NUMBERS — the machine names the policy (W4b), this
+//     owns the numbers: lastGoodRate = min(btlRate, rate last seen
+//     healthy); halfStaleEstimate = max(floor, 0.5 × the stale
+//     delivery estimate) (resiliency §4 — the old estimate may be 10×
+//     the new path). And the HS-6 ceiling math at the LIVE rate:
+//     frameByteCeiling = R×B/8 − higherClassBytes(B),
+//     B = min(2/fps, 25 ms).
+
+import LyteWire
+
+public struct RateEstimatorConfig: Sendable {
+    /// The negotiated session ceiling, bits/s (the W7-era session rate;
+    /// no capability key carries bitrate in v1).
+    public var ceilingBitsPerSecond: Int
+    /// Resiliency §2.2: 500 kbps — enough for a paced IDR within 2 s.
+    public var floorBitsPerSecond: Int
+    /// Where the standing rate starts. Nil = the ceiling (the honest
+    /// pre-evidence default the pacer has always used).
+    public var initialRateBitsPerSecond: Int?
+    /// Delivery-rate samples (and delay baselines) older than this fall
+    /// out of their windows (~10 s, resiliency §2.2).
+    public var sampleWindowNS: UInt64
+    /// Send-spacing gap that splits dispersion samples into trains —
+    /// the MINIMUM: the effective gap scales with the standing rate
+    /// (3 × one datagram's wire time), because at low rates the pacer
+    /// itself spaces datagrams beyond any fixed gap and a fixed split
+    /// would starve the estimator of delivery samples exactly when it
+    /// needs evidence to climb (the floor-deadlock the live gate
+    /// caught: paced 18 ms apart at 500 kbps, no train ever formed,
+    /// no upshift ever fired).
+    public var trainGapNS: UInt64
+    /// Trains below this packet count are weighted ×0.5 in the max
+    /// filter (short-train dispersion noise, resiliency §2.2).
+    public var minTrainPackets: Int
+    /// Queuing-delay inflation that reads as overuse, µs.
+    public var overuseThresholdMicroseconds: Int64
+    /// Consecutive inflated reports before the overuse verdict fires.
+    public var overuseConsecutiveReports: Int
+    /// Pre-FEC loss fraction below which the window reads clean (the
+    /// rate may rise). GCC's lower band.
+    public var lossCleanThreshold: Double
+    /// Pre-FEC loss fraction above which the rate falls ×(1 − loss/2).
+    /// Between the two thresholds the rate HOLDS — that band is FEC's
+    /// to absorb (see the header).
+    public var lossDownshiftThreshold: Double
+    /// The loss accounting window (1 s, resiliency §2.2).
+    public var lossWindowNS: UInt64
+    /// Multiplicative downshift factor and its rate limit.
+    public var downshiftFactor: Double
+    public var downshiftMinIntervalNS: UInt64
+    /// Upshift budget per second toward the ceiling (≤10%/s).
+    public var upshiftPerSecond: Double
+    /// No upshift this long after a downshift (queue drain time).
+    public var upshiftHoldAfterDownshiftNS: UInt64
+    /// Delivery evidence must be at most this old for the rate to rise
+    /// ("rises on evidence").
+    public var upshiftEvidenceWindowNS: UInt64
+    /// The RECOVERY verdict window (W4b's 25 ms feedback window).
+    public var recoveryWindowNS: UInt64
+    /// Send-ledger capacity (datagrams). 8192 covers >600 ms at the
+    /// 20 Mbps shard rate — far beyond any 25–50 ms report cadence.
+    public var sendLedgerCapacity: Int
+    /// The higher-class byte reserves the frameByteCeiling subtracts:
+    /// audio's wire rate (131 B datagrams × 300/s ≈ 315 kbps at the
+    /// HS-15 defaults) and the control reserve (resiliency §2.4).
+    public var audioReserveBitsPerSecond: Int
+    public var controlReserveBitsPerSecond: Int
+
+    public init(
+        ceilingBitsPerSecond: Int,
+        floorBitsPerSecond: Int = 500_000,
+        initialRateBitsPerSecond: Int? = nil,
+        sampleWindowNS: UInt64 = 10_000_000_000,
+        trainGapNS: UInt64 = 2_000_000,
+        minTrainPackets: Int = 8,
+        overuseThresholdMicroseconds: Int64 = 15_000,
+        overuseConsecutiveReports: Int = 2,
+        lossCleanThreshold: Double = 0.02,
+        lossDownshiftThreshold: Double = 0.10,
+        lossWindowNS: UInt64 = 1_000_000_000,
+        downshiftFactor: Double = 0.85,
+        downshiftMinIntervalNS: UInt64 = 500_000_000,
+        upshiftPerSecond: Double = 0.10,
+        upshiftHoldAfterDownshiftNS: UInt64 = 1_000_000_000,
+        upshiftEvidenceWindowNS: UInt64 = 2_000_000_000,
+        recoveryWindowNS: UInt64 = 25_000_000,
+        sendLedgerCapacity: Int = 8_192,
+        audioReserveBitsPerSecond: Int = 320_000,
+        controlReserveBitsPerSecond: Int = 500_000
+    ) {
+        precondition(ceilingBitsPerSecond > 0)
+        precondition(floorBitsPerSecond > 0)
+        self.ceilingBitsPerSecond = ceilingBitsPerSecond
+        self.floorBitsPerSecond = min(floorBitsPerSecond, ceilingBitsPerSecond)
+        self.initialRateBitsPerSecond = initialRateBitsPerSecond
+        self.sampleWindowNS = sampleWindowNS
+        self.trainGapNS = trainGapNS
+        self.minTrainPackets = minTrainPackets
+        self.overuseThresholdMicroseconds = overuseThresholdMicroseconds
+        self.overuseConsecutiveReports = max(overuseConsecutiveReports, 1)
+        self.lossCleanThreshold = lossCleanThreshold
+        self.lossDownshiftThreshold = max(
+            lossDownshiftThreshold, lossCleanThreshold
+        )
+        self.lossWindowNS = lossWindowNS
+        self.downshiftFactor = downshiftFactor
+        self.downshiftMinIntervalNS = downshiftMinIntervalNS
+        self.upshiftPerSecond = upshiftPerSecond
+        self.upshiftHoldAfterDownshiftNS = upshiftHoldAfterDownshiftNS
+        self.upshiftEvidenceWindowNS = upshiftEvidenceWindowNS
+        self.recoveryWindowNS = recoveryWindowNS
+        self.sendLedgerCapacity = max(sendLedgerCapacity, 64)
+        self.audioReserveBitsPerSecond = audioReserveBitsPerSecond
+        self.controlReserveBitsPerSecond = controlReserveBitsPerSecond
+    }
+}
+
+/// What one ingested report did to the estimate — the session applies
+/// `newRate` to the pacer and feeds each verdict to the machine.
+public struct RateEstimatorVerdict: Equatable, Sendable {
+    /// Which control-law branch moved the rate.
+    public enum Change: Equatable, Sendable {
+        case overuse
+        case loss
+        case evidence
+    }
+
+    /// Set when the standing rate moved (already floored/ceilinged).
+    public var newRateBitsPerSecond: Int?
+    /// Why it moved; nil when it did not.
+    public var change: Change?
+    /// One entry per RECOVERY feedback window this report closed
+    /// (empty outside RECOVERY).
+    public var recoveryWindows: [Bool]
+    /// This report's ingest read as overuse (delay inflation) — the
+    /// downshift may still be rate-limited.
+    public var overuse: Bool
+    /// Post-arrival loss fraction over the rolling window.
+    public var lossFraction: Double
+}
+
+/// Running evidence counters, exposed for logs and the live gate.
+public struct RateEstimatorStats: Equatable, Sendable {
+    public var reportsIngested = 0
+    public var dispersionSamplesMatched = 0
+    public var dispersionSamplesUnmatched = 0
+    public var deliverySamples = 0
+    public var downshifts = 0
+    public var upshifts = 0
+    public var overuseVerdicts = 0
+    public var lossDownshifts = 0
+
+    public init() {}
+}
+
+public final class RateEstimator {
+    public let config: RateEstimatorConfig
+    public private(set) var stats = RateEstimatorStats()
+
+    /// The standing pace, bits/s — what the pacer should run at.
+    public private(set) var rateBitsPerSecond: Int
+
+    /// The windowed-max delivery-rate estimate (nil before evidence).
+    public var deliveryRateBitsPerSecond: Int? {
+        deliveryWindow.map { Int($0.rate) }.max()
+    }
+
+    /// The current queuing-delay inflation estimate, µs (nil before
+    /// two reports establish a baseline).
+    public private(set) var queuingDelayMicroseconds: Int64?
+
+    /// min-RTT evidence from beacon echoes — recorded for telemetry
+    /// and the (HS-17) retransmit gate; the rate law runs on the
+    /// dispersion sensor.
+    public private(set) var minRttMicroseconds: Int64?
+
+    // MARK: Send ledger
+
+    private struct SendRecord {
+        var key: UInt32
+        var sendNS: UInt64
+        var bytes: Int
+    }
+
+    /// (channel << 16 | seq) → ledger slot; slots recycle FIFO.
+    private var ledgerIndex: [UInt32: Int] = [:]
+    private var ledger: [SendRecord?]
+    private var ledgerHead = 0
+
+    // MARK: Delivery / delay / loss state
+
+    private struct DeliverySample {
+        var at: UInt64
+        var rate: Double
+    }
+    private var deliveryWindow: [DeliverySample] = []
+    /// The freshest raw (unweighted) delivery measurement — the
+    /// anchor for overuse falls and the stale estimate for RECOVERY.
+    private var lastDeliveryRate: Double?
+    private var lastDeliveryAt: UInt64?
+
+    private struct DelaySample {
+        var at: UInt64
+        var minDelayMicros: Int64
+    }
+    /// Per-channel rolling baselines (see the header: a clean audio
+    /// lane must not mask a growing video queue).
+    private var delayBaselineWindows: [UInt8: [DelaySample]] = [:]
+    private var consecutiveInflatedReports = 0
+
+    private struct LossSample {
+        var at: UInt64
+        var missing: Int
+        var received: Int
+    }
+    private var lossWindow: [LossSample] = []
+    /// Previous report's cumulative ledgers, per channel raw value.
+    private var previousChannelTotals: [UInt8: (received: UInt32, missing: UInt32)] = [:]
+
+    // MARK: Control-law state
+
+    private var lastDownshiftAt: UInt64?
+    private var lastAdjustAt: UInt64
+    /// The rate last in force while the path read healthy — WAKE's
+    /// min(btlRate, lastGoodRate) anchor (overview conflict 14).
+    private var lastGoodRate: Int
+
+    // MARK: RECOVERY window state
+
+    private var recoveryWindowStartNS: UInt64?
+    private var recoveryWindowSawLoss = false
+    private var recoveryWindowSawOveruse = false
+
+    public init(config: RateEstimatorConfig, now: UInt64) {
+        self.config = config
+        let initial = min(
+            max(config.initialRateBitsPerSecond ?? config.ceilingBitsPerSecond,
+                config.floorBitsPerSecond),
+            config.ceilingBitsPerSecond
+        )
+        self.rateBitsPerSecond = initial
+        self.lastGoodRate = initial
+        self.lastAdjustAt = now
+        self.ledger = [SendRecord?](
+            repeating: nil, count: config.sendLedgerCapacity
+        )
+    }
+
+    // MARK: - Send side
+
+    /// Records one outbound datagram at the instant the pacer released
+    /// it. `channel` is the envelope channel the client's dispersion
+    /// samples will name; `bytes` is the wire size (delivery rate is
+    /// measured in wire bytes, the unit the bottleneck queues in).
+    public func noteSent(
+        channel: ChannelId, seq: ChannelSeq, bytes: Int, now: UInt64
+    ) {
+        let key = UInt32(channel.rawValue) << 16 | UInt32(seq.rawValue)
+        if let evicted = ledger[ledgerHead], ledgerIndex[evicted.key] == ledgerHead {
+            ledgerIndex.removeValue(forKey: evicted.key)
+        }
+        ledger[ledgerHead] = SendRecord(key: key, sendNS: now, bytes: bytes)
+        ledgerIndex[key] = ledgerHead
+        ledgerHead = (ledgerHead + 1) % ledger.count
+    }
+
+    /// One beacon-echo RTT sample (telemetry; min-gated).
+    public func noteRtt(microseconds: Int64) {
+        if minRttMicroseconds.map({ microseconds < $0 }) ?? true {
+            minRttMicroseconds = microseconds
+        }
+    }
+
+    // MARK: - Feedback side
+
+    /// Consumes one parsed chan-3 report. `inRecovery` gates the W4b
+    /// window verdicts (the machine's state is the session's to know).
+    public func ingest(
+        _ report: FeedbackReport, now: UInt64, inRecovery: Bool
+    ) -> RateEstimatorVerdict {
+        stats.reportsIngested += 1
+        expireWindows(now: now)
+
+        let (newMissing, _) = absorbChannelLedgers(report, now: now)
+        let matched = matchDispersion(report)
+        absorbDeliveryTrains(matched, now: now)
+        let inflated = absorbDelay(matched, now: now)
+
+        let lossFraction = currentLossFraction()
+        let overuse = inflated
+            && consecutiveInflatedReports >= config.overuseConsecutiveReports
+        if overuse { stats.overuseVerdicts += 1 }
+
+        let oldRate = rateBitsPerSecond
+        let change = applyControlLaw(
+            overuse: overuse, lossFraction: lossFraction, now: now
+        )
+
+        var verdict = RateEstimatorVerdict(
+            newRateBitsPerSecond:
+                rateBitsPerSecond == oldRate ? nil : rateBitsPerSecond,
+            change: rateBitsPerSecond == oldRate ? nil : change,
+            recoveryWindows: [],
+            overuse: overuse,
+            lossFraction: lossFraction
+        )
+
+        if inRecovery {
+            verdict.recoveryWindows = closeRecoveryWindows(
+                sawLoss: newMissing > 0,
+                sawOveruse: overuse,
+                now: now
+            )
+        } else {
+            recoveryWindowStartNS = nil
+            recoveryWindowSawLoss = false
+            recoveryWindowSawOveruse = false
+        }
+        return verdict
+    }
+
+    // MARK: - The machine's numbers
+
+    /// The rate a machine-demanded IDR must be paced at (W4b names the
+    /// policy, this owns the numbers). Applying it also MOVES the
+    /// standing rate there — the pacing decision is the estimate now.
+    public func applyIdrPacing(_ pacing: IdrPacing, now: UInt64) -> Int {
+        let rate: Int
+        switch pacing {
+        case .lastGoodRate:
+            // WAKE from healthy IDLE: min(btlRate, lastGoodRate).
+            let btl = deliveryRateBitsPerSecond ?? lastGoodRate
+            rate = clamp(min(btl, lastGoodRate))
+        case .halfStaleEstimate:
+            // RECOVERY: the path is unknown; the stale estimate may be
+            // 10× the new path's capacity (resiliency §4).
+            let stale = deliveryRateBitsPerSecond
+                ?? lastDeliveryRate.map(Int.init)
+                ?? rateBitsPerSecond
+            rate = clamp(stale / 2)
+        }
+        rateBitsPerSecond = rate
+        lastAdjustAt = now
+        return rate
+    }
+
+    /// The HS-6 frame ceiling at the LIVE estimate: R×B/8 −
+    /// higherClassBytes(B), B = min(2/fps, 25 ms). Never below one
+    /// shard — a ceiling of zero would forbid streaming entirely, and
+    /// the floor rate exists precisely so a paced IDR stays possible.
+    public func frameByteCeiling(fps: Int) -> Int {
+        let budgetNS = min(
+            UInt64(2_000_000_000) / UInt64(max(fps, 1)), 25_000_000
+        )
+        let budgetSeconds = Double(budgetNS) / 1e9
+        let gross = Double(rateBitsPerSecond) * budgetSeconds / 8
+        let reserves = Double(
+            config.audioReserveBitsPerSecond
+                + config.controlReserveBitsPerSecond
+        ) * budgetSeconds / 8
+        return max(Int(gross - reserves), WireBudget.maxDatagramByteCount)
+    }
+
+    // MARK: - Internals
+
+    private func clamp(_ rate: Int) -> Int {
+        min(max(rate, config.floorBitsPerSecond), config.ceilingBitsPerSecond)
+    }
+
+    private func expireWindows(now: UInt64) {
+        deliveryWindow.removeAll {
+            now &- $0.at > config.sampleWindowNS
+        }
+        for channel in delayBaselineWindows.keys {
+            delayBaselineWindows[channel]!.removeAll {
+                now &- $0.at > config.sampleWindowNS
+            }
+        }
+        lossWindow.removeAll {
+            now &- $0.at > config.lossWindowNS
+        }
+    }
+
+    /// Differences the report's cumulative ledgers against the previous
+    /// report's (u32 wrap-tolerant — the codec's documented semantics).
+    private func absorbChannelLedgers(
+        _ report: FeedbackReport, now: UInt64
+    ) -> (missing: Int, received: Int) {
+        var newMissing = 0
+        var newReceived = 0
+        for stats in report.channels {
+            let previous = previousChannelTotals[stats.channel.rawValue]
+            let dMissing = stats.missing &- (previous?.missing ?? 0)
+            let dReceived = stats.received &- (previous?.received ?? 0)
+            // A first report (or counter regression from a client
+            // restart) contributes nothing this window.
+            if previous != nil, dMissing < 1 << 31, dReceived < 1 << 31 {
+                newMissing += Int(dMissing)
+                newReceived += Int(dReceived)
+            }
+            previousChannelTotals[stats.channel.rawValue] =
+                (stats.received, stats.missing)
+        }
+        if newMissing > 0 || newReceived > 0 {
+            lossWindow.append(LossSample(
+                at: now, missing: newMissing, received: newReceived
+            ))
+        }
+        return (newMissing, newReceived)
+    }
+
+    private func currentLossFraction() -> Double {
+        var missing = 0
+        var received = 0
+        for sample in lossWindow {
+            missing += sample.missing
+            received += sample.received
+        }
+        let total = missing + received
+        guard total > 0 else { return 0 }
+        return Double(missing) / Double(total)
+    }
+
+    private struct MatchedSample {
+        var channel: UInt8
+        var sendNS: UInt64
+        var bytes: Int
+        var arrivalMicros: UInt64
+    }
+
+    private func matchDispersion(
+        _ report: FeedbackReport
+    ) -> [MatchedSample] {
+        guard let dispersion = report.dispersion else { return [] }
+        var matched: [MatchedSample] = []
+        matched.reserveCapacity(dispersion.samples.count)
+        for sample in dispersion.samples {
+            let key = UInt32(sample.channel.rawValue) << 16
+                | UInt32(sample.seq.rawValue)
+            guard let slot = ledgerIndex[key], let record = ledger[slot],
+                  record.key == key else {
+                stats.dispersionSamplesUnmatched += 1
+                continue
+            }
+            stats.dispersionSamplesMatched += 1
+            matched.append(MatchedSample(
+                channel: sample.channel.rawValue,
+                sendNS: record.sendNS,
+                bytes: record.bytes,
+                arrivalMicros: dispersion.base.microseconds
+                    &+ UInt64(sample.arrivalDeltaMicroseconds)
+            ))
+        }
+        matched.sort { $0.sendNS < $1.sendNS }
+        return matched
+    }
+
+    /// Segments matched samples into trains by send spacing and feeds
+    /// each train's delivery-rate sample into the max window. The gap
+    /// scales with the standing rate (see the config comment): a
+    /// paced-at-R sender spaces datagrams ≈ their wire time at R, so
+    /// consecutive sends must still read as one train at any rate.
+    private func absorbDeliveryTrains(
+        _ matched: [MatchedSample], now: UInt64
+    ) {
+        guard matched.count >= 2 else { return }
+        let wirePerDatagramNS = UInt64(
+            Double(1_152 * 8) / Double(rateBitsPerSecond) * 1e9
+        )
+        let gapNS = max(config.trainGapNS, 3 * wirePerDatagramNS)
+        var trainStart = 0
+        func closeTrain(_ range: Range<Int>) {
+            let train = matched[range]
+            guard train.count >= 3 else { return }
+            let firstArrival = train.map(\.arrivalMicros).min()!
+            let lastArrival = train.map(\.arrivalMicros).max()!
+            guard lastArrival > firstArrival else { return }
+            // Classic packet-train accounting: the first packet's bytes
+            // opened the measurement window, everything behind it was
+            // delivered inside it.
+            let bytes = train.dropFirst().reduce(0) { $0 + $1.bytes }
+            let spanSeconds = Double(lastArrival - firstArrival) / 1e6
+            let rate = Double(bytes) * 8 / spanSeconds
+            lastDeliveryRate = rate
+            lastDeliveryAt = now
+            stats.deliverySamples += 1
+            let weighted = train.count >= config.minTrainPackets
+                ? rate : rate * 0.5
+            deliveryWindow.append(DeliverySample(at: now, rate: weighted))
+        }
+        for i in 1..<matched.count {
+            if matched[i].sendNS &- matched[i - 1].sendNS > gapNS {
+                closeTrain(trainStart..<i)
+                trainStart = i
+            }
+        }
+        closeTrain(trainStart..<matched.count)
+    }
+
+    /// Returns true when some channel's minimum one-way delay proxy
+    /// sits above its rolling baseline by more than the overuse
+    /// threshold (per-channel — see the header's DSCP-fast-lane note).
+    private func absorbDelay(
+        _ matched: [MatchedSample], now: UInt64
+    ) -> Bool {
+        guard !matched.isEmpty else {
+            // No samples: no delay evidence either way. The inflation
+            // streak survives (silence must not launder an overloaded
+            // path), but nothing new fires.
+            return false
+        }
+        var worstInflation: Int64 = 0
+        var haveBaseline = false
+        var perChannelMin: [UInt8: Int64] = [:]
+        for sample in matched {
+            let delay = Int64(bitPattern: sample.arrivalMicros)
+                &- Int64(bitPattern: sample.sendNS / 1_000)
+            if perChannelMin[sample.channel].map({ delay < $0 }) ?? true {
+                perChannelMin[sample.channel] = delay
+            }
+        }
+        for (channel, reportMin) in perChannelMin {
+            let baseline = delayBaselineWindows[channel]?
+                .map(\.minDelayMicros).min()
+            delayBaselineWindows[channel, default: []].append(
+                DelaySample(at: now, minDelayMicros: reportMin)
+            )
+            guard let baseline else { continue }
+            haveBaseline = true
+            let inflation = reportMin - min(baseline, reportMin)
+            worstInflation = max(worstInflation, inflation)
+        }
+        guard haveBaseline else {
+            queuingDelayMicroseconds = 0
+            consecutiveInflatedReports = 0
+            return false
+        }
+        queuingDelayMicroseconds = worstInflation
+        if worstInflation > config.overuseThresholdMicroseconds {
+            consecutiveInflatedReports += 1
+            return true
+        }
+        consecutiveInflatedReports = 0
+        return false
+    }
+
+    private func applyControlLaw(
+        overuse: Bool, lossFraction: Double, now: UInt64
+    ) -> RateEstimatorVerdict.Change? {
+        let downshiftAllowed = lastDownshiftAt.map {
+            now &- $0 >= config.downshiftMinIntervalNS
+        } ?? true
+
+        if overuse, downshiftAllowed {
+            // Fall to 0.85 × what the path measurably delivered — the
+            // GCC overuse response, anchored to evidence, never to the
+            // configured rate alone.
+            let anchor = lastDeliveryRate.map(Int.init) ?? rateBitsPerSecond
+            rateBitsPerSecond = clamp(min(
+                Int(Double(anchor) * config.downshiftFactor),
+                Int(Double(rateBitsPerSecond) * config.downshiftFactor)
+            ))
+            lastDownshiftAt = now
+            lastAdjustAt = now
+            stats.downshifts += 1
+            return .overuse
+        }
+
+        if lossFraction > config.lossDownshiftThreshold, downshiftAllowed {
+            // GCC's loss response: rate × (1 − loss/2) — a 20% loss
+            // window falls 10%, a 50% catastrophe falls 25% per beat.
+            rateBitsPerSecond = clamp(Int(
+                Double(rateBitsPerSecond) * (1 - lossFraction / 2)
+            ))
+            lastDownshiftAt = now
+            lastAdjustAt = now
+            stats.downshifts += 1
+            stats.lossDownshifts += 1
+            return .loss
+        }
+
+        // Clean: the path is healthy at this rate.
+        if !overuse, lossFraction < config.lossCleanThreshold {
+            lastGoodRate = rateBitsPerSecond
+        }
+
+        // Rise only on evidence: fresh delivery samples, loss below
+        // the CLEAN band (2–10% holds — FEC's band), no active
+        // hold-down, headroom to the ceiling.
+        guard rateBitsPerSecond < config.ceilingBitsPerSecond,
+              !overuse, lossFraction < config.lossCleanThreshold,
+              let deliveredAt = lastDeliveryAt,
+              now &- deliveredAt <= config.upshiftEvidenceWindowNS,
+              lastDownshiftAt.map({
+                  now &- $0 >= config.upshiftHoldAfterDownshiftNS
+              }) ?? true
+        else {
+            lastAdjustAt = now
+            return nil
+        }
+        let elapsedSeconds = Double(now &- lastAdjustAt) / 1e9
+        guard elapsedSeconds > 0 else { return nil }
+        let factor = 1 + config.upshiftPerSecond * min(elapsedSeconds, 1)
+        rateBitsPerSecond = clamp(
+            Int(Double(rateBitsPerSecond) * factor)
+        )
+        lastAdjustAt = now
+        stats.upshifts += 1
+        return .evidence
+    }
+
+    private func closeRecoveryWindows(
+        sawLoss: Bool, sawOveruse: Bool, now: UInt64
+    ) -> [Bool] {
+        guard let start = recoveryWindowStartNS else {
+            // The first report after entering RECOVERY opens the first
+            // window; its own evidence seeds it.
+            recoveryWindowStartNS = now
+            recoveryWindowSawLoss = sawLoss
+            recoveryWindowSawOveruse = sawOveruse
+            return []
+        }
+        recoveryWindowSawLoss = recoveryWindowSawLoss || sawLoss
+        recoveryWindowSawOveruse = recoveryWindowSawOveruse || sawOveruse
+        guard now &- start >= config.recoveryWindowNS else { return [] }
+        let clean = !recoveryWindowSawLoss && !recoveryWindowSawOveruse
+        recoveryWindowStartNS = now
+        recoveryWindowSawLoss = false
+        recoveryWindowSawOveruse = false
+        return [clean]
+    }
+}

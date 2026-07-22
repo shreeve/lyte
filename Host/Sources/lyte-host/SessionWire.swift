@@ -116,6 +116,8 @@ final class SessionWire {
     private(set) var bytesSent = 0
     private(set) var challengesSentOffPrimary = 0
     private(set) var lastSendError: String?
+    /// HS-16 log throttle: the last rate a `rate:` line reported.
+    private var lastPrintedRate: Int?
     /// ECONNREFUSED evidence (LYTE_NETIO_PEER_GONE): the client's socket
     /// is closed — session-ending, not an I/O failure (HS-11).
     private(set) var peerGone = false
@@ -135,6 +137,13 @@ final class SessionWire {
     var pacerTelemetry: PacerTelemetry { session.pacerTelemetry }
     var lifecycleState: SessionState? { session?.lifecycleState }
     var currentWireMode: SessionWireMode? { session?.wireMode }
+    // HS-16 estimator surfaces for the final stats block.
+    var estimatorStats: RateEstimatorStats { session.estimatorStats }
+    var estimatedRate: Int { session.estimatedRateBitsPerSecond }
+    var pacerRate: Int { session.pacerRateBitsPerSecond }
+    var deliveryRate: Int? { session.deliveryRateBitsPerSecond }
+    var queuingDelayMicros: Int64? { session.queuingDelayMicroseconds }
+    func frameByteCeiling(fps: Int) -> Int { session.frameByteCeiling(fps: fps) }
 
     /// - Parameters:
     ///   - listenPort: bind here and await a connecting client (nil =
@@ -673,6 +682,29 @@ final class SessionWire {
             print("session: CLOSED (\(reason))")
         case .inputReceived(let event, let rxMicros):
             injectInput(event, receivedAtMicroseconds: rxMicros)
+        case .rateChanged(let bps, let reason):
+            // HS-16: downshifts and pacing policies always print (the
+            // live gate's evidence); the ≤10%/s evidence climb prints
+            // only on ≥5% moves so a clean recovery reads as a handful
+            // of lines, not a 25 Hz stream.
+            let significant = lastPrintedRate.map {
+                Double(abs(bps - $0)) / Double($0) >= 0.05
+            } ?? true
+            switch reason {
+            case .evidence:
+                guard significant else { break }
+                lastPrintedRate = bps
+                print("rate: ↑ \(bps / 1_000) kbps (evidence climb)")
+            case .overuse:
+                lastPrintedRate = bps
+                print("rate: ↓ \(bps / 1_000) kbps (queuing-delay overuse)")
+            case .loss:
+                lastPrintedRate = bps
+                print("rate: ↓ \(bps / 1_000) kbps (loss over threshold)")
+            case .idrPacing(let pacing):
+                lastPrintedRate = bps
+                print("rate: → \(bps / 1_000) kbps (IDR pacing \(pacing))")
+            }
         }
     }
 

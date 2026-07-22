@@ -77,7 +77,9 @@ public enum SessionCryptoMode: Sendable {
 
 public struct SessionConfig: Sendable {
     public var crypto: SessionCryptoMode
-    /// Pacer rate; the configured session ceiling until HS-16 negotiates.
+    /// The negotiated session ceiling: the pacer's starting rate and
+    /// the HS-16 estimator's upper bound (the estimator moves the live
+    /// rate inside [floor, this]).
     public var rateBitsPerSecond: Int
     public var regime: FecRegime
     public var pacerQuantumNS: UInt64
@@ -105,6 +107,11 @@ public struct SessionConfig: Sendable {
     /// The W4b lifecycle machine's knobs: the 350 ms blackout detector,
     /// the 30 s liveness clock, RECOVERY's clean-window count.
     public var lifecycle: SessionMachineConfig
+    /// The HS-16 congestion estimator's knobs. Nil derives the default
+    /// config with `rateBitsPerSecond` as the ceiling — the negotiated
+    /// session rate IS the ceiling (no capability key carries bitrate
+    /// in v1) and the floor is resiliency's 500 kbps.
+    public var estimator: RateEstimatorConfig?
 
     public init(
         crypto: SessionCryptoMode,
@@ -117,7 +124,8 @@ public struct SessionConfig: Sendable {
         allowedClientStaticPublicKeys: [[UInt8]]? = nil,
         handshakeGate: HandshakeGate.Config = HandshakeGate.Config(),
         capabilities: Capabilities = .wireDefault,
-        lifecycle: SessionMachineConfig = SessionMachineConfig()
+        lifecycle: SessionMachineConfig = SessionMachineConfig(),
+        estimator: RateEstimatorConfig? = nil
     ) {
         self.crypto = crypto
         self.rateBitsPerSecond = rateBitsPerSecond
@@ -130,6 +138,7 @@ public struct SessionConfig: Sendable {
         self.handshakeGate = handshakeGate
         self.capabilities = capabilities
         self.lifecycle = lifecycle
+        self.estimator = estimator
     }
 }
 
@@ -203,6 +212,22 @@ public enum SessionEvent: Equatable, Sendable {
     /// already ran: a keypress in IDLE is the WAKE, one during FROZEN
     /// persists until RECOVERY's IDR consumes it (W4b).
     case inputReceived(InputEvent, receivedAtMicroseconds: UInt64)
+    /// The HS-16 estimator moved the pacer rate (feedback evidence, or
+    /// a machine-demanded IdrPacing policy). The pacer is already
+    /// re-capped when this surfaces; the shell logs it.
+    case rateChanged(bitsPerSecond: Int, reason: RateChangeReason)
+}
+
+/// Why the estimator moved the rate (the live gate's evidence axis).
+public enum RateChangeReason: Equatable, Sendable {
+    /// Queuing-delay inflation over the baseline (rung 2).
+    case overuse
+    /// Post-arrival loss over the threshold (rung 3).
+    case loss
+    /// Clean windows + fresh delivery evidence: ≤10%/s toward ceiling.
+    case evidence
+    /// A machine-demanded IDR pacing policy was applied (W4b).
+    case idrPacing(IdrPacing)
 }
 
 /// Why an inbound datagram went no further. Counted and surfaced, never
@@ -222,6 +247,10 @@ public enum SessionDropReason: Equatable, Sendable {
     /// A message 1 beyond the HandshakeGate budget: dropped unread,
     /// before any Noise state was allocated (HS-9's flood posture).
     case handshakeThrottled
+    /// A chan-3 payload FeedbackReport.decode refused. Still counted as
+    /// media-path evidence (an authenticated arrival is an arrival) but
+    /// the estimator never sees it — HS-16 runs on parsed reports only.
+    case malformedFeedback
 }
 
 public enum SessionError: Error, Equatable, Sendable {
@@ -256,8 +285,18 @@ public struct SessionCounters: Equatable, Sendable {
     /// Sealed CTRL datagrams carrying ARQ frames, both fresh and
     /// retransmit — the loss-gate's retransmission evidence.
     public var arqDatagramsSent = 0
-    /// Chan 3 arrivals: counted, not parsed — the estimator is HS-16.
+    /// Chan 3 arrivals (parsed or not — any authenticated arrival is
+    /// media-path evidence for the blackout detector).
     public var feedbackDatagrams = 0
+    /// Chan 3 payloads that decoded as FeedbackReports and fed the
+    /// HS-16 estimator.
+    public var feedbackReportsParsed = 0
+    /// Chan 3 payloads that failed FeedbackReport.decode (counted,
+    /// dropped loud, never fatal — hostile bytes cannot starve the
+    /// detector, they just carry no estimator evidence).
+    public var feedbackReportsMalformed = 0
+    /// Estimator-driven pacer rate moves (both directions).
+    public var rateChanges = 0
     /// Message 1s the HandshakeGate refused (HS-9's flood evidence).
     public var handshakesThrottled = 0
     /// Video frames the lifecycle machine refused to put on the wire
@@ -350,9 +389,9 @@ public final class Session {
     /// RECOVERY's resume.
     private var videoFrozen = false
     /// A machine-demanded IDR (WAKE's arm or RECOVERY's force), merged
-    /// into `takeFreshKeyframeRequest`. The pacing name is retained for
-    /// the HS-16 estimator; until it exists the pacer rate is the
-    /// configured ceiling either way.
+    /// into `takeFreshKeyframeRequest`. The estimator turned the
+    /// policy into a number and re-paced the wire the moment the
+    /// machine demanded it (HS-16).
     private var machineIdrPacing: IdrPacing?
     /// The converged ratchet frame awaiting its one-shot ride.
     private var convergedFrame:
@@ -362,9 +401,15 @@ public final class Session {
     private var finalFrameGroup: ArqGroupId?
     /// One-shot group ids are session-allocated, serially ascending.
     private var nextOneShotGroup: UInt16 = 1
-    /// The RECOVERY window stub's last window boundary (see
-    /// `recoveryWindowTick`).
-    private var recoveryWindowNS: UInt64?
+    /// The HS-16 congestion estimator: send ledger + delivery-rate/
+    /// queuing-delay/loss evidence → the pacer's setRate seam, W4b's
+    /// RECOVERY window verdicts, and the IdrPacing numbers.
+    private let estimator: RateEstimator
+    /// The `now` of the pump pass currently draining the pacer — the
+    /// send instant the estimator's ledger records (the sink closure
+    /// has no clock of its own; sans-IO means the caller's `now` is
+    /// the only truth).
+    private var pumpNowNS: UInt64
 
     // MARK: HS-13 input state
 
@@ -423,6 +468,14 @@ public final class Session {
             arqPayloadBudget - ArqBounds.segmentHeaderByteCount
         )
         self.arq = ArqEndpoint(channel: .ctrl, config: arqConfig)
+        self.estimator = RateEstimator(
+            config: config.estimator
+                ?? RateEstimatorConfig(
+                    ceilingBitsPerSecond: config.rateBitsPerSecond
+                ),
+            now: now
+        )
+        self.pumpNowNS = now
         self.handshakeGate = HandshakeGate(config: config.handshakeGate)
         self.negotiator = CapabilityNegotiator(
             role: .host, local: config.capabilities
@@ -460,7 +513,15 @@ public final class Session {
             seal: { [unowned self] plaintext, aad, envelope in
                 try self.sealPayload(plaintext, aad: aad, envelope: envelope)
             },
-            send: send
+            // The estimator's send ledger taps the sink: every datagram
+            // the pacer releases is recorded (channel, seq) →
+            // (instant, wire bytes) so the client's dispersion samples
+            // can be matched back to their trains (HS-16). The send
+            // instant is the pump pass's `now` — the sink has no clock.
+            send: { [unowned self] datagram in
+                self.noteSent(datagram)
+                send(datagram)
+            }
         )
         self.audio = AudioFramer(
             config: AudioFramerConfig(connectionId: connectionId)
@@ -568,12 +629,14 @@ public final class Session {
             )
         case .feedback:
             counters.feedbackDatagrams += 1
-            // The media-path proof stream: feeds the blackout detector.
+            // The media-path proof stream: feeds the blackout detector
+            // (any authenticated chan-3 arrival — a malformed interior
+            // is still an arrival on the media path).
             events += runMachine(
                 .mediaPathEvidence, now: now, hostMicroseconds: hostMicroseconds
             )
-            events += recoveryWindowTick(
-                now: now, hostMicroseconds: hostMicroseconds
+            events += ingestFeedback(
+                plaintext, now: now, hostMicroseconds: hostMicroseconds
             )
         default:
             counters.dropped += 1
@@ -1069,6 +1132,17 @@ public final class Session {
                 )
             case .armNextDamageAsIdr(let pacing), .forceIdr(let pacing):
                 machineIdrPacing = pacing
+                // The machine names the policy; the estimator owns the
+                // numbers (HS-16): min(btlRate, lastGoodRate) for a
+                // WAKE, max(floor, 0.5 × stale estimate) for RECOVERY.
+                // Applied to the pacer immediately — the IDR this arms
+                // is the first thing that pace carries.
+                let rate = estimator.applyIdrPacing(pacing, now: now)
+                channel.setRate(bitsPerSecond: rate, now: now)
+                counters.rateChanges += 1
+                events.append(.rateChanged(
+                    bitsPerSecond: rate, reason: .idrPacing(pacing)
+                ))
             case .freezeDatagramSends:
                 videoFrozen = true
             case .resumeDatagramSends:
@@ -1126,29 +1200,70 @@ public final class Session {
         }
     }
 
-    /// HS-16's estimator will own window verdicts; until it exists, a
-    /// feedback arrival ≥25 ms after the previous one while in RECOVERY
-    /// counts as one clean window — enough to graduate a genuinely
-    /// flowing path, and honest about what is measurable today (loss
-    /// judgment needs the estimator; absence of feedback re-freezes via
-    /// the silence detector regardless).
-    private func recoveryWindowTick(
-        now: UInt64, hostMicroseconds: UInt64
-    ) -> [SessionEvent] {
-        guard machine?.state == .recovery else {
-            recoveryWindowNS = nil
-            return []
+    // MARK: The HS-16 estimator's diet
+
+    /// The send-sink tap: one released datagram into the estimator's
+    /// ledger. PacerClass → envelope channel is a fixed mapping (the
+    /// TOS mapping's sibling): control datagrams ride chan 0, audio
+    /// chan 1, every video class chan 2 — the channels the client's
+    /// dispersion samples will name. Off-primary challenges are
+    /// excluded (they travel an unvalidated tuple; their arrivals
+    /// measure a different path).
+    private func noteSent(_ datagram: VideoChannelDatagram) {
+        guard datagram.destination == nil else { return }
+        let channel: ChannelId
+        switch datagram.pacerClass {
+        case .control: channel = .ctrl
+        case .audio: channel = .audio
+        case .freshVideo, .videoTail, .refinement, .telemetry:
+            channel = .videoActive
         }
-        guard let start = recoveryWindowNS else {
-            recoveryWindowNS = now
-            return []
-        }
-        guard now &- start >= 25_000_000 else { return [] }
-        recoveryWindowNS = now
-        return runMachine(
-            .feedbackWindow(clean: true),
-            now: now, hostMicroseconds: hostMicroseconds
+        estimator.noteSent(
+            channel: channel, seq: datagram.seq,
+            bytes: datagram.bytes.count, now: pumpNowNS
         )
+    }
+
+    /// One authenticated chan-3 payload: parse, feed the estimator,
+    /// apply its rate to the shared pacer, and — while the machine is
+    /// in RECOVERY — feed its window verdicts. This retires the HS-11
+    /// 25 ms window STUB: the estimator now decides when returning
+    /// evidence graduates RECOVERY, and a lossy window honestly resets
+    /// the count instead of graduating on mere presence.
+    private func ingestFeedback(
+        _ plaintext: [UInt8], now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        let report: FeedbackReport
+        do {
+            report = try FeedbackReport.decode(plaintext)
+        } catch {
+            counters.feedbackReportsMalformed += 1
+            counters.dropped += 1
+            return [.dropped(.malformedFeedback)]
+        }
+        counters.feedbackReportsParsed += 1
+        let verdict = estimator.ingest(
+            report, now: now, inRecovery: machine?.state == .recovery
+        )
+        var events: [SessionEvent] = []
+        if let rate = verdict.newRateBitsPerSecond {
+            channel.setRate(bitsPerSecond: rate, now: now)
+            counters.rateChanges += 1
+            let reason: RateChangeReason
+            switch verdict.change {
+            case .overuse: reason = .overuse
+            case .loss: reason = .loss
+            case .evidence, nil: reason = .evidence
+            }
+            events.append(.rateChanged(bitsPerSecond: rate, reason: reason))
+        }
+        for clean in verdict.recoveryWindows {
+            events += runMachine(
+                .feedbackWindow(clean: clean),
+                now: now, hostMicroseconds: hostMicroseconds
+            )
+        }
+        return events
     }
 
     /// Polls the endpoint and puts its output on the wire: repack to
@@ -1260,7 +1375,8 @@ public final class Session {
     /// Drains due pacer batches to the sink. Returns the datagram count.
     @discardableResult
     public func pump(now: UInt64) -> Int {
-        channel.pump(now: now)
+        pumpNowNS = now
+        return channel.pump(now: now)
     }
 
     /// The earliest instant anything here has work: the pacer's wake,
@@ -1280,10 +1396,44 @@ public final class Session {
 
     public var isIdle: Bool { channel.isIdle }
 
-    /// The HS-16 seam, passed through to the shared pacer.
+    /// The HS-16 seam, passed through to the shared pacer. The
+    /// estimator now drives this from feedback evidence; the manual
+    /// entry point stays for shells and tests that want to force a
+    /// rate (the estimator's next verdict will move it again).
     public func setRate(bitsPerSecond: Int, now: UInt64) {
         channel.setRate(bitsPerSecond: bitsPerSecond, now: now)
     }
+
+    // MARK: HS-16 estimator surfaces
+
+    /// The estimator's standing rate — what the pacer should be (and,
+    /// short of a manual `setRate`, is) running at.
+    public var estimatedRateBitsPerSecond: Int {
+        estimator.rateBitsPerSecond
+    }
+
+    /// The windowed-max measured delivery rate; nil before evidence.
+    public var deliveryRateBitsPerSecond: Int? {
+        estimator.deliveryRateBitsPerSecond
+    }
+
+    /// The current queuing-delay inflation estimate, µs.
+    public var queuingDelayMicroseconds: Int64? {
+        estimator.queuingDelayMicroseconds
+    }
+
+    public var estimatorStats: RateEstimatorStats { estimator.stats }
+
+    /// The HS-6 frame ceiling at the LIVE estimate: R×B/8 −
+    /// higherClassBytes(B), B = min(2/fps, 25 ms) — the single-frame
+    /// VBV cap the encoder should enforce (the "IdrPacing numbers"
+    /// deferred item, now derived from evidence instead of config).
+    public func frameByteCeiling(fps: Int) -> Int {
+        estimator.frameByteCeiling(fps: fps)
+    }
+
+    /// The rate the shared pacer is actually running at.
+    public var pacerRateBitsPerSecond: Int { channel.rateBitsPerSecond }
 
     public var pacerTelemetry: PacerTelemetry { channel.pacerTelemetry }
     public var videoCounters: VideoChannelCounters { channel.counters }
@@ -1425,6 +1575,9 @@ public final class Session {
             hostReceive: hostReceive
         )
         counters.beaconEchoes += 1
+        // RTT evidence into the estimator (telemetry + the future
+        // HS-17 retransmit gate; the rate law runs on dispersion).
+        estimator.noteRtt(microseconds: sample.rttMicroseconds)
         return [.beaconEchoAccepted(
             beaconSeq: echo.beaconSeq,
             offsetMicroseconds: sample.offsetMicroseconds,

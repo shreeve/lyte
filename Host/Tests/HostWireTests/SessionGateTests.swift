@@ -343,9 +343,14 @@ final class SessionGateTests: XCTestCase {
         )
         // The long feedback-free drain froze the lifecycle machine (the
         // 350 ms detector — no chan-3 traffic exists in this harness);
-        // this first returning CTRL evidence is also the RECOVERY exit.
+        // this first returning CTRL evidence is also the RECOVERY exit,
+        // and the HS-16 estimator paces its IDR at the half-stale rate.
         XCTAssertEqual(idrEvents, [
             .lifecycleChanged(.recovery),
+            .rateChanged(
+                bitsPerSecond: Self.rateBPS / 2,
+                reason: .idrPacing(.halfStaleEstimate)
+            ),
             .idrRequested(request),
         ])
         XCTAssertTrue(session.takeFreshKeyframeRequest(),
@@ -549,9 +554,14 @@ final class SessionGateTests: XCTestCase {
             from: Self.tupleA, now: clock, hostMicroseconds: 84_000
         )
         // The feedback-free drain froze the machine; this first CTRL
-        // evidence is also the RECOVERY exit (the Noise gate's pattern).
+        // evidence is also the RECOVERY exit (the Noise gate's pattern),
+        // with the HS-16 half-stale pacing applied on the way.
         XCTAssertEqual(echoEvents, [
             .lifecycleChanged(.recovery),
+            .rateChanged(
+                bitsPerSecond: Self.rateBPS / 2,
+                reason: .idrPacing(.halfStaleEstimate)
+            ),
             .beaconEchoAccepted(
                 beaconSeq: 0,
                 offsetMicroseconds: Int64(3_000 + (-3_500)) / 2,

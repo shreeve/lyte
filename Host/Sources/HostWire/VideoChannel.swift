@@ -346,6 +346,12 @@ public final class VideoChannel {
         pacer.setRate(bitsPerSecond: bitsPerSecond, now: now)
     }
 
+    /// The rate the shared pacer is running at right now (HS-16's
+    /// evidence surface for tests and logs).
+    public var rateBitsPerSecond: Int {
+        pacer.rateBitsPerSecond
+    }
+
     public var pacerTelemetry: PacerTelemetry {
         pacer.telemetry
     }
