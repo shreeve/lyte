@@ -130,34 +130,28 @@ struct ConnectView: View {
         browsing = false
     }
 
-    /// One Lyte host row: unpaired opens the pairing sheet; paired wears
-    /// the badge and offers Unpair from its context menu (streaming from
-    /// a click is CL-7's slice).
+    /// One Lyte host row: unpaired opens the pairing sheet; paired is a
+    /// launch button — clicking it dials the pinned static with the
+    /// Keychain identity and opens the stream (CL-8's session slice).
     @ViewBuilder
     private func lyteHostRow(_ host: DiscoveredLyteHost) -> some View {
         let pinned = pinnedStore.host(publicKeyHash: host.publicKeyHash)
-        HStack(spacing: 8) {
-            Circle().fill(.indigo).frame(width: 8, height: 8)
-            Text(host.name).fontWeight(.medium)
-            Text("\(host.address):\(String(host.port))")
-                .foregroundStyle(.secondary)
-            Text("Lyte")
-                .font(.caption2.weight(.semibold))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Capsule().fill(Color.indigo.opacity(0.18)))
-                .foregroundStyle(.indigo)
+        Group {
             if pinned != nil {
-                Label("Paired", systemImage: "checkmark.seal.fill")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.green)
-                    .labelStyle(.titleAndIcon)
+                Button {
+                    Task { await model.connectLyte(host) }
+                } label: {
+                    lyteHostLabel(host, paired: true)
+                        .frame(maxWidth: 340)
+                }
+                .controlSize(.large)
+                .buttonStyle(.borderedProminent)
+                .tint(.indigo)
             } else {
-                Button("Pair…") { pairingTarget = host }
-                    .controlSize(.small)
+                lyteHostLabel(host, paired: false)
+                    .frame(maxWidth: 340)
             }
         }
-        .frame(maxWidth: 340)
         .help(lyteHostTooltip(host, paired: pinned != nil))
         .contextMenu {
             if let pinned {
@@ -175,6 +169,31 @@ struct ConnectView: View {
         }
     }
 
+    @ViewBuilder
+    private func lyteHostLabel(_ host: DiscoveredLyteHost, paired: Bool) -> some View {
+        HStack(spacing: 8) {
+            Circle().fill(.indigo).frame(width: 8, height: 8)
+            Text(host.name).fontWeight(.medium)
+            Text("\(host.address):\(String(host.port))")
+                .foregroundStyle(.secondary)
+            Text("Lyte")
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Color.indigo.opacity(0.18)))
+                .foregroundStyle(.indigo)
+            if paired {
+                Label("Paired", systemImage: "checkmark.seal.fill")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.green)
+                    .labelStyle(.titleAndIcon)
+            } else {
+                Button("Pair…") { pairingTarget = host }
+                    .controlSize(.small)
+            }
+        }
+    }
+
     private func lyteHostTooltip(_ host: DiscoveredLyteHost, paired: Bool) -> String {
         var parts = ["Lyte-UDP host"]
         if let v = host.wireVersion { parts.append("wire v\(v)") }
@@ -182,7 +201,7 @@ struct ConnectView: View {
             parts.append("identity \(pkh.prefix(8))…")
         }
         parts.append(paired
-            ? "paired — reconnects are zero-UI (streaming flow is CL-7)"
+            ? "paired — click to stream (zero-UI Noise IK reconnect)"
             : "unpaired — Pair… runs the PIN flow")
         return parts.joined(separator: " — ")
     }

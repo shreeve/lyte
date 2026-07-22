@@ -55,6 +55,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
     private let lock = NSLock()
     private var transport: NoiseTransport?
     private var handshakeMilliseconds: Double?
+    private var retryChallengesAnswered = 0
 
     /// - Parameters:
     ///   - hostStaticPublicKey: the host's pinned 32-byte X25519 static
@@ -137,6 +138,14 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         return handshakeMilliseconds
     }
 
+    /// Retry challenges (0x13) this dial answered with a 0x14
+    /// resubmission — the W8 client leg's evidence counter.
+    public var retryChallengesAnsweredSnapshot: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return retryChallengesAnswered
+    }
+
     /// The seam's contract: no payload before the transport exists. The
     /// endpoint calls `performHandshake` between bind and thread start;
     /// this only asserts it happened.
@@ -184,6 +193,32 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
                 guard let datagram = try io.receiveDatagram(
                     timeoutMilliseconds: max(1, min(remaining, 100))
                 ) else { continue }
+                // W8, the client leg: a flooded host answers message 1
+                // with a stateless RetryChallenge (0x13) instead of
+                // spending crypto. The answer is the SAME message 1,
+                // byte-verbatim, wrapped with the cookie echoed in a
+                // RetryHandshake1 (0x14) — the retransmit rule (0443beb)
+                // makes the verbatim echo free, and the cookie's MAC
+                // over exactly those bytes makes it mandatory. Answering
+                // does not consume an attempt: the challenge IS the
+                // host's liveness, and the resubmission stays inside
+                // this attempt's window.
+                if let challenge = decodeRetryChallenge(datagram) {
+                    let resubmission: [UInt8]
+                    do {
+                        resubmission = try RetryHandshake1(
+                            echoing: challenge, message1: message1
+                        ).encode()
+                    } catch {
+                        lastFailure = "retry challenge unanswerable: \(error)"
+                        continue
+                    }
+                    try io.sendToHost(encodeCarriage(payload: resubmission))
+                    lock.lock()
+                    retryChallengesAnswered += 1
+                    lock.unlock()
+                    continue
+                }
                 guard let message2 = decodeCarriage(datagram) else {
                     // Not message 2 (a reordered sealed datagram, noise
                     // on the port) — FEC absorbs early shard loss;
@@ -212,6 +247,12 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
     /// One CTRL carriage datagram: bare envelope (chan 0, seq 0, client
     /// monotonic µs), payload = type byte ‖ raw Noise message, unsealed.
     private func encodeCarriage(type: UInt8, message: [UInt8]) -> [UInt8] {
+        encodeCarriage(payload: [type] + message)
+    }
+
+    /// The same bare pre-transport carriage for an already-typed payload
+    /// (the 0x14 retry resubmission carries its own type byte).
+    private func encodeCarriage(payload: [UInt8]) -> [UInt8] {
         let envelope = Envelope(
             channel: .ctrl,
             seq: ChannelSeq(rawValue: 0),
@@ -219,8 +260,9 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
             timestamp: DispatchTime.now().uptimeNanoseconds / 1_000,
             fec: 0
         )
-        // A 66 B payload under a bare envelope cannot breach any budget.
-        return try! envelope.encode(payload: [type] + message)
+        // Handshake payloads (≤ 26 + 122 B with the cookie) cannot
+        // breach any budget under a bare envelope.
+        return try! envelope.encode(payload: payload)
     }
 
     /// The raw Noise message 2 when `datagram` is its carriage, else nil.
@@ -230,6 +272,17 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
               payload.first == CtrlMessageType.noiseHandshake2
         else { return nil }
         return Array(payload.dropFirst())
+    }
+
+    /// The typed RetryChallenge when `datagram` carries one (bare CTRL,
+    /// 0x13), else nil. Malformed challenges are ignored, not fatal —
+    /// the attempt window's retransmit draws a fresh one.
+    private func decodeRetryChallenge(_ datagram: [UInt8]) -> RetryChallenge? {
+        guard let (envelope, payload) = try? Envelope.decode(datagram[...]),
+              envelope.channel == .ctrl,
+              payload.first == CtrlMessageType.retryChallenge
+        else { return nil }
+        return try? RetryChallenge.decode(payload)
     }
 
     // MARK: The transport seam

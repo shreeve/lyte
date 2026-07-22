@@ -6,17 +6,17 @@ import LyteTransport
 import LyteUI
 import LyteWire
 
-/// CL-2: wire-listen grows eyes. Binds a Lyte-UDP receive endpoint,
-/// assembles the video channel through LyteVideoPipeline, and renders it
-/// into an AVSampleBufferDisplayLayer window — the H0b debug harness's
-/// video leg. Prints the CL-1 demux stats plus per-frame render stats.
-///
-/// CL-3: the mouth. The same endpoint now talks back on the socket it
-/// listens on — chan=3 feedback reports on a 25–50 ms cadence
-/// (FeedbackSender), beacon echoes for every CTRL ClockBeacon
-/// (BeaconEchoResponder), and coalesced IDR requests when the assembler
-/// writes a frame off as FEC-impossible (IdrRequester). wire-send is the
-/// host stand-in that receives and logs all three until the host box returns.
+/// CL-2: wire-listen grows eyes. CL-3: the mouth (feedback, beacon
+/// echoes, coalesced IDR requests). CL-7: the reliable CTRL sublayer.
+/// CL-8: the whole assembly moves behind LyteUdpSession — the client's
+/// production session object — and wire-view becomes its debug shell:
+/// window + printer around the same object the app's ConnectionModel
+/// drives. New in the CL-8 surface: the capability declaration as the
+/// first reliable word, the mediaReceiver lifecycle machine (mode label
+/// ACTIVE/IDLE from 0x09, the FROZEN pill from the local silence
+/// detector), reliable 0x15 idle frames rendered through the shared
+/// factory, and typed teardown both directions (0x0A out on ⌃C/window
+/// close/duration; 0x0A in ends the run with the host's reason).
 ///
 /// AppKit rule (HANDOFF, hard-won): NSApplication.run() must own the raw
 /// C main thread — Main.main treats every subcommand not on its non-UI
@@ -112,62 +112,64 @@ struct WireView: AsyncParsableCommand {
         window.contentView = videoView
         window.center()
 
-        // Construction order fights two reference cycles (pipeline needs
-        // the IDR requester, endpoint needs the echo responder, both need
-        // the sender, the sender needs the endpoint): late-bound boxes.
-        let idrBox = LockedCell<IdrRequester?>(nil)
-        let echoBox = LockedCell<BeaconEchoResponder?>(nil)
-        let reliableBox = LockedCell<ReliableCtrlEndpoint?>(nil)
-        let clientNow: @Sendable () -> ClientTimestamp = {
-            ClientTimestamp(microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
-        }
+        // Idempotent, and named: four paths converge here and the smoke
+        // evidence must say which one ended the run. Late-bound because
+        // the session's event hook needs it and finish needs the session.
+        let finished = LockedCell(false)
+        let finishBox = LockedCell<(@Sendable (String) -> Void)?>(nil)
 
-        // The render path: assembled DecodeUnits become samples on the
-        // receive thread and enqueue straight into the layer's renderer
-        // (present-ASAP; the frozen stack enqueues from its receive
-        // thread the same way).
-        let pipeline = LyteVideoPipeline(
+        // The production session object, event-printed. Every event
+        // fires off-main (receive/timer threads) — printing is safe.
+        var sessionConfig = LyteUdpSession.Config()
+        sessionConfig.bindPort = port
+        sessionConfig.bindAddress = bind
+        let session = LyteUdpSession(
+            crypto: crypto,
+            config: sessionConfig,
             onSample: { sample, _ in
                 renderer.enqueue(sample)
             },
-            onFecImpossible: { frame, lostData, bestParity in
-                // CL-3: the seam is live — this verdict becomes a
-                // (coalesced) IDR request on CTRL.
-                print("wire-view: frame \(frame.rawValue) FEC-IMPOSSIBLE " +
-                      "(\(lostData) data shards presumed lost, best-case parity \(bestParity)) " +
-                      "— requesting IDR")
-                idrBox.value?.recordFecImpossible(frame: frame, now: clientNow())
-            })
-        pipeline.start()
-
-        let endpoint = UdpReceiveEndpoint(
-            port: port, bindAddress: bind, crypto: crypto,
-            onDatagram: { outcome, _ in
-                guard case .accepted(let envelope, let payload) = outcome else { return }
-                if envelope.channel == .ctrl {
-                    // CL-7: the one-byte peek — a sealed CTRL payload
-                    // starting with 0x07/0x08 is wholly ARQ and routes
-                    // to the reliable endpoint (which also learns the
-                    // conn-id from the envelope's TLV); everything else
-                    // falls through to the exempt paths.
-                    if reliableBox.value?.handleCtrlDatagram(
-                        envelope: envelope, payload: payload) == true {
-                        return
+            onEvent: { event in
+                switch event {
+                case .capabilitiesAgreed(let agreed):
+                    print("wire-view: capabilities AGREED — codecs \(agreed.videoCodecs), "
+                        + "chroma \(agreed.chromaModes), idleSilence \(agreed.idleSilence), "
+                        + "maxDatagram \(agreed.maxDatagramBytes)")
+                case .capabilitiesFailed(let why):
+                    print("wire-view: capabilities FAILED (\(why)) — typed teardown sent")
+                case .capabilityUpdateAnswered(let accepted):
+                    print("wire-view: capability update answered — "
+                        + (accepted ? "accepted" : "rejected"))
+                case .modeChanged(let mode):
+                    print("wire-view: mode → \(mode == .active ? "ACTIVE" : "IDLE")")
+                case .stateChanged(let state):
+                    switch state {
+                    case .frozen:
+                        print("wire-view: PILL ON — path dark (FROZEN)")
+                    case .active, .idle:
+                        print("wire-view: pill off — \(state)")
+                    case .recovery:
+                        print("wire-view: state \(state) (unexpected for a receiver)")
+                    case .closed:
+                        break   // the .closed event carries the reason
                     }
-                    // t2 in the client-monotonic domain, taken here on the
-                    // receive thread (the kernel stamp is wall-clock).
-                    echoBox.value?.handleCtrlPayload(
-                        payload,
-                        arrivalMicroseconds: clientNow().microseconds)
-                } else {
-                    pipeline.ingest(envelope: envelope, payload: payload)
+                case .idleFrameReceived(let frame, let outcome):
+                    print("wire-view: reliable idle frame \(frame) — \(outcome)")
+                case .teardownSent(let reason):
+                    print("wire-view: teardown 0x0A sent (\(reason))")
+                case .closed(let reason):
+                    print("wire-view: session CLOSED — \(reason)")
+                    finishBox.value?("session closed: \(reason)")
+                case .protocolNote(let note):
+                    print("wire-view: \(note)")
                 }
             })
+
         if !insecure {
             print("wire-view: Noise IK handshake → \(host):\(hostPort == 0 ? port : hostPort) …")
         }
         do {
-            try endpoint.start()
+            try session.start()
         } catch let error as TransportCryptoError {
             switch error {
             case .invalidHostKey(let message), .handshakeFailed(let message):
@@ -176,67 +178,24 @@ struct WireView: AsyncParsableCommand {
                 throw ValidationError(message)
             }
         }
+        guard let endpoint = session.endpoint, let core = session.core else {
+            throw ValidationError("session started without endpoint/core")
+        }
         print("wire-view: bound \(bind):\(endpoint.boundPort) — \(crypto.modeDescription)")
+        if let noise = crypto as? NoiseTransportCrypto,
+           noise.retryChallengesAnsweredSnapshot > 0 {
+            print("wire-view: dial answered \(noise.retryChallengesAnsweredSnapshot) "
+                + "retry challenge(s) (0x13 → 0x14, same msg1)")
+        }
         if insecure {
             print("wire-view: *** INSECURE MODE — payloads are neither encrypted nor authenticated ***")
         }
+        print("wire-view: capability declaration sent (0x0F, first reliable word); "
+            + "feedback cadence \(core.feedback.cadenceMilliseconds) ms")
 
-        // The return leg: everything client→host seals through the same
-        // crypto seam and leaves from the listening socket, aimed at the
-        // last datagram's source (wire-send today, the host tomorrow).
-        let sender = TransportSender(crypto: crypto, transmit: { datagram in
-            endpoint.sendToPeer(datagram)
-        })
-        // CL-10: the session's ONE host-clock model (timing pillar §2 —
-        // audio rate correction and video presentation both read this
-        // instance once they exist). Fed live per closed sample.
-        let clockModel = HostClockModel()
-        let echoResponder = BeaconEchoResponder(
-            now: clientNow,
-            onClockSample: { clockModel.ingest($0) },
-            emit: { echo in
-                _ = try? sender.send(channel: .ctrl, timestamp: clientNow(),
-                                     plaintext: echo.encode())
-            })
-        echoBox.value = echoResponder
-        // CL-7: the reliable CTRL sublayer — the client half of HS-8's
-        // seam. Nothing host-side sends reliable traffic yet (W7
-        // capabilities, HS-11 mode transitions are the consumers), so
-        // today this delivers/acknowledges whatever arrives and carries
-        // the debug ping; the wiring is what the slice lands.
-        let reliable = ReliableCtrlEndpoint(
-            sender: sender,
-            onEvent: { event in
-                switch event {
-                case .message(let group, let bytes):
-                    print("wire-view: reliable CTRL message group \(group.rawValue) " +
-                          "(\(bytes.count) B, type 0x\(String(bytes.first ?? 0, radix: 16)))")
-                case .oneShotAcknowledged(let group):
-                    print("wire-view: reliable one-shot group \(group.rawValue) acknowledged")
-                case .ignored:
-                    break   // routine protocol weather; the stats line counts it
-                }
-            })
-        reliable.start()
-        reliableBox.value = reliable
-        let idrRequester = IdrRequester(emit: { request in
-            print("wire-view: IDR-REQUEST #\(request.requestSeq) → host " +
-                  "(frame \(request.frame.rawValue), coalesced \(request.coalescedCount))")
-            _ = try? sender.send(channel: .ctrl, timestamp: clientNow(),
-                                 plaintext: request.encode())
-        })
-        idrBox.value = idrRequester
-        let feedback = FeedbackSender(
-            demux: endpoint.demux, sender: sender,
-            onTick: { now in idrRequester.flushIfDue(now: now) })
-        feedback.start()
-        print("wire-view: feedback cadence \(feedback.cadenceMilliseconds) ms, " +
-              "beacon echo + IDR-request on CTRL (NACK section empty until HS-17)")
-
-        // The CL-7 live probe: reliable pings on the ordered stream. The
-        // type byte 0x7F is a debug placeholder — unregistered, so the
-        // host's dispatch only logs the delivery (which is the evidence:
-        // exactly-once arrival plus the ACK that quiesces this end).
+        // The CL-7 live probe: reliable pings on the ordered stream.
+        // The type byte 0x7F is a debug placeholder — unregistered, so
+        // the host's dispatch only logs the delivery.
         let pinger: DispatchSourceTimer? = arqPing <= 0 ? nil : {
             let source = DispatchSource.makeTimerSource(queue: .global())
             source.schedule(deadline: .now() + .seconds(arqPing),
@@ -248,7 +207,7 @@ struct WireView: AsyncParsableCommand {
                 var body: [UInt8] = [0x7F]
                 withUnsafeBytes(of: n.littleEndian) { body += $0 }
                 do {
-                    try reliable.send(body)
+                    try core.reliable.send(body)
                     print("wire-view: reliable ping #\(n) queued")
                 } catch {
                     print("wire-view: reliable ping #\(n) refused: \(error)")
@@ -263,10 +222,7 @@ struct WireView: AsyncParsableCommand {
         // goes .failed (with the VideoToolbox error) if enqueued samples
         // don't actually decode — enqueue counts alone can't lie-detect.
         let printer = WireViewStatsPrinter(
-            demux: endpoint.demux, pipeline: pipeline,
-            sender: sender, feedback: feedback,
-            echoResponder: echoResponder, idrRequester: idrRequester,
-            reliable: reliable, clockModel: clockModel,
+            session: session,
             rendererState: { @Sendable in
                 switch renderer.status {
                 case .rendering: return "rendering"
@@ -283,9 +239,6 @@ struct WireView: AsyncParsableCommand {
         ticker.setEventHandler { @Sendable in printer.printTick() }
         ticker.resume()
 
-        // Idempotent, and named: three paths converge here and the smoke
-        // evidence must say which one ended the run.
-        let finished = LockedCell(false)
         let finish: @Sendable (String) -> Void = { trigger in
             let already = finished.value
             finished.value = true
@@ -293,22 +246,31 @@ struct WireView: AsyncParsableCommand {
             print("wire-view: finishing (\(trigger))")
             ticker.cancel()
             pinger?.cancel()
-            feedback.stop()
-            reliable.stop()
-            endpoint.stop()
-            pipeline.stop()
+            // A locally-triggered end says goodbye on the wire (typed
+            // 0x0A + ACK linger); a session-closed end (peer teardown,
+            // liveness) has nothing left to say.
+            if trigger.hasPrefix("session closed") {
+                session.stop()
+            } else {
+                session.close(reason: .shuttingDown)
+            }
             printer.printFinal()
             // exit(0) inline from windowWillClose can hang in AppKit
             // teardown; a global-queue hop exits cleanly from every path.
             DispatchQueue.global().async { Foundation.exit(0) }
         }
+        finishBox.value = finish
 
         signal(SIGINT, SIG_IGN)
         let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
         sigint.setEventHandler { @Sendable in finish("SIGINT") }
         sigint.resume()
 
-        let delegate = WindowCloser(onClose: { finish("window closed") })
+        let delegate = WindowCloser(onClose: {
+            // close() lingers ≤500 ms for the teardown ACK — keep that
+            // off the main thread AppKit is tearing the window down on.
+            DispatchQueue.global().async { finish("window closed") }
+        })
         window.delegate = delegate
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(videoView)
@@ -323,67 +285,54 @@ struct WireView: AsyncParsableCommand {
         // NSApplication.run() owns the main thread (Main.main) — keep
         // strong refs to everything AppKit only holds weakly and return.
         streamRetainer.append(contentsOf: [
-            delegate, ticker, sigint, endpoint, pipeline, window,
-            sender, feedback, echoResponder, idrRequester, reliable,
+            delegate, ticker, sigint, session, window,
         ])
         if let pinger { streamRetainer.append(pinger) }
     }
 }
 
 /// The CL-1 demux stats plus the CL-2 render stats plus the CL-3
-/// return-path stats, one tick per second with new arrivals, full summary
-/// at exit.
+/// return-path stats plus the CL-8 session line (mode, pill, idle
+/// frames, agreed capabilities) — one tick per second with new
+/// arrivals, full summary at exit.
 final class WireViewStatsPrinter: Sendable {
-    private let demux: ReceiveDemux
-    private let pipeline: LyteVideoPipeline
-    private let sender: TransportSender
-    private let feedback: FeedbackSender
-    private let echoResponder: BeaconEchoResponder
-    private let idrRequester: IdrRequester
-    private let reliable: ReliableCtrlEndpoint
-    private let clockModel: HostClockModel
+    private let session: LyteUdpSession
     private let rendererState: @Sendable () -> String
     private let lastCount = LockedCell<UInt64>(0)
 
-    init(demux: ReceiveDemux, pipeline: LyteVideoPipeline,
-         sender: TransportSender, feedback: FeedbackSender,
-         echoResponder: BeaconEchoResponder, idrRequester: IdrRequester,
-         reliable: ReliableCtrlEndpoint, clockModel: HostClockModel,
+    init(session: LyteUdpSession,
          rendererState: @escaping @Sendable () -> String) {
-        self.demux = demux
-        self.pipeline = pipeline
-        self.sender = sender
-        self.feedback = feedback
-        self.echoResponder = echoResponder
-        self.idrRequester = idrRequester
-        self.reliable = reliable
-        self.clockModel = clockModel
+        self.session = session
         self.rendererState = rendererState
     }
 
     func printTick() {
-        let totals = demux.snapshotTotals()
+        guard let endpoint = session.endpoint else { return }
+        let totals = endpoint.demux.snapshotTotals()
         guard totals.datagrams != lastCount.value else { return }
         lastCount.value = totals.datagrams
         printSnapshot(prefix: "…", totals: totals)
     }
 
     func printFinal() {
+        guard let endpoint = session.endpoint else { return }
         print("wire-view: final")
-        printSnapshot(prefix: "  ", totals: demux.snapshotTotals())
+        printSnapshot(prefix: "  ", totals: endpoint.demux.snapshotTotals())
     }
 
     private func printSnapshot(prefix: String, totals: DemuxTotals) {
+        guard let endpoint = session.endpoint,
+              let core = session.core else { return }
         var line = "\(prefix) total \(totals.datagrams) datagrams: \(totals.accepted) ok"
         if totals.malformed > 0 { line += ", \(totals.malformed) malformed" }
         if totals.reservedDropped > 0 { line += ", \(totals.reservedDropped) reserved-dropped" }
         if totals.unsealFailures > 0 { line += ", \(totals.unsealFailures) unseal-failed" }
         print(line)
-        if let video = demux.stats(forChannel: pipeline.channel.rawValue) {
+        if let video = endpoint.demux.stats(forChannel: core.pipeline.channel.rawValue) {
             print("\(prefix)   wire: \(video.datagrams) dg, \(video.payloadBytes) B, " +
                   "\(video.seqMissing) missing, \(video.seqDuplicates) dup")
         }
-        let s = pipeline.snapshotStats()
+        let s = core.pipeline.snapshotStats()
         var render = "\(prefix)   render: \(s.framesDecoded) decoded, \(s.framesSkipped) skipped, " +
                      "\(s.samplesDelivered) enqueued"
         if s.samplesWithheld > 0 { render += ", \(s.samplesWithheld) withheld (pre-IDR)" }
@@ -391,24 +340,49 @@ final class WireViewStatsPrinter: Sendable {
         if s.fecImpossibleCount > 0 { render += ", \(s.fecImpossibleCount) fec-impossible" }
         if s.evictions > 0 { render += ", \(s.evictions) evicted" }
         if s.shardsDropped > 0 { render += ", \(s.shardsDropped) shards dropped" }
+        if s.reliableFramesRendered + s.reliableFramesDeduplicated > 0 {
+            render += ", \(s.reliableFramesRendered) idle-rendered"
+            if s.reliableFramesDeduplicated > 0 {
+                render += "/\(s.reliableFramesDeduplicated) idle-deduped"
+            }
+        }
         if let first = s.firstSampleMicroseconds {
             render += String(format: " | first frame %.1fms", Double(first) / 1000)
         }
         render += " | layer \(rendererState())"
         print(render)
 
+        // The CL-8 session line: the machine's verdicts.
+        let counters = core.snapshotCounters()
+        var sess = "\(prefix)   session: mode \(core.wireMode == .active ? "ACTIVE" : "IDLE")"
+        sess += core.isFrozen ? ", PILL (frozen)" : ""
+        if core.state == .closed { sess += ", CLOSED" }
+        sess += ", caps \(core.agreedCapabilities != nil ? "agreed" : "pending")"
+        if counters.modeTransitionsReceived > 0 {
+            sess += ", \(counters.modeTransitionsReceived) mode msgs"
+        }
+        if counters.idleFramesReceived > 0 {
+            sess += ", \(counters.idleFramesReceived) idle frames"
+        }
+        if counters.unknownReliableTypes > 0 {
+            sess += ", \(counters.unknownReliableTypes) unknown-reliable"
+        }
+        if counters.malformedReliableMessages > 0 {
+            sess += ", \(counters.malformedReliableMessages) malformed-reliable"
+        }
+        print(sess)
+
         // The CL-3 return leg: what went back to the host.
-        let out = sender.snapshotStats()
-        let fb = feedback.snapshotStats()
-        let echo = echoResponder.snapshotStats()
-        let idr = idrRequester.snapshotStats()
+        let fb = core.feedback.snapshotStats()
+        let echo = core.echoResponder.snapshotStats()
+        let idr = core.idrRequester.snapshotStats()
         var back = "\(prefix)   sent: \(fb.reportsSent) feedback " +
                    "(\(fb.dispersionSamplesReported) dispersion samples), " +
                    "\(echo.echoesSent) echoes, \(idr.requestsSent) IDR-requests " +
                    "(\(idr.verdicts) verdicts)"
         if echo.clockSamples > 0 {
             back += ", \(echo.clockSamples) clock samples"
-            if let last = echoResponder.snapshotClockSamples().last {
+            if let last = core.echoResponder.snapshotClockSamples().last {
                 // Interpolation, not %d: varargs %d truncates Int64 to 32
                 // bits and boot-epoch offsets are ~10¹⁰ µs (found live —
                 // the printed offset disagreed with CL-10's fit by 2·2³²).
@@ -417,25 +391,23 @@ final class WireViewStatsPrinter: Sendable {
                         "rtt \(last.rttMicroseconds) µs)"
             }
         }
-        if out.sendFailures > 0 { back += ", \(out.sendFailures) send-failed" }
-        if out.sealFailures > 0 { back += ", \(out.sealFailures) seal-failed" }
         print(back)
 
         // The CL-7 reliable sublayer, when it has done anything at all.
-        let arq = reliable.snapshotStats()
+        let arq = core.reliable.snapshotStats()
         if arq.messagesSent + arq.messagesDelivered + arq.datagramsSent > 0 {
             var line = "\(prefix)   arq: \(arq.messagesSent) sent, " +
                        "\(arq.messagesDelivered) delivered, " +
                        "\(arq.oneShotsAcknowledged) one-shot-acked, " +
                        "\(arq.datagramsSent) datagrams" +
-                       (reliable.isQuiescent ? ", quiescent" : ", in flight")
+                       (core.reliable.isQuiescent ? ", quiescent" : ", in flight")
             if arq.ingestIgnored > 0 { line += ", \(arq.ingestIgnored) ignored" }
             if arq.sendFailures > 0 { line += ", \(arq.sendFailures) send-failed" }
             print(line)
         }
 
         // The CL-10 model line: the T gate reads the residual here.
-        if let fit = clockModel.estimate() {
+        if let fit = core.clockModel.estimate() {
             let sign = fit.offsetMicroseconds >= 0 ? "+" : ""
             print("\(prefix)   clock: offset \(sign)\(fit.offsetMicroseconds) µs, " +
                   String(format: "skew %+.1f ppm, residual rms %.1f / max %.1f µs, ",

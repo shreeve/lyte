@@ -88,9 +88,14 @@ let package = Package(
         .executableTarget(
             name: "Lyte",
             // LyteTransport joins at CL-5 for the dual-browse (Lyte hosts
-            // beside Sunshine hosts in ConnectView); LyteKit leaves at the
-            // H2 demolition, LyteTransport is what remains.
-            dependencies: ["LyteKit", "LyteUI", "LyteHelperProtocol", "LyteTransport"]
+            // beside Sunshine hosts in ConnectView); LyteWire at CL-8 for
+            // the session vocabulary (wire modes, teardown reasons) the
+            // Lyte path surfaces. LyteKit leaves at the H2 demolition;
+            // LyteTransport + LyteWire are what remain.
+            dependencies: [
+                "LyteKit", "LyteUI", "LyteHelperProtocol", "LyteTransport",
+                .product(name: "LyteWire", package: "Wire"),
+            ]
         ),
         .testTarget(name: "LyteKitTests", dependencies: ["LyteKit"]),
         .testTarget(

@@ -1,7 +1,9 @@
 import SwiftUI
 @preconcurrency import AVFoundation
 import LyteKit
+import LyteTransport
 import LyteUI
+import LyteWire
 
 /// Per-window connection state machine: pick host → (pair) → pick app →
 /// connect → stream. Owns the session, display layer, and input capture.
@@ -28,6 +30,13 @@ final class ConnectionModel {
     private(set) var session: LyteSession?
     private(set) var policy: PolicyOutput?
     let displayLayer = AVSampleBufferDisplayLayer()
+
+    // The Lyte-UDP path (CL-8): a paired discovered host streams through
+    // LyteUdpSession instead of the frozen GameStream stack. Mode/pill
+    // mirror the session's mediaReceiver machine for the stream overlay.
+    private(set) var lyteSession: LyteUdpSession?
+    private(set) var lyteWireMode: SessionWireMode = .active
+    private(set) var lyteFrozen = false
 
     private var client: HostClient?
     var inputCapture: InputCapture?
@@ -189,6 +198,123 @@ final class ConnectionModel {
         }
     }
 
+    // MARK: - Lyte-UDP streaming (CL-8)
+
+    /// Clicking a PAIRED discovered Lyte host: zero-UI 1-RTT Noise IK
+    /// against the pinned static + Keychain identity, then the stream
+    /// window. Unpaired hosts go through the pairing sheet instead
+    /// (ConnectView routes them there).
+    func connectLyte(_ host: DiscoveredLyteHost) async {
+        guard let pinned = PinnedHostStore.load().host(publicKeyHash: host.publicKeyHash),
+              let hostStatic = pinned.staticPublicKey else {
+            phase = .failed("\(host.name) is not paired — use Pair… first")
+            return
+        }
+        hostAddress = host.address
+        hostName = host.name
+        appTitle = "Desktop"
+        phase = .connecting("Connecting to \(host.name) over Lyte-UDP…")
+
+        let identity: NoiseKeyPair
+        do {
+            identity = try ClientNoiseIdentity.loadOrCreate()
+        } catch {
+            // The Keychain path needs the stable "Lyte Dev" signature —
+            // builds via Scripts/make-app.sh (docs/MACOS-SIGNING.md).
+            phase = .failed("client identity: \(error)")
+            return
+        }
+        let crypto: NoiseTransportCrypto
+        do {
+            crypto = try NoiseTransportCrypto(
+                hostAddress: host.address,
+                hostPort: host.port,
+                hostStaticPublicKey: hostStatic,
+                staticKeys: identity)
+        } catch {
+            phase = .failed("host key: \(error)")
+            return
+        }
+
+        displayLayer.videoGravity = .resizeAspect
+        displayLayer.backgroundColor = CGColor(gray: 0, alpha: 1)
+        let renderer = displayLayer.sampleBufferRenderer
+
+        let lyte = LyteUdpSession(
+            crypto: crypto,
+            onSample: { sample, _ in
+                renderer.enqueue(sample)
+            },
+            onEvent: { [weak self] event in
+                Task { @MainActor [weak self] in
+                    self?.handleLyteEvent(event)
+                }
+            })
+
+        // start() blocks through bind + the Noise handshake (retry
+        // timer inside) — off the main actor.
+        do {
+            try await Task.detached { try lyte.start() }.value
+        } catch {
+            phase = .failed("Lyte-UDP connect: \(error)")
+            return
+        }
+        lyteSession = lyte
+        lyteWireMode = .active
+        lyteFrozen = false
+        mode = .work
+        phase = .streaming
+        statusLine = crypto.modeDescription
+        AgentState.shared.streamBegan()
+    }
+
+    private func handleLyteEvent(_ event: LyteUdpSessionEvent) {
+        switch event {
+        case .capabilitiesAgreed(let agreed):
+            statusLine = "capabilities agreed — idle silence "
+                + (agreed.idleSilence ? "on" : "off")
+        case .capabilitiesFailed(let why):
+            endLyteSession(reason: "capabilities failed: \(why)")
+        case .capabilityUpdateAnswered:
+            break
+        case .modeChanged(let wireMode):
+            lyteWireMode = wireMode
+        case .stateChanged(let state):
+            lyteFrozen = state == .frozen
+        case .idleFrameReceived, .teardownSent, .protocolNote:
+            break
+        case .closed(let reason):
+            switch reason {
+            case .localTeardown:
+                break   // endLyteSession is already driving the close
+            case .peerTeardown(let why):
+                endLyteSession(reason: why == .takenOver
+                    ? "session taken over by another client" : nil)
+            case .livenessTimeout:
+                endLyteSession(reason: "host unreachable for 30 s")
+            }
+        }
+    }
+
+    /// Ends the Lyte-UDP session: the typed goodbye (with its ACK
+    /// linger) runs off-main; UI state resets immediately.
+    private func endLyteSession(reason: String?) {
+        guard let lyte = lyteSession else { return }
+        lyteSession = nil
+        lyteFrozen = false
+        Task.detached {
+            // A peer/liveness close has nobody to say goodbye to; a
+            // local end sends the typed 0x0A and lingers for its ACK.
+            lyte.close(reason: .shuttingDown)
+        }
+        AgentState.shared.streamEnded()
+        if let reason {
+            phase = .failed(reason)
+        } else {
+            phase = .pickHost
+        }
+    }
+
     /// Relaunch-reconnect (D6): host → apps → the remembered app, no clicks.
     func reconnect(address: String, appTitle: String) async {
         await selectHost(address, name: nil)
@@ -199,6 +325,10 @@ final class ConnectionModel {
     }
 
     func endSession(reason: String?) {
+        if lyteSession != nil {
+            endLyteSession(reason: reason)
+            return
+        }
         doctorTask?.cancel()
         doctorTask = nil
         diagnosis = nil

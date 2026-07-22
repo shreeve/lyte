@@ -18,6 +18,24 @@ struct ConnectionWindow: View {
                             DoctorPill(diagnosis: model.diagnosis, policy: model.policy)
                         }
                     }
+                    .overlay(alignment: .top) {
+                        // CL-8: the FROZEN pill — subtle, never modal.
+                        // The path went dark (350 ms-class silence on
+                        // the Lyte session's detector); it clears by
+                        // itself when host traffic returns.
+                        if model.lyteFrozen {
+                            Label("Connection interrupted…",
+                                  systemImage: "wifi.exclamationmark")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Capsule().fill(.ultraThinMaterial))
+                                .foregroundStyle(.orange)
+                                .padding(.top, 10)
+                                .transition(.opacity)
+                        }
+                    }
+                    .animation(.easeInOut(duration: 0.3), value: model.lyteFrozen)
             }
         }
         .navigationTitle(model.windowTitle)
