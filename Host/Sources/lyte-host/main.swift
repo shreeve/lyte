@@ -147,13 +147,15 @@ struct Options {
                 opts.audio = false
             case "--host-audio":
                 i += 1
-                let mode: HostAudioRoutingMode? = i < args.count
-                    ? ["audible": .hostAudible, "muted": .hostMuted][args[i]]
-                    : nil
-                guard let mode else {
+                guard i < args.count else {
                     throw HostError("--host-audio must be audible or muted")
                 }
-                opts.hostAudio = mode
+                switch args[i] {
+                case "audible": opts.hostAudio = .hostAudible
+                case "muted": opts.hostAudio = .hostMuted
+                default:
+                    throw HostError("--host-audio must be audible or muted")
+                }
             case "--audio-bitrate-kbps":
                 i += 1
                 guard i < args.count, let v = Int32(args[i]), v > 0 else {
