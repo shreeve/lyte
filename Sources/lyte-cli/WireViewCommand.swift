@@ -375,6 +375,7 @@ final class WireViewStatsPrinter: Sendable {
         if s.samplesWithheld > 0 { render += ", \(s.samplesWithheld) withheld (pre-IDR)" }
         if s.sampleFailures > 0 { render += ", \(s.sampleFailures) sample-failed" }
         if s.fecImpossibleCount > 0 { render += ", \(s.fecImpossibleCount) fec-impossible" }
+        if s.repairShardsAccepted > 0 { render += ", \(s.repairShardsAccepted) repair-shards" }
         if s.evictions > 0 { render += ", \(s.evictions) evicted" }
         if s.shardsDropped > 0 { render += ", \(s.shardsDropped) shards dropped" }
         if s.reliableFramesRendered + s.reliableFramesDeduplicated > 0 {
@@ -429,6 +430,26 @@ final class WireViewStatsPrinter: Sendable {
             }
         }
         print(back)
+
+        // The CL-12 targeted-repair line, whenever the policy stirred:
+        // asks out, repairs back, frames healed, staleness → IDR.
+        let nack = core.nackPolicy.snapshotStats()
+        if nack.pastParityFrames + nack.repairShardsReceived > 0 {
+            var line = "\(prefix)   nack: \(nack.pastParityFrames) past-parity, " +
+                       "\(nack.nackEntriesEmitted) asks (\(nack.shardsAsked) shards), " +
+                       "\(nack.repairShardsReceived) repairs rx, " +
+                       "\(nack.framesCompletedByRepair) frames repaired"
+            if nack.asksSuppressedStale > 0 {
+                line += ", \(nack.asksSuppressedStale) stale-suppressed"
+            }
+            if nack.framesEscalatedToIdr > 0 {
+                line += ", \(nack.framesEscalatedToIdr) expired→IDR"
+            }
+            if nack.fecImpossibleDeferred > 0 {
+                line += ", \(nack.fecImpossibleDeferred) idr-deferred"
+            }
+            print(line)
+        }
 
         // The CL-7 reliable sublayer, when it has done anything at all.
         let arq = core.reliable.snapshotStats()

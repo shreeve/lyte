@@ -116,6 +116,8 @@ public struct LyteUdpSessionCoreConfig: Sendable {
     public var tightenedBlackoutSilenceMicroseconds: Int64?
     /// The audio playout buffer's policy (CL-11).
     public var audioJitter: AudioJitterConfig
+    /// The targeted-repair ask policy (CL-12).
+    public var nackPolicy: NackPolicyConfig
 
     public init(
         capabilities: Capabilities = .wireDefault,
@@ -123,13 +125,15 @@ public struct LyteUdpSessionCoreConfig: Sendable {
             blackoutSilenceMicroseconds: 2_500_000
         ),
         tightenedBlackoutSilenceMicroseconds: Int64? = 350_000,
-        audioJitter: AudioJitterConfig = AudioJitterConfig()
+        audioJitter: AudioJitterConfig = AudioJitterConfig(),
+        nackPolicy: NackPolicyConfig = NackPolicyConfig()
     ) {
         self.capabilities = capabilities
         self.machineConfig = machineConfig
         self.tightenedBlackoutSilenceMicroseconds =
             tightenedBlackoutSilenceMicroseconds
         self.audioJitter = audioJitter
+        self.nackPolicy = nackPolicy
     }
 }
 
@@ -150,6 +154,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public private(set) var feedback: FeedbackSender!
     public private(set) var input: InputSender!
     public private(set) var audio: AudioReceiver!
+    /// CL-12: the targeted-repair ask policy behind the pipeline's
+    /// repair-signal seam.
+    public private(set) var nackPolicy: NackPolicy!
     public let clockModel = HostClockModel()
 
     // Machine + negotiator + dispatch state, one lock.
@@ -205,9 +212,21 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 onSample(sample, unit)
             },
             onFecImpossible: { [weak self] frame, _, _ in
+                // CL-12: a frame with a live repair ask holds its IDR
+                // for the rule-4 window; everything else requests as
+                // CL-3 always did (the policy escalates expiries back
+                // through the same requester).
                 guard let self else { return }
-                self.idrRequester.recordFecImpossible(
-                    frame: frame, now: self.now())
+                let now = self.now()
+                if !self.nackPolicy.shouldDeferFecImpossible(
+                    frame: frame, now: now
+                ) {
+                    self.idrRequester.recordFecImpossible(
+                        frame: frame, now: now)
+                }
+            },
+            onRepairSignal: { [weak self] signal, now in
+                self?.nackPolicy.handle(signal, now: now)
             })
         self.reliable = ReliableCtrlEndpoint(
             sender: sender,
@@ -239,6 +258,32 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             demux: demux, sender: sender,
             onTick: { [weak self] tickNow in
                 self?.idrRequester.flushIfDue(now: tickNow)
+                self?.nackPolicy.tick(now: tickNow)
+            })
+        self.nackPolicy = NackPolicy(
+            config: config.nackPolicy,
+            rtt: { [weak self] in
+                self?.clockModel.estimate()?.minRttMicroseconds
+            },
+            emit: { [weak self] entries in
+                guard let self else { return }
+                // Enqueue + an immediate out-of-cadence report: the
+                // host's rule-3 freeze budget (~33 ms) is tighter than
+                // the 25–50 ms cadence.
+                self.feedback.enqueueNacks(entries)
+                self.feedback.tick(now: self.now())
+                for entry in entries {
+                    self.onEvent(.protocolNote(
+                        "nack: frame \(entry.frame.rawValue) asks "
+                        + "shards \(entry.missingShards)"))
+                }
+            },
+            escalate: { [weak self] frame, now in
+                guard let self else { return }
+                self.idrRequester.recordFecImpossible(frame: frame, now: now)
+                self.onEvent(.protocolNote(
+                    "nack: frame \(frame.rawValue) repair expired — "
+                    + "IDR instead"))
             })
         self.audio = AudioReceiver(jitterConfig: config.audioJitter)
     }
@@ -299,6 +344,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public func tick(now: ClientTimestamp) {
         reliable.tick(now: now)
         pipeline.tick(now: now)
+        nackPolicy.tick(now: now)
         applyMachine(nil, now: now)
     }
 

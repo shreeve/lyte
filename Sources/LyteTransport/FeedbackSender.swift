@@ -7,11 +7,15 @@
 // the fast-liveness signal (350 ms of feedback silence is the host's
 // blackout detector, resiliency §3).
 //
-// The NACK section is EMPTY in v1: ruling §4.7 — the host ignores NACKs
-// until HS-17's responder exists, and the heal path for FEC-impossible
-// frames is the IdrRequester's CTRL message. When HS-17 lands, the
-// assembler's nackCandidates events route here and fill the section; the
-// codec and wire shape are ready (W4a), only this sender abstains.
+// The NACK section (CL-12, closing §4.7's ruling): NackPolicy's entries
+// queue here via `enqueueNacks` and ride the NEXT report — the policy's
+// emit closure follows the enqueue with an immediate out-of-cadence
+// `tick`, because the host's rule-3 freeze budget (2 frame intervals,
+// ~33 ms) is tighter than the 25–50 ms cadence. Reports stay unreliable:
+// a lost NACK is NOT re-queued (dedupe discipline — the host one-attempts
+// per shard); rule 4's deadline escalation to IDR covers the loss.
+// FeedbackBounds.maxNackEntries (6) caps a report's section; spill waits
+// for the next beat.
 //
 // Reports are unreliable by design (build plan §4.11): a lost report is
 // superseded 25–50 ms later, so sends never retry and failures only count.
@@ -29,6 +33,8 @@ public final class FeedbackSender: @unchecked Sendable {
         public var reportsFailed: UInt64 = 0
         public var dispersionSamplesReported: UInt64 = 0
         public var dispersionSamplesDecimated: UInt64 = 0
+        /// NACK entries carried on the wire (CL-12).
+        public var nackEntriesSent: UInt64 = 0
     }
 
     /// The build plan pins the cadence to 25–50 ms; anything outside is a
@@ -47,6 +53,11 @@ public final class FeedbackSender: @unchecked Sendable {
     private let lock = NSLock()
     private var stats = Stats()
     private var timer: DispatchSourceTimer?
+    /// NACK entries awaiting the next report (CL-12). Bounded: the
+    /// policy's dedupe keeps volume low; past the cap the OLDEST drop —
+    /// their frames are closest to stale and rule 4 backstops them.
+    private var pendingNacks: [FeedbackReport.NackEntry] = []
+    private static let pendingNackCap = 24
 
     public init(
         demux: ReceiveDemux,
@@ -94,6 +105,19 @@ public final class FeedbackSender: @unchecked Sendable {
         source?.cancel()
     }
 
+    /// Queues NACK entries for the next report. The caller (NackPolicy's
+    /// emit closure) follows with `tick(now:)` when the freeze budget
+    /// demands an out-of-cadence report.
+    public func enqueueNacks(_ entries: [FeedbackReport.NackEntry]) {
+        guard !entries.isEmpty else { return }
+        lock.lock()
+        pendingNacks.append(contentsOf: entries)
+        if pendingNacks.count > Self.pendingNackCap {
+            pendingNacks.removeFirst(pendingNacks.count - Self.pendingNackCap)
+        }
+        lock.unlock()
+    }
+
     /// One cadence beat: build the report from live demux state and send
     /// it. The timer calls this; tests call it directly with their clock.
     public func tick(now: ClientTimestamp) {
@@ -136,12 +160,22 @@ public final class FeedbackSender: @unchecked Sendable {
 
         let dispersion = buildDispersion(from: demux.drainArrivalSamples())
 
+        // Drain queued NACK entries up to the section bound; spill rides
+        // the next beat. Drained entries are spent either way (header
+        // comment: a lost report is NOT re-asked; rule 4 backstops).
+        lock.lock()
+        let nacks = Array(
+            pendingNacks.prefix(FeedbackBounds.maxNackEntries))
+        pendingNacks.removeFirst(nacks.count)
+        stats.nackEntriesSent += UInt64(nacks.count)
+        lock.unlock()
+
         return FeedbackReport(
             pathId: 0,   // v1: single path (resiliency §6)
             clientTimestamp: now,
             channels: channels,
             dispersion: dispersion,
-            nacks: [],   // empty until HS-17 (ruling §4.7, header comment)
+            nacks: nacks,
             extensions: [])
     }
 

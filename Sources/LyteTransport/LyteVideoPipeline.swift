@@ -46,6 +46,9 @@ public struct VideoPipelineStats: Sendable {
     public var evictions: UInt64 = 0
     /// Shards the assembler dropped (duplicates, malformed, stale).
     public var shardsDropped: UInt64 = 0
+    /// Fresh-seq repair shards (HS-17's NACK answers) the assembler
+    /// slotted into tracked groups (CL-12).
+    public var repairShardsAccepted: UInt64 = 0
     /// Reliable-channel frames (0x15 idle frames) rendered through the
     /// same factory as the datagram path (CL-8).
     public var reliableFramesRendered: UInt64 = 0
@@ -86,6 +89,9 @@ public final class LyteVideoPipeline: @unchecked Sendable {
 
     private let onSample: @Sendable (CMSampleBuffer, DecodeUnit) -> Void
     private let onFecImpossible: (@Sendable (FrameNumber, _ presumedLostDataShards: Int, _ bestCaseParityShards: Int) -> Void)?
+    /// CL-12: the NackPolicy's feed — presumption pictures, accepted
+    /// repairs, and frame fates, with the pipeline's clock alongside.
+    private let onRepairSignal: (@Sendable (VideoRepairSignal, ClientTimestamp) -> Void)?
 
     private var evictionTimer: DispatchSourceTimer?
 
@@ -97,16 +103,19 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     ///     inferred closure here traps at runtime (dispatch_assert_queue).
     ///   - onFecImpossible: the CL-3 seam — fired once per frame the
     ///     assembler writes off as unrecoverable from plausible arrivals.
+    ///   - onRepairSignal: the CL-12 seam — the NackPolicy's event feed.
     public init(
         channel: ChannelId = .videoActive,
         config: VideoAssemblerConfig = VideoAssemblerConfig(),
         onSample: @escaping @Sendable (CMSampleBuffer, DecodeUnit) -> Void,
-        onFecImpossible: (@Sendable (FrameNumber, _ presumedLostDataShards: Int, _ bestCaseParityShards: Int) -> Void)? = nil
+        onFecImpossible: (@Sendable (FrameNumber, _ presumedLostDataShards: Int, _ bestCaseParityShards: Int) -> Void)? = nil,
+        onRepairSignal: (@Sendable (VideoRepairSignal, ClientTimestamp) -> Void)? = nil
     ) {
         self.channel = channel
         self.assembler = VideoAssembler(channel: channel, config: config)
         self.onSample = onSample
         self.onFecImpossible = onFecImpossible
+        self.onRepairSignal = onRepairSignal
     }
 
     /// Starts the stale-group eviction timer. Idempotent.
@@ -225,6 +234,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     private enum Action {
         case sample(CMSampleBuffer, DecodeUnit)
         case fecImpossible(FrameNumber, presumedLostDataShards: Int, bestCaseParityShards: Int)
+        case repairSignal(VideoRepairSignal, ClientTimestamp)
     }
 
     /// Turns assembler events into stats and deferred callbacks. Runs
@@ -258,18 +268,37 @@ public final class LyteVideoPipeline: @unchecked Sendable {
                 } catch {
                     stats.sampleFailures += 1
                 }
+                actions.append(.repairSignal(
+                    .frameDecoded(frame: unit.frameNumber), now))
             case .framesSkipped(let from, let through, _):
                 stats.framesSkipped += UInt64(through.rawValue &- from.rawValue) + 1
+                actions.append(.repairSignal(
+                    .framesGone(from: from, through: through), now))
             case .fecImpossible(let frame, let lost, let parity):
                 stats.fecImpossibleCount += 1
                 actions.append(.fecImpossible(
                     frame, presumedLostDataShards: lost, bestCaseParityShards: parity))
-            case .evicted:
+            case .evicted(let frame, _):
                 stats.evictions += 1
+                actions.append(.repairSignal(
+                    .framesGone(from: frame, through: frame), now))
             case .shardDropped:
                 stats.shardsDropped += 1
-            case .nackCandidates:
-                break   // §4.7: emitted but unconsumed until HS-17.
+            case .nackCandidates(
+                let frame, _, let missingIndices, let parity, let age):
+                // CL-12: §4.7's consumer exists now — the NackPolicy.
+                actions.append(.repairSignal(
+                    .nackCandidates(
+                        frame: frame,
+                        missingShardIndices: missingIndices,
+                        parityShards: parity,
+                        frameAgeMicroseconds: age),
+                    now))
+            case .repairShardAccepted(let frame, let index):
+                stats.repairShardsAccepted += 1
+                actions.append(.repairSignal(
+                    .repairShardAccepted(frame: frame, shardIndex: index),
+                    now))
             }
         }
         return actions
@@ -282,6 +311,8 @@ public final class LyteVideoPipeline: @unchecked Sendable {
                 onSample(buffer, unit)
             case .fecImpossible(let frame, let lost, let parity):
                 onFecImpossible?(frame, lost, parity)
+            case .repairSignal(let signal, let now):
+                onRepairSignal?(signal, now)
             }
         }
     }
