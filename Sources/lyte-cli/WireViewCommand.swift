@@ -39,6 +39,8 @@ struct WireView: AsyncParsableCommand {
     var hostPort: UInt16 = 0
     @Option(name: .long, help: "Auto-exit after this many seconds (default: until the window closes)")
     var duration: Int = 0
+    @Flag(name: .long, help: "CL-11: decode + play the audio channel (AVAudioEngine) and print the audio stats line")
+    var audio = false
     @Option(name: .long, help: "Debug: send one reliable CTRL ping every N seconds (0 = off) — exercises the CL-7 ARQ leg live")
     var arqPing: Int = 0
     @Option(name: .long, help: """
@@ -134,6 +136,9 @@ struct WireView: AsyncParsableCommand {
         var sessionConfig = LyteUdpSession.Config()
         sessionConfig.bindPort = port
         sessionConfig.bindAddress = bind
+        // Debug shell posture: audio is explicit opt-in here (the app
+        // plays it by default) so unattended gate runs stay silent.
+        sessionConfig.audioPlayback = audio
         let session = LyteUdpSession(
             crypto: crypto,
             config: sessionConfig,
@@ -447,6 +452,53 @@ final class WireViewStatsPrinter: Sendable {
                          fit.residualMaxMicroseconds) +
                   "\(fit.acceptedSamples)/\(fit.windowSamples) samples " +
                   "(min rtt \(fit.minRttMicroseconds) µs)")
+        }
+
+        // The CL-11 audio line: depacketizer/FEC + jitter buffer +
+        // playback evidence, whenever the channel carried anything.
+        let audio = core.audio.snapshotStats()
+        if audio.depacketizer.datagramsIngested > 0 {
+            let d = audio.depacketizer
+            let j = audio.jitter
+            var line = "\(prefix)   audio: \(d.datagramsIngested) dg → " +
+                       "\(d.packetsEmitted) pkts"
+            if d.packetsRebuilt > 0 {
+                line += " (\(d.packetsRebuilt) rebuilt/" +
+                        "\(d.groupsRecovered) groups)"
+            }
+            if d.packetsUnrecoverable > 0 {
+                line += ", \(d.packetsUnrecoverable) fec-impossible"
+            }
+            line += ", plc \(j.plcInvocations)"
+            if j.latePacketsDropped > 0 { line += ", \(j.latePacketsDropped) late" }
+            if j.recenterEvents > 0 {
+                line += ", \(j.recenterEvents) recenter" +
+                        "(-\(j.packetsDroppedInRecenter) pkts)"
+            }
+            if let p50 = audio.bufferDepthPackets.p50,
+               let p99 = audio.bufferDepthPackets.p99 {
+                line += ", depth p50/p99 \(p50)/\(p99) pkts"
+            }
+            line += " (target \(j.targetPackets))"
+            line += String(format: ", jitter σ %.0f µs",
+                           j.interArrivalStdDevMicroseconds)
+            // Above-floor: capture→render minus the session's fastest
+            // observed path (graph-clock epoch is unmappable; the
+            // beacon min-RTT bounds the floor itself).
+            line += Self.latency(" | pipe", audio.captureToRender)
+            if let player = session.audioPlayer {
+                let p = player.snapshotStats()
+                line += ", ring \(p.ringDepthFrames * 1000 / 48_000) ms"
+                if p.underrunFrames > 0 {
+                    line += ", underrun \(p.underrunFrames) frames"
+                }
+                if p.lastWindowRmsDbfs > -120 {
+                    line += String(format: ", sig %.1f dBFS ~%.0f Hz",
+                                   p.lastWindowRmsDbfs,
+                                   p.lastWindowZeroCrossingHz)
+                }
+            }
+            print(line)
         }
 
         // The CL-9 input line: sender books + both latency loops, when

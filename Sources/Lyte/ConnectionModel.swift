@@ -21,7 +21,12 @@ final class ConnectionModel {
 
     var phase: Phase = .pickHost
     var mode: StreamMode = .work
-    var muted = false { didSet { session?.setAudioMuted(muted) } }
+    var muted = false {
+        didSet {
+            session?.setAudioMuted(muted)
+            lyteSession?.setAudioMuted(muted)     // CL-11: the Lyte path
+        }
+    }
     var statusLine = ""
 
     private(set) var hostAddress: String?

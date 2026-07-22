@@ -41,6 +41,15 @@ let package = Package(
             path: "Vendor/nanors",
             publicHeadersPath: "include"
         ),
+        // C leaf (CL-11): libopus for the client audio receiver — decode
+        // + PLC (the system AudioConverter has neither; LyteKit's
+        // OpusDecoder documents the gap). Mirrors Host/'s COpus
+        // system-library posture; brew supplies opus on the Mac.
+        .systemLibrary(
+            name: "COpus",
+            pkgConfig: "opus",
+            providers: [.brew(["opus"]), .apt(["libopus-dev"])]
+        ),
         .target(
             name: "LyteKit",
             dependencies: [
@@ -58,6 +67,7 @@ let package = Package(
         .target(
             name: "LyteTransport",
             dependencies: [
+                "COpus",
                 .product(name: "LyteWire", package: "Wire"),
                 // The sanctioned crypto provider, for exactly one digest:
                 // LyteDiscovery's pkh identity hash (LyteWire's SHA-256 is
@@ -102,6 +112,10 @@ let package = Package(
             name: "LyteTransportTests",
             dependencies: [
                 "LyteTransport",
+                // CL-11: the Opus leaf round-trip generates real packets
+                // with libopus' encoder (test-only; production encodes
+                // nothing client-side).
+                "COpus",
                 .product(name: "LyteWire", package: "Wire"),
                 .product(name: "LyteWireTestKit", package: "Wire"),
             ]

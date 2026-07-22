@@ -88,6 +88,8 @@ public struct LyteUdpSessionCounters: Sendable {
     /// 0x17 echo messages consumed (tuple-level books live on
     /// `InputSender`'s stats — CL-9).
     public var inputEchoMessagesReceived: UInt64 = 0
+    /// Chan-1 datagrams routed to the audio receiver (CL-11).
+    public var audioDatagramsReceived: UInt64 = 0
 }
 
 // MARK: - Config
@@ -101,15 +103,33 @@ public struct LyteUdpSessionCoreConfig: Sendable {
     /// file comment: 2.5 s is beacon-bounded until H2's audio provides
     /// the 5 ms path probe.
     public var machineConfig: SessionMachineConfig
+    /// CL-11, the tightening the CL-8 deviation promised: once this
+    /// session has SEEN audio (an authenticated chan-1 datagram — the
+    /// 5 ms path probe, flowing in ACTIVE/IDLE/FROZEN per HS-15's
+    /// lifecycle ruling), the blackout detector re-arms at this
+    /// threshold — W4b's pillar figure. Evidence-gated rather than
+    /// capability-gated deliberately: W7's registry carries only the
+    /// reserved audioExpress escape hatch, no audio-presence key, so
+    /// a no-audio host (--no-audio, or pre-HS-15) simply never
+    /// tightens and keeps the 2.5 s beacon-bounded behavior. Nil
+    /// disables tightening outright.
+    public var tightenedBlackoutSilenceMicroseconds: Int64?
+    /// The audio playout buffer's policy (CL-11).
+    public var audioJitter: AudioJitterConfig
 
     public init(
         capabilities: Capabilities = .wireDefault,
         machineConfig: SessionMachineConfig = SessionMachineConfig(
             blackoutSilenceMicroseconds: 2_500_000
-        )
+        ),
+        tightenedBlackoutSilenceMicroseconds: Int64? = 350_000,
+        audioJitter: AudioJitterConfig = AudioJitterConfig()
     ) {
         self.capabilities = capabilities
         self.machineConfig = machineConfig
+        self.tightenedBlackoutSilenceMicroseconds =
+            tightenedBlackoutSilenceMicroseconds
+        self.audioJitter = audioJitter
     }
 }
 
@@ -129,6 +149,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public private(set) var idrRequester: IdrRequester!
     public private(set) var feedback: FeedbackSender!
     public private(set) var input: InputSender!
+    public private(set) var audio: AudioReceiver!
     public let clockModel = HostClockModel()
 
     // Machine + negotiator + dispatch state, one lock.
@@ -139,6 +160,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     private var lastWireMode: SessionWireMode = .active
     private var agreed: Capabilities?
     private var counters = LyteUdpSessionCounters()
+    /// True once the first authenticated chan-1 datagram landed and
+    /// (config permitting) the detector re-armed at 350 ms.
+    public private(set) var detectorTightened = false
 
     /// The production machine-poll wake; nil until `startTimers()`.
     private var machineTimer: DispatchSourceTimer?
@@ -216,6 +240,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             onTick: { [weak self] tickNow in
                 self?.idrRequester.flushIfDue(now: tickNow)
             })
+        self.audio = AudioReceiver(jitterConfig: config.audioJitter)
     }
 
     // MARK: Lifecycle
@@ -344,8 +369,48 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             // from this same pass.
             input.noteVideoShard(envelope: envelope)
             pipeline.ingest(envelope: envelope, payload: payload, now: now)
+        } else if envelope.channel == .audio {
+            // CL-11: the 5 ms path probe. Depacketize/recover/buffer,
+            // and — first time only — tighten the blackout detector
+            // to the pillar's 350 ms: with audio flowing in every
+            // non-closed state (HS-15's lifecycle ruling), 350 ms of
+            // total silence honestly means the path is dark.
+            lock.lock()
+            counters.audioDatagramsReceived += 1
+            lock.unlock()
+            audio.ingest(envelope: envelope, payload: payload, now: now)
+            tightenDetectorIfNeeded(now: now)
         }
         applyMachine(.mediaPathEvidence, now: now)
+    }
+
+    /// Rebuilds the receiver machine at the tightened threshold,
+    /// transplanting the wire mode (a receiver machine's only durable
+    /// state — FROZEN would exit on this very evidence anyway, and
+    /// RECOVERY/pre-arm are sender-role). Wire/ stays untouched: the
+    /// config was always the injection point.
+    private func tightenDetectorIfNeeded(now: ClientTimestamp) {
+        guard let tightened = config.tightenedBlackoutSilenceMicroseconds
+        else { return }
+        lock.lock()
+        guard !detectorTightened, machine.state != .closed else {
+            lock.unlock()
+            return
+        }
+        detectorTightened = true
+        var machineConfig = config.machineConfig
+        machineConfig.blackoutSilenceMicroseconds = tightened
+        var rebuilt = SessionStateMachine<ClientClock>(
+            role: .mediaReceiver, config: machineConfig, now: now)
+        _ = rebuilt.apply(.modeMessage(machine.wireMode), now: now)
+        // lastState/lastWireMode stay untouched: the next applyMachine
+        // pass surfaces any edge this rebuild caused (e.g. a FROZEN
+        // pill clearing on this very evidence).
+        machine = rebuilt
+        lock.unlock()
+        onEvent(.protocolNote(String(
+            format: "audio evidence — blackout detector tightened to %d ms",
+            tightened / 1_000)))
     }
 
     // MARK: Snapshots
@@ -584,6 +649,10 @@ public final class LyteUdpSession: @unchecked Sendable {
         /// How long `close()` waits for the teardown segment's ACK
         /// before tearing the socket down anyway.
         public var teardownLingerMilliseconds = 500
+        /// CL-11: decode + play the audio channel (AVAudioEngine).
+        /// Default on — audio just plays; the receiver's stats exist
+        /// either way. wire-view surfaces this as --audio.
+        public var audioPlayback = true
 
         public init() {}
     }
@@ -596,11 +665,21 @@ public final class LyteUdpSession: @unchecked Sendable {
     public let config: Config
     public private(set) var endpoint: UdpReceiveEndpoint?
     public private(set) var core: LyteUdpSessionCore?
+    /// The CL-11 playback unit, present when `config.audioPlayback`
+    /// and the audio device came up.
+    public private(set) var audioPlayer: LyteAudioPlayer?
 
     private let onSample: @Sendable (CMSampleBuffer, DecodeUnit) -> Void
     private let onEvent: @Sendable (LyteUdpSessionEvent) -> Void
     private let coreBox = SessionCoreBox()
     private let closing = SessionFlag()
+    /// CoreAudio engine start/stop runs HERE, never on the caller's
+    /// thread: AVAudioEngine.start() can block on HAL/device
+    /// arbitration (found live — wire-view's @MainActor run() wedged
+    /// inside session.start() before NSApplication owned the run
+    /// loop). One serial queue keeps start/stop ordered.
+    private let audioQueue = DispatchQueue(
+        label: "lyte.audio.engine", qos: .userInitiated)
 
     public init(
         crypto: any TransportCrypto,
@@ -647,6 +726,36 @@ public final class LyteUdpSession: @unchecked Sendable {
         coreBox.value = core
         try core.open()
         core.startTimers()
+
+        // Audio out (CL-11): a refused device is weather, never fatal —
+        // the screen must stream even when audio cannot (the host's
+        // rule, mirrored). Construction is cheap and synchronous; the
+        // engine spin-up goes to the audio queue (see its comment).
+        if config.audioPlayback {
+            do {
+                let player = try LyteAudioPlayer(receiver: core.audio)
+                audioPlayer = player
+                let onEvent = onEvent
+                audioQueue.async {
+                    do {
+                        try player.start()
+                    } catch {
+                        onEvent(.protocolNote(
+                            "audio playback unavailable (\(error)) — video-only"))
+                    }
+                }
+            } catch {
+                onEvent(.protocolNote(
+                    "audio playback unavailable (\(error)) — video-only"))
+            }
+        }
+    }
+
+    /// The stream window's mute toggle (CL-11): playback keeps
+    /// consuming (buffer discipline unaffected); only the mixer goes
+    /// quiet.
+    public func setAudioMuted(_ muted: Bool) {
+        audioPlayer?.muted = muted
     }
 
     /// Orderly close: the typed 0x0A on the ordered stream, a linger
@@ -683,6 +792,11 @@ public final class LyteUdpSession: @unchecked Sendable {
     }
 
     private func stopParts() {
+        if let player = audioPlayer {
+            audioPlayer = nil
+            // Serialized behind the async start; never blocks teardown.
+            audioQueue.async { player.stop() }
+        }
         core?.stopTimers()
         endpoint?.stop()
         coreBox.value = nil
