@@ -1,8 +1,8 @@
 #!/bin/sh
 # Loopback netem helper (HS-4): apply/remove a delay/loss profile on lo,
 # scoped to ONE UDP destination port so nothing else on the machine is
-# touched — in particular the Sunshine service, which speaks on the LAN
-# interface and is never impaired by anything this script does.
+# touched — no other service or session on the box is ever impaired by
+# anything this script does.
 #
 # Runs on the host machine, as root:
 #   sudo Scripts/netem/lo-netem.sh apply <udp-port> [delay-ms] [loss-pct]

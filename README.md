@@ -2,11 +2,11 @@
 
 *Streaming at the speed of Lyte.*
 
-A SwiftUI-native macOS streaming client for [Sunshine](https://github.com/LizardByte/Sunshine)
-hosts, speaking the Moonlight protocol. **GPLv3**, proudly in the same family as the
-reference implementations it learns from:
-[moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c) and
-[moonlight-macos](https://github.com/MichaelMKenny/moonlight-macos).
+A GPLv3 remote-desktop system that owns both ends of the wire: a
+SwiftUI-native macOS client and a Swift Linux host, speaking exactly one
+protocol — **Lyte-UDP**, our own datagram protocol over plain UDP. No RTSP,
+no RTP, no third-party dialect: every byte on the wire is ours, end-to-end
+encrypted with Noise, paced and repaired by our own congestion machinery.
 
 Designed around one idea: **the user states intent, the client derives the settings.**
 
@@ -24,50 +24,45 @@ The user picks **Work or Play**. That's the entire settings UI.
 Every concrete number (bitrate, resolution, buffer depth, codec) is *derived* from the
 active cell plus live network telemetry, never frozen into a preset.
 
-Superusers get named **profiles**: clone a cell's derived policy, override any knob,
-save/share as JSON. Overrides display alongside what the policy would have chosen,
-and "reset to policy" is always one click.
-
-## The network doctor
-
-Streaming clients stutter silently; Lyte diagnoses. The client continuously measures
-path jitter and knows the usual suspects on macOS and Linux hosts:
-
-- AWDL (AirDrop/AirPlay) radio-sharing jitter on the client
-- Wi-Fi power-save latency spikes on the host
-- same-channel double-airtime when both ends are wireless
-- rate-control downshift (retries) on the host uplink
-
-When quality degrades, Lyte names the culprit and — where possible — fixes it.
-
 ## Architecture
 
+Three SwiftPM packages:
+
 ```
-SwiftUI app (settings, hosts, policy engine, network doctor)
-  └─ LyteKit (Swift)
-       ├─ Pairing        … HTTPS + PIN handshake, client certs
-       ├─ Session        … RTSP negotiation
-       ├─ Control        … ENet reliable-UDP control + input channel
-       └─ Media          … RTP depacketization + Reed-Solomon FEC
-  └─ VideoToolbox → CAMetalLayer   … zero-copy hardware decode/render
-  └─ AudioUnit + Opus               … low-latency audio
-  └─ CoreHID / GameController       … input, free/locked mouse
+Wire/     LyteWire — the sans-IO protocol core both ends import
+            envelope codec · Noise IK + CPace PAKE · ARQ sublayer
+            RS-FEC · capabilities · session state machine · frozen vectors
+Host/     LyteHost — the Linux host (lyte-host)
+            PipeWire capture · NVENC HEVC · Opus · congestion control
+            Avahi discovery · Mutter/uinput input injection
+(root)    the macOS client
+            Lyte.app (SwiftUI) + lyte-cli
+            LyteTransport — socket, demux, video/audio render, input send
 ```
 
-## References
+`LyteWire` is Foundation-free and sans-IO (lint-enforced) — the same core a
+future browser client compiles to WASM. The committed test vectors under
+`Wire/Vectors/` are frozen wire contracts, byte-exact on macOS and Linux.
 
-Being GPL, Lyte reads, ports, and — where it beats rewriting — links the ecosystem's
-battle-tested code. Study summaries live in [docs/moonlight-common-c.md](docs/moonlight-common-c.md)
-(protocol core) and [docs/moonlight-macos.md](docs/moonlight-macos.md) (macOS client frameworks and
-patterns); the reference checkouts sit in `misc/` (untracked).
-The [Wolf protocol docs](https://games-on-whales.github.io/wolf/stable/protocols/index.html)
-remain a useful written spec.
+## Protocol
+
+The spec lives in the four pillar docs plus the overview
+(`docs/20260720-1917*`, `docs/20260720-193000`), reconciled by the decision
+record (`docs/20260720-215100-lyte-udp-decision.md`). The short version:
+24-byte envelopes over UDP, Noise IK for every datagram, PIN-pairing as a
+real PAKE, per-frame adaptive RS-FEC with targeted NACK repair, an
+ACTIVE/IDLE/FROZEN/RECOVERY session machine with idle silence, per-packet
+DSCP, and app-level congestion control fed by burst dispersion.
 
 ## Status
 
-Pre-alpha. See [docs/DESIGN.md](docs/DESIGN.md) for the decisions and
-[LYTE-PLAN.md](LYTE-PLAN.md) for the strategy and milestones.
+H2 functional parity: video, 5 ms audio, input injection, congestion
+control, loss repair, and blackout recovery all live end-to-end
+(`docs/20260722-h2-joint-gate.md`). The client's original GameStream stack
+— its bootstrap scaffolding against Sunshine hosts — was deleted at the H2
+exit, as designed. See [LYTE-PLAN.md](LYTE-PLAN.md) for strategy and
+`docs/20260720-222500-lyte-build-plan.md` for the slice ladder.
 
 ## License
 
-GPLv3 — the license of the Moonlight family, kept gladly.
+GPLv3 — kept gladly from the Moonlight family Lyte grew up reading.

@@ -1,5 +1,13 @@
 # Lyte — Implementation Plan
 
+> **HISTORICAL (2026-07-22).** This is the GameStream-era client plan that
+> carried M0–M6. The 2026-07-20 Lyte-UDP decision
+> (`docs/20260720-215100-lyte-udp-decision.md`) superseded its wire mandate,
+> and the H2 demolition deleted the stack it describes (`LyteKit`, `CEnet`,
+> `CNanors`, the `_nvstream._tcp` browse). Kept as a record; the living
+> plans are `docs/20260720-222500-lyte-build-plan.md` and its client/host
+> companions.
+
 *The detailed blueprint: what we're building, how the protocol works, how the app is
 structured, and the order we build it in.*
 

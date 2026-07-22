@@ -6,10 +6,10 @@ authorization for the client pairing key survives every rebuild — one
 
 ## The problem
 
-Lyte's pairing identity is an RSA-2048 private key generated *inside* the login
-Keychain (`ClientIdentity.createInKeychain()`), used to sign the mutual-TLS
-handshake to a Sunshine host (`SecKeyCreateSignature`, 47984). The first time a
-binary touches that key, macOS shows:
+Lyte's pairing identity lives *inside* the login Keychain — today the X25519
+Noise static (`ClientNoiseIdentity`, a generic-password item via `SecItemAdd`);
+originally the GameStream era's RSA-2048 mutual-TLS key, where this lesson was
+learned. The first time a binary touches that item, macOS shows:
 
 > "lyte-cli" wants to sign using key "…" in your keychain.
 
@@ -139,7 +139,7 @@ you'll get one fresh prompt.
   (`~/.config/lyte-signing/`). This is throwaway local-dev material, unrelated
   to any future notarized release identity.
 - **Distinct from the pairing key.** Two different keys are in play: the
-  *pairing* key (`Lyte Client Identity`, in the login keychain, authenticates
-  to Sunshine) and the *signing* key (`Lyte Dev`, in the lyte-signing keychain,
-  signs our binaries). Signing the binary stably is what keeps the pairing
-  key's ACL grant valid.
+  *pairing* key (the client's Noise static, in the login keychain,
+  authenticates to Lyte hosts) and the *signing* key (`Lyte Dev`, in the
+  lyte-signing keychain, signs our binaries). Signing the binary stably is
+  what keeps the pairing key's ACL grant valid.

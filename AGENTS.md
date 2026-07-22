@@ -10,9 +10,9 @@ holds only what doesn't change session to session.
 A GPLv3 remote-desktop system where we own both ends: a SwiftUI macOS
 client and a Swift Linux host. The core decision (2026-07-20): **both ends
 speak exactly one protocol, Lyte-UDP** — our own protocol over plain UDP.
-The GameStream/Sunshine dialect is dropped from the host forever; the
-client's old GameStream stack is frozen scaffolding deleted at H2 parity;
-Sunshine on the host box is a bootstrap crutch, uninstalled at H2. Depth:
+The GameStream/Sunshine dialect never existed on the host; the client's
+old GameStream stack and the Sunshine install on the reference host were
+demolished at the H2 exit (2026-07-22) — Lyte↔Lyte is the only path. Depth:
 `docs/20260720-215100-lyte-udp-decision.md` (the decision record) and
 `docs/20260720-222500-lyte-build-plan.md` (the master plan — slice ladder,
 gates, the H0a/H0b/H1/H2/H3+ milestones).
@@ -35,10 +35,12 @@ gates, the H0a/H0b/H1/H2/H3+ milestones).
   `CNetIO`, plus the `CDBus`/`CPipeWire`/`CLibAV`/`COpus` system-library
   modules) exist only under `#if os(Linux)` in the manifest.
 - **Root** — package `Lyte`: the macOS client (macOS-only; SwiftUI app
-  `Lyte`, `lyte-cli`, `LyteKit`). `LyteTransport` is the Lyte-UDP client
-  path (imports LyteWire, never LyteKit). `LyteKit` + `CEnet` + `CNanors`
-  are the FROZEN GameStream stack — zero new work, slated for deletion at
-  H2 (demolition checklist in `docs/20260720-221103-build-plan-client.md`).
+ `Lyte`, `lyte-cli`). `LyteTransport` is the whole client protocol stack
+ (imports LyteWire): socket + demux, video/audio pipelines, discovery,
+ pairing, session. `LyteUI` holds the shared AppKit shims (render view,
+ icon); `COpus` is the one C leaf (libopus decode/PLC). The GameStream
+ stack (`LyteKit`/`CEnet`/`CNanors`) was deleted at the H2 exit per the
+ demolition checklist in `docs/20260720-221103-build-plan-client.md`.
 
 ## Build & test
 
@@ -124,11 +126,11 @@ makes later runs headless.
 state and the resume point; edit it freely; never commit it.
 
 **Networking / host safety.**
-- All Lyte UDP stays OFF ports 47998–48010 (Sunshine's range). Recent work
-  uses 41000-range ports.
-- Never disturb the Sunshine service on the reference host, and never touch
-  `~/.config/lyte-host/{portal_token,noise_static.key}` — verify they
-  survive any run that goes near them.
+- Lyte UDP work uses 41000-range ports by convention. (The old "stay off
+  47998–48010" rule protected Sunshine; Sunshine was uninstalled at the H2
+  exit and the rule is retired.)
+- Never touch `~/.config/lyte-host/{portal_token,noise_static.key,
+  paired_clients}` — verify they survive any run that goes near them.
 - Scope any netem/tc impairment to the specific Lyte port
   (`Scripts/netem/lo-netem.sh` is the pattern — prio+u32 filters); remove
   it after.

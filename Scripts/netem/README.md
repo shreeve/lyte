@@ -2,9 +2,9 @@
 
 Impairment scripts for the measured gates (host plan
 `docs/20260720-221102-build-plan-host.md` §5). Everything here runs on the
-host machine and is scoped so the Sunshine service is never
-impaired: loopback profiles touch only `lo` and only one UDP port; the
-future LAN profiles will filter on the Lyte client IP and lyte-host's port.
+host machine and is scoped so nothing else on the box is ever impaired:
+loopback profiles touch only `lo` and only one UDP port; the LAN profiles
+filter on the Lyte port (and DSCP class where a leg needs it).
 
 ## Current contents
 
