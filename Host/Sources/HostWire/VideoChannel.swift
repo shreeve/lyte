@@ -157,12 +157,13 @@ public final class VideoChannel {
     public let config: VideoChannelConfig
     public private(set) var counters = VideoChannelCounters()
 
-    /// The pacer is owned here for now: this channel is the session's
-    /// only paced sender until the audio channel (HS-15 era) joins the
-    /// send loop, at which point the Pacer lifts out to a shared owner.
-    /// Control traffic already rides it via `enqueueControl`, so the
-    /// HS-6 strict-priority schedule covers every class the session
-    /// emits today.
+    /// The pacer is owned here: this channel is the session's ONE paced
+    /// sender — one schedule, strict priority, every class the session
+    /// emits. Control rides it via `enqueueControl` (HS-7) and audio
+    /// joined via `enqueueAudio` (HS-15) — the "until audio joins the
+    /// send loop" moment arrived, and the unification is one shared
+    /// schedule rather than an extracted Pacer object, so the HS-5/HS-7
+    /// gate behavior is untouched by construction.
     private let pacer: Pacer
     private let send: (VideoChannelDatagram) -> Void
     private let seal: VideoChannelSealer?
@@ -260,6 +261,37 @@ public final class VideoChannel {
             destination: destination
         )
         enqueue(datagram, urgent: false, frameID: nil, now: now)
+    }
+
+    /// HS-15: one already-sealed audio datagram (an Opus data shard or
+    /// its group's parity) through the same pacer, class `.audio` —
+    /// strictly above every video class and below control, which is
+    /// what makes the 5 ms ± 2 ms inter-send bound structural (HS-6:
+    /// audio waits behind at most one ≤1 ms batch). The bytes are the
+    /// full wire image; the AudioFramer owns the audio seq space and
+    /// the session sealed the payload, exactly the `enqueueControl`
+    /// division of labor.
+    public func enqueueAudio(
+        _ bytes: [UInt8],
+        seq: ChannelSeq,
+        frame: FrameNumber,
+        now: UInt64
+    ) {
+        let datagram = VideoChannelDatagram(
+            bytes: bytes,
+            pacerClass: .audio,
+            frameNumber: frame,
+            seq: seq,
+            isKeyframe: false,
+            destination: nil
+        )
+        enqueue(datagram, urgent: false, frameID: nil, now: now)
+    }
+
+    /// Datagrams of `pacerClass` still waiting in the shared schedule —
+    /// the audio thread's "did my packet actually leave" check (HS-15).
+    public func queuedCount(_ pacerClass: PacerClass) -> Int {
+        pacer.queuedCount(pacerClass)
     }
 
     private func enqueue(

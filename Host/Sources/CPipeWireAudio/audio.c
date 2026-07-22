@@ -182,13 +182,24 @@ lyte_pw_audio *lyte_pw_audio_new(lyte_pw_audio_cb cb, void *user,
     /* stream.capture.sink is the canonical monitor trick: a capture stream
        carrying it links to the DEFAULT SINK's monitor ports (and follows
        default-sink switches) — no registry scan, no node-name matching.
-       Unlike the video leaf there is no portal node id to pin by serial. */
+       Unlike the video leaf there is no portal node id to pin by serial.
+
+       node.force-quantum (HS-15): node.latency is a REQUEST the graph may
+       round up when other streams drive it (measured live: with video
+       capture sharing the graph, buffers arrived at ~256 samples/5.33 ms,
+       beating against the 240-sample slicer into a 5.3/2.7 ms wall-clock
+       emission pattern that violates the 5 ms ± 2 ms inter-send bound at
+       the NIC before the pacer ever sees a packet). Forcing the quantum
+       to 240 makes the graph actually run 5 ms cycles while this stream
+       lives — reverting when it closes — so packets become AVAILABLE at
+       the cadence the wire must carry them. */
     struct pw_properties *props = pw_properties_new(
         PW_KEY_MEDIA_TYPE, "Audio",
         PW_KEY_MEDIA_CATEGORY, "Capture",
         PW_KEY_MEDIA_ROLE, "Music",
         PW_KEY_STREAM_CAPTURE_SINK, "true",
         PW_KEY_NODE_LATENCY, "240/48000",
+        PW_KEY_NODE_FORCE_QUANTUM, "240",
         NULL);
     if (!props) {
         set_err(err, errlen, "pw_properties_new failed");

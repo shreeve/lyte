@@ -10,7 +10,8 @@
 //     byte (W5's first-payload rule), and the session-start beacon is
 //     the host's first sealed word.
 //   • the seal discipline: every outbound datagram — video shards from
-//     VideoChannel, beacons, path challenges, later audio — is sealed
+//     VideoChannel, audio shards from AudioFramer (HS-15), beacons,
+//     path challenges — is sealed
 //     under the transport with the exact header bytes (fixed envelope +
 //     TLV block) as AAD, mirroring the client seam (CL-1/CL-3) so both
 //     directions speak identical crypto. `--insecure` (CP-3 fallback,
@@ -268,6 +269,17 @@ public struct SessionCounters: Equatable, Sendable {
     public var inputEventsReceived = 0
     /// (seq, rx, inject) tuples sent back in 0x17 echo messages.
     public var inputEchoTuplesSent = 0
+    /// 5 ms Opus packets accepted onto the wire (HS-15).
+    public var audioPacketsIngested = 0
+    /// Audio-channel datagrams sealed and enqueued: data shards +
+    /// parity (6 per completed 4+2 group).
+    public var audioDatagramsEnqueued = 0
+    /// Completed 4+2 audio FEC groups.
+    public var audioGroupsCompleted = 0
+    /// Audio packets refused because the session is closed. FROZEN and
+    /// IDLE deliberately never count here — audio is the path probe
+    /// and keeps flowing through both (W4b).
+    public var audioPacketsSuppressed = 0
 
     public init() {}
 }
@@ -294,6 +306,10 @@ public final class Session {
     public var handshakeHash: [UInt8]? { transport?.handshakeHash }
 
     private var channel: VideoChannel!
+    /// HS-15: the audio channel's framer — 5 ms Opus packets → 4+2 RS
+    /// groups → chan-1 envelopes. The session owns the seal and the
+    /// pacer enqueue; the framer owns the audio seq/packet numbering.
+    private var audio: AudioFramer!
     /// Nil until the handshake completes; always nil in insecure mode.
     private var transport: NoiseTransport?
 
@@ -445,6 +461,9 @@ public final class Session {
                 try self.sealPayload(plaintext, aad: aad, envelope: envelope)
             },
             send: send
+        )
+        self.audio = AudioFramer(
+            config: AudioFramerConfig(connectionId: connectionId)
         )
     }
 
@@ -607,6 +626,68 @@ public final class Session {
         )
         nextVideoFrameNumber = nextVideoFrameNumber.next
         return shards
+    }
+
+    // MARK: Audio (HS-15)
+
+    /// One 5 ms Opus packet onto the sealed, paced, conn-id-tagged
+    /// audio channel: the AudioFramer cuts it into chan-1 datagrams
+    /// (its own data shard now; the group's 2 parity shards behind the
+    /// 4th packet), each sealed with the exact header bytes as AAD —
+    /// the same discipline as every other datagram — and enqueued at
+    /// PacerClass.audio, structurally above every video class.
+    ///
+    /// Lifecycle ruling, deliberate and pinned by the gate tests:
+    /// audio flows in ACTIVE, IDLE, FROZEN, and RECOVERY — W4b's
+    /// FROZEN is "datagram VIDEO stops, audio continues as the path
+    /// probe", and the overview's idle silence is "audio and the
+    /// beacon keep flowing". The continuous 5 ms cadence is what lets
+    /// the client's blackout detector tighten to 350 ms (CL-8's
+    /// deviation note) and is the always-on queue-delay sensor
+    /// (resiliency §2), so `videoFrozen` is consulted nowhere here.
+    /// Only `closed` suppresses (counted, never thrown — the audio
+    /// thread must not die because the session did). Throws
+    /// `SessionError.notEstablished` before the transport exists, and
+    /// what the framer/seal path throws — loud, per W2.
+    @discardableResult
+    public func ingestAudioPacket(
+        _ packet: [UInt8],
+        captureTimestampMicroseconds: UInt64,
+        now: UInt64
+    ) throws -> Int {
+        guard phase == .established else {
+            throw SessionError.notEstablished
+        }
+        if machine?.state == .closed {
+            counters.audioPacketsSuppressed += 1
+            return 0
+        }
+        let datagrams = try audio.ingest(
+            packet: packet,
+            captureTimestampMicroseconds: captureTimestampMicroseconds
+        )
+        for (envelope, payload) in datagrams {
+            let header = try envelope.encode(payload: [])
+            let sealed = try sealPayload(
+                payload[...], aad: header[...], envelope: envelope
+            )
+            channel.enqueueAudio(
+                try envelope.encode(payload: sealed),
+                seq: envelope.seq,
+                frame: envelope.frame,
+                now: now
+            )
+        }
+        counters.audioPacketsIngested += 1
+        counters.audioDatagramsEnqueued += datagrams.count
+        counters.audioGroupsCompleted = audio.counters.groupsCompleted
+        return datagrams.count
+    }
+
+    /// Audio datagrams still waiting in the shared pacer — the audio
+    /// thread's bounded "make sure it left" loop reads this (HS-15).
+    public var queuedAudioDatagramCount: Int {
+        channel.queuedCount(.audio)
     }
 
     /// The encoder-loop poll (one per tick, before encoding): true when

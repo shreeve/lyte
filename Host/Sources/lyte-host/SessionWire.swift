@@ -16,13 +16,20 @@
 //   • `--insecure` (CP-3 fallback, §4.1): stream to the fixed peer
 //     immediately, passthrough seal — same wiring, mandatory re-gate.
 //
-// Threading honesty, unchanged from HS-5: everything runs on the PipeWire
-// loop thread. sendFrame drains the pacer to empty before returning,
-// servicing inbound datagrams and session timers at each wake; the
-// idle-floor tick (fps cadence) services them between frames, which is
-// what keeps the 1 Hz beacon honest on a static desktop. `--no-idle-floor`
-// stalls beacons between damage frames — a documented stub limitation the
-// host event-loop era removes.
+// Threading honesty, amended at HS-15: the VIDEO PipeWire loop thread
+// still runs capture → encode → sendFrame → drainToIdle and the
+// idle-floor tick's service pass, but audio arrives on ITS OWN PipeWire
+// loop thread (CPipeWireAudio owns a separate pw_main_loop) at the 5 ms
+// cadence — a cadence the ~16.7 ms video tick could never honor, which
+// is exactly why audio cannot funnel through the video thread. One
+// NSLock therefore guards the (single-threaded by design) Session and
+// the outbox: every service pass holds it, every sleep releases it. The
+// hold times are tens of µs (one pacer batch + one sendmmsg), so the
+// audio thread's 5 ms cadence never waits meaningfully — the in-tree
+// virtual-time gate bounds the pacer's share and the live tcpdump gate
+// bounds the whole. sendFrame still drains the pacer to empty before
+// returning; `--no-idle-floor` still stalls beacons between damage
+// frames (the documented stub limitation).
 //
 // HS-12 rebind wiring: media re-routing executes .promoted by
 // connect()ing to the new tuple, and challenges to unvalidated tuples
@@ -61,6 +68,11 @@ func monotonicMicros() -> UInt64 {
 final class SessionWire {
     private let netio: OpaquePointer
     private var session: Session!
+    /// HS-15: serializes Session/outbox access between the video
+    /// capture loop thread and the audio capture loop thread (see the
+    /// threading note in the header). Held across service passes,
+    /// released across sleeps.
+    private let lock = NSLock()
     private let insecure: Bool
     private let rateBitsPerSecond: Int
     /// HS-9: non-nil = only these client statics may complete message 1
@@ -96,6 +108,10 @@ final class SessionWire {
     private var inputNoInjectorWarned = false
 
     private(set) var framesSent = 0
+    /// HS-15 audio-thread counters (mutated under `lock`).
+    private(set) var audioPacketsSent = 0
+    private(set) var audioSendFailures = 0
+    private(set) var audioPacketsDroppedPreSession = 0
     private(set) var datagramsSent = 0
     private(set) var bytesSent = 0
     private(set) var challengesSentOffPrimary = 0
@@ -108,7 +124,9 @@ final class SessionWire {
     /// closed, or the lifecycle machine reached `closed` (teardown either
     /// way, or the 30 s liveness timeout). The capture loop quits on it.
     var sessionEnded: Bool {
-        peerGone || session?.lifecycleState == .closed
+        lock.lock()
+        defer { lock.unlock() }
+        return peerGone || session?.lifecycleState == .closed
     }
 
     var counters: VideoChannelCounters { session.videoCounters }
@@ -214,35 +232,44 @@ final class SessionWire {
         let deadline = monotonicNS() + UInt64(timeoutSeconds * 1e9)
         while monotonicNS() < deadline {
             var established = false
-            try receiveAll { [weak self] datagram, tuple in
-                guard let self else { return }
-                if self.session == nil {
-                    // First datagram: its source is the session's initial
-                    // tuple; connect() so the send path has a peer.
-                    var err = [CChar](repeating: 0, count: 256)
-                    guard lyte_netio_set_peer(
-                        self.netio, tuple.remoteAddress, tuple.remotePort,
-                        &err, err.count) == 0 else {
-                        print("session: connect to \(tuple.remoteAddress):"
-                            + "\(tuple.remotePort) failed: \(errString(err))")
-                        return
+            lock.lock()
+            do {
+                try receiveAll { [weak self] datagram, tuple in
+                    guard let self else { return }
+                    if self.session == nil {
+                        // First datagram: its source is the session's
+                        // initial tuple; connect() so the send path has
+                        // a peer.
+                        var err = [CChar](repeating: 0, count: 256)
+                        guard lyte_netio_set_peer(
+                            self.netio, tuple.remoteAddress, tuple.remotePort,
+                            &err, err.count) == 0 else {
+                            print("session: connect to \(tuple.remoteAddress):"
+                                + "\(tuple.remotePort) failed: \(errString(err))")
+                            return
+                        }
+                        self.makeSession(
+                            crypto: .noise(hostStatic: hostStatic),
+                            clientTuple: tuple
+                        )
                     }
-                    self.makeSession(
-                        crypto: .noise(hostStatic: hostStatic),
-                        clientTuple: tuple
+                    let events = self.session.receive(
+                        datagram, from: tuple,
+                        now: monotonicNS(), hostMicroseconds: monotonicMicros()
                     )
+                    for event in events {
+                        self.log(event)
+                        if case .handshakeCompleted = event { established = true }
+                    }
                 }
-                let events = self.session.receive(
-                    datagram, from: tuple,
-                    now: monotonicNS(), hostMicroseconds: monotonicMicros()
-                )
-                for event in events {
-                    self.log(event)
-                    if case .handshakeCompleted = event { established = true }
-                }
+                try flushOutbox() // message 2 + the session-start beacon
+            } catch {
+                lock.unlock()
+                throw error
             }
-            try flushOutbox() // message 2 + the session-start beacon
-            if established, session.phase == .established {
+            let done = established && session?.phase == .established
+            lock.unlock()
+            if done {
                 try drainToIdle()
                 return
             }
@@ -257,7 +284,9 @@ final class SessionWire {
     /// lifecycle machine's WAKE/RECOVERY demand): consult before each
     /// encode; true forces the next frame to IDR.
     func takeForcedIdr() -> Bool {
-        session?.takeFreshKeyframeRequest() ?? false
+        lock.lock()
+        defer { lock.unlock() }
+        return session?.takeFreshKeyframeRequest() ?? false
     }
 
     /// HS-11: a FRESH damage frame arrived from capture (never the
@@ -265,6 +294,8 @@ final class SessionWire {
     /// the reliable stream, the damage frame owed as an IDR; in ACTIVE
     /// it aborts a pending idle flip.
     func noteDamage() {
+        lock.lock()
+        defer { lock.unlock() }
         guard let session, session.phase == .established else { return }
         for event in session.noteDamage(
             now: monotonicNS(), hostMicroseconds: monotonicMicros()
@@ -277,6 +308,8 @@ final class SessionWire {
     /// converged frame rides a reliable one-shot; its acknowledgment
     /// flips the wire mode to IDLE and datagram video stops.
     func noteRatchetConverged(finalFrame: [UInt8], captureMicros: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
         guard let session, session.phase == .established else { return }
         for event in session.noteRatchetConverged(
             finalFrame: finalFrame,
@@ -285,7 +318,13 @@ final class SessionWire {
         ) {
             log(event)
         }
-        service() // the one-shot leaves now, not at the next tick
+        // The one-shot leaves now, not at the next tick.
+        do {
+            try serviceOnce()
+            try flushOutbox()
+        } catch {
+            lastSendError = String(describing: error)
+        }
     }
 
     /// HS-11: the orderly close — SessionTeardown 0x0A on the reliable
@@ -294,23 +333,35 @@ final class SessionWire {
     /// the ECONNREFUSED fix: the client learns the session ended instead
     /// of inferring it from silence).
     func shutdown(reason: SessionTeardownReason, lingerSeconds: Double = 0.5) {
+        lock.lock()
         guard let session, session.phase == .established,
-              session.lifecycleState != .closed, !peerGone else { return }
+              session.lifecycleState != .closed, !peerGone else {
+            lock.unlock()
+            return
+        }
         for event in session.beginTeardown(
             reason: reason,
             now: monotonicNS(), hostMicroseconds: monotonicMicros()
         ) {
             log(event)
         }
+        lock.unlock()
         let deadline = monotonicNS() + UInt64(lingerSeconds * 1e9)
-        while !session.arqIsQuiescent, !peerGone, monotonicNS() < deadline {
+        while monotonicNS() < deadline {
+            lock.lock()
+            if session.arqIsQuiescent || peerGone {
+                lock.unlock()
+                break
+            }
             do {
                 try serviceOnce()
                 try flushOutbox()
             } catch {
                 lastSendError = String(describing: error)
+                lock.unlock()
                 break
             }
+            lock.unlock()
             usleep(2_000)
         }
         print(session.arqIsQuiescent
@@ -325,23 +376,81 @@ final class SessionWire {
         data: UnsafePointer<UInt8>, size: Int, isKeyframe: Bool,
         captureMicros: UInt64
     ) throws {
+        let frame = Array(UnsafeBufferPointer(start: data, count: size))
+        lock.lock()
         guard let session else {
+            lock.unlock()
             throw HostError("sendFrame before the session exists")
         }
-        let frame = Array(UnsafeBufferPointer(start: data, count: size))
-        try session.ingestVideoFrame(
-            frame,
-            captureTimestampMicroseconds: captureMicros,
-            isKeyframe: isKeyframe,
-            now: monotonicNS()
-        )
+        do {
+            try session.ingestVideoFrame(
+                frame,
+                captureTimestampMicroseconds: captureMicros,
+                isKeyframe: isKeyframe,
+                now: monotonicNS()
+            )
+        } catch {
+            lock.unlock()
+            throw error
+        }
         framesSent += 1
+        lock.unlock()
         try drainToIdle()
+    }
+
+    /// HS-15: one encoded 5 ms Opus packet from the AUDIO capture
+    /// thread → the sealed chan-1 shards → the shared pacer → the
+    /// wire, now. Never throws and never kills anything — a dead
+    /// session just drops packets quietly (counted): the audio loop
+    /// outliving the session by a beat is normal shutdown order.
+    /// Audio deliberately flows in IDLE and FROZEN (the 5 ms path
+    /// probe — Session's ruling; only `closed` suppresses).
+    func sendAudioPacket(_ packet: [UInt8], captureMicros: UInt64) {
+        lock.lock()
+        guard let session, session.phase == .established, !peerGone else {
+            audioPacketsDroppedPreSession += 1
+            lock.unlock()
+            return
+        }
+        do {
+            _ = try session.ingestAudioPacket(
+                packet,
+                captureTimestampMicroseconds: captureMicros,
+                now: monotonicNS()
+            )
+            session.pump(now: monotonicNS())
+            try flushOutbox()
+            audioPacketsSent += 1
+        } catch {
+            audioSendFailures += 1
+            lastSendError = String(describing: error)
+            lock.unlock()
+            return
+        }
+        // A concurrent video drain can hold the bucket in deficit for
+        // ≤ one 1 ms quantum; if nothing else is pumping (true idle),
+        // bounded second passes make sure the shard leaves anyway.
+        var passes = 0
+        while session.queuedAudioDatagramCount > 0, !peerGone, passes < 4 {
+            let now = monotonicNS()
+            let wake = session.nextWake(now: now)
+            lock.unlock()
+            if let wake, wake > now {
+                usleep(UInt32(min((wake - now) / 1_000 + 1, 1_000)))
+            }
+            lock.lock()
+            session.pump(now: monotonicNS())
+            try? flushOutbox()
+            passes += 1
+        }
+        lock.unlock()
     }
 
     /// The between-frames service hook (idle-floor tick cadence):
     /// inbound datagrams, session timers (beacons), pacer leftovers.
     func service() {
+        lock.lock()
+        defer { lock.unlock() }
         guard session != nil else { return }
         do {
             try serviceOnce()
@@ -366,13 +475,27 @@ final class SessionWire {
             + "— closing cleanly")
     }
 
+    /// Callers must NOT hold `lock`: each pass takes it for the service
+    /// work and releases it across the sleep, so the audio thread's
+    /// 5 ms sends interleave with a long video drain (the structural
+    /// half of the 5 ms ± 2 ms bound; the pacer's class order is the
+    /// other half).
     private func drainToIdle() throws {
         while true {
-            try serviceOnce()
-            try flushOutbox()
-            if peerGone || session.isIdle { return }
+            lock.lock()
+            do {
+                try serviceOnce()
+                try flushOutbox()
+            } catch {
+                lock.unlock()
+                throw error
+            }
+            let done = peerGone || session.isIdle
             let now = monotonicNS()
-            if let wake = session.nextWake(now: now), wake > now {
+            let wake = session.nextWake(now: now)
+            lock.unlock()
+            if done { return }
+            if let wake, wake > now {
                 usleep(UInt32(min((wake - now) / 1_000 + 1, 2_000)))
             }
         }

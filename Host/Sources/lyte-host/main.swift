@@ -54,6 +54,12 @@ struct Options {
     /// HS-13 injection backend: auto = Mutter RemoteDesktop, falling
     /// back to uinput; off disables input for the run.
     var input: InputBackendChoice = .auto
+    /// HS-15: desktop audio on the wire (default ON in session mode —
+    /// the H2 posture: continuous 5 ms CBR audio starts at
+    /// establishment). `--no-audio` opts out.
+    var audio = true
+    /// Opus hard-CBR bitrate (the dialect default).
+    var audioBitrate: Int32 = 128_000
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
@@ -130,6 +136,15 @@ struct Options {
                         "--input must be auto, mutter, uinput, or off")
                 }
                 opts.input = choice
+            case "--no-audio":
+                opts.audio = false
+            case "--audio-bitrate-kbps":
+                i += 1
+                guard i < args.count, let v = Int32(args[i]), v > 0 else {
+                    throw HostError("--audio-bitrate-kbps needs a "
+                        + "positive number")
+                }
+                opts.audioBitrate = v * 1_000
             case "--help", "-h":
                 print("""
                 usage: lyte-host [--out PATH] [--seconds N] [--bitrate-mbps N]
@@ -180,6 +195,13 @@ struct Options {
                                     events (HS-13): auto (default —
                                     Mutter RemoteDesktop, uinput
                                     fallback), mutter, uinput, off
+                  --no-audio        skip the HS-15 audio leg (default in
+                                    session mode: default-sink monitor →
+                                    5 ms Opus → RS 4+2 → chan 1 at
+                                    DSCP 48, continuous from
+                                    establishment — silence included)
+                  --audio-bitrate-kbps N
+                                    Opus hard-CBR bitrate (default 128)
 
                 subcommands: lyte-host sniff --port PORT  (header dissector)
                              lyte-host rd-spike …         (CP-5 input probe)
@@ -728,6 +750,25 @@ func run() throws {
         }
     }
 
+    // HS-15: audio comes up with the session, on its own capture loop
+    // thread — continuous 5 ms CBR from establishment, silence
+    // included (the cadence is the receiver's clock and the path
+    // probe). A missing default sink degrades to a warning, never a
+    // failure: the screen must stream even if audio cannot.
+    var audioWire: AudioWire?
+    if sessionMode, opts.audio, let w = wire {
+        do {
+            let audio = try AudioWire(wire: w, bitrate: opts.audioBitrate)
+            audio.start(seconds: opts.seconds + 20.0)
+            audioWire = audio
+            print("audio: monitor capture → opus "
+                + "\(opts.audioBitrate / 1_000) kbps hard CBR → 5 ms "
+                + "packets → RS 4+2 → chan 1 (TOS 0xC0 / DSCP 48)")
+        } catch {
+            print("audio: unavailable (\(error)) — video-only session")
+        }
+    }
+
     // Both backends must stay alive for the whole capture: dropping them
     // closes their D-Bus connection, which closes the portal/Mutter session
     // and destroys the PipeWire node mid-stream.
@@ -789,6 +830,10 @@ func run() throws {
     if let file { fclose(file) }
     sink.freeEncoder()
     mutter?.stop()
+
+    // HS-15: quit the audio loop BEFORE the teardown so the last audio
+    // shards ride out ahead of the 0x0A, not into a closed session.
+    audioWire?.stop()
 
     // HS-11: the orderly exit — a typed SessionTeardown on the reliable
     // stream (retransmitted until acknowledged or patience runs out), so
@@ -878,7 +923,23 @@ func run() throws {
         p50 \(wire.inputLatency.p50.map(String.init) ?? "—") µs / \
         p99 \(wire.inputLatency.p99.map(String.init) ?? "—") µs / \
         max \(wire.inputLatency.maxValue.map(String.init) ?? "—") µs
+        audio: \(s.audioPacketsIngested) packets → \
+        \(s.audioDatagramsEnqueued) datagrams \
+        (\(s.audioGroupsCompleted) RS 4+2 groups), \
+        \(s.audioPacketsSuppressed) suppressed, \
+        \(wire.audioSendFailures) send failures, \
+        \(wire.audioPacketsDroppedPreSession) dropped pre-session; \
+        max audio queue delay \(t[.audio].maxQueueDelayNS) ns
         """)
+        if let audio = audioWire {
+            print("audio: \(audio.packetsEncoded) packets encoded "
+                + "(\(audio.encodeFailures) encode failures)"
+                + (audio.negotiated.map {
+                    ", negotiated F32 \($0.rate) Hz \($0.channels)ch"
+                } ?? ", no buffers arrived")
+                + (audio.negotiationError.map { "; ERROR \($0)" } ?? "")
+                + (audio.runError.map { "; run error \($0)" } ?? ""))
+        }
     } else {
         print("output: \(opts.outputPath)")
     }

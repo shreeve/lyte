@@ -126,6 +126,10 @@ targets += [
             "CDBus",
             "CPipeWireCapture",
             "CHevcEncode",
+            // HS-15: the audio leg — monitor capture + Opus encode
+            // feeding the session's audio channel.
+            "CPipeWireAudio",
+            "COpusEncode",
             "CNetIO",
             "CInputUinput",
             .product(name: "LyteWire", package: "Wire"),
@@ -139,6 +143,7 @@ targets += [
             .linkedLibrary("pipewire-0.3"),
             .linkedLibrary("avcodec"),
             .linkedLibrary("avutil"),
+            .linkedLibrary("opus"),
         ]
     ),
 ]
