@@ -47,15 +47,17 @@ public final class TransportSender: @unchecked Sendable {
 
     /// Seals and sends one plaintext payload on `channel`, allocating the
     /// next seq. `timestamp` is client monotonic µs (the envelope rule for
-    /// client-sent datagrams). Returns true when the datagram left.
-    /// Envelope/budget violations throw (a caller bug, kept loud);
-    /// transmit failures only count.
+    /// client-sent datagrams). `extensions` ride in the envelope's TLV
+    /// block, inside the AAD (the conn-id tag on reliable CTRL, CL-7).
+    /// Returns true when the datagram left. Envelope/budget violations
+    /// throw (a caller bug, kept loud); transmit failures only count.
     @discardableResult
     public func send(
         channel: ChannelId,
         frame: FrameNumber = FrameNumber(rawValue: 0),
         timestamp: ClientTimestamp,
-        plaintext: [UInt8]
+        plaintext: [UInt8],
+        extensions: [WireExtension] = []
     ) throws -> Bool {
         lock.lock()
         let seq = seqByChannel[channel.rawValue] ?? ChannelSeq(rawValue: 0)
@@ -67,7 +69,8 @@ public final class TransportSender: @unchecked Sendable {
             seq: seq,
             frame: frame,
             timestamp: timestamp.microseconds,
-            fec: 0
+            fec: 0,
+            extensions: extensions
         )
         // The header bytes double as the AAD — exactly what the receiver
         // will slice off ahead of the payload.

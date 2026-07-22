@@ -39,6 +39,8 @@ struct WireView: AsyncParsableCommand {
     var hostPort: UInt16 = 0
     @Option(name: .long, help: "Auto-exit after this many seconds (default: until the window closes)")
     var duration: Int = 0
+    @Option(name: .long, help: "Debug: send one reliable CTRL ping every N seconds (0 = off) — exercises the CL-7 ARQ leg live")
+    var arqPing: Int = 0
 
     func validate() throws {
         if insecure, hostKey != nil {
@@ -88,6 +90,7 @@ struct WireView: AsyncParsableCommand {
         // the sender, the sender needs the endpoint): late-bound boxes.
         let idrBox = LockedCell<IdrRequester?>(nil)
         let echoBox = LockedCell<BeaconEchoResponder?>(nil)
+        let reliableBox = LockedCell<ReliableCtrlEndpoint?>(nil)
         let clientNow: @Sendable () -> ClientTimestamp = {
             ClientTimestamp(microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
         }
@@ -115,6 +118,15 @@ struct WireView: AsyncParsableCommand {
             onDatagram: { outcome, _ in
                 guard case .accepted(let envelope, let payload) = outcome else { return }
                 if envelope.channel == .ctrl {
+                    // CL-7: the one-byte peek — a sealed CTRL payload
+                    // starting with 0x07/0x08 is wholly ARQ and routes
+                    // to the reliable endpoint (which also learns the
+                    // conn-id from the envelope's TLV); everything else
+                    // falls through to the exempt paths.
+                    if reliableBox.value?.handleCtrlDatagram(
+                        envelope: envelope, payload: payload) == true {
+                        return
+                    }
                     // t2 in the client-monotonic domain, taken here on the
                     // receive thread (the kernel stamp is wall-clock).
                     echoBox.value?.handleCtrlPayload(
@@ -160,6 +172,26 @@ struct WireView: AsyncParsableCommand {
                                      plaintext: echo.encode())
             })
         echoBox.value = echoResponder
+        // CL-7: the reliable CTRL sublayer — the client half of HS-8's
+        // seam. Nothing host-side sends reliable traffic yet (W7
+        // capabilities, HS-11 mode transitions are the consumers), so
+        // today this delivers/acknowledges whatever arrives and carries
+        // the debug ping; the wiring is what the slice lands.
+        let reliable = ReliableCtrlEndpoint(
+            sender: sender,
+            onEvent: { event in
+                switch event {
+                case .message(let group, let bytes):
+                    print("wire-view: reliable CTRL message group \(group.rawValue) " +
+                          "(\(bytes.count) B, type 0x\(String(bytes.first ?? 0, radix: 16)))")
+                case .oneShotAcknowledged(let group):
+                    print("wire-view: reliable one-shot group \(group.rawValue) acknowledged")
+                case .ignored:
+                    break   // routine protocol weather; the stats line counts it
+                }
+            })
+        reliable.start()
+        reliableBox.value = reliable
         let idrRequester = IdrRequester(emit: { request in
             print("wire-view: IDR-REQUEST #\(request.requestSeq) → host " +
                   "(frame \(request.frame.rawValue), coalesced \(request.coalescedCount))")
@@ -174,6 +206,32 @@ struct WireView: AsyncParsableCommand {
         print("wire-view: feedback cadence \(feedback.cadenceMilliseconds) ms, " +
               "beacon echo + IDR-request on CTRL (NACK section empty until HS-17)")
 
+        // The CL-7 live probe: reliable pings on the ordered stream. The
+        // type byte 0x7F is a debug placeholder — unregistered, so the
+        // host's dispatch only logs the delivery (which is the evidence:
+        // exactly-once arrival plus the ACK that quiesces this end).
+        let pinger: DispatchSourceTimer? = arqPing <= 0 ? nil : {
+            let source = DispatchSource.makeTimerSource(queue: .global())
+            source.schedule(deadline: .now() + .seconds(arqPing),
+                            repeating: .seconds(arqPing))
+            let counter = LockedCell<UInt32>(0)
+            source.setEventHandler { @Sendable in
+                let n = counter.value
+                counter.value = n + 1
+                var body: [UInt8] = [0x7F]
+                withUnsafeBytes(of: n.littleEndian) { body += $0 }
+                do {
+                    try reliable.send(body)
+                    print("wire-view: reliable ping #\(n) queued")
+                } catch {
+                    print("wire-view: reliable ping #\(n) refused: \(error)")
+                }
+            }
+            source.resume()
+            print("wire-view: reliable CTRL ping every \(arqPing)s (debug type 0x7f)")
+            return source
+        }()
+
         // The renderer's own verdict is the honest render evidence: it
         // goes .failed (with the VideoToolbox error) if enqueued samples
         // don't actually decode — enqueue counts alone can't lie-detect.
@@ -181,7 +239,7 @@ struct WireView: AsyncParsableCommand {
             demux: endpoint.demux, pipeline: pipeline,
             sender: sender, feedback: feedback,
             echoResponder: echoResponder, idrRequester: idrRequester,
-            clockModel: clockModel,
+            reliable: reliable, clockModel: clockModel,
             rendererState: { @Sendable in
                 switch renderer.status {
                 case .rendering: return "rendering"
@@ -207,7 +265,9 @@ struct WireView: AsyncParsableCommand {
             guard !already else { return }
             print("wire-view: finishing (\(trigger))")
             ticker.cancel()
+            pinger?.cancel()
             feedback.stop()
+            reliable.stop()
             endpoint.stop()
             pipeline.stop()
             printer.printFinal()
@@ -237,8 +297,9 @@ struct WireView: AsyncParsableCommand {
         // strong refs to everything AppKit only holds weakly and return.
         streamRetainer.append(contentsOf: [
             delegate, ticker, sigint, endpoint, pipeline, window,
-            sender, feedback, echoResponder, idrRequester,
+            sender, feedback, echoResponder, idrRequester, reliable,
         ])
+        if let pinger { streamRetainer.append(pinger) }
     }
 }
 
@@ -252,6 +313,7 @@ final class WireViewStatsPrinter: Sendable {
     private let feedback: FeedbackSender
     private let echoResponder: BeaconEchoResponder
     private let idrRequester: IdrRequester
+    private let reliable: ReliableCtrlEndpoint
     private let clockModel: HostClockModel
     private let rendererState: @Sendable () -> String
     private let lastCount = LockedCell<UInt64>(0)
@@ -259,7 +321,7 @@ final class WireViewStatsPrinter: Sendable {
     init(demux: ReceiveDemux, pipeline: LyteVideoPipeline,
          sender: TransportSender, feedback: FeedbackSender,
          echoResponder: BeaconEchoResponder, idrRequester: IdrRequester,
-         clockModel: HostClockModel,
+         reliable: ReliableCtrlEndpoint, clockModel: HostClockModel,
          rendererState: @escaping @Sendable () -> String) {
         self.demux = demux
         self.pipeline = pipeline
@@ -267,6 +329,7 @@ final class WireViewStatsPrinter: Sendable {
         self.feedback = feedback
         self.echoResponder = echoResponder
         self.idrRequester = idrRequester
+        self.reliable = reliable
         self.clockModel = clockModel
         self.rendererState = rendererState
     }
@@ -330,6 +393,19 @@ final class WireViewStatsPrinter: Sendable {
         if out.sendFailures > 0 { back += ", \(out.sendFailures) send-failed" }
         if out.sealFailures > 0 { back += ", \(out.sealFailures) seal-failed" }
         print(back)
+
+        // The CL-7 reliable sublayer, when it has done anything at all.
+        let arq = reliable.snapshotStats()
+        if arq.messagesSent + arq.messagesDelivered + arq.datagramsSent > 0 {
+            var line = "\(prefix)   arq: \(arq.messagesSent) sent, " +
+                       "\(arq.messagesDelivered) delivered, " +
+                       "\(arq.oneShotsAcknowledged) one-shot-acked, " +
+                       "\(arq.datagramsSent) datagrams" +
+                       (reliable.isQuiescent ? ", quiescent" : ", in flight")
+            if arq.ingestIgnored > 0 { line += ", \(arq.ingestIgnored) ignored" }
+            if arq.sendFailures > 0 { line += ", \(arq.sendFailures) send-failed" }
+            print(line)
+        }
 
         // The CL-10 model line: the T gate reads the residual here.
         if let fit = clockModel.estimate() {
