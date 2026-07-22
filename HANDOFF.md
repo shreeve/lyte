@@ -848,19 +848,55 @@ are LANDED, GATED, COMMITTED (not pushed):
   ~40 B each, revisit only if ask volume ever matters), promotion
   slice items unchanged (0x15/0x16/0x17/TLV-0x03/audio interior).
 
-IN FLIGHT / NEXT: CL-7 reconnect/takeover UX (needs a host
+- **H2 JOINT GATE — PASSED; H2 FUNCTIONAL PARITY IS CLOSED** (2026-07-22
+  ~13:15 MDT, report `docs/20260722-h2-joint-gate.md`): one coherent live
+  session shape against pup, both ends at committed HEAD `f9ca59c` (host
+  from git archive at `pup:~/src/h2gate`), port 41091, `wire-view --audio`
+  + `--input-script` every leg. Steady state everything-at-once (190 s):
+  video + 5 ms audio + 38 scripted inputs + estimator at the 20 Mbps
+  ceiling + 45 idle cycles, audio full-rate through every idle window,
+  detector tightened to 350 ms on first chan-1 arrival. Input: 1,833
+  events across six runs, 100% exactly-once with echoes, host rx→inject
+  p50 ~1.2 ms / p99 1.8 ms clean; input-wake attributed 15/15 (IDLE →
+  ACTIVE +7…+108 ms, IDR pacing exactly 1/wake, 34/34). Audio cadence at
+  pup's NIC p50 4.999 / p99 5.978 ms (0.34% outside 5±2); receiver PLC
+  0.037% THROUGH a 90 s 6 Mbit video squeeze (receiver-side raw arrival
+  p99 13–20 ms on every leg incl. clean — Wi-Fi clumping, CL-11's
+  finding; the 5±2 bound holds at the NIC). Congestion: overuse falls
+  anchored at measured delivery, floor 500 kbps held; full re-convergence
+  to ceiling post-blackout (run G) — B2's post-release tail floor-pinned
+  under sustained 250 ms damage because the encoder doesn't consume
+  frameByteCeiling yet (HS-16's deferred VBV row, named in the report).
+  Loss/repair (15% video-scoped): client 71 NACK entries / 345 shards ↔
+  host consumed EXACTLY 71 / 345 (1:1), 36 honored → 62 repairs → 7
+  frames repair-healed, 35 stale → IDR, video .rendering throughout.
+  Blackouts (13 s + 10.2 s): pill +425 ms of last arrival (pcap-timed),
+  cleared ≤1 ms on first returning datagram; host FROZEN at 350 ms →
+  RECOVERY on first evidence + halfStaleEstimate IDR pacing → active in
+  ≤153 ms on real estimator verdicts. Hygiene: ~550k sealed datagrams,
+  0 unseal failures both ends in 6/7 runs (run F: 4 = 0.005%,
+  stale-straggler replay discipline during a >2 s queue flush, not auth
+  failures). Cleanup verified: netem removed (noqueue), iptables clean,
+  41091 free, Sunshine ACTIVE, all three secret shas byte-identical.
+  Harness committed: `Scripts/netem/h2gate-netem.sh`. Logs
+  /tmp/h2gate-* (Mac + pup). **REMAINING FOR H2 EXIT (the human's call,
+  J-G2/CP-2): demolition — Sunshine uninstall + LyteKit/CEnet/CNanors
+  deletion as one reviewed series. Explicitly NOT done by this gate;
+  Sunshine untouched and active.**
+
+IN FLIGHT / NEXT: **H2 exit = demolition, pending the human's go** (CP-2
+daily-drive declaration → client deletion checklist + Sunshine uninstall
+in one breath, J-G2). Then: CL-7 reconnect/takeover UX (needs a host
 session-busy story), HS-9 cookie-mode enforcement (W8 landed; the
 client leg is live in every dial), 0x15/idle-frame promotion into
 Wire/ (now joined by 0x16/0x17/TLV-0x03 at CL-9 and the HS-15+CL-11
-audio interior — mirrors in place and byte-pinned on BOTH ends).
-CL-11 is LANDED — H2's client audio row closes; HS-17 is LANDED —
-H2's congestion-II host row closes; **CL-12 is LANDED — the client
-NACK-emission half closes H2's CC/NACK parity item** (remaining for
-the H2 gate: the input/audio/congestion joint legs + the LyteKit
-deletion checklist).
+audio interior — mirrors in place and byte-pinned on BOTH ends),
+encoder VBV consuming frameByteCeiling (the floor-pinning fix),
+repair-lane DSCP.
 Ports used tonight: 41000–41011 + 41021/41022 + 41031 (H1 joint gate)
 + 41041/41061 (HS-16 host/probe) + 41051 (CL-11) + 41071/41072
-(HS-17 host/probe) + 41081 (CL-12 live gate).
+(HS-17 host/probe) + 41081 (CL-12 live gate) + 41091 (H2 joint gate;
+41101 was the maintainer's victory-lap host).
 Subagent stall pattern persists — 7-min watchdog + interrupt-kick works
 (W4b needed two kicks; check any silent worker's transcript mtime).
 
