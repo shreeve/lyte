@@ -56,9 +56,17 @@ public enum CtrlMessageType {
     /// ARQ ACK frame (W3): cumulative + bitmap receive state per
     /// (chan, group). Itself ARQ-exempt — a lost ACK is superseded.
     public static let arqAck: UInt8 = 0x08
+    /// ACTIVE⇄IDLE mode transition (ModeTransition, W4b). The first
+    /// ARQ-carried type: rides CTRL's ordered stream — a reordered mode
+    /// flip would desynchronize the two ends' view of datagram video.
+    public static let modeTransition: UInt8 = 0x09
+    /// Typed session teardown (SessionTeardown, W4b): taken-over-by /
+    /// shutting-down. ARQ-carried, ordered behind everything it follows.
+    public static let sessionTeardown: UInt8 = 0x0A
     /// Client→host IDR request (IdrRequest). Sealed, ARQ-exempt; 0x10 is
     /// CL-3's original pin, clear of the 0x07…0x0F range left for W3's
-    /// session machinery (0x07/0x08 now taken by the ARQ frames).
+    /// session machinery (0x07/0x08 taken by the ARQ frames, 0x09/0x0A
+    /// by the W4b lifecycle messages).
     public static let idrRequest: UInt8 = 0x10
 
     /// The type byte of a CTRL payload, nil when the payload is empty.

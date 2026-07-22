@@ -46,6 +46,10 @@ case in `FecCoderTests`, the hand-walked datagram in
 - `arq-v1.json` — the W3 reliable-sublayer frame formats: the data
   segment 0x07, the ACK 0x08, and the frame-sequence payload rule.
   Anchored against the hand-computed bytes in `ArqCodecTests`.
+- `lifecycle-v1.json` — the W4b session-lifecycle CTRL messages: the
+  ACTIVE⇄IDLE mode transition 0x09 and the typed session teardown
+  0x0A, the first ARQ-carried CTRL types. Anchored against the
+  hand-computed bytes in `SessionLifecycleCodecTests`.
 
 ## The 24-byte envelope (wire v1)
 
@@ -463,6 +467,55 @@ Decode rejects: `empty-payload`, `unknown-frame-type`,
 `ack-zero-blocks`, `ack-too-many-blocks` (17), `ack-bitmap-too-long`
 (33), `ack-bitmap-noncanonical` (zero final byte),
 `ack-truncated-block`.
+
+## The session-lifecycle messages (wire v1)
+
+The W4b CTRL types — the first messages that ride the ARQ ordered
+stream (group 0) rather than bare datagrams, which is what makes their
+ordering guarantees real: a mode flip can never reorder against the
+messages around it, and a teardown can never overtake the messages
+that explain it. Both are exactly their fixed 2-byte layout: truncation
+and trailing bytes reject, a foreign type byte rejects with what it
+found.
+
+Mode transition (type 0x09): `type:u8 mode:u8` — mode 0x01 ACTIVE,
+0x02 IDLE; anything else rejects (`unknownMode`; 0x00 is the loud
+zero-fill bug). ACTIVE⇄IDLE are the only wire modes: FROZEN/RECOVERY
+are each end's local path-loss overlay (overview §2's mode-machine
+ruling) and must never appear on the wire. The sender flips to IDLE
+only after the converged frame's video-idle one-shot is acknowledged —
+one-shot groups are unordered against the CTRL stream, so the ack is
+what guarantees the receiver holds the frame before it learns the
+session went idle.
+
+Session teardown (type 0x0A): `type:u8 reason:u8` — reason 0x01
+taken-over-by (the transport pillar's multi-client ruling), 0x02
+shutting-down; anything else rejects (`unknownReason`). Liveness
+timeouts (≥30 s without authenticated peer evidence) send nothing —
+the peer that would read the message is the one that died.
+
+## File format: lifecycle-v1.json
+
+Top-level: `format` ("lyte-wire-lifecycle-vectors"), `formatVersion`
+(1), `wireVersion` (1), `vectors`. Each vector carries `codec`
+("modeTransition" or "sessionTeardown") plus the session file's kinds
+over `messageHex`: `roundtrip` (typed `value` byte ↔ `messageHex`
+byte-exact both ways) and `decodeReject` (`error`, a
+`LifecycleMessageError` case name). The roundtrips pin the codecs'
+ENTIRE legal value spaces — `LifecycleVectorFileTests` asserts the
+file covers every enum case, so a value added to either enum without a
+vector-file (and wire-version) discussion fails loudly.
+
+## Vector inventory (lifecycle-v1.json, 14 vectors)
+
+Round trips: `mode-active`, `mode-idle`, `teardown-taken-over`,
+`teardown-shutting-down` — the complete value spaces.
+
+Decode rejects: `mode-truncated`, `mode-trailing-byte`,
+`mode-bad-type` (teardown byte at the mode decoder), `mode-zero`
+(the zero-fill rule), `mode-unknown` (0x03 — FROZEN/RECOVERY never
+ride the wire), `teardown-truncated`, `teardown-trailing-byte`,
+`teardown-bad-type`, `teardown-zero`, `teardown-unknown` (0x7f).
 
 ## The Noise layer (wire v1)
 

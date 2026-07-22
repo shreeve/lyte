@@ -1,0 +1,119 @@
+{
+  "format" : "lyte-wire-lifecycle-vectors",
+  "formatVersion" : 1,
+  "vectors" : [
+    {
+      "codec" : "modeTransition",
+      "description" : "Mode transition to ACTIVE — the WAKE flip, IDR pre-armed.",
+      "kind" : "roundtrip",
+      "messageHex" : "0901",
+      "name" : "mode-active",
+      "value" : 1
+    },
+    {
+      "codec" : "modeTransition",
+      "description" : "Mode transition to IDLE — sent only after the converged frame's one-shot is acknowledged.",
+      "kind" : "roundtrip",
+      "messageHex" : "0902",
+      "name" : "mode-idle",
+      "value" : 2
+    },
+    {
+      "codec" : "sessionTeardown",
+      "description" : "Teardown: taken-over-by — the transport pillar's multi-client ruling.",
+      "kind" : "roundtrip",
+      "messageHex" : "0a01",
+      "name" : "teardown-taken-over",
+      "value" : 1
+    },
+    {
+      "codec" : "sessionTeardown",
+      "description" : "Teardown: orderly local shutdown.",
+      "kind" : "roundtrip",
+      "messageHex" : "0a02",
+      "name" : "teardown-shutting-down",
+      "value" : 2
+    },
+    {
+      "codec" : "modeTransition",
+      "description" : "The type byte alone — a mode transition is exactly 2 bytes.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "09",
+      "name" : "mode-truncated"
+    },
+    {
+      "codec" : "modeTransition",
+      "description" : "3 bytes where the message is exactly its layout.",
+      "error" : "trailingBytes",
+      "kind" : "decodeReject",
+      "messageHex" : "090100",
+      "name" : "mode-trailing-byte"
+    },
+    {
+      "codec" : "modeTransition",
+      "description" : "A teardown type byte fed to the mode decoder.",
+      "error" : "unexpectedType",
+      "kind" : "decodeReject",
+      "messageHex" : "0a01",
+      "name" : "mode-bad-type"
+    },
+    {
+      "codec" : "modeTransition",
+      "description" : "Mode 0x00 — the loud zero-fill bug, never a value.",
+      "error" : "unknownMode",
+      "kind" : "decodeReject",
+      "messageHex" : "0900",
+      "name" : "mode-zero"
+    },
+    {
+      "codec" : "modeTransition",
+      "description" : "Mode 0x03 — FROZEN\/RECOVERY are local overlay states, never wire values.",
+      "error" : "unknownMode",
+      "kind" : "decodeReject",
+      "messageHex" : "0903",
+      "name" : "mode-unknown"
+    },
+    {
+      "codec" : "sessionTeardown",
+      "description" : "The type byte alone — a teardown is exactly 2 bytes.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "0a",
+      "name" : "teardown-truncated"
+    },
+    {
+      "codec" : "sessionTeardown",
+      "description" : "3 bytes where the message is exactly its layout.",
+      "error" : "trailingBytes",
+      "kind" : "decodeReject",
+      "messageHex" : "0a0200",
+      "name" : "teardown-trailing-byte"
+    },
+    {
+      "codec" : "sessionTeardown",
+      "description" : "A mode type byte fed to the teardown decoder.",
+      "error" : "unexpectedType",
+      "kind" : "decodeReject",
+      "messageHex" : "0901",
+      "name" : "teardown-bad-type"
+    },
+    {
+      "codec" : "sessionTeardown",
+      "description" : "Reason 0x00 — the loud zero-fill bug, never a value.",
+      "error" : "unknownReason",
+      "kind" : "decodeReject",
+      "messageHex" : "0a00",
+      "name" : "teardown-zero"
+    },
+    {
+      "codec" : "sessionTeardown",
+      "description" : "Reason 0x7f — unassigned reasons reject.",
+      "error" : "unknownReason",
+      "kind" : "decodeReject",
+      "messageHex" : "0a7f",
+      "name" : "teardown-unknown"
+    }
+  ],
+  "wireVersion" : 1
+}
