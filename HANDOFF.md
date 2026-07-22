@@ -338,10 +338,102 @@ are LANDED, GATED, COMMITTED (not pushed):
   yet), capability-update (0x11/0x12) live leg (negotiator seam wired
   + tested in-tree; no host proposer exists).
 
+- **HS-13 input injection** (`18afe77`, Host/): the wire→injection
+  path. Mutter's internal org.gnome.Mutter.RemoteDesktop is PRIMARY
+  (the CP-5 verdict — portal RD auto-denies headless):
+  MutterInputInjector (lyte-host, own SessionBus; CreateSession →
+  linked SC session → RecordMonitor → ONE RD Start → Notify*), with a
+  NEW CInputUinput C leaf as the documented SECONDARY (three virtual
+  evdev devices — keyboard 1..255, rel mouse + hi-res wheels, abs
+  tablet 0..65535 with INPUT_PROP_POINTER, the QEMU-tablet profile —
+  under the seat-user ACL Sunshine's udev rule grants); selected by
+  `--input auto|mutter|uinput|off`. HOST-PINNED messages (promote
+  with CL-9, the 0x15 precedent): **0x16 InputEvent** (`type ‖ seq
+  u32 ‖ clientMicros u64 ‖ kind ‖ body`; kinds keyKeycode /
+  pointerMotionAbsolute / pointerMotionRelative / pointerButton /
+  pointerAxis; evdev codes, host XKB owns layout) and **0x17
+  InputEcho** (`type ‖ count ‖ (seq, rxMicros, injectMicros)×n`,
+  host-µs = beacon domain, ≤32/message) — BOTH on the ARQ ordered
+  stream (transport pillar: input is reliable/ordered CTRL; a
+  reordered keystroke is corruption). lastInputSeq rides EVERY shard
+  of every post-injection video frame as HOST-PINNED **TLV 0x03**
+  (u32 LE; per-shard like the conn-id); VideoChannel geometry derives
+  from the real 1095 B headroom (24+17+1095+16 = 1152 exact).
+  Session consumes 0x16 (runs .preArmInput BEFORE injection — the
+  HS-11 seam now has its caller), surfaces .inputReceived; the shell
+  injects and reports noteInputInjected (buffer-only; echoes flush on
+  advance). HostCore.Histogram lands with the receive→inject edge.
+  Gate in-tree: Host 61 → **70/70 Mac AND pup** — codecs byte-pinned;
+  40 events all five kinds exactly-once IN ORDER through the W-G4
+  SimNet storm with 40/40 byte-faithful echoes; a 1100 B frame that
+  fits one bare 1101 B shard SPLITS under the stamped 1095 B budget
+  and reassembles byte-exact through VideoAssembler; input-in-IDLE
+  wakes (0x09 active + IDR armed pre-damage). LIVE on pup :41010
+  (throwaway LyteWire+HostWire probe /tmp/hs13-probe on the Mac — the
+  CL-9 shape; committed-HEAD archives; portal video capture running
+  throughout): full-script run A = 8/8 events (key/button/abs/rel/
+  axis) exactly-once in-order, 8/8 echoes, **receive→inject p50
+  1245 µs / p99 1422 µs < 2 ms — the gate figure**, stamping live
+  (1092 bare datagrams pre-input → TLV after; final seq on 7330
+  shards), 12,086 video datagrams, 0 unseal failures. PIXEL PROOF
+  (spike method, LYTE_DUMP_RAW finals): moves-only runs F(120,1150)
+  vs G(1900,1150) diff = 171 px centroid (123.9,1161.8) + 573 px
+  centroid (1903.8,1159.0), ZERO changed pixels elsewhere — the
+  embedded cursor sits exactly where commanded. uinput fallback LIVE
+  (run H, `--input uinput`): 2/2 injected p50 154 µs, frame-diff puts
+  the cursor at the SAME (123.9,1161.8) — the tablet leaf moves
+  Mutter's cursor for real. Spike re-run this session: injection→
+  visible ≈ 13 ms. Cleanup verified (no lyte-host, 41010 free,
+  Sunshine active, portal_token/noise_static/paired_clients shas
+  byte-identical). Logs pup:/tmp/hs13-host{A..H}.log +
+  /tmp/hs13_run{F,G,H}.raw; Mac /tmp/hs13-probe{A,B}.log. CAUTION for
+  live-desktop runs: full-script probes click/type/scroll into
+  whatever is focused (runs A/B touched the open Chrome window —
+  harmless but real); moves-only + background coordinates is the
+  clean-evidence recipe. Deferred: CL-9 (client sender, typing-e2e
+  joint leg, input-to-photon into the doctor), 0x16/0x17/TLV-0x03
+  promotion into Wire (with 0x15), key-repeat/modifier policy
+  (client-side per the keymap plan), axis source flags (wheel vs
+  finger) when a real trackpad feeds it.
+
+- **W9 pre-H1 Crypto/ review** (`9775258`, Wire/): the hardening pass
+  W6/W8 scheduled, line by line through Noise IK, CPace/Field25519/
+  Elligator2, RetryCookie + call seams. FIXED (zero wire bytes):
+  Elligator2's two exceptional branches → constant-time select (new
+  Fe25519.isZeroMask/.select, OR-fold + mask arithmetic) AND both
+  proven UNREACHABLE at the site, not merely negligible (r² = −1/2
+  and A² − 4 are quadratic non-residues mod p — no field element ever
+  hits either case); PairingPake's 4 G.I checks → constantTimeEquals
+  (were early-exit Array == on secret DH output); rekeySend now DROPS
+  the superseded send key (was retained forever, unused — memory
+  hygiene); NoiseHandshake reads TRANSACTIONAL (failed msg1/msg2
+  restores symmetric state, so port garbage can't poison the 0443beb
+  one-verbatim-msg1 retry discipline). CONFIRMED SOUND + documented
+  at site: Field25519 carry discipline (weak-reduction invariant,
+  per-op overflow bounds, branch-free toBytes canonicalization
+  argument); RetryCookie early pre-checks (gate on sender-known
+  values only — W8's caveat stands); W3's replay-window-vs-ARQ
+  concern verified as implemented (retransmit = same segment in a
+  FRESH sealed datagram; cross-referenced at NoiseTransport's replay
+  comment + pinned by a new integration test: window advances 80
+  past, straggler dies .staleSequence, PTO retransmit delivers
+  exactly once). Nonce/epoch/AAD discipline, cookie window edges
+  (monotonic mint clock ⇒ no regression case), PAKE no-revival — all
+  verified. NOTHING found needing a wire change. New adversarial
+  tests: Field25519Tests (non-canonical p/p+k/all-ones/bit-255 at
+  every decode boundary, canonical fixed points, mask/select pins,
+  carry-chain identities), handshake retry-after-garbage both
+  directions, PAKE dead-from-every-entry-point. Wire suite 354 →
+  **366/366 Mac AND pup**; all 11 vector shas byte-identical both
+  platforms (the no-bytes-moved proof). Note for other territories:
+  Wire/ was rsynced to pup:src/Wire at this commit's content (it IS
+  committed HEAD for Wire/).
+
 IN FLIGHT / NEXT: CL-7 reconnect/takeover UX (needs a host
 session-busy story), HS-9 cookie-mode enforcement (W8 landed; the
 client leg is live in every dial), 0x15/idle-frame promotion into
-Wire/. Ports used tonight: 41000–41009.
+Wire/ (now joined by 0x16/0x17/TLV-0x03 at CL-9). Ports used tonight:
+41000–41010 (41009 CL-8, 41010 HS-13).
 Subagent stall pattern persists — 7-min watchdog + interrupt-kick works
 (W4b needed two kicks; check any silent worker's transcript mtime).
 
