@@ -50,6 +50,11 @@ case in `FecCoderTests`, the hand-walked datagram in
   ACTIVE⇄IDLE mode transition 0x09 and the typed session teardown
   0x0A, the first ARQ-carried CTRL types. Anchored against the
   hand-computed bytes in `SessionLifecycleCodecTests`.
+- `pairing-v1.json` — the W6 CPace PIN-PAKE (gate W-G7): external
+  draft-irtf-cfrg-cpace-21 vectors (CPACE-X25519-SHA512, appendix
+  A/B.1 plus the B.1.10 low-order table), the pinned PairingPake
+  exchange runs, and the pairing CTRL codecs 0x0B–0x0E. Provenance
+  rules below.
 
 ## The 24-byte envelope (wire v1)
 
@@ -516,6 +521,85 @@ Decode rejects: `mode-truncated`, `mode-trailing-byte`,
 (the zero-fill rule), `mode-unknown` (0x03 — FROZEN/RECOVERY never
 ride the wire), `teardown-truncated`, `teardown-trailing-byte`,
 `teardown-bad-type`, `teardown-zero`, `teardown-unknown` (0x7f).
+
+## The pairing layer (wire v1)
+
+Suite: **CPACE-X25519-SHA512** (draft-irtf-cfrg-cpace-21's recommended
+small-message suite) in the initiator-responder setting — the client
+is party A, the host party B; the symmetric o_cat ordering is
+deliberately not implemented. X25519 and SHA-512 are swift-crypto's;
+the Elligator 2 map onto Curve25519 (and the GF(2²⁵⁵−19) field
+arithmetic beneath it) is hand-written in `Crypto/`, pinned by the
+draft's own vectors.
+
+Composition (Lyte-UDP decision §8.2 — "bind via TLS exporter" becomes
+binding to the Noise transcript): pairing rides the sealed ARQ ordered
+CTRL stream of the trust-on-first-use Noise session it authenticates,
+with **sid = the Noise handshake hash** and **CI = lv_cat(
+"lyte-pairing-v1", client static, host static)** — the exact
+identities being pinned, initiator first (draft §10.1). Explicit key
+confirmation (§10.4: mac_key = H(b"CPaceMac" ‖ sid ‖ ISK), tags =
+HMAC-SHA-512 over each side's lv_cat(Y, AD)) rides inside the
+messages, so wrong PIN and MITM'd session fail identically and loudly,
+and the transcript yields nothing offline-testable. On success each
+shell pins the statics the Noise session already carried; every later
+connect is plain Noise IK against the pinned static.
+
+Messages (CTRL types, fixed layouts, truncation/trailing/foreign-type
+reject): 0x0B share A = `type ‖ Ya(32)`; 0x0C share B = `type ‖ Yb(32)
+‖ Tb(64)`; 0x0D confirm = `type ‖ Ta(64)`; 0x0E reject = `type ‖
+reason` (0x01 confirmation-failed — wrong PIN and tampered binding
+share one value on purpose, 0x02 invalid-share, 0x00 the loud
+zero-fill bug). A share that scalar_mult_vfy maps to G.I (low-order
+point on curve or twist) aborts the run before any tag math.
+
+## File format: pairing-v1.json
+
+Top-level: `format` ("lyte-wire-pairing-vectors"), `formatVersion` (1),
+`wireVersion` (1), `draftVectors`, `exchangeVectors`, `messageVectors`.
+
+**Provenance honesty — the noise-v1 discipline.**
+
+`draftVectors` are **external canonical vectors**, transcribed verbatim
+from draft-irtf-cfrg-cpace-21 (`source` URL + `sourceSha256` of the
+exact upstream txt, fetched 2026-07-22): the appendix-A string
+utilities (prepend_len at the LEB128 boundary, lv_cat,
+transcript_ir), the B.1.1 calculate_generator chain (generator string
+and mapped generator), the B.1.2–B.1.5 exchange (both shares, K, and
+ISK_IR), and the B.1.10 scalar_mult_vfy table — u0…u5 and u7 MUST
+yield the neutral element, u6/u8…ub are non-canonical bit-#255-set
+encodings that MUST yield the listed points on BOTH platforms. A
+divergence is an implementation bug — these values never regenerate.
+
+`exchangeVectors` cover Lyte's PairingPake composition (handshake-hash
+binding, CI from the statics, tags in the message layouts), which no
+published set can cover because the composition is ours. They are
+**pinned self-consistent** (`provenance` says so): counting-byte
+inputs, replayed through the real initiator/responder machines — the
+0x0B/0x0C/0x0D bytes and the ISK must match exactly.
+
+`messageVectors` carry `codec` ("shareA"/"shareB"/"confirm"/"reject")
+plus the lifecycle file's kinds over `messageHex`; `error` names are
+`PairingMessageError` case names. Anchored against the hand-built
+bytes in `PairingCodecTests`. `PairingVectorFileTests` asserts the
+reject codec's whole value space is pinned.
+
+## Vector inventory (pairing-v1.json, 12 low-order + 1 exchange + 14 message)
+
+Draft sections: 4 prepend_len, 1 lv_cat, 2 transcript_ir, the B.1.1
+generator chain, the B.1.2–B.1.5 exchange, the 12-row B.1.10 table.
+
+Exchange: `pairing-nominal` (PIN "482913", counting-byte statics /
+handshake hash / scalars).
+
+Message round trips: `share-a-nominal`, `share-b-nominal`,
+`confirm-nominal`, `reject-confirmation-failed`,
+`reject-invalid-share` (the reject codec's complete value space).
+
+Message decode rejects: `share-a-truncated`, `share-a-trailing-byte`,
+`share-a-bad-type`, `share-b-truncated`, `confirm-bad-type`,
+`confirm-trailing-byte`, `reject-truncated`, `reject-zero`,
+`reject-unknown` (0x7f).
 
 ## The Noise layer (wire v1)
 

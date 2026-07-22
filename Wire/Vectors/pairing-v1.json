@@ -1,0 +1,249 @@
+{
+  "draftVectors" : {
+    "exchange" : {
+      "adaHex" : "414461",
+      "adbHex" : "414462",
+      "iskIrHex" : "6e19b875f7a561d6b3ca3dbb9ef42ac55de3e717881018204b8922b4d5e53bb2aa82c300bea7b65d2b671da71922ddf6472301b79bc270adfa8bf413285f2263",
+      "kHex" : "5b067effbdc0b2a0e1d907b21ebb25cfedb96a852179a847c37e43ee71322c6b",
+      "yaHex" : "21b4f4bd9e64ed355c3eb676a28ebedaf6d8f17bdc365995b319097153044080",
+      "yaShareHex" : "1d13c89278cdadd826f6d8d7f887701430f8380ddc17611cdd6dc989ce0c9f32",
+      "ybHex" : "848b0779ff415f0af4ea14df9dd1d3c29ac41d836c7808896c4eba19c51ac40a",
+      "ybShareHex" : "248cccf6d5cdc3646f0ad593f9e6cef4e69d4945f8372e623512ecea32185623"
+    },
+    "generator" : {
+      "ciHex" : "0b415f696e69746961746f720b425f726573706f6e646572",
+      "generatorHex" : "d04bf6d41f6a289632a2e929fa29bebd51092512a7829fdde7d314b62f05a73f",
+      "generatorStringHex" : "0843506163653235350850617373776f72646d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000180b415f696e69746961746f720b425f726573706f6e646572107e4b4791d6a8ef019b936c79fb7f2c57",
+      "prsHex" : "50617373776f7264",
+      "sidHex" : "7e4b4791d6a8ef019b936c79fb7f2c57"
+    },
+    "lowOrder" : {
+      "cases" : [
+        {
+          "uHex" : "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "uHex" : "0100000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "uHex" : "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"
+        },
+        {
+          "uHex" : "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800"
+        },
+        {
+          "uHex" : "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157"
+        },
+        {
+          "uHex" : "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"
+        },
+        {
+          "resultHex" : "d8e2c776bbacd510d09fd9278b7edcd25fc5ae9adfba3b6e040e8d3b71b21806",
+          "uHex" : "daffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        },
+        {
+          "uHex" : "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"
+        },
+        {
+          "resultHex" : "c85c655ebe8be44ba9c0ffde69f2fe10194458d137f09bbff725ce58803cdb38",
+          "uHex" : "dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        },
+        {
+          "resultHex" : "db64dafa9b8fdd136914e61461935fe92aa372cb056314e1231bc4ec12417456",
+          "uHex" : "d9ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        },
+        {
+          "resultHex" : "e062dcd5376d58297be2618c7498f55baa07d7e03184e8aada20bca28888bf7a",
+          "uHex" : "cdeb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b880"
+        },
+        {
+          "resultHex" : "993c6ad11c4c29da9a56f7691fd0ff8d732e49de6250b6c2e80003ff4629a175",
+          "uHex" : "4c9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f11d7"
+        }
+      ],
+      "scalarHex" : "af46e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449aff"
+    },
+    "source" : "https:\/\/www.ietf.org\/archive\/id\/draft-irtf-cfrg-cpace-21.txt",
+    "sourceSha256" : "ed2772c26c21d43a199d490c1ebe5c5d2431a7dbce50d2124d4fa40957fbf58f",
+    "utilities" : {
+      "lvCat" : {
+        "outputHex" : "043132333401350003363738",
+        "partsHex" : [
+          "31323334",
+          "35",
+          "",
+          "363738"
+        ]
+      },
+      "prependLen" : [
+        {
+          "inputHex" : "",
+          "outputHex" : "00"
+        },
+        {
+          "inputHex" : "31323334",
+          "outputHex" : "0431323334"
+        },
+        {
+          "inputHex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e",
+          "outputHex" : "7f000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e"
+        },
+        {
+          "inputHex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+          "outputHex" : "8001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f"
+        }
+      ],
+      "transcriptIr" : [
+        {
+          "adaHex" : "506172747941",
+          "adbHex" : "506172747942",
+          "outputHex" : "03313233065061727479410332333406506172747942",
+          "yaHex" : "313233",
+          "ybHex" : "323334"
+        },
+        {
+          "adaHex" : "506172747941",
+          "adbHex" : "506172747942",
+          "outputHex" : "043334353606506172747941043233343506506172747942",
+          "yaHex" : "33343536",
+          "ybHex" : "32333435"
+        }
+      ]
+    }
+  },
+  "exchangeVectors" : [
+    {
+      "clientStaticHex" : "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "confirmMessageHex" : "0d3e6f261db8503ef7cfd03b31e0c9e3dc753444667876c8dc60a1d7009b0adf2cf988932799eb52734c005ad25cef60c08c8db305faa99fd2629adbc583196d86",
+      "description" : "A full PIN-pairing run over counting-byte inputs: PIN \"482913\", statics 0x10…\/0x30…, Noise handshake hash 0x50…, scalars 0x70…\/0x90… — the exact 0x0B\/0x0C\/0x0D message bytes and the shared ISK.",
+      "handshakeHashHex" : "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+      "hostStaticHex" : "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+      "initiatorScalarHex" : "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
+      "iskHex" : "f54fc318081ad19dcf7915876988df805720055042263c366455615210a82a5121d4b31b75dbb86c4b1a44d6fba2d59c14e90aa0a0262ca07fded0c0b5cad533",
+      "name" : "pairing-nominal",
+      "pinHex" : "343832393133",
+      "provenance" : "pinned-self-consistent",
+      "responderScalarHex" : "909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+      "shareAMessageHex" : "0b570a4efa0a7ae31259cb349342ec4d4aceb4b5f9a9b8e8b528c5051456b07314",
+      "shareBMessageHex" : "0c401de18c0d66bba187330e5a6f0d9efc28181e725bbdec95fef46d9b85d9cb6d44ba749017292dc03e313aaad81c2581ffd51e78730978bbf4ed0bedd58e5685205c291d88fb5fa0137650e078bec9bce55786b565b70a9d8ab3da755192524e"
+    }
+  ],
+  "format" : "lyte-wire-pairing-vectors",
+  "formatVersion" : 1,
+  "messageVectors" : [
+    {
+      "codec" : "shareA",
+      "description" : "Client's CPace share Ya, counting bytes from 0xA0.",
+      "kind" : "roundtrip",
+      "messageHex" : "0ba0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "name" : "share-a-nominal",
+      "shareHex" : "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+    },
+    {
+      "codec" : "shareB",
+      "description" : "Host's share Yb plus its confirmation tag Tb.",
+      "kind" : "roundtrip",
+      "messageHex" : "0ca0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "name" : "share-b-nominal",
+      "shareHex" : "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "tagHex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+    },
+    {
+      "codec" : "confirm",
+      "description" : "Client's confirmation tag Ta.",
+      "kind" : "roundtrip",
+      "messageHex" : "0d000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "name" : "confirm-nominal",
+      "tagHex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+    },
+    {
+      "codec" : "reject",
+      "description" : "Refusal after a bad tag — wrong PIN and tampered binding share one value on purpose (no oracle).",
+      "kind" : "roundtrip",
+      "messageHex" : "0e01",
+      "name" : "reject-confirmation-failed",
+      "reason" : 1
+    },
+    {
+      "codec" : "reject",
+      "description" : "Refusal of a low-order share (the G.I abort).",
+      "kind" : "roundtrip",
+      "messageHex" : "0e02",
+      "name" : "reject-invalid-share",
+      "reason" : 2
+    },
+    {
+      "codec" : "shareA",
+      "description" : "The type byte alone — share A is exactly 33 bytes.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "0b",
+      "name" : "share-a-truncated"
+    },
+    {
+      "codec" : "shareA",
+      "description" : "34 bytes where the message is exactly its layout.",
+      "error" : "trailingBytes",
+      "kind" : "decodeReject",
+      "messageHex" : "0ba0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf00",
+      "name" : "share-a-trailing-byte"
+    },
+    {
+      "codec" : "shareA",
+      "description" : "A share-B type byte fed to the share-A decoder.",
+      "error" : "unexpectedType",
+      "kind" : "decodeReject",
+      "messageHex" : "0ca0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "name" : "share-a-bad-type"
+    },
+    {
+      "codec" : "shareB",
+      "description" : "Share without the tag — share B is exactly 97 bytes.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "0ca0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "name" : "share-b-truncated"
+    },
+    {
+      "codec" : "confirm",
+      "description" : "A share-A type byte fed to the confirm decoder.",
+      "error" : "unexpectedType",
+      "kind" : "decodeReject",
+      "messageHex" : "0b000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "name" : "confirm-bad-type"
+    },
+    {
+      "codec" : "confirm",
+      "description" : "66 bytes where the message is exactly its layout.",
+      "error" : "trailingBytes",
+      "kind" : "decodeReject",
+      "messageHex" : "0d000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f00",
+      "name" : "confirm-trailing-byte"
+    },
+    {
+      "codec" : "reject",
+      "description" : "The type byte alone — a reject is exactly 2 bytes.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "0e",
+      "name" : "reject-truncated"
+    },
+    {
+      "codec" : "reject",
+      "description" : "Reason 0x00 — the loud zero-fill bug, never a value.",
+      "error" : "unknownReason",
+      "kind" : "decodeReject",
+      "messageHex" : "0e00",
+      "name" : "reject-zero"
+    },
+    {
+      "codec" : "reject",
+      "description" : "Reason 0x7f — unassigned reasons reject.",
+      "error" : "unknownReason",
+      "kind" : "decodeReject",
+      "messageHex" : "0e7f",
+      "name" : "reject-unknown"
+    }
+  ],
+  "wireVersion" : 1
+}

@@ -63,10 +63,24 @@ public enum CtrlMessageType {
     /// Typed session teardown (SessionTeardown, W4b): taken-over-by /
     /// shutting-down. ARQ-carried, ordered behind everything it follows.
     public static let sessionTeardown: UInt8 = 0x0A
+    /// Client→host CPace share Ya (PairingShareA, W6). The pairing
+    /// quartet 0x0B–0x0E rides the sealed ARQ ordered stream of the
+    /// trust-on-first-use Noise session it authenticates — PairingPake
+    /// binds the run to that session's handshake hash and statics.
+    public static let pairingShareA: UInt8 = 0x0B
+    /// Host→client CPace share Yb ‖ confirmation tag Tb (PairingShareB).
+    public static let pairingShareB: UInt8 = 0x0C
+    /// Client→host confirmation tag Ta (PairingConfirm) — verifying it
+    /// completes pairing on the host.
+    public static let pairingConfirm: UInt8 = 0x0D
+    /// Either direction: typed pairing refusal (PairingReject) — loud
+    /// wrong-PIN without an oracle.
+    public static let pairingReject: UInt8 = 0x0E
     /// Client→host IDR request (IdrRequest). Sealed, ARQ-exempt; 0x10 is
     /// CL-3's original pin, clear of the 0x07…0x0F range left for W3's
     /// session machinery (0x07/0x08 taken by the ARQ frames, 0x09/0x0A
-    /// by the W4b lifecycle messages).
+    /// by the W4b lifecycle messages, 0x0B–0x0E by the W6 pairing
+    /// quartet).
     public static let idrRequest: UInt8 = 0x10
 
     /// The type byte of a CTRL payload, nil when the payload is empty.
