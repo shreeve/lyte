@@ -94,6 +94,15 @@ public enum CtrlMessageType {
     /// Client→host answer to an update (CapabilityUpdateAck),
     /// echoing the proposal it accepts or rejects. ARQ-carried.
     public static let capabilityUpdateAck: UInt8 = 0x12
+    /// Host→client stateless retry challenge (RetryChallenge) — the
+    /// msg1-flood defense. Bare pre-transport like 0x05/0x06 (no
+    /// session exists to seal it), ARQ-exempt: a lost challenge is
+    /// answered by the client's msg1 retransmit drawing a fresh one.
+    public static let retryChallenge: UInt8 = 0x13
+    /// Client→host msg1 resubmission with the cookie echoed
+    /// (RetryHandshake1). Bare pre-transport, ARQ-exempt — it IS the
+    /// handshake attempt.
+    public static let retryHandshake1: UInt8 = 0x14
 
     /// The type byte of a CTRL payload, nil when the payload is empty.
     /// Dispatch on this, then hand the whole payload (type byte included)

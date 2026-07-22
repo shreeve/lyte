@@ -4,7 +4,7 @@
 // prompt to regenerate. See Vectors/README.md for the freeze policy and
 // each file's anchor against hand-computed bytes.
 //
-// Usage: swift run lyte-wire-vectorgen <envelope|fec|video|beacon|noise|session|arq|lifecycle|pairing|capabilities> <output-path>
+// Usage: swift run lyte-wire-vectorgen <envelope|fec|video|beacon|noise|session|arq|lifecycle|pairing|capabilities|retry> <output-path>
 //   `video` reads the corpus from <output-dir>/video-corpus-v1/.
 //
 // The `video-roundtrip` subcommand is not an authoring tool but the
@@ -29,7 +29,7 @@ func die(_ message: String) -> Never {
 
 guard (3...4).contains(CommandLine.arguments.count) else {
     die("""
-    usage: lyte-wire-vectorgen <envelope|fec|video|beacon|noise|session|arq|lifecycle|pairing|capabilities> <output-path>
+    usage: lyte-wire-vectorgen <envelope|fec|video|beacon|noise|session|arq|lifecycle|pairing|capabilities|retry> <output-path>
            lyte-wire-vectorgen video-roundtrip <input.hevc> <output.hevc>
     """)
 }
@@ -87,6 +87,10 @@ case "capabilities":
     json = try encoder.encode(file)
     count = file.cborVectors.count + file.setVectors.count
         + file.intersectVectors.count + file.messageVectors.count
+case "retry":
+    let file = try makeRetryVectorFile()
+    json = try encoder.encode(file)
+    count = file.cookieVectors.count + file.messageVectors.count
 case "video-roundtrip":
     try runVideoRoundTrip(
         inputPath: CommandLine.arguments[2],
@@ -95,7 +99,7 @@ case "video-roundtrip":
     )
     exit(0)
 default:
-    die("unknown vector kind '\(CommandLine.arguments[1])' — expected envelope, fec, video, beacon, noise, session, arq, lifecycle, pairing, capabilities, or video-roundtrip")
+    die("unknown vector kind '\(CommandLine.arguments[1])' — expected envelope, fec, video, beacon, noise, session, arq, lifecycle, pairing, capabilities, retry, or video-roundtrip")
 }
 
 try (json + Data("\n".utf8)).write(

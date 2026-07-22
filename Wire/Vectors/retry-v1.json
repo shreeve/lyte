@@ -1,0 +1,307 @@
+{
+  "cookieVectors" : [
+    {
+      "cookieHex" : "00f2052a01000000b4fea57824367a03d94e69d3628acf55",
+      "description" : "The reference mint: (tuple, msg1, now, secret) → these exact 24 bytes, verifying fresh under the minting secret. Stateless: same inputs always yield these bytes.",
+      "kind" : "mint",
+      "message1Hex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+      "mintNowHex" : "0x12a05f200",
+      "name" : "mint-nominal",
+      "provenance" : "pinned-self-consistent",
+      "secretHex" : "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "secretsHex" : [
+        "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+      ],
+      "tupleHex" : "0a0000f9a02b",
+      "valid" : true,
+      "verifyNowHex" : "0x135f1b400"
+    },
+    {
+      "cookieHex" : "00f2052a01000000b4fea57824367a03d94e69d3628acf55",
+      "description" : "Verification at exactly mint + lifetime still accepts — the window is closed-ended.",
+      "kind" : "mint",
+      "message1Hex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+      "mintNowHex" : "0x12a05f200",
+      "name" : "mint-verify-at-lifetime-edge",
+      "provenance" : "pinned-self-consistent",
+      "secretHex" : "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "secretsHex" : [
+        "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+      ],
+      "tupleHex" : "0a0000f9a02b",
+      "valid" : true,
+      "verifyNowHex" : "0x826299e00"
+    },
+    {
+      "cookieHex" : "00f2052a01000000b4fea57824367a03d94e69d3628acf55",
+      "description" : "One nanosecond past the lifetime: a harvested cookie is dead.",
+      "kind" : "mint",
+      "message1Hex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+      "mintNowHex" : "0x12a05f200",
+      "name" : "mint-expired",
+      "provenance" : "pinned-self-consistent",
+      "secretHex" : "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "secretsHex" : [
+        "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+      ],
+      "tupleHex" : "0a0000f9a02b",
+      "valid" : false,
+      "verifyNowHex" : "0x826299e01"
+    },
+    {
+      "cookieHex" : "00f2052a01000000b4fea57824367a03d94e69d3628acf55",
+      "description" : "A timestamp from the future rejects outright — one monotonic host clock mints and verifies, so a future stamp is a forgery.",
+      "kind" : "mint",
+      "message1Hex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+      "mintNowHex" : "0x12a05f200",
+      "name" : "mint-future-stamp",
+      "provenance" : "pinned-self-consistent",
+      "secretHex" : "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "secretsHex" : [
+        "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+      ],
+      "tupleHex" : "0a0000f9a02b",
+      "valid" : false,
+      "verifyNowHex" : "0x12a05f1ff"
+    },
+    {
+      "cookieHex" : "00f2052a01000000b4fea57824367a03d94e69d3628acf55",
+      "description" : "A caller-chosen 1 ms lifetime is honored: this verify sits past it and rejects.",
+      "kind" : "mint",
+      "lifetimeHex" : "0xf4240",
+      "message1Hex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+      "mintNowHex" : "0x12a05f200",
+      "name" : "mint-custom-lifetime",
+      "provenance" : "pinned-self-consistent",
+      "secretHex" : "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "secretsHex" : [
+        "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+      ],
+      "tupleHex" : "0a0000f9a02b",
+      "valid" : false,
+      "verifyNowHex" : "0x12a153441"
+    },
+    {
+      "cookieHex" : "00f2052a01000000b4fea57824367a03d94e69d3628acf55",
+      "description" : "After rotation the previous secret (second in the current-first list) still verifies the cookie it minted.",
+      "kind" : "mint",
+      "message1Hex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+      "mintNowHex" : "0x12a05f200",
+      "name" : "mint-rotation-previous-secret",
+      "provenance" : "pinned-self-consistent",
+      "secretHex" : "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "secretsHex" : [
+        "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+      ],
+      "tupleHex" : "0a0000f9a02b",
+      "valid" : true,
+      "verifyNowHex" : "0x135f1b400"
+    },
+    {
+      "cookieHex" : "00f2052a01000000b4fea57824367a03d94e69d3628acf55",
+      "description" : "The minting secret rotated fully out of the list: reject — rotation tolerance is exactly one configured window, not forever.",
+      "kind" : "mint",
+      "message1Hex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+      "mintNowHex" : "0x12a05f200",
+      "name" : "mint-rotated-out",
+      "provenance" : "pinned-self-consistent",
+      "secretHex" : "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "secretsHex" : [
+        "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f"
+      ],
+      "tupleHex" : "0a0000f9a02b",
+      "valid" : false,
+      "verifyNowHex" : "0x135f1b400"
+    },
+    {
+      "cookieHex" : "00f2052a01000000b4fea57824367a03d94e69d3628acf55",
+      "description" : "The nominal cookie presented from a different address: reject — address ownership is the whole point.",
+      "kind" : "verify",
+      "message1Hex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+      "name" : "verify-foreign-tuple",
+      "provenance" : "pinned-self-consistent",
+      "secretsHex" : [
+        "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+      ],
+      "tupleHex" : "0a0000faa02b",
+      "valid" : false,
+      "verifyNowHex" : "0x135f1b400"
+    },
+    {
+      "cookieHex" : "00f2052a01000000b4fea57824367a03d94e69d3628acf55",
+      "description" : "Same address, one msg1 byte flipped: reject — one cookie authorizes one exact handshake attempt.",
+      "kind" : "verify",
+      "message1Hex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262729292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+      "name" : "verify-altered-message1",
+      "provenance" : "pinned-self-consistent",
+      "secretsHex" : [
+        "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+      ],
+      "tupleHex" : "0a0000f9a02b",
+      "valid" : false,
+      "verifyNowHex" : "0x135f1b400"
+    },
+    {
+      "cookieHex" : "00f2052a01000000b5fea57824367a03d94e69d3628acf55",
+      "description" : "First MAC byte flipped: reject.",
+      "kind" : "verify",
+      "message1Hex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+      "name" : "verify-tampered-mac",
+      "provenance" : "pinned-self-consistent",
+      "secretsHex" : [
+        "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+      ],
+      "tupleHex" : "0a0000f9a02b",
+      "valid" : false,
+      "verifyNowHex" : "0x135f1b400"
+    },
+    {
+      "cookieHex" : "01f2052a01000000b4fea57824367a03d94e69d3628acf55",
+      "description" : "A timestamp byte flipped: the stamp no longer matches the MAC's transcript — reject.",
+      "kind" : "verify",
+      "message1Hex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+      "name" : "verify-tampered-timestamp",
+      "provenance" : "pinned-self-consistent",
+      "secretsHex" : [
+        "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+      ],
+      "tupleHex" : "0a0000f9a02b",
+      "valid" : false,
+      "verifyNowHex" : "0x135f1b400"
+    },
+    {
+      "cookieHex" : "00f2052a01000000b4fea57824367a03d94e69d3628acf",
+      "description" : "23 bytes where the interior is exactly 24: quietly false, never a throw — the flood path stays cheap.",
+      "kind" : "verify",
+      "message1Hex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+      "name" : "verify-truncated-cookie",
+      "provenance" : "pinned-self-consistent",
+      "secretsHex" : [
+        "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+      ],
+      "tupleHex" : "0a0000f9a02b",
+      "valid" : false,
+      "verifyNowHex" : "0x135f1b400"
+    }
+  ],
+  "format" : "lyte-wire-retry-vectors",
+  "formatVersion" : 1,
+  "messageVectors" : [
+    {
+      "codec" : "challenge",
+      "cookieHex" : "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7",
+      "description" : "The hand-computed anchor: type ‖ cookieLen 24 ‖ cookie.",
+      "kind" : "roundtrip",
+      "messageHex" : "1318a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7",
+      "name" : "challenge-nominal"
+    },
+    {
+      "codec" : "challenge",
+      "cookieHex" : "5a",
+      "description" : "A 1-byte cookie — the codec carries any 1…255 bytes; the interior size is the minter's business.",
+      "kind" : "roundtrip",
+      "messageHex" : "13015a",
+      "name" : "challenge-min-cookie"
+    },
+    {
+      "codec" : "challenge",
+      "cookieHex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe",
+      "description" : "A 255-byte cookie — the length byte's ceiling.",
+      "kind" : "roundtrip",
+      "messageHex" : "13ff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe",
+      "name" : "challenge-max-cookie"
+    },
+    {
+      "codec" : "handshake1",
+      "cookieHex" : "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7",
+      "description" : "The hand-computed anchor: type ‖ cookieLen 24 ‖ cookie ‖ msg1 (96 B, the structural minimum).",
+      "kind" : "roundtrip",
+      "message1Hex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "messageHex" : "1418a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "name" : "handshake1-nominal"
+    },
+    {
+      "codec" : "handshake1",
+      "cookieHex" : "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7",
+      "description" : "A 122 B msg1 (version byte + 25 B application payload) — msg1 is the sole trailing field, self-delimiting.",
+      "kind" : "roundtrip",
+      "message1Hex" : "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283848586878889",
+      "messageHex" : "1418a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283848586878889",
+      "name" : "handshake1-real-msg1-shape"
+    },
+    {
+      "codec" : "challenge",
+      "description" : "The type byte alone.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "13",
+      "name" : "challenge-truncated-header"
+    },
+    {
+      "codec" : "challenge",
+      "description" : "cookieLen 24 but only 23 cookie bytes present.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "1318a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6",
+      "name" : "challenge-truncated-cookie"
+    },
+    {
+      "codec" : "challenge",
+      "description" : "cookieLen 0 — the loud zero-fill bug.",
+      "error" : "zeroCookieLength",
+      "kind" : "decodeReject",
+      "messageHex" : "1300",
+      "name" : "challenge-zero-cookie-len"
+    },
+    {
+      "codec" : "challenge",
+      "description" : "One byte past the cookie — a challenge is exactly its layout.",
+      "error" : "trailingBytes",
+      "kind" : "decodeReject",
+      "messageHex" : "1318a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b700",
+      "name" : "challenge-trailing-byte"
+    },
+    {
+      "codec" : "challenge",
+      "description" : "A handshake1 type byte fed to the challenge decoder.",
+      "error" : "unexpectedType",
+      "kind" : "decodeReject",
+      "messageHex" : "1418a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7",
+      "name" : "challenge-bad-type"
+    },
+    {
+      "codec" : "handshake1",
+      "description" : "cookieLen 24 but the payload ends mid-cookie.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "1418a0a1a2a3a4a5a6a7a8a9",
+      "name" : "handshake1-truncated-cookie"
+    },
+    {
+      "codec" : "handshake1",
+      "description" : "cookieLen 0 — the loud zero-fill bug.",
+      "error" : "zeroCookieLength",
+      "kind" : "decodeReject",
+      "messageHex" : "1400000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "name" : "handshake1-zero-cookie-len"
+    },
+    {
+      "codec" : "handshake1",
+      "description" : "95 B where IK msg1's structural minimum is 96 — could never handshake, refused before cookie work.",
+      "error" : "message1TooShort",
+      "kind" : "decodeReject",
+      "messageHex" : "1418a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e",
+      "name" : "handshake1-msg1-too-short"
+    },
+    {
+      "codec" : "handshake1",
+      "description" : "A challenge type byte fed to the handshake1 decoder.",
+      "error" : "unexpectedType",
+      "kind" : "decodeReject",
+      "messageHex" : "1318a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "name" : "handshake1-bad-type"
+    }
+  ],
+  "wireVersion" : 1
+}

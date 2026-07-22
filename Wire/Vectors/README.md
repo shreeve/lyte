@@ -62,6 +62,13 @@ case in `FecCoderTests`, the hand-walked datagram in
   appendix-A examples (transcribed in `CborTests`) and the
   hand-computed set/message bytes in `CapabilitiesTests` /
   `CapabilityCodecTests`.
+- `retry-v1.json` — the stateless retry cookie (HS-9's deferred
+  msg1-flood hardening; core plan §5): the RetryCookie transcript MAC
+  frozen as data (mint bytes, lifetime window, tuple/msg1 binding,
+  secret rotation) plus the retry CTRL codecs 0x13/0x14. Anchored
+  against the hand-built layouts in `RetryCodecTests` and, for the MAC
+  itself, an independent RFC 2104 HMAC-SHA256 built over TestKit's
+  FIPS-verified `Sha256` in `RetryCookieTests`. Details below.
 
 ## The 24-byte envelope (wire v1)
 
@@ -727,6 +734,87 @@ Message round trips: `declaration-wire-default`,
 `declaration-over-budget` (1025 B), `update-empty-map`,
 `update-text-key`, `update-non-canonical-body`, `ack-unknown-status`
 (0x03), `ack-zero-status`, `ack-truncated`.
+
+## The stateless retry cookie (wire v1)
+
+The msg1-flood defense (core plan §5: "Core provides a stateless HMAC
+retry-cookie codec for the first handshake datagram; the host shell
+decides when to demand it") — QUIC Retry's shape without QUIC. Under a
+Noise msg1 flood the host escalates from HS-9's token bucket to cookie
+mode: each msg1 draws a RetryChallenge whose cookie is minted purely
+from (client tuple, now, secret) — no per-client state — and only a
+resubmission whose cookie verifies against the tuple it actually
+arrived from gets to cost X25519.
+
+Cookie interior, 24 bytes (opaque to the client, echoed verbatim; both
+mint and verify are host-side, but the bytes travel so the layout is
+wire contract): `timestamp u64 LE` (host monotonic ns at mint) ‖
+`mac(16)` = HMAC-SHA256 truncated to 16 bytes over the transcript
+`"lyte-retry-cookie-v1" ‖ timestamp u64 LE ‖ tupleLen u8 ‖ tuple ‖
+message1`, keyed by the host's 32-byte cookie secret. Bindings: the
+tuple (address ownership — the point), the timestamp (verify enforces
+`mintTime ≤ now ≤ mintTime + lifetime`, default 30 s; a future stamp
+is a forgery since one monotonic clock mints and verifies), and msg1
+whole and verbatim (one cookie authorizes one exact handshake attempt
+— free for honest clients, whose retry rule already resends one msg1
+byte-identical). Rotation: `verify` takes an ordered current-first
+secret list; a cookie minted under the previous secret survives one
+rotation until the lifetime closes it. Malformed input at verify is
+quietly `false`, never a throw — the flood path stays cheap.
+
+Messages (bare pre-transport CTRL datagrams like 0x05/0x06 —
+ARQ-exempt; a lost challenge is superseded when the client's msg1
+retransmit draws a fresh one): 0x13 retry challenge = `type ‖
+cookieLen u8 (1…255, 0 rejects) ‖ cookie`, exactly its layout; 0x14
+retry handshake 1 = `type ‖ cookieLen ‖ cookie ‖ message1`, msg1 the
+sole trailing field (self-delimiting), rejected below IK msg1's 96 B
+structural minimum before any cookie work. The cookie rides
+length-prefixed so the interior may evolve host-side without touching
+the codec; v1's vectors pin the 24-byte interior.
+
+## File format: retry-v1.json
+
+Top-level: `format` ("lyte-wire-retry-vectors"), `formatVersion` (1),
+`wireVersion` (1), `cookieVectors`, `messageVectors`.
+
+`cookieVectors` (all `provenance` "pinned-self-consistent" — no
+published set covers our transcript; the HMAC beneath them is anchored
+in `RetryCookieTests` against an independent RFC 2104 construction
+over TestKit's `Sha256`): `mint` rows re-mint from (`tupleHex`,
+`message1Hex`, `mintNowHex`, `secretHex`) and must reproduce
+`cookieHex` byte-exact, then verify at `verifyNowHex` under
+`secretsHex` (current-first) — with `lifetimeHex` overriding the
+default window when present — and must answer `valid`; `verify` rows
+present `cookieHex` as-is (tampered, foreign, truncated) with no mint
+step. u64s ride as hex, the house JSON-precision rule.
+
+`messageVectors` carry `codec` ("challenge"/"handshake1") plus the
+lifecycle file's kinds over `messageHex`; roundtrips also pin the
+decoded `cookieHex` (and `message1Hex` for handshake1); `error` names
+are `RetryMessageError` case names. Anchored against the hand-built
+bytes in `RetryCodecTests`.
+
+## Vector inventory (retry-v1.json, 12 cookie + 14 message)
+
+Cookie mint rows: `mint-nominal` (the reference bytes),
+`mint-verify-at-lifetime-edge` (closed-ended window), `mint-expired`
+(+1 ns past lifetime), `mint-future-stamp`, `mint-custom-lifetime`
+(1 ms honored), `mint-rotation-previous-secret`, `mint-rotated-out`.
+
+Cookie verify rows: `verify-foreign-tuple`, `verify-altered-message1`,
+`verify-tampered-mac`, `verify-tampered-timestamp`,
+`verify-truncated-cookie`.
+
+Message round trips: `challenge-nominal` (the hand-computed anchor),
+`challenge-min-cookie` (1 B), `challenge-max-cookie` (255 B),
+`handshake1-nominal` (96 B msg1, the structural minimum),
+`handshake1-real-msg1-shape` (122 B).
+
+Message decode rejects: `challenge-truncated-header`,
+`challenge-truncated-cookie`, `challenge-zero-cookie-len`,
+`challenge-trailing-byte`, `challenge-bad-type`,
+`handshake1-truncated-cookie`, `handshake1-zero-cookie-len`,
+`handshake1-msg1-too-short`, `handshake1-bad-type`.
 
 ## The Noise layer (wire v1)
 
