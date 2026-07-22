@@ -884,9 +884,55 @@ are LANDED, GATED, COMMITTED (not pushed):
   deletion as one reviewed series. Explicitly NOT done by this gate;
   Sunshine untouched and active.**
 
-IN FLIGHT / NEXT: **H2 exit = demolition, pending the human's go** (CP-2
-daily-drive declaration → client deletion checklist + Sunshine uninstall
-in one breath, J-G2). Then: CL-7 reconnect/takeover UX (needs a host
+- **H2 EXIT — THE DEMOLITION, DONE** (2026-07-22 ~14:05 MDT, human's
+  explicit go: "full demolition the moment the gate passes"; commits
+  `2018f6d` → `d5de430` → `9e1cd27`, CL-14 / checklist §6 of
+  20260720-221103): the GameStream stack is GONE and Sunshine is
+  UNINSTALLED. Series: (I `2018f6d`) app/CLI surfaces rewired pure
+  Lyte-UDP — NvApp picker, NVstream PIN flow, doctor pill + Diagnosis
+  plumbing, GameStream recents/resume/headroom, old-session Actions
+  items, Sunshine-era CLI subcommands (discover/info/pair/apps/launch/
+  stream/quit/unpair + their AppKit window), LyteUI's Windows-VK
+  InputCapture all deleted; app Bonjour declaration now `_lyte._udp`
+  only. (II `d5de430`) all 30 LyteKit sources + Vendor/enet + Vendor/
+  nanors + CEnet/CNanors targets + swift-certificates/swift-asn1 deps +
+  PairingCryptoTests deleted — 12,801 lines; root products now just
+  Lyte.app + lyte-cli over LyteTransport/LyteUI/COpus. (III `9e1cd27`)
+  AGENTS.md retires the "never disturb Sunshine" rule + 47998–48010
+  exclusion + frozen-stack repo map; README tells the one-protocol
+  story; PLAN.md banner-marked historical; MACOS-SIGNING names the
+  Noise static; netem comments de-Sunshined (h2gate-netem.sh kept
+  verbatim as a gate record). Checklist notes: item 3's goldens were
+  already re-pointed in LyteTransportTests (nothing preserved from
+  LyteKitTests beyond history); item 5 (ClientStore migration)
+  completed by supersession — PinnedHostStore has owned Lyte identity
+  since CL-6, GameStream recents deleted rather than migrated. Suites:
+  root 109 → **104/104** (−5 = PairingCryptoTests), Wire **372/372**,
+  Host **104/104**, build-cli.sh + make-app.sh release green. LIVE
+  PROOF at the new HEAD (pup host from git archive `~/src/demolition`,
+  port 41111, --ratchet): 60 s session — handshake, 48,474/48,474
+  datagrams ok, 0 unseal failures both ends, 1,780 frames rendered
+  (first frame 25.9 ms), audio 17,874 dg → 11,916 pkts (PLC 0.64%),
+  9/9 scripted inputs injected exactly-once with echoes (host
+  rx→inject p50 1.16 ms), clock residual rms 354 µs, typed 0x0A
+  teardown clean. SUNSHINE UNINSTALL (pup): was deb `sunshine
+  2026.516.143833` (/usr/bin/sunshine, user unit
+  app-dev.lizardbyte.app.Sunshine.service); user config archived to
+  pup:/tmp/sunshine-config-backup.tar.gz (~/.config/sunshine also left
+  in place, inert); service disabled+stopped (user-unit symlinks
+  removed), package PURGED — no binary/process/unit/udev rule/
+  autostart remains, ports 47984–48010 silent. The uinput seat-access
+  line from 60-sunshine.rules (the CInputUinput fallback's ACL,
+  HS-13) was carried over as `/etc/udev/rules.d/60-lyte-uinput.rules`
+  under Lyte's own name BEFORE the purge; udev reloaded. Secrets
+  verified byte-identical before/after (portal_token dadf9a66…37cf,
+  noise_static.key 72860390…cfed, paired_clients 8dc1f88a…55fd).
+  Post-uninstall live leg re-proved the host (18 s: 9,389/9,389 ok,
+  render + audio + 3/3 inputs + clean teardown); no lyte-host left,
+  41111 free. Logs: Mac /tmp/demolition-client.log,
+  pup:/tmp/demolition-host{,2}.log.
+
+IN FLIGHT / NEXT: CL-7 reconnect/takeover UX (needs a host
 session-busy story), HS-9 cookie-mode enforcement (W8 landed; the
 client leg is live in every dial), 0x15/idle-frame promotion into
 Wire/ (now joined by 0x16/0x17/TLV-0x03 at CL-9 and the HS-15+CL-11
@@ -896,7 +942,8 @@ repair-lane DSCP.
 Ports used tonight: 41000–41011 + 41021/41022 + 41031 (H1 joint gate)
 + 41041/41061 (HS-16 host/probe) + 41051 (CL-11) + 41071/41072
 (HS-17 host/probe) + 41081 (CL-12 live gate) + 41091 (H2 joint gate;
-41101 was the maintainer's victory-lap host).
+41101 was the maintainer's victory-lap host) + 41111 (demolition
+live proof).
 Subagent stall pattern persists — 7-min watchdog + interrupt-kick works
 (W4b needed two kicks; check any silent worker's transcript mtime).
 
