@@ -276,10 +276,72 @@ are LANDED, GATED, COMMITTED (not pushed):
   costs one IDR per wake; expect that rhythm until damage-vs-wake
   policy is revisited with data.
 
-IN FLIGHT / NEXT: CL-8 FROZEN pill + idle mirroring (the host now
-emits 0x09/0x15 for real), CL-7 capabilities-exchange follow-up (the
-client still declares nothing), HS-9 cookie-mode enforcement (W8
-landed). Ports used tonight: 41000–41008.
+- **CL-8 + CL-7's session remainder** (`0965ea2`, root): LyteUdpSession —
+  the client's production session object (sans-socket core +
+  UdpReceiveEndpoint shell), now behind BOTH surfaces: wire-view is its
+  debug shell (grew the mode/pill display) and the app's
+  ConnectionModel gained the Lyte path (a PAIRED discovered host row is
+  a launch button → zero-UI Noise IK dial → stream window; FROZEN pill
+  = quiet capsule overlay, never modal). Assembled: persistent-identity
+  Noise IK with the W8 client leg IN THE DIAL (a 0x13 RetryChallenge is
+  answered by the SAME verbatim msg1 wrapped in 0x14 —
+  `RetryHandshake1(echoing:message1:)`; counted, doesn't burn an
+  attempt); client capability declaration 0x0F as the FIRST reliable
+  word (CL-7's deferred leg — intersection = agreement, unworkable
+  intersection → typed 0x0A both ways); SessionStateMachine
+  (mediaReceiver) consuming 0x09/0x0A; HS-11's 0x15 IdleFrame mirrored
+  BYTE-FOR-BYTE in LyteTransport (promotion into Wire/ still pending,
+  both copies delete together) and rendered through the SAME
+  VideoRenderFactory as datagram video via a new
+  LyteVideoPipeline.ingestReliableFrame seam (wrap-aware dedupe on the
+  frame number; ack = the existing one-shot ingest mechanics, nothing
+  extra); HostClockModel + feedback/echo/IDR machinery from wire-view's
+  proven parts; teardown both directions (client close = 0x0A + ≤500 ms
+  ACK linger). DESIGN DEVIATION, documented at the seam: the client's
+  FROZEN detector runs at 2.5 s (config-injected), not W4b's 350 ms —
+  an IDLE host emits only 1 Hz beacons, so a 350 ms receiver detector
+  would flap FROZEN↔IDLE forever; every authenticated arrival feeds it;
+  tightens to 350 ms when H2 audio provides the 5 ms probe. Gate (root
+  72 → **78/78**): retry answer verified vs a minted cookie; 0x15
+  layout pinned vs hand-built bytes; full lifecycle in virtual time
+  over SimNet vs a LyteWire mediaSender build-up (declaration-first
+  both ways, lost converged frame arrives reliably byte-exact, second
+  idle cycle dedupes, blackout pill rises in-window and clears on
+  returning evidence — receiver never enters RECOVERY, teardown with
+  reason both directions through 5% loss). LIVE vs pup :41009
+  (--ratchet, committed HEAD both ends): **13 full idle cycles in
+  40 s** — 26 mode flips mirrored, 13 idle frames acked (ALL deduped:
+  the clean LAN delivered every converged frame on the datagram path;
+  the in-tree gate covers the rendered path), 9230 datagrams ALL ok,
+  0 unseal failures, handshake 12.3 ms, clock residual rms 335 µs
+  THROUGH the session object; run B (host --seconds 25 < client 50):
+  host 0x0A → client `CLOSED — peerTeardown(shuttingDown)`, host
+  logged "teardown acknowledged — clean close"; run A (client ends
+  first): client 0x0A sent + quiesced, host consumed it. Logs
+  /tmp/cl8{a,b}-{host,client}.log (Mac + pup). Cleanup verified: no
+  lyte-host, 41009 free, Sunshine active, token/key/paired_clients
+  shas byte-identical. **WAKE-IDR observation (HS-11's heads-up,
+  measured client-side): 14 IDRs in 39.8 s = startup + exactly one per
+  wake — but the IDR is the small half of the cost: each 1 Hz
+  clock-tick wake re-runs the FULL ratchet ladder (381 of 422 encoded
+  frames were ratchet passes), so a "static" desktop holds ~1.9 Mbps
+  client ingress (9.6 MB/40 s) instead of near-zero. The rhythm is
+  damage-vs-wake policy + re-convergence cost, for the data-driven
+  revisit the HS-11 note promised.** Environment caveat: the Keychain
+  zero-UI leg is unusable from a dark-wake/headless shell (OSStatus
+  -25320 "no UI possible", then -60008) — live runs used the
+  --host-key debug posture; CL-6 already live-gated the Keychain path,
+  and the app-click leg awaits a human at the glass. Deferred: 0x15 +
+  0x7F-ping promotion into Wire/ (registry append + file move, Wire
+  territory), chan-4 videoIdle carriage, app-path human visual +
+  takeover/reconnect UX (`session-busy` sheet — no host counterpart
+  yet), capability-update (0x11/0x12) live leg (negotiator seam wired
+  + tested in-tree; no host proposer exists).
+
+IN FLIGHT / NEXT: CL-7 reconnect/takeover UX (needs a host
+session-busy story), HS-9 cookie-mode enforcement (W8 landed; the
+client leg is live in every dial), 0x15/idle-frame promotion into
+Wire/. Ports used tonight: 41000–41009.
 Subagent stall pattern persists — 7-min watchdog + interrupt-kick works
 (W4b needed two kicks; check any silent worker's transcript mtime).
 
