@@ -38,6 +38,10 @@ struct Options {
     /// CP-3 fallback (§4.1): passthrough seal, stream to the fixed peer
     /// without a handshake. The default is real Noise.
     var insecure = false
+    /// HS-10: advertise `_lyte._udp` via Avahi while listening. On by
+    /// default in `--wire-listen` Noise mode; Avahi being unavailable
+    /// degrades to manual host:port, never a failure.
+    var advertise = true
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
@@ -99,6 +103,8 @@ struct Options {
                 opts.wireListen = port
             case "--insecure":
                 opts.insecure = true
+            case "--no-advertise":
+                opts.advertise = false
             case "--help", "-h":
                 print("""
                 usage: lyte-host [--out PATH] [--seconds N] [--bitrate-mbps N]
@@ -128,13 +134,17 @@ struct Options {
                                     instead of writing the file
                   --wire-listen P   session mode, but bind port P and adopt
                                     whichever client completes message 1
+                                    (advertises _lyte._udp via Avahi)
                   --insecure        CP-3 fallback: no handshake, passthrough
                                     seal, stream to the --wire-out peer
                                     immediately (re-gate with Noise later)
                   --wire-rate-mbps  pacer rate in the wire mode (default 20)
+                  --no-advertise    skip the Avahi _lyte._udp advertisement
+                                    in --wire-listen mode
 
                 subcommands: lyte-host sniff --port PORT  (header dissector)
                              lyte-host rd-spike …         (CP-5 input probe)
+                             lyte-host advertise …        (HS-10 discovery)
                 """)
                 exit(0)
             default:
@@ -508,6 +518,7 @@ func run() throws {
     // client must hold), so no frames are encoded for nobody and the
     // first encoded frame is the session's first IDR.
     var wire: SessionWire?
+    var advertiser: AvahiAdvertiser?
     if sessionMode {
         if opts.insecure, opts.wireOut == nil {
             throw HostError("--insecure streams to a fixed peer; "
@@ -521,6 +532,21 @@ func run() throws {
         )
         if !opts.insecure {
             let hostStatic = try HostStaticKey.loadOrCreate()
+            // HS-10: the advertisement goes up BEFORE the handshake wait,
+            // so a browsing client can find the host and then connect to
+            // it — commit-and-retain is all Avahi needs (the entry group
+            // lives as long as the D-Bus connection; no servicing loop).
+            if opts.advertise, let listenPort = opts.wireListen {
+                do {
+                    advertiser = try AvahiAdvertiser(
+                        port: listenPort,
+                        staticPublicKey: hostStatic.publicKey
+                    )
+                } catch {
+                    print("discovery: unavailable (\(error)) — "
+                        + "manual host:port still works")
+                }
+            }
             try w.awaitClient(hostStatic: hostStatic, timeoutSeconds: 120)
         }
         wire = w
@@ -666,19 +692,27 @@ func run() throws {
     // The capture leaf is not freed here: PipeWire loop/context teardown can
     // block on the compositor after the stream is done, and the spike's
     // deliverable (the file) is already complete and flushed. Exit directly.
+    // The advertiser is retained to this line on purpose: the record stays
+    // published for the whole session and exiting withdraws it.
+    withExtendedLifetime(advertiser) {}
     lyte_stdout_flush()
     exit(0)
 }
 
 // Subcommands, each of which never returns: `rd-spike` is the CP-5
 // RemoteDesktop headless-injection probe (RemoteDesktopSpike.swift);
-// `sniff` is the HS-5 Lyte-UDP header dissector (Sniff.swift).
-// Everything else is the capture path.
+// `sniff` is the HS-5 Lyte-UDP header dissector (Sniff.swift);
+// `advertise` is the HS-10 standalone Avahi advertisement
+// (AvahiAdvertise.swift). Everything else is the capture path.
 if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "rd-spike" {
     rdSpikeMain(Array(CommandLine.arguments.dropFirst(2)))
 }
 if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "sniff" {
     sniffMain(Array(CommandLine.arguments.dropFirst(2)))
+}
+if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "advertise" {
+    lyte_stdout_linebuf() // prints must land live through an ssh pipe
+    advertiseMain(Array(CommandLine.arguments.dropFirst(2)))
 }
 
 do {

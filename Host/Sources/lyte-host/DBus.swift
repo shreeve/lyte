@@ -16,6 +16,9 @@ enum DType {
     static let string: Int32 = 115 // 's'
     static let objectPath: Int32 = 111 // 'o'
     static let uint32: Int32 = 117 // 'u'
+    static let int32: Int32 = 105 // 'i'
+    static let uint16: Int32 = 113 // 'q'
+    static let byte: Int32 = 121 // 'y'
     static let boolean: Int32 = 98 // 'b'
     static let array: Int32 = 97 // 'a'
     static let variant: Int32 = 118 // 'v'
@@ -34,14 +37,28 @@ enum DBusVariant {
 final class SessionBus {
     let conn: OpaquePointer
 
-    init() throws {
+    /// Which bus a private connection binds. The portal/Mutter surfaces
+    /// live on the user session bus; Avahi (HS-10 discovery) is a system
+    /// daemon on the system bus — same libdbus plumbing either way.
+    enum Kind {
+        case session
+        case system
+    }
+
+    init(kind: Kind = .session) throws {
         var err = DBusError()
         dbus_error_init(&err)
-        guard let c = dbus_bus_get_private(DBUS_BUS_SESSION, &err) else {
+        let busType = kind == .session ? DBUS_BUS_SESSION : DBUS_BUS_SYSTEM
+        guard let c = dbus_bus_get_private(busType, &err) else {
             let msg = err.message.map { String(cString: $0) } ?? "unknown"
             dbus_error_free(&err)
-            throw HostError("cannot connect to the D-Bus session bus: \(msg) "
-                + "(is DBUS_SESSION_BUS_ADDRESS set? portal needs the user session bus)")
+            switch kind {
+            case .session:
+                throw HostError("cannot connect to the D-Bus session bus: \(msg) "
+                    + "(is DBUS_SESSION_BUS_ADDRESS set? portal needs the user session bus)")
+            case .system:
+                throw HostError("cannot connect to the D-Bus system bus: \(msg)")
+            }
         }
         dbus_connection_set_exit_on_disconnect(c, 0)
         conn = c
@@ -294,6 +311,16 @@ final class SessionBus {
         guard dbus_message_iter_init(reply, &iter) != 0,
               dbus_message_iter_get_arg_type(&iter) == DType.objectPath
         else { throw HostError("reply does not carry an object path") }
+        var ptr: UnsafePointer<CChar>?
+        dbus_message_iter_get_basic(&iter, &ptr)
+        return ptr.map { String(cString: $0) } ?? ""
+    }
+
+    static func stringReply(_ reply: OpaquePointer) throws -> String {
+        var iter = DBusMessageIter()
+        guard dbus_message_iter_init(reply, &iter) != 0,
+              dbus_message_iter_get_arg_type(&iter) == DType.string
+        else { throw HostError("reply does not carry a string") }
         var ptr: UnsafePointer<CChar>?
         dbus_message_iter_get_basic(&iter, &ptr)
         return ptr.map { String(cString: $0) } ?? ""
