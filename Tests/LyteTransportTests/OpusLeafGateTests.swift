@@ -7,8 +7,8 @@ import LyteTransport
 // host's mode (48 kHz stereo RESTRICTED_LOWDELAY, 5 ms frames; the
 // loop-decode discipline Host/'s COpusEncode harness established) —
 // and its PLC entry point conceals without crashing or going hard
-// silent mid-stream. This is the capability LyteKit's AudioConverter
-// path never had (documented there), which is why the leaf exists.
+// silent mid-stream. This is the capability the system AudioConverter
+// never had, which is why the leaf exists.
 
 final class OpusLeafGateTests: XCTestCase {
 

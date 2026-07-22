@@ -10,13 +10,13 @@
 //                       re-key) without touching the network; the key
 //                       itself never rides the advertisement.
 //
-// This is the Lyte-UDP path's discovery, deliberately separate from the
-// frozen GameStream `_nvstream._tcp` browse in LyteKit (deleted at H2
-// demolition, checklist item 4). Discovery is a convenience layer only:
-// manual host:port stays the always-working fallback everywhere a host
-// is named (wire-view's --host, the risk-register rule).
+// This is the client's only discovery (the GameStream `_nvstream._tcp`
+// browse died with LyteKit at the H2 demolition, checklist item 4).
+// Discovery is a convenience layer only: manual host:port stays the
+// always-working fallback everywhere a host is named (wire-view's
+// --host, the risk-register rule).
 //
-// Resolution craft carried from the frozen Discovery (lessons, not the
+// Resolution craft carried from the deleted Discovery (lessons, not the
 // file): Bonjour service names are useless as connect targets, so each
 // result resolves through an NWConnection — UDP here, which reaches
 // `.ready` on path resolution alone, sending nothing — and the numeric

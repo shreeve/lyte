@@ -2,8 +2,8 @@
 // stereo, one 5 ms packet per call, PLC on nil (the concealment tool
 // the audio-continuity decision pins: "lost packets interpolate
 // instead of going silent", §5.4). Host/'s COpusEncode decoder half is
-// the loop-decode reference this mirrors; LyteKit's AudioConverter
-// path is NOT used (no PLC entry point — documented there).
+// the loop-decode reference this mirrors; the system AudioConverter
+// is NOT used (no PLC entry point — the gap that pinned libopus).
 //
 // Real-time posture: opus_decode_float neither allocates nor blocks,
 // but this wrapper still runs on the pump thread, never the render

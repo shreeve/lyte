@@ -1,6 +1,7 @@
 // VideoRenderFactory: LyteWire DecodeUnit → CMSampleBuffer for
-// AVSampleBufferDisplayLayer — CL-2's copy-adaptation of the frozen
-// stack's proven construction (LyteKit/Video/VideoSampleFactory.swift):
+// AVSampleBufferDisplayLayer — CL-2's copy-adaptation of the GameStream
+// stack's proven construction (LyteKit's VideoSampleFactory, deleted at
+// the H2 demolition; git history keeps the original):
 // the CMBlockBuffer/CMSampleBuffer assembly, the format-description
 // rebuild on IDR parameter sets, the DisplayImmediately attachment
 // (present-ASAP — Work mode's default, no jitter buffer per the timing
@@ -8,14 +9,14 @@
 // trailing-zero strip (RBSP stop-bit guarantee: a NAL's last real byte
 // is never zero, so trailing zeros are inter-NAL padding).
 //
-// Copied rather than imported because the frozen factory is entangled
+// Copied rather than imported because the original factory was entangled
 // with the GameStream DecodeUnit (typed buffer chains, RTP 90 kHz
-// timestamps, Sunshine frame headers) and LyteTransport never imports
-// LyteKit. Deliberate differences from the original:
+// timestamps, Sunshine frame headers). Deliberate differences from the
+// original:
 //   - parameter sets and NAL boundaries come from AnnexBCheck's walker
 //     over the recovered Annex-B bytes, not typed buffer chains;
 //   - HEVC only — Lyte's wire carries hevc_nvenc output; the H.264 leg
-//     stays behind in the frozen stack;
+//     died with the GameStream stack;
 //   - pts is the host capture timestamp (µs, host clock domain) instead
 //     of an RTP tick; with DisplayImmediately it orders, not paces.
 

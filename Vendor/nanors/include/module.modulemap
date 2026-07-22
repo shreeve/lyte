@@ -1,4 +1,0 @@
-module CNanors {
-    header "rs.h"
-    export *
-}

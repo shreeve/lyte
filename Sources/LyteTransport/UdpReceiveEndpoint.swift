@@ -1,6 +1,6 @@
 // The receive-side UDP endpoint — CL-1's shell around ReceiveDemux. BSD
-// sockets, matching the frozen GameStream stack whose craft this imports
-// (Video/AudioStream lessons, kept, not the files): a large SO_RCVBUF so
+// sockets, carrying the GameStream stack's socket craft (Video/AudioStream
+// lessons, kept, not the files): a large SO_RCVBUF so
 // kernel drops never masquerade as network loss, SO_NET_SERVICE_TYPE VI to
 // discourage Wi-Fi RX power-save, SO_TIMESTAMP kernel arrival stamps so
 // gap measurements blame the radio rather than our own thread stalls, a
@@ -345,8 +345,8 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
     }
 }
 
-/// Tiny lock-protected boolean (thread interruption flag) — same shape the
-/// frozen stack uses; duplicated because LyteTransport never imports LyteKit.
+/// Tiny lock-protected boolean (thread interruption flag) — the shape the
+/// GameStream stack proved; duplicated here rather than imported.
 final class TransportAtomicFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var value = false
