@@ -427,6 +427,8 @@ final class FeedbackPathTests: XCTestCase {
         XCTAssertEqual(samples[0].beaconSeq, 0)
         XCTAssertEqual(samples[0].offsetMicroseconds, 249_000)
         XCTAssertEqual(samples[0].rttMicroseconds, 8_000)
+        XCTAssertEqual(samples[0].measuredAt.microseconds, 1_253_000,
+                       "the sample's coordinate is its own exchange's t2 (CL-10's x-axis)")
         XCTAssertEqual(echoes.all.count, 2, "every beacon is echoed")
 
         let stats = responder.snapshotStats()

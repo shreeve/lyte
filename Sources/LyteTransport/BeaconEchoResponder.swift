@@ -24,6 +24,19 @@ public struct ClockSample: Hashable, Sendable {
     public var beaconSeq: UInt32
     public var offsetMicroseconds: Int64
     public var rttMicroseconds: Int64
+    /// The exchange's client-time coordinate (its t2, the beacon's
+    /// arrival) — the x-axis of CL-10's regression. The mirror that
+    /// CLOSES the sample arrives a beacon later; the offset was true at
+    /// the exchange, so the exchange's own instant is the honest abscissa.
+    public var measuredAt: ClientTimestamp
+
+    public init(beaconSeq: UInt32, offsetMicroseconds: Int64,
+                rttMicroseconds: Int64, measuredAt: ClientTimestamp) {
+        self.beaconSeq = beaconSeq
+        self.offsetMicroseconds = offsetMicroseconds
+        self.rttMicroseconds = rttMicroseconds
+        self.measuredAt = measuredAt
+    }
 }
 
 public final class BeaconEchoResponder: @unchecked Sendable {
@@ -43,6 +56,7 @@ public final class BeaconEchoResponder: @unchecked Sendable {
 
     private let emit: @Sendable (BeaconEcho) -> Void
     private let now: @Sendable () -> ClientTimestamp
+    private let onClockSample: (@Sendable (ClockSample) -> Void)?
 
     private let lock = NSLock()
     private var stats = Stats()
@@ -52,15 +66,21 @@ public final class BeaconEchoResponder: @unchecked Sendable {
     private var pending: [(seq: UInt32, t1: HostTimestamp,
                            t2: ClientTimestamp, t3: ClientTimestamp)] = []
 
-    /// - Parameter emit: sends one echo (TransportSender via CTRL in
-    ///   production, a capture closure in tests).
+    /// - Parameters:
+    ///   - emit: sends one echo (TransportSender via CTRL in production,
+    ///     a capture closure in tests).
+    ///   - onClockSample: fires once per closed sample, outside the lock —
+    ///     CL-10's HostClockModel.ingest in production. The retained ring
+    ///     stays regardless (the CLI's summary reads it).
     public init(
         now: @escaping @Sendable () -> ClientTimestamp = {
             ClientTimestamp(microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
         },
+        onClockSample: (@Sendable (ClockSample) -> Void)? = nil,
         emit: @escaping @Sendable (BeaconEcho) -> Void
     ) {
         self.now = now
+        self.onClockSample = onClockSample
         self.emit = emit
     }
 
@@ -107,6 +127,7 @@ public final class BeaconEchoResponder: @unchecked Sendable {
         // The mirror closes an earlier echo's loop: the host tells us the
         // t4 it measured, we still hold that exchange's t1/t2, and the
         // mirrored t3 must match what we sent (echoed verbatim).
+        var closed: ClockSample?
         if let mirror = beacon.lastEcho,
            let match = pending.first(where: { $0.seq == mirror.beaconSeq }) {
             let outbound = Int64(bitPattern:
@@ -117,18 +138,22 @@ public final class BeaconEchoResponder: @unchecked Sendable {
                 mirror.hostReceive.microseconds &- match.t1.microseconds)
             let turnaround = Int64(bitPattern:
                 mirror.clientSend.microseconds &- match.t2.microseconds)
-            samples.append(ClockSample(
+            let sample = ClockSample(
                 beaconSeq: mirror.beaconSeq,
                 offsetMicroseconds: (outbound &+ inbound) / 2,
-                rttMicroseconds: roundTrip &- turnaround))
+                rttMicroseconds: roundTrip &- turnaround,
+                measuredAt: match.t2)
+            samples.append(sample)
             if samples.count > Self.maxRetainedSamples {
                 samples.removeFirst(samples.count - Self.maxRetainedSamples)
             }
             stats.clockSamples += 1
             pending.removeAll { $0.seq == mirror.beaconSeq }
+            closed = sample
         }
         lock.unlock()
 
+        if let closed { onClockSample?(closed) }
         emit(echo)
         return true
     }

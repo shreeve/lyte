@@ -148,10 +148,17 @@ struct WireView: AsyncParsableCommand {
         let sender = TransportSender(crypto: crypto, transmit: { datagram in
             endpoint.sendToPeer(datagram)
         })
-        let echoResponder = BeaconEchoResponder(now: clientNow, emit: { echo in
-            _ = try? sender.send(channel: .ctrl, timestamp: clientNow(),
-                                 plaintext: echo.encode())
-        })
+        // CL-10: the session's ONE host-clock model (timing pillar §2 —
+        // audio rate correction and video presentation both read this
+        // instance once they exist). Fed live per closed sample.
+        let clockModel = HostClockModel()
+        let echoResponder = BeaconEchoResponder(
+            now: clientNow,
+            onClockSample: { clockModel.ingest($0) },
+            emit: { echo in
+                _ = try? sender.send(channel: .ctrl, timestamp: clientNow(),
+                                     plaintext: echo.encode())
+            })
         echoBox.value = echoResponder
         let idrRequester = IdrRequester(emit: { request in
             print("wire-view: IDR-REQUEST #\(request.requestSeq) → host " +
@@ -174,6 +181,7 @@ struct WireView: AsyncParsableCommand {
             demux: endpoint.demux, pipeline: pipeline,
             sender: sender, feedback: feedback,
             echoResponder: echoResponder, idrRequester: idrRequester,
+            clockModel: clockModel,
             rendererState: { @Sendable in
                 switch renderer.status {
                 case .rendering: return "rendering"
@@ -244,12 +252,14 @@ final class WireViewStatsPrinter: Sendable {
     private let feedback: FeedbackSender
     private let echoResponder: BeaconEchoResponder
     private let idrRequester: IdrRequester
+    private let clockModel: HostClockModel
     private let rendererState: @Sendable () -> String
     private let lastCount = LockedCell<UInt64>(0)
 
     init(demux: ReceiveDemux, pipeline: LyteVideoPipeline,
          sender: TransportSender, feedback: FeedbackSender,
          echoResponder: BeaconEchoResponder, idrRequester: IdrRequester,
+         clockModel: HostClockModel,
          rendererState: @escaping @Sendable () -> String) {
         self.demux = demux
         self.pipeline = pipeline
@@ -257,6 +267,7 @@ final class WireViewStatsPrinter: Sendable {
         self.feedback = feedback
         self.echoResponder = echoResponder
         self.idrRequester = idrRequester
+        self.clockModel = clockModel
         self.rendererState = rendererState
     }
 
@@ -308,13 +319,28 @@ final class WireViewStatsPrinter: Sendable {
         if echo.clockSamples > 0 {
             back += ", \(echo.clockSamples) clock samples"
             if let last = echoResponder.snapshotClockSamples().last {
-                back += String(format: " (last offset %+d µs, rtt %d µs)",
-                               last.offsetMicroseconds, last.rttMicroseconds)
+                // Interpolation, not %d: varargs %d truncates Int64 to 32
+                // bits and boot-epoch offsets are ~10¹⁰ µs (found live —
+                // the printed offset disagreed with CL-10's fit by 2·2³²).
+                let sign = last.offsetMicroseconds >= 0 ? "+" : ""
+                back += " (last offset \(sign)\(last.offsetMicroseconds) µs, " +
+                        "rtt \(last.rttMicroseconds) µs)"
             }
         }
         if out.sendFailures > 0 { back += ", \(out.sendFailures) send-failed" }
         if out.sealFailures > 0 { back += ", \(out.sealFailures) seal-failed" }
         print(back)
+
+        // The CL-10 model line: the T gate reads the residual here.
+        if let fit = clockModel.estimate() {
+            let sign = fit.offsetMicroseconds >= 0 ? "+" : ""
+            print("\(prefix)   clock: offset \(sign)\(fit.offsetMicroseconds) µs, " +
+                  String(format: "skew %+.1f ppm, residual rms %.1f / max %.1f µs, ",
+                         fit.skewPartsPerMillion, fit.residualRmsMicroseconds,
+                         fit.residualMaxMicroseconds) +
+                  "\(fit.acceptedSamples)/\(fit.windowSamples) samples " +
+                  "(min rtt \(fit.minRttMicroseconds) µs)")
+        }
     }
 }
 
