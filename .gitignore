@@ -17,7 +17,6 @@ misc/moonlight-common-c/
 misc/moonlight-macos/
 
 # Session handoff notes — working scratch for AI sessions, not repo history
-HANDOFF.md
 
 # Golden packet captures — large binaries + session key material, kept local.
 # Distilled acceptance vectors get committed under Tests/, not the raw pcaps.
