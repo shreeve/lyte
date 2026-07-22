@@ -7,10 +7,12 @@
 // holds the converged frame before it learns the session went idle.
 //
 // PROMOTE-TO-LyteWire FLAG (with CL-8, the client's idle/pill slice):
-// type byte 0x13 is pinned HOST-SIDE FIRST — the HS-7/HS-12 precedent
+// type byte 0x15 is pinned HOST-SIDE FIRST — the HS-7/HS-12 precedent
 // (0x03–0x06 and 0x10 all landed this way) — because Wire/ is another
-// worker's territory tonight. Promotion is a file move plus a registry
-// append; the bytes never change.
+// worker's territory tonight. 0x15 is the first byte past W8's
+// 0x13/0x14 retry pair, the registry's current high-water mark.
+// Promotion is a file move plus a registry append; the bytes never
+// change.
 //
 // Carriage note: the ChannelId registry reserves chan 4 (videoIdle,
 // reliableOneShotGroups) as the idle frames' eventual home. This
@@ -25,7 +27,7 @@
 // Layout, 13-byte header + the frame, multi-byte fields little-endian:
 //
 //   offset size field
-//   0      1    type       0x13
+//   0      1    type       0x15
 //   1      4    frame      u32, the frame number the converged frame
 //                          was last sent with on the datagram path —
 //                          the receiver's dedupe handle
@@ -44,10 +46,10 @@ import LyteWire
 /// LyteWire.CtrlMessageType (see the file comment).
 public enum HostCtrlMessageType {
     /// The reliable idle-frame message (HS-11 → CL-8).
-    public static let idleFrame: UInt8 = 0x13
+    public static let idleFrame: UInt8 = 0x15
 }
 
-/// The reliable idle-frame message (type 0x13).
+/// The reliable idle-frame message (type 0x15).
 public struct IdleFrame: Hashable, Sendable {
     /// The frame number this frame last rode the datagram path with.
     public var frame: FrameNumber
