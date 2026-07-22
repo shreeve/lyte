@@ -17,10 +17,15 @@ on Mac AND pup; `build-cli.sh`/`make-app.sh` release builds green. A live
 post-demolition proof ran at the new HEAD (60 s: 48,474/48,474 datagrams ok,
 0 unseal failures, render + audio + input + clean teardown).
 
-**In flight RIGHT NOW: HS-18** (host audio routing / virtual-sink mute) — a
-worker is mid-flight in Host/ sources. Its pup LIVE legs are DEFERRED
-(pup is off for the owner's travel, below); the in-tree legs proceed. It
-will append its entry to the CURRENT WAVE block at the marker below.
+**HS-18 LANDED on the Mac gates** (`6b5a78e`, Host/) — host audio routing:
+hostMuted virtual-sink capture + exact default-sink restore (crash paths
+included), capability key 9 on the W7 spine, HOST-PINNED CTRL 0x18/0x19.
+Host suite 104 → **110/110 Mac**. Its pup legs are **DEFERRED-PENDING-HOST**
+(pup shut down mid-slice; the full leg list — pup build/suite, hostMuted
+silence proof, restore on teardown + after kill -9, virtual-sink NIC
+cadence, hostAudible regression, secrets shas — is in the wave entry
+below; port 41121 reserved). NOTE: the Linux-only C leaf changes are
+uncompiled anywhere yet — run the pup build FIRST when it returns.
 
 **pup is OFFLINE (traveling).** Shut down 2026-07-22 afternoon; back online
 TONIGHT from a hotel — a different network, so the address in the ssh
@@ -573,11 +578,73 @@ its entry at the marker at the end of this block.*
   41111 free. Logs: Mac /tmp/demolition-client.log,
   pup:/tmp/demolition-host{,2}.log.
 
-- **HS-18 — (in flight; the Host/ worker appends its entry here when it
-  lands. Its pup live legs are deferred until pup is back online — see
-  CURRENT STATE.)**
-
-<!-- HS-18: replace the placeholder entry above with your landing entry. -->
+- **HS-18 host audio routing** (`6b5a78e`, Host/): the host learns to
+  hold its tongue — the human's direct ask after hearing the same
+  audio on both machines. TWO POSTURES: hostAudible (unchanged
+  default — HS-14's default-sink monitor capture) and hostMuted —
+  CPipeWireAudio creates a "Lyte Audio" null sink
+  (adapter/support.null-audio-sink via pw_core_create_object, so the
+  sink is CONNECTION-OWNED and a SIGKILL can never leak it), saves
+  the original `default.configured.audio.sink` metadata value, sets
+  the default to the Lyte sink (the wpctl-set-default key), and
+  captures ITS monitor (stream.capture.sink + target.object pinned to
+  the sink) — sound flows only to the wire. RESTORE LADDER: clean
+  stop/free restores the metadata exactly (or clears it when it was
+  unset) while the connection is whole; SIGINT/SIGTERM raise a flag
+  the capture tick reads → normal teardown path (Signals.swift); the
+  ONE thing kill -9 can strand (the metadata) is persisted to
+  `~/.config/lyte-host/audio_default_sink.prev` BEFORE the switch and
+  swept at the next session start (`AudioWire.sweepLeftoverRouting` →
+  standalone `lyte_pw_audio_restore_default` one-shot; hostMuted is
+  REFUSED if the state file can't be written). Cadence discipline:
+  both modes run the identical 5 ms pipeline — same node.latency
+  240/48000, same node.force-quantum=240, same framer/pacer path;
+  virtual-sink graph cadence is a named live leg (measure, don't
+  assume). CARRIAGE (zero frozen bytes, pinned as data): capability
+  key 9 `hostAudioRouting` rides W7's forward-compat spine through
+  unknownEntries — the declaration is wireDefault's exact frozen
+  encoding plus one appended `09 F5` entry (gate-pinned byte-exact),
+  survives intersection only on mutual byte-equal declaration, so the
+  client's auto-hiding control strip gates its mute button truthfully
+  (the human's design note). Host declares key 9 whenever the audio
+  leg is on (--no-audio doesn't). Mid-session flip: HOST-PINNED CTRL
+  **0x18 AudioRoutingRequest** (`type ‖ mode u8`; 0x01 audible / 0x02
+  muted, client→host) and **0x19 AudioRoutingStatus** (same layout,
+  host→client — the posture that ACTUALLY stands, sent at capability
+  agreement and after every applied flip; a failed flip reports the
+  OLD posture), both on the ARQ ordered stream, both gated on the
+  agreed set (unnegotiated 0x18 → new drop reason
+  `.audioRoutingNotNegotiated`, loud; 0x19-at-host → role-confusion
+  drop). PROMOTE with 0x15/0x16/0x17 (registry appends: CapabilityKey
+  9 + the two CTRL types). Shell: `--host-audio audible|muted` seeds
+  the posture; SessionWire drains flip requests OFF the session lock
+  (a flip is a PipeWire connect — the audio leaf is stopped and
+  rebuilt in the other mode by main's handler; one leaf owns the
+  quantum forcing so two never overlap); new
+  events .audioRoutingRequested/.audioRoutingStatusSent + counters +
+  the audio-routing final-stats line. Gate: Host 104 → **110/110 Mac**
+  (AudioRoutingGateTests: 0x18/0x19 byte-pins + hostile rejects;
+  declaration = frozen bytes + `09 F5` and nothing else moved;
+  intersection both orders + false-not-equal-true; in-vivo negotiated
+  flip both directions with byte-exact 0x19; rule-3 gate: refusal
+  loud, status never volunteered, role confusion dropped).
+  **DEFERRED-PENDING-HOST (pup shut down for travel mid-slice; run on
+  its return, port 41121):** (a) pup build + suite (the C leaf is
+  Linux-only — uncompiled anywhere yet; expect an iteration pass on
+  pipewire API details), (b) hostMuted live leg — tone on pup, wpctl/
+  pactl prove the physical default sink silent + Lyte sink default
+  while the client-side 440 Hz RMS check proves the tone crosses,
+  (c) teardown restore exact (wpctl status name-match before/after) +
+  SIGTERM path, (d) kill -9 mid-session → sink auto-gone (connection-
+  owned) + next-start sweep restores the recorded default, (e) NIC
+  cadence p99 within 5±2 ms in BOTH modes (tcpdump inter-send, the
+  HS-15 method — the virtual sink changes graph topology), (f)
+  hostAudible regression leg unchanged, (g) all three secrets shas
+  byte-identical after everything (they were never touched — the new
+  state file lives BESIDE them, `audio_default_sink.prev`). Client
+  follow-up CL slice (flagged): declare key 9 + send 0x18 + render
+  0x19 in the control strip; promotion slice grows by key 9 +
+  0x18/0x19.
 
 ---
 
