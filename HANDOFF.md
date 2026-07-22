@@ -217,9 +217,69 @@ are LANDED, GATED, COMMITTED (not pushed):
   0x13 by resubmitting the SAME msg1 (0443beb's rule makes it free)
   inside 0x14.
 
-IN FLIGHT / NEXT: CL-8 FROZEN pill + HS-11 mode wiring (W4b exists),
-HS-8/CL-7 capabilities-exchange follow-ups (W7 landed), HS-9
-cookie-mode enforcement (W8 landed). Ports used tonight: 41000–41007.
+- **HS-11 + HS-8 capabilities** (`ceb5176` + fixup `37fc10a`, Host/):
+  the host-session lifecycle slice. HostWire.Session runs the W4b
+  SessionStateMachine (mediaSender): chan-3 feedback feeds the 350 ms
+  blackout detector; every other authenticated arrival feeds
+  liveness/FROZEN-exit only; the machine's poll deadline rides
+  nextWake/advance. Idle flip: the ratchet's all-skip stop → the final
+  converged frame rides a reliable ONE-SHOT as the HOST-PINNED
+  **0x15 IdleFrame** (`type ‖ frame u32 ‖ captureMicros u64 ‖
+  Annex-B`; PROMOTE to Wire with CL-8; deliberately carried on the
+  CTRL endpoint's one-shot groups, NOT chan-4 videoIdle, because
+  that's the sublayer today's client already acks — carriage moves at
+  CL-8, bytes don't; fixup renumbered 0x13→0x15 after W8 took
+  0x13/0x14 mid-slice) → ONLY its full ack flips to IDLE + emits
+  ModeTransition 0x09; new damage aborts a pending flip; damage in
+  IDLE = WAKE (0x09 active + next-damage-as-IDR via the existing
+  takeFreshKeyframeRequest poll). FROZEN suppresses video in-session
+  (counted, never thrown); returning evidence → RECOVERY (resume +
+  halfStaleEstimate IDR); a 25 ms feedback-window STUB graduates
+  RECOVERY until HS-16's estimator owns verdicts. W7 exchange (HS-8's
+  deferred item): host declaration 0x0F is the FIRST sendReliable
+  post-establishment (insecure mode: first advance); intersection =
+  agreement (.capabilitiesAgreed); empty codec/chroma intersection →
+  typed 0x0A teardown + close; a declaration-less client (today's
+  CL-7) streams unimpeded — capability gating (idleSilence) engages
+  only once both ends have spoken. Teardown: beginTeardown → 0x0A on
+  the ordered stream, shell lingers ≤500 ms until arqIsQuiescent;
+  CNetIO grew `LYTE_NETIO_PEER_GONE (-2)` for ECONNREFUSED (send AND
+  recv) → SessionWire closes CLEANLY with full stats — the known
+  recvmmsg death is fixed (proven live 4×: early client deaths drew
+  ICMP and the host shrugged with a clean summary every time).
+  Gate: NEW SessionLifecycleGateTests, 8 legs (first-word
+  declaration, intersection in vivo, ack-gated flip byte-exact,
+  damage abort, FROZEN/RECOVERY off the real detector, both teardown
+  directions, liveness-closes-silently); Host suite 53 → **61/61 Mac
+  AND pup** (pup from committed-HEAD archives — Wire/ tree was
+  mid-W8). LIVE on pup :41008 (--ratchet, 30 s host / 42 s foreground
+  client, run E): **10 full idle cycles** — one-shot acked → `mode: →
+  IDLE` → 1 Hz clock-tick damage → `mode: → ACTIVE` + wake IDR
+  (10 IDRs = exactly 1/wake); client received all 30 reliable
+  messages exactly once, 6902 datagrams ALL ok, 0 unseal failures;
+  final teardown 0x0A ACKNOWLEDGED ("clean close"); tcpdump: 28
+  video-silence windows >250 ms (idle bounded by pup's top-bar clock
+  damage), ZERO video datagrams inside them, beacons/CTRL alive
+  (30/30 echoes). Live evidence ran the pre-fixup 0x13 build — no
+  ambiguity in practice (retry 0x13 is bare pre-transport; the idle
+  frame rides inside the sealed ARQ stream), layout otherwise
+  identical. Logs /tmp/hs11e-{host,client}.log on Mac+pup (runs A–D =
+  the ECONNREFUSED evidence). Cleanup verified: no lyte-host, 41008
+  free, tcpdump killed, Sunshine active, portal_token/noise_static/
+  paired_clients shas byte-identical. Deferred: chan-4 videoIdle
+  carriage + 0x15 promotion (CL-8), IdrPacing numbers + real window
+  verdicts (HS-16), preArmInput caller (HS-13), DPLPMTUD proposer
+  (negotiator seam exists, no caller), idle-floor retirement in
+  non-ratchet mode, W8 cookie-mode enforcement in HandshakeGate.
+  NOTE for CL-8: W4b's pinned WAKE semantics make every post-idle
+  damage a full IDR — on a "static" GNOME desktop the 1 Hz clock
+  costs one IDR per wake; expect that rhythm until damage-vs-wake
+  policy is revisited with data.
+
+IN FLIGHT / NEXT: CL-8 FROZEN pill + idle mirroring (the host now
+emits 0x09/0x15 for real), CL-7 capabilities-exchange follow-up (the
+client still declares nothing), HS-9 cookie-mode enforcement (W8
+landed). Ports used tonight: 41000–41008.
 Subagent stall pattern persists — 7-min watchdog + interrupt-kick works
 (W4b needed two kicks; check any silent worker's transcript mtime).
 
