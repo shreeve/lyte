@@ -144,6 +144,10 @@ final class SessionWire {
     var deliveryRate: Int? { session.deliveryRateBitsPerSecond }
     var queuingDelayMicros: Int64? { session.queuingDelayMicroseconds }
     func frameByteCeiling(fps: Int) -> Int { session.frameByteCeiling(fps: fps) }
+    // HS-17 repair surfaces for the final stats block.
+    var fecRegime: FecRegime { session.fecRegime }
+    var srttMicros: Int64? { session.srttMicroseconds }
+    var repairStoreBytes: Int { session.repairStoreBytes }
 
     /// - Parameters:
     ///   - listenPort: bind here and await a connecting client (nil =
@@ -704,7 +708,20 @@ final class SessionWire {
             case .idrPacing(let pacing):
                 lastPrintedRate = bps
                 print("rate: → \(bps / 1_000) kbps (IDR pacing \(pacing))")
+            case .postFecLoss:
+                lastPrintedRate = bps
+                print("rate: ↓ \(bps / 1_000) kbps (post-FEC loss — "
+                    + "rung 3)")
             }
+        case .repairEnqueued(let frame, let shards):
+            print("repair: frame \(frame.rawValue) — \(shards) shard(s) "
+                + "retransmitted (fresh seqs, videoTail)")
+        case .nackJudgedStale(let frame, let reason):
+            print("repair: NACK frame \(frame.rawValue) judged stale "
+                + "(\(reason))")
+        case .fecRegimeChanged(let regime):
+            print("fec: regime → \(regime.rawValue) "
+                + "(§5.2 \(regime == .lossy ? "lossy" : "clean") column)")
         }
     }
 

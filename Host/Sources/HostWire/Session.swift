@@ -112,6 +112,18 @@ public struct SessionConfig: Sendable {
     /// session rate IS the ceiling (no capability key carries bitrate
     /// in v1) and the floor is resiliency's 500 kbps.
     public var estimator: RateEstimatorConfig?
+    /// HS-17: the retransmit gate's freeze budget (resiliency §1.1
+    /// rule 3, numbers from the overview's ruling: client jitter
+    /// buffer + 2 frame intervals; Work mode has no video jitter
+    /// buffer, so 2 frame intervals — 33 ms at the 60 fps reference).
+    /// A NACK is honored iff SRTT + retransmit serialization still fit
+    /// inside what remains of this budget, measured from the frame's
+    /// packetize instant.
+    public var repairFreezeBudgetNS: UInt64
+    /// HS-17: the repair store's retention window (build plan's
+    /// "≥4 s rings") and byte cap, passed through to VideoChannel.
+    public var repairRetentionNS: UInt64
+    public var repairStoreByteCap: Int
 
     public init(
         crypto: SessionCryptoMode,
@@ -125,7 +137,10 @@ public struct SessionConfig: Sendable {
         handshakeGate: HandshakeGate.Config = HandshakeGate.Config(),
         capabilities: Capabilities = .wireDefault,
         lifecycle: SessionMachineConfig = SessionMachineConfig(),
-        estimator: RateEstimatorConfig? = nil
+        estimator: RateEstimatorConfig? = nil,
+        repairFreezeBudgetNS: UInt64 = 33_333_333,
+        repairRetentionNS: UInt64 = 4_000_000_000,
+        repairStoreByteCap: Int = 16 << 20
     ) {
         self.crypto = crypto
         self.rateBitsPerSecond = rateBitsPerSecond
@@ -139,6 +154,9 @@ public struct SessionConfig: Sendable {
         self.capabilities = capabilities
         self.lifecycle = lifecycle
         self.estimator = estimator
+        self.repairFreezeBudgetNS = repairFreezeBudgetNS
+        self.repairRetentionNS = repairRetentionNS
+        self.repairStoreByteCap = repairStoreByteCap
     }
 }
 
@@ -216,6 +234,37 @@ public enum SessionEvent: Equatable, Sendable {
     /// a machine-demanded IdrPacing policy). The pacer is already
     /// re-capped when this surfaces; the shell logs it.
     case rateChanged(bitsPerSecond: Int, reason: RateChangeReason)
+    /// HS-17: a client NACK passed the retransmit gate — `shards`
+    /// repair datagrams are enqueued (fresh seqs, videoTail class).
+    case repairEnqueued(frame: FrameNumber, shards: Int)
+    /// HS-17: a client NACK was judged per the staleness ruling and
+    /// refused. `.budgetExceeded`/`.unavailable` arm the coalesced
+    /// keyframe latch (the IDR alternative, §1.1 rule 4);
+    /// `.olderThanIdr` refuses silently (a newer IDR already heals)
+    /// and `.alreadyRepaired` is the one-attempt rule holding.
+    case nackJudgedStale(frame: FrameNumber, reason: NackStaleReason)
+    /// HS-17: the estimator stepped the §5.2 FEC regime; the channel's
+    /// packetizing seam is already switched when this surfaces.
+    case fecRegimeChanged(FecRegime)
+}
+
+/// Why a NACK did not produce a retransmit (HS-17's verdict axis).
+public enum NackStaleReason: Equatable, Sendable {
+    /// The frame is older than the last IDR — the decode chain past
+    /// that IDR no longer references it (§1.1 rule 3; the IDR itself
+    /// stays repairable per §5.2's burst-loss rationale).
+    case olderThanIdr
+    /// SRTT + retransmit serialization no longer fit the remaining
+    /// freeze budget (or no RTT evidence exists to promise they do).
+    case budgetExceeded
+    /// The store no longer holds anything the NACK names (evicted
+    /// past the retention window, or indices the frame never had).
+    case unavailable
+    /// Every named shard already rode its one retransmit.
+    case alreadyRepaired
+    /// FROZEN/closed: datagram sends (retransmits included) are
+    /// suppressed (resiliency §4's freeze protocol).
+    case sendsSuppressed
 }
 
 /// Why the estimator moved the rate (the live gate's evidence axis).
@@ -228,6 +277,8 @@ public enum RateChangeReason: Equatable, Sendable {
     case evidence
     /// A machine-demanded IDR pacing policy was applied (W4b).
     case idrPacing(IdrPacing)
+    /// NACK-evidenced loss FEC could not absorb (rung 3, HS-17).
+    case postFecLoss
 }
 
 /// Why an inbound datagram went no further. Counted and surfaced, never
@@ -319,6 +370,18 @@ public struct SessionCounters: Equatable, Sendable {
     /// IDLE deliberately never count here — audio is the path probe
     /// and keeps flowing through both (W4b).
     public var audioPacketsSuppressed = 0
+    /// HS-17: NACK entries consumed from parsed feedback reports.
+    public var nackEntriesReceived = 0
+    /// NACK entries that passed the gate and enqueued repairs.
+    public var nacksHonored = 0
+    /// NACK entries refused by the staleness ruling (any reason).
+    public var nacksJudgedStale = 0
+    /// Repair datagrams enqueued (fresh seqs on videoTail).
+    public var repairDatagramsEnqueued = 0
+    /// Stale verdicts that armed the coalesced keyframe latch.
+    public var idrArmedOnStaleNack = 0
+    /// FEC regime steps applied to the packetizing seam.
+    public var fecRegimeSteps = 0
 
     public init() {}
 }
@@ -507,7 +570,9 @@ public final class Session {
                 regime: config.regime,
                 rateBitsPerSecond: config.rateBitsPerSecond,
                 pacerQuantumNS: config.pacerQuantumNS,
-                connectionId: connectionId
+                connectionId: connectionId,
+                repairRetentionNS: config.repairRetentionNS,
+                repairStoreByteCap: config.repairStoreByteCap
             ),
             now: now,
             seal: { [unowned self] plaintext, aad, envelope in
@@ -1225,11 +1290,9 @@ public final class Session {
     }
 
     /// One authenticated chan-3 payload: parse, feed the estimator,
-    /// apply its rate to the shared pacer, and — while the machine is
-    /// in RECOVERY — feed its window verdicts. This retires the HS-11
-    /// 25 ms window STUB: the estimator now decides when returning
-    /// evidence graduates RECOVERY, and a lossy window honestly resets
-    /// the count instead of graduating on mere presence.
+    /// apply its rate (and any FEC-regime step) to the shared channel,
+    /// answer the NACK section through the HS-17 retransmit gate, and
+    /// — while the machine is in RECOVERY — feed its window verdicts.
     private func ingestFeedback(
         _ plaintext: [UInt8], now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -1253,9 +1316,21 @@ public final class Session {
             switch verdict.change {
             case .overuse: reason = .overuse
             case .loss: reason = .loss
+            case .postFecLoss: reason = .postFecLoss
             case .evidence, nil: reason = .evidence
             }
             events.append(.rateChanged(bitsPerSecond: rate, reason: reason))
+        }
+        if let regime = verdict.fecRegime {
+            // The estimator's rung-3 step verdict lands on the
+            // packetizing seam: the NEXT frame's geometry draws from
+            // the new §5.2 column.
+            channel.setRegime(regime)
+            counters.fecRegimeSteps += 1
+            events.append(.fecRegimeChanged(regime))
+        }
+        for nack in report.nacks {
+            events += respondToNack(nack, now: now)
         }
         for clean in verdict.recoveryWindows {
             events += runMachine(
@@ -1264,6 +1339,110 @@ public final class Session {
             )
         }
         return events
+    }
+
+    /// The HS-17 NACK responder: resiliency §1.1 rules 3–4 over the
+    /// channel's repair store.
+    ///
+    ///   honor iff SRTT + retxSerialization < remainingFreezeBudget
+    ///         AND the frame is newer than the last IDR;
+    ///   one attempt per shard, no retransmission of retransmissions;
+    ///   otherwise the IDR alternative: stale verdicts that leave the
+    ///   client stuck (budget gone, bytes gone) arm the SAME coalesced
+    ///   keyframe latch client 0x10 requests pull — the next
+    ///   `takeFreshKeyframeRequest` poll answers with a fresh IDR.
+    ///
+    /// FROZEN suppresses retransmits with the rest of datagram video
+    /// (§4's freeze protocol) — RECOVERY's forced IDR is the heal
+    /// there, so the latch is deliberately NOT armed.
+    private func respondToNack(
+        _ nack: FeedbackReport.NackEntry, now: UInt64
+    ) -> [SessionEvent] {
+        counters.nackEntriesReceived += 1
+
+        func stale(
+            _ reason: NackStaleReason, armIdr: Bool
+        ) -> [SessionEvent] {
+            counters.nacksJudgedStale += 1
+            if armIdr {
+                clientKeyframePending = true
+                counters.idrArmedOnStaleNack += 1
+            }
+            return [.nackJudgedStale(frame: nack.frame, reason: reason)]
+        }
+
+        if videoFrozen || machine?.state == .closed {
+            return stale(.sendsSuppressed, armIdr: false)
+        }
+        // "The frame is newer than the last IDR": a frame BEHIND the
+        // last IDR is a dead reference — the IDR re-anchored the chain
+        // past it. The IDR itself stays repairable (§5.2's rationale:
+        // burst loss ON an IDR is handled by retransmit or re-issue).
+        // No IDR arm on refusal: the newer IDR IS the heal, in flight
+        // or delivered (and if IT died, the client names it too).
+        if let lastIdr = channel.lastKeyframeNumber, nack.frame < lastIdr {
+            return stale(.olderThanIdr, armIdr: false)
+        }
+        guard let ingestedAt = channel.repairAnchor(for: nack.frame) else {
+            return stale(.unavailable, armIdr: true)
+        }
+        let repairBytes = channel.repairByteCount(
+            frame: nack.frame, shardIndices: nack.missingShards
+        )
+        guard repairBytes > 0 else {
+            // Everything named already rode its one attempt. The
+            // repairs may still be in flight — arming an IDR here
+            // would double-heal; the client's own coalescing
+            // requester escalates if the frame stays incomplete
+            // (rule 4's client half).
+            return stale(.alreadyRepaired, armIdr: false)
+        }
+        // Rule 3's gate. The budget clock started when the frame's
+        // flight completed (the client cannot judge it FEC-impossible
+        // earlier); the NACK's propagation up is already inside the
+        // elapsed time. No RTT evidence means no honest promise the
+        // repair lands in budget — stale. The RTT term is SRTT capped
+        // at 2 × min-RTT: the beacon-echo SRTT double-counts both
+        // ends' receive-loop wake latency (measured 7–13 ms on a
+        // 0.3 ms loopback), which a repair datagram — straight onto
+        // the pacer, no beacon service point — never pays; genuine
+        // path queueing moves min-RTT with it and still governs.
+        let elapsedNS = now &- ingestedAt
+        let budgetNS = config.repairFreezeBudgetNS
+        guard elapsedNS < budgetNS,
+              let srttMicros = estimator.srttMicroseconds
+        else {
+            return stale(.budgetExceeded, armIdr: true)
+        }
+        let remainingNS = budgetNS - elapsedNS
+        let rttMicros = min(
+            max(srttMicros, 0),
+            2 * max(estimator.minRttMicroseconds ?? srttMicros, 0)
+        )
+        let rttNS = UInt64(rttMicros) &* 1_000
+        let serializationNS = UInt64(
+            Double(repairBytes) * 8 / Double(channel.rateBitsPerSecond) * 1e9
+        )
+        guard rttNS + serializationNS < remainingNS else {
+            return stale(.budgetExceeded, armIdr: true)
+        }
+
+        let enqueued: Int
+        do {
+            enqueued = try channel.enqueueRepair(
+                frame: nack.frame,
+                shardIndices: nack.missingShards,
+                now: now
+            )
+        } catch {
+            return [.sendFailed("repair frame \(nack.frame.rawValue): \(error)")]
+        }
+        guard enqueued > 0 else {
+            return stale(.unavailable, armIdr: true)
+        }
+        counters.nacksHonored += 1
+        counters.repairDatagramsEnqueued += enqueued
+        return [.repairEnqueued(frame: nack.frame, shards: enqueued)]
     }
 
     /// Polls the endpoint and puts its output on the wire: repack to
@@ -1437,6 +1616,17 @@ public final class Session {
 
     public var pacerTelemetry: PacerTelemetry { channel.pacerTelemetry }
     public var videoCounters: VideoChannelCounters { channel.counters }
+
+    // MARK: HS-17 repair surfaces
+
+    /// The §5.2 regime column the packetizing seam is drawing from.
+    public var fecRegime: FecRegime { channel.regime }
+
+    /// The retransmit gate's smoothed RTT; nil before beacon evidence.
+    public var srttMicroseconds: Int64? { estimator.srttMicroseconds }
+
+    /// Bytes retained for repair (the ≥4 s ring's live size).
+    public var repairStoreBytes: Int { channel.repairStoreBytes }
 
     // MARK: Handshake (responder)
 

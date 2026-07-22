@@ -42,6 +42,12 @@
 //   • LOSS — the report's cumulative per-channel ledgers, differenced
 //     against the previous report (the codec's documented consumption),
 //     over a rolling 1 s window: post-arrival loss fraction.
+//   • POST-FEC LOSS (HS-17) — the report's NACK section is the wire's
+//     post-FEC evidence: every entry names shards of a frame FEC could
+//     not recover. Deduped (frame, shard) counts over the same rolling
+//     1 s window, against the video channel's attempted datagrams
+//     (received + missing ledger deltas), give the rung-3 detector its
+//     number: post-FEC loss > 2% over 1 s (resiliency §4 rung 3).
 //   • CONTROL LAW — capped CBR with downshift/upshift (§2.2 rule 4):
 //     - overuse (inflation > threshold on 2 consecutive reports) →
 //       rate = 0.85 × measured delivery rate (GCC's REMB shape: anchor
@@ -52,11 +58,11 @@
 //       (may rise), 2–10% HOLD (FEC's parity absorbs this band —
 //       resiliency G1 pins that a 5% uniform path keeps streaming, so
 //       crashing the rate on it would be dishonest), > 10% fall
-//       ×(1 − loss/2), same 500 ms limiter. Resiliency rung 3 names
-//       POST-FEC loss; the wire's post-FEC evidence is the NACK
-//       section, which CL-3 deliberately leaves empty until HS-17 —
-//       consuming it (and the FEC-regime step that goes with the
-//       fall) is deferred with that slice;
+//       ×(1 − loss/2), same 500 ms limiter;
+//     - post-FEC loss over the same window > 2% (rung 3, the NACK
+//       evidence HS-17 wired in) → multiplicative fall ×0.85, same
+//       500 ms limiter — this band is NOT held: loss FEC could not
+//       absorb is the pillar's downshift-and-step trigger;
 //     - clean + fresh delivery evidence → upshift ≤10%/s toward the
 //       negotiated ceiling, held for 1 s after any downshift so the
 //       queue can drain. The standing rate is deliberately allowed
@@ -80,6 +86,19 @@
 //     the new path). And the HS-6 ceiling math at the LIVE rate:
 //     frameByteCeiling = R×B/8 − higherClassBytes(B),
 //     B = min(2/fps, 25 ms).
+//   • FEC REGIME (HS-17) — the §5.2 ladder's column choice, stepped
+//     with the loss regime: clean → lossy when post-FEC loss crosses
+//     the rung-3 threshold (fires with the downshift, latched — the
+//     step is a geometry promise, not a rate move, so the 500 ms
+//     limiter does not gate it); lossy → clean when post-FEC loss has
+//     sat below the clean column's own definition (< 0.5%) for the
+//     step-down hold. The hold length is host policy where the pillar
+//     says only "sustained": long enough that one quiet second cannot
+//     flap the ladder. The session applies each step to VideoChannel's
+//     packetizing seam — per-frame, next frame onward.
+//   • SRTT — beacon-echo RTTs fold into an RFC 6298-shaped EWMA
+//     (gain 1/8): the retransmit gate's SRTT term (resiliency §1.1
+//     rule 3). min-RTT stays alongside for telemetry.
 
 import LyteWire
 
@@ -120,6 +139,18 @@ public struct RateEstimatorConfig: Sendable {
     public var lossDownshiftThreshold: Double
     /// The loss accounting window (1 s, resiliency §2.2).
     public var lossWindowNS: UInt64
+    /// Post-FEC loss fraction (NACKed shards / video datagrams
+    /// attempted, rolling `lossWindowNS`) above which rung 3 fires:
+    /// downshift + FEC regime step up (resiliency §4 rung 3's "> 2%
+    /// over 1 s").
+    public var postFecDownshiftThreshold: Double
+    /// Post-FEC loss below which the window reads clean for the regime
+    /// ladder (the §5.2 clean column's own "< 0.5%" definition).
+    public var postFecCleanThreshold: Double
+    /// How long post-FEC loss must sit below `postFecCleanThreshold`
+    /// before the regime steps back down to clean. Host policy where
+    /// the pillar says only "sustained".
+    public var regimeStepDownHoldNS: UInt64
     /// Multiplicative downshift factor and its rate limit.
     public var downshiftFactor: Double
     public var downshiftMinIntervalNS: UInt64
@@ -153,6 +184,9 @@ public struct RateEstimatorConfig: Sendable {
         lossCleanThreshold: Double = 0.02,
         lossDownshiftThreshold: Double = 0.10,
         lossWindowNS: UInt64 = 1_000_000_000,
+        postFecDownshiftThreshold: Double = 0.02,
+        postFecCleanThreshold: Double = 0.005,
+        regimeStepDownHoldNS: UInt64 = 5_000_000_000,
         downshiftFactor: Double = 0.85,
         downshiftMinIntervalNS: UInt64 = 500_000_000,
         upshiftPerSecond: Double = 0.10,
@@ -178,6 +212,11 @@ public struct RateEstimatorConfig: Sendable {
             lossDownshiftThreshold, lossCleanThreshold
         )
         self.lossWindowNS = lossWindowNS
+        self.postFecDownshiftThreshold = postFecDownshiftThreshold
+        self.postFecCleanThreshold = min(
+            postFecCleanThreshold, postFecDownshiftThreshold
+        )
+        self.regimeStepDownHoldNS = regimeStepDownHoldNS
         self.downshiftFactor = downshiftFactor
         self.downshiftMinIntervalNS = downshiftMinIntervalNS
         self.upshiftPerSecond = upshiftPerSecond
@@ -197,6 +236,8 @@ public struct RateEstimatorVerdict: Equatable, Sendable {
     public enum Change: Equatable, Sendable {
         case overuse
         case loss
+        /// NACK-evidenced loss FEC could not absorb (rung 3, HS-17).
+        case postFecLoss
         case evidence
     }
 
@@ -212,6 +253,11 @@ public struct RateEstimatorVerdict: Equatable, Sendable {
     public var overuse: Bool
     /// Post-arrival loss fraction over the rolling window.
     public var lossFraction: Double
+    /// Post-FEC (NACK-evidenced) loss fraction over the rolling window.
+    public var postFecLossFraction: Double = 0
+    /// Set when this report stepped the FEC regime (HS-17); the session
+    /// applies it to VideoChannel's packetizing seam.
+    public var fecRegime: FecRegime?
 }
 
 /// Running evidence counters, exposed for logs and the live gate.
@@ -224,6 +270,12 @@ public struct RateEstimatorStats: Equatable, Sendable {
     public var upshifts = 0
     public var overuseVerdicts = 0
     public var lossDownshifts = 0
+    /// Rung-3 downshifts (post-FEC loss over threshold, HS-17).
+    public var postFecDownshifts = 0
+    /// Distinct (frame, shard) pairs the NACK sections named.
+    public var nackShardsCounted = 0
+    /// FEC regime steps, both directions.
+    public var regimeSteps = 0
 
     public init() {}
 }
@@ -245,9 +297,20 @@ public final class RateEstimator {
     public private(set) var queuingDelayMicroseconds: Int64?
 
     /// min-RTT evidence from beacon echoes — recorded for telemetry
-    /// and the (HS-17) retransmit gate; the rate law runs on the
+    /// and the HS-17 retransmit gate; the rate law runs on the
     /// dispersion sensor.
     public private(set) var minRttMicroseconds: Int64?
+
+    /// RFC 6298-shaped smoothed RTT from beacon echoes — the SRTT term
+    /// of resiliency §1.1 rule 3's retransmit gate. Nil before the
+    /// first echo (the gate treats no-evidence as gate-fails-open to
+    /// stale: with no RTT the host cannot promise the repair lands in
+    /// budget — see Session's NACK consumption).
+    public private(set) var srttMicroseconds: Int64?
+
+    /// The §5.2 ladder column currently in force (HS-17's regime
+    /// latch). Moves only through `ingest`'s verdicts.
+    public private(set) var fecRegime: FecRegime = .clean
 
     // MARK: Send ledger
 
@@ -287,10 +350,26 @@ public final class RateEstimator {
         var at: UInt64
         var missing: Int
         var received: Int
+        /// The video channel's share — the post-FEC denominator.
+        var videoAttempted: Int
     }
     private var lossWindow: [LossSample] = []
     /// Previous report's cumulative ledgers, per channel raw value.
     private var previousChannelTotals: [UInt8: (received: UInt32, missing: UInt32)] = [:]
+
+    // MARK: Post-FEC (NACK) state — HS-17
+
+    private struct PostFecSample {
+        var at: UInt64
+        var shardCount: Int
+    }
+    private var postFecWindow: [PostFecSample] = []
+    /// (frame << 8 | shard) → last counted instant: the same shard
+    /// re-NACKed across reports inside the window counts once.
+    private var recentNackShards: [UInt64: UInt64] = [:]
+    /// The last instant post-FEC loss sat at or above the clean
+    /// threshold (or a NACK arrived) — the step-down hold's anchor.
+    private var lastPostFecEvidenceAt: UInt64?
 
     // MARK: Control-law state
 
@@ -339,11 +418,15 @@ public final class RateEstimator {
         ledgerHead = (ledgerHead + 1) % ledger.count
     }
 
-    /// One beacon-echo RTT sample (telemetry; min-gated).
+    /// One beacon-echo RTT sample: min-gated for telemetry, EWMA'd
+    /// (RFC 6298's 1/8 gain) into the retransmit gate's SRTT.
     public func noteRtt(microseconds: Int64) {
         if minRttMicroseconds.map({ microseconds < $0 }) ?? true {
             minRttMicroseconds = microseconds
         }
+        srttMicroseconds = srttMicroseconds.map {
+            $0 + (microseconds - $0) / 8
+        } ?? microseconds
     }
 
     // MARK: - Feedback side
@@ -357,18 +440,28 @@ public final class RateEstimator {
         expireWindows(now: now)
 
         let (newMissing, _) = absorbChannelLedgers(report, now: now)
+        let newNackShards = absorbNacks(report, now: now)
         let matched = matchDispersion(report)
         absorbDeliveryTrains(matched, now: now)
         let inflated = absorbDelay(matched, now: now)
 
         let lossFraction = currentLossFraction()
+        let postFecLossFraction = currentPostFecLossFraction()
         let overuse = inflated
             && consecutiveInflatedReports >= config.overuseConsecutiveReports
         if overuse { stats.overuseVerdicts += 1 }
 
         let oldRate = rateBitsPerSecond
         let change = applyControlLaw(
-            overuse: overuse, lossFraction: lossFraction, now: now
+            overuse: overuse,
+            lossFraction: lossFraction,
+            postFecLossFraction: postFecLossFraction,
+            now: now
+        )
+        let steppedRegime = stepRegime(
+            postFecLossFraction: postFecLossFraction,
+            sawNacks: newNackShards > 0,
+            now: now
         )
 
         var verdict = RateEstimatorVerdict(
@@ -377,12 +470,14 @@ public final class RateEstimator {
             change: rateBitsPerSecond == oldRate ? nil : change,
             recoveryWindows: [],
             overuse: overuse,
-            lossFraction: lossFraction
+            lossFraction: lossFraction,
+            postFecLossFraction: postFecLossFraction,
+            fecRegime: steppedRegime
         )
 
         if inRecovery {
             verdict.recoveryWindows = closeRecoveryWindows(
-                sawLoss: newMissing > 0,
+                sawLoss: newMissing > 0 || newNackShards > 0,
                 sawOveruse: overuse,
                 now: now
             )
@@ -454,6 +549,12 @@ public final class RateEstimator {
         lossWindow.removeAll {
             now &- $0.at > config.lossWindowNS
         }
+        postFecWindow.removeAll {
+            now &- $0.at > config.lossWindowNS
+        }
+        recentNackShards = recentNackShards.filter {
+            now &- $0.value <= config.lossWindowNS
+        }
     }
 
     /// Differences the report's cumulative ledgers against the previous
@@ -463,6 +564,7 @@ public final class RateEstimator {
     ) -> (missing: Int, received: Int) {
         var newMissing = 0
         var newReceived = 0
+        var videoAttempted = 0
         for stats in report.channels {
             let previous = previousChannelTotals[stats.channel.rawValue]
             let dMissing = stats.missing &- (previous?.missing ?? 0)
@@ -472,16 +574,41 @@ public final class RateEstimator {
             if previous != nil, dMissing < 1 << 31, dReceived < 1 << 31 {
                 newMissing += Int(dMissing)
                 newReceived += Int(dReceived)
+                if stats.channel == .videoActive {
+                    videoAttempted += Int(dMissing) + Int(dReceived)
+                }
             }
             previousChannelTotals[stats.channel.rawValue] =
                 (stats.received, stats.missing)
         }
         if newMissing > 0 || newReceived > 0 {
             lossWindow.append(LossSample(
-                at: now, missing: newMissing, received: newReceived
+                at: now, missing: newMissing, received: newReceived,
+                videoAttempted: videoAttempted
             ))
         }
         return (newMissing, newReceived)
+    }
+
+    /// Counts the report's NACK section into the post-FEC window:
+    /// distinct (frame, shard) pairs, deduped across reports inside the
+    /// window (a re-NACK is the client insisting, not new loss).
+    private func absorbNacks(
+        _ report: FeedbackReport, now: UInt64
+    ) -> Int {
+        var fresh = 0
+        for nack in report.nacks {
+            for shard in nack.missingShards {
+                let key = UInt64(nack.frame.rawValue) << 8 | UInt64(shard)
+                if recentNackShards[key] == nil { fresh += 1 }
+                recentNackShards[key] = now
+            }
+        }
+        if fresh > 0 {
+            postFecWindow.append(PostFecSample(at: now, shardCount: fresh))
+            stats.nackShardsCounted += fresh
+        }
+        return fresh
     }
 
     private func currentLossFraction() -> Double {
@@ -494,6 +621,17 @@ public final class RateEstimator {
         let total = missing + received
         guard total > 0 else { return 0 }
         return Double(missing) / Double(total)
+    }
+
+    /// NACKed shards over video datagrams attempted, both windowed.
+    /// NACKs with no attempt evidence yet still read as full loss —
+    /// the fraction saturates at 1 rather than dividing by zero.
+    private func currentPostFecLossFraction() -> Double {
+        let nacked = postFecWindow.reduce(0) { $0 + $1.shardCount }
+        guard nacked > 0 else { return 0 }
+        let attempted = lossWindow.reduce(0) { $0 + $1.videoAttempted }
+        guard attempted > nacked else { return 1 }
+        return Double(nacked) / Double(attempted)
     }
 
     private struct MatchedSample {
@@ -620,7 +758,10 @@ public final class RateEstimator {
     }
 
     private func applyControlLaw(
-        overuse: Bool, lossFraction: Double, now: UInt64
+        overuse: Bool,
+        lossFraction: Double,
+        postFecLossFraction: Double,
+        now: UInt64
     ) -> RateEstimatorVerdict.Change? {
         let downshiftAllowed = lastDownshiftAt.map {
             now &- $0 >= config.downshiftMinIntervalNS
@@ -654,8 +795,25 @@ public final class RateEstimator {
             return .loss
         }
 
+        if postFecLossFraction > config.postFecDownshiftThreshold,
+           downshiftAllowed {
+            // Rung 3: loss FEC could not absorb. NOT the 2–10% hold —
+            // that band is held precisely because parity absorbs it,
+            // and this evidence says it did not. Multiplicative fall,
+            // same limiter; the regime step rides the same verdict.
+            rateBitsPerSecond = clamp(Int(
+                Double(rateBitsPerSecond) * config.downshiftFactor
+            ))
+            lastDownshiftAt = now
+            lastAdjustAt = now
+            stats.downshifts += 1
+            stats.postFecDownshifts += 1
+            return .postFecLoss
+        }
+
         // Clean: the path is healthy at this rate.
-        if !overuse, lossFraction < config.lossCleanThreshold {
+        if !overuse, lossFraction < config.lossCleanThreshold,
+           postFecLossFraction <= config.postFecCleanThreshold {
             lastGoodRate = rateBitsPerSecond
         }
 
@@ -664,6 +822,7 @@ public final class RateEstimator {
         // hold-down, headroom to the ceiling.
         guard rateBitsPerSecond < config.ceilingBitsPerSecond,
               !overuse, lossFraction < config.lossCleanThreshold,
+              postFecLossFraction <= config.postFecCleanThreshold,
               let deliveredAt = lastDeliveryAt,
               now &- deliveredAt <= config.upshiftEvidenceWindowNS,
               lastDownshiftAt.map({
@@ -682,6 +841,35 @@ public final class RateEstimator {
         lastAdjustAt = now
         stats.upshifts += 1
         return .evidence
+    }
+
+    /// The §5.2 regime ladder's step law (see the header). Returns the
+    /// new regime when this ingest moved it; nil otherwise.
+    private func stepRegime(
+        postFecLossFraction: Double, sawNacks: Bool, now: UInt64
+    ) -> FecRegime? {
+        if sawNacks || postFecLossFraction >= config.postFecCleanThreshold {
+            lastPostFecEvidenceAt = now
+        }
+        switch fecRegime {
+        case .clean:
+            guard postFecLossFraction > config.postFecDownshiftThreshold
+            else { return nil }
+            fecRegime = .lossy
+            stats.regimeSteps += 1
+            return .lossy
+        case .lossy:
+            // Step down only after a sustained stretch with no
+            // post-FEC evidence — one quiet second cannot flap the
+            // ladder, and every fresh NACK re-anchors the hold.
+            guard let lastEvidence = lastPostFecEvidenceAt,
+                  now &- lastEvidence >= config.regimeStepDownHoldNS,
+                  postFecLossFraction < config.postFecCleanThreshold
+            else { return nil }
+            fecRegime = .clean
+            stats.regimeSteps += 1
+            return .clean
+        }
     }
 
     private func closeRecoveryWindows(

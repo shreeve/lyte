@@ -948,6 +948,15 @@ func run() throws {
         \(wire.estimatorStats.upshifts) upshifts, \
         \(s.rateChanges) pacer moves; frameByteCeiling@\(opts.fps)fps \
         \(wire.frameByteCeiling(fps: Int(opts.fps))) B
+        repair: \(s.nackEntriesReceived) NACK entries \
+        (\(s.nacksHonored) honored → \(s.repairDatagramsEnqueued) repair \
+        datagrams, \(s.nacksJudgedStale) stale, \
+        \(s.idrArmedOnStaleNack) IDR-armed), \
+        \(wire.estimatorStats.nackShardsCounted) post-FEC shards counted, \
+        \(wire.estimatorStats.postFecDownshifts) rung-3 downshifts, \
+        \(s.fecRegimeSteps) regime steps (final \(wire.fecRegime.rawValue)); \
+        srtt \(wire.srttMicros.map { "\($0) µs" } ?? "—"), \
+        store \(wire.repairStoreBytes) B
         """)
         if let audio = audioWire {
             print("audio: \(audio.packetsEncoded) packets encoded "
