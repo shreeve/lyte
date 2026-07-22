@@ -10,9 +10,11 @@ implementation blueprint lives in [PLAN.md](PLAN.md) and product decisions in
 ## 1. Executive summary
 
 Lyte began as a native macOS client for Sunshine hosts speaking the Moonlight
-protocol. That client now works end-to-end (pairing, encrypted session, HEVC
+protocol. That client worked end-to-end (pairing, encrypted session, HEVC
 video, Opus audio, input, app shell, network doctor — M0–M6 core, all verified
-live against a real Sunshine host).
+live against a real Sunshine host) and served as the bootstrap scaffolding
+until the H2 exit (2026-07-22), when it was deleted in favor of the pure
+Lyte-UDP client.
 
 The strategy now extends to the other end of the wire: **a Lyte host, written
 in Swift, so we own both ends.** Owning both ends is what unlocks everything
@@ -159,14 +161,12 @@ extras. Feature channels (clipboard, files, printing, cursor metadata,
 display control) are message streams on the same connection, gated by
 capability negotiation.
 
-**The transition.** The client's existing GameStream stack is frozen
-scaffolding: zero new work, kept compiling only because it is the working
-streaming path against Sunshine while Lyte-UDP comes up. It is deleted as
-soon as it stops being load-bearing (target: H0b/H1, when the Lyte-UDP
-client path streams end-to-end; at the latest at H2 parity) — deletion is
-the default, not a decision point. Sunshine's only remaining role is
-bootstrap crutch on the host machine until Lyte↔Lyte streams; then it is
-uninstalled. Rationale: dual support is a split brain — the two envelopes
+**The transition — COMPLETE (2026-07-22).** The client's GameStream stack
+was frozen scaffolding: zero new work, kept compiling only as the working
+streaming path against Sunshine while Lyte-UDP came up. It was deleted at
+the H2 exit, and Sunshine — the bootstrap crutch on the host machine —
+was uninstalled in the same series, exactly as planned here.
+Rationale (as it stood): dual support is a split brain — the two envelopes
 share the media-pipeline interior, so every refactor and bug carries double
 surface. One protocol, one host, one client per platform is the product.
 
@@ -229,31 +229,28 @@ Privileged bits, if ever needed, follow the client's helper pattern
 *(This ladder was rewritten 2026-07-20 when the GameStream dialect was
 dropped from the host roadmap — decision and rationale in
 [docs/20260720-215100-lyte-udp-decision.md](docs/20260720-215100-lyte-udp-decision.md).
-H0a is unchanged and partially complete; everything after it is
-Lyte-UDP-shaped.)*
+Status 2026-07-22: **H0a ✓ H0b ✓ H1 ✓ H2 ✓ — demolition included**; gate
+reports in `docs/20260722-h{1,2}-joint-gate.md`. H3 is next.)*
 
-- **H0a — Spike: first pixels into a file (in progress; slices 1–2
-  committed).** Portal/PipeWire capture → NVENC HEVC (a libavcodec leaf) →
-  Annex-B file, proven headless on the host. The formerly planned
-  "Sunshine-dialect RTP+FEC into the debug client" slice is dropped.
-  Remaining H0a work: the quality-ratchet prototype on the existing
-  file-output host (already approved).
-- **H0b — First pixels, Lyte-UDP.** Envelope v1 + the video datagram
+- **H0a ✓ — Spike: first pixels into a file.** Portal/PipeWire capture →
+  NVENC HEVC (a libavcodec leaf) → Annex-B file, proven headless on the
+  host, plus the quality-ratchet prototype. The formerly planned
+  "Sunshine-dialect RTP+FEC into the debug client" slice was dropped.
+- **H0b ✓ — First pixels, Lyte-UDP.** Envelope v1 + the video datagram
   channel + RS FEC on the host; a Lyte-UDP receive module in the client
-  (debug mode) rendering the live desktop. Acceptance: the client renders
-  lyte-host's desktop over the LAN.
-- **H1 — Honest session.** Noise handshake, PIN-PAKE pairing, discovery
+  (debug mode) rendering the live desktop. Acceptance held: the client
+  renders lyte-host's desktop over the LAN, Noise end to end (J-G1).
+- **H1 ✓ — Honest session.** Noise handshake, PIN-PAKE pairing, discovery
   (Bonjour + manual host:port), session lifecycle, the control channel on
   the reliable sublayer, the idle/active state machine — idle silence,
   reliable sparse idle frames, IDR-on-wake — and the liveness beacon.
-- **H2 — Parity.** Input injection via portal RemoteDesktop as primary (we
-  already hold that portal session open for capture; no udev rule on the
-  happy path), uinput as fallback; PipeWire monitor capture of the real
-  desktop → Opus, with the audio-continuity doc's send pacing and
-  per-packet DSCP (48 audio / 40 video); the congestion/resiliency
-  machinery (app-level CC, NACK, FROZEN/RECOVERY). Exit criteria: Sunshine
-  is uninstalled from the host box, and the client's GameStream stack is deleted
-  (earlier if H0b/H1 already made it non-load-bearing).
+- **H2 ✓ — Parity.** Input injection (Mutter internal RemoteDesktop as
+  primary — the portal path proved hostile headless — uinput as
+  fallback); PipeWire monitor capture of the real desktop → Opus, with
+  the audio-continuity doc's send pacing and per-packet DSCP (48 audio /
+  40 video); the congestion/resiliency machinery (app-level CC, NACK,
+  FROZEN/RECOVERY). Exit criteria met 2026-07-22: Sunshine uninstalled
+  from the host box, the client's GameStream stack deleted.
 - **H3 — Feature channel + clipboard.** Capability-negotiated feature
   channel over Lyte-UDP; bidirectional text clipboard with the
   loop-prevention discipline above. The first thing Sunshine can't do.
@@ -282,10 +279,10 @@ The existing ladder stands: **M5.5** (policy engine full), **M6 remainder**
 (preflight, SSH host probes, WoL, one-session guard, DSCP), **M7** (profiles,
 frame pacing, AV1, HDR, reconnect/resume) — all on the Lyte-UDP path.
 
-**The GameStream stack is frozen scaffolding** (per the 2026-07-20
+**The GameStream stack was frozen scaffolding** (per the 2026-07-20
 decision): zero new work, kept compiling only as the working path against
-Sunshine during the transition, deleted as soon as the Lyte-UDP client path
-is load-bearing (H0b/H1 target; H2 at the latest).
+Sunshine during the transition — and deleted at the H2 exit (2026-07-22),
+as scheduled.
 
 **Freeze rule:** M5.5–M7 are paused during H0–H2, critical fixes excepted.
 One maintainer, one front at a time.
@@ -344,8 +341,8 @@ One maintainer, one front at a time.
    platform layers (DXGI/Media Foundation/SendInput) and the UI is a tray
    shell, not SwiftUI. Sequenced after the Linux host proves the
    architecture, not before.
-5. **iOS/tvOS client** — architecture stays clean for it (LyteKit has no UI
-   dependencies); not scheduled.
+5. **iOS/tvOS client** — architecture stays clean for it (LyteTransport
+   has no UI dependencies); not scheduled.
 
 ---
 
@@ -359,8 +356,8 @@ One maintainer, one front at a time.
 - **No GameStream/Moonlight compatibility, either direction.** lyte-host
   speaks only Lyte-UDP; no Moonlight client ever connects to it unless a
   compat leaf is deliberately added later (2026-07-20 decision — the honest
-  cost is recorded there). The client's GameStream stack is transition
-  scaffolding slated for deletion, not a supported mode.
+  cost is recorded there). The client's GameStream stack was transition
+  scaffolding, deleted at the H2 exit — never a supported mode.
 - **No conferencing features.** Lyte is not a meeting tool.
 - **No settings sprawl.** The 2×2 policy grid and one dial survive the host
   expansion; the host role gets the same treatment (capabilities on/off,
@@ -378,7 +375,7 @@ One maintainer, one front at a time.
 | Hardware encoder variance (VAAPI quirks, NVENC licensing surface, hybrid-GPU traps) | One Swift encode facade with capability probes; the reference-host case study already caught the hybrid-GPU silent-fallback trap — probe results become doctor diagnoses. |
 | Swift-on-Linux ecosystem gaps (no Foundation surprises, C interop volume) | The client already proved the pure-Swift + C-leaf pattern; keep the C boundary at hardware libraries only. |
 | Two-ends scope creep | The H-ladder is strictly serial; a milestone ships only when verified live against the Lyte client; features land as negotiated channels, never as forks of the media path. |
-| Solo-maintainer bandwidth | Sunshine stays installed as the bootstrap crutch until Lyte↔Lyte streams — there is never a broken middle where nothing streams. The client's frozen GameStream path is that bridge; it is deleted only once Lyte-UDP is load-bearing. |
+| Solo-maintainer bandwidth | Sunshine stayed installed as the bootstrap crutch until Lyte↔Lyte streamed — there was never a broken middle where nothing streamed. The client's frozen GameStream path was that bridge; both were retired at the H2 exit once Lyte-UDP was load-bearing. |
 | Owning the wire ourselves (post-2026-07-20) | The reliable sublayer's ARQ correctness and the pre-handshake DoS posture are ours alone — no RFC 9000 lineage. Mitigations: the sublayer's scope is deliberately tiny (control, sparse idle frames, final ratchet frame); adversarial/netem tests are acceptance gates; the `LyteTransport` facade keeps QUIC re-adoptable if the ecosystem matures. Debugging has no off-the-shelf dissector — a small `lyte sniff` tool is the ledgered answer. |
 
 ---
@@ -389,7 +386,8 @@ Client works (done) → keep Sunshine as the bootstrap crutch while the host
 comes up on Lyte-UDP, our own and only protocol (H0a capture/encode is
 proven; H0b puts first pixels on the new wire; H1 makes the session honest) →
 reach parity, retire Sunshine, delete the client's GameStream scaffolding
-(H2) → open the negotiated feature channel and ship clipboard, the first
+(H2 — **all of this is done as of 2026-07-22**) → open the negotiated
+feature channel and ship clipboard, the first
 impossible-with-Sunshine feature (H3) → land 4:4:4 and the quality ratchet
 (H4) → files and printing (H5) → macOS host + one-binary UX (H6) → remote
 reach via Tailscale/port-forward today, a browser bridge and rendezvous

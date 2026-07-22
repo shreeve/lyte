@@ -2,34 +2,55 @@
 
 *Where Lyte-UDP desktop streaming stands against conferencing screen share,
 traditional remote desktop, and its own game-streaming lineage. Measured
-figures are from the J-G1 gate runs of 2026-07-21 (2048×1280@60 real
-desktop, the reference host → Mac client over LAN Wi-Fi, Noise encryption
-end to end); competitor figures are typical published/observed ranges, not
-lab-matched benchmarks.*
+figures are from the J-G1 gate runs of 2026-07-21 and the H1/H2 joint gates
+of 2026-07-22 (`docs/20260722-h1-joint-gate.md`,
+`docs/20260722-h2-joint-gate.md`) — 2048×1280@60 real desktop, the
+reference host → Mac client over LAN Wi-Fi, Noise encryption end to end;
+competitor figures are typical published/observed ranges, not lab-matched
+benchmarks.*
 
 ## The one-sentence summary
 
-Lyte already delivers **game-streaming latency at screen-sharing bandwidth
-with remote-desktop idle behavior — and stronger encryption than all of
-them** — with the remaining gaps (input, audio on the wire, WAN hardening)
-scheduled work, not open questions.
+Lyte delivers **game-streaming latency at screen-sharing bandwidth with
+remote-desktop idle behavior — and stronger encryption than all of them** —
+with input, audio, congestion control, and targeted loss repair now
+measured and landed, and the remaining gaps (WAN traversal, clipboard,
+4:4:4) scheduled work, not open questions.
 
-## Our measured baseline (J-G1, encrypted, live)
+## Our measured baseline (gate evidence, encrypted, live)
 
 - **Bandwidth**: ~4.1 Mbps average for a working 2048×1280@60 desktop
   (169 MB over 330 s); near-zero between damage events on a static screen.
 - **Latency**: first frame on glass 21.4 ms after the first datagram;
   fresh-frame capture→assembled ~16 ms; ~9 ms Wi-Fi RTT underneath.
+- **Input**: keystrokes/mouse ride the sealed reliable stream —
+  **input→photon p50 29–49 ms** measured end to end across the H2 gate's
+  six runs (1,833 scripted events, 100% injected exactly-once with
+  echoes; host receive→inject p50 ~1.2 ms). An input event in an idle
+  session wakes it in ~20 ms (p50).
+- **Audio**: desktop audio as 5 ms Opus packets under RS 4+2 FEC —
+  emission cadence at the host NIC **p50 4.999 / p99 5.978 ms**, held
+  through IDR bursts and a 90 s video squeeze (receiver concealment
+  0.037% through the squeeze). Audio keeps flowing through idle and
+  frozen states as the always-on path probe.
 - **Quality**: damage-driven 60 fps HEVC (NVENC); the quality ratchet
   converges static content to ~50 dB luma PSNR (visually lossless text)
   in under a second, then goes silent.
-- **Resilience**: RS-FEC healed real Wi-Fi loss transparently (0.001%
-  loss in the sign-off run; 5% induced loss healed via FEC + coalesced
-  IDR requests in the gate runs). Connection migration with
+- **Resilience**: RS-FEC heals real Wi-Fi loss transparently; past
+  parity, targeted NACK repair asks for exactly the missing shards (the
+  H2 gate's 15%-loss leg: 71 asks ↔ 71 consumed, 1:1 on the wire, frames
+  healed by repair with stale asks answered by IDR). Blackout recovery is
+  measured: freeze pill within ~425 ms of the last arrival, cleared ≤1 ms
+  after the first returning datagram. Connection migration with
   anti-amplification is built in.
+- **Congestion control**: delivery-rate estimation from burst dispersion —
+  rate falls anchor to *measured* delivery (never blind multiplicative
+  guesses), loss in FEC's band is held rather than crashed, and the rate
+  climbs back to ceiling on fresh evidence after squeezes and blackouts.
 - **Security**: every datagram sealed under Noise IK with a 16-byte proof;
-  0 unseal failures across ~300k datagrams of gate evidence; per-packet
-  DSCP marking (40 video / 48 control) on the wire.
+  **0 unseal failures across ~550k datagrams** of H2 gate evidence;
+  PIN-pairing is a real PAKE (CPace); per-packet DSCP marking (40 video /
+  48 audio+control) on the wire.
 
 ## Vs. conferencing screen share (Google Meet, Zoom, GoToMeeting)
 
@@ -45,8 +66,8 @@ viewers, so they buffer aggressively:
 
 We deliver 60 fps at conferencing-class bandwidth *because* we are
 damage-driven. The honest caveat: they solve NAT traversal, relays, and
-multi-party viewing — problems Lyte has not touched yet (WAN/congestion
-work lands with H2's CC and the later bridge work).
+multi-party viewing — problems Lyte has not touched yet (v1 remote reach
+is Tailscale or a port-forward; the browser bridge comes later).
 
 ## Vs. VNC
 
@@ -70,8 +91,10 @@ the H4 4:4:4 work on the roadmap.
 
 ## Vs. Sunshine / GameStream (Moonlight)
 
-Our true lineage, and the most direct comparison — the same reference box
-runs both today.
+Our true lineage — and, as of the H2 exit (2026-07-22), a system Lyte has
+**fully replaced**: Sunshine is uninstalled from the reference box and the
+client's GameStream stack is deleted. These rows describe what we measured
+while both ran side by side, and what the lineage never had.
 
 - **Bandwidth**: GameStream is constant-bitrate. Configure 20 Mbps and it
   burns ~20 Mbps forever, re-encoding a static desktop at 60 fps. Lyte
@@ -79,14 +102,18 @@ runs both today.
   more idle the desktop is — and goes near-silent between damage events.
 - **Latency**: same class (~5–20 ms LAN glass-to-glass). Neither side has
   a meaningful edge here; both are NVENC-fed UDP with FEC.
+- **Input and audio**: at parity, measured (input→photon p50 29–49 ms;
+  5 ms audio cadence held at p99 under load) — on the sealed wire, which
+  GameStream's never were.
 - **Security**: GameStream's video RTP flies **unencrypted** (only control
-  and audio are encrypted). Every Lyte datagram — video shards, beacons,
-  challenges — rides sealed under Noise.
-- **Extras GameStream lacks**: per-packet DSCP, connection migration with
-  path validation, a clock-beacon layer for honest latency accounting,
-  and the quality ratchet.
-- **What it still has that we don't (yet)**: input, audio on the wire, and
-  congestion control — the H1→H2 ladder, in order.
+  and audio are encrypted). Every Lyte datagram — video shards, audio,
+  input, beacons, challenges — rides sealed under Noise, and pairing is a
+  real PAKE instead of certificate exchange.
+- **Extras GameStream lacks**: measured congestion control (GameStream
+  streams blind at its configured bitrate), targeted NACK repair,
+  per-packet DSCP, connection migration with path validation, a
+  clock-beacon layer for honest latency accounting, idle silence, and the
+  quality ratchet.
 
 ## Quick reference
 
@@ -98,19 +125,16 @@ runs both today.
 | Static-content quality | ratchets to ~lossless | lossy | exact but slow | sharp (4:4:4) | fixed QP, lossy |
 | Encryption | everything (Noise IK) | TLS/SRTP | usually weak/none | TLS | video unencrypted |
 | Motion/video content | good (HEVC 60) | poor | very poor | fair | good |
-| WAN/NAT story | not yet (H2+) | excellent | poor | fair | fair (manual) |
-| Input + audio | not yet (H2) | n/a / yes | yes | yes | yes |
+| Congestion control | measured-delivery CC | yes | none | fair | none (CBR) |
+| WAN/NAT story | Tailscale/port-forward (bridge later) | excellent | poor | fair | fair (manual) |
+| Input + audio | yes (29–49 ms photon; 5 ms audio) | n/a / yes | yes | yes | yes |
 
 ## Where this gets awesome (roadmap features that widen the gap)
 
-The comparison above is Lyte at H0b — pixels only. The ladder ahead adds
-the capabilities that make a remote desktop feel local, each riding the
-same encrypted, paced, FEC-protected wire:
+The comparison above is Lyte at H2 — full streaming parity on our own
+wire. The ladder ahead adds the capabilities that make a remote desktop
+feel local, each riding the same encrypted, paced, FEC-protected wire:
 
-- **H2**: input (Mutter RemoteDesktop injection, ~18 ms proven) and audio
-  (5 ms Opus at a rock-steady 200 pkt/s, capture pipeline already gated),
-  plus congestion control — parity with GameStream, at which point the
-  scaffolding is deleted and Sunshine uninstalled.
 - **H3**: the feature channel — **clipboard** both ways, then
   **drag-and-drop file transfer**, riding the ARQ reliable sublayer.
   RDP has clipboard; conferencing tools mostly don't; GameStream never

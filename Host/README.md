@@ -1,30 +1,48 @@
 # Lyte Host (Linux)
 
-The Swift Linux host (LYTE-PLAN §6, `docs/HOST-PLAN.md`). This is the H0a
-"first pixels" work: desktop capture → NVENC HEVC, ahead of any RTP/protocol.
+The Swift Linux host (LYTE-PLAN §6, `docs/HOST-PLAN.md`): a full Lyte-UDP
+session host — portal desktop capture → NVENC HEVC video, 5 ms Opus audio,
+Mutter/uinput input injection, Noise-sealed datagrams, congestion control
+and targeted repair, Avahi discovery. H2 parity closed 2026-07-22
+(`docs/20260722-h2-joint-gate.md`).
 
 ## Layout
 
-- `Sources/HostCore` — pure Swift, no platform deps. Annex-B/HEVC NAL helpers.
-  Builds and tests on macOS so the bitstream contract is verifiable off-target.
-- `Sources/CDBus`, `Sources/CPipeWire`, `Sources/CLibAV` — pkg-config
-  systemLibrary modules (Linux only).
-- `Sources/CPipeWireCapture` — C leaf: a PipeWire input stream that hands mapped
-  RGB frames to a callback (SPA pod building is macro-only, hence C), plus an
-  optional repeating tick on the same loop thread for the steady-rate supply.
-- `Sources/CHevcEncode` — C leaf: libavcodec `hevc_nvenc` with Sunshine's
-  low-latency recipe (true CBR, single-frame VBV, GOP INT_MAX, zero B-frames,
-  preset p1 + ull, zero reorder, one surface). Annex-B packets out.
-- `Sources/lyte-host` — the executable: D-Bus portal ScreenCast session (or the
-  Mutter fallback), the capture→encode wiring, and the file writer.
+- `Sources/HostCore` — pure Swift, no platform deps: Annex-B/HEVC NAL
+  helpers, the strict-priority send pacer, histograms. Builds and tests on
+  macOS so the contracts are verifiable off-target.
+- `Sources/HostWire` — the session layer on LyteWire (also cross-platform):
+  Session (Noise responder), VideoChannel (packetize/FEC/pace/repair
+  store), AudioFramer, RateEstimator, SessionStateMachine wiring,
+  PathValidator migration, pairing responder, client keystore.
+- `Sources/CDBus`, `Sources/CPipeWire`, `Sources/CLibAV`, `Sources/COpus` —
+  pkg-config systemLibrary modules (Linux only).
+- `Sources/CPipeWireCapture` / `Sources/CPipeWireAudio` — C leaves: portal
+  video stream (mapped RGB frames + damage-driven callback + tick) and
+  default-sink monitor audio capture at the 5 ms quantum.
+- `Sources/CHevcEncode` — C leaf: libavcodec `hevc_nvenc` with the
+  low-latency recipe (true CBR, single-frame VBV, GOP INT_MAX, zero
+  B-frames, preset p1 + ull, zero reorder, one surface; capped-CQ VBR for
+  `--ratchet`). Annex-B packets out.
+- `Sources/COpusEncode` — C leaf: libopus 5 ms hard-CBR encode (+ decode
+  for loop verification).
+- `Sources/CNetIO` — C leaf: the UDP socket (sendmmsg/recvmmsg, per-packet
+  TOS cmsgs, kernel TX timestamps).
+- `Sources/CInputUinput` — C leaf: virtual evdev devices, the input
+  fallback behind Mutter RemoteDesktop.
+- `Sources/lyte-host` — the executable: portal/Mutter capture session,
+  session wiring, Avahi advertisement, pairing (`--pair`), input backends
+  (`--input auto|mutter|uinput|off`).
+- `Sources/lyte-netio-check`, `lyte-pace-check`, `lyte-audio-check` —
+  on-host verification harnesses.
 
-C lives only at the hardware/OS leaves (PipeWire, D-Bus, libavcodec), per
-LYTE-PLAN §4.
+C lives only at the hardware/OS leaves (PipeWire, D-Bus, libavcodec,
+libopus, the socket, uinput), per LYTE-PLAN §4.
 
 ## Test (macOS or Linux)
 
 ```
-swift test           # HostCore Annex-B helpers
+swift test           # HostCore + HostWire (the executable + C leaves are Linux-only)
 ```
 
 On macOS use `DEVELOPER_DIR=/Applications/Xcode.app swift test` (CLT lacks XCTest).
@@ -60,6 +78,11 @@ unlocked or capture is inhibited):
 
 # Spike fallback — Mutter's internal ScreenCast, no consent dialog.
 ./.build/debug/lyte-host --backend mutter --connector eDP-1 --out /tmp/lyte-h0a.hevc --seconds 5
+
+# The real thing — a Lyte-UDP session host (prints its Noise static pubkey;
+# audio + Avahi advertisement default-on; --pair for PIN pairing;
+# --require-paired to enforce the keystore). 41000-range ports by convention.
+./.build/debug/lyte-host --backend portal --wire-listen 41000 --ratchet --seconds 330
 ```
 
 ## Verify the output

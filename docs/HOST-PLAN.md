@@ -12,7 +12,9 @@
 > amendments in §6 are kept as historical record — the protocol knowledge in
 > them still documents the payload interiors Lyte-UDP reuses (HEVC
 > depacketization layout, RS-FEC math, Opus framing) and what the frozen
-> client scaffolding speaks until it is deleted.
+> client scaffolding spoke until its deletion at the H2 exit (2026-07-22 —
+> H2 parity closed, Sunshine uninstalled, the GameStream stack deleted;
+> `docs/20260722-h2-joint-gate.md`).
 
 ## TL;DR
 

@@ -2,17 +2,19 @@
 
 Stable conventions, architecture, and hard rules for the Lyte repo. For
 *current* state (what's committed, what slice is next, live-run results),
-read `HANDOFF.md` — gitignored session scratch, never committed. This file
-holds only what doesn't change session to session.
+read `HANDOFF.md` — the tracked session ledger. This file holds only what
+doesn't change session to session.
 
 ## What Lyte is
 
 A GPLv3 remote-desktop system where we own both ends: a SwiftUI macOS
 client and a Swift Linux host. The core decision (2026-07-20): **both ends
 speak exactly one protocol, Lyte-UDP** — our own protocol over plain UDP.
-The GameStream/Sunshine dialect never existed on the host; the client's
-old GameStream stack and the Sunshine install on the reference host were
-demolished at the H2 exit (2026-07-22) — Lyte↔Lyte is the only path. Depth:
+H2 functional parity (input, 5 ms audio, congestion control, targeted
+repair) closed 2026-07-22 with the H2 joint gate. The GameStream/Sunshine
+dialect never existed on the host; the client's old GameStream stack and
+the Sunshine install on the reference host were demolished at the H2 exit
+(2026-07-22) — Lyte↔Lyte is the only path. Depth:
 `docs/20260720-215100-lyte-udp-decision.md` (the decision record) and
 `docs/20260720-222500-lyte-build-plan.md` (the master plan — slice ladder,
 gates, the H0a/H0b/H1/H2/H3+ milestones).
@@ -32,15 +34,17 @@ gates, the H0a/H0b/H1/H2/H3+ milestones).
   `HostWire` (packetizer/FEC/pacer wiring onto LyteWire) build and test
   everywhere, macOS included. The `lyte-host` executable and the C leaves
   (`CPipeWireCapture`, `CHevcEncode`, `CPipeWireAudio`, `COpusEncode`,
-  `CNetIO`, plus the `CDBus`/`CPipeWire`/`CLibAV`/`COpus` system-library
-  modules) exist only under `#if os(Linux)` in the manifest.
+  `CNetIO`, `CInputUinput`, plus the `CDBus`/`CPipeWire`/`CLibAV`/`COpus`
+  system-library modules) exist only under `#if os(Linux)` in the manifest.
 - **Root** — package `Lyte`: the macOS client (macOS-only; SwiftUI app
  `Lyte`, `lyte-cli`). `LyteTransport` is the whole client protocol stack
  (imports LyteWire): socket + demux, video/audio pipelines, discovery,
  pairing, session. `LyteUI` holds the shared AppKit shims (render view,
- icon); `COpus` is the one C leaf (libopus decode/PLC). The GameStream
- stack (`LyteKit`/`CEnet`/`CNanors`) was deleted at the H2 exit per the
- demolition checklist in `docs/20260720-221103-build-plan-client.md`.
+ icon); `lyte-helperd` + `LyteHelperProtocol` are the SMAppService AWDL
+ helper pair; `COpus` is the one C leaf (libopus decode/PLC). The
+ GameStream stack (`LyteKit`/`CEnet`/`CNanors`) was deleted at the H2
+ exit per the demolition checklist in
+ `docs/20260720-221103-build-plan-client.md`.
 
 ## Build & test
 
@@ -89,8 +93,8 @@ makes later runs headless.
 
 - **Pure Swift, both ends. C only at hardware/OS leaves** — on the host:
   PipeWire, NVENC/libavcodec, D-Bus, libopus, the UDP socket (CNetIO's
-  cmsg/sendmmsg syscalls), uinput when it lands; in Wire: nanors.
-  Everything above a leaf is Swift.
+  cmsg/sendmmsg syscalls), uinput (CInputUinput, the input fallback); in
+  Wire: nanors. Everything above a leaf is Swift.
 - **LyteWire is sans-IO**: no Foundation, no sockets, no threads; clocks
   and randomness are injected. It must stay WASM-compilable — the future
   browser client imports the same core. The rule is lint-enforced, not
@@ -122,8 +126,10 @@ makes later runs headless.
 - Don't push unless asked (main runs ahead of origin by convention).
   Avoid `--amend`.
 
-**HANDOFF.md** is gitignored session scratch. Read it first for current
-state and the resume point; edit it freely; never commit it.
+**HANDOFF.md** is the tracked session ledger (in the repo since `8da50bf`;
+the `.gitignore` entry is vestigial and inert for a tracked file). Read it
+first for current state and the resume point; edit it freely; commit
+updates in the ledger voice.
 
 **Networking / host safety.**
 - Lyte UDP work uses 41000-range ports by convention. (The old "stay off
