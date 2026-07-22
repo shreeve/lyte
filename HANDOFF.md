@@ -700,16 +700,98 @@ are LANDED, GATED, COMMITTED (not pushed):
   deferred human leg), background-run death root-cause if it ever
   shows in a real session.
 
+- **HS-17 NACK consumption / targeted repair** (`96b1a89`, Host/):
+  the H2 resiliency close-out — client NACKs are honored, closing §4.7's
+  deferred half. NACK RESPONDER (resiliency §1.1 rules 3–4 as written):
+  the chan-3 report's NACK section (frozen W4a codec — ZERO wire bytes
+  moved, everything composes through existing codecs) is consumed at
+  Session.ingestFeedback → per-entry verdicts. VideoChannel grew the
+  repair store — every packetized shard (plaintext + fec field + TLV
+  stamps) retained per frame, ≥4 s ring (build-plan row) + 16 MB byte
+  cap, oldest-first eviction — and `enqueueRepair`: each honored shard
+  is a FRESH datagram (fresh seq, fresh seal — the W3/W9 rule; the
+  original frame/fec/timestamp/lastInputSeq TLVs ride verbatim) on
+  `.videoTail` (overview conflict 13 — below fresh video, structurally
+  below audio). Staleness ruling: honor iff `rtt + retxSerialization <
+  remainingFreezeBudget` (budget = 2 frame intervals, 33 ms default —
+  Work mode has no video jitter buffer; anchor = the frame's LAST shard
+  release instant, pacer queue time never charged) AND frame not older
+  than the last IDR (the IDR itself stays repairable, §5.2's burst
+  rationale); ONE attempt per shard ever; stale verdicts that leave the
+  client stuck (budget gone / store evicted) arm the SAME coalesced
+  keyframe latch client 0x10s pull (IDR-on-stale = the existing
+  requester, no new pathway); olderThanIdr refuses silently (the newer
+  IDR is the heal); FROZEN/closed suppress repairs (§4 freeze rule).
+  RTT term = SRTT (new RFC 6298 EWMA off beacon echoes) capped at
+  2×min-RTT — the beacon SRTT double-counts both ends' receive-loop
+  wake latency (~7–14 ms measured on a 0.3 ms loopback), which a repair
+  datagram never pays. POST-FEC LOSS → ESTIMATOR (HS-16's named seam):
+  NACKed shards, deduped (frame,shard) over the rolling 1 s window,
+  over the video ledger's attempted deltas = post-FEC loss; > 2%
+  (rung 3) → ×0.85 fall (same 500 ms limiter, NOT the held 2–10% band
+  — this is precisely what FEC failed to absorb; new verdict/reason
+  `.postFecLoss`) + FEC-REGIME STEP: estimator latches §5.2 clean→lossy
+  (fires with the downshift), lossy→clean after 5 s (config) with no
+  post-FEC evidence; Session applies each step to VideoChannel's NEW
+  `setRegime` per-frame switch (HS-16's deferred item, closed). NACK
+  evidence inside a RECOVERY window holds RECOVERY (sawLoss). Gate:
+  Host 93 → **104/104 Mac AND pup** (NackRepairGateTests, 11 legs:
+  repair round-trip — 6 shards past parity healed byte-exact via
+  loop-decode, fresh seqs pinned; olderThanIdr dead + IDR-repairable;
+  budget-stale arms the coalesced latch exactly once; no-RTT refused;
+  evicted → unavailable → IDR; closed suppressed; store age/cap laws +
+  channel-level one-attempt; estimator post-FEC downshift + regime
+  step/step-down + re-NACK dedupe; NACK-holds-RECOVERY; regime step
+  lands on next frame's geometry 28+5 → 28+10; R-G8 CADENCE UNDER
+  REPAIR STORM — 199 NACKs honored → 398 videoTail repairs in 5 s
+  virtual, audio inter-send p99 deviation 0.026 ms). LIVE on pup
+  :41071 (probe ~/src/hs17-probe :41072 — the hs16 probe grown the
+  client NACK half: VideoAssembler's exact packet-threshold-3
+  presumption, immediate NACK flush, repair verification by
+  loop-decode, rule-4 escalation to 0x10 after 250 ms): run E, 15%
+  netem loss VIDEO-scoped (tos 0xa0 + dport 41072, removed at t≈27 s):
+  1,365 video datagrams dropped → 304 frames FEC-recovered and, past
+  parity, **7 frames HEALED BY REPAIR (47 fresh-seq repair shards
+  received, byte-exact by loop-decode) — targeted repair healing what
+  FEC can't**; host honored 7/13 entries → 52 repair datagrams, 6
+  honestly stale (5 budget, 1 olderThanIdr) → IDR alternative; **14
+  rung-3 downshifts (20000→17000→14450… kbps) + 4 regime steps —
+  probe watched the §5.2 column flip on the wire (k=75 m=19 lossy) and
+  step BACK to clean after the quiet hold**; audio inter-arrival p50
+  4.74 / p99 5.98 ms (within 5±2 ms) THROUGH loss+repair; 0 unseal
+  failures (23,365 dg). Run F (stale mode, clean path): 16 deliberately
+  stale NACKs → **0 retransmits, 16 stale verdicts (12 olderThanIdr
+  refused dead, 4 budgetExceeded → 4 IDR-armed, exact 1:1), staleness
+  answered with IDR** (15 IDRs encoded, probe decoded 14 IRAP frames);
+  audio p99 5.89 ms. Cleanup verified: netem removed (noqueue), no
+  lyte-host/probe, 41071/41072 free, Sunshine active, all three config
+  shas byte-identical. Logs pup:/tmp/hs17-{hostE,hostF,probeE,probeF}.log
+  (A–D = earlier iterations: A found the pacer-queue-time budget bug,
+  C/D found the probe's false-NACK timer + the SRTT wake-latency
+  distortion). Deferred: client-side NACK emission in LyteTransport
+  (root territory — the probe proved the wire contract; CL's
+  FeedbackSender routes assembler nackCandidates into the section it
+  already encodes), VideoAssembler acceptance of fresh-seq repair
+  shards (Wire/ territory: the group-consistency check drops a repair
+  whose seq sits outside the original range — the ONE seam the probe
+  had to model around; flag for the promotion slice), retransmit-lane
+  DSCP (repairs ride 0xA0 with video today; a tail-class marking is a
+  wire-policy call), per-NACK-entry pacing if a hostile client ever
+  matters (today bounded by store size + one-attempt).
+
 IN FLIGHT / NEXT: CL-7 reconnect/takeover UX (needs a host
 session-busy story), HS-9 cookie-mode enforcement (W8 landed; the
 client leg is live in every dial), 0x15/idle-frame promotion into
 Wire/ (now joined by 0x16/0x17/TLV-0x03 at CL-9 and the HS-15+CL-11
 audio interior — mirrors in place and byte-pinned on BOTH ends).
-CL-11 is LANDED — H2's client audio row closes; the remaining H2
-demolition gate items are input/audio/congestion joint legs + the
-LyteKit deletion checklist.
+CL-11 is LANDED — H2's client audio row closes; HS-17 is LANDED —
+H2's congestion-II host row closes (CC/NACK/FROZEN-RECOVERY: HS-18's
+rows landed inside HS-11/HS-16; the client NACK-emission half + the
+input/audio/congestion joint legs + the LyteKit deletion checklist
+remain for the H2 gate).
 Ports used tonight: 41000–41011 + 41021/41022 + 41031 (H1 joint gate)
-+ 41041/41061 (HS-16 host/probe) + 41051 (CL-11).
++ 41041/41061 (HS-16 host/probe) + 41051 (CL-11) + 41071/41072
+(HS-17 host/probe).
 Subagent stall pattern persists — 7-min watchdog + interrupt-kick works
 (W4b needed two kicks; check any silent worker's transcript mtime).
 
