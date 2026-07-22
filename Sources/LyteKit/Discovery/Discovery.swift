@@ -3,11 +3,11 @@ import Network
 
 /// Bonjour discovery of GameStream/Sunshine hosts (_nvstream._tcp).
 /// Results are RESOLVED to numeric addresses — service names like
-/// "pop._nvstream._tcp.local." are useless as connect targets and don't
+/// "pup._nvstream._tcp.local." are useless as connect targets and don't
 /// match stored pairings.
 public enum Discovery {
     public struct FoundHost: Sendable {
-        public let name: String        // Bonjour service name, e.g. "pop"
+        public let name: String        // Bonjour service name, e.g. "pup"
         public let endpoint: String    // resolved address, e.g. "10.0.0.249"
     }
 

@@ -55,7 +55,7 @@ That is the number the telemetry in §8 must report continuously.
 ## 2. Clock architecture
 
 **One master clock domain: the host PipeWire graph clock** (CLOCK_MONOTONIC
-on `pop`). The audio-continuity doc already pins audio RTP timestamps to it
+on the host). The audio-continuity doc already pins audio RTP timestamps to it
 (§4.3 there); this design extends the same domain to video rather than
 revisiting it. Every capture buffer — audio and video — gets a timestamp from
 the same monotonic clock at the same conceptual point (media entered the

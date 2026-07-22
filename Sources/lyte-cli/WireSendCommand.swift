@@ -10,7 +10,7 @@ import LyteWire
 /// FEC recovery can be exercised without a lossy network. Insecure
 /// framing only (the crypto seam is W5's; re-gate when it lands).
 ///
-/// CL-3 makes it the two-sided host stand-in (pop is down; this is the
+/// CL-3 makes it the two-sided host stand-in (the host box is down; this is the
 /// smoke's far end until J-G1): it RECEIVES on its connected socket and
 /// logs the client's return traffic — chan=3 feedback reports (ledgers,
 /// dispersion sample counts), beacon echoes (computing offset/RTT with a

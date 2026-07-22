@@ -60,28 +60,28 @@ Client binaries that contact a host: use `Scripts/build-cli.sh` /
 `Scripts/make-app.sh` so the stable "Lyte Dev" signature preserves Keychain
 authorization (`docs/MACOS-SIGNING.md`).
 
-### Reference host (pop) — facts specific to THIS box, not repo-wide rules
+### Reference host (pup) — facts specific to THIS box, not repo-wide rules
 
-`pop` = the Linux host at 10.0.0.249 (`ssh pop`): Ubuntu 26.04, GNOME/Mutter
+`pup` = the Linux host at 10.0.0.249 (`ssh pup`): Ubuntu 26.04, GNOME/Mutter
 Wayland, RTX 4050, PipeWire, Swift 6.1.2 at `/usr/local/bin/swift`,
 passwordless sudo. Source syncs there; `Host/Package.swift` needs Wire as a
 sibling directory:
 
 ```
-rsync -a --delete --exclude .build Wire/ pop:src/Wire/
-rsync -a --delete --exclude .build Host/ pop:src/lyte-host/
-ssh pop 'cd ~/src/lyte-host && LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build'
+rsync -a --delete --exclude .build Wire/ pup:src/Wire/
+rsync -a --delete --exclude .build Host/ pup:src/lyte-host/
+ssh pup 'cd ~/src/lyte-host && LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build'
 ```
 
-The `LD_LIBRARY_PATH` shim is a **local pop-box workaround only**: Swift
+The `LD_LIBRARY_PATH` shim is a **local pup-box workaround only**: Swift
 6.1.2's build tools want `libxml2.so.2`, which Ubuntu 26.04 doesn't ship
 (it has `.so.16`), so `~/.local/lib/swift-compat/libxml2.so.2` symlinks to
 the system `libxml2.so.16`. Not a universal requirement.
 
 `lyte-host` must run inside the logged-in, unlocked graphical session
 (portal capture is inhibited otherwise). First portal run shows a one-time
-consent dialog on pop's physical screen; the persisted restore token makes
-later runs headless.
+consent dialog on the host's physical screen; the persisted restore token
+makes later runs headless.
 
 ## Architecture doctrine (LYTE-PLAN §4 + the decision record)
 
@@ -126,7 +126,7 @@ state and the resume point; edit it freely; never commit it.
 **Networking / host safety.**
 - All Lyte UDP stays OFF ports 47998–48010 (Sunshine's range). Recent work
   uses 41000-range ports.
-- Never disturb the Sunshine service on pop, and never touch
+- Never disturb the Sunshine service on the reference host, and never touch
   `~/.config/lyte-host/{portal_token,noise_static.key}` — verify they
   survive any run that goes near them.
 - Scope any netem/tc impairment to the specific Lyte port

@@ -53,8 +53,8 @@ The client alone, however good, is capped by what Sunshine ships. Concretely:
 2. **4:4:4 arrives with or without us — the moat is elsewhere.** Windows
    NVENC 4:4:4 shipped in 2025; Linux NVENC 4:4:4 (CUDA/CUDA-GL, fixing
    the silent 4:2:0 fallback of #4836) merged to Sunshine's master on
-   2026-06-16 (PR #4965). It hasn't appeared in a release yet, but `pop`
-   could serve 4:4:4 today from a source build — so the host is not the
+   2026-06-16 (PR #4965). It hasn't appeared in a release yet, but the
+   reference host could serve 4:4:4 today from a source build — so the host is not the
    only road to crisp text, and honesty says so. What owning the host
    actually buys is the feature channel (points 1 and 3) and roadmap
    ownership: chroma fidelity becomes a capability negotiation on our
@@ -193,8 +193,8 @@ docs/20260720-215100-lyte-udp-decision.md.)*
 ## 6. The Lyte host (Linux first)
 
 Linux is the first host target because that's the machine on the other end
-today (`pop`), and because it's the platform where owning the host pays off
-immediately (Wayland clipboard, 4:4:4 via NVENC on `pop`).
+today (the reference host), and because it's the platform where owning the
+host pays off immediately (Wayland clipboard, 4:4:4 via NVENC).
 
 Implementation detail and evidence for these choices:
 [docs/HOST-PLAN.md](docs/HOST-PLAN.md) (recommendation + adopted review
@@ -211,7 +211,7 @@ lyte (host role)
 ├── SessionHost/    Lyte-UDP session/control host side; one session per display, N feature channels
 ├── Capture/        Linux: PipeWire/portal (Wayland), KMS; macOS: ScreenCaptureKit
 ├── Encode/         NVENC / VAAPI / VideoToolbox behind one Swift facade; HEVC⇄H.264; 4:4:4
-│                   (NVENC is the `pop` path and the 4:4:4-capable one; VAAPI banked for Intel hosts)
+│                   (NVENC is the reference-host path and the 4:4:4-capable one; VAAPI banked for Intel hosts)
 ├── AudioCap/       PipeWire capture → Opus encode → Lyte-UDP datagrams + FEC
 ├── InputInject/    portal RemoteDesktop primary, uinput fallback — keyboard, mouse, scroll
 ├── Features/       clipboard watcher/setter, print interception, file channel
@@ -234,7 +234,7 @@ Lyte-UDP-shaped.)*
 
 - **H0a — Spike: first pixels into a file (in progress; slices 1–2
   committed).** Portal/PipeWire capture → NVENC HEVC (a libavcodec leaf) →
-  Annex-B file, proven headless on `pop`. The formerly planned
+  Annex-B file, proven headless on the host. The formerly planned
   "Sunshine-dialect RTP+FEC into the debug client" slice is dropped.
   Remaining H0a work: the quality-ratchet prototype on the existing
   file-output host (already approved).
@@ -252,7 +252,7 @@ Lyte-UDP-shaped.)*
   desktop → Opus, with the audio-continuity doc's send pacing and
   per-packet DSCP (48 audio / 40 video); the congestion/resiliency
   machinery (app-level CC, NACK, FROZEN/RECOVERY). Exit criteria: Sunshine
-  is uninstalled from `pop`, and the client's GameStream stack is deleted
+  is uninstalled from the host box, and the client's GameStream stack is deleted
   (earlier if H0b/H1 already made it non-load-bearing).
 - **H3 — Feature channel + clipboard.** Capability-negotiated feature
   channel over Lyte-UDP; bidirectional text clipboard with the
@@ -373,9 +373,9 @@ One maintainer, one front at a time.
 | Risk | Mitigation |
 |------|-----------|
 | Wayland capture/input fragmentation across distros/compositors | Target PipeWire + portals + libei (the modern common path); study Sunshine's fallbacks; state supported environments explicitly rather than chasing every compositor. |
-| COSMIC portal immaturity — Pop!_OS is migrating from GNOME to COSMIC, whose ScreenCast/RemoteDesktop portals are young | Pin H0–H2 to GNOME/Mutter on `pop`; COSMIC and non-NVIDIA are explicitly unsupported at that stage, failing loudly rather than silently; KMS stays the documented fallback backend for later. |
+| COSMIC portal immaturity — Pop!_OS is migrating from GNOME to COSMIC, whose ScreenCast/RemoteDesktop portals are young | Pin H0–H2 to GNOME/Mutter on the reference host; COSMIC and non-NVIDIA are explicitly unsupported at that stage, failing loudly rather than silently; KMS stays the documented fallback backend for later. |
 | Login-screen blackout — portal capture needs a logged-in session, so a rebooted host is dark until someone logs in | A stated limitation and a named doctor diagnosis until a KMS/login-manager story exists — never a silent capture failure. |
-| Hardware encoder variance (VAAPI quirks, NVENC licensing surface, hybrid-GPU traps) | One Swift encode facade with capability probes; the `pop` case study already caught the hybrid-GPU silent-fallback trap — probe results become doctor diagnoses. |
+| Hardware encoder variance (VAAPI quirks, NVENC licensing surface, hybrid-GPU traps) | One Swift encode facade with capability probes; the reference-host case study already caught the hybrid-GPU silent-fallback trap — probe results become doctor diagnoses. |
 | Swift-on-Linux ecosystem gaps (no Foundation surprises, C interop volume) | The client already proved the pure-Swift + C-leaf pattern; keep the C boundary at hardware libraries only. |
 | Two-ends scope creep | The H-ladder is strictly serial; a milestone ships only when verified live against the Lyte client; features land as negotiated channels, never as forks of the media path. |
 | Solo-maintainer bandwidth | Sunshine stays installed as the bootstrap crutch until Lyte↔Lyte streams — there is never a broken middle where nothing streams. The client's frozen GameStream path is that bridge; it is deleted only once Lyte-UDP is load-bearing. |

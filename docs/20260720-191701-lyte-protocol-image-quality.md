@@ -230,7 +230,7 @@ for by the resiliency sibling's LTR needs.
 ## 5. Resolution and scaling: pixel-exact is a protocol guarantee
 
 **Work default: pixel-exact mode.** Capture at native panel resolution
-(2048×1280 on `pop`), encode 1:1, decode 1:1, and render **decoded pixel →
+(2048×1280 on the reference host), encode 1:1, decode 1:1, and render **decoded pixel →
 device pixel with no resampling**. On a Retina client this means the stream
 window's backing store is mapped at device-pixel identity, not scaled by the
 2× UI factor. Every resampling step — host fractional scaling, client
@@ -290,7 +290,7 @@ witness); (d) black/white/primary flat patches (range round-trip witness);
 (e) one photographic frame (regression guard for Play).
 
 The harness runs the *real pipeline* — RGB source → host conversion + encode
-(on `pop`) → decode via VideoToolbox on the client → readback — and compares
+(on the host) → decode via VideoToolbox on the client → readback — and compares
 **in RGB space after full decode**, because YUV-domain PSNR hides exactly the
 chroma and range bugs we care about. Metrics and gates:
 

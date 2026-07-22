@@ -128,7 +128,7 @@ wire changes. Amendments to the H2 audio scope
    **Acceptance criterion (measurable):** while a worst-case IDR frame
    transmits, audio inter-send intervals at the host NIC stay within
    **5 ms ± 2 ms at p99** (measured via send-side timestamping or tcpdump on
-   `pop`); no audio packet waits behind more than one in-flight video send
+   the host); no audio packet waits behind more than one in-flight video send
    batch. Stale-video discard and video-bitrate backoff (video yields before
    audio continuity is threatened) are *designed* under this ordering in H2
    but *implemented* in H4, where loss-driven adaptation lands.

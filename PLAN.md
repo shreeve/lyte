@@ -284,15 +284,15 @@ PolicyOutput = { w, h, fps, bitrate, codecPrefs, bufferMs, mouseMode,
 
 ---
 
-## 6. Milestones (each ends runnable against `pop`)
+## 6. Milestones (each ends runnable against the reference host)
 
 | # | Name | Deliverable | Acceptance |
 |---|------|-------------|------------|
 | M0 | Scaffold | this plan, repo, references | ✅ done |
-| M1 | Pairing | LyteKit: discovery, cert gen, PIN pair, serverinfo/applist. CLI: `lyte-cli pair`, `lyte-cli apps` | Pairs with Sunshine on pop; applist prints; identity survives relaunch (Keychain) |
+| M1 | Pairing | LyteKit: discovery, cert gen, PIN pair, serverinfo/applist. CLI: `lyte-cli pair`, `lyte-cli apps` | Pairs with Sunshine on the host; applist prints; identity survives relaunch (Keychain) |
 | M2 | Session | RTSP handshake + control ENet connect + launch/resume/quit | ✅ done — encrypted RTSP reaches PLAY on ice; control channel soaked 10 min; clean teardown |
 | M3 | Pixels | Video UDP → FEC → depacketize → ASBDL in a bare window | ✅ done — 310s soak at 2048×1280@60 clean; 5% induced loss: 1,087 pkts FEC-recovered, IDR re-request heals the rest |
-| M4 | Hands & ears | Input (free+locked mouse, keyboard, scroll) + Opus audio | ✅ done — type/scroll/click + audio approved live on pop; audio FEC recovered 187 pkts under 5% induced loss; ⌃⌥ mouse lock; ~50 ms audio depth cap |
+| M4 | Hands & ears | Input (free+locked mouse, keyboard, scroll) + Opus audio | ✅ done — type/scroll/click + audio approved live on the host; audio FEC recovered 187 pkts under 5% induced loss; ⌃⌥ mouse lock; ~50 ms audio depth cap |
 | M5 | App shell | SwiftUI window-is-the-app shell (D6): connect empty-state, ⌘N windows, mode toggle, policy engine v1 | ✅ done — Lyte.app: click host → click app → pixels; relaunch → pixels with zero clicks (verified live); policy derives all parameters, zero settings touched |
 | M6 | Doctor | probes, signatures, awdl helper, SSH host checks | Reproduce the case study on demand: doctor names AWDL + power-save + shared-channel correctly, fixes the first two |
 | M7 | Polish | Metal/VTDecompression path, AV1, HDR, frame-pacing dial, MenuBarExtra, reconnect/resume | Play·Local end-to-end latency ≤ moonlight-qt on same hardware; HDR round-trips |
@@ -306,9 +306,9 @@ Ship signal: M5 is daily-drivable for Steve; M6 is the public-release bar.
 
 | Risk | Mitigation |
 |------|------------|
-| ENet fork subtleties (channel config, MTU) | Vendor the exact fork; integration-test against Sunshine nightly + `pop` |
+| ENet fork subtleties (channel config, MTU) | Vendor the exact fork; integration-test against Sunshine nightly + the reference host |
 | Audio FEC parity matrix mismatch | Vendor matrix verbatim; golden-packet tests captured from real sessions |
-| Depacketizer edge cases (multi-FEC blocks, frame-header variants) | Sunshine-only trims variants; fuzz the parser (moonlight-common-c.md §15 quality bar); capture-replay corpus from pop |
+| Depacketizer edge cases (multi-FEC blocks, frame-header variants) | Sunshine-only trims variants; fuzz the parser (moonlight-common-c.md §15 quality bar); capture-replay corpus from the host |
 | Pairing crypto byte-exactness | Golden transcripts captured from reference client ↔ Sunshine; unit-test each stage |
 | VideoToolbox HEVC quirks (parameter-set changes mid-stream) | Rebuild format description on VPS/SPS/PPS change (reference behavior); test host resolution changes |
 | Sandbox + UDP + ICMP + helper | Prototype entitlements in M1 CLI (network.client/server); SMAppService helper spike early in M6 |

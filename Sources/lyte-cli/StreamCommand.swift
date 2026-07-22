@@ -51,7 +51,7 @@ enum HelperBridge {
 
 struct Stream: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Stream an app to a window — video, audio, and input (the default subcommand: `lyte-cli pop` streams pop's desktop).")
+        abstract: "Stream an app to a window — video, audio, and input (the default subcommand: `lyte-cli <host>` streams that host's desktop).")
 
     @Argument(help: "Host: Bonjour name, hostname, or IP") var host: String
     @Argument(help: "App on the host (default: the desktop)") var app: String = "Desktop"

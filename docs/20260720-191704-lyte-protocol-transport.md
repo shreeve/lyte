@@ -316,7 +316,7 @@ Sequencing (my call, consistent with the H-ladder's verifier discipline):
   acceptance, before H3): the transport validation spike (§1 gates), then
   one QUIC connection carrying CTRL (Noise IK + capabilities + input) +
   video-active datagrams + video-idle streams, host `--native-listen` flag,
-  client `lyte://` toggle. Acceptance: the Mac client streams the `pop`
+  client `lyte://` toggle. Acceptance: the Mac client streams the host
   desktop over the native transport, idle→active transitions with fresh IDR
   work, and an A/B against the compat dialect measures the audio DSCP
   question (§2). Media crypto may stub through TLS-only for the first week

@@ -16,7 +16,7 @@ struct LyteCLI: AsyncParsableCommand {
 
 /// Accept Bonjour names, .local names, hostnames, or IPs anywhere an address
 /// is expected: bare names that don't resolve in DNS are matched against
-/// discovered _nvstream._tcp services (so `lyte-cli pop` just works).
+/// discovered _nvstream._tcp services (so `lyte-cli pup` just works).
 enum HostAddress {
     static func resolve(_ input: String) async -> String {
         // IPs and dotted names go straight through (the system resolver

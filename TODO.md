@@ -30,7 +30,7 @@ it was deferred, so the next touch of that code picks it up naturally.*
   frozen scaffolding — zero new work — kept compiling only as the working
   path against Sunshine during the transition. Delete it when the Lyte-UDP
   client path streams the desktop end-to-end (H0b/H1 target), at the absolute
-  latest at H2 parity; uninstall Sunshine from `pop` at the same moment.
+  latest at H2 parity; uninstall Sunshine from the host box at the same moment.
   Deletion is the default, not a decision point — git history preserves it.
   (`docs/20260720-215100-lyte-udp-decision.md`.)
 

@@ -158,7 +158,7 @@ Each platform-format struct carries **four pix_fmt slots**: 8-bit, 10-bit, **444
 Profiles: H.264 High → High 4:4:4 Predictive; HEVC Main/Main10 → **Rext** for any 4:4:4; AV1 Main → High (profile 1). 10-bit H.264 asserted impossible.
 
 ### Probing (validate_encoder, video.cpp:3000)
-Runs at startup **and every stream launch** (unless nothing changed). Each capability = a **real 1080p60 test encode** (1000 kbps): H.264 baseline, then HEVC/AV1, then separate test encodes for YUV444, HDR, and HDR+444 per codec; first packet must be IDR; SPS parsed for VUI presence. Failures cascade to the next encoder. Results feed serverinfo's SCM bits directly — capability advertisement is empirical, never assumed. (The `pop` hybrid-GPU silent-fallback case study is this mechanism working as designed: NVENC failed its probe, vaapi passed, 4:4:4 silently unavailable.)
+Runs at startup **and every stream launch** (unless nothing changed). Each capability = a **real 1080p60 test encode** (1000 kbps): H.264 baseline, then HEVC/AV1, then separate test encodes for YUV444, HDR, and HDR+444 per codec; first packet must be IDR; SPS parsed for VUI presence. Failures cascade to the next encoder. Results feed serverinfo's SCM bits directly — capability advertisement is empirical, never assumed. (The reference-host hybrid-GPU silent-fallback case study is this mechanism working as designed: NVENC failed its probe, vaapi passed, 4:4:4 silently unavailable.)
 
 ### Capture→encode loop & idle behavior — **the VNC-bandwidth divergence point**
 - Shared capture thread per display (priority critical), per-session encode loops (priority high), 12-image pool.
@@ -181,7 +181,7 @@ Runs at startup **and every stream launch** (unless nothing changed). Each capab
 
 What PR #4965 built (all reusable): `chromaSamplingType` plumbed end-to-end; per-codec 444 probe + SCM advertisement; profile switching; EGL YUV444 render targets + per-plane Y/U/V conversion shaders (`graphics.cpp:1103` `make_yuv444`); CUDA `RGBA_to_YUV444` kernels; GL↔CUDA interop path feeding Linux NVENC.
 
-**What VAAPI 4:4:4 needs** (confirmed against source; matches the plan in the `pop` investigation):
+**What VAAPI 4:4:4 needs** (confirmed against source; matches the plan in the reference-host investigation):
 1. `video.cpp:1180` — fill the two `AV_PIX_FMT_NONE` slots with `VUYX` (8-bit) / `XV36` (10-bit) and add `YUV444_SUPPORT`. Without this, `make_encode_device` bails before anything else runs.
 2. `vaapi.cpp:420 set_frame` assumes NV12 export: exactly 2 layers, UV = w/2 h/2. A VUYX surface exports as **one packed layer** — needs a packed-write shader variant (or 3-plane handling; note `import_target_yuv444` at graphics.cpp:795 already exists but is **dead code** — declared, defined under a different name, never called).
 3. Runtime probe: `get_va_profile` **already returns** `VAProfileHEVCMain444(_10)` for Rext; `is_va_profile_supported` machinery exists. The probe matters — AMD/radeonsi has no 444 encode; the flag alone would break AMD.

@@ -4,12 +4,12 @@
 # touched — in particular the Sunshine service, which speaks on the LAN
 # interface and is never impaired by anything this script does.
 #
-# Runs on the host machine (pop), as root:
+# Runs on the host machine, as root:
 #   sudo Scripts/netem/lo-netem.sh apply <udp-port> [delay-ms] [loss-pct]
 #   sudo Scripts/netem/lo-netem.sh remove
 #   Scripts/netem/lo-netem.sh status
 # or from the dev machine:
-#   ssh pop 'sudo -n sh -s -- apply 47999 20' < Scripts/netem/lo-netem.sh
+#   ssh pup 'sudo -n sh -s -- apply 47999 20' < Scripts/netem/lo-netem.sh
 #
 # Mechanism: a prio qdisc on lo's root whose priomap sends ALL traffic to
 # band 1 (plain pfifo, unimpaired); a u32 filter steers only UDP datagrams

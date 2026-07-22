@@ -62,12 +62,12 @@ host deliverables.
 | CL-1 | H0b | `LyteTransport` receive skeleton: UDP socket (kernel stamps, big rcvbuf, VI class), envelope decode, (chan, u16 seq) demux with serial arithmetic, per-channel counters; `lyte-cli` debug subcommand | Decodes core test vectors byte-exact; counts live host datagrams on LAN | S | core: envelope codec + vectors |
 | CL-2 | H0b | Video channel: `LyteVideoAssembler` (per-frame RS block from `fec` field, nanors decode) → adapter → existing depacketizer → factory → window | Renders canned datagram corpus, then live host video; 5% synthetic drop recovers via FEC | M | CL-1; host video sender |
 | CL-3 | H0b | Minimal feedback: chan=3 per-packet arrival reports at 25–50 ms, NACK on FEC-impossible (immediate, geometry-triggered), 1 Hz beacon echo | Host estimator shows dispersion samples; forced loss produces NACKs the host honors | S | core: feedback/NACK/beacon formats |
-| CL-4 | H0b | **Joint gate with host**: live `pop` desktop rendered over LAN via pure Lyte-UDP | Glass-to-glass measured (capture-ts→photon via rough clock offset, cross-checked with a phone-camera ms-clock photo); soak ≥ 5 min clean | S | CL-1..3; host H0b complete |
+| CL-4 | H0b | **Joint gate with host**: live host desktop rendered over LAN via pure Lyte-UDP | Glass-to-glass measured (capture-ts→photon via rough clock offset, cross-checked with a phone-camera ms-clock photo); soak ≥ 5 min clean | S | CL-1..3; host H0b complete |
 | CL-5 | H1 | Discovery: `_lyte._udp` NWBrowser (TXT: identity hash, version, port); dual-browse with `_nvstream._tcp` until demolition | Lyte host appears in ConnectView beside Sunshine hosts; manual host:port still works | S | host advertises (Avahi) |
 | CL-6 | H1 | Pairing: PIN SwiftUI flow rewired to PAKE; pinned static Noise keys in Keychain (`SecKeyCreateRandomKey(kSecAttrIsPermanent)` lesson; signed builds only) | Pair once, reconnect authenticates via Noise IK with zero UI; unpair works | M | core: PAKE + Noise |
 | CL-7 | H1 | Session lifecycle: `LyteUdpSession` replaces `LyteSession` behind ConnectionModel; CTRL on reliable sublayer; capabilities exchange; connect/reconnect/takeover UX (`session-busy` → takeover-request sheet) | App streams Lyte-UDP end-to-end from click; reconnect after client sleep; takeover verified with two clients | M | core: reliable sublayer, session messages |
 | CL-8 | H1 | Idle-silence + FROZEN/RECOVERY surfacing: no post-first-frame video watchdog (designed in, not patched in); status pill shows FROZEN subtly, never modal | LYTE_GAP_SIM-equivalent passes on the new path; pulled-cable shows pill, restores silently | S | CL-7 |
-| CL-9 | H2 | Input over CTRL: client-timestamped, sequenced events; host echo tuples (seq, rx, inject); lastInputSeq closes per-keystroke input-to-photon into Stats/doctor | Typing on `pop` via Lyte-UDP; input-to-photon histogram live in doctor | M | core: input messages; host inject |
+| CL-9 | H2 | Input over CTRL: client-timestamped, sequenced events; host echo tuples (seq, rx, inject); lastInputSeq closes per-keystroke input-to-photon into Stats/doctor | Typing on the host via Lyte-UDP; input-to-photon histogram live in doctor | M | core: input messages; host inject |
 | CL-10 | H2 | `HostClockModel`: min-filtered offset + regression skew over 30 s window from beacon echoes; single instance, two consumers | Residual < 1 ms after 30 s (T gate) | S | CL-3 beacon |
 | CL-11 | H2 | **M7 audio receiver** against the Lyte-UDP audio channel, pinned order (§3) | M7 acceptance envelope (§3) | L | core: audio channel; host audio sender |
 | CL-12 | H2 | Work/Play presentation: Work = present-ASAP (decode all, display newest); Play = schedule at `map(captureTs) + D` on the 120 Hz vsync grid via CADisplayLink, percentile D, A/V sync bias [−100, +30] ms | Play-mode pacing ≥ 99% scheduled-slot hits at LAN 60 fps; wake-from-idle presents frame 1 without display-link wait | M | CL-10 |
@@ -174,7 +174,7 @@ Executed as one reviewed commit series, not a slow bleed:
 5. Migrate `ClientStore` schema: drop cert/uniqueId fields, keep host
    names/recents; users re-pair (PAKE) — acceptable, stated in release notes.
 6. Sweep docs: PLAN.md §3 module map, README, doctor strings referencing
-   Sunshine. Uninstall Sunshine from `pop` in the same breath (host plan).
+   Sunshine. Uninstall Sunshine from the host box in the same breath (host plan).
 7. `DEVELOPER_DIR=/Applications/Xcode.app swift test` green; full app
    re-verified live before the series merges.
 
@@ -212,7 +212,7 @@ stay at H4 as pinned.
 | VideoToolbox Rext 4:4:4 quirks (full-range double-expansion, mid-stream parameter-set changes) | CL-13 fixture harness with byte-exact 0/255 round-trip gates before any live 4:4:4; rebuild format description on VPS/SPS/PPS change (proven M3 behavior) |
 | ProMotion pacing (display-link jitter, 120 Hz treated as fixed) | Work mode needs no display link (present-ASAP); Play-mode CL-12 gates on measured slot-hit rate; moonlight-qt's pacer is the studied prior art |
 | WSOLA correctness (audible artifacts on music) | Accel-only scope; synthetic seam tests + the 300 ms stall+burst acceptance; item lands alone so regressions bisect to it |
-| Bonjour interop with a Linux host (Avahi advertising `_lyte._udp`, TXT parsing via NWBrowser) | CL-5 tested against the real `pop` advertisement early; manual host:port is the always-working fallback |
+| Bonjour interop with a Linux host (Avahi advertising `_lyte._udp`, TXT parsing via NWBrowser) | CL-5 tested against the real host's advertisement early; manual host:port is the always-working fallback |
 | u16 seq wrap / serial-arithmetic bugs in demux and NACK addressing | Property tests around wrap in CL-1; wrap at peak ≈ 3.6 s ≫ gate windows by design |
 | Feedback/NACK loop bugs starving the host estimator | CL-3 gates on host-visible samples, not client-side counters; `lyte sniff` (TODO-ledgered) before protocol surface grows past H2 |
 | Dual-stack window drags on (two protocol layers to keep compiling) | Deletion is the default with a named trigger and an H2 hard deadline; freeze rule forbids any GameStream work meanwhile |

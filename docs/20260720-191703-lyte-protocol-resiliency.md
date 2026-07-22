@@ -321,7 +321,7 @@ shard header so the receiver's NACK decision (§1.1 rule 2) is immediate.
 ## 7. Acceptance gates
 
 All profiles are netem/tc scripts checked into `Scripts/` (reproducible, run against
-`pop` or a Linux bridge box), each ≥ 120 s, measured at the client with existing
+the host or a Linux bridge box), each ≥ 120 s, measured at the client with existing
 kernel-timestamp instrumentation. "Artifact" = any rendered frame containing damage from
 an incompletely decoded reference, or a freeze.
 

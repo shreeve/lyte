@@ -16,7 +16,7 @@ import LyteWire
 /// (FeedbackSender), beacon echoes for every CTRL ClockBeacon
 /// (BeaconEchoResponder), and coalesced IDR requests when the assembler
 /// writes a frame off as FEC-impossible (IdrRequester). wire-send is the
-/// host stand-in that receives and logs all three until pop returns.
+/// host stand-in that receives and logs all three until the host box returns.
 ///
 /// AppKit rule (HANDOFF, hard-won): NSApplication.run() must own the raw
 /// C main thread — Main.main treats every subcommand not on its non-UI
