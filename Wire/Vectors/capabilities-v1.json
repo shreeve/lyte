@@ -1,0 +1,401 @@
+{
+  "cborVectors" : [
+    {
+      "cborHex" : "851718181901001a000100001b0000000100000000",
+      "description" : "Every shortest-form argument width in one array: 23 (immediate), 24 (u8), 256 (u16), 65536 (u32), 2^32 (u64) — the RFC 8949 appendix-A ladder.",
+      "kind" : "canonical",
+      "name" : "unsigned-argument-widths"
+    },
+    {
+      "cborHex" : "85203863f5f4f6",
+      "description" : "Negative integers (−1, −100) and the three profile simple values.",
+      "kind" : "canonical",
+      "name" : "negative-and-simple"
+    },
+    {
+      "cborHex" : "8244010203046449455446",
+      "description" : "RFC 8949 appendix-A byte and text strings: h'01020304' and \"IETF\".",
+      "kind" : "canonical",
+      "name" : "bytes-and-text"
+    },
+    {
+      "cborHex" : "8301820203820405",
+      "description" : "RFC 8949 appendix-A [1, [2, 3], [4, 5]].",
+      "kind" : "canonical",
+      "name" : "nested-arrays"
+    },
+    {
+      "cborHex" : "a301021864f66161820203",
+      "description" : "Integer keys before text keys, bytewise over the encodings — the §4.2.1 deterministic order.",
+      "kind" : "canonical",
+      "name" : "map-key-order"
+    },
+    {
+      "cborHex" : "1817",
+      "description" : "Argument 23 in the one-byte form — well-formed CBOR, not the shortest form, rejected.",
+      "error" : "nonCanonicalArgument",
+      "kind" : "decodeReject",
+      "name" : "non-shortest-u8"
+    },
+    {
+      "cborHex" : "1900ff",
+      "description" : "Argument 255 in the two-byte form.",
+      "error" : "nonCanonicalArgument",
+      "kind" : "decodeReject",
+      "name" : "non-shortest-u16"
+    },
+    {
+      "cborHex" : "a202000100",
+      "description" : "{2: 0, 1: 0} — keys out of bytewise order.",
+      "error" : "misorderedMapKeys",
+      "kind" : "decodeReject",
+      "name" : "misordered-map-keys"
+    },
+    {
+      "cborHex" : "a201000100",
+      "description" : "{1: 0, 1: 0}.",
+      "error" : "duplicateMapKey",
+      "kind" : "decodeReject",
+      "name" : "duplicate-map-key"
+    },
+    {
+      "cborHex" : "9f00ff",
+      "description" : "The indefinite-length marker is outside the profile.",
+      "error" : "unsupportedItem",
+      "kind" : "decodeReject",
+      "name" : "indefinite-array"
+    },
+    {
+      "cborHex" : "c000",
+      "description" : "Major type 6 (a tag) is outside the profile.",
+      "error" : "unsupportedItem",
+      "kind" : "decodeReject",
+      "name" : "tag"
+    },
+    {
+      "cborHex" : "f90000",
+      "description" : "Float16 0.0 — no floats in the profile.",
+      "error" : "unsupportedItem",
+      "kind" : "decodeReject",
+      "name" : "float"
+    },
+    {
+      "cborHex" : "f7",
+      "description" : "Simple value `undefined` — only false\/true\/null pass.",
+      "error" : "unsupportedItem",
+      "kind" : "decodeReject",
+      "name" : "undefined"
+    },
+    {
+      "cborHex" : "1904",
+      "description" : "A u16 argument cut mid-byte.",
+      "error" : "truncatedItem",
+      "kind" : "decodeReject",
+      "name" : "truncated-argument"
+    },
+    {
+      "cborHex" : "0000",
+      "description" : "One item then garbage — the buffer is exactly one item.",
+      "error" : "trailingBytes",
+      "kind" : "decodeReject",
+      "name" : "trailing-bytes"
+    },
+    {
+      "cborHex" : "62c328",
+      "description" : "A text string whose bytes are not UTF-8.",
+      "error" : "invalidUtf8",
+      "kind" : "decodeReject",
+      "name" : "invalid-utf8"
+    },
+    {
+      "cborHex" : "818181818181818100",
+      "description" : "Eight nested arrays put the innermost item at the depth cap.",
+      "error" : "nestingTooDeep",
+      "kind" : "decodeReject",
+      "name" : "nesting-too-deep"
+    }
+  ],
+  "format" : "lyte-wire-capability-vectors",
+  "formatVersion" : 1,
+  "intersectVectors" : [
+    {
+      "aHex" : "a80103028201020382010204f5058301020306f507f5081905dc",
+      "agreedHex" : "a8010002810103810104f505810106f407f508190578",
+      "bHex" : "a8010002810103810104f505810106f407f508190578",
+      "description" : "A full-house host against a modest client: min minor, HEVC only, 4:2:0 only, clipboard only, AND'd booleans, min ceiling.",
+      "name" : "nominal-asymmetric"
+    },
+    {
+      "aHex" : "a80103028201020382010204f5058301020306f507f5081905dc",
+      "agreedHex" : "a80103028201020382010204f5058301020306f507f5081905dc",
+      "bHex" : "a80103028201020382010204f5058301020306f507f5081905dc",
+      "description" : "A set against itself — the idempotence law as bytes.",
+      "name" : "identical-idempotent"
+    },
+    {
+      "aHex" : "a8010002810103810104f505810106f407f508190578",
+      "agreedHex" : "a8010002810103810104f5058006f407f408190578",
+      "bHex" : "a8010002810103810104f505810306f407f408190578",
+      "description" : "Disjoint feature lists intersect to empty — absence is \"not supported\", never an error.",
+      "name" : "disjoint-features"
+    },
+    {
+      "aHex" : "aa010002810103810104f505810106f407f50819057818640718656161",
+      "agreedHex" : "a9010002810103810104f505810106f407f508190578186407",
+      "bHex" : "aa0103028201020382010204f5058301020306f507f5081905dc18640718656162",
+      "description" : "Foreign keys survive intersection only on byte-equal agreement: key 100 (equal values) survives, key 101 (differing values) drops.",
+      "name" : "unknown-entries-byte-equal-rule"
+    }
+  ],
+  "messageVectors" : [
+    {
+      "codec" : "declaration",
+      "description" : "0x0F carrying Capabilities.wireDefault — the hand-computed anchor (CapabilityCodecTests).",
+      "kind" : "roundtrip",
+      "messageHex" : "0fa8010002810103810104f5058006f407f408190480",
+      "name" : "declaration-wire-default"
+    },
+    {
+      "codec" : "declaration",
+      "description" : "0x0F carrying every v1 key at a non-default value.",
+      "kind" : "roundtrip",
+      "messageHex" : "0fa80103028201020382010204f5058301020306f507f5081905dc",
+      "name" : "declaration-full-house"
+    },
+    {
+      "codec" : "update",
+      "description" : "0x11 proposing maxDatagramBytes 1500 — the DPLPMTUD raise, v1's one renegotiable key.",
+      "kind" : "roundtrip",
+      "messageHex" : "11a1081905dc",
+      "name" : "update-geometry-raise"
+    },
+    {
+      "codec" : "updateAck",
+      "description" : "0x12 status 0x01, echoing the raise proposal verbatim.",
+      "kind" : "roundtrip",
+      "messageHex" : "1201a1081905dc",
+      "name" : "ack-accepted"
+    },
+    {
+      "codec" : "updateAck",
+      "description" : "0x12 status 0x02 — a refused proposal, echoed.",
+      "kind" : "roundtrip",
+      "messageHex" : "1202a1081905dc",
+      "name" : "ack-rejected"
+    },
+    {
+      "codec" : "declaration",
+      "description" : "The type byte alone — a declaration has a body.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "0f",
+      "name" : "declaration-truncated"
+    },
+    {
+      "codec" : "declaration",
+      "description" : "An IDR-request type byte fed to the declaration decoder.",
+      "error" : "unexpectedType",
+      "kind" : "decodeReject",
+      "messageHex" : "10a0",
+      "name" : "declaration-bad-type"
+    },
+    {
+      "codec" : "declaration",
+      "description" : "A CBOR array where the capability map belongs.",
+      "error" : "malformedBody",
+      "kind" : "decodeReject",
+      "messageHex" : "0f810a",
+      "name" : "declaration-body-not-a-map"
+    },
+    {
+      "codec" : "declaration",
+      "description" : "1025 bytes — past the 1024 B capability-message ceiling, the anti-streaming stop, refused before any CBOR work.",
+      "error" : "messageOverBudget",
+      "kind" : "decodeReject",
+      "messageHex" : "0f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "name" : "declaration-over-budget"
+    },
+    {
+      "codec" : "update",
+      "description" : "An empty proposal map — a no-op update is a bug, not a message.",
+      "error" : "emptyUpdate",
+      "kind" : "decodeReject",
+      "messageHex" : "11a0",
+      "name" : "update-empty-map"
+    },
+    {
+      "codec" : "update",
+      "description" : "{\"a\": 0} — parameter keys are registry numbers.",
+      "error" : "nonIntegerParameterKey",
+      "kind" : "decodeReject",
+      "messageHex" : "11a1616100",
+      "name" : "update-text-key"
+    },
+    {
+      "codec" : "update",
+      "description" : "A proposal whose CBOR argument (23 in the u8 form) is not shortest-form — deterministic encoding is enforced end to end.",
+      "error" : "malformedBody",
+      "kind" : "decodeReject",
+      "messageHex" : "11a1081817",
+      "name" : "update-non-canonical-body"
+    },
+    {
+      "codec" : "updateAck",
+      "description" : "Status 0x03 — unassigned.",
+      "error" : "unknownStatus",
+      "kind" : "decodeReject",
+      "messageHex" : "1203a1081905dc",
+      "name" : "ack-unknown-status"
+    },
+    {
+      "codec" : "updateAck",
+      "description" : "Status 0x00 — the loud zero-fill bug, never a value.",
+      "error" : "unknownStatus",
+      "kind" : "decodeReject",
+      "messageHex" : "1200a1081905dc",
+      "name" : "ack-zero-status"
+    },
+    {
+      "codec" : "updateAck",
+      "description" : "The type byte alone — an ack has a status and a body.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "12",
+      "name" : "ack-truncated"
+    }
+  ],
+  "setVectors" : [
+    {
+      "cborHex" : "a8010002810103810104f5058006f407f408190480",
+      "description" : "Capabilities.wireDefault — the hand-computed anchor (CapabilitiesTests): minor 0, HEVC, 4:2:0, idle-silence, no features, 1152 B ceiling.",
+      "kind" : "roundtrip",
+      "name" : "wire-default",
+      "set" : {
+        "audioExpress" : false,
+        "chromaModes" : [
+          1
+        ],
+        "featureChannels" : [
+
+        ],
+        "idleSilence" : true,
+        "maxDatagramBytes" : 1152,
+        "resume" : false,
+        "unknownKeyCount" : 0,
+        "videoCodecs" : [
+          1
+        ],
+        "wireMinor" : 0
+      }
+    },
+    {
+      "cborHex" : "a80103028201020382010204f5058301020306f507f5081905dc",
+      "description" : "Every v1 key at a non-default value, including a foreign codec id (2) carried in the list.",
+      "kind" : "roundtrip",
+      "name" : "full-house",
+      "set" : {
+        "audioExpress" : true,
+        "chromaModes" : [
+          1,
+          2
+        ],
+        "featureChannels" : [
+          1,
+          2,
+          3
+        ],
+        "idleSilence" : true,
+        "maxDatagramBytes" : 1500,
+        "resume" : true,
+        "unknownKeyCount" : 0,
+        "videoCodecs" : [
+          1,
+          2
+        ],
+        "wireMinor" : 3
+      }
+    },
+    {
+      "cborHex" : "a9010002810103810104f5058006f407f40819048018646178",
+      "description" : "wireDefault plus foreign key 100 → \"x\": the unknown-key-ignored rule — decodes, typed fields unaffected, re-encodes byte-exact.",
+      "kind" : "roundtrip",
+      "name" : "unknown-key-preserved",
+      "set" : {
+        "audioExpress" : false,
+        "chromaModes" : [
+          1
+        ],
+        "featureChannels" : [
+
+        ],
+        "idleSilence" : true,
+        "maxDatagramBytes" : 1152,
+        "resume" : false,
+        "unknownKeyCount" : 1,
+        "videoCodecs" : [
+          1
+        ],
+        "wireMinor" : 0
+      }
+    },
+    {
+      "cborHex" : "a30100028101038101",
+      "description" : "Only the three required keys — the optional five default to unsupported \/ the 1152 B floor. Decode-only: a v1 re-encode emits all eight keys explicitly, so this legal-but-lean form is not byte-stable.",
+      "kind" : "decodeLenient",
+      "name" : "required-keys-only",
+      "set" : {
+        "audioExpress" : false,
+        "chromaModes" : [
+          1
+        ],
+        "featureChannels" : [
+
+        ],
+        "idleSilence" : false,
+        "maxDatagramBytes" : 1152,
+        "resume" : false,
+        "unknownKeyCount" : 0,
+        "videoCodecs" : [
+          1
+        ],
+        "wireMinor" : 0
+      }
+    },
+    {
+      "cborHex" : "a20100038101",
+      "description" : "wireMinor and chromaModes only — videoCodecs is required.",
+      "error" : "missingKey",
+      "kind" : "decodeReject",
+      "name" : "missing-video-codecs"
+    },
+    {
+      "cborHex" : "a3016131028101038101",
+      "description" : "wireMinor as a text string — registered keys carry their registered types.",
+      "error" : "wrongValueType",
+      "kind" : "decodeReject",
+      "name" : "wrong-type-minor"
+    },
+    {
+      "cborHex" : "a3010002810103820201",
+      "description" : "chromaModes [2, 1] — id lists are strictly ascending.",
+      "error" : "nonCanonicalIdList",
+      "kind" : "decodeReject",
+      "name" : "descending-id-list"
+    },
+    {
+      "cborHex" : "a401000281010381010819047f",
+      "description" : "maxDatagramBytes 1151 — below the 1152 B protocol floor.",
+      "error" : "datagramCeilingBelowFloor",
+      "kind" : "decodeReject",
+      "name" : "ceiling-below-floor"
+    },
+    {
+      "cborHex" : "810a",
+      "description" : "A top-level array — a declaration body is a map.",
+      "error" : "notAMap",
+      "kind" : "decodeReject",
+      "name" : "not-a-map"
+    }
+  ],
+  "wireVersion" : 1
+}

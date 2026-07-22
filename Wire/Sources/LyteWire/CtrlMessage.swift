@@ -76,12 +76,24 @@ public enum CtrlMessageType {
     /// Either direction: typed pairing refusal (PairingReject) — loud
     /// wrong-PIN without an oracle.
     public static let pairingReject: UInt8 = 0x0E
+    /// Both directions: the capability declaration (W7,
+    /// CapabilityDeclaration — `type ‖ deterministic CBOR map`). The
+    /// first ARQ-carried message each way after establishment; the
+    /// session's agreed set is the intersection of the two.
+    public static let capabilityDeclaration: UInt8 = 0x0F
     /// Client→host IDR request (IdrRequest). Sealed, ARQ-exempt; 0x10 is
     /// CL-3's original pin, clear of the 0x07…0x0F range left for W3's
     /// session machinery (0x07/0x08 taken by the ARQ frames, 0x09/0x0A
     /// by the W4b lifecycle messages, 0x0B–0x0E by the W6 pairing
-    /// quartet).
+    /// quartet, 0x0F by the W7 capability declaration).
     public static let idrRequest: UInt8 = 0x10
+    /// Host→client session-parameter renegotiation proposal (W7,
+    /// CapabilityUpdate) — renegotiable keys only (v1:
+    /// maxDatagramBytes, the DPLPMTUD raise). ARQ-carried.
+    public static let capabilityUpdate: UInt8 = 0x11
+    /// Client→host answer to an update (CapabilityUpdateAck),
+    /// echoing the proposal it accepts or rejects. ARQ-carried.
+    public static let capabilityUpdateAck: UInt8 = 0x12
 
     /// The type byte of a CTRL payload, nil when the payload is empty.
     /// Dispatch on this, then hand the whole payload (type byte included)

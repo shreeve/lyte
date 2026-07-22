@@ -55,6 +55,13 @@ case in `FecCoderTests`, the hand-walked datagram in
   A/B.1 plus the B.1.10 low-order table), the pinned PairingPake
   exchange runs, and the pairing CTRL codecs 0x0B–0x0E. Provenance
   rules below.
+- `capabilities-v1.json` — the W7 capability layer (gate W-G8): the
+  deterministic CBOR profile, the typed capability set and its
+  unknown-key rules, the intersect algebra frozen as data, and the
+  capability CTRL codecs 0x0F/0x11/0x12. Anchored against RFC 8949's
+  appendix-A examples (transcribed in `CborTests`) and the
+  hand-computed set/message bytes in `CapabilitiesTests` /
+  `CapabilityCodecTests`.
 
 ## The 24-byte envelope (wire v1)
 
@@ -600,6 +607,126 @@ Message decode rejects: `share-a-truncated`, `share-a-trailing-byte`,
 `share-a-bad-type`, `share-b-truncated`, `confirm-bad-type`,
 `confirm-trailing-byte`, `reject-truncated`, `reject-zero`,
 `reject-unknown` (0x7f).
+
+## The capability layer (wire v1)
+
+The W7 "superpowers handshake" (transport pillar §4): right after
+establishment, each end sends one capability declaration as the first
+ARQ-carried CTRL message; the session's effective capabilities are the
+INTERSECTION, computed identically on both ends. There is no accept
+round — the intersection is the agreement. Capabilities are
+session-scoped and fixed after the exchange except where the key
+registry marks a key renegotiable.
+
+**The CBOR profile.** Declaration bodies are deterministic CBOR
+(RFC 8949 §4.2.1 core requirements) restricted to the Lyte capability
+profile: unsigned/negative integers, byte and text strings, arrays,
+maps with strictly-ascending bytewise-ordered keys, false/true/null.
+No indefinite lengths, no tags, no floats. Non-shortest arguments and
+misordered/duplicate map keys REJECT even when well-formed — two ends
+that disagree about bytes are a wire bug the codec refuses to paper
+over. Decode nesting is bounded at depth 8.
+
+**The key registry** (CBOR unsigned map keys; numbers are wire
+contract; `Capabilities.swift`):
+
+| key | field | type | intersect |
+|---|---|---|---|
+| 1 | wireMinor (required) | u16 | min |
+| 2 | videoCodecs (required) | ascending id list — 1 HEVC | set ∩ |
+| 3 | chromaModes (required) | ascending id list — 1 4:2:0, 2 4:4:4 | set ∩ |
+| 4 | idleSilence | bool | AND |
+| 5 | featureChannels | ascending id list — 1 clipboard, 2 files, 3 printing | set ∩ |
+| 6 | audioExpress | bool | AND |
+| 7 | resume | bool | AND |
+| 8 | maxDatagramBytes | u32 ≥ 1152 | min |
+
+Forward compatibility, three rules: unknown KEYS are ignored (never a
+decode error) and preserved verbatim; unknown VALUES inside id lists
+are carried, not rejected (intersection with the local set drops
+them); new semantics ship as new keys gated by intersection, so
+absence is always "not supported", never an error. Unknown entries
+survive intersection only when present in BOTH declarations with
+byte-equal values — the rule that keeps the algebra idempotent.
+Omitted optional keys decode to unsupported / the 1152 B floor;
+required keys (1–3) missing reject. Empty videoCodecs or chromaModes
+intersection is negotiation failure (`CapabilityNegotiator`).
+
+**Renegotiation.** v1 marks exactly one key renegotiable:
+`maxDatagramBytes` — the DPLPMTUD raise (overview §2), host→client
+proposals only (the media sender owns geometry), one outstanding at a
+time, values within [1152, agreed ceiling], applied at an IDR
+boundary. The operative value starts at 1152 regardless of the agreed
+ceiling. Everything else is connect-time only; a proposal naming a
+fixed or unknown key draws a rejected ack, not a teardown.
+
+Messages (CTRL types, all ARQ-carried on the ordered stream):
+0x0F declaration = `type ‖ CBOR map` (the full set); 0x11 update =
+`type ‖ CBOR map` (renegotiable keys only, non-empty); 0x12 update
+ack = `type ‖ status ‖ CBOR map` (status 0x01 accepted / 0x02
+rejected, 0x00 the loud zero-fill bug; the map echoes the proposal
+verbatim so the answer binds to bytes). Any capability message over
+1024 B rejects before CBOR work — the anti-streaming stop.
+
+## File format: capabilities-v1.json
+
+Top-level: `format` ("lyte-wire-capability-vectors"), `formatVersion`
+(1), `wireVersion` (1), `cborVectors`, `setVectors`,
+`intersectVectors`, `messageVectors`.
+
+`cborVectors`: `canonical` — `cborHex` must decode and re-encode
+byte-exact (canonical admission + deterministic re-emission in one
+check); `decodeReject` — decoding throws `error`, a `CborError` case
+name. The circularity is broken by RFC 8949's own appendix-A examples
+transcribed into `CborTests`.
+
+`setVectors`: `roundtrip` — `cborHex` decodes to a set matching the
+typed `set` fields and re-encodes byte-exact (and with
+`unknownKeyCount` 0, encoding the typed fields must produce `cborHex`
+exactly); `decodeLenient` — legal but not byte-stable (omitted
+optional keys re-encode explicit), decode-only; `decodeReject` —
+`error` is a `CapabilityError` case name.
+
+`intersectVectors`: decoding `aHex` and `bHex` and intersecting IN
+BOTH ORDERS must produce exactly `agreedHex` — commutativity frozen
+as data, not assumed.
+
+`messageVectors`: `codec` ("declaration"/"update"/"updateAck") plus
+`roundtrip` (decode `messageHex`, re-encode byte-exact) and
+`decodeReject` (`error`, a `CapabilityMessageError` case name).
+Anchored against the hand-computed bytes in `CapabilityCodecTests`.
+
+## Vector inventory (capabilities-v1.json, 17 cbor + 9 set + 4 intersect + 15 message)
+
+CBOR canonical: `unsigned-argument-widths` (every shortest-form width
+in one array), `negative-and-simple`, `bytes-and-text`,
+`nested-arrays`, `map-key-order` (integer keys before text keys).
+
+CBOR decode rejects: `non-shortest-u8`, `non-shortest-u16`,
+`misordered-map-keys`, `duplicate-map-key`, `indefinite-array`,
+`tag`, `float`, `undefined`, `truncated-argument`, `trailing-bytes`,
+`invalid-utf8`, `nesting-too-deep`.
+
+Set round trips: `wire-default` (the hand-computed anchor),
+`full-house` (every key non-default, a foreign codec id carried),
+`unknown-key-preserved` (the unknown-key-ignored rule as bytes).
+Set lenient decode: `required-keys-only` (optional keys defaulted).
+Set decode rejects: `missing-video-codecs`, `wrong-type-minor`,
+`descending-id-list`, `ceiling-below-floor`, `not-a-map`.
+
+Intersects: `nominal-asymmetric` (full-house ∩ modest),
+`identical-idempotent` (the idempotence law as bytes),
+`disjoint-features` (empty feature agreement is fine),
+`unknown-entries-byte-equal-rule` (equal foreign values survive,
+differing ones drop).
+
+Message round trips: `declaration-wire-default`,
+`declaration-full-house`, `update-geometry-raise`, `ack-accepted`,
+`ack-rejected`. Message decode rejects: `declaration-truncated`,
+`declaration-bad-type`, `declaration-body-not-a-map`,
+`declaration-over-budget` (1025 B), `update-empty-map`,
+`update-text-key`, `update-non-canonical-body`, `ack-unknown-status`
+(0x03), `ack-zero-status`, `ack-truncated`.
 
 ## The Noise layer (wire v1)
 
