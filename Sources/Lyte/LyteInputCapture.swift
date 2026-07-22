@@ -1,9 +1,9 @@
 // LyteInputCapture (CL-9): NSEvent capture for the Lyte-UDP stream
-// window — the input half of the app's Lyte path. The frozen GameStream
-// capture (LyteUI.InputCapture) keeps its Windows-VK world untouched;
-// this one speaks HS-13's wire: evdev position codes (the host's XKB
-// map owns layout), absolute pointer pixels in the HOST's
-// recorded-monitor space, smooth-scroll pixel deltas.
+// window — the input half of the app's Lyte path. Speaks HS-13's wire:
+// evdev position codes (the host's XKB map owns layout), absolute
+// pointer pixels in the HOST's recorded-monitor space, smooth-scroll
+// pixel deltas. (The GameStream capture and its Windows-VK world died
+// with LyteKit at the H2 demolition.)
 //
 // Coordinate mapping: the display layer draws with resizeAspect, so the
 // video occupies the aspect-fit rect inside the view — absolute

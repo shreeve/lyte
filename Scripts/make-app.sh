@@ -54,9 +54,9 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>LSApplicationCategoryType</key> <string>public.app-category.games</string>
     <key>NSHumanReadableCopyright</key> <string>© 2026 Steve Shreeve · GPL-3.0</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Lyte discovers and streams from Sunshine hosts on your local network.</string>
+    <string>Lyte discovers and streams from Lyte hosts on your local network.</string>
     <key>NSBonjourServices</key>
-    <array><string>_nvstream._tcp</string></array>
+    <array><string>_lyte._udp</string></array>
 </dict>
 </plist>
 EOF

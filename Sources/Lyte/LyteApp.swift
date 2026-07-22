@@ -1,5 +1,4 @@
 import SwiftUI
-import LyteKit
 import LyteUI
 
 /// The Lyte app (M5): D6 window-is-the-app. Each window is one connection;

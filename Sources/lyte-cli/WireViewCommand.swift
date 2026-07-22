@@ -643,6 +643,16 @@ enum InputScript {
     }
 }
 
+final class WindowCloser: NSObject, NSWindowDelegate {
+    private let onClose: () -> Void
+    init(onClose: @escaping () -> Void) { self.onClose = onClose }
+    func windowWillClose(_ notification: Notification) { onClose() }
+}
+
+/// Strong refs for objects whose owners (NSApp, NSWindow) hold them weakly,
+/// alive for the life of the process.
+@MainActor var streamRetainer: [Any] = []
+
 /// Lock-boxed value for cross-queue state (WireListen's LockedBox
 /// sibling; file-private types don't travel between files).
 final class LockedCell<T>: @unchecked Sendable {

@@ -1,9 +1,8 @@
 import SwiftUI
-import LyteKit
 
 /// The agent (A0): Lyte's quiet menu-bar presence — the same binary wearing
 /// its always-on face (LYTE-PLAN §3: one program per platform, living in the
-/// menu bar). Fronts the client role today: new connections and resume.
+/// menu bar). Fronts the client role today: new connections.
 /// The Host toggle is visible but disabled until the Lyte host lands.
 struct AgentMenu: View {
     @Environment(\.openWindow) private var openWindow
@@ -13,19 +12,6 @@ struct AgentMenu: View {
         Text(agent.statusLine)
 
         Button("New Connection…") { openWindow(id: "connection") }
-
-        let recents = Array(RecentConnections.load().prefix(3))
-        if !recents.isEmpty {
-            let store = ClientStore.load()
-            Section("Resume") {
-                ForEach(Array(recents.enumerated()), id: \.offset) { _, entry in
-                    Button("\(entry.app) on \(store.host(entry.address)?.name ?? entry.address)") {
-                        PendingConnect.target = (address: entry.address, app: entry.app)
-                        openWindow(id: "connection")
-                    }
-                }
-            }
-        }
 
         Divider()
 
@@ -64,11 +50,4 @@ final class AgentState {
         default: "Lyte — \(activeStreams) streams"
         }
     }
-}
-
-/// One-shot handoff from the agent menu to the window it opens (same idiom
-/// as LaunchReconnect): set the target, open a window, the window consumes it.
-@MainActor
-enum PendingConnect {
-    static var target: (address: String, app: String)?
 }
