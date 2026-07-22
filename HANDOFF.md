@@ -429,11 +429,62 @@ are LANDED, GATED, COMMITTED (not pushed):
   Wire/ was rsynced to pup:src/Wire at this commit's content (it IS
   committed HEAD for Wire/).
 
+- **CL-9 client input sender** (`1a8dff7`, root): HS-13's other half.
+  0x16/0x17/TLV-0x03 byte-mirrored into LyteTransport (layout-pinned
+  against the host tests' hand-built arrays; promote to Wire/ with
+  0x15 — all copies delete together). InputSender (sans-IO): session
+  seq counter, capture-µs stamps, ARQ ordered stream, NO mode gate
+  (sending promptly IS the client's pre-arm half — the host runs
+  .preArmInput per delivered event; input in IDLE = WAKE). Latency
+  books: input→inject (echo inject stamp through the CL-10 fit),
+  input→photon (DELIVERED frame whose TLV stamp ≥ seq; honest caveat:
+  measured at sample handoff — VT decode + scan-out ride on top, HS-13
+  spiked that tail ≈13 ms), host receive→inject verbatim; all p50/p99
+  in wire-view's new input stats line + on the core. Capture:
+  LyteInputCapture (app Lyte path) — evdev position codes via new
+  MacEvdevKeyMap (host XKB owns layout), absolute coords through the
+  aspect-fit rect scaled to stream dims learned from the first
+  sample's format description; ⌘ chords + auto-repeats stay local
+  (repeat policy = HS-13's deferred keymap item). wire-view grew
+  --input-script ("<at_ms> move|rel|key|button|axis …"), the scripted
+  gating surface. Gate (root 78 → **84/84**): codec pins + hostile
+  refusals; EXACT latency math under a known fit; 40 events all five
+  kinds exactly-once IN ORDER through the W-G4 storm vs a LyteWire
+  host build-up with the real beacon→echo→mirror clock loop, 40/40
+  echoes, host rx→inject reproduced to the µs, stamped frame closed
+  all 40 photon loops, stamped shards ≤1152 B (geometry honesty
+  mirrored). LIVE vs pup :41011 (committed-HEAD host via git archive
+  — Host/ working tree was mid-audio-edit, NOT rsynced; Mutter
+  injector, portal video running): run A 8/8 events (key/button/abs/
+  rel/axis) injected, 8/8 echoes, **input→inject p50/p99 6.1/8.1 ms,
+  input→photon p50/p99 28.9/35.7 ms, host receive→inject p50 689 µs /
+  p99 1151 µs (HS-13's <2 ms gate re-held)**, frame stamp live
+  (lastInputSeq 7), 22,080 datagrams ALL ok / 0 missing, layer
+  .rendering, clock residual rms ~271 µs, clean 0x0A teardown. PIXEL
+  PROOF (HS-13's frame-diff method, LYTE_DUMP_RAW finals): control
+  leg F-vs-H (two separate sessions commanding (120,1150)) = **ZERO
+  changed pixels outside the top-bar clock** — the commanded move
+  fully determines the cursor pixels; F-vs-G cursor cluster centroid
+  **(123.7,1161.1)** — HS-13's own reference figure to the pixel; the
+  G(1900,1150) point sat over Chrome content whose hover repaint
+  joined the diff (the known live-desktop caution — moves-only +
+  BACKGROUND coordinates next time; the control leg carries the
+  proof). Logs /tmp/cl9-{clientA,clientF,clientG,clientH}.log (Mac),
+  pup:/tmp/cl9-host{A,F,G,H}.log + /tmp/cl9_run{F,G,H}.raw. Cleanup
+  verified: no lyte-host, 41011 free, Sunshine active, portal_token/
+  noise_static/paired_clients shas byte-identical. Deferred:
+  0x16/0x17/TLV-0x03 + 0x15 promotion into Wire/ (Wire territory),
+  key-repeat/modifier policy + axis source flags (HS-13's rows),
+  typing-e2e joint human leg + input-to-photon into the doctor, app
+  stream-window human leg (NSEvent capture is wired; the Keychain
+  zero-UI dial still needs a human at the glass — CL-8's caveat).
+
 IN FLIGHT / NEXT: CL-7 reconnect/takeover UX (needs a host
 session-busy story), HS-9 cookie-mode enforcement (W8 landed; the
 client leg is live in every dial), 0x15/idle-frame promotion into
-Wire/ (now joined by 0x16/0x17/TLV-0x03 at CL-9). Ports used tonight:
-41000–41010 (41009 CL-8, 41010 HS-13).
+Wire/ (now joined by 0x16/0x17/TLV-0x03 at CL-9 — both ends' mirrors
+are in place and byte-pinned). Ports used tonight: 41000–41011
+(41009 CL-8, 41010 HS-13, 41011 CL-9).
 Subagent stall pattern persists — 7-min watchdog + interrupt-kick works
 (W4b needed two kicks; check any silent worker's transcript mtime).
 
