@@ -12,6 +12,7 @@ import CPipeWireCapture
 import Foundation
 import HostCore
 import HostWire
+import LyteWire
 
 // MARK: - Options
 
