@@ -633,14 +633,83 @@ are LANDED, GATED, COMMITTED (not pushed):
   explicit receive-window/buffer-fill hint would sharpen verdicts —
   both are wire-version items, parked.
 
+- **CL-11 client audio receiver** (`90f178d`, root): the last client
+  H2 slice — the Mac plays pup's desktop audio. AudioDepacketizer
+  (LyteTransport, sans-IO): HS-15's HOST-PINNED layout byte-MIRRORED
+  (frame = group id = first packet number; packet n = frame +
+  shardIndex; data shards carry their own graph-clock capture µs,
+  parity the group's first, recovered stamps derive firstTs + i×5 ms),
+  layout pinned against the SAME hand-built byte arrays as the host
+  gate's leg 1 (the cross-pin) — promotion into Wire/ still joint with
+  the host copy. FEC recovery client-side through the frozen
+  FecDecoder, eager at any k-of-6 (any-2-losses tested exhaustively,
+  15/15 patterns byte-exact). AudioJitterBuffer: the audio-continuity
+  doc's percentile controller at packet granularity — target covers
+  the ~2.6 s skew window's (p99 − min) spread (floor 5 pkts/25 ms so
+  the hold-until-dry gap policy always outlasts the ≤3-packet FEC
+  repair trail; found live: per-pair deviation statistics MISS Wi-Fi
+  clump bursts, lattice-skew spread sees them), PLC verdicts only when
+  due-and-dry, late arrivals dropped, stall backlogs re-centered
+  (counted content skip — WSOLA accelerate stays M7's). Playback:
+  COpus system-library leaf (pkg-config opus; libopus decode + PLC —
+  AudioConverter has no PLC entry point, LyteKit untouched/frozen) →
+  lock-free SPSC ring → AVAudioSourceNode; pacing locks to the DAC
+  (pump refills to the adaptive target; render thread lock-free,
+  §5.1). DETECTOR TIGHTENED (CL-8's promised deviation closes): first
+  authenticated chan-1 arrival rebuilds the receiver machine at 350 ms
+  (wire-mode transplanted; evidence-gated — W7 has no audio-presence
+  key, only the reserved audioExpress, so a --no-audio host keeps
+  2.5 s; config-injected, Wire/ untouched). Surfaces: wire-view
+  --audio + audio stats line (FEC/PLC/late/recenter, depth p50/p99,
+  jitter σ, above-floor pipe latency, ring ms, underrun, live RMS
+  dBFS + zero-crossing Hz); the app plays by default, mute toggle
+  wired to the Lyte path. Gate: root 84 → **103/103** (layout
+  cross-pins; any-2-of-6; hostile shards counted-never-fatal;
+  virtual-time jitter legs steady/±15 ms/FEC-healed-5%-ish/true-gap→
+  exactly-4-PLC/late-discipline/stall-recenter; detector legs incl.
+  wire-mode preservation + nil-config off; Opus leaf tone round-trip
+  −27 dBFS RMS/440 Hz + PLC interpolates + garbage→counted silence).
+  LIVE vs pup :41051 (committed-HEAD ce051e1 host via git archive;
+  HS-16 was landing in Host/ concurrently — never touched): 125 s
+  clean leg — **440 Hz pw-play tone at −24 dBFS measured at the
+  decoded output: −27.0 dBFS RMS / ~440 Hz (sine's 3 dB RMS offset,
+  exact)**, 10,441 audio dg → 6,961 pkts, PLC 6 (all in opening
+  adaptation), depth p50/p99 18/24 pkts STABLE over the run, 0 video
+  missing; 5% netem scoped to udp dport 41051 (105 s): **1,016
+  packets FEC-rebuilt across 965 groups, PLC only for the 26
+  fec-impossible packets**, stream continuous, 95,555 datagrams ALL
+  ok / 0 unseal failures, video 3,525 missing healed by 77 IDR
+  requests, layer .rendering. LATENCY HONESTY: audio capture stamps
+  are the PipeWire GRAPH clock (epoch unmappable client-side), so the
+  books report ABOVE-FLOOR pipeline latency (min capture→feed delta
+  subtracted): pipe p50/p99 ~98–102/127 ms — this Wi-Fi path's
+  arrival clumping drove the adaptive target to 18–24 pkts (90–120
+  ms); silence-free playout bought with latency, the doc's honest
+  trade (M7's accelerate lowers equilibrium). Cleanup verified: netem
+  removed (noqueue), no lyte-host, 41051 free, Sunshine active, all
+  three config shas byte-identical. Logs /tmp/cl11-client{D,F}.log
+  (Mac), pup:/tmp/cl11-host{D,F}.log. OPERATIONAL CAUTION: wire-view
+  --audio runs ORPHANED into the background (subshell + redirect)
+  died silently mid-run 3× (no crash report, no stderr; legs A/B/E) —
+  every FOREGROUND run completed clean; suspect the headless-shell
+  process-lifetime class of CL-8's Keychain caveat, not a code path a
+  real GUI session hits. Deferred: audio-interior promotion into
+  Wire/ (with the host copy), WSOLA accelerate + skew-term (M7),
+  AVAudioEngine device-change/route-change handling, app human-at-
+  glass listen (audio default-on in the app path awaits CL-8's
+  deferred human leg), background-run death root-cause if it ever
+  shows in a real session.
+
 IN FLIGHT / NEXT: CL-7 reconnect/takeover UX (needs a host
 session-busy story), HS-9 cookie-mode enforcement (W8 landed; the
 client leg is live in every dial), 0x15/idle-frame promotion into
-Wire/ (now joined by 0x16/0x17/TLV-0x03 at CL-9 and the HS-15 audio
-interior at CL-11 — mirrors in place and byte-pinned), CL-11 M7 audio
-receiver (HS-15's wire side is live — the host streams audio TODAY).
+Wire/ (now joined by 0x16/0x17/TLV-0x03 at CL-9 and the HS-15+CL-11
+audio interior — mirrors in place and byte-pinned on BOTH ends).
+CL-11 is LANDED — H2's client audio row closes; the remaining H2
+demolition gate items are input/audio/congestion joint legs + the
+LyteKit deletion checklist.
 Ports used tonight: 41000–41011 + 41021/41022 + 41031 (H1 joint gate)
-+ 41041/41061 (HS-16 host/probe).
++ 41041/41061 (HS-16 host/probe) + 41051 (CL-11).
 Subagent stall pattern persists — 7-min watchdog + interrupt-kick works
 (W4b needed two kicks; check any silent worker's transcript mtime).
 
