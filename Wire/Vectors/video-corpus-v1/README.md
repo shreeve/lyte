@@ -1,7 +1,7 @@
 # video-corpus-v1 — the W2 golden HEVC corpus
 
 Real Annex-B HEVC access units captured from the H0a file-output host
-(`lyte-host` on pop: portal ScreenCast → PipeWire → hevc_nvenc, the plain
+(`lyte-host`: portal ScreenCast → PipeWire → hevc_nvenc, the plain
 non-ratchet path), published as first-class W2 artifacts (master plan
 §4.12): client CL-2 and host HS-5 code against these frames and the
 packetize/assembly vectors in `../video-v1.json` before either end sends
@@ -13,7 +13,7 @@ suites fail loudly on drift. New material goes in a `video-corpus-v2/`.
 
 ## Provenance
 
-Source capture: `/tmp/lyte-plain.hevc` on pop (2026-07-20, 1547155 bytes,
+Source capture: `/tmp/lyte-plain.hevc` on pup (2026-07-20, 1547155 bytes,
 sha256 `c50da8279b45d76645a88dcb883514d0a91cf510178faaf4b24f5375c1ebdc53`,
 301 access units, 1080p60 hevc_nvenc, frame 0 forced IDR, the rest
 P-frames). Frames were split on access-unit boundaries by NAL walking
@@ -59,6 +59,6 @@ shapes live traffic produces at both regimes.
   interleaving and loss.
 - `VideoVectorFileTests`: the sha256 pins in `../video-v1.json`.
 - Decode evidence (W-G3): `swift run lyte-wire-vectorgen video-roundtrip`
-  on the reassembled prefix, then `ffmpeg -f null -` on pop — clean
+  on the reassembled prefix, then `ffmpeg -f null -` on the host — clean
   decode, zero errors. The same harness round-trips the full 301-frame
   source capture byte-exact under ~21% injected loss.

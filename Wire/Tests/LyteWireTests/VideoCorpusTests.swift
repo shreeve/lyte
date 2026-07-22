@@ -7,7 +7,7 @@ import LyteWireTestKit
 // through packetizer → seeded damage → assembler byte-exact, per frame
 // and as the reassembled decodable prefix (frames 000–009 are contiguous
 // in the source capture; their concatenation is the stream ffmpeg
-// decodes clean on pop — see the corpus README for the evidence line).
+// decodes clean on the host — see the corpus README for the evidence line).
 
 final class VideoCorpusTests: XCTestCase {
 
@@ -92,7 +92,7 @@ final class VideoCorpusTests: XCTestCase {
         // Frames 000–009 in order through one channel, shards shuffled
         // within a two-frame window, per-frame loss at the parity limit —
         // the reassembled concatenation must equal the source
-        // concatenation byte-exact (what ffmpeg then decodes on pop).
+        // concatenation byte-exact (what ffmpeg then decodes on the host).
         let files = try corpusFiles().filter { !$0.contains("small") }
         XCTAssertEqual(files.count, 10)
         let frames = try files.map(load)
