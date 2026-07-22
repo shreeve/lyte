@@ -479,12 +479,65 @@ are LANDED, GATED, COMMITTED (not pushed):
   stream-window human leg (NSEvent capture is wired; the Keychain
   zero-UI dial still needs a human at the glass — CL-8's caveat).
 
+- **HS-15 audio on the wire** (`a0d92cf`, Host/): the desktop's voice.
+  AudioFramer (HostWire, sans-IO): one HS-14 5 ms Opus packet = one
+  chan-1 data-shard datagram, emitted IMMEDIATELY (cadence = the
+  receiver's clock + the always-on path probe; FEC grouping never
+  delays a packet); RS 4+2 parity (the SAME FecField/FecEncoder
+  machinery as video — "audio's 4+2 expresses in the same field")
+  rides out behind the 4th packet. Layout HOST-PINNED (the 0x15/0x16
+  precedent — the plan's W8 audio-interior slot went to the retry
+  cookie): frame field = group id = the group's FIRST packet number
+  (packet n = frame + shardIndex — Vocabulary's two readings hold at
+  once); data shards carry their own capture µs, parity the group's
+  first; hard CBR ENFORCED loud (a mid-group size change would shear
+  shard/packet alignment); conn-id TLV on every datagram. CL-11
+  mirrors these bytes; both copies promote into Wire/ together.
+  Session: ingestAudioPacket seals header-as-AAD like everything and
+  enqueues PacerClass.audio through the ONE shared schedule
+  (VideoChannel.enqueueAudio — "until audio joins the send loop"
+  resolved as one schedule, video gates untouched). LIFECYCLE RULING
+  pinned by tests: audio flows in ACTIVE, IDLE, FROZEN, RECOVERY
+  (W4b: FROZEN stops datagram VIDEO; the 5 ms probe is what lets the
+  client detector tighten to 350 ms) — only `closed` suppresses.
+  lyte-host: audio leg default-on in session mode (--no-audio,
+  --audio-bitrate-kbps; AudioWire runs CPipeWireAudio on its own
+  thread); SessionWire grew the NSLock that lets 5 ms audio sends
+  interleave with a draining IDR (every sleep releases it). Capture
+  fix the live gate forced: node.force-quantum=240 in audio.c — a
+  graph busy with video rounds the 5 ms latency REQUEST up to 256
+  samples and the 240-slicer beats against it (measured 5.3/2.7 ms
+  emission pattern violating the bound before the pacer ever saw a
+  packet). Gate: Host 70 → **81/81 Mac AND pup**; in-tree R-G8 shape
+  (5 s virtual, 59,904 B IDR every 2 s at 20 Mbps): deviation p99
+  0.0 ms, max audio queue delay 0.047 ms. LIVE on pup :41021
+  (loopback, portal video + audio, throwaway probe ~/src/hs15-probe
+  forcing an IDR every 2 s): tcpdump at the NIC, 6,971 data-shard
+  sends — **inter-send p50 5.000 / p99 5.446 ms, deviation p99
+  0.573 ms, ZERO outside 5±2 ms, identical inside the 22 IDR-burst
+  windows (audio-continuity §4.1, MEASURED)**; host max audio queue
+  delay 570 µs ≤ one batch; TOS 0xC0 on every audio datagram / 0xA0
+  video (probe IP_RECVTOS + tcpdump agree); 5% netem loss scoped to
+  the probe's port → **331 groups FEC-recovered, 355 packets rebuilt
+  byte-exact + loop-decoded, 4 honestly impossible**, 0 unseal
+  failures anywhere; 440 Hz tone crossed sealed at −24.1 dBFS.
+  Logs pup:/tmp/hs15-{hostA,hostB,hostC,probeA,probeB,probeC}.log +
+  /tmp/hs15{A,B}.pcap. Cleanup verified (netem removed → noqueue, no
+  lyte-host/tcpdump, 41021/41022 free, Sunshine active, all three
+  config shas byte-identical). Deferred: per-packet SO_PRIORITY 6
+  (single socket ⇒ needs the SO_PRIORITY cmsg, kernel ≥6.9; Wi-Fi
+  EDCA already classifies from our DSCP marking), audio-interior
+  promotion into Wire/ (with CL-11), the M7 receiver (CL-11 owns
+  decode/playback — client-side audio was explicitly NOT this slice).
+
 IN FLIGHT / NEXT: CL-7 reconnect/takeover UX (needs a host
 session-busy story), HS-9 cookie-mode enforcement (W8 landed; the
 client leg is live in every dial), 0x15/idle-frame promotion into
-Wire/ (now joined by 0x16/0x17/TLV-0x03 at CL-9 — both ends' mirrors
-are in place and byte-pinned). Ports used tonight: 41000–41011
-(41009 CL-8, 41010 HS-13, 41011 CL-9).
+Wire/ (now joined by 0x16/0x17/TLV-0x03 at CL-9 and the HS-15 audio
+interior at CL-11 — mirrors in place and byte-pinned), CL-11 M7 audio
+receiver (HS-15's wire side is live — the host streams audio TODAY).
+Ports used tonight: 41000–41011 + 41021/41022 (41009 CL-8, 41010
+HS-13, 41011 CL-9, 41021+41022 HS-15).
 Subagent stall pattern persists — 7-min watchdog + interrupt-kick works
 (W4b needed two kicks; check any silent worker's transcript mtime).
 
