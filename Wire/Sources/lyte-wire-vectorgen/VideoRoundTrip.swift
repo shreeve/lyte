@@ -75,6 +75,8 @@ func runVideoRoundTrip(inputPath: String, outputPath: String) throws {
                     die("shard dropped: \(reason)")
                 case .fecImpossible, .nackCandidates:
                     break // presumption noise while a group is in flight
+                case .repairShardAccepted(let frame, let index):
+                    die("repair accepted for \(frame.rawValue)/\(index) on a clean round trip")
                 }
             }
         }

@@ -32,6 +32,20 @@
 // is `reorderThresholdPackets` past it. Presumed-lost shards feed the
 // NACK-candidate lists — no timer.
 //
+// Repair shards (HS-17/CL-12, resiliency §1.1 rules 3–4): a NACK-honored
+// retransmit is a FRESH datagram — fresh seq, fresh seal — carrying the
+// ORIGINAL frame number and fec field. Such a shard derives a seq base
+// outside the group's original allocation; when the geometry matches the
+// tracked group it slots in by its FEC shard index and can complete the
+// group byte-exact (reported as `.repairShardAccepted`, never dropped).
+// Only a GEOMETRY disagreement remains `.inconsistentGroup` — that is a
+// sender bug; a seq-base disagreement is the repair lane working. The
+// group's own seq base (set by its first-arrived shard) keeps anchoring
+// loss presumption; a group OPENED by a repair shard necessarily anchors
+// to the repair's fresh seq, which quietly under-presumes — honest, since
+// the true allocation is unknowable from a repair alone, and FEC decode
+// plus the frame-shape check still gate every emitted byte.
+//
 // The fec-impossible verdict uses its own, more conservative threshold
 // (`fecImpossibleThresholdPackets`): a spurious NACK candidate costs one
 // retransmit request that HS-17 RTT-gates anyway, but a spurious
@@ -84,8 +98,10 @@ public enum VideoShardDropReason: Hashable, Sendable {
     /// The frame's turn has passed (emitted or skipped), or the tracker
     /// is full and this frame is older than everything tracked.
     case staleFrame(FrameNumber)
-    /// Same frame number, different geometry or seq base than the shard
-    /// that opened the group — some sender bug, kept loud.
+    /// Same frame number, different GEOMETRY than the shard that opened
+    /// the group — some sender bug, kept loud. (A different seq base
+    /// with matching geometry is a repair shard, accepted — see the
+    /// header comment.)
     case inconsistentGroup(FrameNumber)
     /// This shard index already arrived (duplicate datagram).
     case duplicateShard(FrameNumber, shardIndex: UInt8)
@@ -131,8 +147,28 @@ public enum VideoAssemblerEvent: Hashable, Sendable {
     /// emitted once per frame, the CL-3 IDR-request trigger.
     case fecImpossible(FrameNumber, presumedLostDataShards: Int, bestCaseParityShards: Int)
     /// Newly presumed-lost seqs whose retransmit would help this frame —
-    /// §4.7's NACK-decision output, unconsumed until HS-17.
-    case nackCandidates(FrameNumber, missingSeqs: [ChannelSeq])
+    /// §4.7's NACK-decision output; CL-12's NACK policy consumes it.
+    /// `missingSeqs` are the candidates NEW this pass (the firing
+    /// condition); the remaining fields are the frame's whole current
+    /// picture, everything rule 3's client half needs in one event:
+    /// `missingShardIndices` = ALL currently-absent presumed-lost FEC
+    /// shard indices (the W4a NACK bitmap's coordinates, self-correcting
+    /// as late arrivals or repairs fill slots), `parityShards` = the
+    /// geometry's m (past parity ⇔ indices.count > m — RS completes from
+    /// ANY k of n, so the group is unrecoverable from what is plausibly
+    /// in flight exactly when more than m shards are written off), and
+    /// `frameAgeMicroseconds` = now − first arrival (the staleness
+    /// gate's anchor).
+    case nackCandidates(
+        FrameNumber,
+        missingSeqs: [ChannelSeq],
+        missingShardIndices: [UInt8],
+        parityShards: Int,
+        frameAgeMicroseconds: Int64
+    )
+    /// A fresh-seq repair shard (HS-17's answer to a NACK) slotted into
+    /// its tracked group by FEC shard index — the CL-12 seam's receipt.
+    case repairShardAccepted(FrameNumber, shardIndex: UInt8)
     /// The group was dropped undecoded.
     case evicted(FrameNumber, reason: VideoEvictionReason)
     case shardDropped(VideoShardDropReason)
@@ -223,9 +259,14 @@ public struct VideoAssembler: Sendable {
         // but still advance loss presumption below — they are honest
         // signal about what the network delivered.
         if var group = groups[frame.rawValue] {
-            guard group.geometry == geometry, group.seqBase == seqBase else {
+            guard group.geometry == geometry else {
                 return events + [.shardDropped(.inconsistentGroup(frame))]
             }
+            // Matching geometry under a foreign seq base = a repair
+            // shard riding a fresh seq (header comment): slot it in by
+            // its FEC shard index. The group's own seq base — the loss-
+            // presumption anchor — never moves.
+            let isRepair = group.seqBase != seqBase
             if group.isDecoded || group.slots[Int(shardIndex)] != nil {
                 events.append(.shardDropped(
                     .duplicateShard(frame, shardIndex: shardIndex)
@@ -233,6 +274,11 @@ public struct VideoAssembler: Sendable {
             } else {
                 group.slots[Int(shardIndex)] = Array(payload)
                 group.receivedCount += 1
+                if isRepair {
+                    events.append(.repairShardAccepted(
+                        frame, shardIndex: shardIndex
+                    ))
+                }
                 attemptDecode(&group, frame: frame)
                 groups[frame.rawValue] = group
             }
@@ -257,7 +303,7 @@ public struct VideoAssembler: Sendable {
             highestSeq = envelope.seq
         }
 
-        sweepLossPresumption(into: &events)
+        sweepLossPresumption(now: now, into: &events)
         evict(now: now, into: &events)
         drain(now: now, into: &events)
         return events
@@ -325,7 +371,7 @@ public struct VideoAssembler: Sendable {
     /// new presumed-lost seqs become NACK candidates, and a group whose
     /// presumed losses exceed best-case parity reports fec-impossible.
     private mutating func sweepLossPresumption(
-        into events: inout [VideoAssemblerEvent]
+        now: ClientTimestamp, into events: inout [VideoAssemblerEvent]
     ) {
         guard let highest = highestSeq else { return }
         for key in groups.keys.sorted() {
@@ -334,6 +380,7 @@ public struct VideoAssembler: Sendable {
 
             let k = group.geometry.dataShards
             var newCandidates: [ChannelSeq] = []
+            var missingIndices: [UInt8] = []
             var presumedLostData = 0
             var bestCaseParity = 0
             for index in 0..<group.geometry.totalShards {
@@ -349,6 +396,7 @@ public struct VideoAssembler: Sendable {
                 } else if !writtenOff {
                     bestCaseParity += 1
                 }
+                if nackWorthy { missingIndices.append(UInt8(index)) }
                 if nackWorthy, !group.nackReported.contains(seq.rawValue) {
                     group.nackReported.insert(seq.rawValue)
                     newCandidates.append(seq)
@@ -357,7 +405,12 @@ public struct VideoAssembler: Sendable {
 
             if !newCandidates.isEmpty {
                 events.append(.nackCandidates(
-                    FrameNumber(rawValue: key), missingSeqs: newCandidates
+                    FrameNumber(rawValue: key),
+                    missingSeqs: newCandidates,
+                    missingShardIndices: missingIndices,
+                    parityShards: group.geometry.parityShards,
+                    frameAgeMicroseconds:
+                        now.microseconds(since: group.firstArrival)
                 ))
             }
             if presumedLostData > bestCaseParity, !group.fecImpossibleReported {

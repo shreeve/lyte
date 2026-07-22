@@ -146,17 +146,19 @@ final class VideoAssemblerTests: XCTestCase {
             ))]
         )
 
-        // Inconsistent group: same frame number, different seq base —
+        // Inconsistent group: same frame number, different GEOMETRY —
         // on a k=2 frame so the group is still pending when the liar
-        // arrives.
+        // arrives. (A moved seq with MATCHING geometry is the repair
+        // lane now — see the repair tests below.)
         let pending = try packetize(pFrame(2000), number: 0, firstSeq: 0)
         _ = assembler.ingest(
             envelope: pending[0].envelope, payload: pending[0].payload, now: t0
         )
-        var moved = pending[1].envelope
-        moved.seq = ChannelSeq(rawValue: 40)
+        let liar = try packetize(pFrame(3000), number: 0, firstSeq: 10)
         XCTAssertEqual(
-            assembler.ingest(envelope: moved, payload: pending[1].payload, now: t0),
+            assembler.ingest(
+                envelope: liar[1].envelope, payload: liar[1].payload, now: t0
+            ),
             [.shardDropped(.inconsistentGroup(FrameNumber(rawValue: 0)))]
         )
     }
@@ -205,11 +207,17 @@ final class VideoAssemblerTests: XCTestCase {
         XCTAssertFalse(events.contains { if case .nackCandidates = $0 { true } else { false } })
 
         // Frame 1's parity: highest=4, seq 1 is 3 behind → NACK candidate.
+        // The enriched fields carry the frame's whole picture: shard
+        // index 1 missing, one parity shard, ingested this same instant.
         events = assembler.ingest(
             envelope: shards1[1].envelope, payload: shards1[1].payload, now: t0
         )
         XCTAssertTrue(events.contains(.nackCandidates(
-            FrameNumber(rawValue: 0), missingSeqs: [ChannelSeq(rawValue: 1)]
+            FrameNumber(rawValue: 0),
+            missingSeqs: [ChannelSeq(rawValue: 1)],
+            missingShardIndices: [1],
+            parityShards: 1,
+            frameAgeMicroseconds: 0
         )))
         // Not fec-impossible yet: seq 2 (the parity) could still arrive.
         XCTAssertFalse(events.contains { if case .fecImpossible = $0 { true } else { false } })
@@ -226,8 +234,14 @@ final class VideoAssemblerTests: XCTestCase {
                 envelope: shard.envelope, payload: shard.payload, now: t0
             )
         }
+        // Both of frame 0's tail seqs are now presumed lost — 2 missing
+        // against 1 parity shard is PAST PARITY (the CL-12 ask trigger).
         XCTAssertTrue(events.contains(.nackCandidates(
-            FrameNumber(rawValue: 0), missingSeqs: [ChannelSeq(rawValue: 2)]
+            FrameNumber(rawValue: 0),
+            missingSeqs: [ChannelSeq(rawValue: 2)],
+            missingShardIndices: [1, 2],
+            parityShards: 1,
+            frameAgeMicroseconds: 0
         )))
         XCTAssertTrue(events.contains(.fecImpossible(
             FrameNumber(rawValue: 0),
@@ -375,5 +389,169 @@ final class VideoAssemblerTests: XCTestCase {
             from: FrameNumber(rawValue: 0), through: FrameNumber(rawValue: 0),
             reason: .corruptSuppressed
         )))
+    }
+
+    // MARK: - Repair shards (CL-12: the HS-17 seam's receive half)
+
+    /// Builds the host's enqueueRepair datagram shape from an original
+    /// shard: same frame number, fec field, and timestamp — a FRESH seq.
+    private func repairShard(
+        of shard: VideoShard, freshSeq: UInt16
+    ) -> (envelope: Envelope, payload: [UInt8]) {
+        var envelope = shard.envelope
+        envelope.seq = ChannelSeq(rawValue: freshSeq)
+        return (envelope, shard.payload)
+    }
+
+    func testRepairShardsUnderFreshSeqsCompleteTheGroupByteExact() throws {
+        // k=3 m=2: only shard 1 survives (4 lost — well past parity) —
+        // then repairs of 0 and 2 arrive under fresh seqs far outside
+        // the original allocation, exactly the host's enqueueRepair
+        // shape.
+        let frame = pFrame(3000, fill: 0x77)
+        let shards = try packetize(frame, number: 0, firstSeq: 100)
+        var assembler = VideoAssembler()
+        var events: [VideoAssemblerEvent] = assembler.ingest(
+            envelope: shards[1].envelope, payload: shards[1].payload, now: t0
+        )
+        XCTAssertTrue(decodedUnits(events).isEmpty)
+
+        events = assembler.ingest(
+            envelope: repairShard(of: shards[0], freshSeq: 900).envelope,
+            payload: shards[0].payload, now: t0
+        )
+        XCTAssertTrue(events.contains(.repairShardAccepted(
+            FrameNumber(rawValue: 0), shardIndex: 0
+        )))
+        XCTAssertTrue(decodedUnits(events).isEmpty)
+
+        events = assembler.ingest(
+            envelope: repairShard(of: shards[2], freshSeq: 901).envelope,
+            payload: shards[2].payload, now: t0
+        )
+        XCTAssertTrue(events.contains(.repairShardAccepted(
+            FrameNumber(rawValue: 0), shardIndex: 2
+        )))
+        XCTAssertEqual(decodedUnits(events).map(\.annexB), [frame],
+                       "the repaired group must complete byte-exact")
+    }
+
+    func testRepairCompletesAFrameAlreadyWrittenOffAsFecImpossible() throws {
+        // The progression test's shape, healed by the repair lane
+        // instead of a late original: presumption is not truth, and the
+        // repair arrives under a seq the group never owned.
+        let frame0 = pFrame(2000, fill: 0x81)
+        let shards0 = try packetize(frame0, number: 0, firstSeq: 0)
+        var assembler = VideoAssembler(config: VideoAssemblerConfig(
+            fecImpossibleThresholdPackets: 4
+        ))
+        var events = assembler.ingest(
+            envelope: shards0[0].envelope, payload: shards0[0].payload, now: t0
+        )
+        for number in 1...2 {   // k=1 m=1 traffic pushes highest past the write-off
+            let filler = pFrame(100, fill: UInt8(0x90 + number))
+            for shard in try packetize(
+                filler, number: UInt32(number), firstSeq: UInt16(1 + 2 * number)
+            ) {
+                events += assembler.ingest(
+                    envelope: shard.envelope, payload: shard.payload, now: t0
+                )
+            }
+        }
+        XCTAssertEqual(
+            assembler.status(of: FrameNumber(rawValue: 0)), .fecImpossible
+        )
+
+        let heal = assembler.ingest(
+            envelope: repairShard(of: shards0[1], freshSeq: 500).envelope,
+            payload: shards0[1].payload, now: t0
+        )
+        XCTAssertTrue(heal.contains(.repairShardAccepted(
+            FrameNumber(rawValue: 0), shardIndex: 1
+        )))
+        XCTAssertEqual(decodedUnits(heal).first?.annexB, frame0)
+    }
+
+    func testDuplicateRepairShardReportsDuplicateAndStaysHarmless() throws {
+        let frame = pFrame(2000, fill: 0x83) // k=2 m=1
+        let shards = try packetize(frame, number: 0, firstSeq: 0)
+        var assembler = VideoAssembler()
+        _ = assembler.ingest(
+            envelope: shards[0].envelope, payload: shards[0].payload, now: t0
+        )
+        // A repair of a shard already present duplicates, never mutates
+        // (its fresh seq still advances loss presumption — honest signal
+        // — so presumption events may follow the duplicate report).
+        let events = assembler.ingest(
+            envelope: repairShard(of: shards[0], freshSeq: 700).envelope,
+            payload: shards[0].payload, now: t0
+        )
+        XCTAssertEqual(events.first, .shardDropped(
+            .duplicateShard(FrameNumber(rawValue: 0), shardIndex: 0)
+        ))
+        XCTAssertFalse(events.contains(.repairShardAccepted(
+            FrameNumber(rawValue: 0), shardIndex: 0
+        )))
+        let done = assembler.ingest(
+            envelope: shards[1].envelope, payload: shards[1].payload, now: t0
+        )
+        XCTAssertEqual(decodedUnits(done).map(\.annexB), [frame])
+    }
+
+    func testRepairForAnEmittedFrameDropsAsStale() throws {
+        let frame = pFrame(100, fill: 0x84) // k=1 m=1: emits from shard 0
+        let shards = try packetize(frame, number: 0, firstSeq: 0)
+        var assembler = VideoAssembler()
+        let emitted = assembler.ingest(
+            envelope: shards[0].envelope, payload: shards[0].payload, now: t0
+        )
+        XCTAssertEqual(decodedUnits(emitted).count, 1)
+        XCTAssertEqual(
+            assembler.ingest(
+                envelope: repairShard(of: shards[1], freshSeq: 800).envelope,
+                payload: shards[1].payload, now: t0
+            ),
+            [.shardDropped(.staleFrame(FrameNumber(rawValue: 0)))]
+        )
+    }
+
+    func testRepairShardsAloneCanOpenAndCompleteAGroup() throws {
+        // Every original shard died; only repairs arrive. The first one
+        // opens the group (its derived base is the best knowledge
+        // available); the rest slot in by index and the frame still
+        // completes byte-exact — k=3 m=2 healed from shards 0, 3, 4.
+        let frame = pFrame(3000, fill: 0x85)
+        let shards = try packetize(frame, number: 7, firstSeq: 40)
+        var assembler = VideoAssembler()
+        var events: [VideoAssemblerEvent] = []
+        for (shard, seq) in [
+            (shards[0], UInt16(200)), (shards[3], 201), (shards[4], 202)
+        ] {
+            events += assembler.ingest(
+                envelope: repairShard(of: shard, freshSeq: seq).envelope,
+                payload: shard.payload, now: t0
+            )
+        }
+        XCTAssertEqual(decodedUnits(events).map(\.annexB), [frame])
+        XCTAssertEqual(decodedUnits(events).first?.frameNumber.rawValue, 7)
+    }
+
+    func testRepairGeometryLieStillDropsInconsistent() throws {
+        // The repair lane must not have widened the door for actual
+        // sender bugs: matching frame number, foreign geometry, fresh
+        // seq — still refused loud.
+        let shards = try packetize(pFrame(2000, fill: 0x86), number: 0, firstSeq: 0)
+        var assembler = VideoAssembler()
+        _ = assembler.ingest(
+            envelope: shards[0].envelope, payload: shards[0].payload, now: t0
+        )
+        let alien = try packetize(pFrame(3000, fill: 0x87), number: 0, firstSeq: 60)
+        XCTAssertEqual(
+            assembler.ingest(
+                envelope: repairShard(of: alien[1], freshSeq: 300).envelope,
+                payload: alien[1].payload, now: t0
+            ),
+            [.shardDropped(.inconsistentGroup(FrameNumber(rawValue: 0)))]
+        )
     }
 }
