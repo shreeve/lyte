@@ -9,6 +9,10 @@ struct ConnectView: View {
     @State private var discovered: [Discovery.FoundHost] = []
     @State private var lyteHosts: [DiscoveredLyteHost] = []
     @State private var browsing = false
+    // CL-6: the pairing sheet's target, and a pinned-store snapshot for
+    // the paired badges (reloaded after every pair/unpair).
+    @State private var pairingTarget: DiscoveredLyteHost?
+    @State private var pinnedStore = PinnedHostStore.load()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -39,6 +43,12 @@ struct ConnectView: View {
             .ignoresSafeArea()
         }
         .task { await browse() }
+        .sheet(item: $pairingTarget) { host in
+            LytePairingSheet(host: host) { pairedNow in
+                if pairedNow { pinnedStore = PinnedHostStore.load() }
+                pairingTarget = nil
+            }
+        }
     }
 
     // MARK: - Hosts
@@ -61,24 +71,11 @@ struct ConnectView: View {
                 }
                 // CL-5 dual-browse: Lyte-UDP hosts (_lyte._udp) listed
                 // beside the Sunshine ones until the H2 demolition retires
-                // the latter. Session flow over Lyte-UDP is CL-7; until
-                // then these rows announce presence (and pin identity),
-                // they don't launch.
+                // the latter. CL-6: an unpaired row opens the pairing
+                // sheet; a paired one wears its badge and offers Unpair.
+                // Session flow (launching a stream) is CL-7.
                 ForEach(lyteHosts, id: \.address) { host in
-                    HStack(spacing: 8) {
-                        Circle().fill(.indigo).frame(width: 8, height: 8)
-                        Text(host.name).fontWeight(.medium)
-                        Text("\(host.address):\(String(host.port))")
-                            .foregroundStyle(.secondary)
-                        Text("Lyte")
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color.indigo.opacity(0.18)))
-                            .foregroundStyle(.indigo)
-                    }
-                    .frame(maxWidth: 300)
-                    .help(lyteHostTooltip(host))
+                    lyteHostRow(host)
                 }
                 ForEach(discovered, id: \.endpoint) { host in
                     Button {
@@ -133,13 +130,60 @@ struct ConnectView: View {
         browsing = false
     }
 
-    private func lyteHostTooltip(_ host: DiscoveredLyteHost) -> String {
+    /// One Lyte host row: unpaired opens the pairing sheet; paired wears
+    /// the badge and offers Unpair from its context menu (streaming from
+    /// a click is CL-7's slice).
+    @ViewBuilder
+    private func lyteHostRow(_ host: DiscoveredLyteHost) -> some View {
+        let pinned = pinnedStore.host(publicKeyHash: host.publicKeyHash)
+        HStack(spacing: 8) {
+            Circle().fill(.indigo).frame(width: 8, height: 8)
+            Text(host.name).fontWeight(.medium)
+            Text("\(host.address):\(String(host.port))")
+                .foregroundStyle(.secondary)
+            Text("Lyte")
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Color.indigo.opacity(0.18)))
+                .foregroundStyle(.indigo)
+            if pinned != nil {
+                Label("Paired", systemImage: "checkmark.seal.fill")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.green)
+                    .labelStyle(.titleAndIcon)
+            } else {
+                Button("Pair…") { pairingTarget = host }
+                    .controlSize(.small)
+            }
+        }
+        .frame(maxWidth: 340)
+        .help(lyteHostTooltip(host, paired: pinned != nil))
+        .contextMenu {
+            if let pinned {
+                Button("Unpair \(pinned.name)", role: .destructive) {
+                    var store = PinnedHostStore.load()
+                    if let pkh = host.publicKeyHash {
+                        store.unpin(publicKeyHash: pkh)
+                        try? store.save()
+                        pinnedStore = store
+                    }
+                }
+            } else {
+                Button("Pair…") { pairingTarget = host }
+            }
+        }
+    }
+
+    private func lyteHostTooltip(_ host: DiscoveredLyteHost, paired: Bool) -> String {
         var parts = ["Lyte-UDP host"]
         if let v = host.wireVersion { parts.append("wire v\(v)") }
         if let pkh = host.publicKeyHash {
             parts.append("identity \(pkh.prefix(8))…")
         }
-        parts.append("connect flow arrives with pairing (CL-6/CL-7)")
+        parts.append(paired
+            ? "paired — reconnects are zero-UI (streaming flow is CL-7)"
+            : "unpaired — Pair… runs the PIN flow")
         return parts.joined(separator: " — ")
     }
 

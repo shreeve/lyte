@@ -31,7 +31,7 @@ struct WireView: AsyncParsableCommand {
     @Option(name: .long, help: "Address to bind") var bind: String = "0.0.0.0"
     @Flag(name: .long, help: "CP-3 recorded fallback: accept payloads with NO crypto")
     var insecure = false
-    @Option(name: .long, help: "Noise mode: the host's static public key, 64 hex digits (printed by lyte-host at start)")
+    @Option(name: .long, help: "Noise mode: the host's static public key, 64 hex digits (printed by lyte-host at start). Omit it once paired — the pinned key + Keychain identity take over (CL-6)")
     var hostKey: String?
     @Option(name: .long, help: "Noise mode: the host's address")
     var host: String = "10.0.0.249"
@@ -46,10 +46,6 @@ struct WireView: AsyncParsableCommand {
         if insecure, hostKey != nil {
             throw ValidationError("--insecure and --host-key are mutually exclusive")
         }
-        if !insecure, hostKey == nil {
-            throw ValidationError(
-                "Noise mode needs --host-key <64-hex host static> (from lyte-host's banner), or pass --insecure for the recorded CP-3 fallback")
-        }
     }
 
     @MainActor
@@ -59,11 +55,42 @@ struct WireView: AsyncParsableCommand {
         let crypto: any TransportCrypto
         if insecure {
             crypto = InsecureTransportCrypto()
-        } else {
+        } else if let hostKey {
+            // Explicit key: throwaway client static, exactly as before —
+            // the debug-harness posture (a --require-paired host will
+            // refuse the unpinned static; that refusal is the feature).
             crypto = try NoiseTransportCrypto(
                 hostAddress: host,
                 hostPort: hostPort == 0 ? port : hostPort,
-                hostStaticPublicKey: NoiseTransportCrypto.parseKeyHex(hostKey!))
+                hostStaticPublicKey: NoiseTransportCrypto.parseKeyHex(hostKey))
+        } else {
+            // CL-6, the zero-UI reconnect: no key argued, so the pinned
+            // store supplies the host static and the Keychain supplies
+            // OUR persistent identity — plain 1-RTT Noise IK, which a
+            // --require-paired host admits because pairing pinned this
+            // exact static pair on both ends.
+            guard let pinned = PinnedHostStore.load().host(address: host),
+                  let key = pinned.staticPublicKey
+            else {
+                throw ValidationError(
+                    "\(host) is not paired — run `lyte-cli wire-pair \(host) --pin <PIN>` first, pass --host-key <64-hex> for a one-off, or --insecure for the recorded CP-3 fallback")
+            }
+            let identity: NoiseKeyPair
+            do {
+                identity = try ClientNoiseIdentity.loadOrCreate()
+            } catch ClientNoiseIdentityError.keychain(let status) {
+                throw ValidationError(
+                    "Keychain refused the client identity (OSStatus \(status)) — build via Scripts/build-cli.sh (docs/MACOS-SIGNING.md)")
+            }
+            print("wire-view: paired host \(pinned.name) — pinned static "
+                + "\(pinned.staticPublicKeyHex.prefix(8))…, client identity "
+                + identity.publicKey.prefix(4).map { String(format: "%02x", $0) }.joined()
+                + "…")
+            crypto = try NoiseTransportCrypto(
+                hostAddress: host,
+                hostPort: hostPort == 0 ? port : hostPort,
+                hostStaticPublicKey: key,
+                staticKeys: identity)
         }
 
         // Window + display layer first (main thread, before datagrams).
@@ -136,7 +163,7 @@ struct WireView: AsyncParsableCommand {
                     pipeline.ingest(envelope: envelope, payload: payload)
                 }
             })
-        if hostKey != nil {
+        if !insecure {
             print("wire-view: Noise IK handshake → \(host):\(hostPort == 0 ? port : hostPort) …")
         }
         do {

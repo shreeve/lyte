@@ -48,6 +48,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
     public let hostAddress: String
     public let hostPort: UInt16
     private let hostStaticPublicKey: [UInt8]
+    private let staticKeys: NoiseKeyPair
     private let attempts: Int
     private let attemptTimeoutMilliseconds: Int
 
@@ -58,6 +59,11 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
     /// - Parameters:
     ///   - hostStaticPublicKey: the host's pinned 32-byte X25519 static
     ///     (printed by lyte-host at start; hand-carried until W6 pairing).
+    ///   - staticKeys: the client's Noise static identity. nil mints a
+    ///     throwaway pair for this connection — fine for debug harnesses,
+    ///     but pairing (CL-6) and `--require-paired` reconnects need the
+    ///     PERSISTENT identity here: the host pins/authenticates exactly
+    ///     the static message 1 delivers.
     ///   - attempts/attemptTimeoutMilliseconds: the client-owned retry
     ///     timer — a lost message 1 or 2 meets a fresh attempt, and the
     ///     host answers each message 1 from fresh responder state.
@@ -65,6 +71,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         hostAddress: String,
         hostPort: UInt16,
         hostStaticPublicKey: [UInt8],
+        staticKeys: NoiseKeyPair? = nil,
         attempts: Int = 5,
         attemptTimeoutMilliseconds: Int = 1_000
     ) throws {
@@ -75,8 +82,20 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         self.hostAddress = hostAddress
         self.hostPort = hostPort
         self.hostStaticPublicKey = hostStaticPublicKey
+        self.staticKeys = staticKeys ?? NoiseKeyPair.generate()
         self.attempts = attempts
         self.attemptTimeoutMilliseconds = attemptTimeoutMilliseconds
+    }
+
+    /// The static public key message 1 will present to the host.
+    public var clientStaticPublicKey: [UInt8] { staticKeys.publicKey }
+
+    /// The completed session's Noise handshake hash — the W6 pairing
+    /// binding (sid). Nil until `performHandshake` succeeds.
+    public var handshakeHashSnapshot: [UInt8]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return transport?.handshakeHash
     }
 
     /// Parses the CLI's `--host-key` hex argument (64 hex digits,
@@ -147,7 +166,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         // transcript, however late it lands.
         var session = try NoiseSession(
             role: .initiator,
-            staticKeys: NoiseKeyPair.generate(),
+            staticKeys: staticKeys,
             remoteStaticPublicKey: hostStaticPublicKey
         )
         let message1 = try session.writeMessage1()

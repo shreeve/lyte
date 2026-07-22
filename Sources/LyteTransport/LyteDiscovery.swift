@@ -30,7 +30,10 @@ import LyteWire
 /// One advertised Lyte host, resolved and parsed. `wireVersion` and
 /// `publicKeyHash` are nil when the advertisement omitted or mangled
 /// them — an old or foreign record, still listed so the operator sees it.
-public struct DiscoveredLyteHost: Sendable, Equatable {
+public struct DiscoveredLyteHost: Sendable, Equatable, Identifiable {
+    /// Stable per dial target (SwiftUI sheet/list identity).
+    public var id: String { "\(address):\(port)" }
+
     /// Bonjour instance name — the host's short hostname (e.g. "pup"),
     /// possibly daemon-uniqued ("pup #2") on collision.
     public let name: String
