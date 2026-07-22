@@ -15,7 +15,12 @@
 // bitmap per channel: duplicates reject as `replayedSequence`, datagrams
 // older than the window reject as `staleSequence`, reorder inside the
 // window is admitted. Receiver state commits only after the AEAD opens,
-// so forged headers cannot desync the counter.
+// so forged headers cannot desync the counter. The ARQ sublayer does NOT
+// rely on datagram-level resends surviving this window: its retransmit
+// unit is the segment, re-sealed inside a FRESH datagram (fresh seq,
+// fresh nonce) precisely so a busy channel's 64-deep window can never
+// starve a straggling retransmit — see ArqFrames.swift's retransmission
+// discipline, the W3-flagged interaction resolved.
 //
 // Rekey grace (core plan §2 decision 1): the receive side keeps the
 // previous epoch's key alive until the next rekey; unseal tries the
@@ -117,10 +122,13 @@ struct TransportDirection: Sendable {
         return bytes
     }
 
-    /// Noise REKEY + epoch bump; the outgoing key is gone for good, the
-    /// previous stays only as the receive-grace key.
-    mutating func rekey() throws {
-        previousCipher = cipher
+    /// Noise REKEY + epoch bump. `keepPrevious` retains the outgoing
+    /// key one epoch — the receive-grace window; the send direction
+    /// passes false so its superseded key leaves memory immediately
+    /// (nothing ever seals under it again, so holding it only widens
+    /// the compromise surface).
+    mutating func rekey(keepPrevious: Bool) throws {
+        previousCipher = keepPrevious ? cipher : nil
         try cipher.rekey()
         epoch &+= 1
         datagramsSinceRekey = 0
@@ -289,15 +297,17 @@ public struct NoiseTransport: Sendable {
 
     /// Rekeys the send direction (Noise REKEY, epoch += 1). Coordination
     /// — telling the peer to `rekeyReceive()` via a CTRL message — is
-    /// session territory; this is the pure primitive.
+    /// session territory; this is the pure primitive. The superseded
+    /// send key is dropped, not retained: only the receive side needs a
+    /// grace key.
     public mutating func rekeySend() throws {
-        try send.rekey()
+        try send.rekey(keepPrevious: false)
     }
 
     /// Rekeys the receive direction; the outgoing key is retained one
     /// epoch as the grace key so in-flight datagrams still open.
     public mutating func rekeyReceive() throws {
-        try receive.rekey()
+        try receive.rekey(keepPrevious: true)
     }
 
     public var sendEpoch: UInt32 { send.epoch }

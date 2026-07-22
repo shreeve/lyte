@@ -151,6 +151,13 @@ public struct NoiseHandshake: Sendable {
 
     /// Responder reads message 1, returning its payload. On success
     /// `remoteStaticPublicKey` holds the authenticated initiator identity.
+    ///
+    /// TRANSACTIONAL (pre-H1 Crypto/ review): a message that fails
+    /// mid-read — bad DH point, failed authentication — restores the
+    /// state exactly as it was, so half-mixed transcript state can never
+    /// poison a later attempt. Without this, one garbage datagram fed to
+    /// a handshake that a shell retries in place would make the GENUINE
+    /// message unverifiable forever after.
     public mutating func readMessage1(
         _ message: ArraySlice<UInt8>
     ) throws -> [UInt8] {
@@ -160,30 +167,38 @@ public struct NoiseHandshake: Sendable {
         guard message.count >= Self.message1MinimumByteCount else {
             throw NoiseError.truncatedHandshakeMessage
         }
-        let base = message.startIndex
-        // e
-        let re = Array(message[base..<base + 32])
-        remoteEphemeralPublicKey = re
-        symmetric.mixHash(re)
-        // es = DH(s, re)
-        symmetric.mixKey(try NoisePrimitives.dh(
-            privateKey: staticKeys.privateKey, publicKey: re
-        ))
-        // s
-        let rs = try symmetric.decryptAndHash(message[base + 32..<base + 80])
-        guard rs.count == NoisePrimitives.keyByteCount else {
-            throw NoiseError.invalidKeyLength(rs.count)
-        }
-        remoteStaticPublicKey = rs
-        // ss = DH(s, rs)
-        symmetric.mixKey(try NoisePrimitives.dh(
-            privateKey: staticKeys.privateKey, publicKey: rs
-        ))
-        // payload
-        let payload = try symmetric.decryptAndHash(message[(base + 80)...])
+        let savedSymmetric = symmetric
+        do {
+            let base = message.startIndex
+            // e
+            let re = Array(message[base..<base + 32])
+            remoteEphemeralPublicKey = re
+            symmetric.mixHash(re)
+            // es = DH(s, re)
+            symmetric.mixKey(try NoisePrimitives.dh(
+                privateKey: staticKeys.privateKey, publicKey: re
+            ))
+            // s
+            let rs = try symmetric.decryptAndHash(message[base + 32..<base + 80])
+            guard rs.count == NoisePrimitives.keyByteCount else {
+                throw NoiseError.invalidKeyLength(rs.count)
+            }
+            remoteStaticPublicKey = rs
+            // ss = DH(s, rs)
+            symmetric.mixKey(try NoisePrimitives.dh(
+                privateKey: staticKeys.privateKey, publicKey: rs
+            ))
+            // payload
+            let payload = try symmetric.decryptAndHash(message[(base + 80)...])
 
-        phase = .awaitingMessage2
-        return payload
+            phase = .awaitingMessage2
+            return payload
+        } catch {
+            symmetric = savedSymmetric
+            remoteEphemeralPublicKey = nil
+            remoteStaticPublicKey = nil
+            throw error
+        }
     }
 
     // MARK: Message 2  (<- e, ee, se)
@@ -223,7 +238,11 @@ public struct NoiseHandshake: Sendable {
     }
 
     /// Initiator reads message 2, returning its payload; the handshake is
-    /// complete afterwards.
+    /// complete afterwards. Transactional like `readMessage1` — this is
+    /// the load-bearing case: the client retransmits ONE message 1
+    /// across the retry window (0443beb's rule) and must remain able to
+    /// read the REAL message 2 after hostile or mangled bytes on the
+    /// same port failed a read attempt.
     public mutating func readMessage2(
         _ message: ArraySlice<UInt8>
     ) throws -> [UInt8] {
@@ -236,24 +255,32 @@ public struct NoiseHandshake: Sendable {
         guard let e = ephemeralKeys else {
             throw NoiseError.handshakeOutOfOrder
         }
-        let base = message.startIndex
-        // e
-        let re = Array(message[base..<base + 32])
-        remoteEphemeralPublicKey = re
-        symmetric.mixHash(re)
-        // ee = DH(e, re)
-        symmetric.mixKey(try NoisePrimitives.dh(
-            privateKey: e.privateKey, publicKey: re
-        ))
-        // se = DH(s, re)
-        symmetric.mixKey(try NoisePrimitives.dh(
-            privateKey: staticKeys.privateKey, publicKey: re
-        ))
-        // payload
-        let payload = try symmetric.decryptAndHash(message[(base + 32)...])
+        let savedSymmetric = symmetric
+        let savedRemoteEphemeral = remoteEphemeralPublicKey
+        do {
+            let base = message.startIndex
+            // e
+            let re = Array(message[base..<base + 32])
+            remoteEphemeralPublicKey = re
+            symmetric.mixHash(re)
+            // ee = DH(e, re)
+            symmetric.mixKey(try NoisePrimitives.dh(
+                privateKey: e.privateKey, publicKey: re
+            ))
+            // se = DH(s, re)
+            symmetric.mixKey(try NoisePrimitives.dh(
+                privateKey: staticKeys.privateKey, publicKey: re
+            ))
+            // payload
+            let payload = try symmetric.decryptAndHash(message[(base + 32)...])
 
-        phase = .complete
-        return payload
+            phase = .complete
+            return payload
+        } catch {
+            symmetric = savedSymmetric
+            remoteEphemeralPublicKey = savedRemoteEphemeral
+            throw error
+        }
     }
 
     // MARK: Split

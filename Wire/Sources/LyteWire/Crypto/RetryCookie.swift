@@ -48,11 +48,14 @@
 //
 // Sans-IO: `now` is injected monotonic ns (the HandshakeGate
 // convention); the secret is injected bytes; randomness is not needed.
-// Constant-time caveat (for the scheduled pre-H1 Crypto/ review, the
-// W6 discipline): the MAC comparison is constant-time via
+// Constant-time caveat (reviewed and CONFIRMED SOUND by the pre-H1
+// Crypto/ review): the MAC comparison is constant-time via
 // CPace.constantTimeEquals and the secrets loop never early-exits, but
-// the length/window pre-checks return early — they gate on values the
-// sender already knows, never on key material.
+// the length/window pre-checks return early — they gate exclusively on
+// values the sender chose or already knows (cookie length, its own
+// tuple length, the timestamp it echoed back), never on key material or
+// any MAC computation, so their timing tells an attacker nothing it
+// didn't tell itself.
 
 import Crypto
 

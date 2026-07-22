@@ -129,6 +129,12 @@ final class PairingPakeTests: XCTestCase {
         XCTAssertThrowsError(try initiator.receiveShareB(shareB)) {
             XCTAssertEqual($0 as? PairingPakeError, .invalidState)
         }
+        // EVERY entry point is dead, not just the one that failed: a
+        // failed initiator cannot even re-emit its share A (which would
+        // let a shell accidentally restart the run with burned scalars).
+        XCTAssertThrowsError(try initiator.makeShareA()) {
+            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
+        }
     }
 
     func testWrongPinFailsAtTheResponder() throws {
@@ -156,6 +162,15 @@ final class PairingPakeTests: XCTestCase {
         }
         XCTAssertNil(responder.result)
         XCTAssertThrowsError(try responder.receiveConfirm(forged)) {
+            XCTAssertEqual($0 as? PairingPakeError, .invalidState)
+        }
+        // And a failed responder is dead to a fresh share A too — no
+        // revival path from any state.
+        XCTAssertThrowsError(
+            try responder.receiveShareA(
+                PairingShareA(share: [UInt8](repeating: 1, count: 32))
+            )
+        ) {
             XCTAssertEqual($0 as? PairingPakeError, .invalidState)
         }
     }

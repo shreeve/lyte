@@ -115,7 +115,7 @@ public struct PairingPakeInitiator: Sendable {
             throw PairingPakeError.invalidInput
         }
         shareA = CPace.scalarMult(scalar: scalar, element: generator)
-        guard shareA != CPace.neutralElement else {
+        guard !CPace.constantTimeEquals(shareA, CPace.neutralElement) else {
             // Unreachable with an Elligator-mapped generator; refuse
             // to put G.I on the wire regardless.
             throw PairingPakeError.invalidPeerShare
@@ -141,8 +141,10 @@ public struct PairingPakeInitiator: Sendable {
         guard state == .awaitingShareB else {
             throw PairingPakeError.invalidState
         }
+        // The G.I check compares SECRET key material against a public
+        // constant — constant-time, so timing never narrows K.
         let k = CPace.scalarMultVfy(scalar: scalar, element: message.share)
-        guard k != CPace.neutralElement else {
+        guard !CPace.constantTimeEquals(k, CPace.neutralElement) else {
             state = .failed
             throw PairingPakeError.invalidPeerShare
         }
@@ -220,7 +222,7 @@ public struct PairingPakeResponder: Sendable {
             throw PairingPakeError.invalidInput
         }
         shareB = CPace.scalarMult(scalar: scalar, element: generator)
-        guard shareB != CPace.neutralElement else {
+        guard !CPace.constantTimeEquals(shareB, CPace.neutralElement) else {
             throw PairingPakeError.invalidPeerShare
         }
         self.clientStaticPublicKey = clientStaticPublicKey
@@ -237,8 +239,9 @@ public struct PairingPakeResponder: Sendable {
         guard state == .awaitingShareA else {
             throw PairingPakeError.invalidState
         }
+        // Constant-time G.I check, as on the initiator side.
         let k = CPace.scalarMultVfy(scalar: scalar, element: message.share)
-        guard k != CPace.neutralElement else {
+        guard !CPace.constantTimeEquals(k, CPace.neutralElement) else {
             state = .failed
             throw PairingPakeError.invalidPeerShare
         }

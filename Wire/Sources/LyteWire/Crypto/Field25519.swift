@@ -8,20 +8,28 @@
 //
 // Exponentiation is a fixed square-and-multiply over PUBLIC exponents
 // ((p−1)/2 and p−2), so the operation sequence never depends on the
-// PRS-derived base — the data-dependent branches the draft's §10.10
-// warns about are limited to the negligible-probability exceptional
-// cases called out at their sites in Elligator2.swift.
+// PRS-derived base. The exceptional-case selections in Elligator2.swift
+// are constant-time (mask arithmetic, no data-dependent branch) as of
+// the pre-H1 Crypto/ review — and provably unreachable besides; the
+// argument lives at their sites.
+//
+// Carry discipline (the invariant every operation preserves; each site
+// notes the numeric argument): "weakly reduced" means limb 1 ≤ 2⁵¹ and
+// every other limb ≤ 2⁵¹ − 1 — `weakReduce`'s postcondition. Every
+// public operation accepts weakly reduced inputs and returns weakly
+// reduced outputs; only `toBytes()` produces the canonical (< p) form.
 
 /// A field element of GF(2²⁵⁵ − 19) in 5 little-endian 51-bit limbs.
-/// Arithmetic keeps limbs weakly reduced (< 2⁵¹ + ε); `toBytes()` is the
-/// only place full canonical reduction happens.
-struct Fe25519: Sendable {
+/// Arithmetic keeps limbs weakly reduced (limb 1 ≤ 2⁵¹, others ≤
+/// 2⁵¹ − 1); `toBytes()` is the only place full canonical reduction
+/// happens.
+package struct Fe25519: Sendable {
     /// Always exactly 5 limbs.
     var l: [UInt64]
 
     static let limbMask: UInt64 = (1 << 51) - 1
-    static let zero = Fe25519(l: [0, 0, 0, 0, 0])
-    static let one = Fe25519(l: [1, 0, 0, 0, 0])
+    package static let zero = Fe25519(l: [0, 0, 0, 0, 0])
+    package static let one = Fe25519(l: [1, 0, 0, 0, 0])
     /// 2p per limb — the subtraction bias that keeps a + 2p − b positive
     /// for weakly reduced inputs.
     private static let twoP: [UInt64] = [
@@ -31,11 +39,11 @@ struct Fe25519: Sendable {
 
     /// (p − 1) / 2 = 2²⁵⁴ − 10, big-endian — the Legendre-symbol
     /// exponent (`epsilon` in the draft's Elligator 2 reference code).
-    static let legendreExponent: [UInt8] =
+    package static let legendreExponent: [UInt8] =
         [0x3F] + [UInt8](repeating: 0xFF, count: 30) + [0xF6]
     /// p − 2 = 2²⁵⁵ − 21, big-endian — Fermat inversion, with the inv0
     /// convention (0 ↦ 0) RFC 9380's map relies on.
-    static let inversionExponent: [UInt8] =
+    package static let inversionExponent: [UInt8] =
         [0x7F] + [UInt8](repeating: 0xFF, count: 30) + [0xEB]
 
     init(l: [UInt64]) {
@@ -43,14 +51,14 @@ struct Fe25519: Sendable {
     }
 
     /// A small constant as a field element.
-    init(_ value: UInt64) {
+    package init(_ value: UInt64) {
         l = [value & Self.limbMask, value >> 51, 0, 0, 0]
     }
 
     /// decodeUCoordinate from RFC 7748 for field_size_bits = 255: 32
     /// little-endian bytes with bit #255 cleared. Non-canonical values
     /// (≥ p) are accepted; arithmetic reduces them.
-    static func fromBytes(_ bytes: [UInt8]) -> Fe25519 {
+    package static func fromBytes(_ bytes: [UInt8]) -> Fe25519 {
         precondition(bytes.count == 32, "field element is exactly 32 bytes")
         var words = [UInt64](repeating: 0, count: 4)
         for i in 0..<4 {
@@ -69,13 +77,21 @@ struct Fe25519: Sendable {
     }
 
     /// encodeUCoordinate: the canonical (fully reduced) 32-byte
-    /// little-endian encoding, bit #255 always clear.
-    func toBytes() -> [UInt8] {
-        // Two weak passes bring every limb ≤ 2⁵¹ − 1…
+    /// little-endian encoding, bit #255 always clear. Branch-free: the
+    /// conditional −p is the carry-chain trick, not a comparison.
+    package func toBytes() -> [UInt8] {
+        // Two weak passes pin the represented VALUE below 2²⁵⁵: limbs
+        // 0 and 2–4 end ≤ 2⁵¹ − 1; limb 1 can end at 2⁵¹ only when the
+        // pass's 19-fold carried, which forces limb 4 to have been
+        // masked to 0 — so either every limb is ≤ 2⁵¹ − 1 (value ≤
+        // 2²⁵⁵ − 1) or limb 4 is 0 (value < 2²⁰⁵). At most ONE
+        // subtraction of p therefore canonicalizes…
         var t = Self.weakReduce(Self.weakReduce(l))
-        // …then the carry-chain trick: q = 1 iff value ≥ p (adding 19
-        // would carry out of bit 254), so adding 19q and dropping bit
-        // 255 subtracts p exactly when needed.
+        // …then the carry-chain trick: q = floor((value + 19) / 2²⁵⁵),
+        // exact because every partial sum t[i] + q ≤ 2⁵¹ + 19 < 2⁵², so
+        // each shift captures the whole carry — q = 1 iff value ≥ p, and
+        // adding 19q then dropping bit 255 subtracts p exactly when
+        // needed. No branch anywhere in this function.
         var q = (t[0] &+ 19) >> 51
         q = (t[1] &+ q) >> 51
         q = (t[2] &+ q) >> 51
@@ -103,25 +119,54 @@ struct Fe25519: Sendable {
         return out
     }
 
-    var isZero: Bool {
-        toBytes().allSatisfy { $0 == 0 }
+    /// Constant-time zero test (zero mod p, i.e. on the CANONICAL form):
+    /// all-ones when the element is zero, all-zeros otherwise. OR-folds
+    /// every canonical byte — no early exit, no data-dependent branch.
+    package var isZeroMask: UInt64 {
+        var accumulated: UInt64 = 0
+        for byte in toBytes() {
+            accumulated |= UInt64(byte)
+        }
+        // (x | −x) carries the "any bit set" fact into bit 63.
+        let nonZeroBit = (accumulated | (0 &- accumulated)) >> 63
+        return nonZeroBit &- 1
     }
 
-    static func add(_ a: Fe25519, _ b: Fe25519) -> Fe25519 {
+    /// Convenience over `isZeroMask` for non-secret contexts (tests,
+    /// assertions). Secret-dependent selection must use `select`.
+    package var isZero: Bool { isZeroMask == UInt64.max }
+
+    /// Constant-time selection: `a` where `mask` is all-ones, `b` where
+    /// it is all-zeros — the RFC 9380 CMOV, mask arithmetic only.
+    package static func select(
+        _ a: Fe25519, _ b: Fe25519, mask: UInt64
+    ) -> Fe25519 {
+        Fe25519(l: (0..<5).map { (a.l[$0] & mask) | (b.l[$0] & ~mask) })
+    }
+
+    /// Weakly reduced inputs (limbs ≤ 2⁵¹) sum below 2⁵² per limb — no
+    /// UInt64 overflow, and one weak pass restores the invariant.
+    package static func add(_ a: Fe25519, _ b: Fe25519) -> Fe25519 {
         Fe25519(l: weakReduce((0..<5).map { a.l[$0] &+ b.l[$0] }))
     }
 
-    static func sub(_ a: Fe25519, _ b: Fe25519) -> Fe25519 {
+    /// Per limb: a + 2p − b with 2p's limbs ≥ 2⁵² − 38 > any weakly
+    /// reduced b limb, so no underflow; the sum stays below 2⁵³.
+    package static func sub(_ a: Fe25519, _ b: Fe25519) -> Fe25519 {
         Fe25519(l: weakReduce((0..<5).map { a.l[$0] &+ twoP[$0] &- b.l[$0] }))
     }
 
-    static func neg(_ a: Fe25519) -> Fe25519 {
+    package static func neg(_ a: Fe25519) -> Fe25519 {
         sub(zero, a)
     }
 
-    static func mul(_ a: Fe25519, _ b: Fe25519) -> Fe25519 {
-        // Schoolbook 5×5 with the 2²⁵⁵ ≡ 19 fold. Weakly reduced inputs
-        // keep every accumulator far inside UInt128.
+    package static func mul(_ a: Fe25519, _ b: Fe25519) -> Fe25519 {
+        // Schoolbook 5×5 with the 2²⁵⁵ ≡ 19 fold. Bounds: weakly reduced
+        // limbs are ≤ 2⁵¹, so each product is ≤ 2¹⁰² and the worst
+        // accumulator (r[0], one product plus 19×4) stays below
+        // 77 · 2¹⁰² < 2¹⁰⁹ — far inside UInt128. After the carry pass,
+        // fold = r[4] >> 51 < 2⁵⁴, so 19 · fold < 2⁵⁹ — far inside
+        // UInt64 — and the final weakReduce restores the limb invariant.
         let x = a.l.map { UInt128($0) }
         let y = b.l.map { UInt128($0) }
         var r = [UInt128](repeating: 0, count: 5)
@@ -141,13 +186,13 @@ struct Fe25519: Sendable {
         return Fe25519(l: weakReduce(out))
     }
 
-    static func square(_ a: Fe25519) -> Fe25519 {
+    package static func square(_ a: Fe25519) -> Fe25519 {
         mul(a, a)
     }
 
     /// Square-and-multiply over a big-endian public exponent. Variable
     /// time in the EXPONENT only — both callers pass fixed constants.
-    static func pow(_ base: Fe25519, exponent: [UInt8]) -> Fe25519 {
+    package static func pow(_ base: Fe25519, exponent: [UInt8]) -> Fe25519 {
         var result = one
         for byte in exponent {
             for bit in (0..<8).reversed() {
@@ -160,8 +205,11 @@ struct Fe25519: Sendable {
         return result
     }
 
-    /// One carry pass: limbs settle below 2⁵¹ + ε, the top carry folds
-    /// back through 19, and a final pass clears limb 0's residue.
+    /// One carry pass: the postcondition is the weak-reduction invariant
+    /// — limbs 0 and 2–4 ≤ 2⁵¹ − 1, limb 1 ≤ 2⁵¹ (the final += can
+    /// leave exactly one carry bit there; every operation's input bound
+    /// keeps all intermediate sums well inside UInt64). The top carry
+    /// folds back through 19; a final pass clears limb 0's residue.
     private static func weakReduce(_ limbs: [UInt64]) -> [UInt64] {
         var t = limbs
         for i in 0..<4 {

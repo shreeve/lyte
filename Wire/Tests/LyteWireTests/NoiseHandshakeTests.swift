@@ -268,4 +268,68 @@ final class NoiseHandshakeTests: XCTestCase {
             XCTAssertEqual(error as? NoiseError, .handshakeIncomplete)
         }
     }
+
+    // MARK: Failed reads are transactional (pre-H1 Crypto/ review)
+
+    func testFailedMessage1LeavesResponderRetryable() throws {
+        // Hostile bytes first, the genuine message 1 second — on the
+        // SAME instance. A failed read must not leave half-mixed
+        // transcript state behind, or the genuine message could never
+        // verify.
+        var (client, host) = try makeSessions()
+        let message1 = try client.writeMessage1(
+            applicationPayload: Array("real".utf8)[...]
+        )
+        var tampered = message1
+        tampered[40] ^= 0xFF
+        XCTAssertThrowsError(try host.readMessage1(tampered[...]))
+        XCTAssertNil(host.remoteStaticPublicKey)
+
+        XCTAssertEqual(
+            try host.readMessage1(message1[...]), Array("real".utf8)
+        )
+        // …and the handshake completes normally afterwards.
+        let message2 = try host.writeMessage2()
+        XCTAssertNoThrow(try client.readMessage2(message2[...]))
+        XCTAssertEqual(client.handshakeHash, host.handshakeHash)
+    }
+
+    func testFailedMessage2LeavesInitiatorRetryable() throws {
+        // The load-bearing direction: the client retransmits ONE msg1
+        // across the retry window (0443beb), so garbage on the port
+        // must not poison its ability to read the real message 2 later.
+        var (client, host) = try makeSessions()
+        _ = try host.readMessage1(try client.writeMessage1()[...])
+        let message2 = try host.writeMessage2()
+
+        var tampered = message2
+        tampered[tampered.count - 1] ^= 0x01
+        XCTAssertThrowsError(try client.readMessage2(tampered[...]))
+        // Seeded garbage too, at message-2 minimum length.
+        var rng = SplitMix64(seed: 0xBAD2)
+        let garbage = (0..<48).map { _ in UInt8(truncatingIfNeeded: rng.next()) }
+        XCTAssertThrowsError(try client.readMessage2(garbage[...]))
+
+        XCTAssertNoThrow(try client.readMessage2(message2[...]))
+        XCTAssertTrue(client.isComplete)
+        XCTAssertEqual(client.handshakeHash, host.handshakeHash)
+        // The transports derived after the noisy path still agree.
+        var up = try client.makeTransport()
+        var down = try host.makeTransport()
+        let envelope = Envelope(
+            channel: .ctrl,
+            seq: ChannelSeq(rawValue: 0),
+            frame: FrameNumber(rawValue: 0),
+            timestamp: 7,
+            fec: 0
+        )
+        let aad = try envelope.encode(payload: [])
+        let sealed = try up.seal(
+            plaintext: [1, 2, 3][...], aad: aad[...], envelope: envelope
+        )
+        XCTAssertEqual(
+            try down.unseal(wirePayload: sealed[...], aad: aad[...], envelope: envelope),
+            [1, 2, 3]
+        )
+    }
 }
