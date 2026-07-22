@@ -530,6 +530,33 @@ are LANDED, GATED, COMMITTED (not pushed):
   promotion into Wire/ (with CL-11), the M7 receiver (CL-11 owns
   decode/playback — client-side audio was explicitly NOT this slice).
 
+- **H1 JOINT GATE — PASSED; H1 IS CLOSED** (2026-07-22 ~09:00 MDT,
+  report `docs/20260722-h1-joint-gate.md`): one coherent live run against
+  pup, both ends at committed HEAD `bf7c6b5` (host built from git archive
+  at `pup:~/src/h1gate` — the Host/ working tree was mid-HS-15 and never
+  touched), port 41031. Every decision-record H1 criterion passed:
+  discovery (Avahi live, PINNED-KEY MATCH) → zero-UI paired Noise IK
+  (Keychain identity, 13.5–32.3 ms across six dials, 0 unseal failures in
+  ~54k datagrams) → capabilities first reliable words both ways → ACTIVE
+  with ratchet → 13 idle cycles/40 s (run A) and 30/102 s (run D), flips
+  ack-gated, 0x15 frames deduped clean + 2 ARQ-RENDERED under loss →
+  input WAKE attributed (timestamped run D: input in IDLE → ACTIVE in
+  14 ms; 29/29 injected, rx→inject p50 1.3 ms; IDR = startup + exactly
+  1/wake) → teardown with reason BOTH directions (runs A/B). Fresh
+  non-interactive PIN-PAKE pairing PASSED (PIN read off the host console
+  over SSH; PAIRED both ends, re-pin no-op) + --require-paired 1-RTT
+  reconnect 18.3 ms. Adversity (netem scoped to 41031 egress): 5% loss +
+  20 ms → 5.2% delivered loss, 9/9 fec-impossible healed by IDR, ARQ
+  exactly-once (16 dups ignored), 0 unseal failures; 5.0 s blackout →
+  FROZEN pill at +2.52 s (the 2.5 s detector, to the tick) → recovery on
+  first evidence, receiver never in RECOVERY, no teardown. Clock residual
+  rms 75.6 µs/102 s. DEFERRED, named, non-gating: live retry-cookie dial
+  (host HandshakeGate cookie-mode slice doesn't exist at HEAD — client
+  leg armed + gate-tested), human-at-glass app visual, 0x15/0x16/0x17
+  promotion into Wire/. Cleanup verified: netem removed (noqueue), 41031
+  free, no lyte-host, Sunshine active, portal_token/noise_static.key/
+  paired_clients shas byte-identical. Logs /tmp/h1gate-* (Mac + pup).
+
 IN FLIGHT / NEXT: CL-7 reconnect/takeover UX (needs a host
 session-busy story), HS-9 cookie-mode enforcement (W8 landed; the
 client leg is live in every dial), 0x15/idle-frame promotion into
