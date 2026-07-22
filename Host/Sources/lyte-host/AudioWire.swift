@@ -5,6 +5,17 @@
 // packet TOS 0xC0 (CS6 / DSCP 48 — the tos(for:) map already routes
 // PacerClass.audio there).
 //
+// HS-18 routing: the leaf now runs in one of two postures. hostAudible
+// (default) captures the DEFAULT sink's monitor — the host's speakers
+// keep playing. hostMuted has the C leaf create the "Lyte Audio"
+// virtual sink, switch the system default to it, and capture ITS
+// monitor — the wire hears everything, the room hears nothing. The
+// sink itself is connection-owned (a SIGKILL cannot leak it); the one
+// stranded thing a crash can leave is the default-sink metadata, so
+// the ORIGINAL value is persisted to a state file the moment the
+// switch happens, removed after a clean restore, and swept on the
+// next start (`AudioWire.sweepLeftoverRouting`).
+//
 // Threading: CPipeWireAudio owns its own pw_main_loop, run here on a
 // dedicated Thread — the 5 ms cadence cannot ride the video loop's
 // ~16.7 ms tick. All slicing/encoding state below is confined to that
@@ -18,12 +29,22 @@
 import COpusEncode
 import CPipeWireAudio
 import Foundation
+import HostWire
 
 /// @unchecked Sendable: the run thread's closure crosses a @Sendable
 /// boundary on Linux Foundation, but every mutable property is confined
 /// to the audio loop thread; the evidence counters are read only after
 /// `stop()` joins.
 final class AudioWire: @unchecked Sendable {
+    /// Where a dirty previous run's original default sink waits for
+    /// the sweep. Beside the sacred three, never one of them.
+    static let routingStatePath = FileManager.default
+        .homeDirectoryForCurrentUser
+        .appendingPathComponent(".config/lyte-host/audio_default_sink.prev")
+    /// The state-file sentinel for "the key was unset before us".
+    private static let unsetSentinel = "<unset>"
+
+    let mode: HostAudioRoutingMode
     private let wire: SessionWire
     private var capture: OpaquePointer?
     private let encoder: OpaquePointer
@@ -48,8 +69,12 @@ final class AudioWire: @unchecked Sendable {
     private(set) var negotiationError: String?
     private(set) var runError: String?
 
-    init(wire: SessionWire, bitrate: Int32) throws {
+    init(
+        wire: SessionWire, bitrate: Int32,
+        mode: HostAudioRoutingMode = .hostAudible
+    ) throws {
         self.wire = wire
+        self.mode = mode
         var err = [CChar](repeating: 0, count: 256)
         guard let enc = lyte_opus_enc_new(bitrate, 0, &err, err.count) else {
             throw HostError("opus encoder: \(errString(err))")
@@ -59,16 +84,91 @@ final class AudioWire: @unchecked Sendable {
         pending.reserveCapacity(8_192)
         let user = Unmanaged.passUnretained(self).toOpaque()
         guard let cap = lyte_pw_audio_new(audioWireTrampoline, user,
+                                          mode == .hostMuted ? 1 : 0,
                                           &err, err.count) else {
             lyte_opus_enc_free(enc)
             throw HostError("pipewire audio setup: \(errString(err))")
         }
         capture = cap
+        // The crash ledger: the original default is on disk BEFORE any
+        // session traffic — a kill -9 from here on is recoverable by
+        // the next start's sweep. (The sink itself dies with the
+        // connection; only this metadata value can be stranded.)
+        if mode == .hostMuted {
+            var saved = [CChar](repeating: 0, count: 512)
+            let rc = lyte_pw_audio_saved_default(cap, &saved, saved.count)
+            let record = rc == 1 ? errString(saved) : Self.unsetSentinel
+            do {
+                try Data(record.utf8).write(to: Self.routingStatePath)
+            } catch {
+                // Refuse the posture rather than run un-restorable: a
+                // crash would strand the user's default sink silently.
+                lyte_pw_audio_free(cap)
+                capture = nil
+                lyte_opus_enc_free(enc)
+                throw HostError("cannot persist the original default "
+                    + "sink for crash restore (\(error)) — refusing "
+                    + "hostMuted")
+            }
+            print("audio: routing hostMuted — \"Lyte Audio\" sink is the "
+                + "default; original "
+                + (rc == 1 ? errString(saved) : "(unset)")
+                + " recorded for restore")
+        }
     }
 
     deinit {
+        restoreRouting()
         if let capture { lyte_pw_audio_free(capture) }
         lyte_opus_enc_free(encoder)
+    }
+
+    private var routingRestored = false
+
+    /// Puts the original default sink back and clears the crash
+    /// ledger. Idempotent; also runs from deinit (the C leaf restores
+    /// inside free as its own backstop).
+    private func restoreRouting() {
+        guard mode == .hostMuted, let capture, !routingRestored else { return }
+        routingRestored = true
+        var err = [CChar](repeating: 0, count: 256)
+        if lyte_pw_audio_restore(capture, &err, err.count) == 0 {
+            try? FileManager.default.removeItem(at: Self.routingStatePath)
+            print("audio: routing restored — original default sink back")
+        } else {
+            // The state file deliberately stays: the sweep finishes
+            // the job on the next start.
+            print("audio: routing restore FAILED (\(errString(err))) — "
+                + "state file kept for the next-start sweep")
+        }
+    }
+
+    /// The next-start sweep: a previous run that died without
+    /// restoring (kill -9) left the original default sink recorded
+    /// here — put it back before anything else touches audio. The
+    /// dead run's sink never survives (connection-owned), so this is
+    /// purely the metadata restore. Call once at session start, any
+    /// routing mode.
+    static func sweepLeftoverRouting() {
+        guard let data = try? Data(contentsOf: routingStatePath) else {
+            return // clean previous shutdown — nothing recorded
+        }
+        let record = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var err = [CChar](repeating: 0, count: 256)
+        let rc = record == unsetSentinel
+            ? lyte_pw_audio_restore_default(nil, &err, err.count)
+            : lyte_pw_audio_restore_default(record, &err, err.count)
+        if rc == 0 {
+            try? FileManager.default.removeItem(at: routingStatePath)
+            print("audio: swept a dirty previous run — default sink "
+                + "restored to "
+                + (record == unsetSentinel ? "(unset)" : record))
+        } else {
+            print("audio: leftover-routing sweep FAILED "
+                + "(\(errString(err))) — state file kept; restore by "
+                + "hand with wpctl set-default")
+        }
     }
 
     /// Runs the audio capture loop on its own thread for up to
@@ -87,13 +187,16 @@ final class AudioWire: @unchecked Sendable {
         thread.start()
     }
 
-    /// Quits the audio loop and waits for the thread. pw_main_loop_quit
-    /// signals the loop's eventfd — safe from another thread.
+    /// Quits the audio loop and waits for the thread, then restores
+    /// the routing promptly (deinit is the backstop, not the plan).
+    /// pw_main_loop_quit signals the loop's eventfd — safe from
+    /// another thread.
     func stop() {
         guard thread != nil, let capture else { return }
         lyte_pw_audio_quit(capture)
         _ = finished.wait(timeout: .now() + 2)
         thread = nil
+        restoreRouting()
     }
 
     /// The capture callback (audio loop thread): buffer in, zero or

@@ -219,7 +219,7 @@ func run() throws {
 
     let sink = Sink(encoder: encoder, decoder: decoder)
     let user = Unmanaged.passUnretained(sink).toOpaque()
-    guard let capture = lyte_pw_audio_new(audioTrampoline, user,
+    guard let capture = lyte_pw_audio_new(audioTrampoline, user, 0,
                                           &err, err.count) else {
         throw CheckError("pipewire audio setup failed: \(errString(err))")
     }

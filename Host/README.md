@@ -83,6 +83,12 @@ unlocked or capture is inhibited):
 # audio + Avahi advertisement default-on; --pair for PIN pairing;
 # --require-paired to enforce the keystore). 41000-range ports by convention.
 ./.build/debug/lyte-host --backend portal --wire-listen 41000 --ratchet --seconds 330
+
+# HS-18: mute the host's own speakers for the session — desktop audio is
+# routed to a session-owned "Lyte Audio" virtual sink (its monitor feeds
+# the wire) and the original default sink is restored at teardown; a
+# crashed run is swept on the next start.
+./.build/debug/lyte-host --backend portal --wire-listen 41000 --host-audio muted --seconds 330
 ```
 
 ## Verify the output

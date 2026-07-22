@@ -246,6 +246,14 @@ public enum SessionEvent: Equatable, Sendable {
     /// HS-17: the estimator stepped the §5.2 FEC regime; the channel's
     /// packetizing seam is already switched when this surfaces.
     case fecRegimeChanged(FecRegime)
+    /// HS-18: a client 0x18 asked for a routing flip. Only surfaces
+    /// when the agreed capabilities carry hostAudioRouting (W7 rule 3);
+    /// the shell flips the audio leaf and reports back via
+    /// `noteAudioRoutingApplied`, which is what emits the 0x19 status.
+    case audioRoutingRequested(HostAudioRoutingMode)
+    /// HS-18: an applied posture left as a 0x19 status on the reliable
+    /// stream (at capability agreement and after every applied flip).
+    case audioRoutingStatusSent(HostAudioRoutingMode)
 }
 
 /// Why a NACK did not produce a retransmit (HS-17's verdict axis).
@@ -302,6 +310,10 @@ public enum SessionDropReason: Equatable, Sendable {
     /// media-path evidence (an authenticated arrival is an arrival) but
     /// the estimator never sees it — HS-16 runs on parsed reports only.
     case malformedFeedback
+    /// A 0x18 routing request without hostAudioRouting in the agreed
+    /// set — the peer is using a capability it never negotiated
+    /// (HS-18; the W7 rule-3 gate holding). Dropped loud, never fatal.
+    case audioRoutingNotNegotiated
 }
 
 public enum SessionError: Error, Equatable, Sendable {
@@ -382,6 +394,10 @@ public struct SessionCounters: Equatable, Sendable {
     public var idrArmedOnStaleNack = 0
     /// FEC regime steps applied to the packetizing seam.
     public var fecRegimeSteps = 0
+    /// HS-18: 0x18 routing requests delivered (past the rule-3 gate).
+    public var audioRoutingRequestsReceived = 0
+    /// HS-18: 0x19 posture statuses sent.
+    public var audioRoutingStatusesSent = 0
 
     public init() {}
 }
@@ -496,6 +512,12 @@ public final class Session {
     /// lands (the CL-7 client does not send one yet — nil is the
     /// grandfathered pre-W7 posture, not an error).
     public var agreedCapabilities: Capabilities? { negotiator.agreed }
+    /// HS-18: true when hostAudioRouting (key 9) survived the
+    /// intersection — both ends declared it byte-equal. Gates 0x18
+    /// consumption and 0x19 emission.
+    public var agreedHostAudioRouting: Bool {
+        negotiator.agreed?.hostAudioRouting == true
+    }
 
     /// - Parameters:
     ///   - clientTuple: the peer's 4-tuple at session start — the
@@ -909,6 +931,29 @@ public final class Session {
         return events
     }
 
+    /// HS-18: the shell's report that the audio leaf is now RUNNING in
+    /// `mode` — at session start (once capabilities agree) and after
+    /// every applied 0x18 flip. Emits the 0x19 status the client's
+    /// control strip renders. Silently a no-op unless the agreed set
+    /// carries hostAudioRouting: a legacy client neither asked for the
+    /// key nor knows the byte, so the status would be noise (the same
+    /// absence-is-unsupported rule that hides the client's button).
+    public func noteAudioRoutingApplied(
+        _ mode: HostAudioRoutingMode, now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        guard agreedHostAudioRouting else { return [] }
+        do {
+            try sendReliable(
+                AudioRoutingStatus(mode: mode).encode(),
+                now: now, hostMicroseconds: hostMicroseconds
+            )
+            counters.audioRoutingStatusesSent += 1
+            return [.audioRoutingStatusSent(mode)]
+        } catch {
+            return [.sendFailed("audio routing status: \(error)")]
+        }
+    }
+
     /// The ratchet's all-skip stop (HS-3's detector via HS-11): retains
     /// the final converged frame and starts the idle handoff — the
     /// frame rides a reliable one-shot group, and ONLY its full
@@ -1087,11 +1132,28 @@ public final class Session {
                 event, receivedAtMicroseconds: hostMicroseconds
             ))
             return events
+        case HostCtrlMessageType.audioRoutingRequest:
+            guard let request = try? AudioRoutingRequest.decode(message) else {
+                counters.dropped += 1
+                return [.dropped(.malformedCtrl)]
+            }
+            // The W7 rule-3 gate: a capability is enabled only when
+            // BOTH ends declared it — the byte-equal key-9 entry
+            // surviving intersection IS that AND (HS-18). A request
+            // outside the agreement is a peer using a superpower it
+            // never negotiated: dropped loud, never fatal.
+            guard agreedHostAudioRouting else {
+                counters.dropped += 1
+                return [.dropped(.audioRoutingNotNegotiated)]
+            }
+            counters.audioRoutingRequestsReceived += 1
+            return [.audioRoutingRequested(request.mode)]
         case CtrlMessageType.modeTransition, CtrlMessageType.capabilityUpdate,
-             HostCtrlMessageType.inputEcho:
+             HostCtrlMessageType.inputEcho,
+             HostCtrlMessageType.audioRoutingStatus:
             // Receiver-role messages arriving at the mediaSender /
-            // sole proposer / echo emitter: hostile or confused.
-            // Dropped loud.
+            // sole proposer / echo emitter / status emitter: hostile
+            // or confused. Dropped loud.
             counters.dropped += 1
             return [.dropped(.unexpectedCtrlType(message.first!))]
         default:

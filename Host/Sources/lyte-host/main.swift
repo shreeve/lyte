@@ -61,6 +61,12 @@ struct Options {
     var audio = true
     /// Opus hard-CBR bitrate (the dialect default).
     var audioBitrate: Int32 = 128_000
+    /// HS-18: the session's starting audio-routing posture. audible =
+    /// HS-14's default-sink monitor (the host's speakers keep
+    /// playing); muted = the "Lyte Audio" virtual sink takes the
+    /// default and the physical output goes silent for the session.
+    /// A capability-negotiated client can flip it mid-session (0x18).
+    var hostAudio: HostAudioRoutingMode = .hostAudible
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
@@ -139,6 +145,15 @@ struct Options {
                 opts.input = choice
             case "--no-audio":
                 opts.audio = false
+            case "--host-audio":
+                i += 1
+                let mode: HostAudioRoutingMode? = i < args.count
+                    ? ["audible": .hostAudible, "muted": .hostMuted][args[i]]
+                    : nil
+                guard let mode else {
+                    throw HostError("--host-audio must be audible or muted")
+                }
+                opts.hostAudio = mode
             case "--audio-bitrate-kbps":
                 i += 1
                 guard i < args.count, let v = Int32(args[i]), v > 0 else {
@@ -203,6 +218,15 @@ struct Options {
                                     establishment — silence included)
                   --audio-bitrate-kbps N
                                     Opus hard-CBR bitrate (default 128)
+                  --host-audio MODE audible (default) keeps the host's
+                                    speakers playing (default-sink
+                                    monitor capture); muted routes the
+                                    desktop's audio to a session-owned
+                                    "Lyte Audio" virtual sink — only
+                                    the wire hears it, and the original
+                                    default sink is restored at
+                                    teardown (crash paths swept on the
+                                    next start)
 
                 subcommands: lyte-host sniff --port PORT  (header dissector)
                              lyte-host rd-spike …         (CP-5 input probe)
@@ -257,6 +281,8 @@ final class Sink {
     // re-encoded.
     var pendingCaptureUs: UInt64 = 0
     var lastFrameGraphUs: UInt64 = 0
+    /// HS-18: the SIGINT/SIGTERM notice printed once.
+    var terminationNoted = false
 
     // Quality-ratchet prototype (--ratchet). The encoder runs capped-CQ VBR
     // with qmin pinned at the floor; each re-encode of the retained frame
@@ -389,6 +415,18 @@ final class Sink {
     /// beacon timer run here, on the same thread as everything else.
     func onTick() {
         if lastError != nil { return }
+
+        // HS-18: an interrupted run (SIGINT/SIGTERM) exits through the
+        // same door as a completed one, so the audio-routing restore
+        // and the typed teardown both happen.
+        if lyteTerminationRequested != 0, let capture {
+            if !terminationNoted {
+                terminationNoted = true
+                print("session: termination signal — closing cleanly")
+            }
+            lyte_pw_capture_quit(capture)
+            return
+        }
 
         wire?.service()
 
@@ -679,6 +717,10 @@ func run() throws {
             throw HostError("--pair admits a not-yet-paired client; "
                 + "--require-paired contradicts it")
         }
+        if !opts.audio, opts.hostAudio == .hostMuted {
+            throw HostError("--host-audio muted routes audio to the wire "
+                + "instead of the speakers; --no-audio contradicts it")
+        }
 
         // HS-9 setup happens before the socket exists so a bad keystore
         // fails the run instead of a live session.
@@ -710,11 +752,28 @@ func run() throws {
             }
         }
 
+        // HS-18 housekeeping before any session traffic: put back a
+        // default sink a SIGKILLed previous run stranded (no-op when
+        // the previous shutdown was clean), and arm the SIGINT/SIGTERM
+        // flag so an interrupted run still walks the restore path.
+        AudioWire.sweepLeftoverRouting()
+        lyteInstallTerminationHandlers()
+
+        // The W7 declaration: key 9 (hostAudioRouting, the HS-18
+        // virtual-sink mute) rides the forward-compat spine whenever
+        // the audio leg exists — the client's control strip gates its
+        // mute button on the intersection, so a --no-audio host
+        // truthfully never declares it.
+        let declared = opts.audio
+            ? Capabilities.wireDefault.declaringHostAudioRouting()
+            : .wireDefault
+
         let w = try SessionWire(
             listenPort: opts.wireListen,
             peer: opts.wireOut,
             insecure: opts.insecure,
             rateBitsPerSecond: Int(opts.wireRateMbps * 1_000_000),
+            capabilities: declared,
             allowedClientStatics: allowed,
             pairing: pairingService,
             onPairingEvent: handlePairingEvent
@@ -756,15 +815,52 @@ func run() throws {
     // included (the cadence is the receiver's clock and the path
     // probe). A missing default sink degrades to a warning, never a
     // failure: the screen must stream even if audio cannot.
+    // HS-18: the leaf comes up in the --host-audio posture, and a
+    // capability-negotiated client can flip it (0x18) — the handler
+    // below rebuilds the leaf in the other routing.
     var audioWire: AudioWire?
     if sessionMode, opts.audio, let w = wire {
         do {
-            let audio = try AudioWire(wire: w, bitrate: opts.audioBitrate)
+            let audio = try AudioWire(
+                wire: w, bitrate: opts.audioBitrate, mode: opts.hostAudio
+            )
             audio.start(seconds: opts.seconds + 20.0)
             audioWire = audio
-            print("audio: monitor capture → opus "
-                + "\(opts.audioBitrate / 1_000) kbps hard CBR → 5 ms "
-                + "packets → RS 4+2 → chan 1 (TOS 0xC0 / DSCP 48)")
+            w.setInitialAudioRouting(opts.hostAudio)
+            w.audioRoutingHandler = { mode in
+                // Runs on the video-loop thread, off the session lock
+                // (SessionWire.service drains requests there). The
+                // 5 ms stream pauses across the rebuild — one leaf
+                // owns the quantum forcing, so two never overlap.
+                audioWire?.stop()
+                audioWire = nil
+                do {
+                    let flipped = try AudioWire(
+                        wire: w, bitrate: opts.audioBitrate, mode: mode
+                    )
+                    flipped.start(seconds: opts.seconds + 20.0)
+                    audioWire = flipped
+                    return true
+                } catch {
+                    print("audio-routing: rebuild in \(mode) failed "
+                        + "(\(error)) — trying to come back "
+                        + "\(opts.hostAudio)")
+                    if let back = try? AudioWire(
+                        wire: w, bitrate: opts.audioBitrate,
+                        mode: opts.hostAudio
+                    ) {
+                        back.start(seconds: opts.seconds + 20.0)
+                        audioWire = back
+                    }
+                    return false
+                }
+            }
+            print("audio: "
+                + (opts.hostAudio == .hostMuted
+                    ? "\"Lyte Audio\" virtual-sink capture (host MUTED)"
+                    : "default-sink monitor capture (host audible)")
+                + " → opus \(opts.audioBitrate / 1_000) kbps hard CBR → "
+                + "5 ms packets → RS 4+2 → chan 1 (TOS 0xC0 / DSCP 48)")
         } catch {
             print("audio: unavailable (\(error)) — video-only session")
         }
@@ -931,6 +1027,9 @@ func run() throws {
         \(wire.audioSendFailures) send failures, \
         \(wire.audioPacketsDroppedPreSession) dropped pre-session; \
         max audio queue delay \(t[.audio].maxQueueDelayNS) ns
+        audio-routing: final \(wire.currentAudioRouting), \
+        \(s.audioRoutingRequestsReceived) flip requests, \
+        \(s.audioRoutingStatusesSent) statuses sent
         estimator: rate \(wire.estimatedRate / 1_000) kbps \
         (pacer \(wire.pacerRate / 1_000) kbps, ceiling \
         \(Int(opts.wireRateMbps * 1_000)) kbps), delivery \

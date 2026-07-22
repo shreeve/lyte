@@ -75,6 +75,9 @@ final class SessionWire {
     private let lock = NSLock()
     private let insecure: Bool
     private let rateBitsPerSecond: Int
+    /// What this host declares in the W7 exchange (HS-18: key 9 rides
+    /// here when the audio leg is on).
+    private let capabilities: Capabilities
     /// HS-9: non-nil = only these client statics may complete message 1
     /// (the paired set, loaded from the keystore by --require-paired).
     private let allowedClientStatics: [[UInt8]]?
@@ -101,6 +104,23 @@ final class SessionWire {
     /// disabled (counted loud, never fatal). Set by main after the
     /// backend policy runs.
     var inputInjector: InputInjector?
+
+    /// HS-18: the shell's audio-leaf flipper — stop the leaf, bring it
+    /// back in the requested routing, return whether it stuck. Nil =
+    /// no flip surface this run (requests answered with the standing
+    /// posture). Set by main once audio is up. Called OFF the session
+    /// lock: a flip is a PipeWire connect (milliseconds, and it must
+    /// not stall the 5 ms audio thread against the lock).
+    var audioRoutingHandler: ((HostAudioRoutingMode) -> Bool)?
+    /// The posture the audio leaf is actually running (main seeds it;
+    /// applied flips move it). Mutated under `lock`.
+    private(set) var currentAudioRouting: HostAudioRoutingMode = .hostAudible
+    /// 0x18 requests delivered by the session, awaiting the shell's
+    /// flip outside the lock (drained by `service()`).
+    private var pendingAudioRouting: [HostAudioRoutingMode] = []
+    /// Set at capability agreement when hostAudioRouting survived the
+    /// intersection: the client is owed one starting-posture 0x19.
+    private var routingAnnounceOwed = false
     /// receive→inject per event, µs (the HS-13 p99 < 2 ms gate edge).
     private(set) var inputLatency = Histogram()
     private(set) var inputInjected = 0
@@ -159,6 +179,7 @@ final class SessionWire {
         peer: (host: String, port: UInt16)?,
         insecure: Bool,
         rateBitsPerSecond: Int,
+        capabilities: Capabilities = .wireDefault,
         allowedClientStatics: [[UInt8]]? = nil,
         pairing: PairingResponderService? = nil,
         onPairingEvent: @escaping (PairingResponderService.Event) -> Void
@@ -168,6 +189,7 @@ final class SessionWire {
                      "a session needs a port to listen on or a peer")
         self.insecure = insecure
         self.rateBitsPerSecond = rateBitsPerSecond
+        self.capabilities = capabilities
         self.allowedClientStatics = allowedClientStatics
         self.pairing = pairing
         self.onPairingEvent = onPairingEvent
@@ -223,7 +245,8 @@ final class SessionWire {
             config: SessionConfig(
                 crypto: crypto,
                 rateBitsPerSecond: rateBitsPerSecond,
-                allowedClientStaticPublicKeys: allowedClientStatics
+                allowedClientStaticPublicKeys: allowedClientStatics,
+                capabilities: capabilities
             ),
             clientTuple: clientTuple,
             now: monotonicNS()
@@ -460,11 +483,86 @@ final class SessionWire {
     }
 
     /// The between-frames service hook (idle-floor tick cadence):
-    /// inbound datagrams, session timers (beacons), pacer leftovers.
+    /// inbound datagrams, session timers (beacons), pacer leftovers,
+    /// and the HS-18 routing work that must run OFF the lock.
     func service() {
         lock.lock()
+        guard session != nil else {
+            lock.unlock()
+            return
+        }
+        do {
+            try serviceOnce()
+            try flushOutbox()
+        } catch {
+            lastSendError = String(describing: error)
+        }
+        let requests = pendingAudioRouting
+        pendingAudioRouting.removeAll()
+        let announce = routingAnnounceOwed
+        routingAnnounceOwed = false
+        let standing = currentAudioRouting
+        lock.unlock()
+
+        // The starting-posture 0x19 (capabilities just agreed) and any
+        // client flips — both re-take the lock per send, neither holds
+        // it across the PipeWire work.
+        if announce {
+            noteAudioRoutingApplied(standing)
+        }
+        for mode in requests {
+            applyAudioRouting(mode)
+        }
+    }
+
+    /// HS-18: main's seed — what posture the audio leaf came up in.
+    func setInitialAudioRouting(_ mode: HostAudioRoutingMode) {
+        lock.lock()
         defer { lock.unlock() }
-        guard session != nil else { return }
+        currentAudioRouting = mode
+    }
+
+    /// One 0x18 answered: flip the leaf via the shell's handler, then
+    /// report the posture that actually stands (the client's control
+    /// strip renders truth — a failed flip reports the OLD posture).
+    private func applyAudioRouting(_ mode: HostAudioRoutingMode) {
+        lock.lock()
+        let standing = currentAudioRouting
+        lock.unlock()
+        if mode == standing {
+            noteAudioRoutingApplied(standing) // re-affirm, truthfully
+            return
+        }
+        guard let handler = audioRoutingHandler else {
+            print("audio-routing: \(mode) requested but no flip surface "
+                + "is active this run — posture stays \(standing)")
+            noteAudioRoutingApplied(standing)
+            return
+        }
+        if handler(mode) {
+            lock.lock()
+            currentAudioRouting = mode
+            lock.unlock()
+            print("audio-routing: flipped to \(mode)")
+            noteAudioRoutingApplied(mode)
+        } else {
+            print("audio-routing: flip to \(mode) FAILED — posture "
+                + "stays \(standing)")
+            noteAudioRoutingApplied(standing)
+        }
+    }
+
+    /// The applied-posture 0x19 onto the reliable stream (a no-op at
+    /// the session layer unless hostAudioRouting was negotiated).
+    func noteAudioRoutingApplied(_ mode: HostAudioRoutingMode) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let session, session.phase == .established else { return }
+        for event in session.noteAudioRoutingApplied(
+            mode, now: monotonicNS(), hostMicroseconds: monotonicMicros()
+        ) {
+            log(event)
+        }
         do {
             try serviceOnce()
             try flushOutbox()
@@ -654,7 +752,14 @@ final class SessionWire {
             print("capabilities: agreed — wire minor \(agreed.wireMinor), "
                 + "codecs \(agreed.videoCodecs), chroma \(agreed.chromaModes), "
                 + "idle-silence \(agreed.idleSilence), "
+                + "host-audio-routing \(agreed.hostAudioRouting), "
                 + "max datagram \(agreed.maxDatagramBytes) B")
+            // HS-18: both ends declared key 9 — the client is owed one
+            // starting-posture 0x19 (its control strip renders it).
+            // Buffered; the next service pass sends it off this stack.
+            if agreed.hostAudioRouting {
+                routingAnnounceOwed = true
+            }
         case .capabilitiesFailed(let why):
             print("capabilities: NO WORKABLE INTERSECTION (\(why)) — "
                 + "typed teardown follows")
@@ -722,6 +827,13 @@ final class SessionWire {
         case .fecRegimeChanged(let regime):
             print("fec: regime → \(regime.rawValue) "
                 + "(§5.2 \(regime == .lossy ? "lossy" : "clean") column)")
+        case .audioRoutingRequested(let mode):
+            // Delivered under the lock mid-iteration: buffer only. The
+            // flip (a PipeWire connect) runs off-lock in service().
+            print("audio-routing: client requested \(mode) (0x18)")
+            pendingAudioRouting.append(mode)
+        case .audioRoutingStatusSent(let mode):
+            print("audio-routing: status \(mode) sent (0x19)")
         }
     }
 
