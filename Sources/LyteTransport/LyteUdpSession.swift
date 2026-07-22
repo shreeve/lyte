@@ -85,6 +85,9 @@ public struct LyteUdpSessionCounters: Sendable {
     public var capabilityUpdatesAnswered: UInt64 = 0
     public var unknownReliableTypes: UInt64 = 0
     public var malformedReliableMessages: UInt64 = 0
+    /// 0x17 echo messages consumed (tuple-level books live on
+    /// `InputSender`'s stats — CL-9).
+    public var inputEchoMessagesReceived: UInt64 = 0
 }
 
 // MARK: - Config
@@ -125,6 +128,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public private(set) var echoResponder: BeaconEchoResponder!
     public private(set) var idrRequester: IdrRequester!
     public private(set) var feedback: FeedbackSender!
+    public private(set) var input: InputSender!
     public let clockModel = HostClockModel()
 
     // Machine + negotiator + dispatch state, one lock.
@@ -165,7 +169,17 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         )
 
         self.pipeline = LyteVideoPipeline(
-            onSample: onSample,
+            onSample: { [weak self] sample, unit in
+                // The input→photon seam (CL-9): a DELIVERED frame whose
+                // shards carried the lastInputSeq TLV closes every
+                // pending event at or below its stamp. Delivery — not
+                // shard arrival — is the honest instant.
+                if let self {
+                    self.input.noteFrameDelivered(
+                        frame: unit.frameNumber, now: self.now())
+                }
+                onSample(sample, unit)
+            },
             onFecImpossible: { [weak self] frame, _, _ in
                 guard let self else { return }
                 self.idrRequester.recordFecImpossible(
@@ -176,6 +190,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             now: now,
             onEvent: { [weak self] event in
                 self?.dispatchReliable(event)
+            })
+        self.input = InputSender(
+            clockModel: clockModel,
+            send: { [weak self] message, now in
+                try self?.reliable.send(message, now: now)
             })
         self.echoResponder = BeaconEchoResponder(
             now: now,
@@ -273,6 +292,28 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         beginTeardown(reason: reason, now: now())
     }
 
+    // MARK: Input (CL-9)
+
+    /// Queues one captured input event on the reliable ordered stream
+    /// (0x16), stamped `now` and sequenced by the session's counter.
+    /// NEVER gated on wire mode or the FROZEN overlay: the host runs
+    /// `.preArmInput` on every delivered event BEFORE injecting, so an
+    /// event in IDLE is the WAKE and one during a blackout persists
+    /// through FROZEN into RECOVERY's IDR (W4b via HS-13) — sending
+    /// promptly IS how this end drives the pre-arm seam. Returns the
+    /// allocated seq; throws what the reliable endpoint throws.
+    @discardableResult
+    public func sendInput(
+        _ body: InputEvent.Body, now: ClientTimestamp
+    ) throws -> UInt32 {
+        try input.send(body, now: now)
+    }
+
+    @discardableResult
+    public func sendInput(_ body: InputEvent.Body) throws -> UInt32 {
+        try sendInput(body, now: now())
+    }
+
     // MARK: Ingest
 
     /// The endpoint's per-datagram hook: routes accepted payloads to
@@ -297,6 +338,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                     payload, arrivalMicroseconds: now.microseconds)
             }
         } else if envelope.channel == pipeline.channel {
+            // Any one shard's lastInputSeq TLV (0x03) associates the
+            // frame with the newest injected input — recorded before
+            // ingest so the association exists when delivery fires
+            // from this same pass.
+            input.noteVideoShard(envelope: envelope)
             pipeline.ingest(envelope: envelope, payload: payload, now: now)
         }
         applyMachine(.mediaPathEvidence, now: now)
@@ -414,6 +460,16 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
         case ClientCtrlMessageType.idleFrame:
             receiveIdleFrame(bytes)
+
+        case ClientCtrlMessageType.inputEcho:
+            guard let echo = try? InputEcho.decode(bytes) else {
+                noteMalformed("input echo")
+                return
+            }
+            lock.lock()
+            counters.inputEchoMessagesReceived += 1
+            lock.unlock()
+            input.handleEcho(echo, now: now)
 
         default:
             lock.lock()
@@ -607,6 +663,15 @@ public final class LyteUdpSession: @unchecked Sendable {
             }
         }
         stopParts()
+    }
+
+    /// The shell's input leg (CL-9): captured events straight onto the
+    /// reliable stream. A refused send (teardown races, mostly) is the
+    /// caller's weather — count it, never crash the capture monitor.
+    @discardableResult
+    public func sendInput(_ body: InputEvent.Body) throws -> UInt32 {
+        guard let core else { throw TransportEndpointError.notStarted }
+        return try core.sendInput(body)
     }
 
     /// Hard stop, no wire goodbye — the path after a peer teardown or

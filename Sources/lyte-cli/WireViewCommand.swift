@@ -41,10 +41,21 @@ struct WireView: AsyncParsableCommand {
     var duration: Int = 0
     @Option(name: .long, help: "Debug: send one reliable CTRL ping every N seconds (0 = off) — exercises the CL-7 ARQ leg live")
     var arqPing: Int = 0
+    @Option(name: .long, help: """
+        CL-9 gating: scripted synthetic input, semicolon-separated \
+        "<at_ms> <kind> <args>" entries sent on the reliable stream. Kinds: \
+        `move X Y` (host pixels), `rel DX DY`, `key CODE down|up` (evdev), \
+        `button CODE down|up`, `axis DX DY [finish]`. \
+        Example: --input-script "500 move 120 1150; 1500 key 30 down; 1550 key 30 up"
+        """)
+    var inputScript: String?
 
     func validate() throws {
         if insecure, hostKey != nil {
             throw ValidationError("--insecure and --host-key are mutually exclusive")
+        }
+        if let inputScript {
+            _ = try InputScript.parse(inputScript)   // fail before the dial
         }
     }
 
@@ -217,6 +228,27 @@ struct WireView: AsyncParsableCommand {
             print("wire-view: reliable CTRL ping every \(arqPing)s (debug type 0x7f)")
             return source
         }()
+
+        // The CL-9 gating surface: scripted synthetic input through the
+        // production sendInput path (seq, capture stamp, reliable
+        // stream) — the same bytes the app's NSEvent capture sends.
+        if let inputScript {
+            let entries = try InputScript.parse(inputScript)
+            print("wire-view: input script armed — \(entries.count) event(s), "
+                + "first at +\(entries.first!.atMilliseconds) ms")
+            for entry in entries {
+                DispatchQueue.global().asyncAfter(
+                    deadline: .now() + .milliseconds(entry.atMilliseconds)
+                ) {
+                    do {
+                        let seq = try core.sendInput(entry.body)
+                        print("wire-view: input seq \(seq) sent — \(entry.label)")
+                    } catch {
+                        print("wire-view: input '\(entry.label)' refused: \(error)")
+                    }
+                }
+            }
+        }
 
         // The renderer's own verdict is the honest render evidence: it
         // goes .failed (with the VideoToolbox error) if enqueued samples
@@ -415,6 +447,125 @@ final class WireViewStatsPrinter: Sendable {
                          fit.residualMaxMicroseconds) +
                   "\(fit.acceptedSamples)/\(fit.windowSamples) samples " +
                   "(min rtt \(fit.minRttMicroseconds) µs)")
+        }
+
+        // The CL-9 input line: sender books + both latency loops, when
+        // any input rode this session.
+        let input = core.input.snapshotStats()
+        if input.eventsSent > 0 || input.echoTuplesReceived > 0 {
+            var line = "\(prefix)   input: \(input.eventsSent) sent, " +
+                       "\(input.echoTuplesReceived) echoes"
+            if core.input.pendingEchoCount > 0 {
+                line += " (\(core.input.pendingEchoCount) pending)"
+            }
+            if input.sendFailures > 0 { line += ", \(input.sendFailures) send-failed" }
+            if input.unmatchedEchoTuples > 0 {
+                line += ", \(input.unmatchedEchoTuples) unmatched"
+            }
+            if input.echoesWithoutClockFit > 0 {
+                line += ", \(input.echoesWithoutClockFit) no-clock-fit"
+            }
+            if input.malformedFrameStamps > 0 {
+                line += ", \(input.malformedFrameStamps) bad-stamps"
+            }
+            if let stamp = input.lastStampSeen {
+                line += ", frame stamp \(stamp)"
+            }
+            line += Self.latency(" | inject", input.inputToInject)
+            line += Self.latency(", photon", input.inputToPhoton)
+            line += Self.latency(", host rx→inject", input.hostReceiveToInject)
+            print(line)
+        }
+    }
+
+    /// "label p50/p99 A/B ms" for one recorded edge; empty pre-samples.
+    private static func latency(
+        _ label: String, _ hist: LatencyHistogram
+    ) -> String {
+        guard let p50 = hist.p50, let p99 = hist.p99 else { return "" }
+        return String(format: "%@ p50/p99 %.1f/%.1f ms",
+                      label, Double(p50) / 1000, Double(p99) / 1000)
+    }
+}
+
+/// The --input-script DSL (CL-9's synthetic gating surface): semicolon-
+/// separated "<at_ms> <kind> <args>" entries. Parsed up front so a typo
+/// fails the command, never a mid-run surprise.
+enum InputScript {
+    struct Entry {
+        let atMilliseconds: Int
+        let body: InputEvent.Body
+        let label: String
+    }
+
+    static func parse(_ script: String) throws -> [Entry] {
+        var entries: [Entry] = []
+        for raw in script.split(separator: ";") {
+            let words = raw.split(separator: " ").map(String.init)
+            guard words.count >= 2, let at = Int(words[0]), at >= 0 else {
+                throw ValidationError(
+                    "input-script entry '\(raw.trimmingCharacters(in: .whitespaces))' — want '<at_ms> <kind> <args>'")
+            }
+            let body: InputEvent.Body
+            switch (words[1], words.count) {
+            case ("move", 4):
+                body = .pointerMotionAbsolute(
+                    x: try double(words[2], in: raw),
+                    y: try double(words[3], in: raw))
+            case ("rel", 4):
+                body = .pointerMotionRelative(
+                    dx: try double(words[2], in: raw),
+                    dy: try double(words[3], in: raw))
+            case ("key", 4):
+                body = .keyKeycode(
+                    keycode: try code(words[2], in: raw),
+                    pressed: try pressed(words[3], in: raw))
+            case ("button", 4):
+                body = .pointerButton(
+                    button: try code(words[2], in: raw),
+                    pressed: try pressed(words[3], in: raw))
+            case ("axis", 4), ("axis", 5):
+                body = .pointerAxis(
+                    dx: try double(words[2], in: raw),
+                    dy: try double(words[3], in: raw),
+                    finish: words.count == 5 && words[4] == "finish")
+            default:
+                throw ValidationError(
+                    "input-script entry '\(raw.trimmingCharacters(in: .whitespaces))' — unknown kind/arity")
+            }
+            entries.append(Entry(
+                atMilliseconds: at, body: body,
+                label: words.dropFirst().joined(separator: " ")))
+        }
+        guard !entries.isEmpty else {
+            throw ValidationError("input-script parsed to zero entries")
+        }
+        return entries.sorted { $0.atMilliseconds < $1.atMilliseconds }
+    }
+
+    private static func double(_ word: String, in entry: Substring) throws -> Double {
+        guard let value = Double(word) else {
+            throw ValidationError("input-script '\(entry)': '\(word)' is not a number")
+        }
+        return value
+    }
+
+    private static func code(_ word: String, in entry: Substring) throws -> UInt32 {
+        let value = word.hasPrefix("0x")
+            ? UInt32(word.dropFirst(2), radix: 16)
+            : UInt32(word)
+        guard let value else {
+            throw ValidationError("input-script '\(entry)': '\(word)' is not a keycode")
+        }
+        return value
+    }
+
+    private static func pressed(_ word: String, in entry: Substring) throws -> Bool {
+        switch word {
+        case "down": return true
+        case "up": return false
+        default:
+            throw ValidationError("input-script '\(entry)': want down|up, got '\(word)'")
         }
     }
 }

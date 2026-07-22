@@ -37,6 +37,11 @@ final class ConnectionModel {
     private(set) var lyteSession: LyteUdpSession?
     private(set) var lyteWireMode: SessionWireMode = .active
     private(set) var lyteFrozen = false
+    // CL-9: the host's stream dimensions (from the first delivered
+    // sample's format description) — LyteInputCapture's coordinate
+    // space; the capture drops absolute moves until this is known.
+    private(set) var lyteVideoSize: CGSize = .zero
+    var lyteInputCapture: LyteInputCapture?
 
     private var client: HostClient?
     var inputCapture: InputCapture?
@@ -240,10 +245,24 @@ final class ConnectionModel {
         displayLayer.backgroundColor = CGColor(gray: 0, alpha: 1)
         let renderer = displayLayer.sampleBufferRenderer
 
+        let lastDims = VideoDimsCell()
         let lyte = LyteUdpSession(
             crypto: crypto,
-            onSample: { sample, _ in
+            onSample: { [weak self] sample, _ in
                 renderer.enqueue(sample)
+                // Teach the input capture its coordinate space — once
+                // per size, not per sample (dimension changes are a
+                // renegotiation-era event, but wired honestly now).
+                if let format = CMSampleBufferGetFormatDescription(sample) {
+                    let dims = CMVideoFormatDescriptionGetDimensions(format)
+                    if lastDims.update(width: dims.width, height: dims.height) {
+                        Task { @MainActor [weak self] in
+                            self?.lyteVideoSize = CGSize(
+                                width: CGFloat(dims.width),
+                                height: CGFloat(dims.height))
+                        }
+                    }
+                }
             },
             onEvent: { [weak self] event in
                 Task { @MainActor [weak self] in
@@ -302,6 +321,9 @@ final class ConnectionModel {
         guard let lyte = lyteSession else { return }
         lyteSession = nil
         lyteFrozen = false
+        lyteInputCapture?.stop()
+        lyteInputCapture = nil
+        lyteVideoSize = .zero
         Task.detached {
             // A peer/liveness close has nobody to say goodbye to; a
             // local end sends the typed 0x0A and lingers for its ACK.
@@ -358,6 +380,24 @@ final class ConnectionModel {
 
     func disconnect() {
         endSession(reason: nil)
+    }
+}
+
+/// Latched (width, height) so the sample callback hops to the main
+/// actor only when the stream dimensions actually change (CL-9's
+/// coordinate-space feed; samples arrive on the receive thread).
+private final class VideoDimsCell: @unchecked Sendable {
+    private let lock = NSLock()
+    private var width: Int32 = 0
+    private var height: Int32 = 0
+    /// True when this (width, height) is new.
+    func update(width: Int32, height: Int32) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard width != self.width || height != self.height else { return false }
+        self.width = width
+        self.height = height
+        return true
     }
 }
 

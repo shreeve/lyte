@@ -25,6 +25,9 @@ public enum TransportEndpointError: Error, Sendable {
     case socketFailed(errno: Int32)
     case bindFailed(errno: Int32)
     case badAddress(String)
+    /// A session-shell entry point was called before `start()` built
+    /// the core (CL-9's sendInput is the first such surface).
+    case notStarted
 }
 
 public final class UdpReceiveEndpoint: @unchecked Sendable {
