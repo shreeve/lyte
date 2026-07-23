@@ -35,16 +35,24 @@ public struct PinnedHost: Codable, Equatable, Sendable {
     /// false both mean "take the host's default". The strip's toggle
     /// is the live override — this only seeds the connect.
     public var startHostAudioMuted: Bool?
+    /// Per-host clipboard consent (CL-15): start sessions against
+    /// THIS host with clipboard sharing ON. Optional so older files
+    /// decode unchanged; nil and false both mean OFF — clipboards
+    /// carry passwords, so the default is silence. The strip's toggle
+    /// is the live override — this only seeds the connect.
+    public var shareClipboard: Bool?
 
     public init(name: String, address: String, port: UInt16,
                 staticPublicKeyHex: String, pairedAt: String,
-                startHostAudioMuted: Bool? = nil) {
+                startHostAudioMuted: Bool? = nil,
+                shareClipboard: Bool? = nil) {
         self.name = name
         self.address = address
         self.port = port
         self.staticPublicKeyHex = staticPublicKeyHex
         self.pairedAt = pairedAt
         self.startHostAudioMuted = startHostAudioMuted
+        self.shareClipboard = shareClipboard
     }
 
     /// The raw 32-byte static, decoded from the stored hex.
@@ -124,7 +132,8 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
         hosts[pkh] = PinnedHost(
             name: name, address: address, port: port,
             staticPublicKeyHex: hex, pairedAt: pairedAt,
-            startHostAudioMuted: hosts[pkh]?.startHostAudioMuted)
+            startHostAudioMuted: hosts[pkh]?.startHostAudioMuted,
+            shareClipboard: hosts[pkh]?.shareClipboard)
         return fresh
     }
 
@@ -137,6 +146,18 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
         let key = publicKeyHash.lowercased()
         guard hosts[key] != nil else { return false }
         hosts[key]?.startHostAudioMuted = muted
+        return true
+    }
+
+    /// Sets the per-host clipboard consent (CL-15). Returns false
+    /// when the hash is not pinned.
+    @discardableResult
+    public mutating func setShareClipboard(
+        publicKeyHash: String, share: Bool?
+    ) -> Bool {
+        let key = publicKeyHash.lowercased()
+        guard hosts[key] != nil else { return false }
+        hosts[key]?.shareClipboard = share
         return true
     }
 

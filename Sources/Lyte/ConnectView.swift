@@ -124,6 +124,23 @@ struct ConnectView: View {
                         pinnedStore = store
                     }
                 ))
+                // CL-15: the per-host clipboard consent — applied at
+                // connect; the strip's toggle overrides live. OFF by
+                // default (clipboards carry passwords).
+                Toggle("Share Clipboard", isOn: Binding(
+                    get: {
+                        pinnedStore.host(publicKeyHash: host.publicKeyHash)?
+                            .shareClipboard == true
+                    },
+                    set: { share in
+                        guard let pkh = host.publicKeyHash else { return }
+                        var store = PinnedHostStore.load()
+                        store.setShareClipboard(
+                            publicKeyHash: pkh, share: share ? true : nil)
+                        try? store.save()
+                        pinnedStore = store
+                    }
+                ))
                 Divider()
                 Button("Unpair \(pinned.name)", role: .destructive) {
                     var store = PinnedHostStore.load()

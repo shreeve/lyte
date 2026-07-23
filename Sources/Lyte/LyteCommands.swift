@@ -40,6 +40,28 @@ struct LyteCommands: Commands {
 
             Divider()
 
+            // Clipboard sharing (CL-15): capability-gated like the
+            // host-audio toggle — present but disabled when key 10
+            // never survived intersection. The check mark is the live
+            // consent state; while off, nothing leaves and nothing
+            // lands.
+            Toggle("Share Clipboard", isOn: Binding(
+                get: { connection?.clipboardSharing ?? false },
+                set: { connection?.setClipboardSharing($0) }
+            ))
+            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .disabled(connection?.clipboardNegotiated != true)
+
+            // The per-host consent default (CL-15): applied at the
+            // NEXT connect to this host.
+            Toggle("Share Clipboard with This Host by Default", isOn: Binding(
+                get: { connection?.shareClipboardPreference ?? false },
+                set: { connection?.shareClipboardPreference = $0 }
+            ))
+            .disabled(connection?.hostPublicKeyHash == nil)
+
+            Divider()
+
             Toggle("Session Stats", isOn: Binding(
                 get: { connection?.statsVisible ?? false },
                 set: { connection?.statsVisible = $0 }

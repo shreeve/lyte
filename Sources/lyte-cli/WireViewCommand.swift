@@ -43,6 +43,8 @@ struct WireView: AsyncParsableCommand {
     var audio = false
     @Option(name: .long, help: "CL-13: the session-start posture for the HOST's own speakers — audible|muted. Needs capability key 9 on both ends; against a no-key-9 host the ask is refused client-side (that refusal is the evidence)")
     var hostAudio: String?
+    @Flag(name: .long, help: "CL-15: share the clipboard (UTF-8 text, both ways) — real NSPasteboard glue behind the sans-IO core's gates. Needs capability key 10 on both ends; against a no-key-10 host every local copy reports notNegotiated (that refusal is the evidence). Payloads are never printed — byte counts only")
+    var clipboard = false
     @Option(name: .long, help: "Debug: send one reliable CTRL ping every N seconds (0 = off) — exercises the CL-7 ARQ leg live")
     var arqPing: Int = 0
     @Option(name: .long, help: """
@@ -157,6 +159,11 @@ struct WireView: AsyncParsableCommand {
         // worker drives the whole negotiation live without the app.
         sessionConfig.core.desiredHostAudioRouting =
             hostAudio.flatMap(Self.parseHostAudio)
+        // CL-15: --clipboard seeds the sharing gate ON (the app's
+        // per-host default's role); the pasteboard watcher arms after
+        // the session starts (it needs the session to funnel into).
+        sessionConfig.core.shareClipboard = clipboard
+        let pasteboardBox = LockedCell<PasteboardSync?>(nil)
         let session = LyteUdpSession(
             crypto: crypto,
             config: sessionConfig,
@@ -169,7 +176,8 @@ struct WireView: AsyncParsableCommand {
                     print("wire-view: capabilities AGREED — codecs \(agreed.videoCodecs), "
                         + "chroma \(agreed.chromaModes), idleSilence \(agreed.idleSilence), "
                         + "maxDatagram \(agreed.maxDatagramBytes), "
-                        + "hostAudioRouting \(agreed.hostAudioRouting ? "yes (key 9)" : "no")")
+                        + "hostAudioRouting \(agreed.hostAudioRouting ? "yes (key 9)" : "no"), "
+                        + "clipboard \(agreed.clipboardText ? "yes (key 10)" : "no")")
                 case .capabilitiesFailed(let why):
                     print("wire-view: capabilities FAILED (\(why)) — typed teardown sent")
                 case .capabilityUpdateAnswered(let accepted):
@@ -193,6 +201,12 @@ struct WireView: AsyncParsableCommand {
                         + (mode == .hostMuted ? "MUTED (host speakers silent)"
                                               : "AUDIBLE (host speakers playing)")
                         + " (0x19-confirmed)")
+                case .hostClipboardChanged(let text):
+                    // Payloads never print — the byte count is the
+                    // live-leg evidence.
+                    print("wire-view: host clipboard → pasteboard "
+                        + "(\(text.utf8.count) B, 0x1B)")
+                    pasteboardBox.value?.apply(text)
                 case .idleFrameReceived(let frame, let outcome):
                     print("wire-view: reliable idle frame \(frame) — \(outcome)")
                 case .teardownSent(let reason):
@@ -232,6 +246,22 @@ struct WireView: AsyncParsableCommand {
         }
         print("wire-view: capability declaration sent (0x0F, first reliable word); "
             + "feedback cadence \(core.feedback.cadenceMilliseconds) ms")
+
+        // CL-15: the pasteboard watcher — the same LyteUI glue the app
+        // runs; every local copy funnels through the core's gates
+        // (negotiated → enabled → sync book → ceiling), and every
+        // verdict prints as evidence. Byte counts only, never content.
+        if clipboard {
+            let sync = PasteboardSync(onLocalChange: { [weak session] text in
+                guard let session else { return }
+                let outcome = session.shareLocalClipboard(text)
+                print("wire-view: local copy (\(text.utf8.count) B) — \(outcome)")
+            })
+            sync.start()
+            pasteboardBox.value = sync
+            print("wire-view: clipboard sharing ON — NSPasteboard poll "
+                + "200 ms (key 10 pending agreement)")
+        }
 
         // The CL-7 live probe: reliable pings on the ordered stream.
         // The type byte 0x7F is a debug placeholder — unregistered, so
@@ -307,6 +337,7 @@ struct WireView: AsyncParsableCommand {
             print("wire-view: finishing (\(trigger))")
             ticker.cancel()
             pinger?.cancel()
+            pasteboardBox.value?.stop()
             // A locally-triggered end says goodbye on the wire (typed
             // 0x0A + ACK linger); a session-closed end (peer teardown,
             // liveness) has nothing left to say.
@@ -451,6 +482,27 @@ final class WireViewStatsPrinter: Sendable {
         }
         if counters.audioRoutingDropsLoud > 0 {
             sess += ", \(counters.audioRoutingDropsLoud) routing-drops"
+        }
+        // CL-15: the clipboard state + books (byte counts and verdicts
+        // only — payloads never print).
+        if core.clipboardNegotiated {
+            sess += ", clipboard \(core.clipboardSharingEnabled ? "ON" : "off")"
+            if counters.clipboardSharesSent
+                + counters.clipboardAnnouncesReceived > 0 {
+                sess += " (\(counters.clipboardSharesSent) sent/"
+                    + "\(counters.clipboardAnnouncesReceived) recv)"
+            }
+            if counters.clipboardLoopSuppressed > 0 {
+                sess += ", \(counters.clipboardLoopSuppressed) clip-suppressed"
+            }
+            if counters.clipboardIgnoredDisabled > 0 {
+                sess += ", \(counters.clipboardIgnoredDisabled) clip-ignored"
+            }
+        } else if core.agreedCapabilities != nil {
+            sess += ", clipboard unnegotiated"
+        }
+        if counters.clipboardDropsLoud > 0 {
+            sess += ", \(counters.clipboardDropsLoud) clip-drops"
         }
         print(sess)
 

@@ -113,6 +113,22 @@ struct ControlStrip: View {
                 .disabled(model.hostAudioPosture == nil)
             }
 
+            // Share Clipboard — EXISTS only when capability key 10
+            // survived intersection (CL-15). Renders the live consent
+            // state; while off, nothing leaves and nothing lands.
+            if model.clipboardNegotiated {
+                stripButton(
+                    systemImage: model.clipboardSharing
+                        ? "doc.on.clipboard.fill" : "doc.on.clipboard",
+                    active: model.clipboardSharing,
+                    help: model.clipboardSharing
+                        ? "Stop sharing the clipboard with the host"
+                        : "Share the clipboard with the host (text, both ways)"
+                ) {
+                    model.setClipboardSharing(!model.clipboardSharing)
+                }
+            }
+
             // Client-side mute — the local pipeline's mixer (CL-11);
             // always available while the session runs.
             stripButton(

@@ -29,6 +29,14 @@ final class ConnectionModel {
     // the toggle asks and waits for the wire's answer.
     private(set) var hostAudioNegotiated = false
     private(set) var hostAudioPosture: HostAudioRoutingMode?
+    // CL-15: clipboard sharing — `clipboardNegotiated` decides whether
+    // the strip's toggle EXISTS (key 10 survived intersection);
+    // `clipboardSharing` is the live consent state (seeded from the
+    // per-host default at connect, default OFF — clipboards carry
+    // passwords). The pasteboard watcher runs only while both hold.
+    private(set) var clipboardNegotiated = false
+    private(set) var clipboardSharing = false
+    private var pasteboardSync: PasteboardSync?
     /// The stats readout's visibility (the strip's chart toggle).
     var statsVisible = false
 
@@ -108,6 +116,9 @@ final class ConnectionModel {
         if pinned.startHostAudioMuted == true {
             sessionConfig.core.desiredHostAudioRouting = .hostMuted
         }
+        // CL-15: the per-host clipboard consent seeds the session's
+        // starting posture; the strip's toggle is the live override.
+        sessionConfig.core.shareClipboard = pinned.shareClipboard == true
 
         let lastDims = VideoDimsCell()
         let lyte = LyteUdpSession(
@@ -148,6 +159,14 @@ final class ConnectionModel {
         lyteFrozen = false
         hostAudioNegotiated = false
         hostAudioPosture = nil
+        clipboardNegotiated = false
+        clipboardSharing = pinned.shareClipboard == true
+        // The watcher exists per session, started only once key 10
+        // agrees AND sharing is on (updatePasteboardWatcher). The
+        // core judges every change; the glue only reads and applies.
+        pasteboardSync = PasteboardSync(onLocalChange: { [weak lyte] text in
+            lyte?.shareLocalClipboard(text)
+        })
         phase = .streaming
         statusLine = crypto.modeDescription
         AgentState.shared.streamBegan()
@@ -161,8 +180,16 @@ final class ConnectionModel {
             // The strip's host-mute button exists exactly when key 9
             // survived intersection (CL-13).
             hostAudioNegotiated = agreed.hostAudioRouting
+            // CL-15: the clipboard toggle exists exactly when key 10
+            // survived; the watcher starts if consent is already on.
+            clipboardNegotiated = agreed.clipboardText
+            updatePasteboardWatcher()
         case .hostAudioRoutingStatus(let mode):
             hostAudioPosture = mode
+        case .hostClipboardChanged(let text):
+            // Already through the core's gates (negotiated + sharing
+            // on, book pre-armed); the glue just applies.
+            pasteboardSync?.apply(text)
         case .capabilitiesFailed(let why):
             endLyteSession(reason: "capabilities failed: \(why)")
         case .capabilityUpdateAnswered:
@@ -194,6 +221,10 @@ final class ConnectionModel {
         lyteFrozen = false
         hostAudioNegotiated = false
         hostAudioPosture = nil
+        pasteboardSync?.stop()
+        pasteboardSync = nil
+        clipboardNegotiated = false
+        clipboardSharing = false
         statsVisible = false
         lyteInputCapture?.stop()
         lyteInputCapture = nil
@@ -255,6 +286,46 @@ final class ConnectionModel {
         }
     }
 
+    // MARK: - Clipboard sharing (CL-15)
+
+    /// The strip's live consent toggle. Only reachable when
+    /// `clipboardNegotiated` (button gating); flips the core's gate
+    /// (nothing leaves, nothing lands, while off) and the watcher.
+    func setClipboardSharing(_ enabled: Bool) {
+        guard clipboardNegotiated else { return }
+        clipboardSharing = enabled
+        lyteSession?.setClipboardSharing(enabled)
+        updatePasteboardWatcher()
+    }
+
+    /// The watcher polls exactly while consent AND capability hold —
+    /// while off, the pasteboard is never even read.
+    private func updatePasteboardWatcher() {
+        if clipboardNegotiated, clipboardSharing, lyteSession != nil {
+            pasteboardSync?.start()
+        } else {
+            pasteboardSync?.stop()
+        }
+    }
+
+    /// The per-host "share clipboard" default, read live from the
+    /// pinned store (CL-15). Applied at connect; the strip's toggle
+    /// overrides live without touching it.
+    var shareClipboardPreference: Bool {
+        get {
+            guard let pkh = hostPublicKeyHash else { return false }
+            return PinnedHostStore.load()
+                .host(publicKeyHash: pkh)?.shareClipboard == true
+        }
+        set {
+            guard let pkh = hostPublicKeyHash else { return }
+            var store = PinnedHostStore.load()
+            store.setShareClipboard(
+                publicKeyHash: pkh, share: newValue ? true : nil)
+            try? store.save()
+        }
+    }
+
     // MARK: - Window verbs (strip + Actions menu, same commands)
 
     func toggleFullscreen() {
@@ -288,6 +359,9 @@ final class ConnectionModel {
             case nil: mode += " · host audio pending"
             }
         }
+        if clipboardNegotiated {
+            mode += clipboardSharing ? " · clipboard on" : " · clipboard off"
+        }
         lines.append(mode)
 
         let input = core.input.snapshotStats()
@@ -313,6 +387,16 @@ final class ConnectionModel {
                 line += " · fec \(audio.depacketizer.packetsRebuilt)"
             }
             lines.append(line)
+        }
+
+        let clipboard = core.snapshotCounters()
+        let clipboardActivity = clipboard.clipboardSharesSent
+            + clipboard.clipboardAnnouncesReceived
+            + clipboard.clipboardLoopSuppressed
+        if clipboardNegotiated, clipboardActivity > 0 {
+            lines.append("clipboard \(clipboard.clipboardSharesSent) sent"
+                + " · \(clipboard.clipboardAnnouncesReceived) recv"
+                + " · \(clipboard.clipboardLoopSuppressed) suppressed")
         }
         return lines
     }

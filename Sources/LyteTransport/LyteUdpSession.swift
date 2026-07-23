@@ -59,6 +59,32 @@ public enum AudioRoutingAskError: Error, Equatable, Sendable {
     case notNegotiated
 }
 
+// MARK: - Client-side clipboard policy (CL-15)
+
+/// One local clipboard change's fate (the pasteboard watcher calls on
+/// every changeCount bump while sharing is on; the verdict is policy,
+/// counted, never thrown — a poller has nobody to catch for it).
+public enum ClipboardShareOutcome: Equatable, Sendable {
+    /// A 0x1A left on the ordered stream.
+    case shared
+    /// The pasteboard reporting our own host-announce apply back —
+    /// the sync book's boomerang stop.
+    case suppressedEcho
+    /// Identical to the last text we shared — the host already holds it.
+    case suppressedDuplicate
+    /// The session toggle (or per-host default) says clipboard
+    /// sharing is off: nothing leaves.
+    case sharingDisabled
+    /// Key 10 never survived intersection — refused before a byte
+    /// leaves (the rule-3 gate, the audio-routing ask's rule).
+    case notNegotiated
+    /// Past the 65,536-byte v1 ceiling (or empty) — suppressed
+    /// weather, counted.
+    case overBudget(Int)
+    /// The reliable endpoint refused the send (teardown races).
+    case sendRefused(String)
+}
+
 // MARK: - Events
 
 /// Everything the session surfaces to its owner (the CLI's printer,
@@ -85,6 +111,12 @@ public enum LyteUdpSessionEvent: Sendable {
     /// the OLD posture. Fires on every status, changed or not, so the
     /// UI can settle a pending toggle either way. Truth, not hope.
     case hostAudioRoutingStatus(HostAudioRoutingMode)
+    /// A 0x1B clipboard announce arrived and passed every gate
+    /// (negotiated, sharing enabled) — the glue applies `text` to the
+    /// pasteboard (CL-15). The sync book is already pre-armed against
+    /// the apply's changeCount echo. Never fires while sharing is off:
+    /// content must not land on the pasteboard without consent.
+    case hostClipboardChanged(String)
     /// Our typed teardown left on the ordered stream.
     case teardownSent(SessionTeardownReason)
     /// The session reached `closed` — peer teardown, local teardown,
@@ -116,6 +148,18 @@ public struct LyteUdpSessionCounters: Sendable {
     /// role-confused 0x18 arriving AT the client — the host's rule-3
     /// gate, mirrored.
     public var audioRoutingDropsLoud: UInt64 = 0
+    /// 0x1A clipboard sets this end put on the ordered stream (CL-15).
+    public var clipboardSharesSent: UInt64 = 0
+    /// 0x1B announces consumed and applied (CL-15).
+    public var clipboardAnnouncesReceived: UInt64 = 0
+    /// Local changes the sync book suppressed (echo or duplicate).
+    public var clipboardLoopSuppressed: UInt64 = 0
+    /// Announces that arrived while the session toggle was OFF —
+    /// counted and ignored, never applied (the consent posture).
+    public var clipboardIgnoredDisabled: UInt64 = 0
+    /// Loud clipboard drops: an unnegotiated 0x1B, or a role-confused
+    /// 0x1A arriving AT the client.
+    public var clipboardDropsLoud: UInt64 = 0
 }
 
 // MARK: - Config
@@ -157,16 +201,26 @@ public struct LyteUdpSessionCoreConfig: Sendable {
     /// would be a loop, and the strip's toggle is the live override).
     /// Nil takes the host's default without comment.
     public var desiredHostAudioRouting: HostAudioRoutingMode?
+    /// CL-15: the session's starting clipboard-sharing posture (the
+    /// per-host "Share Clipboard" default's landing point; default
+    /// OFF — clipboards carry passwords). Declaration is unaffected:
+    /// key 10 is always declared (dialect, not consent — the key-9
+    /// rule) and the strip's toggle flips sharing live via
+    /// `setClipboardSharing`. While off, nothing leaves and nothing
+    /// lands.
+    public var shareClipboard: Bool
 
     public init(
-        capabilities: Capabilities = .wireDefault.declaringHostAudioRouting(),
+        capabilities: Capabilities = .wireDefault
+            .declaringHostAudioRouting().declaringClipboardText(),
         machineConfig: SessionMachineConfig = SessionMachineConfig(
             blackoutSilenceMicroseconds: 2_500_000
         ),
         tightenedBlackoutSilenceMicroseconds: Int64? = 350_000,
         audioJitter: AudioJitterConfig = AudioJitterConfig(),
         nackPolicy: NackPolicyConfig = NackPolicyConfig(),
-        desiredHostAudioRouting: HostAudioRoutingMode? = nil
+        desiredHostAudioRouting: HostAudioRoutingMode? = nil,
+        shareClipboard: Bool = false
     ) {
         self.capabilities = capabilities
         self.machineConfig = machineConfig
@@ -175,6 +229,7 @@ public struct LyteUdpSessionCoreConfig: Sendable {
         self.audioJitter = audioJitter
         self.nackPolicy = nackPolicy
         self.desiredHostAudioRouting = desiredHostAudioRouting
+        self.shareClipboard = shareClipboard
     }
 }
 
@@ -213,6 +268,13 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     private var hostAudioPosture: HostAudioRoutingMode?
     /// The session-start ask fires at most once (config comment).
     private var sessionStartAudioAskDone = false
+    /// CL-15: the live clipboard-sharing toggle (seeded from the
+    /// config's per-host default; the strip flips it). Gates BOTH
+    /// directions — nothing leaves, nothing lands, while off.
+    private var clipboardSharingOn: Bool
+    /// CL-15: the loop-prevention/dedupe books (the host runs the
+    /// identical type on its side).
+    private var clipboardBook = ClipboardSyncBook()
     private var counters = LyteUdpSessionCounters()
     /// True once the first authenticated chan-1 datagram landed and
     /// (config permitting) the detector re-armed at 350 ms.
@@ -235,6 +297,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         self.config = config
         self.now = now
         self.onEvent = onEvent
+        self.clipboardSharingOn = config.shareClipboard
         // The machine begins at establishment (the shell constructs the
         // core only after the Noise handshake), streaming: ACTIVE.
         self.machine = SessionStateMachine(
@@ -455,6 +518,88 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     public func requestHostAudioRouting(_ mode: HostAudioRoutingMode) throws {
         try requestHostAudioRouting(mode, now: now())
+    }
+
+    // MARK: Clipboard (CL-15)
+
+    /// True when capability key 10 survived intersection — the
+    /// strip's clipboard toggle exists exactly when this is true.
+    public var clipboardNegotiated: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return agreed?.clipboardText == true
+    }
+
+    /// The live sharing toggle's state (seeded from the per-host
+    /// default; nothing leaves and nothing lands while false).
+    public var clipboardSharingEnabled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return clipboardSharingOn
+    }
+
+    /// The strip's live override for clipboard sharing. Local policy
+    /// only — no wire message exists for it in v1 (design doc §1's
+    /// named non-goal), so a disabled end simply goes quiet and deaf.
+    public func setClipboardSharing(_ enabled: Bool) {
+        lock.lock()
+        clipboardSharingOn = enabled
+        lock.unlock()
+    }
+
+    /// The pasteboard watcher's funnel: one local clipboard change,
+    /// judged (negotiated → enabled → the sync book → the ceiling) and
+    /// shared as a 0x1A when it survives. Never throws — the poller
+    /// has nobody to catch for it; the outcome is counted and
+    /// returned.
+    @discardableResult
+    public func shareLocalClipboard(
+        _ text: String, now: ClientTimestamp
+    ) -> ClipboardShareOutcome {
+        lock.lock()
+        guard agreed?.clipboardText == true else {
+            lock.unlock()
+            return .notNegotiated
+        }
+        guard clipboardSharingOn else {
+            lock.unlock()
+            return .sharingDisabled
+        }
+        switch clipboardBook.admitLocalChange(text) {
+        case .suppressEcho:
+            counters.clipboardLoopSuppressed += 1
+            lock.unlock()
+            return .suppressedEcho
+        case .suppressDuplicate:
+            counters.clipboardLoopSuppressed += 1
+            lock.unlock()
+            return .suppressedDuplicate
+        case .share:
+            break
+        }
+        lock.unlock()
+        let message: [UInt8]
+        do {
+            message = try ClipboardSet(text: text).encode()
+        } catch {
+            // Empty or over the v1 ceiling: suppressed weather.
+            return .overBudget(text.utf8.count)
+        }
+        do {
+            try reliable.send(message, now: now)
+        } catch {
+            return .sendRefused(String(describing: error))
+        }
+        lock.lock()
+        clipboardBook.noteShared(text)
+        counters.clipboardSharesSent += 1
+        lock.unlock()
+        return .shared
+    }
+
+    @discardableResult
+    public func shareLocalClipboard(_ text: String) -> ClipboardShareOutcome {
+        shareLocalClipboard(text, now: now())
     }
 
     // MARK: Ingest
@@ -684,6 +829,19 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 "audio-routing 0x18 arrived AT the client "
                 + "(role confusion) — dropped"))
 
+        case CtrlMessageType.clipboardAnnounce:
+            receiveClipboardAnnounce(bytes)
+
+        case CtrlMessageType.clipboardSet:
+            // Role confusion: 0x1A is client→host only (the host's
+            // 0x1B-at-host mirror). Loud, payload never logged.
+            lock.lock()
+            counters.clipboardDropsLoud += 1
+            lock.unlock()
+            onEvent(.protocolNote(
+                "clipboard 0x1A arrived AT the client "
+                + "(role confusion) — dropped"))
+
         default:
             lock.lock()
             counters.unknownReliableTypes += 1
@@ -817,6 +975,41 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                     "session-start posture ask refused: \(error)"))
             }
         }
+    }
+
+    /// The 0x1B announce (CL-15). Gated on the agreed set (an
+    /// announce from a host that never negotiated key 10 is a
+    /// protocol break — dropped loud, the rule-3 gate mirrored) AND
+    /// on the session toggle (consent: while sharing is off, host
+    /// clipboard content must not land on the pasteboard — counted,
+    /// ignored, no event). A legitimate one pre-arms the sync book
+    /// against its own changeCount echo, then surfaces for the glue
+    /// to apply.
+    private func receiveClipboardAnnounce(_ bytes: [UInt8]) {
+        guard let announce = try? ClipboardAnnounce.decode(bytes) else {
+            noteMalformed("clipboard announce")
+            return
+        }
+        lock.lock()
+        guard agreed?.clipboardText == true else {
+            counters.clipboardDropsLoud += 1
+            lock.unlock()
+            onEvent(.protocolNote(
+                "clipboard 0x1B without negotiated key 10 — dropped"))
+            return
+        }
+        guard clipboardSharingOn else {
+            counters.clipboardIgnoredDisabled += 1
+            lock.unlock()
+            onEvent(.protocolNote(
+                "clipboard 0x1B while sharing is off — ignored "
+                + "(\(announce.text.utf8.count) B never applied)"))
+            return
+        }
+        counters.clipboardAnnouncesReceived += 1
+        clipboardBook.noteRemoteApplied(announce.text)
+        lock.unlock()
+        onEvent(.hostClipboardChanged(announce.text))
     }
 
     private func noteMalformed(_ what: String) {
@@ -966,6 +1159,28 @@ public final class LyteUdpSession: @unchecked Sendable {
     /// status (CL-13).
     public var hostAudioRoutingPosture: HostAudioRoutingMode? {
         core?.hostAudioRoutingPosture
+    }
+
+    /// True when key 10 survived intersection (CL-15) — the strip's
+    /// clipboard toggle exists exactly when this is true.
+    public var clipboardNegotiated: Bool {
+        core?.clipboardNegotiated ?? false
+    }
+
+    /// The live clipboard-sharing toggle (CL-15).
+    public var clipboardSharingEnabled: Bool {
+        core?.clipboardSharingEnabled ?? false
+    }
+
+    public func setClipboardSharing(_ enabled: Bool) {
+        core?.setClipboardSharing(enabled)
+    }
+
+    /// The pasteboard watcher's funnel (CL-15): one local clipboard
+    /// change through the core's gates. Safe before start (`.sendRefused`).
+    @discardableResult
+    public func shareLocalClipboard(_ text: String) -> ClipboardShareOutcome {
+        core?.shareLocalClipboard(text) ?? .sendRefused("not started")
     }
 
     /// Orderly close: the typed 0x0A on the ordered stream, a linger
