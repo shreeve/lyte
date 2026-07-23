@@ -834,6 +834,19 @@ final class SessionWire {
             pendingAudioRouting.append(mode)
         case .audioRoutingStatusSent(let mode):
             print("audio-routing: status \(mode) sent (0x19)")
+        case .clipboardSetReceived(let text):
+            // CL-15: the session's gate + book already ran; without a
+            // clipboard leaf there is nothing to apply to. The real
+            // portal-Clipboard leaf is queued follow-up work — this
+            // shell never declares key 10 until it exists, so this
+            // case is unreachable today (defensive, never logs the
+            // payload).
+            print("clipboard: 0x1A set received (\(text.utf8.count) B) — "
+                + "no clipboard leaf, ignored")
+        case .clipboardAnnounceSent(let byteCount):
+            print("clipboard: announce sent (\(byteCount) B, 0x1B)")
+        case .clipboardAnnounceSuppressed(let reason):
+            print("clipboard: announce suppressed (\(reason))")
         }
     }
 

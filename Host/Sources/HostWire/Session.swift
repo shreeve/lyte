@@ -254,6 +254,34 @@ public enum SessionEvent: Equatable, Sendable {
     /// HS-18: an applied posture left as a 0x19 status on the reliable
     /// stream (at capability agreement and after every applied flip).
     case audioRoutingStatusSent(HostAudioRoutingMode)
+    /// CL-15: a client 0x1A clipboard set arrived on the reliable
+    /// stream — exactly once, in order. Only surfaces when the agreed
+    /// capabilities carry clipboardText (the W7 rule-3 gate); the
+    /// sync book is already pre-armed against this apply's OS echo.
+    /// The shell applies it through the HostClipboardLeaf seam and
+    /// reports the leaf's own change signals via
+    /// `noteHostClipboardChanged` — the book eats the echo there.
+    case clipboardSetReceived(text: String)
+    /// CL-15: a host clipboard change left as a 0x1B announce on the
+    /// reliable stream (byte count only — payloads are never logged).
+    case clipboardAnnounceSent(byteCount: Int)
+    /// CL-15: a leaf-reported clipboard change was judged and NOT
+    /// announced — the loop-prevention/dedupe/ceiling discipline
+    /// holding (design doc §5).
+    case clipboardAnnounceSuppressed(ClipboardSuppressReason)
+}
+
+/// Why a leaf-reported host clipboard change did not become a 0x1B
+/// (CL-15's suppression axis). Counted and surfaced, never thrown.
+public enum ClipboardSuppressReason: Equatable, Sendable {
+    /// The OS reporting our own client-set apply back — the boomerang
+    /// the sync book exists to stop.
+    case loopEcho
+    /// Identical to the last announce — the client already holds it.
+    case duplicate
+    /// Past the 65,536-byte v1 ceiling — routine weather (a huge copy
+    /// on the host), suppressed rather than erred.
+    case overBudget
 }
 
 /// Why a NACK did not produce a retransmit (HS-17's verdict axis).
@@ -314,6 +342,9 @@ public enum SessionDropReason: Equatable, Sendable {
     /// set — the peer is using a capability it never negotiated
     /// (HS-18; the W7 rule-3 gate holding). Dropped loud, never fatal.
     case audioRoutingNotNegotiated
+    /// A 0x1A clipboard set without clipboardText in the agreed set
+    /// (CL-15; the same rule-3 gate). Dropped loud, never fatal.
+    case clipboardNotNegotiated
 }
 
 public enum SessionError: Error, Equatable, Sendable {
@@ -398,6 +429,12 @@ public struct SessionCounters: Equatable, Sendable {
     public var audioRoutingRequestsReceived = 0
     /// HS-18: 0x19 posture statuses sent.
     public var audioRoutingStatusesSent = 0
+    /// CL-15: 0x1A clipboard sets delivered (past the rule-3 gate).
+    public var clipboardSetsReceived = 0
+    /// CL-15: 0x1B clipboard announces sent.
+    public var clipboardAnnouncesSent = 0
+    /// CL-15: leaf-reported changes the book/ceiling suppressed.
+    public var clipboardAnnouncesSuppressed = 0
 
     public init() {}
 }
@@ -518,6 +555,17 @@ public final class Session {
     public var agreedHostAudioRouting: Bool {
         negotiator.agreed?.hostAudioRouting == true
     }
+    /// CL-15: true when clipboardText (key 10) survived the
+    /// intersection. Gates 0x1A consumption and 0x1B emission.
+    public var agreedClipboardText: Bool {
+        negotiator.agreed?.clipboardText == true
+    }
+
+    /// CL-15: the loop-prevention/dedupe books (design doc §5) — one
+    /// per session, shared by the 0x1A consume path (pre-arms echo
+    /// suppression) and `noteHostClipboardChanged` (judges the leaf's
+    /// change signals).
+    private var clipboardBook = ClipboardSyncBook()
 
     /// - Parameters:
     ///   - clientTuple: the peer's 4-tuple at session start — the
@@ -954,6 +1002,51 @@ public final class Session {
         }
     }
 
+    /// CL-15: the shell's report that the OS clipboard changed (the
+    /// HostClipboardLeaf's onLocalChange, both genuine host copies AND
+    /// the echoes of our own client-set applies — the book tells them
+    /// apart). Judges the agreement, the book, and the ceiling before
+    /// a 0x1B leaves. Silently a no-op unless the agreed set carries
+    /// clipboardText (the noteAudioRoutingApplied rule: a legacy
+    /// client neither asked for the key nor knows the byte) or when
+    /// the leaf reports an empty clipboard (v1 does not sync
+    /// clearing). Payloads never appear in events or logs — byte
+    /// counts only.
+    public func noteHostClipboardChanged(
+        _ text: String, now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        guard agreedClipboardText, !text.isEmpty else { return [] }
+        switch clipboardBook.admitLocalChange(text) {
+        case .suppressEcho:
+            counters.clipboardAnnouncesSuppressed += 1
+            return [.clipboardAnnounceSuppressed(.loopEcho)]
+        case .suppressDuplicate:
+            counters.clipboardAnnouncesSuppressed += 1
+            return [.clipboardAnnounceSuppressed(.duplicate)]
+        case .share:
+            break
+        }
+        let message: [UInt8]
+        do {
+            message = try ClipboardAnnounce(text: text).encode()
+        } catch {
+            // Over the v1 ceiling: routine weather (a huge host copy),
+            // suppressed and counted, never an error.
+            counters.clipboardAnnouncesSuppressed += 1
+            return [.clipboardAnnounceSuppressed(.overBudget)]
+        }
+        do {
+            try sendReliable(
+                message, now: now, hostMicroseconds: hostMicroseconds
+            )
+            clipboardBook.noteShared(text)
+            counters.clipboardAnnouncesSent += 1
+            return [.clipboardAnnounceSent(byteCount: message.count - 1)]
+        } catch {
+            return [.sendFailed("clipboard announce: \(error)")]
+        }
+    }
+
     /// The ratchet's all-skip stop (HS-3's detector via HS-11): retains
     /// the final converged frame and starts the idle handoff — the
     /// frame rides a reliable one-shot group, and ONLY its full
@@ -1148,12 +1241,31 @@ public final class Session {
             }
             counters.audioRoutingRequestsReceived += 1
             return [.audioRoutingRequested(request.mode)]
+        case CtrlMessageType.clipboardSet:
+            guard let set = try? ClipboardSet.decode(message) else {
+                counters.dropped += 1
+                return [.dropped(.malformedCtrl)]
+            }
+            // The W7 rule-3 gate, key 10 (CL-15): a set outside the
+            // agreement is a peer using a superpower it never
+            // negotiated — dropped loud, never fatal.
+            guard agreedClipboardText else {
+                counters.dropped += 1
+                return [.dropped(.clipboardNotNegotiated)]
+            }
+            counters.clipboardSetsReceived += 1
+            // Pre-arm the book BEFORE the shell applies: the leaf's
+            // change signal for this very apply must suppress, not
+            // boomerang (design doc §5's proof obligation).
+            clipboardBook.noteRemoteApplied(set.text)
+            return [.clipboardSetReceived(text: set.text)]
         case CtrlMessageType.modeTransition, CtrlMessageType.capabilityUpdate,
              CtrlMessageType.inputEcho,
-             CtrlMessageType.audioRoutingStatus:
+             CtrlMessageType.audioRoutingStatus,
+             CtrlMessageType.clipboardAnnounce:
             // Receiver-role messages arriving at the mediaSender /
-            // sole proposer / echo emitter / status emitter: hostile
-            // or confused. Dropped loud.
+            // sole proposer / echo emitter / status emitter / announce
+            // emitter: hostile or confused. Dropped loud.
             counters.dropped += 1
             return [.dropped(.unexpectedCtrlType(message.first!))]
         default:
