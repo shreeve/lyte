@@ -82,6 +82,18 @@ public enum CapabilityKey {
     /// fields is a wire-version discussion (the TLV fold-into-v2
     /// precedent), not a promotion.
     public static let hostAudioRouting: UInt64 = 9
+    /// bool — this end speaks the v1 clipboard-text sync (CTRL
+    /// 0x1A/0x1B on the ordered stream, CL-15 — the first H3
+    /// feature). Rides the forward-compat spine through
+    /// `unknownEntries` like key 9 (one canonical `0A F5` entry;
+    /// capabilities-v1.json never moves), surviving intersection only
+    /// on mutual byte-equal declaration. Deliberately NOT the
+    /// featureChannels list (key 5, id 1) — that id promises the
+    /// chan ≥ 8 feature-channel architecture, which v1 does not
+    /// build. Accessors in Clipboard.swift. Declaration is dialect,
+    /// not consent: sharing is gated locally on each end (design doc
+    /// §6).
+    public static let clipboardText: UInt64 = 10
 
     /// The renegotiable subset (transport pillar §4: "fixed after
     /// exchange except where a capability itself declares

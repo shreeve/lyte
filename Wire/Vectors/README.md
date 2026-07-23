@@ -88,6 +88,27 @@ case in `FecCoderTests`, the hand-walked datagram in
   envelope/fec formats these files already freeze (the Noise-carriage
   precedent), with the layout pinned as hand-built bytes in
   `AudioInteriorTests`.
+- `clipboard-v1.json` — the CL-15 clipboard-text sync (the first H3
+  feature; design record `docs/20260722-231500-lyte-clipboard.md`):
+  ClipboardSet 0x1A (client→host) and ClipboardAnnounce 0x1B
+  (host→client), both `type ‖ UTF-8 text` with the text the sole
+  trailing field, plus capability key 10 (`clipboardText`) on the W7
+  forward-compat spine as data (declared `0A F5`, absent, and composed
+  beside key 9 — capabilities-v1.json never moves). A NEW file rather
+  than an append to control-v1.json: appending is legal under the
+  freeze policy, but control-v1.json's byte-exact pup verification is
+  queued on the deferred ledger, and a new file keeps the existing 12
+  untouched while that leg is in flight. Format mirrors the control
+  file (`roundtrip`/`decodeReject` over `messageHex`; text rides as
+  `textUtf8Hex`); anchored against the hand-computed bytes in
+  `ClipboardCodecTests`. Inventory (17): roundtrips covering ASCII,
+  2-/3-/4-byte UTF-8, and the exact 65,536-byte ceiling
+  (printable-ASCII cycle, auditable by eye); rejects covering
+  truncation, empty text (v1 does not sync clearing), both cross-type
+  confusions, a foreign type, one-over-ceiling, and two invalid-UTF-8
+  shapes; the three key-10 spine pins. `ClipboardVectorFileTests`
+  asserts the coverage discipline (every error case name present, the
+  ceiling pinned legal, the spine pinned both ways).
 
 ## The 24-byte envelope (wire v1)
 

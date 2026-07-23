@@ -123,6 +123,14 @@ public enum CtrlMessageType {
     /// Host→client applied audio-routing posture (AudioRoutingStatus,
     /// HS-18 → CL-13, promoted). Same carriage and gate.
     public static let audioRoutingStatus: UInt8 = 0x19
+    /// Client→host clipboard push (ClipboardSet, CL-15 — the first H3
+    /// feature, born in the registry rather than promoted). ARQ
+    /// ordered stream, gated on capability key 10 surviving
+    /// intersection.
+    public static let clipboardSet: UInt8 = 0x1A
+    /// Host→client clipboard-change report (ClipboardAnnounce, CL-15).
+    /// Same carriage and gate.
+    public static let clipboardAnnounce: UInt8 = 0x1B
 
     /// The type byte of a CTRL payload, nil when the payload is empty.
     /// Dispatch on this, then hand the whole payload (type byte included)
