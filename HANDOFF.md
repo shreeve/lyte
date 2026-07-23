@@ -868,6 +868,110 @@ its entry at the marker at the end of this block.*
   silence); no render corruption, 0 unseal failures, video .rendering
   throughout, the new nack line quoted in the run log.
 
+- **CL-15 clipboard sync — the first H3 feature, Mac-local end to end**
+  (`ce50a20` Wire / `c16ff91` Host / `2f5f2f1` root; design record
+  `docs/20260722-231500-lyte-clipboard.md`, written BEFORE the code):
+  copy on either machine, paste on the other — v1 scoped to UTF-8 text.
+  WIRE (born in the registry, not promoted): CTRL **0x1A ClipboardSet**
+  (client→host) and **0x1B ClipboardAnnounce** (host→client), both
+  `type ‖ UTF-8 text` (text the sole trailing field — the ARQ message
+  boundary is the length), riding the ARQ ordered CTRL stream
+  exactly-once in-order with NO clipboard-layer chunking (the ARQ
+  reassembles whole messages); **65,536-byte ceiling** (the ARQ
+  receive window describes 256 segments and the stream is shared with
+  input — the old 256 KiB sketch would stall keystrokes ~4× longer;
+  over-ceiling local copies suppress as counted weather, over-ceiling
+  wire bytes reject); invalid UTF-8 and empty text reject (v1 does not
+  sync clearing). **Capability key 10 `clipboardText`** on the W7
+  spine exactly as key 9 (one canonical `0A F5` entry through
+  unknownEntries, mutual byte-equal survival, capabilities-v1.json
+  untouched) — deliberately NOT featureChannels id 1, which stays
+  reserved for the real chan ≥ 8 feature-channel architecture (new
+  semantics, new key). LOOP PREVENTION: `ClipboardSyncBook` (LyteWire,
+  sans-IO, both ends run it verbatim) — remote applies pre-arm a
+  consume-once echo ring, duplicates dedupe against the last share, a
+  genuine share clears stale entries; the boomerang proof (a set must
+  not echo back as a fresh change) is pinned on ALL THREE levels.
+  VECTOR RULING: new frozen file **clipboard-v1.json** (17 vectors;
+  vectorgen grew the `clipboard` subcommand) rather than appending to
+  control-v1.json — appending is legal under the freeze policy, but
+  control-v1.json's byte-exact pup verification is already queued on
+  the deferred ledger, so the existing 12 files stay untouched;
+  anchored by hand-computed bytes in ClipboardCodecTests, coverage
+  discipline (every error case, the exact ceiling legal, the spine
+  pinned declared+absent) asserted by ClipboardVectorFileTests. HOST:
+  Session consumes 0x1A behind the rule-3 gate (unnegotiated →
+  `.clipboardNotNegotiated` loud; 0x1B-at-host → role-confusion drop),
+  pre-arms the book BEFORE the shell applies, and
+  `noteHostClipboardChanged` judges agreement → book → ceiling before
+  a 0x1B leaves (never volunteered to a no-key-10 client; suppressions
+  surfaced as `.clipboardAnnounceSuppressed` loopEcho/duplicate/
+  overBudget + counters); **`HostClipboardLeaf`** (ClipboardWire.swift)
+  is the seam the real Wayland/portal leaf will drive — the gate runs
+  a scripted leaf; lyte-host grew ONLY the event-switch arms
+  (byte-count logs, payloads never printed) and does NOT declare
+  key 10 until the real leaf exists. CLIENT: policy all in the sans-IO
+  core — `shareLocalClipboard` returns a typed verdict (negotiated →
+  enabled → book → ceiling), the 0x1B consumer gates on agreement
+  (loud drop) AND on consent (counted-ignored, never applied, no
+  event); CONSENT POSTURE: key 10 always declared (dialect, not
+  consent — the key-9 rule), per-host `PinnedHost.shareClipboard`
+  default OFF (clipboards carry passwords; pre-CL-15 files decode
+  unchanged, re-pair preserves it), the control-strip toggle
+  (capability-gated, ⌘⇧C in the Actions menu, per-host default in the
+  host row's context menu) flips sharing live — while off the
+  pasteboard is never even read. GLUE (thin by design): LyteUI's
+  `PasteboardSync` — 200 ms changeCount poll, apply-and-swallow-own-
+  bump, shared by the app and wire-view; wire-view grew `--clipboard`
+  (real pasteboard glue for the live legs), the key-10 capabilities
+  line, and clipboard books on the stats line — byte counts only,
+  payloads never log anywhere. Gates: Wire 388 → **402/402 Mac**
+  (+11 ClipboardCodecTests incl. registry pins + the book's laws,
+  +3 ClipboardVectorFileTests), Host 110 → **115/115 Mac**
+  (ClipboardGateTests: cross-pins; spine; in-vivo set → apply → echo
+  suppressed with NOTHING returning on the wire + genuine copy →
+  byte-exact 0x1B + dedupe; rule-3 legs; ceiling-is-weather + exact
+  ceiling flows), root 116 → **122/122 Mac** (ClipboardClientGateTests
+  vs a scripted key-10 host in virtual time: byte-exact 0x1A incl. the
+  full 64 KiB ceiling through real ARQ segmentation, announce →
+  event → echo suppressed, consent off = quiet AND deaf + live toggle,
+  rule-3 refusal pre-wire + hostile/role-confused loud drops,
+  over-budget verdict, pinned-store plumbing); no-Foundation lint
+  green; build-cli.sh + make-app.sh release green.
+  **DEFERRED-PENDING-HOST (pup offline; run with the queued catch-up,
+  AFTER its m/n legs — this slice extends them):** (q) pup build +
+  suites over this slice's Wire/Host changes — Wire expecting
+  **402/402** with byte-exact verification of all THIRTEEN vector
+  files (clipboard-v1.json joins the set), Host expecting **115/115**
+  (the new lyte-host switch arms get their first compile with HS-18's
+  still-uncompiled C leaf); (r) key-10 truthfulness vs the real,
+  still-leafless host: wire-view --clipboard against lyte-host (which
+  deliberately does not declare key 10 yet) — capabilities line reads
+  "clipboard no", every local copy prints the notNegotiated verdict,
+  zero 0x1A on the wire, and the app's strip toggle must not exist;
+  (s) live end-to-end clipboard both ways — copy Mac→host and
+  host→Mac, boomerang counters clean on both ends (loop-suppressed
+  matches applies, no ping-pong), 1:1 reconciliation
+  (clipboardSharesSent ↔ clipboardSetsReceived, clipboardAnnouncesSent
+  ↔ clipboardAnnouncesReceived), the 64 KiB ceiling live, the consent
+  toggle flipped mid-session both directions; leg (s) ALSO needs the
+  queued Linux leaf below — it runs when both pup and the leaf exist.
+  **QUEUED FOLLOW-UP (new queue item, host territory):** the Linux
+  clipboard OS leaf — the portal Clipboard API attached to the
+  existing RemoteDesktop session (host build plan §6: selection-change
+  signals + fd transfer both directions; wl-clipboard is NOT a real
+  fallback on GNOME), driving `HostClipboardLeaf`; wire it into
+  lyte-host (apply on `.clipboardSetReceived`, changes into
+  `noteHostClipboardChanged`, a `--clipboard` shell flag), declare
+  key 10 only when the leaf is enabled (the key-9/--no-audio
+  precedent), then run leg (s). Deferred (non-live, named): a
+  mid-session "stop announcing" courtesy message is a v2 wire item
+  (today a disabled end just ignores inbound announces); images/files/
+  rich flavors and the chan ≥ 8 feature-channel carriage are the
+  design doc's named non-goals; the glue's accepted race (a user copy
+  landing inside the same 200 ms poll window as an inbound apply is
+  superseded at the OS clipboard) is documented in PasteboardSync.
+
 ---
 
 # Hard-won findings index (details live at the named commits/files)
