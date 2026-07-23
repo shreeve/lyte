@@ -27,6 +27,18 @@ cadence, hostAudible regression, secrets shas — is in the wave entry
 below; port 41121 reserved). NOTE: the Linux-only C leaf changes are
 uncompiled anywhere yet — run the pup build FIRST when it returns.
 
+**CL-13 LANDED on the Mac gates** (root) — the stream-window control
+strip + the client half of host-audio routing: key 9 declared client-side
+(byte-equal to HS-18's encoding, frozen-bytes proof mirrored), CTRL
+0x18/0x19 client codecs cross-pinned against the host's test arrays, the
+negotiated flip + session-start posture on `LyteUdpSessionCore`, per-host
+"start muted" defaults on the pinned store, the auto-hiding strip in the
+app, `wire-view --host-audio audible|muted`. Root suite 104 → **113/113
+Mac**; build-cli.sh + make-app.sh release green. Its live legs are
+**DEFERRED-PENDING-HOST** (full list in the wave entry below — they run
+TOGETHER with HS-18's a–g on pup's return; port 41121 stays reserved for
+the pair).
+
 **pup is OFFLINE (traveling).** Shut down 2026-07-22 afternoon; back online
 TONIGHT from a hotel — a different network, so the address in the ssh
 config (10.0.0.249 today) will likely change and `ssh pup` may need
@@ -36,12 +48,13 @@ possibly client-isolation quirks on hotel Wi-Fi.
 
 **Queued next (in order):**
 
-1. **Client control-strip slice** (root) — auto-hiding stream-window UI,
-   capability-gated buttons (including the host-mute toggle HS-18
-   provides), per-host defaults.
+1. **Tonight's catch-up worker** — HS-18's deferred legs a–g + CL-13's
+   deferred legs (both lists live in their wave entries; run the pup
+   build FIRST — the HS-18 C leaf is still uncompiled anywhere).
 2. **Codec-promotion slice into Wire/** — 0x15 IdleFrame, 0x16 InputEvent,
-   0x17 InputEcho, TLV 0x03 lastInputSeq, and the HS-15/CL-11 audio
-   interior. Mirrors exist byte-pinned on BOTH ends; all copies delete
+   0x17 InputEcho, TLV 0x03 lastInputSeq, the HS-15/CL-11 audio
+   interior, AND (new with HS-18/CL-13) capability key 9 + CTRL
+   0x18/0x19. Mirrors exist byte-pinned on BOTH ends; all copies delete
    together (registry append + file moves + a new vector file).
 3. **H3 ladder** — the capability-gated feature channel: clipboard both
    ways, then drag-and-drop files, per the master plan
@@ -645,6 +658,100 @@ its entry at the marker at the end of this block.*
   follow-up CL slice (flagged): declare key 9 + send 0x18 + render
   0x19 in the control strip; promotion slice grows by key 9 +
   0x18/0x19.
+
+- **CL-13 control strip + client audio routing** (root): HS-18's other
+  half — the stream window grows its verbs and the client learns to
+  ask the host to hold its tongue. WIRE MIRROR (LyteTransport/
+  AudioRouting.swift, the 0x15/0x16/0x17 mirror-then-promote
+  precedent): CTRL 0x18 AudioRoutingRequest / 0x19 AudioRoutingStatus
+  (`type ‖ mode u8`), byte-pinned against the SAME hand-built arrays
+  as Host/Tests' AudioRoutingGateTests leg 1 (the cross-pin); key 9
+  on the W7 spine with the frozen-bytes proof repeated client-side
+  (wireDefault's bytes + map-head 0xA8→0xA9 + `09 F5` appended,
+  nothing else moves); both copies delete together at the promotion
+  slice. SESSION CORE: the DEFAULT client declaration now carries
+  key 9 (the client can always render the control; the intersection
+  decides existence), `requestHostAudioRouting` sends 0x18 on the ARQ
+  ordered stream and is refused BEFORE a byte leaves when key 9 never
+  survived intersection (AudioRoutingAskError.notNegotiated — the
+  host would only drop it loud); the 0x19 consumer is gated on the
+  agreed set (unnegotiated status → loud drop + counter; a
+  role-confused 0x18 at the client likewise), updates the confirmed
+  posture (`hostAudioRoutingPosture`, nil until the host's first
+  status — NEVER optimistic) and fires `.hostAudioRoutingStatus` on
+  every 0x19 including a failed flip's old-posture re-report (the ask
+  was answered; the answer is "nothing changed" — the UI toggle
+  snaps back). SESSION-START POSTURE: config
+  `desiredHostAudioRouting` — the host's FIRST 0x19 (its own default,
+  sent at capability agreement per HS-18) is compared and exactly one
+  0x18 leaves when they differ; at most once per session by design (a
+  failing host re-asked forever would loop; the strip is the live
+  override). PER-HOST DEFAULT: `PinnedHost.startHostAudioMuted`
+  (optional — pre-CL-13 pinned_hosts.json decodes unchanged; a
+  re-pair refreshes dial hints WITHOUT resetting it), applied at
+  connect by the app; settable from the host row's context menu and
+  the Actions menu. THE STRIP (ControlStrip.swift, the human's
+  recorded design): auto-hiding, video-player style — reveals on
+  mouse movement (the input capture pings the reveal clock, since it
+  consumes moves over the video and SwiftUI hover alone goes blind;
+  onContinuousHover is the not-key-window backup), fades after ~2 s
+  idle, never while hovered, always one wiggle away. Buttons
+  CAPABILITY-GATED: Mute Host Audio EXISTS only when key 9 survived
+  intersection, renders the 0x19-confirmed posture, disabled until
+  the first status; client-side mute (CL-11 mixer); stats readout
+  toggle (compact overlay off the session's existing books:
+  datagrams ok/unseal, mode + posture, input inject p50/p99, audio
+  depth/PLC/FEC, 1 Hz TimelineView refresh); fullscreen; Disconnect
+  (the typed 0x0A). The Actions menu drives the SAME ConnectionModel
+  verbs (menu and strip cannot disagree; both existing items kept
+  their Lyte meaning — nothing left to delete post-demolition).
+  Input-capture seam: mouse events HIT-TEST first — strip/stats
+  clicks never reach the host cursor; key events never reveal the
+  strip. wire-view: `--host-audio audible|muted` seeds the
+  session-start posture, capabilities line + session stats line grew
+  the posture (`host-audio MUTED/audible/pending/unnegotiated`), 0x19
+  events print — tonight's worker drives the whole negotiation live
+  without the app. Gate: root 104 → **113/113 Mac**
+  (AudioRoutingClientGateTests, 9 legs: codec cross-pins + hostile
+  rejects; frozen-bytes spine proof + core-default-declares;
+  intersection both orders + false-not-equal-true; in-vivo negotiated
+  flip vs a scripted key-9 host in virtual time — starting 0x19 →
+  ask [0x18 0x02] byte-exact → 0x19 → callback, failed flip reports
+  old posture; session-start ask exactly-once-when-differing +
+  quiet-when-matching + never-re-triggered; rule-3 gate — ask refused
+  pre-wire, hostile 0x19 + role-confused 0x18 dropped loud; per-host
+  default decode/re-pair/refusal plumbing). Harness lesson worth
+  keeping: the stand-in host MUST queue its declaration at
+  establishment, before consuming any client word — lazily queued, the
+  agreement's 0x19 jumps ahead of the declaration on the ordered
+  stream and the client rightly drops it loud (HS-11's first-word
+  rule is load-bearing, not ceremony). Release builds green
+  (build-cli.sh + make-app.sh). **DEFERRED-PENDING-HOST (run with
+  HS-18's a–g on pup's return, port 41121):** (h) live negotiated
+  flip vs the real host — wire-view --audio, strip AND menu: posture
+  flips audibly mid-session both directions, 0x18/0x19 counters 1:1
+  against the host's audioRoutingRequestsReceived/StatusesSent,
+  posture line tracks; (i) session-start posture live —
+  `--host-audio muted` against a hostAudible host: exactly one 0x18
+  after the starting 0x19, session begins silent at the host's
+  speakers; (j) per-host default honored at connect — "Start with
+  Host Muted" set in the app, fresh connect starts muted with zero
+  strip interaction; (k) strip truthfulness vs a NO-key-9 host — run
+  lyte-host `--no-audio` (it never declares key 9; no older build
+  needed): the host-mute button must not exist, client-mute/stats/
+  fullscreen/disconnect all still work, `--host-audio muted` prints
+  the notNegotiated refusal and sends nothing; (l) app human-at-glass
+  (needs the human): strip reveal/fade feel, no strip-click leakage
+  to the host cursor, stats overlay legibility over live video,
+  ⌘⇧H/⌘⇧M/⌘⌥I/⌘D shortcuts, fullscreen round-trip. HS-18's own five
+  deferred legs are listed in ITS entry (a–g) — referenced here, not
+  duplicated. Deferred (non-live): the strip is flat buttons-in-a-
+  capsule v1 (no volume slider, no latency badge — H3-era polish);
+  posture-pending UX shows a disabled button (fine while the first
+  0x19 arrives inside the agreement round-trip; revisit only if a
+  real path shows a visible pending window); promotion slice items
+  unchanged (key 9 + 0x18/0x19 ride with 0x15/0x16/0x17/TLV-0x03 +
+  audio interior).
 
 ---
 
