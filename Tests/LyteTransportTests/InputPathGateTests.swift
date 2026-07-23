@@ -155,7 +155,7 @@ final class InputPathGateTests: XCTestCase {
         )
         XCTAssertThrowsError(try LastInputSeqTlv.decode(
             extensions: [try WireExtension(
-                type: ClientWireExtensionType.lastInputSeq, value: [1, 2]
+                type: WireExtension.ReservedType.lastInputSeq, value: [1, 2]
             )]
         ))
         XCTAssertNil(try LastInputSeqTlv.decode(extensions: []))
@@ -438,7 +438,7 @@ final class InputPathGateTests: XCTestCase {
             switch message.first {
             case CtrlMessageType.capabilityDeclaration:
                 declarationsSeen += 1
-            case ClientCtrlMessageType.inputEvent:
+            case CtrlMessageType.inputEvent:
                 guard let event = try? InputEvent.decode(message) else {
                     return XCTFail("malformed input event reached the host")
                 }

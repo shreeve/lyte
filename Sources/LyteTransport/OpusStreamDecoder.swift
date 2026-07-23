@@ -10,6 +10,7 @@
 // callback — the SPSC ring is the only thing the render thread touches.
 
 import COpus
+import LyteWire
 
 public enum OpusStreamDecoderError: Error, Sendable {
     case createFailed(Int32)

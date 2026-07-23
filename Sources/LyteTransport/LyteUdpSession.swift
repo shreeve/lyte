@@ -48,6 +48,17 @@ import Dispatch
 import Foundation
 import LyteWire
 
+// MARK: - Client-side audio-routing policy
+
+/// The rule-3 gate, client side: asking for a flip the intersection
+/// never agreed to is refused HERE, before a byte leaves — the host
+/// would only drop it loud (`.audioRoutingNotNegotiated`). Client
+/// session policy, not wire vocabulary — which is why it stayed behind
+/// when the 0x18/0x19 codecs promoted into LyteWire.
+public enum AudioRoutingAskError: Error, Equatable, Sendable {
+    case notNegotiated
+}
+
 // MARK: - Events
 
 /// Everything the session surfaces to its owner (the CLI's printer,
@@ -647,10 +658,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         case CtrlMessageType.capabilityUpdate:
             receiveUpdate(bytes, now: now)
 
-        case ClientCtrlMessageType.idleFrame:
+        case CtrlMessageType.idleFrame:
             receiveIdleFrame(bytes)
 
-        case ClientCtrlMessageType.inputEcho:
+        case CtrlMessageType.inputEcho:
             guard let echo = try? InputEcho.decode(bytes) else {
                 noteMalformed("input echo")
                 return
@@ -660,10 +671,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             lock.unlock()
             input.handleEcho(echo, now: now)
 
-        case ClientCtrlMessageType.audioRoutingStatus:
+        case CtrlMessageType.audioRoutingStatus:
             receiveAudioRoutingStatus(bytes, now: now)
 
-        case ClientCtrlMessageType.audioRoutingRequest:
+        case CtrlMessageType.audioRoutingRequest:
             // Role confusion: 0x18 is client→host only. The host's
             // mirror drops a client-bound 0x19 the same way — loud.
             lock.lock()

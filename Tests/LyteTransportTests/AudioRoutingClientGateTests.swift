@@ -139,7 +139,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         // absence and refusal are the same posture.
         var refusing = Capabilities.wireDefault
         refusing.unknownEntries.append(CborMapEntry(
-            key: .unsigned(ClientCapabilityKey.hostAudioRouting),
+            key: .unsigned(CapabilityKey.hostAudioRouting),
             value: .bool(false)
         ))
         XCTAssertFalse(refusing.hostAudioRouting)
@@ -299,7 +299,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
                             now: instant)
                     }
                 }
-            case ClientCtrlMessageType.audioRoutingRequest:
+            case CtrlMessageType.audioRoutingRequest:
                 requestsReceived.append(message)
                 guard agreed?.hostAudioRouting == true else {
                     return   // the host's rule-3 drop, silent here
@@ -591,7 +591,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
         XCTAssertEqual(host.requestsReceived, [])
         XCTAssertFalse(
             host.receivedReliableTypes
-                .contains(ClientCtrlMessageType.audioRoutingRequest),
+                .contains(CtrlMessageType.audioRoutingRequest),
             "no 0x18 may ever reach an unnegotiated host")
 
         // A hostile/buggy 0x19 from the no-key-9 host: dropped loud,

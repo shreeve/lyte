@@ -28,6 +28,7 @@
 
 import AppKit
 import LyteTransport
+import LyteWire
 
 @MainActor
 final class LyteInputCapture {

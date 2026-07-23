@@ -1,6 +1,7 @@
 import XCTest
 import COpus
 import LyteTransport
+import LyteWire
 
 // THE GATE (CL-11, decode leaf): the client's libopus wrapper decodes
 // real Opus packets — generated here with libopus' own encoder in the
