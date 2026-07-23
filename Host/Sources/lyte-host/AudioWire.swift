@@ -30,6 +30,7 @@ import COpusEncode
 import CPipeWireAudio
 import Foundation
 import HostWire
+import LyteWire
 
 /// @unchecked Sendable: the run thread's closure crosses a @Sendable
 /// boundary on Linux Foundation, but every mutable property is confined

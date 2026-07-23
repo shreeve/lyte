@@ -1115,7 +1115,7 @@ public final class Session {
                 counters.dropped += 1 // unreachable from receive(ack)
                 return [.dropped(.malformedCtrl)]
             }
-        case HostCtrlMessageType.inputEvent:
+        case CtrlMessageType.inputEvent:
             guard let event = try? InputEvent.decode(message) else {
                 counters.dropped += 1
                 return [.dropped(.malformedCtrl)]
@@ -1132,7 +1132,7 @@ public final class Session {
                 event, receivedAtMicroseconds: hostMicroseconds
             ))
             return events
-        case HostCtrlMessageType.audioRoutingRequest:
+        case CtrlMessageType.audioRoutingRequest:
             guard let request = try? AudioRoutingRequest.decode(message) else {
                 counters.dropped += 1
                 return [.dropped(.malformedCtrl)]
@@ -1149,8 +1149,8 @@ public final class Session {
             counters.audioRoutingRequestsReceived += 1
             return [.audioRoutingRequested(request.mode)]
         case CtrlMessageType.modeTransition, CtrlMessageType.capabilityUpdate,
-             HostCtrlMessageType.inputEcho,
-             HostCtrlMessageType.audioRoutingStatus:
+             CtrlMessageType.inputEcho,
+             CtrlMessageType.audioRoutingStatus:
             // Receiver-role messages arriving at the mediaSender /
             // sole proposer / echo emitter / status emitter: hostile
             // or confused. Dropped loud.

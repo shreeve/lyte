@@ -140,7 +140,7 @@ final class AudioRoutingGateTests: XCTestCase {
         // documented rule) and the intersection drops the entry.
         var refusing = Capabilities.wireDefault
         refusing.unknownEntries.append(CborMapEntry(
-            key: .unsigned(HostCapabilityKey.hostAudioRouting),
+            key: .unsigned(CapabilityKey.hostAudioRouting),
             value: .bool(false)
         ))
         XCTAssertFalse(refusing.hostAudioRouting)
@@ -362,7 +362,7 @@ final class AudioRoutingGateTests: XCTestCase {
         )
         XCTAssertEqual(statusEvents, [.audioRoutingStatusSent(.hostMuted)])
         try settle(session, &client, box, forwarded: &forwarded, t: &t)
-        XCTAssertEqual(client.take(type: HostCtrlMessageType.audioRoutingStatus),
+        XCTAssertEqual(client.take(type: CtrlMessageType.audioRoutingStatus),
                        [[0x19, 0x02]])
         XCTAssertEqual(session.counters.audioRoutingStatusesSent, 1)
 
@@ -382,7 +382,7 @@ final class AudioRoutingGateTests: XCTestCase {
             .hostAudible, now: t * 1_000, hostMicroseconds: t
         )
         try settle(session, &client, box, forwarded: &forwarded, t: &t)
-        XCTAssertEqual(client.take(type: HostCtrlMessageType.audioRoutingStatus),
+        XCTAssertEqual(client.take(type: CtrlMessageType.audioRoutingStatus),
                        [[0x19, 0x01]])
 
         print("HS-18 gate (in vivo): negotiated 0x18 → event → 0x19 "
@@ -433,7 +433,7 @@ final class AudioRoutingGateTests: XCTestCase {
         )
         try settle(session, &client, box, forwarded: &forwarded, t: &t)
         XCTAssertEqual(
-            client.take(type: HostCtrlMessageType.audioRoutingStatus), []
+            client.take(type: CtrlMessageType.audioRoutingStatus), []
         )
         XCTAssertEqual(session.counters.audioRoutingStatusesSent, 0)
 

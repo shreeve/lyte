@@ -20,6 +20,7 @@
 
 import Foundation
 import HostWire
+import LyteWire
 
 #if os(Linux)
 import CDBus

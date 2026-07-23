@@ -150,7 +150,7 @@ final class InputGateTests: XCTestCase {
         )
         XCTAssertThrowsError(try LastInputSeqTlv.decode(
             extensions: [try WireExtension(
-                type: HostWireExtensionType.lastInputSeq, value: [1, 2]
+                type: WireExtension.ReservedType.lastInputSeq, value: [1, 2]
             )]
         ))
         XCTAssertNil(try LastInputSeqTlv.decode(extensions: []))
@@ -244,7 +244,7 @@ final class InputGateTests: XCTestCase {
                         continue
                     }
                     received.append((group, bytes))
-                    if bytes.first == HostCtrlMessageType.inputEcho {
+                    if bytes.first == CtrlMessageType.inputEcho {
                         let echo = try InputEcho.decode(bytes)
                         echoTuples += echo.tuples
                         echoMessageTupleCounts.append(echo.tuples.count)
