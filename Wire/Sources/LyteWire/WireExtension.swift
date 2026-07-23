@@ -32,6 +32,11 @@ public struct WireExtension: Hashable, Sendable {
         /// Wire major version, carried in the first handshake datagram
         /// (Lyte-UDP decision §8.3, replacing ALPN). Codec at W5.
         public static let wireVersion: UInt8 = 0x02
+        /// u32 LE: the seq of the last input event injected before this
+        /// frame's capture (HS-13 → CL-9, promoted by the second
+        /// codec-promotion slice). Stamped per-shard like the conn-id
+        /// TLV; codec in `LastInputSeqTlv`.
+        public static let lastInputSeq: UInt8 = 0x03
     }
 
     /// Encoded size on the wire: type + length + value bytes.

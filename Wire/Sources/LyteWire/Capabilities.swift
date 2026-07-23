@@ -70,6 +70,18 @@ public enum CapabilityKey {
     /// 1152 B default regardless and may be renegotiated up to the
     /// agreed ceiling (the DPLPMTUD raise), at an IDR boundary only.
     public static let maxDatagramBytes: UInt64 = 8
+    /// bool — the host can route desktop audio to a virtual sink and
+    /// mute its own speakers for the session, honoring 0x18 flips
+    /// (HS-18 → CL-13, promoted by the second codec-promotion slice).
+    /// DELIBERATELY not a typed field of `Capabilities` in wire v1:
+    /// key 9 rides the forward-compat spine through `unknownEntries`
+    /// exactly as it shipped (one canonical `09 F5` map entry appended
+    /// to the frozen v1 encoding — capabilities-v1.json never moves),
+    /// surviving intersection only on mutual byte-equal declaration.
+    /// Accessors in AudioRouting.swift; folding it into the typed
+    /// fields is a wire-version discussion (the TLV fold-into-v2
+    /// precedent), not a promotion.
+    public static let hostAudioRouting: UInt64 = 9
 
     /// The renegotiable subset (transport pillar §4: "fixed after
     /// exchange except where a capability itself declares

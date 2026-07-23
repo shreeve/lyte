@@ -103,6 +103,26 @@ public enum CtrlMessageType {
     /// (RetryHandshake1). Bare pre-transport, ARQ-exempt — it IS the
     /// handshake attempt.
     public static let retryHandshake1: UInt8 = 0x14
+    /// Host→client reliable idle frame (IdleFrame, HS-11 → CL-8,
+    /// promoted by the second codec-promotion slice — the numbers are
+    /// carried verbatim; both ends already speak them). Rides a CTRL
+    /// one-shot ARQ group: the sender's ACTIVE→IDLE flip is gated on
+    /// this message's group being fully acknowledged.
+    public static let idleFrame: UInt8 = 0x15
+    /// Client→host input event (InputEvent, HS-13 → CL-9, promoted).
+    /// ARQ ordered stream — a lost or reordered keystroke is
+    /// corruption, not weather.
+    public static let inputEvent: UInt8 = 0x16
+    /// Host→client input echo tuples (InputEcho, HS-13 → CL-9,
+    /// promoted). ARQ ordered stream.
+    public static let inputEcho: UInt8 = 0x17
+    /// Client→host audio-routing flip request (AudioRoutingRequest,
+    /// HS-18 → CL-13, promoted). ARQ ordered stream, gated on
+    /// capability key 9 surviving intersection.
+    public static let audioRoutingRequest: UInt8 = 0x18
+    /// Host→client applied audio-routing posture (AudioRoutingStatus,
+    /// HS-18 → CL-13, promoted). Same carriage and gate.
+    public static let audioRoutingStatus: UInt8 = 0x19
 
     /// The type byte of a CTRL payload, nil when the payload is empty.
     /// Dispatch on this, then hand the whole payload (type byte included)

@@ -69,6 +69,25 @@ case in `FecCoderTests`, the hand-walked datagram in
   against the hand-built layouts in `RetryCodecTests` and, for the MAC
   itself, an independent RFC 2104 HMAC-SHA256 built over TestKit's
   FIPS-verified `Sha256` in `RetryCookieTests`. Details below.
+- `control-v1.json` — the second codec-promotion slice: the CTRL/TLV/
+  capability codecs that shipped end-side under mirror-and-flag during
+  H2 and were promoted verbatim — the reliable idle frame 0x15
+  (HS-11/CL-8), the input pair 0x16/0x17 + the lastInputSeq TLV 0x03
+  (HS-13/CL-9), the audio-routing pair 0x18/0x19 + capability key 9
+  (HS-18/CL-13). Format mirrors the session file (`roundtrip`/
+  `decodeReject` over `messageHex`, typed fields per codec); the TLV
+  rides whole envelope datagrams like the conn-id vectors; the key-9
+  vectors pin the forward-compat-spine bytes (wireDefault's frozen
+  encoding plus exactly the appended `09 F5` entry — key 9 is
+  registered but deliberately NOT a typed set field in v1, so
+  capabilities-v1.json never moves). The InputEvent kind space and
+  both routing codecs' whole mode spaces are pinned (the lifecycle
+  discipline). Anchored against the hand-computed bytes in
+  `ControlCodecTests`. The promoted audio interior (AudioFramer/
+  AudioDepacketizer) needs no vector file of its own — it composes the
+  envelope/fec formats these files already freeze (the Noise-carriage
+  precedent), with the layout pinned as hand-built bytes in
+  `AudioInteriorTests`.
 
 ## The 24-byte envelope (wire v1)
 
