@@ -53,6 +53,15 @@ public enum VideoRepairSignal: Sendable {
     /// Frames `from`…`through` will never complete (evicted or skipped)
     /// — repairs can no longer help them.
     case framesGone(from: FrameNumber, through: FrameNumber)
+    /// The assembler dropped a shard whose slot is already satisfied
+    /// (filled, or the whole group decoded) — the late/duplicate repair
+    /// classification input. The drop itself is the assembler's clean
+    /// no-op; this signal only feeds the books.
+    case satisfiedShardDropped(frame: FrameNumber, shardIndex: UInt8)
+    /// The assembler dropped a shard for a frame whose turn has passed
+    /// (emitted, skipped, or evicted from the tracker) — the
+    /// late/superseded classification input.
+    case staleShardDropped(frame: FrameNumber)
 }
 
 public struct NackPolicyConfig: Sendable {
@@ -99,6 +108,23 @@ public final class NackPolicy: @unchecked Sendable {
         public var framesEscalatedToIdr: UInt64 = 0
         /// fec-impossible verdicts deferred while a repair was pending.
         public var fecImpossibleDeferred: UInt64 = 0
+        /// Answers to an ask that landed after the frame no longer
+        /// needed them — the slot was already filled or the frame had
+        /// already decoded (FEC or stragglers got there first). Clean
+        /// no-ops at the assembler; counted here so the live books can
+        /// reconcile against the host's repair ledger. Honesty note: a
+        /// straggling ORIGINAL for an asked shard is indistinguishable
+        /// at this seam (the drop event carries no seq) and counts the
+        /// same — it is equally an answer the frame no longer needed.
+        public var repairsLate: UInt64 = 0
+        /// Asked shards whose repair was already ACCEPTED once — a
+        /// duplicated answer (network duplication; the host itself
+        /// one-attempts).
+        public var repairsDuplicate: UInt64 = 0
+        /// Answers for frames the client had already abandoned (skipped,
+        /// evicted, or rule-4 escalated to IDR) — superseded by newer
+        /// frames or the keyframe heal.
+        public var repairsSuperseded: UInt64 = 0
     }
 
     public let config: NackPolicyConfig
@@ -112,11 +138,24 @@ public final class NackPolicy: @unchecked Sendable {
     private let escalate: @Sendable (FrameNumber, ClientTimestamp) -> Void
 
     private struct FrameBook {
+        /// How an asked frame's story ended — the late-vs-superseded
+        /// discriminator for answers that keep arriving afterward.
+        enum Fate {
+            case pending
+            /// Decoded (originals, FEC, repairs — any mix).
+            case decoded
+            /// Abandoned: skipped/evicted, or rule-4 escalated to IDR.
+            case gone
+        }
         var askedIndices: Set<UInt8> = []
+        /// Asked indices whose repair was accepted (the duplicate
+        /// discriminator).
+        var acceptedRepairIndices: Set<UInt8> = []
         var firstAskAt: ClientTimestamp?
         var refusedStale = false
         var sawRepair = false
-        var settled = false   // completed, escalated, or gone
+        var fate: Fate = .pending
+        var settled: Bool { fate != .pending }
         var lastTouched: ClientTimestamp
     }
 
@@ -153,11 +192,14 @@ public final class NackPolicy: @unchecked Sendable {
                 frame: frame, missingIndices: missing,
                 parityShards: parity, frameAgeMicroseconds: age, now: now
             )
-        case .repairShardAccepted(let frame, _):
+        case .repairShardAccepted(let frame, let index):
             lock.lock()
             stats.repairShardsReceived += 1
             if var book = books[frame.rawValue] {
                 book.sawRepair = true
+                if book.askedIndices.contains(index) {
+                    book.acceptedRepairIndices.insert(index)
+                }
                 book.lastTouched = now
                 books[frame.rawValue] = book
             }
@@ -168,7 +210,7 @@ public final class NackPolicy: @unchecked Sendable {
                 if book.sawRepair, !book.askedIndices.isEmpty {
                     stats.framesCompletedByRepair += 1
                 }
-                book.settled = true
+                book.fate = .decoded
                 book.lastTouched = now
                 books[frame.rawValue] = book
             }
@@ -184,7 +226,7 @@ public final class NackPolicy: @unchecked Sendable {
                         stats.framesEscalatedToIdr += 1
                         expired.append(frame)
                     }
-                    book.settled = true
+                    book.fate = .gone
                     book.lastTouched = now
                     books[frame.rawValue] = book
                 }
@@ -193,6 +235,40 @@ public final class NackPolicy: @unchecked Sendable {
             }
             lock.unlock()
             for frame in expired { escalate(frame, now) }
+        case .satisfiedShardDropped(let frame, let index):
+            // Only asked shards are repair accounting; an unasked
+            // duplicate is ordinary network duplication of an original.
+            lock.lock()
+            if var book = books[frame.rawValue],
+               book.askedIndices.contains(index) {
+                if book.acceptedRepairIndices.contains(index) {
+                    stats.repairsDuplicate += 1
+                } else {
+                    stats.repairsLate += 1
+                }
+                book.lastTouched = now
+                books[frame.rawValue] = book
+            }
+            lock.unlock()
+        case .staleShardDropped(let frame):
+            lock.lock()
+            if var book = books[frame.rawValue], !book.askedIndices.isEmpty {
+                // Decoded frames age out of the tracker and their turn
+                // passes — a straggling answer is merely LATE. A frame
+                // that died undecoded (skipped/evicted/escalated) was
+                // SUPERSEDED by newer frames or the IDR heal. (.pending
+                // cannot reach here in practice: a frame's turn passing
+                // always emits decoded or framesGone first; classified
+                // as superseded if it ever does.)
+                if book.fate == .decoded {
+                    stats.repairsLate += 1
+                } else {
+                    stats.repairsSuperseded += 1
+                }
+                book.lastTouched = now
+                books[frame.rawValue] = book
+            }
+            lock.unlock()
         }
     }
 
@@ -223,7 +299,9 @@ public final class NackPolicy: @unchecked Sendable {
                now.microseconds(since: asked)
                    >= config.repairDeadlineMicroseconds {
                 stats.framesEscalatedToIdr += 1
-                book.settled = true
+                // The IDR supersedes the repair path: any answer still
+                // in flight lands as superseded, not late.
+                book.fate = .gone
                 book.lastTouched = now
                 books[key] = book
                 expired.append(FrameNumber(rawValue: key))

@@ -110,6 +110,20 @@ final class NackRepairClientGateTests: XCTestCase {
             annexB: [UInt8], frameNumber: UInt32, hostMicros: UInt64,
             dropping: Set<Int> = []
         ) throws -> [[UInt8]] {
+            try videoDatagramsSplit(
+                annexB: annexB, frameNumber: frameNumber,
+                hostMicros: hostMicros, dropping: dropping
+            ).sent
+        }
+
+        /// Like `videoDatagrams`, but the "dropped" shards come back
+        /// sealed too — the straggler-reorder legs deliver them LATE
+        /// instead of never (seals are envelope-keyed, so holding a
+        /// datagram costs nothing).
+        func videoDatagramsSplit(
+            annexB: [UInt8], frameNumber: UInt32, hostMicros: UInt64,
+            dropping: Set<Int> = []
+        ) throws -> (sent: [[UInt8]], held: [[UInt8]]) {
             var packetizer = VideoPacketizer(firstSeq: nextVideoSeq)
             let shards = try packetizer.packetize(
                 frame: annexB,
@@ -120,13 +134,18 @@ final class NackRepairClientGateTests: XCTestCase {
             )
             nextVideoSeq = nextVideoSeq.advanced(by: Int16(shards.count))
             retained[frameNumber] = shards.map { ($0.envelope, $0.payload) }
-            var out: [[UInt8]] = []
-            for (index, shard) in shards.enumerated()
-            where !dropping.contains(index) {
-                out.append(try seal(
-                    envelope: shard.envelope, plaintext: shard.payload))
+            var sent: [[UInt8]] = []
+            var held: [[UInt8]] = []
+            for (index, shard) in shards.enumerated() {
+                let datagram = try seal(
+                    envelope: shard.envelope, plaintext: shard.payload)
+                if dropping.contains(index) {
+                    held.append(datagram)
+                } else {
+                    sent.append(datagram)
+                }
             }
-            return out
+            return (sent, held)
         }
 
         /// The geometry `annexB` WILL packetize to at the current seq —
@@ -170,6 +189,24 @@ final class NackRepairClientGateTests: XCTestCase {
                 repairDatagramsSent += 1
             }
             return out
+        }
+
+        /// The NETWORK's second copy of an already-honored answer: the
+        /// same original shard under yet another fresh seq. An exact
+        /// byte duplicate would die at the demux's replay window and
+        /// never reach the assembler's books — duplication on the wire
+        /// re-seals. Deliberately bypasses the one-attempt guard: this
+        /// models the wire (or a replay-shaping peer), not the host.
+        func duplicateRepairDatagram(
+            frame: UInt32, shardIndex: UInt8
+        ) throws -> [UInt8] {
+            let shards = retained[frame]!
+            var envelope = shards[Int(shardIndex)].envelope
+            envelope.seq = nextVideoSeq
+            nextVideoSeq = nextVideoSeq.next
+            return try seal(
+                envelope: envelope,
+                plaintext: shards[Int(shardIndex)].payload)
         }
 
         /// One client datagram: chan-3 reports feed the NACK evidence,
@@ -365,14 +402,18 @@ final class NackRepairClientGateTests: XCTestCase {
                        "every asked shard rode exactly one repair")
         // The group decodes the moment missing-data ≤ present-parity:
         // with parity+2 data shards dropped and all parity in hand,
-        // exactly TWO repairs slot in before RS completes — the rest
-        // land as duplicates on a decoded group (honest accounting,
-        // same as the host gate's loop-decode leg).
+        // exactly TWO repairs slot in before RS completes and the frame
+        // emits — the REST of the batch lands after the frame's turn
+        // has passed, and the books call those answers LATE (the frame
+        // decoded; they were unneeded), never a corruption.
         let needed = UInt64(dropCount - geometry1.parityShards)
         XCTAssertEqual(stats.repairShardsReceived, needed)
         XCTAssertEqual(stats.framesCompletedByRepair, 1)
         XCTAssertEqual(stats.asksSuppressedStale, 0)
         XCTAssertEqual(stats.framesEscalatedToIdr, 0)
+        XCTAssertEqual(stats.repairsLate, UInt64(geometry1.parityShards))
+        XCTAssertEqual(stats.repairsDuplicate, 0)
+        XCTAssertEqual(stats.repairsSuperseded, 0)
         let pipeline = harness.core.pipeline.snapshotStats()
         XCTAssertEqual(pipeline.repairShardsAccepted, needed)
     }
@@ -546,13 +587,37 @@ final class NackRepairClientGateTests: XCTestCase {
         XCTAssertEqual(stats.repairShardsReceived, 2)
         XCTAssertEqual(stats.framesCompletedByRepair, 1)
 
-        // An asked frame whose group DIES escalates immediately.
+        // An asked frame whose group DIES escalates immediately — and
+        // is never asked for again, whatever pictures still arrive.
         let doomed = FrameNumber(rawValue: 5)
         policy.handle(.nackCandidates(
             frame: doomed, missingShardIndices: [0, 1],
             parityShards: 1, frameAgeMicroseconds: 2_000), now: t0)
         policy.handle(.framesGone(from: doomed, through: doomed), now: t0)
         XCTAssertEqual(escalated.count, 1)
+        let askedBefore = emitted.count
+        policy.handle(.nackCandidates(
+            frame: doomed, missingShardIndices: [0, 1, 3],
+            parityShards: 1, frameAgeMicroseconds: 3_000), now: t0)
+        XCTAssertEqual(emitted.count, askedBefore,
+                       "a settled frame must never be re-asked")
+
+        // Answer classification, pinned per branch: an answer for the
+        // GONE frame is superseded; a straggler for the DECODED frame
+        // is late; a second copy of an ACCEPTED repair is a duplicate;
+        // and signals for never-asked shards touch no repair book.
+        policy.handle(.staleShardDropped(frame: doomed), now: t0)
+        policy.handle(.staleShardDropped(frame: young), now: t0)
+        policy.handle(.satisfiedShardDropped(frame: young, shardIndex: 1),
+                      now: t0)
+        let unasked = FrameNumber(rawValue: 77)
+        policy.handle(.staleShardDropped(frame: unasked), now: t0)
+        policy.handle(.satisfiedShardDropped(frame: unasked, shardIndex: 0),
+                      now: t0)
+        let classified = policy.snapshotStats()
+        XCTAssertEqual(classified.repairsSuperseded, 1)
+        XCTAssertEqual(classified.repairsLate, 1)
+        XCTAssertEqual(classified.repairsDuplicate, 1)
     }
 
     // MARK: - Leg D: the feedback section carries and bounds the asks
@@ -694,5 +759,264 @@ final class NackRepairClientGateTests: XCTestCase {
         XCTAssertEqual(repeatedAsks, 0, "one ask per shard, ever")
         XCTAssertLessThanOrEqual(stats.framesCompletedByRepair,
                                  stats.pastParityFrames)
+    }
+
+    // MARK: - Leg F: answers after stragglers already fixed the frame
+
+    /// The task the books exist for: the presumption goes past parity
+    /// and the ask leaves, but the "lost" originals were merely
+    /// reordered — they straggle in and complete the frame before any
+    /// repair lands. Every answer the host then sends must be a clean
+    /// no-op counted LATE: no double delivery, no corruption, no
+    /// repair-acceptance bookkeeping.
+    func testAnswersAfterStragglerHealAreCountedLateAndChangeNothing() throws {
+        let corpus = try loadCorpus(3)
+        let host = RepairHost()
+        let harness = try Harness(host: host)
+
+        var t: UInt64 = 1_000
+        harness.clock.value = t
+        for datagram in try host.videoDatagrams(
+            annexB: corpus[0], frameNumber: 0, hostMicros: t
+        ) {
+            harness.absorb(datagram, tMicros: t)
+        }
+
+        // Frame 1: parity+2 shards "lost" — actually held for later.
+        t += 5_000; harness.clock.value = t
+        let geometry1 = try host.plannedGeometry(annexB: corpus[1])
+        let dropCount = geometry1.parityShards + 2
+        XCTAssertLessThan(dropCount, geometry1.dataShards)
+        let split = try host.videoDatagramsSplit(
+            annexB: corpus[1], frameNumber: 1, hostMicros: t,
+            dropping: Set(0..<dropCount))
+        for datagram in split.sent {
+            harness.absorb(datagram, tMicros: t)
+        }
+
+        // ONE follow-on frame renders the past-parity verdict; the ask
+        // leaves. (Just one, deliberately: the ~23-shard corpus frames
+        // mean a second would push the stragglers past the 64-seq
+        // replay window and the demux — correctly — would eat them
+        // before this leg's seam is ever exercised.)
+        t += 5_000; harness.clock.value = t
+        for datagram in try host.videoDatagrams(
+            annexB: corpus[2], frameNumber: 2, hostMicros: t
+        ) {
+            harness.absorb(datagram, tMicros: t)
+        }
+        harness.core.tick(now: ClientTimestamp(microseconds: t))
+        var forwarded = 0
+        try harness.pumpOutboundToHost(forwarded: &forwarded)
+        XCTAssertFalse(host.nackEntriesSeen.isEmpty)
+
+        // TWO stragglers arrive — exactly enough for RS to complete —
+        // and the frame emits byte-exact before any repair shows up.
+        t += 3_000; harness.clock.value = t
+        for datagram in split.held.prefix(2) {
+            harness.absorb(datagram, tMicros: t)
+        }
+        XCTAssertEqual(harness.samples.map(\.frameNumber.rawValue),
+                       [0, 1, 2])
+        XCTAssertEqual(harness.samples[1].annexB, corpus[1])
+
+        // The host honors the full ask anyway; every answer lands after
+        // the frame's turn has passed.
+        t += 5_000; harness.clock.value = t
+        for (frame, shards) in host.nackEntriesSeen {
+            for datagram in try host.repairDatagrams(
+                frame: frame, shardIndices: shards
+            ) {
+                harness.absorb(datagram, tMicros: t)
+            }
+        }
+        harness.core.tick(now: ClientTimestamp(microseconds: t))
+
+        // No re-delivery, no corruption — and the books call every
+        // answer late.
+        XCTAssertEqual(harness.samples.map(\.frameNumber.rawValue),
+                       [0, 1, 2], "a late answer must never re-deliver")
+        let stats = harness.core.nackPolicy.snapshotStats()
+        XCTAssertEqual(stats.pastParityFrames, 1)
+        XCTAssertEqual(stats.repairsLate, UInt64(host.repairDatagramsSent))
+        XCTAssertEqual(stats.repairsDuplicate, 0)
+        XCTAssertEqual(stats.repairsSuperseded, 0)
+        XCTAssertEqual(stats.repairShardsReceived, 0,
+                       "nothing was ACCEPTED — the frame never needed it")
+        XCTAssertEqual(stats.framesCompletedByRepair, 0)
+        XCTAssertEqual(stats.framesEscalatedToIdr, 0,
+                       "the frame completed — rule 4 must stay quiet")
+        XCTAssertEqual(
+            harness.core.pipeline.snapshotStats().repairShardsAccepted, 0)
+        try harness.pumpOutboundToHost(forwarded: &forwarded)
+        XCTAssertEqual(host.idrRequestsSeen, 0)
+    }
+
+    // MARK: - Leg G: a duplicated answer on the wire counts, once
+
+    /// Network duplication of an accepted repair (fresh seq — an exact
+    /// byte copy dies at the demux replay window, which is its own
+    /// gate): the second copy is a counted no-op, and the frame still
+    /// heals byte-exact.
+    func testDuplicatedRepairAnswerIsCountedAndHarmless() throws {
+        let corpus = try loadCorpus(4)
+        let host = RepairHost()
+        let harness = try Harness(host: host)
+
+        var t: UInt64 = 1_000
+        harness.clock.value = t
+        for datagram in try host.videoDatagrams(
+            annexB: corpus[0], frameNumber: 0, hostMicros: t
+        ) {
+            harness.absorb(datagram, tMicros: t)
+        }
+
+        t += 5_000; harness.clock.value = t
+        let geometry1 = try host.plannedGeometry(annexB: corpus[1])
+        let dropCount = geometry1.parityShards + 2
+        XCTAssertLessThan(dropCount, geometry1.dataShards)
+        for datagram in try host.videoDatagrams(
+            annexB: corpus[1], frameNumber: 1, hostMicros: t,
+            dropping: Set(0..<dropCount)
+        ) {
+            harness.absorb(datagram, tMicros: t)
+        }
+        for number in 2...3 {
+            t += 5_000; harness.clock.value = t
+            for datagram in try host.videoDatagrams(
+                annexB: corpus[number], frameNumber: UInt32(number),
+                hostMicros: t
+            ) {
+                harness.absorb(datagram, tMicros: t)
+            }
+            harness.core.tick(now: ClientTimestamp(microseconds: t))
+        }
+        var forwarded = 0
+        try harness.pumpOutboundToHost(forwarded: &forwarded)
+        XCTAssertFalse(host.nackEntriesSeen.isEmpty)
+
+        // The answers dribble in one at a time; the FIRST one gets
+        // duplicated by the wire while the group is still incomplete.
+        // (The ask may ride SPLIT across entries — the missing picture
+        // grows as follow-on shards ingest — so gather them all.)
+        t += 8_000; harness.clock.value = t
+        var answers: [[UInt8]] = []
+        for (frame, shards) in host.nackEntriesSeen {
+            answers.append(contentsOf: try host.repairDatagrams(
+                frame: frame, shardIndices: shards))
+        }
+        XCTAssertEqual(answers.count, dropCount)
+        let firstAskedShard = host.nackEntriesSeen[0].shards[0]
+
+        harness.absorb(answers[0], tMicros: t)   // accepted
+        harness.absorb(try host.duplicateRepairDatagram(
+            frame: 1, shardIndex: firstAskedShard), tMicros: t)   // the copy
+        harness.absorb(answers[1], tMicros: t)   // accepted — RS completes
+        harness.core.tick(now: ClientTimestamp(microseconds: t))
+
+        XCTAssertEqual(harness.samples.map(\.frameNumber.rawValue),
+                       [0, 1, 2, 3])
+        XCTAssertEqual(harness.samples[1].annexB, corpus[1],
+                       "healed byte-exact through the duplication")
+        let stats = harness.core.nackPolicy.snapshotStats()
+        XCTAssertEqual(stats.repairShardsReceived, 2)
+        XCTAssertEqual(stats.framesCompletedByRepair, 1)
+        XCTAssertEqual(stats.repairsDuplicate, 1,
+                       "the wire's second copy counts exactly once")
+        XCTAssertEqual(stats.repairsLate, 0)
+        XCTAssertEqual(stats.repairsSuperseded, 0)
+        try harness.pumpOutboundToHost(forwarded: &forwarded)
+        XCTAssertEqual(host.idrRequestsSeen, 0)
+    }
+
+    // MARK: - Leg H: answers for an abandoned frame count superseded
+
+    /// The give-up story: an asked frame gets skipped by the holdback
+    /// (newer decoded frames pile up behind it), rule 4 escalates it to
+    /// the IDR requester, and every answer that still arrives is a
+    /// counted no-op — SUPERSEDED, never rendered, never corrupting.
+    func testAnswersForSupersededFrameCountAndAsksStop() throws {
+        let corpus = try loadCorpus(5)
+        let host = RepairHost()
+        let harness = try Harness(host: host)
+
+        var t: UInt64 = 1_000
+        harness.clock.value = t
+        for datagram in try host.videoDatagrams(
+            annexB: corpus[0], frameNumber: 0, hostMicros: t
+        ) {
+            harness.absorb(datagram, tMicros: t)
+        }
+
+        // Frame 1 holed past parity; the ask leaves on the follow-on
+        // traffic.
+        t += 5_000; harness.clock.value = t
+        let geometry1 = try host.plannedGeometry(annexB: corpus[1])
+        let dropCount = geometry1.parityShards + 2
+        XCTAssertLessThan(dropCount, geometry1.dataShards)
+        for datagram in try host.videoDatagrams(
+            annexB: corpus[1], frameNumber: 1, hostMicros: t,
+            dropping: Set(0..<dropCount)
+        ) {
+            harness.absorb(datagram, tMicros: t)
+        }
+
+        // Three decoded frames pile up behind the hole — the holdback
+        // (3) skips frame 1 the moment frame 4 decodes, and the skip
+        // escalates the asked frame to the IDR requester (rule 4 via
+        // the frame's death, not the deadline).
+        for number in 2...4 {
+            t += 5_000; harness.clock.value = t
+            for datagram in try host.videoDatagrams(
+                annexB: corpus[number], frameNumber: UInt32(number),
+                hostMicros: t
+            ) {
+                harness.absorb(datagram, tMicros: t)
+            }
+            harness.core.tick(now: ClientTimestamp(microseconds: t))
+        }
+        harness.core.feedback.tick(now: ClientTimestamp(microseconds: t))
+        var forwarded = 0
+        try harness.pumpOutboundToHost(forwarded: &forwarded)
+        XCTAssertFalse(host.nackEntriesSeen.isEmpty,
+                       "the ask must have left before the skip")
+        XCTAssertEqual(harness.samples.map(\.frameNumber.rawValue),
+                       [0, 2, 3, 4], "frame 1 skipped, order held")
+        XCTAssertGreaterThanOrEqual(host.idrRequestsSeen, 1,
+                                    "the abandoned ask escalates to IDR")
+
+        // The host's answers arrive anyway — for a frame that no
+        // longer exists anywhere in the client.
+        t += 5_000; harness.clock.value = t
+        for (frame, shards) in host.nackEntriesSeen {
+            for datagram in try host.repairDatagrams(
+                frame: frame, shardIndices: shards
+            ) {
+                harness.absorb(datagram, tMicros: t)
+            }
+        }
+        harness.core.tick(now: ClientTimestamp(microseconds: t))
+
+        XCTAssertEqual(harness.samples.map(\.frameNumber.rawValue),
+                       [0, 2, 3, 4],
+                       "an answer for a dead frame must change nothing")
+        let stats = harness.core.nackPolicy.snapshotStats()
+        XCTAssertEqual(stats.repairsSuperseded,
+                       UInt64(host.repairDatagramsSent))
+        XCTAssertGreaterThan(stats.repairsSuperseded, 0)
+        XCTAssertEqual(stats.repairsLate, 0)
+        XCTAssertEqual(stats.repairsDuplicate, 0)
+        XCTAssertEqual(stats.repairShardsReceived, 0)
+        XCTAssertEqual(stats.framesEscalatedToIdr, 1)
+        XCTAssertEqual(
+            harness.core.pipeline.snapshotStats().repairShardsAccepted, 0)
+        // And the asking stopped: everything the host ever saw for
+        // frame 1 predates the skip (once-ever dedupe + settled book).
+        try harness.pumpOutboundToHost(forwarded: &forwarded)
+        let askedPairs = host.nackEntriesSeen.flatMap { entry in
+            entry.shards.map { UInt64(entry.frame) << 8 | UInt64($0) }
+        }
+        XCTAssertEqual(askedPairs.count, Set(askedPairs).count,
+                       "no (frame, shard) pair was ever re-asked")
     }
 }

@@ -282,8 +282,23 @@ public final class LyteVideoPipeline: @unchecked Sendable {
                 stats.evictions += 1
                 actions.append(.repairSignal(
                     .framesGone(from: frame, through: frame), now))
-            case .shardDropped:
+            case .shardDropped(let reason):
                 stats.shardsDropped += 1
+                // The two reasons a NACK answer can land as (duplicate
+                // slot, passed turn) feed the policy's late/duplicate/
+                // superseded books; the rest are counters only.
+                switch reason {
+                case .duplicateShard(let frame, let shardIndex):
+                    actions.append(.repairSignal(
+                        .satisfiedShardDropped(
+                            frame: frame, shardIndex: shardIndex),
+                        now))
+                case .staleFrame(let frame):
+                    actions.append(.repairSignal(
+                        .staleShardDropped(frame: frame), now))
+                default:
+                    break
+                }
             case .nackCandidates(
                 let frame, _, let missingIndices, let parity, let age):
                 // CL-12: §4.7's consumer exists now — the NackPolicy.

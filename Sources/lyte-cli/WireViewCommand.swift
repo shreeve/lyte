@@ -492,6 +492,14 @@ final class WireViewStatsPrinter: Sendable {
             if nack.fecImpossibleDeferred > 0 {
                 line += ", \(nack.fecImpossibleDeferred) idr-deferred"
             }
+            // Answers the frame no longer needed — the live-books
+            // reconciliation against the host's repair ledger.
+            if nack.repairsLate + nack.repairsDuplicate
+                + nack.repairsSuperseded > 0 {
+                line += ", answers unneeded \(nack.repairsLate) late/" +
+                        "\(nack.repairsDuplicate) dup/" +
+                        "\(nack.repairsSuperseded) superseded"
+            }
             print(line)
         }
 
