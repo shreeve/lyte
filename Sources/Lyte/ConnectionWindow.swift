@@ -11,25 +11,10 @@ struct ConnectionWindow: View {
             case .pickHost, .connecting, .failed:
                 ConnectView(model: model)
             case .streaming:
-                StreamView(model: model)
-                    .overlay(alignment: .top) {
-                        // CL-8: the FROZEN pill — subtle, never modal.
-                        // The path went dark (350 ms-class silence on
-                        // the Lyte session's detector); it clears by
-                        // itself when host traffic returns.
-                        if model.lyteFrozen {
-                            Label("Connection interrupted…",
-                                  systemImage: "wifi.exclamationmark")
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(Capsule().fill(.ultraThinMaterial))
-                                .foregroundStyle(.orange)
-                                .padding(.top, 10)
-                                .transition(.opacity)
-                        }
-                    }
-                    .animation(.easeInOut(duration: 0.3), value: model.lyteFrozen)
+                // CL-13: the stream + its overlays (FROZEN pill, stats
+                // readout, the auto-hiding control strip) live in
+                // StreamContainer.
+                StreamContainer(model: model)
             }
         }
         .navigationTitle(model.windowTitle)

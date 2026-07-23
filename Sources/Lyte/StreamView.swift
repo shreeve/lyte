@@ -6,9 +6,14 @@ import LyteUI
 /// capture to the session once the view lands in a window.
 struct StreamView: NSViewRepresentable {
     let model: ConnectionModel
+    /// CL-13: pinged on every mouse event the capture sees — the
+    /// control strip's reveal clock (the capture consumes moves over
+    /// the video, so SwiftUI hover tracking alone would go blind).
+    var onMouseActivity: @MainActor () -> Void = {}
 
     func makeNSView(context: Context) -> VideoLayerView {
         let view = VideoLayerView(layer: model.displayLayer)
+        let onMouseActivity = onMouseActivity
         DispatchQueue.main.async {
             guard let window = view.window else { return }
 
@@ -27,7 +32,8 @@ struct StreamView: NSViewRepresentable {
                     // session is already ending; never crash the
                     // event monitor over it.
                     _ = try? lyte.sendInput(body)
-                })
+                },
+                onActivity: onMouseActivity)
             capture.start()
             model.lyteInputCapture = capture
         }

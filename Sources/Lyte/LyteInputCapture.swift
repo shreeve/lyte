@@ -16,6 +16,15 @@
 // Kept local: ⌘-chorded keys (window management must not leak to the
 // host) and key auto-repeats (repeat policy is host-side-deferred per
 // the HS-13 row — a repeat without its release would wedge a key).
+//
+// CL-13, the control-strip seam: local monitors swallow every mouse
+// event in the window, which would make any overlaid SwiftUI control
+// unclickable. So mouse events HIT-TEST first — an event landing on a
+// view that is not the video surface (the strip's buttons, the stats
+// overlay) passes through to AppKit untouched, video-player style:
+// interacting with the controls never drives the host cursor. Every
+// mouse move (captured or passed) also pings `onActivity`, the strip's
+// auto-reveal clock.
 
 import AppKit
 import LyteTransport
@@ -30,18 +39,24 @@ final class LyteInputCapture {
     /// The host's stream dimensions in pixels, read live from the
     /// owning model (updated when the first sample arrives).
     private let videoSize: @MainActor () -> CGSize
+    /// Pinged on every mouse event in the window — the control strip's
+    /// reveal/idle-fade clock (CL-13). Never pinged for keys: typing
+    /// must not resurface the strip.
+    private let onActivity: @MainActor () -> Void
     private var monitors: [Any] = []
 
     init(
         view: NSView,
         window: NSWindow,
         videoSize: @escaping @MainActor () -> CGSize,
-        send: @escaping @MainActor (InputEvent.Body) -> Void
+        send: @escaping @MainActor (InputEvent.Body) -> Void,
+        onActivity: @escaping @MainActor () -> Void = {}
     ) {
         self.view = view
         self.window = window
         self.videoSize = videoSize
         self.send = send
+        self.onActivity = onActivity
         window.acceptsMouseMovedEvents = true
     }
 
@@ -78,8 +93,37 @@ final class LyteInputCapture {
                       width: fitted.width, height: fitted.height)
     }
 
+    /// True when the event lands on something OTHER than the video
+    /// surface — an overlaid control owns it, the monitor must not.
+    /// "Other" means genuinely disjoint from the video view: a hit on
+    /// the video, on a descendant, or on an ANCESTOR container (a
+    /// SwiftUI hosting wrapper claiming the point on the video's
+    /// behalf) all stay captured.
+    private func landsOnOverlay(_ event: NSEvent) -> Bool {
+        guard let view, let content = event.window?.contentView else {
+            return false
+        }
+        let point = content.superview?.convert(event.locationInWindow, from: nil)
+            ?? event.locationInWindow
+        guard let hit = content.hitTest(point) else { return false }
+        var walk: NSView? = hit
+        while let candidate = walk {
+            if candidate === view { return false }
+            walk = candidate.superview
+        }
+        walk = view
+        while let candidate = walk {
+            if candidate === hit { return false }
+            walk = candidate.superview
+        }
+        return true
+    }
+
     private func handleMouse(_ event: NSEvent) -> NSEvent? {
         guard let view, let window, event.window === window, window.isKeyWindow else { return event }
+        onActivity()
+        // The strip/stats overlays keep their own events (CL-13).
+        if landsOnOverlay(event) { return event }
 
         switch event.type {
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:

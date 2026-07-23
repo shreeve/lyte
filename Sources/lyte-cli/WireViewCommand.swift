@@ -41,6 +41,8 @@ struct WireView: AsyncParsableCommand {
     var duration: Int = 0
     @Flag(name: .long, help: "CL-11: decode + play the audio channel (AVAudioEngine) and print the audio stats line")
     var audio = false
+    @Option(name: .long, help: "CL-13: the session-start posture for the HOST's own speakers — audible|muted. Needs capability key 9 on both ends; against a no-key-9 host the ask is refused client-side (that refusal is the evidence)")
+    var hostAudio: String?
     @Option(name: .long, help: "Debug: send one reliable CTRL ping every N seconds (0 = off) — exercises the CL-7 ARQ leg live")
     var arqPing: Int = 0
     @Option(name: .long, help: """
@@ -58,6 +60,17 @@ struct WireView: AsyncParsableCommand {
         }
         if let inputScript {
             _ = try InputScript.parse(inputScript)   // fail before the dial
+        }
+        if let hostAudio, Self.parseHostAudio(hostAudio) == nil {
+            throw ValidationError("--host-audio wants audible|muted, got '\(hostAudio)'")
+        }
+    }
+
+    static func parseHostAudio(_ word: String) -> HostAudioRoutingMode? {
+        switch word {
+        case "audible": return .hostAudible
+        case "muted": return .hostMuted
+        default: return nil
         }
     }
 
@@ -139,6 +152,11 @@ struct WireView: AsyncParsableCommand {
         // Debug shell posture: audio is explicit opt-in here (the app
         // plays it by default) so unattended gate runs stay silent.
         sessionConfig.audioPlayback = audio
+        // CL-13: the session-start posture ask (one 0x18 after the
+        // host's first 0x19, when they differ) — tonight's catch-up
+        // worker drives the whole negotiation live without the app.
+        sessionConfig.core.desiredHostAudioRouting =
+            hostAudio.flatMap(Self.parseHostAudio)
         let session = LyteUdpSession(
             crypto: crypto,
             config: sessionConfig,
@@ -150,7 +168,8 @@ struct WireView: AsyncParsableCommand {
                 case .capabilitiesAgreed(let agreed):
                     print("wire-view: capabilities AGREED — codecs \(agreed.videoCodecs), "
                         + "chroma \(agreed.chromaModes), idleSilence \(agreed.idleSilence), "
-                        + "maxDatagram \(agreed.maxDatagramBytes)")
+                        + "maxDatagram \(agreed.maxDatagramBytes), "
+                        + "hostAudioRouting \(agreed.hostAudioRouting ? "yes (key 9)" : "no")")
                 case .capabilitiesFailed(let why):
                     print("wire-view: capabilities FAILED (\(why)) — typed teardown sent")
                 case .capabilityUpdateAnswered(let accepted):
@@ -169,6 +188,11 @@ struct WireView: AsyncParsableCommand {
                     case .closed:
                         break   // the .closed event carries the reason
                     }
+                case .hostAudioRoutingStatus(let mode):
+                    print("wire-view: host audio posture — "
+                        + (mode == .hostMuted ? "MUTED (host speakers silent)"
+                                              : "AUDIBLE (host speakers playing)")
+                        + " (0x19-confirmed)")
                 case .idleFrameReceived(let frame, let outcome):
                     print("wire-view: reliable idle frame \(frame) — \(outcome)")
                 case .teardownSent(let reason):
@@ -396,6 +420,18 @@ final class WireViewStatsPrinter: Sendable {
         sess += core.isFrozen ? ", PILL (frozen)" : ""
         if core.state == .closed { sess += ", CLOSED" }
         sess += ", caps \(core.agreedCapabilities != nil ? "agreed" : "pending")"
+        // CL-13: the host-speaker posture — key 9 + the 0x19-confirmed
+        // truth (never optimistic; "pending" between agreement and the
+        // host's first status).
+        if core.hostAudioRoutingNegotiated {
+            switch core.hostAudioRoutingPosture {
+            case .hostMuted: sess += ", host-audio MUTED"
+            case .hostAudible: sess += ", host-audio audible"
+            case nil: sess += ", host-audio pending"
+            }
+        } else if core.agreedCapabilities != nil {
+            sess += ", host-audio unnegotiated"
+        }
         if counters.modeTransitionsReceived > 0 {
             sess += ", \(counters.modeTransitionsReceived) mode msgs"
         }
@@ -407,6 +443,14 @@ final class WireViewStatsPrinter: Sendable {
         }
         if counters.malformedReliableMessages > 0 {
             sess += ", \(counters.malformedReliableMessages) malformed-reliable"
+        }
+        if counters.audioRoutingRequestsSent
+            + counters.audioRoutingStatusesReceived > 0 {
+            sess += ", routing \(counters.audioRoutingRequestsSent) asks/"
+                + "\(counters.audioRoutingStatusesReceived) statuses"
+        }
+        if counters.audioRoutingDropsLoud > 0 {
+            sess += ", \(counters.audioRoutingDropsLoud) routing-drops"
         }
         print(sess)
 

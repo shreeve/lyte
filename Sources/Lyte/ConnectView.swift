@@ -108,6 +108,23 @@ struct ConnectView: View {
         .help(lyteHostTooltip(host, paired: pinned != nil))
         .contextMenu {
             if let pinned {
+                // CL-13: the per-host session-start posture — applied
+                // at connect; the strip's toggle overrides live.
+                Toggle("Start with Host Muted", isOn: Binding(
+                    get: {
+                        pinnedStore.host(publicKeyHash: host.publicKeyHash)?
+                            .startHostAudioMuted == true
+                    },
+                    set: { muted in
+                        guard let pkh = host.publicKeyHash else { return }
+                        var store = PinnedHostStore.load()
+                        store.setStartHostAudioMuted(
+                            publicKeyHash: pkh, muted: muted ? true : nil)
+                        try? store.save()
+                        pinnedStore = store
+                    }
+                ))
+                Divider()
                 Button("Unpair \(pinned.name)", role: .destructive) {
                     var store = PinnedHostStore.load()
                     if let pkh = host.publicKeyHash {

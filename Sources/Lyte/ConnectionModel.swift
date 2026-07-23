@@ -22,8 +22,21 @@ final class ConnectionModel {
     }
     var statusLine = ""
 
+    // CL-13: host audio routing — the strip's truth. `hostAudioNegotiated`
+    // decides whether the host-mute control EXISTS (capability key 9
+    // survived intersection); `hostAudioPosture` is the 0x19-confirmed
+    // state, nil until the host's first status. Never set optimistically:
+    // the toggle asks and waits for the wire's answer.
+    private(set) var hostAudioNegotiated = false
+    private(set) var hostAudioPosture: HostAudioRoutingMode?
+    /// The stats readout's visibility (the strip's chart toggle).
+    var statsVisible = false
+
     private(set) var hostAddress: String?
     private(set) var hostName: String?
+    /// The pinned identity hash of the streaming host — the per-host
+    /// preference key (CL-13).
+    private(set) var hostPublicKeyHash: String?
     let displayLayer = AVSampleBufferDisplayLayer()
 
     // The Lyte-UDP session (CL-8). Mode/pill mirror the session's
@@ -60,6 +73,7 @@ final class ConnectionModel {
         }
         hostAddress = host.address
         hostName = host.name
+        hostPublicKeyHash = host.publicKeyHash
         phase = .connecting("Connecting to \(host.name) over Lyte-UDP…")
 
         let identity: NoiseKeyPair
@@ -87,9 +101,18 @@ final class ConnectionModel {
         displayLayer.backgroundColor = CGColor(gray: 0, alpha: 1)
         let renderer = displayLayer.sampleBufferRenderer
 
+        // CL-13: the per-host default seeds the session-start posture —
+        // one 0x18 leaves after the host's first 0x19 when they differ.
+        // The strip's toggle is the live override thereafter.
+        var sessionConfig = LyteUdpSession.Config()
+        if pinned.startHostAudioMuted == true {
+            sessionConfig.core.desiredHostAudioRouting = .hostMuted
+        }
+
         let lastDims = VideoDimsCell()
         let lyte = LyteUdpSession(
             crypto: crypto,
+            config: sessionConfig,
             onSample: { [weak self] sample, _ in
                 renderer.enqueue(sample)
                 // Teach the input capture its coordinate space — once
@@ -123,6 +146,8 @@ final class ConnectionModel {
         lyteSession = lyte
         lyteWireMode = .active
         lyteFrozen = false
+        hostAudioNegotiated = false
+        hostAudioPosture = nil
         phase = .streaming
         statusLine = crypto.modeDescription
         AgentState.shared.streamBegan()
@@ -133,6 +158,11 @@ final class ConnectionModel {
         case .capabilitiesAgreed(let agreed):
             statusLine = "capabilities agreed — idle silence "
                 + (agreed.idleSilence ? "on" : "off")
+            // The strip's host-mute button exists exactly when key 9
+            // survived intersection (CL-13).
+            hostAudioNegotiated = agreed.hostAudioRouting
+        case .hostAudioRoutingStatus(let mode):
+            hostAudioPosture = mode
         case .capabilitiesFailed(let why):
             endLyteSession(reason: "capabilities failed: \(why)")
         case .capabilityUpdateAnswered:
@@ -162,6 +192,9 @@ final class ConnectionModel {
         guard let lyte = lyteSession else { return }
         lyteSession = nil
         lyteFrozen = false
+        hostAudioNegotiated = false
+        hostAudioPosture = nil
+        statsVisible = false
         lyteInputCapture?.stop()
         lyteInputCapture = nil
         lyteVideoSize = .zero
@@ -184,6 +217,104 @@ final class ConnectionModel {
 
     func disconnect() {
         endSession(reason: nil)
+    }
+
+    // MARK: - Host audio routing (CL-13)
+
+    /// True when the 0x19-confirmed posture says the host's speakers
+    /// are silent. The strip and the Actions menu render THIS — never
+    /// the ask in flight.
+    var hostMuted: Bool { hostAudioPosture == .hostMuted }
+
+    /// Asks the host to flip its own speakers (0x18 on the ordered
+    /// stream). The UI's toggle stays where the last 0x19 put it until
+    /// the next one answers — a failed flip therefore visibly snaps
+    /// back. Only reachable when `hostAudioNegotiated` (button gating),
+    /// so the refusal path is a teardown race, counted as weather.
+    func setHostMuted(_ muted: Bool) {
+        guard hostAudioNegotiated else { return }
+        try? lyteSession?.requestHostAudioRouting(
+            muted ? .hostMuted : .hostAudible)
+    }
+
+    /// The per-host "start sessions with host muted" default, read
+    /// live from the pinned store (CL-13). Applied at connect; the
+    /// strip's toggle overrides live without touching it.
+    var startHostMutedPreference: Bool {
+        get {
+            guard let pkh = hostPublicKeyHash else { return false }
+            return PinnedHostStore.load()
+                .host(publicKeyHash: pkh)?.startHostAudioMuted == true
+        }
+        set {
+            guard let pkh = hostPublicKeyHash else { return }
+            var store = PinnedHostStore.load()
+            store.setStartHostAudioMuted(
+                publicKeyHash: pkh, muted: newValue ? true : nil)
+            try? store.save()
+        }
+    }
+
+    // MARK: - Window verbs (strip + Actions menu, same commands)
+
+    func toggleFullscreen() {
+        NSApp.keyWindow?.toggleFullScreen(nil)
+    }
+
+    // MARK: - The stats readout (CL-13)
+
+    /// A compact snapshot of the session's existing books — the same
+    /// counters wire-view prints, shaped for the overlay. Re-read on
+    /// every call; the overlay's TimelineView drives the cadence.
+    func statsLines() -> [String] {
+        guard let session = lyteSession,
+              let endpoint = session.endpoint,
+              let core = session.core else { return [] }
+        var lines: [String] = []
+
+        let totals = endpoint.demux.snapshotTotals()
+        var wire = "\(totals.accepted)/\(totals.datagrams) datagrams ok"
+        if totals.unsealFailures > 0 {
+            wire += ", \(totals.unsealFailures) unseal-failed"
+        }
+        lines.append(wire)
+
+        var mode = "mode \(core.wireMode == .active ? "ACTIVE" : "IDLE")"
+        if core.isFrozen { mode += " — FROZEN" }
+        if hostAudioNegotiated {
+            switch hostAudioPosture {
+            case .hostMuted: mode += " · host audio muted"
+            case .hostAudible: mode += " · host audio audible"
+            case nil: mode += " · host audio pending"
+            }
+        }
+        lines.append(mode)
+
+        let input = core.input.snapshotStats()
+        if input.eventsSent > 0 {
+            var line = "input \(input.eventsSent) sent"
+            if let p50 = input.inputToInject.p50,
+               let p99 = input.inputToInject.p99 {
+                line += String(format: " · inject p50/p99 %.1f/%.1f ms",
+                               Double(p50) / 1000, Double(p99) / 1000)
+            }
+            lines.append(line)
+        }
+
+        let audio = core.audio.snapshotStats()
+        if audio.depacketizer.datagramsIngested > 0 {
+            var line = "audio"
+            if let p50 = audio.bufferDepthPackets.p50,
+               let p99 = audio.bufferDepthPackets.p99 {
+                line += " depth p50/p99 \(p50)/\(p99) pkts"
+            }
+            line += " · plc \(audio.jitter.plcInvocations)"
+            if audio.depacketizer.packetsRebuilt > 0 {
+                line += " · fec \(audio.depacketizer.packetsRebuilt)"
+            }
+            lines.append(line)
+        }
+        return lines
     }
 }
 

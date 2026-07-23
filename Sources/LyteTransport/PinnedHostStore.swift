@@ -29,14 +29,22 @@ public struct PinnedHost: Codable, Equatable, Sendable {
     public var staticPublicKeyHex: String
     /// ISO-8601 stamp of the pairing, for the operator's benefit.
     public var pairedAt: String
+    /// Per-host session-start posture (CL-13): start sessions against
+    /// THIS host with its own speakers muted (the 0x18 session-start
+    /// ask). Optional so pre-CL-13 files decode unchanged; nil and
+    /// false both mean "take the host's default". The strip's toggle
+    /// is the live override — this only seeds the connect.
+    public var startHostAudioMuted: Bool?
 
     public init(name: String, address: String, port: UInt16,
-                staticPublicKeyHex: String, pairedAt: String) {
+                staticPublicKeyHex: String, pairedAt: String,
+                startHostAudioMuted: Bool? = nil) {
         self.name = name
         self.address = address
         self.port = port
         self.staticPublicKeyHex = staticPublicKeyHex
         self.pairedAt = pairedAt
+        self.startHostAudioMuted = startHostAudioMuted
     }
 
     /// The raw 32-byte static, decoded from the stored hex.
@@ -102,7 +110,9 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
     // MARK: Trust operations
 
     /// Pins one host static (or refreshes its dial hints when the key
-    /// was already pinned). Returns true when the key is NEW.
+    /// was already pinned; per-host preferences survive the refresh —
+    /// a re-pair is a trust event, not a settings reset). Returns true
+    /// when the key is NEW.
     @discardableResult
     public mutating func pin(
         staticPublicKey: [UInt8], name: String, address: String,
@@ -113,8 +123,21 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
         let fresh = hosts[pkh] == nil
         hosts[pkh] = PinnedHost(
             name: name, address: address, port: port,
-            staticPublicKeyHex: hex, pairedAt: pairedAt)
+            staticPublicKeyHex: hex, pairedAt: pairedAt,
+            startHostAudioMuted: hosts[pkh]?.startHostAudioMuted)
         return fresh
+    }
+
+    /// Sets the per-host session-start posture (CL-13). Returns false
+    /// when the hash is not pinned (nothing to hang the preference on).
+    @discardableResult
+    public mutating func setStartHostAudioMuted(
+        publicKeyHash: String, muted: Bool?
+    ) -> Bool {
+        let key = publicKeyHash.lowercased()
+        guard hosts[key] != nil else { return false }
+        hosts[key]?.startHostAudioMuted = muted
+        return true
     }
 
     /// Removes the pinned entry. Returns the removed host, nil when the
