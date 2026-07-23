@@ -12,10 +12,18 @@ EXIT demolition is DONE (commits `2018f6d` → `d5de430` → `9e1cd27`): the
 client's GameStream stack (LyteKit/CEnet/CNanors, ~14.3k lines) is deleted,
 Sunshine is uninstalled from pup, and both ends speak exactly one protocol —
 Lyte-UDP. H1 closed earlier the same day (`docs/20260722-h1-joint-gate.md`).
-Suites at HEAD: Wire **372/372**, Host **104/104**, root **104/104**, green
-on Mac AND pup; `build-cli.sh`/`make-app.sh` release builds green. A live
-post-demolition proof ran at the new HEAD (60 s: 48,474/48,474 datagrams ok,
-0 unseal failures, render + audio + input + clean teardown).
+Suites at HEAD: Wire **388/388**, Host **110/110**, root **113/113** on
+Mac (pup legs for everything landed since the H2 exit are deferred — it
+is offline; the H2-exit state 372/104/104 was the last green on BOTH
+platforms); `build-cli.sh` release green. A live post-demolition proof
+ran at the H2-exit HEAD (60 s: 48,474/48,474 datagrams ok, 0 unseal
+failures, render + audio + input + clean teardown).
+
+**CODEC PROMOTION LANDED Mac-side** (`65f56d0` Wire / `d98e154` Host /
+`1b63a4f` root) — the H2 mirrors (CTRL 0x15/0x16/0x17, TLV 0x03, CTRL
+0x18/0x19, capability key 9, the audio interior) live canonically in
+LyteWire now, both end-side copies deleted, new frozen vector file
+`control-v1.json`; full entry in the wave block, pup leg deferred.
 
 **HS-18 LANDED on the Mac gates** (`6b5a78e`, Host/) — host audio routing:
 hostMuted virtual-sink capture + exact default-sink restore (crash paths
@@ -50,12 +58,13 @@ possibly client-isolation quirks on hotel Wi-Fi.
 
 1. **Tonight's catch-up worker** — HS-18's deferred legs a–g + CL-13's
    deferred legs (both lists live in their wave entries; run the pup
-   build FIRST — the HS-18 C leaf is still uncompiled anywhere).
-2. **Codec-promotion slice into Wire/** — 0x15 IdleFrame, 0x16 InputEvent,
-   0x17 InputEcho, TLV 0x03 lastInputSeq, the HS-15/CL-11 audio
-   interior, AND (new with HS-18/CL-13) capability key 9 + CTRL
-   0x18/0x19. Mirrors exist byte-pinned on BOTH ends; all copies delete
-   together (registry append + file moves + a new vector file).
+   build FIRST — the HS-18 C leaf is still uncompiled anywhere), PLUS
+   the codec-promotion slice's deferred Linux leg (its wave entry
+   below: rsync BOTH Wire/ and Host/, Wire suite 388 on pup, vector
+   shas incl. the new control-v1.json).
+2. ~~**Codec-promotion slice into Wire/**~~ — **DONE Mac-side**
+   (`65f56d0` Wire / `d98e154` Host / `1b63a4f` root, wave entry
+   below); only the pup verification leg remains, filed with item 1.
 3. **H3 ladder** — the capability-gated feature channel: clipboard both
    ways, then drag-and-drop files, per the master plan
    (`docs/20260720-222500-lyte-build-plan.md`).
@@ -752,6 +761,57 @@ its entry at the marker at the end of this block.*
   real path shows a visible pending window); promotion slice items
   unchanged (key 9 + 0x18/0x19 ride with 0x15/0x16/0x17/TLV-0x03 +
   audio interior).
+
+- **CODEC PROMOTION — the mirrors come home** (`65f56d0` Wire /
+  `d98e154` Host / `1b63a4f` root): the flag-flip the mirror-and-flag
+  precedent promised, all three territories in one slice. Everything
+  invented end-side during H2 moved to Wire/Sources/LyteWire VERBATIM
+  — IdleFrame 0x15 (HS-11/CL-8), InputEvent 0x16 + InputEcho 0x17 +
+  lastInputSeq TLV 0x03 (HS-13/CL-9), AudioRoutingRequest/Status
+  0x18/0x19 + capability key 9 (HS-18/CL-13), and the HS-15/CL-11
+  audio interior (AudioFramer + AudioDepacketizer + the AudioWire
+  ground-truth constants) — registry appends on CtrlMessageType /
+  WireExtension.ReservedType / CapabilityKey, zero wire bytes changed.
+  Key-9 ruling: registered as `CapabilityKey.hostAudioRouting = 9` but
+  deliberately NOT a typed set field in v1 — it keeps riding the
+  forward-compat spine through unknownEntries exactly as it shipped
+  (declaration = wireDefault's frozen bytes + `09 F5`, gate-pinned),
+  so capabilities-v1.json never moves; the typed-field fold-in is a
+  wire-version discussion. NEW VECTOR FILE `control-v1.json` (34
+  vectors: every InputEvent kind, both routing codecs' whole mode
+  spaces per the lifecycle discipline, the TLV on whole datagrams per
+  the conn-id precedent, the key-9 spine as data; vectorgen grew the
+  `control` subcommand), anchored by ControlCodecTests carrying the
+  SAME hand-built arrays the end gates pinned; the audio interior
+  composes frozen envelope/fec formats so it carries no vector file
+  (the Noise-carriage precedent) — its layout pins live in
+  AudioInteriorTests (hand-built envelope bytes + any-2-of-6 byte-exact
+  + CBR loudness). BOTH mirror copies DELETED on both ends — no flags,
+  no shims, no aliases; the only non-delete text was pinned-enum names
+  giving way to the registry (Host/Client CtrlMessageType →
+  CtrlMessageType etc.), explicit LyteWire imports where nothing
+  re-exports (lyte-host's InputInject/AudioWire shell files, the app's
+  input capture, the Opus leaf pair), and AudioRoutingAskError staying
+  behind on LyteUdpSession (client rule-3 policy, not wire
+  vocabulary). EVERY byte-pin assertion in Host/Tests and root Tests
+  is UNTOUCHED — the arrays that pinned the mirrors now prove both
+  integrations speak the canonical bytes. Suites: Wire 372 →
+  **388/388 Mac** (+10 ControlCodecTests incl. a registry-number pin,
+  +3 AudioInteriorTests, +3 ControlVectorFileTests incl. a
+  value-space-coverage leg), Host **110/110 Mac** (unchanged),
+  root **113/113 Mac** (unchanged); all 11 pre-existing vector files
+  byte-identical; no-Foundation lint green; build-cli.sh release
+  links + signs. **DEFERRED-PENDING-HOST (pup offline — travel; runs
+  with tonight's catch-up, run the pup build FIRST):** (m) rsync BOTH
+  Wire/ and Host/ (Wire changed this slice — the sibling-checkout
+  recipe), Wire suite on pup expecting **388/388** with byte-exact
+  vector verification of all 12 files INCLUDING the new
+  control-v1.json (the W-G1 cross-platform gate for the promoted
+  codecs), (n) Host build + suite on pup expecting **110/110** over
+  the flipped imports (rides with HS-18's leg a — its C leaf is still
+  uncompiled anywhere), (o) no root leg exists (macOS-only client);
+  the HS-18/CL-13 live legs a–l already queued exercise the promoted
+  codecs end-to-end on the wire.
 
 ---
 
