@@ -12,10 +12,11 @@ EXIT demolition is DONE (commits `2018f6d` → `d5de430` → `9e1cd27`): the
 client's GameStream stack (LyteKit/CEnet/CNanors, ~14.3k lines) is deleted,
 Sunshine is uninstalled from pup, and both ends speak exactly one protocol —
 Lyte-UDP. H1 closed earlier the same day (`docs/20260722-h1-joint-gate.md`).
-Suites at HEAD: Wire **388/388**, Host **110/110**, root **113/113** on
-Mac (pup legs for everything landed since the H2 exit are deferred — it
-is offline; the H2-exit state 372/104/104 was the last green on BOTH
-platforms); `build-cli.sh` release green. A live post-demolition proof
+Suites at HEAD: Wire **388/388**, Host **110/110**, root **116/116** on
+Mac (113 → 116 at the CL-12 follow-through, `ab4f905` — repair-answer
+books; entry in the wave block) (pup legs for everything landed since
+the H2 exit are deferred — it is offline; the H2-exit state 372/104/104
+was the last green on BOTH platforms); `build-cli.sh` release green. A live post-demolition proof
 ran at the H2-exit HEAD (60 s: 48,474/48,474 datagrams ok, 0 unseal
 failures, render + audio + input + clean teardown).
 
@@ -61,7 +62,9 @@ possibly client-isolation quirks on hotel Wi-Fi.
    build FIRST — the HS-18 C leaf is still uncompiled anywhere), PLUS
    the codec-promotion slice's deferred Linux leg (its wave entry
    below: rsync BOTH Wire/ and Host/, Wire suite 388 on pup, vector
-   shas incl. the new control-v1.json).
+   shas incl. the new control-v1.json), PLUS the repair-answer-books
+   live leg (p) from the CL-12 follow-through entry (root `ab4f905`;
+   root suite is now 116/116 Mac).
 2. ~~**Codec-promotion slice into Wire/**~~ — **DONE Mac-side**
    (`65f56d0` Wire / `d98e154` Host / `1b63a4f` root, wave entry
    below); only the pup verification leg remains, filed with item 1.
@@ -812,6 +815,58 @@ its entry at the marker at the end of this block.*
   uncompiled anywhere), (o) no root leg exists (macOS-only client);
   the HS-18/CL-13 live legs a–l already queued exercise the promoted
   codecs end-to-end on the wire.
+
+- **CL-12 FOLLOW-THROUGH — repair-answer books** (`ab4f905`, root):
+  commissioned in the wave plan as "CL-14: client NACK emission +
+  repair-shard acceptance" — the worker's finding, recorded for
+  honesty: that scope had ALREADY LANDED as CL-12 (`63924d5` Wire /
+  `3552091` root — gap detection via the assembler's enriched
+  nackCandidates, NackPolicy running resiliency §1.1 as written, W4a
+  NACK-section emission through FeedbackSender, fresh-seq repair
+  acceptance in Wire's VideoAssembler, counters + the wire-view nack
+  line, and a LIVE leg on :41081 before pup left). The CL-14 label
+  also collides with the build plan's own CL-14 (the demolition,
+  done). The genuine residual, now closed: the books said nothing
+  about answers a frame NO LONGER NEEDS — a repair landing after FEC
+  or a straggler already fixed the frame, a wire-duplicated copy, or
+  an answer for a frame the holdback abandoned all vanished into the
+  pipeline's anonymous shardsDropped tally (the no-op discipline
+  itself was always Wire-guaranteed; zero Wire changes here). Now:
+  LyteVideoPipeline forwards the two drop reasons an answer can land
+  as (satisfied slot → `.satisfiedShardDropped`, passed turn →
+  `.staleShardDropped`) through the CL-12 repair-signal seam, and
+  NackPolicy classifies against its own ask books — asked + repair
+  already accepted = **repairsDuplicate**; asked + frame decoded
+  without it = **repairsLate** (a straggling ORIGINAL for an asked
+  shard counts the same — the seam carries no seq, and it is equally
+  an answer the frame never needed; documented honesty caveat); asked
+  + frame skipped/evicted/rule-4-escalated = **repairsSuperseded**
+  (frame FATE replaces the boolean settle so late-vs-superseded
+  follows how the story ended; escalation rules .gone — the IDR owns
+  the heal). wire-view's nack line grew `answers unneeded N late/N
+  dup/N superseded`. Gate: root 113 → **116/116 Mac** (three new legs
+  through the REAL receive path in virtual time: straggler-heal-then-
+  answers → all late, zero re-delivery, rule 4 quiet; wire-duplicated
+  accepted repair → counts exactly once, frame still heals byte-exact;
+  holdback-abandoned frame → answers superseded, asks provably
+  stopped, samples never move — plus per-branch policy pins incl.
+  never-asked frames touching no book). build-cli.sh release green.
+  Harness lesson: corpus frames run ~23 shards, so a straggler held
+  past TWO follow-on frames falls off the 64-seq replay window and the
+  demux rightly eats it — the leg keeps one follow-on frame and the
+  caveat is written in the test. **DEFERRED-PENDING-HOST (rides
+  tonight's catch-up, AFTER the queued HS-18 a–g / CL-13 h–l /
+  promotion m–n legs — referenced, not duplicated):** (p) live
+  video-scoped netem loss run vs the real host (fresh 41xxx port,
+  wire-view --audio, FOREGROUND per the CL-11 caution): the CL-12
+  1:1 wire correlation EXTENDED to the wasted-answer classes — client
+  repairShardsAccepted + late + dup + superseded reconciled against
+  the host's repair ledger (repair datagrams sent, honored/stale
+  verdicts); on a rough-Wi-Fi path expect superseded to track the
+  host's budget-stale → IDR arms (CL-12's live run saw 54 repairs
+  sent vs 17 accepted — the other 37 now get named buckets instead of
+  silence); no render corruption, 0 unseal failures, video .rendering
+  throughout, the new nack line quoted in the run log.
 
 ---
 
