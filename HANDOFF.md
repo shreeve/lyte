@@ -1265,6 +1265,76 @@ its entry at the marker at the end of this block.*
   needs resolution/fps shedding (the H3 ladder's territory; VBV owns
   everything above ~1.5 Mbps and proved it).
 
+- **HS-21 — Wave 0's last two debt rungs: the cookie dial goes live, and
+  the overuse anchor stops trusting one sample** (`ede7d49`, Host/ only;
+  Wire and root untouched at `5006c02`). **D-3 (cookie-mode escalation):**
+  W8 landed the retry-cookie codec (0x13/0x14) and the client's answer
+  path, but the HOST never escalated — no dial had ever drawn a 0x13.
+  `HandshakeGate` grows a second posture beside the HS-9 token bucket:
+  once the msg1 arrival rate crosses `cookieEnterThreshold` in a
+  `floodWindowNS` (default 20 arrivals / 1 s) it flips to require-cookie
+  mode, answering an un-cookied msg1 with a stateless `RetryChallenge`
+  (one HMAC over source-tuple‖msg1‖now, a reply SMALLER than the request,
+  no Noise, no per-client state); a client echoing a verifying cookie in a
+  `RetryHandshake1` is admitted (the cookie is judged in EITHER posture,
+  ahead of the bucket); the dial clears with hysteresis at
+  `cookieExitThreshold` (default 5). OFF entirely without a `cookieSecret`,
+  so the pure H1 posture — and every pre-HS-21 test — is byte-identical.
+  `Session` decodes 0x05 vs 0x14, mints/verifies through the gate before
+  any Noise allocation, and surfaces `handshakeCookieModeChanged` +
+  `handshakeChallenged` as events; `SessionWire` logs them, `main` arms
+  the dial behind `--require-cookie/--cookie-enter/--cookie-exit` (a fresh
+  random secret per process, never persisted — secrets untouched). **The
+  live leg found the real gap:** `awaitClient` never pumped, so a challenge
+  enqueued into the pacer pre-establishment sat there forever (msg 2
+  escapes later via the streaming service loop's pump, but a flood never
+  establishes) — the fix is one pre-establishment `session.pump()` per
+  await pass so the 0x13 actually leaves the box. **D-1 (overuse anchor):**
+  pays HS-20 morning-eyes finding (2). The overuse fall anchored to the
+  LAST raw delivery sample; one garbage short-train reading took a clean
+  20 Mbps path to 810 kbps in a single step. The fall now anchors to the
+  MEDIAN of the last `overuseAnchorSampleCount` raw samples (default 3):
+  overuse fires on `overuseConsecutiveReports` (2) consecutive inflated
+  reports, so by fire time two recent samples already reflect a genuine
+  sustained drop and dominate a 3-median (a real squeeze falls exactly as
+  the one-deep anchor did) while a lone outlier is outvoted 2-to-1 and
+  cannot move it. Median, not windowed-max: a max would reject a low
+  outlier but blunt a genuine sustained drop until the pre-drop samples
+  age out. **Gate: Host 127 → 136/136 Mac AND pup** (7 CookieGateTests:
+  no-secret-is-the-token-bucket, flip/clear hysteresis, bounded verifiable
+  challenge, valid-admits/forged-stale-wrong-tuple-wrong-msg1-drops, plus
+  the two Session-level legs — flood engages then a legit client
+  establishes on one extra round trip, and the dial clears when pressure
+  lifts; 2 RateEstimatorGateTests: a lone 2 Mbps sample at the overuse
+  fire holds 17,000 kbps median-anchored to 20 Mbps where the one-deep
+  anchor would have cratered to ~1,700 kbps, and a sustained 5 Mbps
+  squeeze still falls — first fall 4,250 kbps = 0.85 × measured, 5 falls,
+  settled 2,218 kbps). **LIVE (pup :41157, host `--require-cookie
+  --cookie-enter 20 --cookie-exit 5 --backend mutter --input off
+  --no-audio`, a single-tuple throwaway flood/handshake probe in
+  `~/src/cookie-probe`, connected-socket model so flood and legit client
+  share one tuple):** **connect leg** — 25 garbage msg1 at ~330/s flipped
+  the dial ON (`FLOOD — require-cookie mode ENGAGED`), a legit real msg1
+  drew a 0x13 (**challenge datagram 50 B vs msg1 datagram 122 B — SMALLER,
+  no amplification**; cookie 24 B), the cookie echoed in a 0x14 was
+  verified and the session came up — **7 cookies minted, 1 verified,
+  0 rejected, one extra round trip**; **flip-back leg** — same flood
+  engaged, then 1.5 s idle drained the window and one un-cookied msg1 was
+  admitted STRAIGHT THROUGH (0x06 msg2, no challenge) with the host
+  logging `pressure cleared — require-cookie mode DISENGAGED`. **Hygiene:**
+  secrets shas byte-identical after (72860390…cfed / 8dc1f88a…55fd /
+  dadf9a66…37cf); no netem touched; no strays (41157 free after); owner
+  relaunch loop intact on 41151 (nv571 shim, pup un-rebooted); flood logs
+  removed. **MORNING EYES:** (1) the connected-socket `awaitClient` adopts
+  the FIRST source tuple, so the live proof necessarily ran flood + legit
+  client from ONE tuple (the probe) — a two-source flood (attacker A,
+  victim B) is NOT provable against the current host without an
+  unconnected recvfrom listener; the sans-IO Session legs cover the
+  distinct-tuple cookie binding, but a genuinely-separate-source live
+  flood is future work if the threat model wants it. (2) The throwaway
+  probe lives at `~/src/cookie-probe` on pup (like the hs1x-probes,
+  outside the repo) — left in place; delete if reclaiming space.
+
 ---
 
 # Hard-won findings index (details live at the named commits/files)
