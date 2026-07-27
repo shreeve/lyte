@@ -49,6 +49,19 @@ int lyte_hevc_enc_send(lyte_hevc_enc *e, const uint8_t *data, int src_stride,
                        lyte_hevc_packet_cb cb, void *user,
                        char *err, size_t errlen);
 
+/* Reconfigures the open encoder's rate control mid-stream (HS-20: the
+   congestion controller's frameByteCeiling finally reaches NVENC).
+   `avg_bits` <= 0 leaves the average bitrate untouched (capped-CQ mode
+   has none and must keep none); `max_bits` and `vbv_bits` set
+   rc_max_rate and rc_buffer_size. In CBR mode rc_min_rate follows the
+   average (min = avg = max is the CBR contract). FFmpeg's nvenc wrapper
+   picks the changed fields up on the next avcodec_send_frame and issues
+   one NvEncReconfigureEncoder — no IDR, no encoder reset, for pure
+   rate/VBV moves. Returns 0 on success, -1 with `err` filled. */
+int lyte_hevc_enc_set_rate(lyte_hevc_enc *e, int64_t avg_bits,
+                           int64_t max_bits, int64_t vbv_bits,
+                           char *err, size_t errlen);
+
 /* Drains the encoder. Returns 0 on success, -1 on error. */
 int lyte_hevc_enc_flush(lyte_hevc_enc *e, lyte_hevc_packet_cb cb, void *user,
                         char *err, size_t errlen);

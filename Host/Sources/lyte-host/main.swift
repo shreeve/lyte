@@ -328,6 +328,14 @@ final class Sink {
     // that synchronously produced it.
     var lastPacketBytes = 0
     var lastPacketQP = -1
+    // HS-20: encoder-VBV reconfigures applied to the leaf, and the
+    // rolling frame-size books (5 s windows, session mode only) — the
+    // live gate's before/during/after percentile evidence that a rate
+    // drop actually shrinks emitted frames.
+    var encoderReconfigures = 0
+    var frameWindowSizes: [Int] = []
+    var frameWindowStartedAt: Double?
+    static let frameWindowSeconds = 5.0
     // HS-11: the most recent encoded packet's bytes, retained only in
     // ratchet+session mode — on convergence this IS the final converged
     // frame, re-sent on a reliable one-shot before the idle flip.
@@ -446,6 +454,7 @@ final class Sink {
         }
 
         wire?.service()
+        flushFrameWindow(monotonicNow())
 
         // The session is over (peer gone, teardown, liveness): stop the
         // capture loop cleanly — the HS-11 graceful exit.
@@ -539,6 +548,29 @@ final class Sink {
         var err = [CChar](repeating: 0, count: 256)
         let user = Unmanaged.passUnretained(self).toOpaque()
         let forceIdr = framesIn == 0 || (wire?.takeForcedIdr() ?? false)
+        // HS-20: the estimator's ceiling into the encoder BEFORE this
+        // frame — the wrapper folds the changed rc fields into one
+        // NvEncReconfigureEncoder on the send below.
+        if let directive = wire?.takeEncoderRateDirective() {
+            if lyte_hevc_enc_set_rate(
+                encoder,
+                Int64(directive.averageBitsPerSecond ?? 0),
+                Int64(directive.maxBitsPerSecond),
+                Int64(directive.vbvBits),
+                &err, err.count
+            ) == 0 {
+                encoderReconfigures += 1
+                let avg = directive.averageBitsPerSecond
+                    .map { "avg \($0 / 1_000) kbps, " } ?? ""
+                print("encoder: rate reconfigure — \(avg)max "
+                    + "\(directive.maxBitsPerSecond / 1_000) kbps, vbv "
+                    + "\(directive.vbvBits / 8) B (frame ceiling "
+                    + "\(directive.frameByteCeiling) B)")
+            } else {
+                print("encoder: rate reconfigure REJECTED: "
+                    + errString(err))
+            }
+        }
         let rc = lyte_hevc_enc_send(encoder, data, stride, Int64(framesIn),
                                     forceIdr ? 1 : 0,
                                     packetTrampoline, user, &err, err.count)
@@ -548,6 +580,32 @@ final class Sink {
         }
         framesIn += 1
         return true
+    }
+
+    /// HS-20 evidence books: every ~5 s of session-mode encoding, one
+    /// line of emitted frame-size percentiles next to the live ceiling
+    /// and pacer rate — the host-side proof that a rate drop shrinks
+    /// frames (and that a release lets them grow back).
+    private func flushFrameWindow(_ now: Double) {
+        guard let wire else { return }
+        guard let started = frameWindowStartedAt else {
+            frameWindowStartedAt = now
+            return
+        }
+        guard now - started >= Self.frameWindowSeconds else { return }
+        defer {
+            frameWindowSizes.removeAll(keepingCapacity: true)
+            frameWindowStartedAt = now
+        }
+        guard !frameWindowSizes.isEmpty else { return }
+        let sorted = frameWindowSizes.sorted()
+        func pct(_ q: Double) -> Int {
+            sorted[max(Int((q * Double(sorted.count)).rounded(.up)), 1) - 1]
+        }
+        print("frames: \(sorted.count) in \(Int(now - started)) s — "
+            + "p50 \(pct(0.5)) B, p95 \(pct(0.95)) B, max \(sorted.last!) B"
+            + " | ceiling \(wire.frameByteCeiling(fps: Int(opts.fps))) B, "
+            + "pacer \(wire.pacerRate / 1_000) kbps")
     }
 
     private func quitIfElapsed(_ now: Double) {
@@ -575,6 +633,7 @@ final class Sink {
         packetsOut += 1
         bytesOut += size
         if keyframe { keyframes += 1 }
+        if wire != nil { frameWindowSizes.append(size) }
         lastPacketBytes = size
         lastPacketQP = avgQP
         if opts.ratchet, wire != nil {
@@ -838,7 +897,22 @@ func run() throws {
         }
         wire = w
         print("session: up — pacer \(opts.wireRateMbps) Mbps, per-packet "
-            + "TOS (video 0xA0 / control 0xC0), 1 Hz beacon on CTRL")
+            + "TOS (video 0xA0 / ctrl+audio+repairs 0xC0), 1 Hz beacon "
+            + "on CTRL")
+
+        // HS-20: the encoder finally consumes frameByteCeiling. The
+        // baseline mirrors the opening posture lyte_hevc_enc_new will
+        // configure (CBR: avg = max = --bitrate-mbps, single-frame VBV;
+        // capped-CQ: only the max-rate cap, no VBV) — the policy caps
+        // against it and never pushes above it. Sink polls per encode.
+        w.armEncoderVbv(EncoderVbvConfig(
+            fps: Int(opts.fps),
+            baselineAverageBitsPerSecond:
+                opts.ratchet ? nil : Int(opts.bitrate),
+            baselineMaxBitsPerSecond: Int(opts.bitrate),
+            baselineVbvBits:
+                opts.ratchet ? nil : Int(opts.bitrate) / Int(opts.fps)
+        ))
 
         // HS-13: the injection backend comes up with the session — the
         // Mutter RemoteDesktop session is independent of the portal
@@ -1060,6 +1134,15 @@ func run() throws {
         let s = wire.sessionCounters
         // HS-19: the leaf's own books (byte-level transfer evidence),
         // appended to the clipboard line when the leaf ran.
+        // HS-20: the final standing directive, if any moved the encoder.
+        var vbvFinal = ""
+        if let d = wire.lastVbvDirective {
+            let avg = d.averageBitsPerSecond
+                .map { " avg \($0 / 1_000) kbps," } ?? ""
+            vbvFinal = " — final\(avg) max \(d.maxBitsPerSecond / 1_000) "
+                + "kbps, vbv \(d.vbvBits / 8) B "
+                + "(ceiling \(d.frameByteCeiling) B)"
+        }
         var clipboardLeafStats = ""
         if let leaf = clipboardLeaf {
             clipboardLeafStats = " (leaf: \(leaf.appliesTaken) applies"
@@ -1124,6 +1207,8 @@ func run() throws {
         \(wire.estimatorStats.upshifts) upshifts, \
         \(s.rateChanges) pacer moves; frameByteCeiling@\(opts.fps)fps \
         \(wire.frameByteCeiling(fps: Int(opts.fps))) B
+        encoder-vbv: \(wire.vbvDirectivesIssued) directives, \
+        \(sink.encoderReconfigures) applied\(vbvFinal)
         repair: \(s.nackEntriesReceived) NACK entries \
         (\(s.nacksHonored) honored → \(s.repairDatagramsEnqueued) repair \
         datagrams, \(s.nacksJudgedStale) stale, \

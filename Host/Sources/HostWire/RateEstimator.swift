@@ -514,14 +514,19 @@ public final class RateEstimator {
         return rate
     }
 
+    /// The HS-6 burst-budget window B = min(2/fps, 25 ms), in ns — one
+    /// definition shared by the ceiling math below and HS-20's
+    /// EncoderVbvPolicy (which inverts it: ceiling / B back to a rate).
+    public static func frameBudgetNS(fps: Int) -> UInt64 {
+        min(UInt64(2_000_000_000) / UInt64(max(fps, 1)), 25_000_000)
+    }
+
     /// The HS-6 frame ceiling at the LIVE estimate: R×B/8 −
     /// higherClassBytes(B), B = min(2/fps, 25 ms). Never below one
     /// shard — a ceiling of zero would forbid streaming entirely, and
     /// the floor rate exists precisely so a paced IDR stays possible.
     public func frameByteCeiling(fps: Int) -> Int {
-        let budgetNS = min(
-            UInt64(2_000_000_000) / UInt64(max(fps, 1)), 25_000_000
-        )
+        let budgetNS = Self.frameBudgetNS(fps: fps)
         let budgetSeconds = Double(budgetNS) / 1e9
         let gross = Double(rateBitsPerSecond) * budgetSeconds / 8
         let reserves = Double(

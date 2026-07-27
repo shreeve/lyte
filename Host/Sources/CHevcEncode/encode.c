@@ -17,6 +17,7 @@ struct lyte_hevc_enc {
     AVPacket *pkt;
     int width;
     int height;
+    int cbr; /* opened in CBR mode (cq == 0): min-rate tracks the avg */
 };
 
 void lyte_stdout_linebuf(void) { setvbuf(stdout, NULL, _IOLBF, 0); }
@@ -98,6 +99,7 @@ lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
         av_opt_set_int(ctx->priv_data, "cq", cq, 0);
     } else {
         /* True CBR (the committed slice-2 recipe). */
+        e->cbr = 1;
         ctx->bit_rate = bit_rate;
         ctx->rc_max_rate = bit_rate;
         ctx->rc_min_rate = bit_rate;
@@ -197,6 +199,31 @@ int lyte_hevc_enc_send(lyte_hevc_enc *e, const uint8_t *data, int src_stride,
         return -1;
     }
     return drain(e, cb, user, err, errlen);
+}
+
+int lyte_hevc_enc_set_rate(lyte_hevc_enc *e, int64_t avg_bits,
+                           int64_t max_bits, int64_t vbv_bits,
+                           char *err, size_t errlen)
+{
+    if (max_bits <= 0 || vbv_bits <= 0 || vbv_bits > INT_MAX) {
+        set_err(err, errlen,
+                "set_rate: max %lld / vbv %lld out of range",
+                (long long)max_bits, (long long)vbv_bits);
+        return -1;
+    }
+    /* The nvenc wrapper (nvenc_reconfig_encoder) reads these fields at
+       the next send_frame, diffs them against the running NVENC config,
+       and reconfigures in place when something moved. Nothing to call
+       here — assignment IS the API. */
+    AVCodecContext *ctx = e->ctx;
+    if (avg_bits > 0) {
+        ctx->bit_rate = avg_bits;
+        if (e->cbr)
+            ctx->rc_min_rate = avg_bits; /* min = avg = max: still CBR */
+    }
+    ctx->rc_max_rate = max_bits;
+    ctx->rc_buffer_size = (int)vbv_bits;
+    return 0;
 }
 
 int lyte_hevc_enc_flush(lyte_hevc_enc *e, lyte_hevc_packet_cb cb, void *user,

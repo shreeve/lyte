@@ -3,9 +3,10 @@
 // seal discipline, the 1 Hz beacon, the conn-id TLV, path validation, and
 // the shared pacer). This file is only syscalls and scheduling: CNetIO
 // bind/connect, recvmmsg → Session.receive with real source tuples,
-// Session's paced datagrams → sendmmsg with per-class TOS (control 0xC0
-// CS6, video 0xA0 CS5 — DSCP 40 per packet is J-G1's tcpdump check), and
-// the forced-IDR poll the encoder consults before each frame.
+// Session's paced datagrams → sendmmsg with per-class TOS (HostCore's
+// WireTos policy: ctrl/audio/repairs 0xC0 CS6, video 0xA0 CS5 — DSCP 40
+// per packet is J-G1's tcpdump check), and the forced-IDR + VBV polls
+// the encoder consults before each frame.
 //
 // Modes (extending HS-5's --wire-out into a real session):
 //   • Noise (default): bind, print the host static public key, block
@@ -42,15 +43,6 @@ import Foundation
 import HostCore
 import HostWire
 import LyteWire
-
-/// Class → IPv4 TOS byte, the lyte-pace-check policy verbatim.
-private func tos(for c: PacerClass) -> UInt8 {
-    switch c {
-    case .control, .audio: return 0xC0 // CS6 / DSCP 48
-    case .freshVideo, .videoTail, .refinement: return 0xA0 // CS5 / DSCP 40
-    case .telemetry: return 0x00
-    }
-}
 
 func monotonicNS() -> UInt64 {
     var ts = timespec()
@@ -152,6 +144,12 @@ final class SessionWire {
     private(set) var lastSendError: String?
     /// HS-16 log throttle: the last rate a `rate:` line reported.
     private var lastPrintedRate: Int?
+    /// HS-20: the encoder-VBV policy (armed by main once the encoder's
+    /// opening posture is known) and its evidence counters. Mutated
+    /// under `lock`.
+    private var vbvPolicy: EncoderVbvPolicy?
+    private(set) var vbvDirectivesIssued = 0
+    private(set) var lastVbvDirective: EncoderRateDirective?
     /// ECONNREFUSED evidence (LYTE_NETIO_PEER_GONE): the client's socket
     /// is closed — session-ending, not an I/O failure (HS-11).
     private(set) var peerGone = false
@@ -337,6 +335,35 @@ final class SessionWire {
         lock.lock()
         defer { lock.unlock() }
         return session?.takeFreshKeyframeRequest() ?? false
+    }
+
+    /// HS-20: arm the encoder-VBV policy once the encoder's opening
+    /// rate-control posture is known (main calls this right after the
+    /// session comes up; the policy's baseline mirrors what
+    /// lyte_hevc_enc_new configured).
+    func armEncoderVbv(_ config: EncoderVbvConfig) {
+        lock.lock()
+        defer { lock.unlock() }
+        vbvPolicy = EncoderVbvPolicy(config: config)
+    }
+
+    /// HS-20: the encoder-loop's second poll (with takeForcedIdr, once
+    /// per encode): the estimator's LIVE frameByteCeiling into the
+    /// policy; a non-nil directive must reach the encoder leaf before
+    /// this frame is sent.
+    func takeEncoderRateDirective() -> EncoderRateDirective? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let vbvPolicy, let session, session.phase == .established
+        else { return nil }
+        guard let directive = vbvPolicy.note(
+            frameByteCeiling: session.frameByteCeiling(
+                fps: vbvPolicy.config.fps),
+            now: monotonicNS()
+        ) else { return nil }
+        vbvDirectivesIssued += 1
+        lastVbvDirective = directive
+        return directive
     }
 
     /// HS-11: a FRESH damage frame arrived from capture (never the
@@ -963,7 +990,7 @@ final class SessionWire {
             let rc = datagram.bytes.withUnsafeBufferPointer { buf -> Int32 in
                 var pkt = lyte_netio_pkt(
                     data: buf.baseAddress, len: buf.count,
-                    tos: tos(for: datagram.pacerClass))
+                    tos: WireTos.byte(for: datagram.pacerClass))
                 return lyte_netio_send_to(
                     netio, &pkt,
                     destination.remoteAddress, destination.remotePort,
@@ -1001,7 +1028,7 @@ final class SessionWire {
                 pkts.append(lyte_netio_pkt(
                     data: scratch.advanced(by: offset),
                     len: d.bytes.count,
-                    tos: tos(for: d.pacerClass)
+                    tos: WireTos.byte(for: d.pacerClass)
                 ))
                 offset += d.bytes.count
             }

@@ -3,8 +3,9 @@
 // A 60 fps mix (5 ms audio, 10 ms control, 2-shard P-frames) plus one
 // forced IDR runs through the Pacer against the real monotonic clock;
 // each emitted batch becomes one lyte_netio_send_batch call with
-// per-packet TOS mapped from the pacer class (the mapping lives HERE,
-// not in the pure Pacer: audio/control 0xC0 CS6, video 0xA0 CS5).
+// per-packet TOS mapped from the pacer class (HostCore's WireTos —
+// outside the pure Pacer by design: ctrl/audio/repairs 0xC0 CS6,
+// video 0xA0 CS5).
 // Kernel software TX timestamps then measure what actually left the
 // host: inter-batch spacing during the saturated IDR drain (≈ one
 // quantum), the IDR's wall-clock drain, and audio's worst queue delay.
@@ -37,13 +38,10 @@ func realtimeNS() -> UInt64 {
     return UInt64(ts.tv_sec) * 1_000_000_000 + UInt64(ts.tv_nsec)
 }
 
-/// Class → IPv4 TOS byte. Harness policy, deliberately outside the Pacer.
+/// Class → IPv4 TOS byte: HostCore's WireTos, the product policy the
+/// session shell also applies (HS-20 unified the two verbatim copies).
 func tos(for c: PacerClass) -> UInt8 {
-    switch c {
-    case .control, .audio: return 0xC0 // CS6 / DSCP 48
-    case .freshVideo, .videoTail, .refinement: return 0xA0 // CS5 / DSCP 40
-    case .telemetry: return 0x00
-    }
+    WireTos.byte(for: c)
 }
 
 func fmtMS(_ ns: UInt64) -> String { String(format: "%7.3f", Double(ns) / 1e6) }
