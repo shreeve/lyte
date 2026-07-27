@@ -27,7 +27,17 @@ import LyteWireTestKit
 //     loud;
 //   • the per-host default plumbing: pre-CL-13 pinned_hosts.json
 //     decodes unchanged, the preference survives a re-pair's dial-hint
-//     refresh, and the setter refuses unknown hashes.
+//     refresh, and the setter refuses unknown hashes;
+//   • CL-18, the flipped default posture: a FRESH config desires
+//     hostMuted (sound follows the viewer — the Sunshine/Moonlight
+//     posture), so a new session against a key-9 audible host sends
+//     exactly one [0x18 0x02] with nothing configured; the per-host
+//     preference reads as opt-out (nil/true → muted, explicit false →
+//     the "start audible" opt-out, which suppresses the ask against an
+//     audible host and still asks [0x18 0x01] against a muted one);
+//     migration is by construction — CL-13's setters never wrote
+//     false, so stored trues keep their meaning and only the unset
+//     default flips.
 
 final class AudioRoutingClientGateTests: XCTestCase {
 
@@ -448,7 +458,12 @@ final class AudioRoutingClientGateTests: XCTestCase {
     func testGateNegotiatedFlipRoundTripAndFailedFlipReportsOldPosture() throws {
         let host = RoutingHostStandIn(
             localCapabilities: .wireDefault.declaringHostAudioRouting())
-        let harness = try Harness(host: host)
+        // The NEUTRAL posture, explicit since CL-18 flipped the
+        // config default to hostMuted: this leg is about the flip
+        // round-trip, so the session-start ask stays out of the way.
+        var config = LyteUdpSessionCoreConfig()
+        config.desiredHostAudioRouting = nil
+        let harness = try Harness(host: host, coreConfig: config)
         var t: UInt64 = 1_000
         harness.clock.value = t
 
@@ -661,5 +676,144 @@ final class AudioRoutingClientGateTests: XCTestCase {
         // The setter refuses hashes it has never pinned.
         XCTAssertFalse(repaired.setStartHostAudioMuted(
             publicKeyHash: "0000", muted: true))
+    }
+
+    // MARK: Leg 7 — CL-18: the flipped default posture
+
+    func testGateFreshConfigStartsHostMutedByDefault() throws {
+        // The flip itself, pinned at the source: a FRESH config —
+        // nothing set anywhere — desires hostMuted.
+        XCTAssertEqual(
+            LyteUdpSessionCoreConfig().desiredHostAudioRouting, .hostMuted)
+
+        // And in vivo: a new session against a key-9 host whose own
+        // default is audible sends exactly one [0x18 0x02] — the
+        // Sunshine/Moonlight posture with zero configuration. (The
+        // no-key-9 case stays pinned by leg 5: the ask only ever
+        // fires on the host's first 0x19, which such a host never
+        // owes — unnegotiated hosts keep playing, unchanged.)
+        let host = RoutingHostStandIn(
+            localCapabilities: .wireDefault.declaringHostAudioRouting())
+        let harness = try Harness(host: host)   // the DEFAULT config
+        var t: UInt64 = 1_000
+        harness.clock.value = t
+
+        try harness.core.open(now: ClientTimestamp(microseconds: t))
+        try harness.settle(t: &t)
+
+        XCTAssertEqual(host.requestsReceived, [[0x18, 0x02]],
+                       "an unconfigured session asks for hostMuted now")
+        XCTAssertEqual(harness.postureEvents, [.hostAudible, .hostMuted])
+        XCTAssertEqual(harness.core.hostAudioRoutingPosture, .hostMuted)
+        XCTAssertEqual(
+            harness.core.snapshotCounters().audioRoutingRequestsSent, 1)
+
+        print("CL-18 gate (default flip): fresh config → one "
+            + "[0x18 0x02] against an audible key-9 host")
+    }
+
+    func testGateStoredAudibleOptOutWorksBothDirections() throws {
+        // The stored "start audible" opt-out (explicit false) against
+        // an AUDIBLE host: postures already match — zero 0x18.
+        let audibleHost = RoutingHostStandIn(
+            localCapabilities: .wireDefault.declaringHostAudioRouting())
+        var config = LyteUdpSessionCoreConfig()
+        config.desiredHostAudioRouting = PinnedHost(
+            name: "pup", address: "10.0.0.249", port: 41_000,
+            staticPublicKeyHex: String(repeating: "ab", count: 32),
+            pairedAt: "2026-07-27T09:00:00Z",
+            startHostAudioMuted: false
+        ).sessionStartHostAudioRouting
+        XCTAssertEqual(config.desiredHostAudioRouting, .hostAudible)
+
+        let quiet = try Harness(host: audibleHost, coreConfig: config)
+        var t: UInt64 = 1_000
+        quiet.clock.value = t
+        try quiet.core.open(now: ClientTimestamp(microseconds: t))
+        try quiet.settle(t: &t)
+        XCTAssertEqual(audibleHost.requestsReceived, [],
+                       "the audible opt-out suppresses the default ask")
+        XCTAssertEqual(quiet.core.hostAudioRoutingPosture, .hostAudible)
+
+        // The SAME opt-out against a host whose shell default is
+        // muted (--host-audio muted): the preference still means
+        // something in both directions — one [0x18 0x01] leaves.
+        let mutedHost = RoutingHostStandIn(
+            localCapabilities: .wireDefault.declaringHostAudioRouting())
+        mutedHost.posture = .hostMuted
+        let asking = try Harness(host: mutedHost, coreConfig: config)
+        var t2: UInt64 = 1_000
+        asking.clock.value = t2
+        try asking.core.open(now: ClientTimestamp(microseconds: t2))
+        try asking.settle(t: &t2)
+        XCTAssertEqual(mutedHost.requestsReceived, [[0x18, 0x01]],
+                       "the opt-out ASKS for audible against a muted host")
+        XCTAssertEqual(asking.core.hostAudioRoutingPosture, .hostAudible)
+
+        print("CL-18 gate (opt-out): stored audible suppresses the "
+            + "muted default and still flips a muted host")
+    }
+
+    func testPinnedHostPostureMappingAndMigration() throws {
+        let keyHex = String(repeating: "ab", count: 32)
+        func pinned(_ startMuted: Bool?) -> PinnedHost {
+            PinnedHost(name: "pup", address: "10.0.0.249", port: 41_000,
+                       staticPublicKeyHex: keyHex,
+                       pairedAt: "2026-07-27T09:00:00Z",
+                       startHostAudioMuted: startMuted)
+        }
+        // The tri-state, read the one sanctioned way: unset takes the
+        // flipped default (muted), a stored true KEEPS its CL-13
+        // meaning (muted), and only the explicit false — a value no
+        // CL-13 setter ever wrote, so no existing file carries it —
+        // is the new "start audible" opt-out. That construction IS
+        // the migration: nothing stored changes meaning.
+        XCTAssertEqual(pinned(nil).sessionStartHostAudioRouting, .hostMuted)
+        XCTAssertEqual(pinned(true).sessionStartHostAudioRouting, .hostMuted)
+        XCTAssertEqual(pinned(false).sessionStartHostAudioRouting, .hostAudible)
+
+        // A pre-CL-13 file (no key at all) reads as the flipped
+        // default through the same accessor.
+        let legacy = Data("""
+        {"hosts":{"deadbeef":{"name":"pup","address":"10.0.0.249",\
+        "port":41000,"staticPublicKeyHex":"\(keyHex)",\
+        "pairedAt":"2026-07-21T09:00:00Z"}}}
+        """.utf8)
+        let store = try JSONDecoder().decode(PinnedHostStore.self, from: legacy)
+        XCTAssertEqual(
+            store.hosts["deadbeef"]?.sessionStartHostAudioRouting, .hostMuted)
+
+        // The setter now writes BOTH directions explicitly (the UI's
+        // uncheck is an opt-out, not a reset), and the explicit false
+        // survives the real save/load path.
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cl18-pinned-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        var live = PinnedHostStore()
+        let staticKey = (0..<32).map { UInt8($0) }
+        live.pin(staticPublicKey: staticKey, name: "pup",
+                 address: "10.0.0.249", port: 41_000,
+                 pairedAt: "2026-07-27T09:00:00Z")
+        let pkh = try XCTUnwrap(live.hosts.keys.first)
+        XCTAssertTrue(live.setStartHostAudioMuted(
+            publicKeyHash: pkh, muted: false))
+        try live.save(to: url)
+        let reloaded = PinnedHostStore.load(from: url)
+        XCTAssertEqual(
+            reloaded.host(publicKeyHash: pkh)?.startHostAudioMuted, false)
+        XCTAssertEqual(
+            reloaded.host(publicKeyHash: pkh)?.sessionStartHostAudioRouting,
+            .hostAudible)
+
+        // And back to muted, explicitly.
+        var flipped = reloaded
+        XCTAssertTrue(flipped.setStartHostAudioMuted(
+            publicKeyHash: pkh, muted: true))
+        XCTAssertEqual(
+            flipped.host(publicKeyHash: pkh)?.sessionStartHostAudioRouting,
+            .hostMuted)
+
+        print("CL-18 gate (migration): nil/true → muted, explicit "
+            + "false → audible; stored prefs keep their meaning")
     }
 }

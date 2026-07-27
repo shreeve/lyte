@@ -29,12 +29,26 @@
 // strip's buttons owns the point, so an ancestor hit must PASS
 // THROUGH (CL-13 shipped it captured, which left every strip button
 // dead and leaked strip clicks to the host cursor). Every mouse move
-// (captured or passed) also pings `onActivity`, the strip's
-// auto-reveal clock.
+// (captured or passed) also feeds `onActivity` — since CL-18 with the
+// pointer's edge geometry, because the strip's reveal is now a
+// dwell-near-the-edge verdict (StripRevealPolicy), not a
+// any-motion-reveals ping.
 
 import AppKit
 import LyteTransport
 import LyteWire
+
+/// One mouse event's edge geometry (CL-18) — everything the strip's
+/// reveal policy needs, measured window-side where the capture already
+/// lives: distances from both horizontal window edges (the container
+/// picks the one its edge preference names) and whether those edges
+/// are real SCREEN edges right now (fullscreen — arming the policy's
+/// system-sliver rule).
+struct PointerActivity {
+    var distanceFromBottom: CGFloat
+    var distanceFromTop: CGFloat
+    var isFullscreen: Bool
+}
 
 @MainActor
 final class LyteInputCapture {
@@ -46,10 +60,10 @@ final class LyteInputCapture {
     /// The host's stream dimensions in pixels, read live from the
     /// owning model (updated when the first sample arrives).
     private let videoSize: @MainActor () -> CGSize
-    /// Pinged on every mouse event in the window — the control strip's
-    /// reveal/idle-fade clock (CL-13). Never pinged for keys: typing
-    /// must not resurface the strip.
-    private let onActivity: @MainActor () -> Void
+    /// Fed on every mouse event in the window — the control strip's
+    /// reveal/idle-fade clock (CL-13; geometry-carrying since CL-18).
+    /// Never fed for keys: typing must not resurface the strip.
+    private let onActivity: @MainActor (PointerActivity) -> Void
     private var monitors: [Any] = []
 
     init(
@@ -57,7 +71,7 @@ final class LyteInputCapture {
         window: NSWindow,
         videoSize: @escaping @MainActor () -> CGSize,
         send: @escaping @MainActor (InputEvent.Body) -> Void,
-        onActivity: @escaping @MainActor () -> Void = {}
+        onActivity: @escaping @MainActor (PointerActivity) -> Void = { _ in }
     ) {
         self.view = view
         self.window = window
@@ -125,7 +139,14 @@ final class LyteInputCapture {
 
     private func handleMouse(_ event: NSEvent) -> NSEvent? {
         guard let view, let window, event.window === window, window.isKeyWindow else { return event }
-        onActivity()
+        // locationInWindow's origin is the window frame's bottom-left,
+        // which is also the content view's bottom-left (titlebars sit
+        // at the top) — good enough edge geometry for the reveal zone.
+        let contentHeight = window.contentView?.frame.height ?? 0
+        onActivity(PointerActivity(
+            distanceFromBottom: event.locationInWindow.y,
+            distanceFromTop: contentHeight - event.locationInWindow.y,
+            isFullscreen: window.styleMask.contains(.fullScreen)))
         // Only the video surface feeds the host; overlays keep their
         // own events (CL-13, rule corrected by CL-16).
         guard landsOnVideoSurface(event) else { return event }

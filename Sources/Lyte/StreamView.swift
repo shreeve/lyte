@@ -6,10 +6,11 @@ import LyteUI
 /// capture to the session once the view lands in a window.
 struct StreamView: NSViewRepresentable {
     let model: ConnectionModel
-    /// CL-13: pinged on every mouse event the capture sees — the
-    /// control strip's reveal clock (the capture consumes moves over
-    /// the video, so SwiftUI hover tracking alone would go blind).
-    var onMouseActivity: @MainActor () -> Void = {}
+    /// CL-13: fed on every mouse event the capture sees — the control
+    /// strip's reveal clock (the capture consumes moves over the
+    /// video, so SwiftUI hover tracking alone would go blind). Carries
+    /// the pointer's edge geometry since CL-18 (the dwell reveal).
+    var onMouseActivity: @MainActor (PointerActivity) -> Void = { _ in }
 
     /// The window attaches sometime AFTER makeNSView returns — usually
     /// one runloop turn, but not dependably. CL-13 shipped a one-shot

@@ -200,6 +200,15 @@ public struct LyteUdpSessionCoreConfig: Sendable {
     /// whose flip fails reports the old posture; re-asking forever
     /// would be a loop, and the strip's toggle is the live override).
     /// Nil takes the host's default without comment.
+    ///
+    /// DEFAULT FLIPPED BY CL-18 (owner hand-test verdict): a fresh
+    /// config now desires `.hostMuted` — the Sunshine/Moonlight
+    /// posture, sound follows the viewer while the host holds its
+    /// tongue. Against a no-key-9 host nothing changes (the ask only
+    /// ever fires on the host's first 0x19, which such a host never
+    /// owes — the host plays, nothing we can do). Shells wanting the
+    /// old neutral posture set nil explicitly (wire-view does, unless
+    /// its --host-audio flag says otherwise).
     public var desiredHostAudioRouting: HostAudioRoutingMode?
     /// CL-15: the session's starting clipboard-sharing posture (the
     /// per-host "Share Clipboard" default's landing point; default
@@ -219,7 +228,7 @@ public struct LyteUdpSessionCoreConfig: Sendable {
         tightenedBlackoutSilenceMicroseconds: Int64? = 350_000,
         audioJitter: AudioJitterConfig = AudioJitterConfig(),
         nackPolicy: NackPolicyConfig = NackPolicyConfig(),
-        desiredHostAudioRouting: HostAudioRoutingMode? = nil,
+        desiredHostAudioRouting: HostAudioRoutingMode? = .hostMuted,
         shareClipboard: Bool = false
     ) {
         self.capabilities = capabilities

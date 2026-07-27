@@ -110,16 +110,19 @@ struct ConnectView: View {
             if let pinned {
                 // CL-13: the per-host session-start posture — applied
                 // at connect; the strip's toggle overrides live.
+                // CL-18: opt-out semantics — unset means muted (the
+                // flipped default), so this reads `!= false` (checked
+                // by default) and writes BOTH directions explicitly.
                 Toggle("Start with Host Muted", isOn: Binding(
                     get: {
                         pinnedStore.host(publicKeyHash: host.publicKeyHash)?
-                            .startHostAudioMuted == true
+                            .startHostAudioMuted != false
                     },
                     set: { muted in
                         guard let pkh = host.publicKeyHash else { return }
                         var store = PinnedHostStore.load()
                         store.setStartHostAudioMuted(
-                            publicKeyHash: pkh, muted: muted ? true : nil)
+                            publicKeyHash: pkh, muted: muted)
                         try? store.save()
                         pinnedStore = store
                     }

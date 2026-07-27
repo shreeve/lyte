@@ -109,13 +109,15 @@ final class ConnectionModel {
         displayLayer.backgroundColor = CGColor(gray: 0, alpha: 1)
         let renderer = displayLayer.sampleBufferRenderer
 
-        // CL-13: the per-host default seeds the session-start posture —
-        // one 0x18 leaves after the host's first 0x19 when they differ.
-        // The strip's toggle is the live override thereafter.
+        // CL-13/CL-18: the per-host preference seeds the session-start
+        // posture — one 0x18 leaves after the host's first 0x19 when
+        // they differ. Since CL-18 the unset default is hostMuted
+        // (sound follows the viewer); only the explicit "start
+        // audible" opt-out asks for the host's speakers. The strip's
+        // toggle is the live override thereafter.
         var sessionConfig = LyteUdpSession.Config()
-        if pinned.startHostAudioMuted == true {
-            sessionConfig.core.desiredHostAudioRouting = .hostMuted
-        }
+        sessionConfig.core.desiredHostAudioRouting =
+            pinned.sessionStartHostAudioRouting
         // CL-15: the per-host clipboard consent seeds the session's
         // starting posture; the strip's toggle is the live override.
         sessionConfig.core.shareClipboard = pinned.shareClipboard == true
@@ -269,19 +271,22 @@ final class ConnectionModel {
     }
 
     /// The per-host "start sessions with host muted" default, read
-    /// live from the pinned store (CL-13). Applied at connect; the
-    /// strip's toggle overrides live without touching it.
+    /// live from the pinned store (CL-13; opt-out semantics since
+    /// CL-18 — unset means muted, so this reads `!= false` and writes
+    /// BOTH directions explicitly: unchecking is the "start audible"
+    /// opt-out, not a reset). Applied at connect; the strip's toggle
+    /// overrides live without touching it.
     var startHostMutedPreference: Bool {
         get {
-            guard let pkh = hostPublicKeyHash else { return false }
-            return PinnedHostStore.load()
-                .host(publicKeyHash: pkh)?.startHostAudioMuted == true
+            guard let pkh = hostPublicKeyHash,
+                  let pinned = PinnedHostStore.load().host(publicKeyHash: pkh)
+            else { return true }   // the CL-18 default posture
+            return pinned.startHostAudioMuted != false
         }
         set {
             guard let pkh = hostPublicKeyHash else { return }
             var store = PinnedHostStore.load()
-            store.setStartHostAudioMuted(
-                publicKeyHash: pkh, muted: newValue ? true : nil)
+            store.setStartHostAudioMuted(publicKeyHash: pkh, muted: newValue)
             try? store.save()
         }
     }

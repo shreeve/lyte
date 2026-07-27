@@ -43,7 +43,7 @@ struct WireView: AsyncParsableCommand {
     var audio = false
     @Option(name: .long, help: "CL-17 forcing surface: prime the adaptive jitter target at N packets (~N×5 ms of initial depth) — the percentile controller then decays and WSOLA accelerate drains the surplus; the audio line's depth/accel books are the evidence. 0 = off")
     var audioPrime: Int = 0
-    @Option(name: .long, help: "CL-13: the session-start posture for the HOST's own speakers — audible|muted. Needs capability key 9 on both ends; against a no-key-9 host the ask is refused client-side (that refusal is the evidence)")
+    @Option(name: .long, help: "CL-13: the session-start posture for the HOST's own speakers — audible|muted. Needs capability key 9 on both ends; against a no-key-9 host the ask is refused client-side (that refusal is the evidence). Omitted = NEUTRAL: take the host's default without asking (the debug-shell posture; the APP defaults to muted since CL-18)")
     var hostAudio: String?
     @Flag(name: .long, help: "CL-15: share the clipboard (UTF-8 text, both ways) — real NSPasteboard glue behind the sans-IO core's gates. Needs capability key 10 on both ends; against a no-key-10 host every local copy reports notNegotiated (that refusal is the evidence). Payloads are never printed — byte counts only")
     var clipboard = false
@@ -180,6 +180,10 @@ struct WireView: AsyncParsableCommand {
         // CL-13: the session-start posture ask (one 0x18 after the
         // host's first 0x19, when they differ) — tonight's catch-up
         // worker drives the whole negotiation live without the app.
+        // The nil assignment is DELIBERATE (CL-18): the core's default
+        // flipped to hostMuted for the app, but the debug shell stays
+        // neutral unless the flag says otherwise — scripted gate runs
+        // keep their pre-CL-18 wire shape.
         sessionConfig.core.desiredHostAudioRouting =
             hostAudio.flatMap(Self.parseHostAudio)
         // CL-15: --clipboard seeds the sharing gate ON (the app's

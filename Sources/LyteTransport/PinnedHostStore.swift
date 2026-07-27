@@ -29,11 +29,18 @@ public struct PinnedHost: Codable, Equatable, Sendable {
     public var staticPublicKeyHex: String
     /// ISO-8601 stamp of the pairing, for the operator's benefit.
     public var pairedAt: String
-    /// Per-host session-start posture (CL-13): start sessions against
-    /// THIS host with its own speakers muted (the 0x18 session-start
-    /// ask). Optional so pre-CL-13 files decode unchanged; nil and
-    /// false both mean "take the host's default". The strip's toggle
-    /// is the live override — this only seeds the connect.
+    /// Per-host session-start posture (CL-13; semantics flipped by
+    /// CL-18). Since CL-18 the app's DEFAULT posture is host-muted —
+    /// sound follows the viewer — so this preference is now the
+    /// "start audible" OPT-OUT: nil (unset) and true both mean start
+    /// muted; an explicit false means start audible. Migration is by
+    /// construction: CL-13's setters only ever wrote true or nil
+    /// (false was mapped to nil), so no existing file carries a
+    /// false — stored trues keep their meaning verbatim and only the
+    /// unset default flips. Optional so pre-CL-13 files decode
+    /// unchanged. The strip's toggle is the live override — this only
+    /// seeds the connect. `sessionStartHostAudioRouting` is the one
+    /// reading of these three states.
     public var startHostAudioMuted: Bool?
     /// Per-host clipboard consent (CL-15): start sessions against
     /// THIS host with clipboard sharing ON. Optional so older files
@@ -77,6 +84,17 @@ public struct PinnedHost: Codable, Equatable, Sendable {
     /// results carry, so recognition never touches the network.
     public var publicKeyHash: String? {
         staticPublicKey.map { LyteDiscovery.publicKeyHash(ofStaticPublicKey: $0) }
+    }
+
+    /// The session-start posture this host's preference asks for
+    /// (CL-18): the one place the tri-state is read. Unset and true
+    /// both mean `.hostMuted` (the flipped default — the
+    /// Sunshine/Moonlight posture); only an explicit false — the
+    /// "start audible" opt-out — means `.hostAudible`. Lands on
+    /// `desiredHostAudioRouting` at connect; inert against a
+    /// no-key-9 host (the ask never fires without the host's 0x19).
+    public var sessionStartHostAudioRouting: HostAudioRoutingMode {
+        startHostAudioMuted == false ? .hostAudible : .hostMuted
     }
 }
 

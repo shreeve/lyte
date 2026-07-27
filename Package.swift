@@ -61,6 +61,13 @@ let package = Package(
                 .product(name: "LyteWire", package: "Wire"),
             ]
         ),
+        // CL-18: the control strip's ergonomics policy (StripRevealPolicy,
+        // StripPreferences) lives in LyteUI so the feel is virtual-time
+        // testable without the app shell.
+        .testTarget(
+            name: "LyteUITests",
+            dependencies: ["LyteUI"]
+        ),
         .testTarget(
             name: "LyteTransportTests",
             dependencies: [
