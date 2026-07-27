@@ -12,10 +12,10 @@ EXIT demolition is DONE (commits `2018f6d` → `d5de430` → `9e1cd27`): the
 client's GameStream stack (LyteKit/CEnet/CNanors, ~14.3k lines) is deleted,
 Sunshine is uninstalled from pup, and both ends speak exactly one protocol —
 Lyte-UDP. H1 closed earlier the same day (`docs/20260722-h1-joint-gate.md`).
-Suites at HEAD: Wire **402/402**, Host **127/127** (Mac AND pup, grown
-through HS-20), root **122/122** on
-Mac (grown through the CL-12 follow-through `ab4f905`, the codec
-promotion, and CL-15 clipboard; entries in the wave block) (pup legs for
+Suites at HEAD: Wire **402/402**, Host **136/136** (Mac AND pup, grown
+through HS-21), root **131/131** on
+Mac (grown through CL-16 and CL-17 — the M7 audio remainder, entry in
+the wave block) (pup legs for
 everything landed since the H2 exit are deferred — being drained NOW,
 see below; the H2-exit state 372/104/104 was the last green on BOTH
 platforms); `build-cli.sh` + `make-app.sh` release green. A live post-demolition proof
@@ -157,15 +157,14 @@ multi-monitor at H4) that gate the H3 feature ladder.
    client half.
 4. **H3 ladder** per `docs/20260723-051223-lyte-h3-plan.md` — debt
    rungs first (~~VBV, repair-lane DSCP~~ — **DONE as HS-20
-   (`084e826`)**; cookie dial, M7 audio remain), then F-1 clipboard
+   (`084e826`)**; ~~cookie dial~~ — **DONE as HS-21 (`ede7d49`)**;
+   ~~M7 audio~~ — **DONE as CL-17 (`3a58fb6`)**), then F-1 clipboard
    completion → F-2 bulk channel → F-3/F-4 file drop → F-5 roaming;
    gated on the §0 owner decisions.
 
 **Standing deferred seams** (named at their slices, none blocking):
-reconnect/takeover UX (needs a host session-busy story), HS-9 cookie-mode
-enforcement in HandshakeGate (W8 landed; the client leg is live in every
-dial), M7 audio items (WSOLA accelerate, skew term, device-change
-handling), app human-at-glass legs (Keychain zero-UI dial +
+reconnect/takeover UX (needs a host session-busy story), app
+human-at-glass legs (Keychain zero-UI dial +
 stream-window visual from a real GUI session). New from HS-20 (details
 in its wave entry): estimator overuse-fall anchor wants windowed-max
 robustness against garbage delivery samples (HS-16 territory), and the
@@ -458,11 +457,11 @@ its entry at the marker at the end of this block.*
   every FOREGROUND run completed clean; suspect the headless-shell
   process-lifetime class of CL-8's Keychain caveat, not a code path a
   real GUI session hits. Deferred: audio-interior promotion into
-  Wire/ (with the host copy), WSOLA accelerate + skew-term (M7),
-  AVAudioEngine device-change/route-change handling, app human-at-
-  glass listen (audio default-on in the app path awaits CL-8's
-  deferred human leg), background-run death root-cause if it ever
-  shows in a real session.
+  Wire/ (with the host copy), app human-at-glass listen (audio
+  default-on in the app path awaits CL-8's deferred human leg),
+  background-run death root-cause if it ever shows in a real session.
+  (WSOLA accelerate + skew-term + device-change handling themselves:
+  retired, CL-17 `3a58fb6`.)
 
 - **HS-17 NACK consumption / targeted repair** (`96b1a89`, Host/):
   the H2 resiliency close-out — client NACKs are honored, closing §4.7's
@@ -1334,6 +1333,105 @@ its entry at the marker at the end of this block.*
   flood is future work if the threat model wants it. (2) The throwaway
   probe lives at `~/src/cookie-probe` on pup (like the hs1x-probes,
   outside the repo) — left in place; delete if reclaiming space.
+
+- **CL-17 — the M7 audio remainder: WSOLA accelerate, the skew term,
+  device-change survival** (`3a58fb6`, root only; Wire and Host
+  untouched at `5006c02`). CL-11 bought silence-free playout with
+  latency (~98–102 ms pipe p50 on this Wi-Fi path vs the ~40 ms
+  target) because the only backlog tool was the counted content skip.
+  **ACCELERATE:** `AudioAccelerator` (LyteTransport, sans-IO,
+  pump-owned single-threaded) is the continuity doc's §5.2 as written
+  — the NetEQ move in pure Swift: gather one op's working set
+  (≤ 20 ms, held transiently and counted into the depth the receiver
+  judges), find the best waveform period T ∈ [2.5, 10 ms] by
+  normalized autocorrelation on a mono mixdown (stride-4 coarse
+  sweep + ±3 refine), overlap-add x[0..T) into x[T..2T) under a
+  raised-cosine ramp — T frames vanish on the waveform's own
+  self-similarity, pitch preserved, everything outside the crossfade
+  byte-exact. A token bucket accrues 5% of every input frame (capped
+  at one period) so sustained speedup is bounded ≤5% of realtime;
+  correlation < 0.5 DEFERS the cut (a transient is passing); silence
+  on both sides of a lag counts perfectly self-similar (cutting
+  silence is free), one-sided counts zero (never splice sound into
+  quiet); disengaged is exact passthrough with zero added latency;
+  `flush()` strands nothing. Engagement is the RECEIVER's verdict,
+  mirroring CL-11's expand/normal seam: `AudioReceiver.pullDecision()`
+  judges TOTAL depth (jitter buffer + gathered + the ring/render
+  microseconds the pump reports back) with hysteresis — engage above
+  target+slack, disengage at target — and `recenterIfOvergrown`
+  RETREATS from target+slack to the 24-pkt hard cap, so the band
+  between target and cap now belongs to the accelerator and the
+  counted skip is blackout-only. **SKEW:** `retarget()` least-squares
+  detrends the ~2.6 s skew window — the slope is the sender/receiver
+  clock drift (`skewPartsPerMillion` on the books, clamped ±500), the
+  spread comes from the RESIDUALS, so a drifting clock reads as ppm
+  instead of inflating the target; the skew anchor went Int64
+  (sender-fast drift underflowed the UInt64 re-anchor — found by the
+  virtual-time gate, would have been a live crash); the target update
+  gates on `started` so a prime survives the opening adaptation.
+  **DEVICE:** LyteAudioPlayer observes AVAudioEngineConfigurationChange
+  on a serial route queue and rebuilds the source-node graph around
+  the UNTOUCHED ring (engine-lock guarded, restart retried; PLC and
+  the ring cushion cover the seam), counted as
+  routeChangesHandled/routeChangeFailures. **wire-view:** the audio
+  line grew skew ppm + `accel N ops (−N ms, N engage)` + route
+  counts; `--audio-prime N` (5–60 pkts) pre-loads the jitter target
+  for drain legs; a latencyCritical+userInitiated NSActivity now pins
+  App Nap for the process lifetime (HS-20 morning-eyes (1), the
+  wire-view half — no more per-run NSAppSleepDisabled). Gate: root
+  124 → **131/131 Mac** (1 skipped: the route-change leg needs real
+  output hardware, XCTSkip headless) — AudioAccelerateGateTests: a
+  440 Hz sine through a full drain stays phase-continuous (bounded
+  sample step, zero-crossing cadence held, measured rate ≤5%);
+  passthrough byte-exact + transient defers + silence cuts free;
+  overfull-to-target drain in virtual time with NO skip and NO PLC;
+  skew ±240 ppm converges with the target flat under pure drift;
+  sender-fast drift absorbed by accelerate (0 recenters); drain-then-
+  stall hands to PLC exactly-when-dry; build-cli.sh + make-app.sh
+  release green. **LIVE (pup :41159, 150 s foreground wire-view
+  --audio --audio-prime 20, host at committed HEAD + nv571 shim +
+  --ratchet; logs /tmp/cl17-{client,host}D.log both ends):** **pipe
+  p50/p99 39.9/132.5 ms where CL-11 measured ~98–102 p50** — the
+  equilibrium accelerate was built to lower, lowered. 44,958 audio
+  dg → 29,972 pkts, **accel 393 ops = −982 ms drained across 50
+  engagements**, PLC 204 = 0.68% (late-arrival singles inside radio
+  stalls — no storms), 10 recenters (−95 pkts, ALL inside
+  multi-hundred-ms Wi-Fi blackout bursts that breached the hard cap:
+  the designed blackout path), skew books −222 ppm at final, 63,550
+  datagrams ALL ok / 0 unseal failures. The drain signature repeats
+  the whole run: each ~15 s Wi-Fi scan stall spikes jitter σ to
+  6–23 ms and the target to 20 pkts; recovery drops the target back
+  to 5 and the accelerator works the pipe down — cleanest cycle
+  **p50 75.3 → 36.0 ms** while ops climbed 96 → 151 with ZERO new
+  PLC/recenters/underruns. Honest note: the 20-pkt PRIME itself was
+  trimmed by the hard-cap recenter during AVAudioEngine startup
+  (~1 s of arrivals stack before the DAC starts pulling), so the
+  spike-recovery cycles are the drain evidence — better evidence
+  anyway: real impairment, real recovery, no synthetic depth.
+  **Hygiene:** secrets shas byte-identical (72860390…cfed /
+  8dc1f88a…55fd / dadf9a66…37cf); 41159 free after; no strays;
+  earlier legs A–C (locked-screen HAL refusal, a SIGPIPE harness
+  bug, radio weather) logged at /tmp/cl17-{client,host}{A,B,C}.log.
+  The owner relaunch loop on 41151 EXPIRED NATURALLY mid-slice
+  (HS-20's 60 iterations × 120 s handshake timeout ≈ 2 h; last
+  timeout logged 06:36, untouched by this worker) — restored fresh
+  (60 × debug `--wire-listen 41151`, nv571 shim, same
+  /tmp/lyte-host-session.log), awaiting handshake at the same static
+  key. **MORNING EARS (three items):** (1) WSOLA quality on real
+  content — the sine gate pins continuity/pitch/rate, but music and
+  speech through a forced drain (`--audio-prime 30`, listen through
+  the first minute) need human ears for warble or roughness at the
+  5% cap; (2) AirPods/device swap mid-session — the rebuild is
+  counter-proven and the XCTSkip leg runs on real hardware, but
+  nobody has HEARD a swap yet (ring survives; PLC covers about one
+  pump of seam); (3) this Mac's ~15 s Wi-Fi scan stalls under
+  session load (runs A–D all show them) roughen ANY audio regardless
+  of receiver behavior — an Ethernet or different-AP listen would
+  separate path weather from receiver polish. Repeat of the HS-20
+  caveat: the Mac was screen-LOCKED all night, so live legs ran
+  `--host-key` with throwaway client statics (pairing store
+  untouched), and CoreAudio's HAL refuses I/O while the display
+  sleeps — `caffeinate -diu` was required for every audio leg.
 
 ---
 
