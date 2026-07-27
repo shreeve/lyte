@@ -82,7 +82,8 @@ and the read-only UX investigator. To resume safely:
 4. **HANDOFF.md commits are the coordinator's job**; workers edit only
    their own wave entries and leave the file uncommitted.
 
-**UX INVESTIGATION CONCLUDED (2026-07-27 ~01:37) — fix worker dispatched.**
+**UX INVESTIGATION CONCLUDED (2026-07-27 ~01:37) — fix items 1–4 LANDED
+(CL-16 `73ccd46`, ~01:47; details at the end of this block).**
 The owner's trip-era complaints ("can't control the host, duplicated
 audio, choppy") diagnosed via code audit + an AppKit hit-test probe:
 - **CONFIRMED REGRESSION (CL-13, `d11dba3`)**: `landsOnOverlay`'s
@@ -109,9 +110,27 @@ audio, choppy") diagnosed via code audit + an AppKit hit-test probe:
   retry/telemetry; stats hides the input line while eventsSent==0 —
   exactly the datum that discriminates capture-vs-host failure.
 Fix list (ordered, sized) is in the investigator's report; items 1–4
-(hit-test fix, unconditional stats input line, capture-install
-hardening, reveal coalescing) are the dispatched fix worker's scope —
-root territory only. VBV + DSCP stay H3 debt rungs.
+were the dispatched fix worker's scope — **DONE, one root commit CL-16
+`73ccd46`**: (1) `landsOnOverlay` rewritten as `landsOnVideoSurface` —
+CAPTURED iff the hit view is VideoLayerView or a descendant, anything
+else (the hosting-view ancestor included) returns to AppKit; the
+investigator's probe re-run with the corrected rule embedded asserts
+all four classifications (video/upper-right captured, strip
+pass-through, allowsHitTesting(false) stats stays captured-transparent)
+— PASS. (2) The stats input line is unconditional and carries the
+capture verdict ("input 0 sent · capture INACTIVE"), formatter
+extracted to `InputSenderStats.overlayLine` and contract-pinned in
+virtual time. (3) StreamView's capture install polls 50 ms up to ~4 s,
+NSLogs the verdict either way (attempt count on success, loud
+gave-up), and the overlay renders capture active/INACTIVE live off
+`model.lyteInputCapture`. (4) The strip's reveal is one standing fade
+task fed by a reference-typed last-activity timestamp (plain class in
+@State — pointer-rate events invalidate nothing); behavior kept:
+reveal on activity, fade ~2 s after the last, never while hovered.
+Root suite 122 → **124/124 Mac**; build-cli.sh + make-app.sh release
+green. STILL OPEN: the CL-13 human leg (l) — hand-test the strip
+(reveal/fade feel, buttons CLICK now, no leakage to the host cursor,
+stats legibility) at or past `73ccd46`. VBV + DSCP stay H3 debt rungs.
 
 **Landed since the trip started (all Mac-local, wave entries below):**
 CL-13's follow-through books (`ab4f905`), the codec promotion
