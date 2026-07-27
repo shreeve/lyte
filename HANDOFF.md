@@ -59,28 +59,34 @@ while it runs). Leg (s), live end-to-end clipboard, is now CLOSED —
 HS-19 (`73e5cdb`) landed the Mutter clipboard leaf and ran it live;
 verdict + evidence in the CL-15 wave entry.
 
-**RESTART / RESUME PROTOCOL (if the session or workers are restarted
-mid-flight):** two workers may have died mid-task — the catch-up worker
-and the read-only UX investigator. To resume safely:
-1. **Hygiene first, always**: `ssh pup 'pgrep -a lyte-host'` and kill
-   strays; check netem is gone (`tc qdisc show` on pup — only default
-   qdiscs should exist); verify the three secrets in
-   `~/.config/lyte-host/` (noise_static.key, paired_clients,
-   portal_token) still exist.
-2. **Reconstruct catch-up progress from evidence, not memory**: read
-   the wave entries below — any leg already marked PASSED/FAILED with
-   an evidence line is done; any leg still reading DEFERRED-PENDING-HOST
-   remains. Check `git log` (Wire/Host fixes the worker may have
-   committed) and pup's `~/src/` (whether the rsync + build already
-   happened: `ssh pup 'cd ~/src/lyte-host && swift build 2>&1 | tail -1'`).
-   Relaunch ONE catch-up worker scoped to only the remaining legs, same
-   rules (per-leg verdicts + real numbers into the wave entries, netem
-   scoped + removed, secrets shas at start and end, no push).
-3. **The UX investigation** (trip-era complaints, above) is read-only
-   and stateless — if its report never arrived, relaunch it as-is; its
-   scope is in this file one paragraph up. Its findings gate the fix
-   worker, which gates H3 feature slices.
-4. **HANDOFF.md commits are the coordinator's job**; workers edit only
+**RESTART / RESUME PROTOCOL (updated 2026-07-27 ~13:45):** ONE worker
+may have died mid-task — **HS-22, the video-quality investigation**
+(launched ~12:13, frozen since ~12:34 when the owner left the home LAN;
+it committed NOTHING — a fresh relaunch loses only its private notes).
+To resume:
+1. **Hygiene first, always** (needs pup reachable — the owner was on a
+   hotspot when this was written): `ssh pup 'pgrep -a lyte-host'` and
+   kill strays EXCEPT the owner's relaunch loop (`~/lyte-loop.sh` +
+   its lyte-host on :41151 — that pair stays); netem gone (`tc qdisc
+   show`); the three secrets in `~/.config/lyte-host/` intact.
+2. **Relaunch HS-22 as one worker owning Host/ + root** (Wire/
+   read-only), scope: (a) clean-path video-quality regression — owner
+   reports "moderate" quality vs the H2-era sessions; prime suspects
+   in order: HS-20's VBV caps engaging on a CLEAN path (vbv=8×C is a
+   squeeze tool, not steady-state posture — likely fix: no caps when
+   frameByteCeiling ≥ unconstrained budget), estimator below ceiling
+   on Wi-Fi, the new 595.84 driver; (b) quality instrumentation FIRST
+   — per-second host books with NVENC QP/held-rate/frame-size, a
+   quality line in the ⌘⌥I overlay and wire-view (no new wire
+   vocabulary; Wire/ is read-only); (c) the owner's "1 Hz blur while
+   paused" — the WAKE-ratchet pulse (a 1 Hz damage tick must not
+   restart the IDR+ratchet ladder; static desktop must hold near-idle
+   bandwidth, no visible pulse; symptom is intermittent — reproduce
+   with a ticking clock on a static desktop); (d) prove the fix on a
+   clean-path run AND re-prove HS-20's squeeze behavior (its B2
+   retirement must survive); (e) commits per package, owner loop on
+   41151 restored, live legs on port 41163.
+3. **HANDOFF.md commits are the coordinator's job**; workers edit only
    their own wave entries and leave the file uncommitted.
 
 **UX INVESTIGATION CONCLUDED (2026-07-27 ~01:37) — fix items 1–4 LANDED
