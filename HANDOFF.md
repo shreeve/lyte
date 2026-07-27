@@ -1,6 +1,6 @@
 # Lyte — Session Handoff
 
-*Current as of 2026-07-27 ~01:35 MDT. The session ledger — tracked in the
+*Current as of 2026-07-27 ~02:30 MDT. The session ledger — tracked in the
 repo since `8da50bf` (the .gitignore entry is vestigial; the file is
 tracked). Update freely; commit updates in the ledger voice.*
 
@@ -12,7 +12,8 @@ EXIT demolition is DONE (commits `2018f6d` → `d5de430` → `9e1cd27`): the
 client's GameStream stack (LyteKit/CEnet/CNanors, ~14.3k lines) is deleted,
 Sunshine is uninstalled from pup, and both ends speak exactly one protocol —
 Lyte-UDP. H1 closed earlier the same day (`docs/20260722-h1-joint-gate.md`).
-Suites at HEAD: Wire **402/402**, Host **115/115**, root **122/122** on
+Suites at HEAD: Wire **402/402**, Host **117/117** (Mac AND pup, grown
+through HS-19), root **122/122** on
 Mac (grown through the CL-12 follow-through `ab4f905`, the codec
 promotion, and CL-15 clipboard; entries in the wave block) (pup legs for
 everything landed since the H2 exit are deferred — being drained NOW,
@@ -54,9 +55,9 @@ detour over — never actually reachable there; 5 days uptime on return),
 secrets verified present at start of catch-up. **The catch-up worker is
 IN FLIGHT right now** draining the whole deferred ledger (legs a–r; its
 verdicts land in the wave entries below — do not edit the wave block
-while it runs). Leg (s), live end-to-end clipboard, stays open — blocked
-on the Linux portal clipboard leaf (queued follow-up, next worker after
-catch-up).
+while it runs). Leg (s), live end-to-end clipboard, is now CLOSED —
+HS-19 (`73e5cdb`) landed the Mutter clipboard leaf and ran it live;
+verdict + evidence in the CL-15 wave entry.
 
 **RESTART / RESUME PROTOCOL (if the session or workers are restarted
 mid-flight):** two workers may have died mid-task — the catch-up worker
@@ -148,8 +149,10 @@ multi-monitor at H4) that gate the H3 feature ladder.
 2. **UX-complaint fixes** — whatever the investigator's report names
    (input regression suspicion first), sized and dispatched before
    feature work.
-3. **Linux portal clipboard leaf** (host territory) — the queued
-   CL-15 follow-up; unblocks deferred leg (s) and live copy/paste.
+3. ~~Linux portal clipboard leaf~~ — **DONE as HS-19 (`73e5cdb`)**;
+   leg (s) PASSED live (evidence in the CL-15 wave entry). Live
+   copy/paste is real: `lyte-host --clipboard` + the app/wire-view
+   client half.
 4. **H3 ladder** per `docs/20260723-051223-lyte-h3-plan.md` — debt
    rungs first (VBV, repair-lane DSCP, cookie dial, M7 audio), then
    F-1 clipboard completion → F-2 bulk channel → F-3/F-4 file drop →
@@ -1106,23 +1109,44 @@ its entry at the marker at the end of this block.*
   counters on either end's final, no drops at the host), the Mac
   pasteboard saved before and restored after the probe; the app strip
   toggle's non-existence is UI-gated by the same negotiated flag
-  proven false here (eyeball rides CL-13 leg l); (s) live end-to-end
-  clipboard both ways — copy Mac→host and
-  host→Mac, boomerang counters clean on both ends (loop-suppressed
-  matches applies, no ping-pong), 1:1 reconciliation
-  (clipboardSharesSent ↔ clipboardSetsReceived, clipboardAnnouncesSent
-  ↔ clipboardAnnouncesReceived), the 64 KiB ceiling live, the consent
-  toggle flipped mid-session both directions; leg (s) ALSO needs the
-  queued Linux leaf below — it runs when both pup and the leaf exist.
-  **QUEUED FOLLOW-UP (new queue item, host territory):** the Linux
-  clipboard OS leaf — the portal Clipboard API attached to the
-  existing RemoteDesktop session (host build plan §6: selection-change
-  signals + fd transfer both directions; wl-clipboard is NOT a real
-  fallback on GNOME), driving `HostClipboardLeaf`; wire it into
-  lyte-host (apply on `.clipboardSetReceived`, changes into
-  `noteHostClipboardChanged`, a `--clipboard` shell flag), declare
-  key 10 only when the leaf is enabled (the key-9/--no-audio
-  precedent), then run leg (s). Deferred (non-live, named): a
+  proven false here (eyeball rides CL-13 leg l); **(s) PASSED
+  (2026-07-27 ~02:20 MDT, HS-19 `73e5cdb`, port 41153, wire-view
+  --clipboard vs lyte-host --clipboard)** — key 10 AGREED both ends
+  (`clipboard yes (key 10)`); Mac→host: 25 B pbcopy marker → `local
+  copy (25 B) — shared` → host `0x1A set received (25 B)` → wl-paste
+  on pup returned it byte-exact, and the leaf's own SetSelection echo
+  came back through the REAL Mutter signal path and was suppressed
+  (`announce suppressed (loopEcho)`) — boomerang ZERO; host→Mac: 28 B
+  wl-copy → `announce sent (28 B, 0x1B)` → Mac pasteboard byte-exact,
+  2 SelectionTransfers served to host-side pastes, 0 failed; ceiling
+  BOTH directions: a 70000 B Mac copy died client-side pre-wire
+  (`overBudget(70000)`, pup's clipboard kept the 28 B marker) and a
+  70000 B pup copy died at the host seam (`announce suppressed
+  (overBudget)`, Mac pasteboard untouched); counters reconciled 1:1
+  (host `1 sets received, 1 announces sent, 2 suppressed` ↔ client
+  `clipboard ON (1 sent/1 recv)`); PLUS the consent discovery — Mutter
+  replays the STANDING selection owner right after EnableClipboard, so
+  the leaf drains that replay window (`1 baseline replay(s) skipped`)
+  and a pre-seeded pre-session secret provably never crossed while a
+  fresh mid-session copy still announced (24 B); negotiated-off
+  re-proven at the same build (bare host: `clipboard no`, client
+  `clipboard unnegotiated`, markers both ways did NOT cross, host
+  `leaf none, 0/0/0`). The consent toggle mid-session flip stays
+  covered by CL-15's Mac-local in-vivo tests (live re-run not repeated).
+  **QUEUED FOLLOW-UP — DONE as HS-19 (`73e5cdb`):** MutterClipboardLeaf
+  drives the RemoteDesktop-session selection API directly
+  (org.gnome.Mutter.RemoteDesktop — the sanctioned portal wraps exactly
+  this interface but auto-denies headless Start, the CP-5 verdict; own
+  bus connection + own RD session, mirroring injector-vs-capture
+  separation), SelectionOwnerChanged/SelectionRead inbound,
+  SetSelection + SelectionTransfer/SelectionWrite serial dance
+  outbound, fd state machines O_NONBLOCK on the video-loop tick, NO new
+  C shim (CDBus already decodes fd replies); ClipboardTextMime pins the
+  text-flavor policy cross-platform; `--clipboard` default-OFF gates
+  both the leaf AND key 10. Host suite 115 → **117/117 Mac AND pup**.
+  Live findings inked in the leaf's comments: mime-types rides a
+  struct-wrapped variant `((as))`, and the EnableClipboard baseline
+  replay above. Deferred (non-live, named): a
   mid-session "stop announcing" courtesy message is a v2 wire item
   (today a disabled end just ignores inbound announces); images/files/
   rich flavors and the chan ≥ 8 feature-channel carriage are the
