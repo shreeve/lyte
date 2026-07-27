@@ -364,16 +364,11 @@ final class ConnectionModel {
         }
         lines.append(mode)
 
-        let input = core.input.snapshotStats()
-        if input.eventsSent > 0 {
-            var line = "input \(input.eventsSent) sent"
-            if let p50 = input.inputToInject.p50,
-               let p99 = input.inputToInject.p99 {
-                line += String(format: " · inject p50/p99 %.1f/%.1f ms",
-                               Double(p50) / 1000, Double(p99) / 1000)
-            }
-            lines.append(line)
-        }
+        // Unconditional, capture verdict included (CL-16): "input 0
+        // sent · capture INACTIVE" is the line that tells a client
+        // failure from a host one.
+        lines.append(core.input.snapshotStats()
+            .overlayLine(captureActive: lyteInputCapture != nil))
 
         let audio = core.audio.snapshotStats()
         if audio.depacketizer.datagramsIngested > 0 {

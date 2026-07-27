@@ -17,13 +17,19 @@
 // host) and key auto-repeats (repeat policy is host-side-deferred per
 // the HS-13 row — a repeat without its release would wedge a key).
 //
-// CL-13, the control-strip seam: local monitors swallow every mouse
-// event in the window, which would make any overlaid SwiftUI control
-// unclickable. So mouse events HIT-TEST first — an event landing on a
-// view that is not the video surface (the strip's buttons, the stats
-// overlay) passes through to AppKit untouched, video-player style:
-// interacting with the controls never drives the host cursor. Every
-// mouse move (captured or passed) also pings `onActivity`, the strip's
+// CL-13, the control-strip seam (rule corrected by CL-16): local
+// monitors swallow every mouse event in the window, which would make
+// any overlaid SwiftUI control unclickable. So mouse events HIT-TEST
+// first — an event is CAPTURED (sent to the host) iff the hit view is
+// the video layer view or a descendant of it; ANY other hit means
+// SwiftUI content claimed the point and the event returns to AppKit
+// untouched, video-player style. Probe-established (the CL-16
+// investigation): NSHostingView.hitTest answers with the HOSTING view
+// — an ANCESTOR of the video view — whenever SwiftUI content like the
+// strip's buttons owns the point, so an ancestor hit must PASS
+// THROUGH (CL-13 shipped it captured, which left every strip button
+// dead and leaked strip clicks to the host cursor). Every mouse move
+// (captured or passed) also pings `onActivity`, the strip's
 // auto-reveal clock.
 
 import AppKit
@@ -94,13 +100,15 @@ final class LyteInputCapture {
                       width: fitted.width, height: fitted.height)
     }
 
-    /// True when the event lands on something OTHER than the video
-    /// surface — an overlaid control owns it, the monitor must not.
-    /// "Other" means genuinely disjoint from the video view: a hit on
-    /// the video, on a descendant, or on an ANCESTOR container (a
-    /// SwiftUI hosting wrapper claiming the point on the video's
-    /// behalf) all stay captured.
-    private func landsOnOverlay(_ event: NSEvent) -> Bool {
+    /// True when the event lands on the video surface: the hit view is
+    /// the video layer view or a DESCENDANT of it — the only two shapes
+    /// hitTest produces for a point the video genuinely owns. Anything
+    /// else — nil, a sibling, or an ANCESTOR (NSHostingView answering
+    /// for its own SwiftUI content: the strip's buttons, probe-proven)
+    /// — means an overlay claimed the point and the event must return
+    /// to AppKit. CL-13's version also kept ancestor hits captured,
+    /// which made every strip button dead (the CL-16 regression).
+    private func landsOnVideoSurface(_ event: NSEvent) -> Bool {
         guard let view, let content = event.window?.contentView else {
             return false
         }
@@ -109,22 +117,18 @@ final class LyteInputCapture {
         guard let hit = content.hitTest(point) else { return false }
         var walk: NSView? = hit
         while let candidate = walk {
-            if candidate === view { return false }
+            if candidate === view { return true }
             walk = candidate.superview
         }
-        walk = view
-        while let candidate = walk {
-            if candidate === hit { return false }
-            walk = candidate.superview
-        }
-        return true
+        return false
     }
 
     private func handleMouse(_ event: NSEvent) -> NSEvent? {
         guard let view, let window, event.window === window, window.isKeyWindow else { return event }
         onActivity()
-        // The strip/stats overlays keep their own events (CL-13).
-        if landsOnOverlay(event) { return event }
+        // Only the video surface feeds the host; overlays keep their
+        // own events (CL-13, rule corrected by CL-16).
+        guard landsOnVideoSurface(event) else { return event }
 
         switch event.type {
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:

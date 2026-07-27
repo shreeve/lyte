@@ -112,6 +112,25 @@ public struct InputSenderStats: Sendable {
     public var hostReceiveToInject = LatencyHistogram()
 }
 
+extension InputSenderStats {
+    /// The stream overlay's input line (CL-16). Rendered
+    /// UNCONDITIONALLY while a session runs: "input 0 sent" is the
+    /// datum that discriminates a client-capture failure from a
+    /// host-side one, so hiding the line at zero hid exactly the
+    /// interesting case. Carries the capture-install verdict for the
+    /// same reason — a failed install must be distinguishable from a
+    /// dead host.
+    public func overlayLine(captureActive: Bool) -> String {
+        var line = "input \(eventsSent) sent"
+        if let p50 = inputToInject.p50, let p99 = inputToInject.p99 {
+            line += String(format: " · inject p50/p99 %.1f/%.1f ms",
+                           Double(p50) / 1000, Double(p99) / 1000)
+        }
+        line += captureActive ? " · capture active" : " · capture INACTIVE"
+        return line
+    }
+}
+
 public final class InputSender: @unchecked Sendable {
     /// Pending books are bounded: input with injection off (the host's
     /// `--input off`) never echoes, and an unmatched book must not grow

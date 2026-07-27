@@ -14,9 +14,13 @@ struct StreamContainer: View {
 
     @State private var stripVisible = false
     @State private var stripHovered = false
-    /// Monotonic reveal generation: each mouse activity bumps it, and
-    /// only the newest scheduled fade may hide the strip.
-    @State private var revealGeneration = 0
+    /// The reveal clock's mutable interior (CL-16): a REFERENCE type,
+    /// so pointer-rate activity lands as one timestamp write inside
+    /// the box — the @State reference never changes, per-event traffic
+    /// invalidates no view and spawns no task. CL-13's version bumped
+    /// an observed @State counter and started a fresh 2 s Task per
+    /// mouse event.
+    @State private var fade = StripFadeBooks()
 
     private static let idleFadeSeconds: Double = 2
 
@@ -51,7 +55,10 @@ struct StreamContainer: View {
                         .padding(.bottom, 16)
                         .onHover { hovering in
                             stripHovered = hovering
-                            if !hovering { scheduleFade() }
+                            // Hover exit restamps the clock so the
+                            // fade lands ~2 s after the pointer
+                            // leaves, matching mouse activity.
+                            if !hovering { fade.lastActivity = .now }
                         }
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
@@ -63,25 +70,53 @@ struct StreamContainer: View {
             .onContinuousHover { phase in
                 if case .active = phase { reveal() }
             }
+            .onDisappear {
+                fade.task?.cancel()
+                fade.task = nil
+            }
             .animation(.easeInOut(duration: 0.3), value: model.lyteFrozen)
             .animation(.easeInOut(duration: 0.25), value: stripVisible)
             .animation(.easeInOut(duration: 0.2), value: model.statsVisible)
     }
 
+    /// Reveal on activity; fade ~2 s after the LAST activity, never
+    /// while hovered (the CL-13 behavior, kept). One STANDING task
+    /// owns the countdown: it sleeps to the current deadline and, on
+    /// waking early (activity moved it), just sleeps again — activity
+    /// itself only writes a timestamp.
     private func reveal() {
-        stripVisible = true
-        scheduleFade()
-    }
-
-    private func scheduleFade() {
-        revealGeneration += 1
-        let generation = revealGeneration
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(Self.idleFadeSeconds))
-            guard generation == revealGeneration, !stripHovered else { return }
-            stripVisible = false
+        fade.lastActivity = .now
+        if !stripVisible { stripVisible = true }
+        guard fade.task == nil else { return }
+        fade.task = Task { @MainActor in
+            defer { fade.task = nil }
+            while !Task.isCancelled {
+                let deadline = fade.lastActivity
+                    + .seconds(Self.idleFadeSeconds)
+                if ContinuousClock.now < deadline {
+                    try? await Task.sleep(until: deadline, clock: .continuous)
+                    continue
+                }
+                // Deadline reached. Hover pins the strip: idle a fade
+                // interval and look again (hover exit restamps the
+                // clock, so the fade still lands ~2 s after it).
+                if stripHovered {
+                    try? await Task.sleep(for: .seconds(Self.idleFadeSeconds))
+                    continue
+                }
+                stripVisible = false
+                return
+            }
         }
     }
+}
+
+/// StreamContainer's fade books — deliberately a plain class (not
+/// Observable): mutations must be invisible to SwiftUI. Main-actor
+/// confined by its only owner.
+private final class StripFadeBooks {
+    var lastActivity: ContinuousClock.Instant = .now
+    var task: Task<Void, Never>?
 }
 
 /// The strip itself: one translucent capsule of session verbs. Order:

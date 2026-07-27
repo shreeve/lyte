@@ -11,31 +11,54 @@ struct StreamView: NSViewRepresentable {
     /// the video, so SwiftUI hover tracking alone would go blind).
     var onMouseActivity: @MainActor () -> Void = {}
 
+    /// The window attaches sometime AFTER makeNSView returns — usually
+    /// one runloop turn, but not dependably. CL-13 shipped a one-shot
+    /// async that gave up silently when it wasn't, leaving a session
+    /// with no input path and no evidence (CL-16's latent finding):
+    /// bounded retry instead, verdict logged either way, and the stats
+    /// overlay renders capture active/INACTIVE live off
+    /// `model.lyteInputCapture`.
+    private static let installRetryInterval: Duration = .milliseconds(50)
+    private static let installMaxAttempts = 80   // ~4 s bound
+
     func makeNSView(context: Context) -> VideoLayerView {
         let view = VideoLayerView(layer: model.displayLayer)
+        let model = model
         let onMouseActivity = onMouseActivity
-        DispatchQueue.main.async {
-            guard let window = view.window else { return }
-
-            // CL-9: evdev-speaking capture onto the session's reliable
-            // input stream. Coordinates map through the aspect-fit rect
-            // into the host's stream space, learned from the first
-            // delivered sample (model.lyteVideoSize).
-            guard let lyte = model.lyteSession, model.lyteInputCapture == nil else { return }
-            window.collectionBehavior.insert(.fullScreenPrimary)
-            window.makeFirstResponder(view)
-            let capture = LyteInputCapture(
-                view: view, window: window,
-                videoSize: { model.lyteVideoSize },
-                send: { body in
-                    // A refused send is a teardown race — the
-                    // session is already ending; never crash the
-                    // event monitor over it.
-                    _ = try? lyte.sendInput(body)
-                },
-                onActivity: onMouseActivity)
-            capture.start()
-            model.lyteInputCapture = capture
+        Task { @MainActor in
+            for attempt in 1...Self.installMaxAttempts {
+                // Session already gone (teardown race) or another
+                // make pass installed first: nothing left to do.
+                guard let lyte = model.lyteSession,
+                      model.lyteInputCapture == nil else { return }
+                if let window = view.window {
+                    // CL-9: evdev-speaking capture onto the session's
+                    // reliable input stream. Coordinates map through
+                    // the aspect-fit rect into the host's stream
+                    // space, learned from the first delivered sample
+                    // (model.lyteVideoSize).
+                    window.collectionBehavior.insert(.fullScreenPrimary)
+                    window.makeFirstResponder(view)
+                    let capture = LyteInputCapture(
+                        view: view, window: window,
+                        videoSize: { model.lyteVideoSize },
+                        send: { body in
+                            // A refused send is a teardown race — the
+                            // session is already ending; never crash
+                            // the event monitor over it.
+                            _ = try? lyte.sendInput(body)
+                        },
+                        onActivity: onMouseActivity)
+                    capture.start()
+                    model.lyteInputCapture = capture
+                    NSLog("lyte input capture: installed (attempt \(attempt))")
+                    return
+                }
+                try? await Task.sleep(for: Self.installRetryInterval)
+            }
+            NSLog("lyte input capture: GAVE UP — no window after "
+                + "\(Self.installMaxAttempts) attempts; input cannot reach "
+                + "the host (stats overlay reads capture INACTIVE)")
         }
         return view
     }
