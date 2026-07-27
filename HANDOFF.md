@@ -82,15 +82,36 @@ and the read-only UX investigator. To resume safely:
 4. **HANDOFF.md commits are the coordinator's job**; workers edit only
    their own wave entries and leave the file uncommitted.
 
-**OPEN INVESTIGATION — trip-era app UX complaints (owner-reported):**
-"can't control the host from the client, duplicated audio, a little
-choppy." A read-only investigator is on it: prime suspect for input is
-CL-13's input-capture/hit-testing rework (`d11dba3`); duplicated audio
-is likely the hostAudible default (the HS-18 mute + per-host default is
-the remedy, but unverified live); choppiness maps to the named VBV/DSCP
-debts. NOTE the owner's 01:30 repro attempt was invalid — no lyte-host
-was running on pup at that moment. Findings → fix worker before H3
-feature slices proceed.
+**UX INVESTIGATION CONCLUDED (2026-07-27 ~01:37) — fix worker dispatched.**
+The owner's trip-era complaints ("can't control the host, duplicated
+audio, choppy") diagnosed via code audit + an AppKit hit-test probe:
+- **CONFIRMED REGRESSION (CL-13, `d11dba3`)**: `landsOnOverlay`'s
+  ancestor-stays-captured walk (`Sources/Lyte/LyteInputCapture.swift`
+  ~115–120) misclassifies strip points — `NSHostingView.hitTest` returns
+  the hosting view (an ancestor of `VideoLayerView`) for SwiftUI content,
+  so **all control-strip buttons are dead and strip clicks leak to the
+  host cursor**. Video-surface capture itself is INTACT (probe-proven).
+  Workaround until fixed: drive everything from the Actions MENU
+  (⌘⇧M/⌘⇧H/⌘⌥I/⌘D) — the menu bypasses capture and works.
+- **"Can't control" root cause**: host-side/operational (no lyte-host
+  running at the 01:30 attempt; a dead host leaves a frozen frame ~30 s
+  = "no control"). The client input path has no regression; client
+  bundle is HEAD-equivalent (mtime = CL-15c minute).
+- **"Duplicated audio" fully explained**: pup still runs the pre-HS-18
+  demolition binary — never declares key 9, so host-mute can't exist
+  anywhere. Remedy arrives with the catch-up deploy + menu ⌘⇧H (or the
+  per-host "start muted" default).
+- **"Choppy" inventory**: encoder-VBV debt first (floor-pinned tail the
+  H2 gate itself observed), hotel-Wi-Fi clumping (video has no jitter
+  buffer by design), repair-lane DSCP debt, WAKE-ratchet pulsing, and
+  minor CL-13 per-mouse-event reveal churn.
+- Latent (pre-CL-13): one-shot capture install in `StreamView` with no
+  retry/telemetry; stats hides the input line while eventsSent==0 —
+  exactly the datum that discriminates capture-vs-host failure.
+Fix list (ordered, sized) is in the investigator's report; items 1–4
+(hit-test fix, unconditional stats input line, capture-install
+hardening, reveal coalescing) are the dispatched fix worker's scope —
+root territory only. VBV + DSCP stay H3 debt rungs.
 
 **Landed since the trip started (all Mac-local, wave entries below):**
 CL-13's follow-through books (`ab4f905`), the codec promotion
