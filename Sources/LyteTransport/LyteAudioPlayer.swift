@@ -14,6 +14,18 @@
 // duration: scheduling jitter on the pump shows up as ring-depth
 // ripple well inside one packet, and the `urgent` flag turns a
 // nearly-dry ring into immediate PLC instead of zeros.
+//
+// CL-17 grows the pump two ways. (1) Decoded PCM rides through the
+// WSOLA AudioAccelerator whenever the receiver's pull decision says
+// the pipe is overfull — backlog drains by pitch-preserving time
+// compression (≤5% fast) instead of parking as latency or dying in a
+// content skip; a nearly-dry ring flushes the accelerator's gather
+// first (zeros are strictly worse than 20 ms of uncompressed audio).
+// (2) An output-device change (AirPods in/out, default-device switch)
+// posts AVAudioEngineConfigurationChange and STOPS the engine — the
+// handler rebuilds the source node and restarts on a serial queue
+// while the ring (and everything upstream) survives untouched, so
+// playback resumes where the old device left it; counted.
 
 import AVFoundation
 import Dispatch
@@ -38,6 +50,13 @@ public struct LyteAudioPlayerStats: Sendable {
     public var lastWindowRmsDbfs: Double = -Double.infinity
     public var lastWindowZeroCrossingHz: Double = 0
     public var decodeFailures: UInt64 = 0
+    /// CL-17: the WSOLA accelerate books (ops, frames excised, ms
+    /// drained).
+    public var accelerate = AudioAccelerateStats()
+    /// CL-17: output-device changes survived (engine rebuilt, ring
+    /// kept) and rebuilds that never came back (device refused).
+    public var routeChangesHandled: UInt64 = 0
+    public var routeChangeFailures: UInt64 = 0
 
     public init() {}
 }
@@ -134,10 +153,21 @@ public final class LyteAudioPlayer: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode?
     private var pump: DispatchSourceTimer?
+    /// Engine-graph mutations (start/stop/route rebuild) exclude each
+    /// other here — the session's audio queue and the route queue both
+    /// arrive at the same engine.
+    private let engineLock = NSLock()
+    private let routeQueue = DispatchQueue(
+        label: "lyte.audio.route", qos: .userInitiated)
+    private var configChangeObserver: (any NSObjectProtocol)?
+    private let routeChangesHandled = Atomic<UInt64>(0)
+    private let routeChangeFailures = Atomic<UInt64>(0)
 
     // Pump-side state (pump thread only).
+    private let accelerator = AudioAccelerator()
     private var packetsFed: UInt64 = 0
     private var plcPacketsFed: UInt64 = 0
+    private var accelSnapshot = AudioAccelerateStats()
     private var windowSumSquares: Double = 0
     private var windowFrames = 0
     private var windowCrossings = 0
@@ -160,29 +190,33 @@ public final class LyteAudioPlayer: @unchecked Sendable {
     /// weather (video must stream even when audio cannot; the host's
     /// rule, mirrored).
     public func start() throws {
-        guard sourceNode == nil else { return }
-        // The STANDARD format (float32 deinterleaved) — the only
-        // format a mixer input accepts; the ring deinterleaves in the
-        // render callback.
-        guard let format = AVAudioFormat(
-            standardFormatWithSampleRate: Double(AudioWire.sampleRate),
-            channels: AVAudioChannelCount(AudioWire.channels)
-        ) else {
-            throw OpusStreamDecoderError.createFailed(-1)
+        engineLock.lock()
+        do {
+            guard sourceNode == nil else {
+                engineLock.unlock()
+                return
+            }
+            let node = try makeSourceNode()
+            engine.attach(node)
+            engine.connect(node, to: engine.mainMixerNode,
+                           format: node.outputFormat(forBus: 0))
+            engine.mainMixerNode.outputVolume = muted ? 0 : 1
+            try engine.start()
+            sourceNode = node
+        } catch {
+            engineLock.unlock()
+            throw error
         }
+        engineLock.unlock()
 
-        let ring = ring
-        let node = AVAudioSourceNode(format: format) {
-            _, _, frameCount, audioBufferList -> OSStatus in
-            let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
-            ring.render(into: buffers, wanted: Int(frameCount))
-            return noErr
+        // The route seam (CL-17): a default-output switch stops the
+        // engine and posts this — rebuild off the notification thread.
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine, queue: nil
+        ) { [weak self] _ in
+            self?.handleOutputConfigurationChange()
         }
-        engine.attach(node)
-        engine.connect(node, to: engine.mainMixerNode, format: format)
-        engine.mainMixerNode.outputVolume = muted ? 0 : 1
-        try engine.start()
-        sourceNode = node
 
         let timer = DispatchSource.makeTimerSource(
             queue: .global(qos: .userInteractive))
@@ -196,11 +230,79 @@ public final class LyteAudioPlayer: @unchecked Sendable {
     public func stop() {
         pump?.cancel()
         pump = nil
+        if let observer = configChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configChangeObserver = nil
+        }
+        engineLock.lock()
         if let node = sourceNode {
             engine.stop()
             engine.detach(node)
             sourceNode = nil
         }
+        engineLock.unlock()
+    }
+
+    /// The notification target, public so a diagnostic (or the gate)
+    /// can drive the exact production path. Serialized on the route
+    /// queue; safe against a racing stop().
+    public func handleOutputConfigurationChange() {
+        routeQueue.async { [weak self] in self?.rebuildOutput() }
+    }
+
+    /// The standard format (float32 deinterleaved) — the only format
+    /// a mixer input accepts; the ring deinterleaves in the render
+    /// callback. The closure captures the RING, never self.
+    private func makeSourceNode() throws -> AVAudioSourceNode {
+        guard let format = AVAudioFormat(
+            standardFormatWithSampleRate: Double(AudioWire.sampleRate),
+            channels: AVAudioChannelCount(AudioWire.channels)
+        ) else {
+            throw OpusStreamDecoderError.createFailed(-1)
+        }
+        let ring = ring
+        return AVAudioSourceNode(format: format) {
+            _, _, frameCount, audioBufferList -> OSStatus in
+            let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
+            ring.render(into: buffers, wanted: Int(frameCount))
+            return noErr
+        }
+    }
+
+    /// The route-change recovery: tear the graph down to the ring and
+    /// put it back on the NEW device. The ring is never touched —
+    /// whatever was queued toward the old speaker plays on the new
+    /// one; upstream (jitter buffer, accelerator, pump) never notices.
+    private func rebuildOutput() {
+        engineLock.lock()
+        defer { engineLock.unlock() }
+        guard let old = sourceNode else { return }   // stopped already
+        engine.stop()
+        engine.detach(old)
+        sourceNode = nil
+        guard let node = try? makeSourceNode() else {
+            _ = routeChangeFailures.add(1, ordering: .relaxed)
+            return
+        }
+        engine.attach(node)
+        engine.connect(node, to: engine.mainMixerNode,
+                       format: node.outputFormat(forBus: 0))
+        engine.mainMixerNode.outputVolume = muted ? 0 : 1
+        for attempt in 0..<5 {
+            do {
+                try engine.start()
+                sourceNode = node
+                _ = routeChangesHandled.add(1, ordering: .relaxed)
+                return
+            } catch {
+                if attempt < 4 { usleep(100_000) }   // HAL settles
+            }
+        }
+        // The new device refused every attempt; counted loudly. The
+        // node stays attached so the NEXT configuration change (or a
+        // fresh device) walks this same path again.
+        sourceNode = node
+        _ = routeChangeFailures.add(1, ordering: .relaxed)
     }
 
     public func snapshotStats() -> LyteAudioPlayerStats {
@@ -211,10 +313,15 @@ public final class LyteAudioPlayer: @unchecked Sendable {
         statsLock.lock()
         out.packetsFed = packetsFed
         out.plcPacketsFed = plcPacketsFed
+        out.accelerate = accelSnapshot
         out.lastWindowRmsDbfs = lastWindowRmsDbfs
         out.lastWindowZeroCrossingHz = lastWindowZeroCrossingHz
         statsLock.unlock()
         out.decodeFailures = decoder.decodeFailures
+        out.routeChangesHandled =
+            routeChangesHandled.load(ordering: .relaxed)
+        out.routeChangeFailures =
+            routeChangeFailures.load(ordering: .relaxed)
         return out
     }
 
@@ -224,21 +331,36 @@ public final class LyteAudioPlayer: @unchecked Sendable {
         let capacity = AudioPcmRing.capacityFrames
         let packetFrames = AudioWire.samplesPerPacket
         while true {
-            let depth = ring.depthFrames
+            var ringDepth = ring.depthFrames
+            // A nearly-dry ring outranks the accelerator's gather:
+            // 20 ms of uncompressed audio beats any amount of zeros.
+            if ringDepth < packetFrames, accelerator.pendingFrames > 0 {
+                let flushed = accelerator.flush()
+                if !flushed.isEmpty {
+                    ring.write(flushed)
+                    noteSignal(flushed)
+                }
+                ringDepth = ring.depthFrames
+            }
             let target = max(receiver.targetDepthPackets, 1) * packetFrames
-            guard depth < target, depth + packetFrames <= capacity else {
+            guard ringDepth < target,
+                  ringDepth + packetFrames <= capacity else {
+                snapshotAccelBooks()
                 return
             }
-            let urgent = depth < packetFrames
-            let pipelineMicros = UInt64(depth) * 1_000_000
+            let urgent = ringDepth < packetFrames
+            // The pipe the receiver judges: ring + the gather — both
+            // sit between the jitter buffer and the speaker.
+            let heldFrames = ringDepth + accelerator.pendingFrames
+            let pipelineMicros = UInt64(heldFrames) * 1_000_000
                 / UInt64(AudioWire.sampleRate)
             let now = ClientTimestamp(
                 microseconds: DispatchTime.now().uptimeNanoseconds / 1_000)
-            let pcm: [Float]
-            switch receiver.pull(
+            let decision = receiver.pullDecision(
                 now: now, urgent: urgent,
-                renderPipelineMicroseconds: pipelineMicros
-            ) {
+                renderPipelineMicroseconds: pipelineMicros)
+            let pcm: [Float]
+            switch decision.verdict {
             case .packet(let packet):
                 pcm = decoder.decode(packet.bytes)
                 statsLock.lock()
@@ -251,11 +373,24 @@ public final class LyteAudioPlayer: @unchecked Sendable {
                 plcPacketsFed += 1
                 statsLock.unlock()
             case .starved:
+                snapshotAccelBooks()
                 return
             }
-            ring.write(pcm)
-            noteSignal(pcm)
+            let out = accelerator.process(
+                pcm, accelerate: decision.accelerate)
+            if !out.isEmpty {
+                ring.write(out)
+                noteSignal(out)
+            }
         }
+    }
+
+    /// The accelerator is pump-thread-only; its books cross to
+    /// snapshotStats through the stats lock.
+    private func snapshotAccelBooks() {
+        statsLock.lock()
+        accelSnapshot = accelerator.stats
+        statsLock.unlock()
     }
 
     /// Decoded-signal evidence, rolled once per second of fed audio:

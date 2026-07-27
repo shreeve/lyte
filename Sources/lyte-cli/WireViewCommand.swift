@@ -41,6 +41,8 @@ struct WireView: AsyncParsableCommand {
     var duration: Int = 0
     @Flag(name: .long, help: "CL-11: decode + play the audio channel (AVAudioEngine) and print the audio stats line")
     var audio = false
+    @Option(name: .long, help: "CL-17 forcing surface: prime the adaptive jitter target at N packets (~N×5 ms of initial depth) — the percentile controller then decays and WSOLA accelerate drains the surplus; the audio line's depth/accel books are the evidence. 0 = off")
+    var audioPrime: Int = 0
     @Option(name: .long, help: "CL-13: the session-start posture for the HOST's own speakers — audible|muted. Needs capability key 9 on both ends; against a no-key-9 host the ask is refused client-side (that refusal is the evidence)")
     var hostAudio: String?
     @Flag(name: .long, help: "CL-15: share the clipboard (UTF-8 text, both ways) — real NSPasteboard glue behind the sans-IO core's gates. Needs capability key 10 on both ends; against a no-key-10 host every local copy reports notNegotiated (that refusal is the evidence). Payloads are never printed — byte counts only")
@@ -66,6 +68,9 @@ struct WireView: AsyncParsableCommand {
         if let hostAudio, Self.parseHostAudio(hostAudio) == nil {
             throw ValidationError("--host-audio wants audible|muted, got '\(hostAudio)'")
         }
+        if audioPrime != 0, !(5...60).contains(audioPrime) {
+            throw ValidationError("--audio-prime wants 5…60 packets (25…300 ms), got \(audioPrime)")
+        }
     }
 
     static func parseHostAudio(_ word: String) -> HostAudioRoutingMode? {
@@ -79,6 +84,15 @@ struct WireView: AsyncParsableCommand {
     @MainActor
     func run() async throws {
         setvbuf(stdout, nil, _IOLBF, 0)   // line-buffer even when piped
+
+        // HS-20's morning finding, fixed at the source: App Nap
+        // throttled a locked-screen wire-view into garbage evidence
+        // (recenter storms, nonsense delivery samples). A live media
+        // session is latency-critical for exactly as long as it runs.
+        let activity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .latencyCritical],
+            reason: "wire-view live session")
+        defer { ProcessInfo.processInfo.endActivity(activity) }
 
         let crypto: any TransportCrypto
         if insecure {
@@ -154,6 +168,15 @@ struct WireView: AsyncParsableCommand {
         // Debug shell posture: audio is explicit opt-in here (the app
         // plays it by default) so unattended gate runs stay silent.
         sessionConfig.audioPlayback = audio
+        // CL-17: the prime forces the drain scenario — the buffer
+        // waits for N packets before playout begins, so the pipe
+        // opens ~N×5 ms deep and the controller + accelerate earn
+        // their way back down on the live wire.
+        if audioPrime > 0 {
+            sessionConfig.core.audioJitter.initialTargetPackets = audioPrime
+            sessionConfig.core.audioJitter.maxTargetPackets = max(
+                sessionConfig.core.audioJitter.maxTargetPackets, audioPrime)
+        }
         // CL-13: the session-start posture ask (one 0x18 after the
         // host's first 0x19, when they differ) — tonight's catch-up
         // worker drives the whole negotiation live without the app.
@@ -607,6 +630,10 @@ final class WireViewStatsPrinter: Sendable {
             line += " (target \(j.targetPackets))"
             line += String(format: ", jitter σ %.0f µs",
                            j.interArrivalStdDevMicroseconds)
+            if j.skewPartsPerMillion != 0 {
+                line += String(format: ", skew %+.0f ppm",
+                               j.skewPartsPerMillion)
+            }
             // Above-floor: capture→render minus the session's fastest
             // observed path (graph-clock epoch is unmappable; the
             // beacon min-RTT bounds the floor itself).
@@ -616,6 +643,20 @@ final class WireViewStatsPrinter: Sendable {
                 line += ", ring \(p.ringDepthFrames * 1000 / 48_000) ms"
                 if p.underrunFrames > 0 {
                     line += ", underrun \(p.underrunFrames) frames"
+                }
+                // The CL-17 books: WSOLA ops + backlog drained, the
+                // engage count, and route-change survivals.
+                if p.accelerate.removalOps > 0
+                    || audio.accelerateEngagements > 0 {
+                    line += ", accel \(p.accelerate.removalOps) ops "
+                        + "(−\(p.accelerate.millisecondsDrained) ms, "
+                        + "\(audio.accelerateEngagements) engage)"
+                }
+                if p.routeChangesHandled + p.routeChangeFailures > 0 {
+                    line += ", route \(p.routeChangesHandled) rebuilt"
+                    if p.routeChangeFailures > 0 {
+                        line += "/\(p.routeChangeFailures) failed"
+                    }
                 }
                 if p.lastWindowRmsDbfs > -120 {
                     line += String(format: ", sig %.1f dBFS ~%.0f Hz",

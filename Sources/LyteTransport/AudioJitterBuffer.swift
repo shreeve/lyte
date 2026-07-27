@@ -6,9 +6,12 @@
 // granularity), conceals true gaps through Opus PLC (§5.4 — the
 // verdict the caller turns into a decode(nil)), and never grows
 // unbounded (late packets are dropped, a post-stall burst re-centers).
-// WSOLA time-scale modification (§5.2) is deliberately NOT here — it
-// is the M7 receiver's seam-quality refinement; this buffer's
-// re-center is a counted content skip, honest and bounded.
+// WSOLA time-scale modification (§5.2) is deliberately NOT here — the
+// CL-17 AudioAccelerator lives on the pump's PCM side; this buffer
+// hands it the band between target and the hard cap (the re-center is
+// now the blunt tool past the cap and for number jumps only), and its
+// target computation detrends sender/receiver clock skew (§5.5) so a
+// slow drift reads as a rate to absorb, never as depth to cover.
 //
 // Pull model (how the production shell drives it): the render side
 // consumes a PCM ring at exactly the hardware rate; a pump thread
@@ -55,6 +58,15 @@ public struct AudioJitterConfig: Sendable {
     /// Arrival-skew window (packets) the target is computed over —
     /// 512 ≈ 2.6 s of history at the 5 ms cadence.
     public var deviationWindowPackets = 512
+    /// CL-17: packets of depth beyond target before the receiver's
+    /// pull decision engages WSOLA accelerate (hysteresis: engage at
+    /// target + this, disengage at target).
+    public var accelerateEngagePackets = 3
+    /// CL-17: the skew detrend's sanity clamp, ppm. Consumer crystals
+    /// sit under ~100 ppm; the clamp keeps a burst's step from ever
+    /// masquerading as skew (the inverse of the drift-as-depth error
+    /// the term exists to fix).
+    public var maxSkewPartsPerMillion = 500.0
 
     public init() {}
 
@@ -97,6 +109,11 @@ public struct AudioJitterStats: Sendable {
     public var targetPackets = 0
     /// Windowed standard deviation of inter-arrival time, µs.
     public var interArrivalStdDevMicroseconds: Double = 0
+    /// CL-17: the skew-window trend, ppm — the sender/receiver clock
+    /// skew as the arrival lattice sees it (positive = sender slow,
+    /// depth shrinks; negative = sender fast, depth grows — the drain
+    /// the accelerate side absorbs). Clamped, 0 until ≥128 samples.
+    public var skewPartsPerMillion: Double = 0
 
     public init() {}
 }
@@ -124,9 +141,16 @@ public final class AudioJitterBuffer {
     // target stuck at the floor). Windowed differences also cancel
     // sender/receiver clock drift (≤0.2 ms across the window at
     // consumer-crystal ppm).
-    private var skewAnchor: (number: UInt32, arrivalMicroseconds: UInt64)?
+    /// Signed anchor arrival: the wrap-fold below shifts it by the
+    /// window minimum, which a sender-fast drift makes NEGATIVE — a
+    /// small test-clock origin underflowed the old unsigned form
+    /// (production uptime stamps never could; fixed at CL-17).
+    private var skewAnchor: (number: UInt32, arrivalMicroseconds: Int64)?
     private var skewWindow: [Int64] = []
     private var skewCursor = 0
+    /// The detrend's output (CL-17): the window's least-squares slope
+    /// read as clock skew, clamped to config bounds.
+    private var estimatedSkewPpm: Double = 0
     // Pairwise inter-arrival deviation, kept for the σ/histogram
     // diagnostics the stats line reports.
     private var lastArrival: (number: UInt32, atMicroseconds: UInt64)?
@@ -230,6 +254,7 @@ public final class AudioJitterBuffer {
         var out = stats
         out.targetPackets = targetPackets
         out.interArrivalStdDevMicroseconds = windowStdDev()
+        out.skewPartsPerMillion = estimatedSkewPpm
         return out
     }
 
@@ -254,12 +279,12 @@ public final class AudioJitterBuffer {
         }
     }
 
-    /// Overgrowth discipline: a burst that leaves more than
-    /// target + slack queued is a stall's backlog — skip forward so
-    /// equilibrium latency returns to the target (counted content
-    /// skip; M7's accelerate replaces the skip with compression).
+    /// Overgrowth discipline, CL-17 posture: backlog between target
+    /// and the hard cap belongs to WSOLA accelerate (time compression,
+    /// no content lost); only past the cap does the skip fire — a
+    /// blackout's burst must still never become unbounded latency.
     private func recenterIfOvergrown() {
-        let limit = targetPackets + config.slackPackets
+        let limit = config.hardCapPackets
         guard pending.count > limit else { return }
         guard let newest = pending.keys.max(by: { a, b in
             Int32(bitPattern: a &- b) < 0
@@ -308,11 +333,11 @@ public final class AudioJitterBuffer {
         lastArrival = (packet.number, arrivalMicroseconds)
 
         // The controller's sample: lattice skew against the anchor.
-        let anchor = skewAnchor ?? (packet.number, arrivalMicroseconds)
+        let anchor = skewAnchor
+            ?? (packet.number, Int64(arrivalMicroseconds))
         if skewAnchor == nil { skewAnchor = anchor }
         let numberDelta = Int32(bitPattern: packet.number &- anchor.number)
-        let skew = Int64(bitPattern:
-            arrivalMicroseconds &- anchor.arrivalMicroseconds)
+        let skew = Int64(arrivalMicroseconds) - anchor.arrivalMicroseconds
             - Int64(numberDelta) * config.packetDurationMicroseconds
         if skewWindow.count < config.deviationWindowPackets {
             skewWindow.append(skew)
@@ -324,7 +349,7 @@ public final class AudioJitterBuffer {
             // cursor wraps, fold the window's min back into the anchor.
             if skewCursor == 0, let low = skewWindow.min() {
                 skewAnchor = (anchor.number,
-                              UInt64(Int64(anchor.arrivalMicroseconds) + low))
+                              anchor.arrivalMicroseconds + low)
                 for index in skewWindow.indices { skewWindow[index] -= low }
             }
         }
@@ -335,18 +360,67 @@ public final class AudioJitterBuffer {
     /// granularity): the target covers the skew window's p99 − min
     /// spread plus one packet of headroom, clamped to config bounds.
     /// Only ever applied via natural drain/growth — no queue jumps.
+    /// CL-17 adds the M7 §5.5 skew term: the window's least-squares
+    /// trend is clock DRIFT, not jitter — it is estimated (clamped to
+    /// consumer-crystal plausibility so a burst's step can't fake it),
+    /// exposed, and removed before the spread is measured, so a slow
+    /// drift reads as a rate for accelerate to absorb, never as depth
+    /// the target must cover.
     private func retarget() {
         guard skewWindow.count >= 16 else { return }
-        let sorted = skewWindow.sorted()
-        let p99 = sorted[Int(Double(sorted.count - 1) * 0.99)]
-        let spread = p99 - sorted[0]
+        let samples = chronologicalSkewWindow()
+
+        var slopePerPacket = 0.0
+        if samples.count >= 128 {
+            // Least squares over (index, skew): index steps are one
+            // packet interval apart on the arrival lattice.
+            let n = Double(samples.count)
+            let meanX = (n - 1) / 2
+            var meanY = 0.0
+            for value in samples { meanY += Double(value) }
+            meanY /= n
+            var num = 0.0
+            var den = 0.0
+            for (index, value) in samples.enumerated() {
+                let dx = Double(index) - meanX
+                num += dx * (Double(value) - meanY)
+                den += dx * dx
+            }
+            let clamp = config.maxSkewPartsPerMillion * 1e-6
+                * Double(config.packetDurationMicroseconds)
+            slopePerPacket = min(max(num / den, -clamp), clamp)
+        }
+        estimatedSkewPpm = slopePerPacket
+            / Double(config.packetDurationMicroseconds) * 1e6
+
+        var residuals = [Double](repeating: 0, count: samples.count)
+        for (index, value) in samples.enumerated() {
+            residuals[index] = Double(value) - slopePerPacket * Double(index)
+        }
+        residuals.sort()
+        let p99 = residuals[Int(Double(residuals.count - 1) * 0.99)]
+        let spread = Int64((p99 - residuals[0]).rounded(.up))
         let needed = 1 + Int((spread
             + config.packetDurationMicroseconds - 1)
             / config.packetDurationMicroseconds)
+        // The target moves only once playout runs: the configured
+        // initial target owns the priming phase (CL-17 — a primed
+        // start must actually open that deep; the controller then
+        // earns its way down and accelerate drains the surplus).
+        guard started else { return }
         targetPackets = min(
             max(needed, config.minTargetPackets),
             config.maxTargetPackets)
         stats.targetPackets = targetPackets
+    }
+
+    /// The skew ring in arrival order (oldest first) — the detrend's
+    /// x-axis must be time, and the ring wraps.
+    private func chronologicalSkewWindow() -> [Int64] {
+        guard skewWindow.count == config.deviationWindowPackets,
+              skewCursor != 0 else { return skewWindow }
+        return Array(skewWindow[skewCursor...])
+            + Array(skewWindow[..<skewCursor])
     }
 
     private func windowStdDev() -> Double {
