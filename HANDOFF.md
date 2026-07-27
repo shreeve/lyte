@@ -12,8 +12,8 @@ EXIT demolition is DONE (commits `2018f6d` → `d5de430` → `9e1cd27`): the
 client's GameStream stack (LyteKit/CEnet/CNanors, ~14.3k lines) is deleted,
 Sunshine is uninstalled from pup, and both ends speak exactly one protocol —
 Lyte-UDP. H1 closed earlier the same day (`docs/20260722-h1-joint-gate.md`).
-Suites at HEAD: Wire **402/402**, Host **117/117** (Mac AND pup, grown
-through HS-19), root **122/122** on
+Suites at HEAD: Wire **402/402**, Host **127/127** (Mac AND pup, grown
+through HS-20), root **122/122** on
 Mac (grown through the CL-12 follow-through `ab4f905`, the codec
 promotion, and CL-15 clipboard; entries in the wave block) (pup legs for
 everything landed since the H2 exit are deferred — being drained NOW,
@@ -103,10 +103,11 @@ audio, choppy") diagnosed via code audit + an AppKit hit-test probe:
   demolition binary — never declares key 9, so host-mute can't exist
   anywhere. Remedy arrives with the catch-up deploy + menu ⌘⇧H (or the
   per-host "start muted" default).
-- **"Choppy" inventory**: encoder-VBV debt first (floor-pinned tail the
-  H2 gate itself observed), hotel-Wi-Fi clumping (video has no jitter
-  buffer by design), repair-lane DSCP debt, WAKE-ratchet pulsing, and
-  minor CL-13 per-mouse-event reveal churn.
+- **"Choppy" inventory**: ~~encoder-VBV debt~~ and ~~repair-lane DSCP
+  debt~~ — **both retired by HS-20 (`084e826`)**, wave entry below;
+  remaining: hotel-Wi-Fi clumping (video has no jitter buffer by
+  design), WAKE-ratchet pulsing, and minor CL-13 per-mouse-event
+  reveal churn.
 - Latent (pre-CL-13): one-shot capture install in `StreamView` with no
   retry/telemetry; stats hides the input line while eventsSent==0 —
   exactly the datum that discriminates capture-vs-host failure.
@@ -131,7 +132,8 @@ reveal on activity, fade ~2 s after the last, never while hovered.
 Root suite 122 → **124/124 Mac**; build-cli.sh + make-app.sh release
 green. STILL OPEN: the CL-13 human leg (l) — hand-test the strip
 (reveal/fade feel, buttons CLICK now, no leakage to the host cursor,
-stats legibility) at or past `73ccd46`. VBV + DSCP stay H3 debt rungs.
+stats legibility) at or past `73ccd46`. ~~VBV + DSCP stay H3 debt
+rungs~~ — paid as HS-20 (`084e826`).
 
 **Landed since the trip started (all Mac-local, wave entries below):**
 CL-13's follow-through books (`ab4f905`), the codec promotion
@@ -154,18 +156,23 @@ multi-monitor at H4) that gate the H3 feature ladder.
    copy/paste is real: `lyte-host --clipboard` + the app/wire-view
    client half.
 4. **H3 ladder** per `docs/20260723-051223-lyte-h3-plan.md` — debt
-   rungs first (VBV, repair-lane DSCP, cookie dial, M7 audio), then
-   F-1 clipboard completion → F-2 bulk channel → F-3/F-4 file drop →
-   F-5 roaming; gated on the §0 owner decisions.
+   rungs first (~~VBV, repair-lane DSCP~~ — **DONE as HS-20
+   (`084e826`)**; cookie dial, M7 audio remain), then F-1 clipboard
+   completion → F-2 bulk channel → F-3/F-4 file drop → F-5 roaming;
+   gated on the §0 owner decisions.
 
 **Standing deferred seams** (named at their slices, none blocking):
 reconnect/takeover UX (needs a host session-busy story), HS-9 cookie-mode
 enforcement in HandshakeGate (W8 landed; the client leg is live in every
-dial), encoder VBV consuming frameByteCeiling (the floor-pinning dynamic
-the H2 gate named), repair-lane DSCP for videoTail repairs, M7 audio items
-(WSOLA accelerate, skew term, device-change handling), app human-at-glass
-legs (Keychain zero-UI dial + stream-window visual from a real GUI
-session).
+dial), M7 audio items (WSOLA accelerate, skew term, device-change
+handling), app human-at-glass legs (Keychain zero-UI dial +
+stream-window visual from a real GUI session). New from HS-20 (details
+in its wave entry): estimator overuse-fall anchor wants windowed-max
+robustness against garbage delivery samples (HS-16 territory), and the
+deep-floor rung below ~1.5 Mbps needs resolution/fps shedding — the
+QP-51 damage-frame minimum (~10.3 kB at 2048×1280) can't fit the
+500 kbps floor's frame ceiling, VBV or no VBV. (Encoder VBV and
+repair-lane DSCP themselves: retired, HS-20 `084e826`.)
 
 ## The two joint-gate verdicts
 
@@ -1153,6 +1160,110 @@ its entry at the marker at the end of this block.*
   design doc's named non-goals; the glue's accepted race (a user copy
   landing inside the same 200 ms poll window as an inbound apply is
   superseded at the OS clipboard) is documented in PasteboardSync.
+
+- **HS-20 — Wave 0's two named choppiness owners: encoder VBV consumes
+  frameByteCeiling, repairs ride the protected lane** (`084e826`,
+  Host/ only; Wire and root untouched at `69f1812`). **D-1 (encoder
+  VBV):** the B2 dynamic the H2 gate named — rate drops the encoder
+  never heard about, ceiling-sized frames pouring into a squeezed
+  pacer, the post-release tail cycling 500→~900 kbps — gets its
+  reconfigure path. `EncoderVbvPolicy` (HostWire, sans-IO): the
+  ceiling C alone derives the posture (vbv = 8×C bits, rate = 8×C/B
+  over the HS-6 budget window, `RateEstimator.frameBudgetNS` now the
+  shared definition), always CAPS against the opening recipe (CBR
+  keeps min=avg=max; capped-CQ keeps its nil average — pushing one
+  would flip the rc mode — and, opening with NO VBV at all, gets the
+  ceiling imposed at first look); hysteresis is the least-thrash
+  ruling written down — 10% deadband on every effective param, a
+  tightening applies before the very next frame (the estimator's own
+  ≥15%/500 ms downshift limiter bounds the cadence), a loosening
+  additionally waits 500 ms. The leaf grows `lyte_hevc_enc_set_rate`
+  (assignment IS the API: FFmpeg's nvenc wrapper folds changed rc
+  fields into one NvEncReconfigureEncoder on the next send_frame — no
+  IDR, no reset); SessionWire arms/polls the policy under its lock and
+  the Sink applies the directive beside the forced-IDR poll; 5 s
+  frame-size percentile books print next to the live ceiling + pacer
+  rate. Gate: Host 117 → **127/127 Mac AND pup** (8 EncoderVbvGateTests
+  legs — budget-window pins, CBR-stricter-stays-silent, capped-CQ
+  first-look imposition, exact 5 Mbps mapping incl. the min=avg=max
+  CBR contract, floor never degenerate, deadband, falls-now/rises-wait,
+  recovery-returns-exactly-to-baseline — plus 2 WireTosTests).
+  **LIVE D-1 PASSED (pup :41155, 155 s wire-view --audio, moves every
+  250 ms, 6 Mbit video-scoped netem squeeze t+50→t+110 — the B2
+  shape):** clean phase at the 20,000 kbps ceiling (frames p50
+  7,700 B / p95 9,934 B under ceiling 59,937 B); the squeeze fall to
+  5,682 kbps carried `encoder: rate reconfigure — avg 4,862 kbps, vbv
+  15,195 B` and every later move tracked (**89 directives = 89
+  applied, 0 rejected**); deep falls PROVE emission obeys the ceiling
+  — at pacer 1,803 kbps/ceiling 3,072 B the next window read p50
+  2,257 / p95 4,345 B, and at pacer ~1,273 kbps/ceiling ~1,300 B the
+  window read **p50 623 B / p95 1,265 B at 50 fps** (vs 7.7 kB clean);
+  post-release the tail is NOT floor-pinned: climbed back to the FULL
+  20,000 kbps by run end (final window p50 7,429 B at ceiling
+  59,937 B), FEC regime ended clean, **3 IDR requests and 5 NACK asks
+  in the whole 155 s**, 131,464 dg / 0 unseal failures, client
+  9,303/9,310 frames decoded. Even a late-run garbage-anchored crash
+  to 810 kbps (encoder followed to 368 kbps/1,152 B) recovered to the
+  ceiling within ~30 s — the B2 signature (falls stick, tail pins) is
+  retired at squeeze rates. **D-2 (repair-lane DSCP):** `WireTos`
+  (HostCore) is now the ONE product marking policy — SessionWire and
+  lyte-pace-check both apply it, Mac-pinned — and `videoTail` (the
+  NACK-repair class) moves to **CS6/0xC0** beside control and audio,
+  per the Lyte-UDP decision's per-packet-DSCP ruling and the priority
+  ladder's "retransmits above refinement" intent; the pacer's strict
+  priority still holds repairs below fresh video at OUR NIC (R-G8
+  untouched — audio max queue delay 5.3 ms in the loss leg), the mark
+  protects them at bottleneck queues we don't own. **LIVE D-2 (pup
+  :41157, 85 s wire-view --audio, 15% video-scoped loss t+20→t+60 —
+  leg p's shape), books side by side:** baseline leg p (41139, at
+  `71d936b`): 58 asks/253 shards 1:1; **85 repairs sent = 28 accepted
+  + 48 late + 0 dup + 0 sup + 9 netem-eaten** (10.6% ≈ the loss rate);
+  15 frames healed; 81 IDR asks; 33 rung-3 falls to the FLOOR, regime
+  ended lossy. HS-20 leg R: 53 asks/201 shards 1:1 both ends; host
+  honored 20 → **54 repair datagrams = 21 accepted + 38 late + 0 dup +
+  0 sup + 0 netem-eaten** — every repair crossed the impaired band
+  (P(0 of 54 at 15%) ≈ 1.6·10⁻⁴: the 0xC0 escape past the dsfield-0xA0
+  filter is conclusive), 9 frames healed by repair; **21 IDR asks ↔ 21
+  seen**; estimator ended AT the 20,000 kbps ceiling with regime CLEAN
+  (13 loss + 10 rung-3 falls mid-window, recovered); 58,231 dg / 0
+  unseal failures (1,861 video datagrams died in the band — the
+  impairment was real). HONEST READING: accepted-of-sent moved 33%→39%
+  and eaten→0, but the LATE fraction did not fall (38/54 vs 48/85) —
+  at ~18 ms SRTT under pure loss (no queue to die in) lateness is the
+  client's rule-4 expiry racing the NACK round trip, not a lane
+  problem; the queue-death scenario the marking chiefly protects
+  (CL-12's squeeze: 17 of 54) now barely GENERATES repairs at all,
+  because D-1 keeps frames conforming (V2's whole 60 s squeeze: 5
+  asks, 0 honored). The marking's session-level win rode both fixes:
+  81 → 21 IDR asks, floor-pinned-lossy → ceiling-clean. Client-book
+  quirk for root territory: the answer buckets named 59 of 54 sent
+  (over-named by 5; leg p under-named 76 of 85) — accounting, not
+  wire. **Hygiene:** netem applied/removed per window, `noqueue`
+  verified after each; secrets shas byte-identical start AND end
+  (72860390…cfed / 8dc1f88a…55fd / dadf9a66…37cf); no strays, 41155/
+  41157 free; owner relaunch loop restored FRESH (60 iterations, nv571
+  shim) and awaiting handshake on 41151 at the HS-20 build. Logs:
+  pup /tmp/hs20-host{V,V2,R}.log, Mac /tmp/hs20-client{V,V2,R}.log +
+  /tmp/hs20-netem{V2,R}.log. **MORNING EYES (three findings):**
+  (1) the Mac was screen-LOCKED all night — Keychain refused the
+  client identity (OSStatus −25320), so the live legs ran `--host-key`
+  with throwaway client statics (hosts not --require-paired; pairing
+  store untouched), AND App Nap throttled wire-view into garbage
+  evidence (first attempt: audio recentered 6,183×, delivery samples
+  nonsense, estimator crashed to the floor pre-netem) until
+  `NSAppSleepDisabled` was set for the run (deleted after — consider
+  pinning it for scripted runs); (2) estimator anchor fragility,
+  HS-16 territory: overuse falls anchor to the LAST raw delivery
+  sample, and one garbage short-train sent a clean 20 Mbps path to
+  810 kbps (V2) / straight to the 500 kbps floor (V1) in a single
+  step — recovery is fast now that frames conform, but the anchor
+  wants windowed-max robustness; (3) the QP-floor vs rate-floor
+  mismatch, seen when the first attempt's degraded client pinned the
+  loop at 1.5 fps: damage-accumulated 2048×1280 frames bottom out
+  ~10.3 kB at nvenc's QP ceiling — no VBV can fit that into the
+  500 kbps floor's 1,152 B ceiling, so the deep-floor rung eventually
+  needs resolution/fps shedding (the H3 ladder's territory; VBV owns
+  everything above ~1.5 Mbps and proved it).
 
 ---
 
