@@ -425,6 +425,146 @@ final class RateEstimatorGateTests: XCTestCase {
             + "measurably delivered)")
     }
 
+    // MARK: Leg 3b — HS-21: the overuse anchor is robust to one garbage
+    // delivery sample (the HS-20 live finding: a lone garbage short-train
+    // sample anchored an overuse fall and cratered a clean 20 Mbps path to
+    // 810 kbps in a single step). The anchor is now the MEDIAN of the last
+    // few raw samples, so the freshest sample cannot decide the fall alone.
+
+    /// A clean 20 Mbps path, overuse fires on a report whose ONLY
+    /// delivery sample is garbage-low — the fall must anchor to the
+    /// clean median the window still holds, never to the lone outlier.
+    func testOveruseAnchorRejectsOneGarbageDeliverySample() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        // Ten clean 20 Mbps reports: the standing rate stays at the
+        // ceiling and the raw-delivery window fills with 20 Mbps
+        // samples (and the delay baseline is established).
+        for _ in 0..<10 {
+            now += 25 * Self.ms
+            clientMicros += 25_000
+            let samples = train(
+                estimator, seqStart: seq, count: 12,
+                sendStartNS: now - Self.ms,
+                bottleneckBitsPerSecond: 20e6
+            )
+            seq += 12
+            _ = estimator.ingest(
+                report(samples: samples, clientMicros: clientMicros),
+                now: now, inRecovery: false
+            )
+        }
+        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
+
+        // Arm: one inflated report, still a clean 20 Mbps train.
+        now += 25 * Self.ms; clientMicros += 25_000
+        let arm = train(
+            estimator, seqStart: seq, count: 12,
+            sendStartNS: now - Self.ms,
+            bottleneckBitsPerSecond: 20e6, extraDelayMicros: 40_000
+        )
+        seq += 12
+        XCTAssertFalse(estimator.ingest(
+            report(samples: arm, clientMicros: clientMicros),
+            now: now, inRecovery: false
+        ).overuse)
+
+        // Fire: the second inflated report — and its ONLY delivery
+        // sample is a garbage short train that measures ~2 Mbps. The
+        // one-deep anchor of old would fall to 0.85 × 2 Mbps = 1.7 Mbps
+        // (a crater); the median of the last three raw samples is still
+        // 20 Mbps (garbage outvoted 2-to-1), so the fall lands at
+        // 0.85 × 20 Mbps.
+        now += 25 * Self.ms; clientMicros += 25_000
+        let garbage = train(
+            estimator, seqStart: seq, count: 4,
+            sendStartNS: now - Self.ms,
+            bottleneckBitsPerSecond: 2e6, extraDelayMicros: 40_000
+        )
+        seq += 4
+        let verdict = estimator.ingest(
+            report(samples: garbage, clientMicros: clientMicros),
+            now: now, inRecovery: false
+        )
+        XCTAssertTrue(verdict.overuse)
+        XCTAssertEqual(verdict.change, .overuse)
+        let newRate = verdict.newRateBitsPerSecond
+        XCTAssertNotNil(newRate)
+        XCTAssertGreaterThan(Double(newRate!), 10e6,
+            "one garbage delivery sample must not crater the rate — "
+            + "the anchor is the clean median, not the lone outlier "
+            + "(got \(newRate! / 1_000) kbps)")
+        XCTAssertEqual(Double(newRate!), 20e6 * 0.85, accuracy: 1.0e6,
+            "the fall anchors to the 20 Mbps the median still measures")
+
+        print("HS-21 gate (garbage anchor): lone 2 Mbps sample at the "
+            + "overuse fire → \(newRate! / 1_000) kbps (median-anchored "
+            + "to 20 Mbps; the one-deep anchor would have cratered to "
+            + "~1,700 kbps)")
+    }
+
+    /// The regression pin: a GENUINE sustained overuse — delivery truly
+    /// drops to ~5 Mbps for the whole run — still falls fast and anchors
+    /// to the measured delivery, exactly as the one-deep anchor did. By
+    /// the time overuse fires (two consecutive inflated reports), two
+    /// recent 5 Mbps samples already dominate the 3-median.
+    func testGenuineSustainedOveruseStillFallsToMeasuredDelivery() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        func beat(mbps: Double, inflate: Bool) -> RateEstimatorVerdict {
+            now += 25 * Self.ms; clientMicros += 25_000
+            let samples = train(
+                estimator, seqStart: seq, count: 12,
+                sendStartNS: now - Self.ms,
+                bottleneckBitsPerSecond: mbps * 1e6,
+                extraDelayMicros: inflate ? 40_000 : 0
+            )
+            seq += 12
+            return estimator.ingest(
+                report(samples: samples, clientMicros: clientMicros),
+                now: now, inRecovery: false
+            )
+        }
+
+        // Baseline clean at the full 20 Mbps.
+        for _ in 0..<10 { _ = beat(mbps: 20, inflate: false) }
+        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
+
+        // The squeeze: delivery genuinely drops to ~5 Mbps and the
+        // queue inflates. Arm, then fire.
+        XCTAssertFalse(beat(mbps: 5, inflate: true).overuse)
+        let first = beat(mbps: 5, inflate: true)
+        XCTAssertTrue(first.overuse)
+        XCTAssertEqual(first.change, .overuse)
+        XCTAssertNotNil(first.newRateBitsPerSecond)
+        XCTAssertEqual(Double(first.newRateBitsPerSecond!), 5e6 * 0.85,
+            accuracy: 1.0e6,
+            "genuine sustained overuse still anchors to the 5 Mbps the "
+            + "path measurably delivers — the fast fall is intact")
+
+        // Sustained: it keeps falling under continued overuse (the
+        // 500 ms limiter bounds cadence), never blunted by the median.
+        var falls = 1
+        for _ in 0..<80 where beat(mbps: 5, inflate: true)
+            .newRateBitsPerSecond != nil { falls += 1 }
+        XCTAssertGreaterThanOrEqual(falls, 2,
+            "sustained overuse falls repeatedly")
+        XCTAssertLessThanOrEqual(estimator.rateBitsPerSecond,
+            Int(5e6 * 0.85) + 500_000,
+            "the rate tracks the measured delivery down under the squeeze")
+
+        print("HS-21 gate (genuine fall): sustained 5 Mbps squeeze → "
+            + "first fall \(first.newRateBitsPerSecond! / 1_000) kbps "
+            + "(0.85 × measured), \(falls) falls total, settled at "
+            + "\(estimator.rateBitsPerSecond / 1_000) kbps")
+    }
+
     // MARK: Leg 4 — the machine's numbers
 
     func testIdrPacingNumbers() {

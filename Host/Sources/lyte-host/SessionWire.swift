@@ -73,6 +73,9 @@ final class SessionWire {
     /// HS-9: non-nil = only these client statics may complete message 1
     /// (the paired set, loaded from the keystore by --require-paired).
     private let allowedClientStatics: [[UInt8]]?
+    /// HS-21: the pre-handshake flood throttle + require-cookie dial
+    /// config, threaded into every session this shell makes.
+    private let handshakeGateConfig: HandshakeGate.Config
     /// HS-9: non-nil = pairing mode. The service consumes the pairing
     /// CTRL types off the reliable stream; replies ride sendReliable.
     private let pairing: PairingResponderService?
@@ -165,6 +168,8 @@ final class SessionWire {
 
     var counters: VideoChannelCounters { session.videoCounters }
     var sessionCounters: SessionCounters { session.counters }
+    /// HS-21: whether the flood dial currently demands a retry cookie.
+    var handshakeCookieMode: Bool { session?.handshakeCookieMode ?? false }
     var clock: SessionClockStats { session.clock }
     var pacerTelemetry: PacerTelemetry { session.pacerTelemetry }
     var lifecycleState: SessionState? { session?.lifecycleState }
@@ -193,6 +198,7 @@ final class SessionWire {
         rateBitsPerSecond: Int,
         capabilities: Capabilities = .wireDefault,
         allowedClientStatics: [[UInt8]]? = nil,
+        handshakeGateConfig: HandshakeGate.Config = HandshakeGate.Config(),
         pairing: PairingResponderService? = nil,
         onPairingEvent: @escaping (PairingResponderService.Event) -> Void
             = { _ in }
@@ -203,6 +209,7 @@ final class SessionWire {
         self.rateBitsPerSecond = rateBitsPerSecond
         self.capabilities = capabilities
         self.allowedClientStatics = allowedClientStatics
+        self.handshakeGateConfig = handshakeGateConfig
         self.pairing = pairing
         self.onPairingEvent = onPairingEvent
 
@@ -258,6 +265,7 @@ final class SessionWire {
                 crypto: crypto,
                 rateBitsPerSecond: rateBitsPerSecond,
                 allowedClientStaticPublicKeys: allowedClientStatics,
+                handshakeGate: handshakeGateConfig,
                 capabilities: capabilities
             ),
             clientTuple: clientTuple,
@@ -310,7 +318,14 @@ final class SessionWire {
                         if case .handshakeCompleted = event { established = true }
                     }
                 }
-                try flushOutbox() // message 2 + the session-start beacon
+                // A pre-establishment pump is what lets HS-21's 0x13
+                // RetryChallenge (enqueued into the pacer by
+                // Session.receive under flood) actually leave the box:
+                // msg 2 escapes later via the streaming service loop's
+                // pump, but a challenge answers a flood that never
+                // establishes, so awaitClient must drain the pacer here.
+                if session != nil { session.pump(now: monotonicNS()) }
+                try flushOutbox() // challenges, message 2, session-start beacon
             } catch {
                 lock.unlock()
                 throw error
@@ -813,10 +828,25 @@ final class SessionWire {
                     print("path: rebind connect failed: \(errString(err))")
                 }
             }
+        case .handshakeCookieModeChanged(let requireCookie):
+            // HS-21: the observable dial. Loud on purpose — this is the
+            // live evidence the flip happened and cleared.
+            print(requireCookie
+                ? "handshake: FLOOD — require-cookie mode ENGAGED "
+                    + "(msg1 rate crossed the enter threshold; "
+                    + "un-cookied msg1s now answered with 0x13, no Noise)"
+                : "handshake: pressure cleared — require-cookie mode "
+                    + "DISENGAGED (back to the token-bucket posture)")
+        case .handshakeChallenged:
+            // A flood would print per datagram; the final stats line
+            // carries the handshakeChallengesMinted count instead.
+            break
         case .dropped(.handshakeThrottled):
             // A flood would print per datagram; the final stats line
             // carries the handshakesThrottled count instead.
             break
+        case .dropped(.handshakeCookieInvalid):
+            break // counted; the final stats line carries the tally
         case .dropped(let reason):
             print("drop: \(reason)")
         case .sendFailed(let what):

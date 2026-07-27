@@ -72,6 +72,13 @@ struct Options {
     /// and capability key 10 is declared only when the leaf actually
     /// came up (the key-9/--no-audio precedent).
     var clipboard = false
+    /// HS-21: arm the W8 retry-cookie dial. Off = the pure HS-9
+    /// token-bucket posture (nil secret). On = a random cookie secret is
+    /// minted and require-cookie mode engages when the msg1 arrival rate
+    /// crosses the enter threshold, clearing at the exit threshold.
+    var requireCookie = false
+    var cookieEnter = 20
+    var cookieExit = 5
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
@@ -163,6 +170,20 @@ struct Options {
                 }
             case "--clipboard":
                 opts.clipboard = true
+            case "--require-cookie":
+                opts.requireCookie = true
+            case "--cookie-enter":
+                i += 1
+                guard i < args.count, let v = Int(args[i]), v >= 1 else {
+                    throw HostError("--cookie-enter needs a positive integer")
+                }
+                opts.cookieEnter = v
+            case "--cookie-exit":
+                i += 1
+                guard i < args.count, let v = Int(args[i]), v >= 0 else {
+                    throw HostError("--cookie-exit needs a non-negative integer")
+                }
+                opts.cookieExit = v
             case "--audio-bitrate-kbps":
                 i += 1
                 guard i < args.count, let v = Int32(args[i]), v > 0 else {
@@ -867,6 +888,24 @@ func run() throws {
             declared = declared.declaringClipboardText()
         }
 
+        // HS-21: arm the retry-cookie dial when asked. A random secret,
+        // process-scoped: the host both mints and verifies with it, and
+        // no cookie needs to survive a restart (an honest client re-dials
+        // with a fresh msg1, drawing a fresh challenge).
+        var gateConfig = HandshakeGate.Config()
+        if opts.requireCookie {
+            var secret = [UInt8](repeating: 0, count: RetryCookie.secretByteCount)
+            for i in secret.indices { secret[i] = UInt8.random(in: 0...255) }
+            gateConfig = HandshakeGate.Config(
+                cookieSecret: secret,
+                cookieEnterThreshold: opts.cookieEnter,
+                cookieExitThreshold: opts.cookieExit
+            )
+            print("handshake: W8 retry-cookie dial ARMED "
+                + "(require-cookie engages at \(opts.cookieEnter) msg1/s, "
+                + "clears at \(opts.cookieExit)/s)")
+        }
+
         let w = try SessionWire(
             listenPort: opts.wireListen,
             peer: opts.wireOut,
@@ -874,6 +913,7 @@ func run() throws {
             rateBitsPerSecond: Int(opts.wireRateMbps * 1_000_000),
             capabilities: declared,
             allowedClientStatics: allowed,
+            handshakeGateConfig: gateConfig,
             pairing: pairingService,
             onPairingEvent: handlePairingEvent
         )
@@ -1165,6 +1205,10 @@ func run() throws {
         \(s.idrRequests) IDR requests, \(s.unsealFailures) unseal failures, \
         \(s.feedbackDatagrams) feedback datagrams, \
         \(s.handshakesThrottled) msg1 throttled
+        handshake-flood: \(s.handshakeChallengesMinted) cookies minted \
+        (0x13), \(s.handshakeCookiesVerified) verified / \
+        \(s.handshakeCookiesRejected) rejected (0x14), require-cookie now \
+        \(wire.handshakeCookieMode ? "ON" : "off")
         lifecycle: \(s.modeTransitionsSent) mode transitions, \
         \(s.videoFramesSuppressed) frames suppressed (FROZEN/closed), \
         final state \(wire.lifecycleState.map { "\($0)" } ?? "—") \

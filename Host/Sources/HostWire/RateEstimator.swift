@@ -52,7 +52,17 @@
 //     - overuse (inflation > threshold on 2 consecutive reports) →
 //       rate = 0.85 × measured delivery rate (GCC's REMB shape: anchor
 //       the fall to what the path actually delivered), at most one
-//       downshift per 500 ms;
+//       downshift per 500 ms. The anchor is the MEDIAN of the last few
+//       raw delivery samples, not the single freshest one (HS-21):
+//       Wi-Fi aggregation coughs up the occasional lone garbage
+//       short-train sample, and anchoring a fall to one such sample
+//       craters a clean path in a single step (HS-20 live finding: one
+//       garbage sample took a 20 Mbps path to 810 kbps). A median over
+//       a short count-window rejects a lone outlier in either direction
+//       while still tracking a GENUINE sustained drop within a couple
+//       of reports — well inside the 500 ms fall limiter — so the
+//       fast-fall property the pillar needs on real overuse is intact
+//       and only the single-sample vulnerability dies;
 //     - loss over the rolling 1 s window, GCC's three-band law on the
 //       PRE-FEC missing counts the wire actually carries: < 2% clean
 //       (may rise), 2–10% HOLD (FEC's parity absorbs this band —
@@ -126,6 +136,15 @@ public struct RateEstimatorConfig: Sendable {
     /// Trains below this packet count are weighted ×0.5 in the max
     /// filter (short-train dispersion noise, resiliency §2.2).
     public var minTrainPackets: Int
+    /// How many of the most recent RAW delivery samples the overuse
+    /// fall takes its anchor median over (HS-21). Odd is preferable
+    /// (a clean middle). The default 3 is deliberate: overuse fires
+    /// on `overuseConsecutiveReports` (2) consecutive inflated reports,
+    /// so by fire time TWO recent samples already reflect a genuine
+    /// sustained drop and dominate a 3-median — the fall lands on
+    /// measured delivery exactly as the one-deep anchor did — while a
+    /// lone garbage sample stays outvoted 2-to-1 and cannot move it.
+    public var overuseAnchorSampleCount: Int
     /// Queuing-delay inflation that reads as overuse, µs.
     public var overuseThresholdMicroseconds: Int64
     /// Consecutive inflated reports before the overuse verdict fires.
@@ -179,6 +198,7 @@ public struct RateEstimatorConfig: Sendable {
         sampleWindowNS: UInt64 = 10_000_000_000,
         trainGapNS: UInt64 = 2_000_000,
         minTrainPackets: Int = 8,
+        overuseAnchorSampleCount: Int = 3,
         overuseThresholdMicroseconds: Int64 = 15_000,
         overuseConsecutiveReports: Int = 2,
         lossCleanThreshold: Double = 0.02,
@@ -205,6 +225,7 @@ public struct RateEstimatorConfig: Sendable {
         self.sampleWindowNS = sampleWindowNS
         self.trainGapNS = trainGapNS
         self.minTrainPackets = minTrainPackets
+        self.overuseAnchorSampleCount = max(overuseAnchorSampleCount, 1)
         self.overuseThresholdMicroseconds = overuseThresholdMicroseconds
         self.overuseConsecutiveReports = max(overuseConsecutiveReports, 1)
         self.lossCleanThreshold = lossCleanThreshold
@@ -332,10 +353,17 @@ public final class RateEstimator {
         var rate: Double
     }
     private var deliveryWindow: [DeliverySample] = []
-    /// The freshest raw (unweighted) delivery measurement — the
-    /// anchor for overuse falls and the stale estimate for RECOVERY.
+    /// The freshest raw (unweighted) delivery measurement — the stale
+    /// estimate for RECOVERY's halfStaleEstimate pacing.
     private var lastDeliveryRate: Double?
     private var lastDeliveryAt: UInt64?
+    /// The last `overuseAnchorSampleCount` raw (unweighted) delivery
+    /// measurements, FIFO — the overuse fall's anchor takes their
+    /// median so a lone garbage short-train sample cannot crater the
+    /// rate (HS-21). Raw, deliberately: this is the same measurement
+    /// `lastDeliveryRate` records, kept over a short window instead of
+    /// one-deep.
+    private var recentRawDeliveries: [Double] = []
 
     private struct DelaySample {
         var at: UInt64
@@ -542,6 +570,20 @@ public final class RateEstimator {
         min(max(rate, config.floorBitsPerSecond), config.ceilingBitsPerSecond)
     }
 
+    /// The overuse fall's anchor (HS-21): the median of the last few
+    /// raw delivery samples. Median, not max: a max would ignore a lone
+    /// LOW garbage sample but blunt a GENUINE sustained drop (the still
+    /// higher pre-drop samples would win the window until they age out);
+    /// a median rejects a lone outlier in either direction yet follows
+    /// the bulk the moment the majority of the window reflects the new
+    /// path. Nil before any delivery evidence (the caller falls back to
+    /// the standing rate then, as before).
+    private var overuseAnchorRate: Double? {
+        guard !recentRawDeliveries.isEmpty else { return nil }
+        let sorted = recentRawDeliveries.sorted()
+        return sorted[sorted.count / 2]
+    }
+
     private func expireWindows(now: UInt64) {
         deliveryWindow.removeAll {
             now &- $0.at > config.sampleWindowNS
@@ -701,6 +743,10 @@ public final class RateEstimator {
             let rate = Double(bytes) * 8 / spanSeconds
             lastDeliveryRate = rate
             lastDeliveryAt = now
+            recentRawDeliveries.append(rate)
+            if recentRawDeliveries.count > config.overuseAnchorSampleCount {
+                recentRawDeliveries.removeFirst()
+            }
             stats.deliverySamples += 1
             let weighted = train.count >= config.minTrainPackets
                 ? rate : rate * 0.5
@@ -775,8 +821,10 @@ public final class RateEstimator {
         if overuse, downshiftAllowed {
             // Fall to 0.85 × what the path measurably delivered — the
             // GCC overuse response, anchored to evidence, never to the
-            // configured rate alone.
-            let anchor = lastDeliveryRate.map(Int.init) ?? rateBitsPerSecond
+            // configured rate alone. The anchor is the MEDIAN of the
+            // recent raw samples (HS-21), not the single freshest: one
+            // garbage short-train sample must not decide the fall.
+            let anchor = overuseAnchorRate.map(Int.init) ?? rateBitsPerSecond
             rateBitsPerSecond = clamp(min(
                 Int(Double(anchor) * config.downshiftFactor),
                 Int(Double(rateBitsPerSecond) * config.downshiftFactor)

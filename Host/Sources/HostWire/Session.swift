@@ -166,6 +166,14 @@ public enum SessionEvent: Equatable, Sendable {
     /// The Noise handshake completed; the transport is live. The key is
     /// the client's authenticated static — the identity pairing checks.
     case handshakeCompleted(remoteStaticPublicKey: [UInt8])
+    /// HS-21: the host answered an un-cookied message 1 with a stateless
+    /// RetryChallenge (0x13) because require-cookie mode is engaged. No
+    /// Noise state was allocated — this is the bounded flood cost.
+    case handshakeChallenged
+    /// HS-21: require-cookie mode flipped. `true` = the msg1 arrival rate
+    /// crossed the enter threshold (flood detected — the host now demands
+    /// a cookie); `false` = pressure cleared past the exit threshold.
+    case handshakeCookieModeChanged(requireCookie: Bool)
     case beaconSent(beaconSeq: UInt32)
     /// One echo consumed: one raw offset/RTT sample recorded (filtering
     /// is CL-10's HostClockModel on the client; the host keeps the
@@ -334,6 +342,9 @@ public enum SessionDropReason: Equatable, Sendable {
     /// A message 1 beyond the HandshakeGate budget: dropped unread,
     /// before any Noise state was allocated (HS-9's flood posture).
     case handshakeThrottled
+    /// A RetryHandshake1 (0x14) whose cookie did not verify — a spoofer
+    /// or a stale/replayed cookie, dropped before any Noise (HS-21).
+    case handshakeCookieInvalid
     /// A chan-3 payload FeedbackReport.decode refused. Still counted as
     /// media-path evidence (an authenticated arrival is an arrival) but
     /// the estimator never sees it — HS-16 runs on parsed reports only.
@@ -393,6 +404,15 @@ public struct SessionCounters: Equatable, Sendable {
     public var rateChanges = 0
     /// Message 1s the HandshakeGate refused (HS-9's flood evidence).
     public var handshakesThrottled = 0
+    /// RetryChallenges (0x13) the host minted under flood (HS-21) — the
+    /// bounded-cost answer: one HMAC + a reply smaller than the request,
+    /// no Noise, no per-client state.
+    public var handshakeChallengesMinted = 0
+    /// RetryHandshake1s (0x14) whose cookie verified — the extra-round-
+    /// trip admits that got in while require-cookie mode stood.
+    public var handshakeCookiesVerified = 0
+    /// RetryHandshake1s whose cookie did NOT verify (spoof/replay).
+    public var handshakeCookiesRejected = 0
     /// Video frames the lifecycle machine refused to put on the wire
     /// (FROZEN's freezeDatagramSends, or a closed session).
     public var videoFramesSuppressed = 0
@@ -485,6 +505,13 @@ public final class Session {
 
     /// Message-1 admissions, consulted before any handshake allocation.
     private var handshakeGate: HandshakeGate
+    /// The last require-cookie posture observed, so a flip surfaces as
+    /// exactly one `.handshakeCookieModeChanged` (HS-21).
+    private var lastCookieMode = false
+
+    /// Whether the flood dial currently demands a retry cookie (HS-21) —
+    /// surfaced for the shell's live log.
+    public var handshakeCookieMode: Bool { handshakeGate.cookieMode }
 
     private var beaconSeq: UInt32 = 0
     private var nextBeaconAt: UInt64?
@@ -717,25 +744,74 @@ public final class Session {
                 events.append(.dropped(.notEstablished(envelope.channel.rawValue)))
                 return events
             }
-            guard envelope.channel == .ctrl,
-                  payload.first == CtrlMessageType.noiseHandshake1
-            else {
+            // Two admissible first words: a bare Noise message 1 (0x05)
+            // or a RetryHandshake1 (0x14) echoing a cookie the host
+            // minted under flood (HS-21/W8). Anything else is
+            // pre-establishment noise.
+            let presentedCookie: ArraySlice<UInt8>?
+            let message1: ArraySlice<UInt8>
+            switch payload.first {
+            case CtrlMessageType.noiseHandshake1:
+                presentedCookie = nil
+                message1 = payload.dropFirst()
+            case CtrlMessageType.retryHandshake1:
+                guard let resubmission = try? RetryHandshake1.decode(payload)
+                else {
+                    counters.dropped += 1
+                    events.append(.dropped(.malformedCtrl))
+                    return events
+                }
+                presentedCookie = resubmission.cookie[...]
+                message1 = resubmission.message1[...]
+            default:
                 counters.dropped += 1
                 events.append(.dropped(.notEstablished(envelope.channel.rawValue)))
                 return events
             }
-            guard handshakeGate.admit(now: now) else {
+
+            let admission = handshakeGate.admitMessage1(
+                presentedCookie: presentedCookie,
+                clientTuple: Self.cookieTuple(tuple),
+                message1: message1,
+                now: now
+            )
+            events += noteCookieModeTransition()
+            switch admission {
+            case .admit:
+                events += completeHandshake(
+                    message1: message1,
+                    hostStatic: hostStatic,
+                    now: now,
+                    hostMicroseconds: hostMicroseconds
+                )
+            case .challenge(let cookie):
+                counters.dropped += 1
+                counters.handshakeChallengesMinted += 1
+                // A stateless RetryChallenge (0x13) on the exact tuple the
+                // message 1 arrived from — no Noise, no session state.
+                do {
+                    try sendCtrl(
+                        body: try RetryChallenge(cookie: cookie).encode(),
+                        sealed: false,
+                        destination: tuple,
+                        now: now, hostMicroseconds: hostMicroseconds
+                    )
+                    events.append(.handshakeChallenged)
+                } catch {
+                    events.append(.sendFailed(String(describing: error)))
+                }
+            case .drop(.throttled):
                 counters.dropped += 1
                 counters.handshakesThrottled += 1
                 events.append(.dropped(.handshakeThrottled))
-                return events
+            case .drop(.cookieInvalid):
+                counters.dropped += 1
+                counters.handshakeCookiesRejected += 1
+                events.append(.dropped(.handshakeCookieInvalid))
             }
-            events += completeHandshake(
-                message1: payload.dropFirst(),
-                hostStatic: hostStatic,
-                now: now,
-                hostMicroseconds: hostMicroseconds
-            )
+            if presentedCookie != nil, case .admit = admission {
+                counters.handshakeCookiesVerified += 1
+            }
             return events
         }
 
@@ -1803,6 +1879,26 @@ public final class Session {
     public var repairStoreBytes: Int { channel.repairStoreBytes }
 
     // MARK: Handshake (responder)
+
+    /// The opaque bytes the retry cookie binds address ownership to
+    /// (HS-21): the client's source address ‖ port, the host's own
+    /// serialization. Only the host ever parses it (sans-IO: it is
+    /// opaque to the cookie crypto), and it stays inside RetryCookie's
+    /// 1…255-byte tuple bound — an "255.255.255.255:65535" is 21 bytes,
+    /// an IPv6 literal with a port comfortably under the ceiling.
+    static func cookieTuple(_ tuple: FourTuple) -> [UInt8] {
+        Array("\(tuple.remoteAddress):\(tuple.remotePort)".utf8)
+    }
+
+    /// Emits one `.handshakeCookieModeChanged` per genuine flip of the
+    /// require-cookie dial (HS-21). Called right after every
+    /// `admitMessage1`, whose flood-window update is what moves it.
+    private func noteCookieModeTransition() -> [SessionEvent] {
+        let mode = handshakeGate.cookieMode
+        guard mode != lastCookieMode else { return [] }
+        lastCookieMode = mode
+        return [.handshakeCookieModeChanged(requireCookie: mode)]
+    }
 
     private func completeHandshake(
         message1: ArraySlice<UInt8>,
