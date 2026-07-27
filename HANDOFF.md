@@ -13,9 +13,9 @@ client's GameStream stack (LyteKit/CEnet/CNanors, ~14.3k lines) is deleted,
 Sunshine is uninstalled from pup, and both ends speak exactly one protocol —
 Lyte-UDP. H1 closed earlier the same day (`docs/20260722-h1-joint-gate.md`).
 Suites at HEAD: Wire **402/402**, Host **136/136** (Mac AND pup, grown
-through HS-21), root **131/131** on
-Mac (grown through CL-16 and CL-17 — the M7 audio remainder, entry in
-the wave block) (pup legs for
+through HS-21), root **141/141** on
+Mac (grown through CL-18 — the strip-ergonomics + host-muted-default
+wave, entry in the wave block) (pup legs for
 everything landed since the H2 exit are deferred — being drained NOW,
 see below; the H2-exit state 372/104/104 was the last green on BOTH
 platforms); `build-cli.sh` + `make-app.sh` release green. A live post-demolition proof
@@ -134,6 +134,29 @@ green. STILL OPEN: the CL-13 human leg (l) — hand-test the strip
 (reveal/fade feel, buttons CLICK now, no leakage to the host cursor,
 stats legibility) at or past `73ccd46`. ~~VBV + DSCP stay H3 debt
 rungs~~ — paid as HS-20 (`084e826`).
+
+**CL-18 LANDED (`ae91be0`, root) — ⚠️ USER-VISIBLE DEFAULT FLIPPED:
+new sessions against a key-9 host now START WITH THE HOST MUTED**
+(the Sunshine/Moonlight posture — sound follows the viewer; the
+owner's direct ask after this morning's hand-test). A fresh config
+desires hostMuted, so one [0x18 0x02] leaves after the host's first
+0x19; the per-host "Start with Host Muted" preference is now the
+"start audible" OPT-OUT (nil/true → muted, explicit false → audible —
+migration by construction: CL-13's setters never wrote false, so
+stored prefs keep their meaning and only the unset default flips).
+Unnegotiated hosts unchanged (no 0x19, no ask — the host plays);
+wire-view stays neutral unless `--host-audio` says otherwise, so
+scripted runs keep their wire shape. The same slice reworked the
+strip's ergonomics off the hand-test feedback: dwell-to-reveal
+(~200 ms in a 90 pt edge zone — a Dock-bound flick reveals nothing),
+the fullscreen system-edge sliver stays macOS's, window-exit and
+edge-push hide instantly, a persisted bottom/top edge preference, a
+"Hide Control Strip" mode with the Actions menu as the full fallback,
+and unmistakably distinct mute buttons (HOST hifispeaker cabinet vs
+MAC headphones, captions + machine-naming tooltips/menu titles).
+Root suite 131 → **141/141**; both release builds green. The owner
+hand-test checklist is in the wave entry — it SUPERSEDES the CL-13
+leg-l list.
 
 **Landed since the trip started (all Mac-local, wave entries below):**
 CL-13's follow-through books (`ab4f905`), the codec promotion
@@ -1432,6 +1455,120 @@ its entry at the marker at the end of this block.*
   `--host-key` with throwaway client statics (pairing store
   untouched), and CoreAudio's HAL refuses I/O while the display
   sleeps — `caffeinate -diu` was required for every audio leg.
+
+- **CL-18 — strip ergonomics + host-muted-by-default** (`ae91be0`,
+  root only; Wire and Host untouched at `af83571`'s upstreams). The
+  owner's first real hand-test (the morning after CL-16 fixed the dead
+  buttons) filed two wounds: (a) the strip revealed on ANY mouse
+  motion and lived on the bottom edge, so aiming at the macOS Dock in
+  fullscreen meant fighting the strip; (b) the two mute buttons were
+  speaker-glyph twins — the owner muted the Mac meaning the host — and
+  sessions started with the host playing out loud, the opposite of the
+  Sunshine/Moonlight posture. **ERGONOMICS — the reveal is a verdict
+  now:** `StripRevealPolicy` (LyteUI, sans-IO, nanosecond clock
+  injected) replaces the CL-13 any-motion ping. The FEEL RULING,
+  written down: reveal is earned by ~200 ms of continuous pointer
+  presence (the middle of the owner-named 150–250 ms band) in a 90 pt
+  zone hugging the strip's edge — a Dock-bound flick transits the zone
+  in well under the dwell and reveals NOTHING; the stationary case
+  (enter, stop) completes via the deadline tick, because no more move
+  events is exactly what dwelling looks like. In fullscreen the last
+  6 pt at the real screen edge are the SYSTEM'S: presence there never
+  arms the dwell, and a push into it takes a visible strip down
+  instantly — the push IS the Dock/menu-bar summon (macOS routes
+  events to a summoned Dock regardless; this keeps the strip from
+  visually squatting where the Dock lands). Leaving the window bounds
+  (the windowed-mode Dock aim, below the window) hides instantly and
+  cancels any pending dwell. CL-16's fade books hold — ~2 s idle,
+  never while hovered, hover exit restamps — with one tightening:
+  only ZONE activity restamps; working out in the video lets the
+  strip fade away. Both the dwell (chosen over a pure geometric inset:
+  an inset alone still traps a pointer that PAUSES near the edge en
+  route; the dwell distinguishes intent by TIME, and the sliver keeps
+  the summon pixels sacred on top) and every number are pinned in the
+  new gate. **EDGE PREFERENCE:** app-wide `StripPreferences`
+  (UserDefaults: `controlStripEdge` bottom|top, default bottom as
+  shipped; garbage values fall back rather than wedge), togglable from
+  the strip's own arrow button AND an Actions-menu Picker (@AppStorage
+  both places — they cannot disagree); the reveal zone, the strip, its
+  slide-in transition, and the FROZEN pill + stats overlays (which
+  relocate to the opposite edge/corner) all follow it. **HIDDEN MODE:**
+  `controlStripHidden` ("Hide Control Strip", menu-checkable) makes
+  the policy inert — no reveal on hover, period; the Actions menu +
+  shortcuts (⌘⇧M/⌘⇧H/⌘⇧C/⌘⌥I/⌘D) remain the full surface. The
+  driver kept the CL-16 shape: the policy lives in a reference box
+  (pointer-rate events invalidate no view), one standing task sleeps
+  to `nextDeadline`, and only actual visibility flips touch @State;
+  `LyteInputCapture.onActivity` grew edge geometry (distances from
+  both edges + fullscreen), and the SwiftUI hover backup's `.ended`
+  is the window-exit signal (mouseExited is outside the monitor's
+  mask, so it fires even while the capture eats moves). **MUTE
+  DISTINCTION:** the host button wears the `hifispeaker.fill` cabinet
+  (a physical loudspeaker in the other room) with a tiny HOST caption;
+  the local button wears `headphones` with MAC; muted is the same
+  composed diagonal slash on both (SF Symbols ships no .slash variant
+  for either glyph — one visual language for "silenced", two
+  unmistakable machines). Tooltips name the machine ("Mute host
+  speakers (pup)…" / "Mute playback on this Mac…"), and the menu
+  retitled to match ("Mute Host Speakers" / "Mute Playback on This
+  Mac", shortcuts unchanged). **THE DEFAULT FLIP (user-visible):**
+  `LyteUdpSessionCoreConfig.desiredHostAudioRouting` now DEFAULTS to
+  `.hostMuted` — an unconfigured session against a key-9 host sends
+  exactly one [0x18 0x02] after the host's first 0x19. The per-host
+  preference became the "start audible" opt-out read through ONE
+  accessor (`PinnedHost.sessionStartHostAudioRouting`: nil/true →
+  muted, explicit false → audible); MIGRATION IS BY CONSTRUCTION —
+  CL-13's setters wrote only true-or-nil (false mapped to nil), so no
+  existing pinned_hosts.json carries a false: stored trues keep their
+  meaning verbatim, the freed false takes the opt-out meaning, and
+  only the unset default flips. The setters now write BOTH directions
+  explicitly (unchecking is an opt-out, not a reset); the
+  "Start … with Host Muted" toggles (Actions menu + host-row context
+  menu) read `!= false`, checked by default. Unnegotiated hosts:
+  UNCHANGED — the ask only fires on the host's first 0x19, which a
+  no-key-9 host never owes (no ask, host plays, nothing we can do);
+  the 0x19-confirmed-posture rendering (strip button + menu check)
+  is untouched. wire-view stays NEUTRAL unless `--host-audio` is
+  passed (the debug-shell posture, deliberately assigned nil over the
+  flipped default) so scripted gate runs keep their pre-CL-18 wire
+  shape. **Gate: root 131 → 141/141 Mac** — new `LyteUITests` target
+  (7 legs: transit-never-reveals, dwell moving/stationary/restarting,
+  sliver-never-arms + same-distance-windowed-arms + visible-yields,
+  window-exit hides + cancels, fade-anchors-to-zone-only +
+  hover-pins/restamps, hidden-mode inert both directions, prefs
+  round-trip + garbage fallback) + 3 CL-18 routing legs
+  (fresh-config → one [0x18 0x02] vs an audible key-9 host;
+  stored-audible opt-out quiet vs audible host AND one [0x18 0x01]
+  vs a muted host — both directions; the tri-state mapping/migration
+  pins incl. legacy-file decode and explicit-false JSON round-trip);
+  CL-13's flip-round-trip leg keeps its no-ask shape via an explicit
+  nil (the neutral posture is a deliberate fixture now, not the
+  default). build-cli.sh + make-app.sh release green. **THE OWNER
+  HAND-TEST CHECKLIST (supersedes CL-13 leg l):** (1) fullscreen,
+  flick to the Dock — strip must NOT appear en route, Dock summons,
+  clicks land on the Dock; (2) rest the pointer near the bottom edge
+  ~a beat — strip reveals; move up into the video — it fades ~2 s
+  later; (3) with the strip up, push into the very bottom edge — the
+  strip yields instantly; (4) the strip's arrow button / Actions →
+  Control Strip Position — strip jumps to the top edge, reveal zone
+  follows, survives an app relaunch; (5) Actions → Hide Control
+  Strip — no reveal anywhere, drive the session by menu + shortcuts;
+  (6) the two mute buttons — HOST cabinet vs MAC headphones, captions
+  and tooltips name the machine, ⌘⇧H flips pup's speakers and the
+  icon follows the 0x19; (7) fresh connect to pup (key-9 host) with
+  nothing configured — pup's speakers SILENT from the start, strip
+  HOST button shows muted; uncheck "Start with Host Muted" in the
+  host row / Actions menu — the NEXT connect starts audible; re-check
+  — muted again. Deferred (named): the hover backup path reports
+  isFullscreen=false (non-key windows are never the fullscreen front;
+  the sliver rule rides the capture path — revisit only if a real
+  session shows otherwise); the edge preference is app-wide by design
+  (ergonomics, not per-host trust — the pinned store carries consent,
+  not layout); strip v1 flat-capsule scope unchanged (CL-13's
+  deferred polish rows); the wire-view neutral posture means the
+  DEBUG shell never exercises the flipped default live — the app
+  connect path is the flip's only live surface, which is exactly
+  checklist item 7.
 
 ---
 
