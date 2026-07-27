@@ -58,6 +58,30 @@ while it runs). Leg (s), live end-to-end clipboard, stays open — blocked
 on the Linux portal clipboard leaf (queued follow-up, next worker after
 catch-up).
 
+**RESTART / RESUME PROTOCOL (if the session or workers are restarted
+mid-flight):** two workers may have died mid-task — the catch-up worker
+and the read-only UX investigator. To resume safely:
+1. **Hygiene first, always**: `ssh pup 'pgrep -a lyte-host'` and kill
+   strays; check netem is gone (`tc qdisc show` on pup — only default
+   qdiscs should exist); verify the three secrets in
+   `~/.config/lyte-host/` (noise_static.key, paired_clients,
+   portal_token) still exist.
+2. **Reconstruct catch-up progress from evidence, not memory**: read
+   the wave entries below — any leg already marked PASSED/FAILED with
+   an evidence line is done; any leg still reading DEFERRED-PENDING-HOST
+   remains. Check `git log` (Wire/Host fixes the worker may have
+   committed) and pup's `~/src/` (whether the rsync + build already
+   happened: `ssh pup 'cd ~/src/lyte-host && swift build 2>&1 | tail -1'`).
+   Relaunch ONE catch-up worker scoped to only the remaining legs, same
+   rules (per-leg verdicts + real numbers into the wave entries, netem
+   scoped + removed, secrets shas at start and end, no push).
+3. **The UX investigation** (trip-era complaints, above) is read-only
+   and stateless — if its report never arrived, relaunch it as-is; its
+   scope is in this file one paragraph up. Its findings gate the fix
+   worker, which gates H3 feature slices.
+4. **HANDOFF.md commits are the coordinator's job**; workers edit only
+   their own wave entries and leave the file uncommitted.
+
 **OPEN INVESTIGATION — trip-era app UX complaints (owner-reported):**
 "can't control the host from the client, duplicated audio, a little
 choppy." A read-only investigator is on it: prime suspect for input is
