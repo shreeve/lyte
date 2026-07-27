@@ -1,6 +1,6 @@
 # Lyte — Session Handoff
 
-*Current as of 2026-07-22 ~14:30 MDT. The session ledger — tracked in the
+*Current as of 2026-07-27 ~01:35 MDT. The session ledger — tracked in the
 repo since `8da50bf` (the .gitignore entry is vestigial; the file is
 tracked). Update freely; commit updates in the ledger voice.*
 
@@ -12,11 +12,12 @@ EXIT demolition is DONE (commits `2018f6d` → `d5de430` → `9e1cd27`): the
 client's GameStream stack (LyteKit/CEnet/CNanors, ~14.3k lines) is deleted,
 Sunshine is uninstalled from pup, and both ends speak exactly one protocol —
 Lyte-UDP. H1 closed earlier the same day (`docs/20260722-h1-joint-gate.md`).
-Suites at HEAD: Wire **388/388**, Host **110/110**, root **116/116** on
-Mac (113 → 116 at the CL-12 follow-through, `ab4f905` — repair-answer
-books; entry in the wave block) (pup legs for everything landed since
-the H2 exit are deferred — it is offline; the H2-exit state 372/104/104
-was the last green on BOTH platforms); `build-cli.sh` release green. A live post-demolition proof
+Suites at HEAD: Wire **402/402**, Host **115/115**, root **122/122** on
+Mac (grown through the CL-12 follow-through `ab4f905`, the codec
+promotion, and CL-15 clipboard; entries in the wave block) (pup legs for
+everything landed since the H2 exit are deferred — being drained NOW,
+see below; the H2-exit state 372/104/104 was the last green on BOTH
+platforms); `build-cli.sh` + `make-app.sh` release green. A live post-demolition proof
 ran at the H2-exit HEAD (60 s: 48,474/48,474 datagrams ok, 0 unseal
 failures, render + audio + input + clean teardown).
 
@@ -48,29 +49,47 @@ Mac**; build-cli.sh + make-app.sh release green. Its live legs are
 TOGETHER with HS-18's a–g on pup's return; port 41121 stays reserved for
 the pair).
 
-**pup is OFFLINE (traveling).** Shut down 2026-07-22 afternoon; back online
-TONIGHT from a hotel — a different network, so the address in the ssh
-config (10.0.0.249 today) will likely change and `ssh pup` may need
-updating before any live leg runs. Discovery/pairing survive the move by
-design (Avahi + pinned keys are address-independent); expect a new IP and
-possibly client-isolation quirks on hotel Wi-Fi.
+**pup is BACK ONLINE (2026-07-27 ~00:57 MDT).** `ssh pup` works (hotel
+detour over — never actually reachable there; 5 days uptime on return),
+secrets verified present at start of catch-up. **The catch-up worker is
+IN FLIGHT right now** draining the whole deferred ledger (legs a–r; its
+verdicts land in the wave entries below — do not edit the wave block
+while it runs). Leg (s), live end-to-end clipboard, stays open — blocked
+on the Linux portal clipboard leaf (queued follow-up, next worker after
+catch-up).
+
+**OPEN INVESTIGATION — trip-era app UX complaints (owner-reported):**
+"can't control the host from the client, duplicated audio, a little
+choppy." A read-only investigator is on it: prime suspect for input is
+CL-13's input-capture/hit-testing rework (`d11dba3`); duplicated audio
+is likely the hostAudible default (the HS-18 mute + per-host default is
+the remedy, but unverified live); choppiness maps to the named VBV/DSCP
+debts. NOTE the owner's 01:30 repro attempt was invalid — no lyte-host
+was running on pup at that moment. Findings → fix worker before H3
+feature slices proceed.
+
+**Landed since the trip started (all Mac-local, wave entries below):**
+CL-13's follow-through books (`ab4f905`), the codec promotion
+(`65f56d0`/`d98e154`/`1b63a4f`), CL-15 clipboard sync across all three
+packages (`ce50a20`/`c16ff91`/`2f5f2f1` — new frozen `clipboard-v1.json`,
+key 10, CTRL 0x1A/0x1B), and the **H3 wave plan**
+(`docs/20260723-051223-lyte-h3-plan.md`, `557bba0`) — its §0 holds
+SEVEN OWNER DECISIONS (file-transfer consent UX, clipboard v2 scope,
+WASM timing, non-LAN reach, wire-version batch, printing at H5,
+multi-monitor at H4) that gate the H3 feature ladder.
 
 **Queued next (in order):**
 
-1. **Tonight's catch-up worker** — HS-18's deferred legs a–g + CL-13's
-   deferred legs (both lists live in their wave entries; run the pup
-   build FIRST — the HS-18 C leaf is still uncompiled anywhere), PLUS
-   the codec-promotion slice's deferred Linux leg (its wave entry
-   below: rsync BOTH Wire/ and Host/, Wire suite 388 on pup, vector
-   shas incl. the new control-v1.json), PLUS the repair-answer-books
-   live leg (p) from the CL-12 follow-through entry (root `ab4f905`;
-   root suite is now 116/116 Mac).
-2. ~~**Codec-promotion slice into Wire/**~~ — **DONE Mac-side**
-   (`65f56d0` Wire / `d98e154` Host / `1b63a4f` root, wave entry
-   below); only the pup verification leg remains, filed with item 1.
-3. **H3 ladder** — the capability-gated feature channel: clipboard both
-   ways, then drag-and-drop files, per the master plan
-   (`docs/20260720-222500-lyte-build-plan.md`).
+1. ~~Tonight's catch-up worker~~ — **IN FLIGHT** (see above).
+2. **UX-complaint fixes** — whatever the investigator's report names
+   (input regression suspicion first), sized and dispatched before
+   feature work.
+3. **Linux portal clipboard leaf** (host territory) — the queued
+   CL-15 follow-up; unblocks deferred leg (s) and live copy/paste.
+4. **H3 ladder** per `docs/20260723-051223-lyte-h3-plan.md` — debt
+   rungs first (VBV, repair-lane DSCP, cookie dial, M7 audio), then
+   F-1 clipboard completion → F-2 bulk channel → F-3/F-4 file drop →
+   F-5 roaming; gated on the §0 owner decisions.
 
 **Standing deferred seams** (named at their slices, none blocking):
 reconnect/takeover UX (needs a host session-busy story), HS-9 cookie-mode
