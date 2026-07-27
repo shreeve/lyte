@@ -67,6 +67,11 @@ struct Options {
     /// default and the physical output goes silent for the session.
     /// A capability-negotiated client can flip it mid-session (0x18).
     var hostAudio: HostAudioRoutingMode = .hostAudible
+    /// HS-19: clipboard sync (CL-15's v1, UTF-8 text both ways).
+    /// Default OFF — the consent posture: the host operator opts in,
+    /// and capability key 10 is declared only when the leaf actually
+    /// came up (the key-9/--no-audio precedent).
+    var clipboard = false
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
@@ -156,6 +161,8 @@ struct Options {
                 default:
                     throw HostError("--host-audio must be audible or muted")
                 }
+            case "--clipboard":
+                opts.clipboard = true
             case "--audio-bitrate-kbps":
                 i += 1
                 guard i < args.count, let v = Int32(args[i]), v > 0 else {
@@ -220,6 +227,14 @@ struct Options {
                                     establishment — silence included)
                   --audio-bitrate-kbps N
                                     Opus hard-CBR bitrate (default 128)
+                  --clipboard       clipboard sync (UTF-8 text, both
+                                    ways, 64 KiB ceiling): client sets
+                                    (0x1A) land on the host clipboard,
+                                    host copies announce (0x1B).
+                                    Default OFF; capability key 10 is
+                                    declared only when the leaf comes
+                                    up, so a plain run truthfully
+                                    negotiates no clipboard
                   --host-audio MODE audible (default) keeps the host's
                                     speakers playing (default-sink
                                     monitor capture); muted routes the
@@ -706,6 +721,7 @@ func run() throws {
     var wire: SessionWire?
     var advertiser: AvahiAdvertiser?
     var pairingService: PairingResponderService?
+    var clipboardLeaf: MutterClipboardLeaf?
     if sessionMode {
         if opts.insecure, opts.wireOut == nil {
             throw HostError("--insecure streams to a fixed peer; "
@@ -761,14 +777,36 @@ func run() throws {
         AudioWire.sweepLeftoverRouting()
         lyteInstallTerminationHandlers()
 
+        // HS-19: the clipboard leaf comes up BEFORE the declaration is
+        // built — key 10 follows the leaf, never the flag alone (a
+        // refused Mutter session must not leave the host promising a
+        // dialect it cannot speak).
+        if opts.clipboard {
+            do {
+                let leaf = try MutterClipboardLeaf()
+                try leaf.start()
+                clipboardLeaf = leaf
+                print("clipboard: leaf up — RemoteDesktop-session "
+                    + "clipboard (Mutter), text both ways, "
+                    + "\(ClipboardWire.maxTextByteCount) B ceiling")
+            } catch {
+                print("clipboard: leaf unavailable (\(error)) — "
+                    + "clipboard sync OFF this run, key 10 not declared")
+            }
+        }
+
         // The W7 declaration: key 9 (hostAudioRouting, the HS-18
         // virtual-sink mute) rides the forward-compat spine whenever
         // the audio leg exists — the client's control strip gates its
         // mute button on the intersection, so a --no-audio host
-        // truthfully never declares it.
-        let declared = opts.audio
+        // truthfully never declares it. Key 10 (clipboardText, CL-15)
+        // rides the same spine whenever the clipboard leaf is up.
+        var declared = opts.audio
             ? Capabilities.wireDefault.declaringHostAudioRouting()
             : .wireDefault
+        if clipboardLeaf != nil {
+            declared = declared.declaringClipboardText()
+        }
 
         let w = try SessionWire(
             listenPort: opts.wireListen,
@@ -809,6 +847,23 @@ func run() throws {
             w.inputInjector = injector
             print("input: injection via \(injector.name) "
                 + "(echo tuples + lastInputSeq stamping active)")
+        }
+
+        // HS-19: the clipboard loop — client 0x1A sets apply through
+        // the leaf; leaf-observed changes (genuine copies AND the
+        // applies' own echoes, which the session's book suppresses)
+        // flow back through noteHostClipboardChanged. All of it rides
+        // the video tick's off-lock service pass.
+        if let leaf = clipboardLeaf {
+            w.clipboardApplyHandler = { [weak leaf] text in
+                leaf?.apply(text: text)
+            }
+            w.clipboardServiceHook = { [weak leaf] in
+                leaf?.service()
+            }
+            leaf.onLocalChange = { [weak w] text in
+                w?.noteHostClipboardChanged(text)
+            }
         }
     }
 
@@ -941,6 +996,10 @@ func run() throws {
     // HS-13: close the Mutter RemoteDesktop session (uinput devices die
     // with the process either way).
     sink.wire?.inputInjector?.stop()
+    // HS-19: close the clipboard leaf's RemoteDesktop session (its
+    // selection ownership and pending transfers die with it; the
+    // connection-owned session can never be stranded by a crash).
+    clipboardLeaf?.stop()
 
     // Measurement aid: dump the final retained raw frame (stride-packed
     // BGRx as delivered by PipeWire) so decoded output can be PSNR'd
@@ -999,6 +1058,18 @@ func run() throws {
         let t = wire.pacerTelemetry
         let c = wire.counters
         let s = wire.sessionCounters
+        // HS-19: the leaf's own books (byte-level transfer evidence),
+        // appended to the clipboard line when the leaf ran.
+        var clipboardLeafStats = ""
+        if let leaf = clipboardLeaf {
+            clipboardLeafStats = " (leaf: \(leaf.appliesTaken) applies"
+            clipboardLeafStats += ", \(leaf.changesReported) changes reported"
+            clipboardLeafStats += ", \(leaf.transfersServed) transfers served"
+            clipboardLeafStats += ", \(leaf.transfersFailed) failed"
+            clipboardLeafStats += ", \(leaf.readsAbandoned) reads abandoned"
+            clipboardLeafStats += ", \(leaf.nonTextChangesIgnored) non-text ignored"
+            clipboardLeafStats += ", \(leaf.baselineReplaysSkipped) baseline skipped)"
+        }
         print("""
         session: \(c.framesIngested) frames → \(c.shardsEnqueued) shards → \
         \(wire.datagramsSent) datagrams (\(wire.bytesSent) B) in \
@@ -1032,6 +1103,10 @@ func run() throws {
         audio-routing: final \(wire.currentAudioRouting), \
         \(s.audioRoutingRequestsReceived) flip requests, \
         \(s.audioRoutingStatusesSent) statuses sent
+        clipboard: leaf \(clipboardLeaf != nil ? "ACTIVE" : "none"), \
+        \(s.clipboardSetsReceived) sets received, \
+        \(s.clipboardAnnouncesSent) announces sent, \
+        \(s.clipboardAnnouncesSuppressed) suppressed\(clipboardLeafStats)
         estimator: rate \(wire.estimatedRate / 1_000) kbps \
         (pacer \(wire.pacerRate / 1_000) kbps, ceiling \
         \(Int(opts.wireRateMbps * 1_000)) kbps), delivery \

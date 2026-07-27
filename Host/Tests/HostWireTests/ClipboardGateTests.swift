@@ -93,6 +93,56 @@ final class ClipboardGateTests: XCTestCase {
             + "mutual-only survival")
     }
 
+    // MARK: Leg 2b — the leaf's text-flavor policy (HS-19), pinned
+    // everywhere: the Linux leaf itself compiles only on Linux, but
+    // the flavor it reads and the flavors it offers are pure policy.
+
+    func testTextMimeReadPreferenceOrder() {
+        // Explicit UTF-8 wins over everything else offered.
+        XCTAssertEqual(
+            ClipboardTextMime.pickForRead(fromOffered:
+                ["image/png", "text/plain", "text/plain;charset=utf-8",
+                 "UTF8_STRING"]),
+            "text/plain;charset=utf-8"
+        )
+        // Matching is case-insensitive, and the OWNER's spelling is
+        // what gets read back (the request echoes their advertisement).
+        XCTAssertEqual(
+            ClipboardTextMime.pickForRead(fromOffered:
+                ["TEXT/PLAIN;CHARSET=UTF-8"]),
+            "TEXT/PLAIN;CHARSET=UTF-8"
+        )
+        // The X11-era UTF-8 target outranks bare text/plain.
+        XCTAssertEqual(
+            ClipboardTextMime.pickForRead(fromOffered:
+                ["text/plain", "UTF8_STRING"]),
+            "UTF8_STRING"
+        )
+        XCTAssertEqual(
+            ClipboardTextMime.pickForRead(fromOffered: ["text/plain"]),
+            "text/plain"
+        )
+        print("HS-19 gate (mime): read preference "
+            + "utf-8 → UTF8_STRING → text/plain, case-insensitive")
+    }
+
+    func testTextMimeRefusesNonTextAndOffersFaithfulFirst() {
+        // No v1 flavor offered (images, rich text, an empty
+        // advertisement): nil — ignored weather, never an error.
+        XCTAssertNil(ClipboardTextMime.pickForRead(fromOffered:
+            ["image/png", "text/html", "application/x-qt-image"]))
+        XCTAssertNil(ClipboardTextMime.pickForRead(fromOffered: []))
+        // What an apply advertises: the faithful flavor leads, and
+        // every offered flavor is one the leaf can serve as UTF-8.
+        XCTAssertEqual(ClipboardTextMime.offered.first,
+                       ClipboardTextMime.utf8)
+        XCTAssertEqual(ClipboardTextMime.offered,
+                       [ClipboardTextMime.utf8, "text/plain",
+                        "UTF8_STRING"])
+        print("HS-19 gate (mime): non-text refused, "
+            + "offer list faithful-first")
+    }
+
     // MARK: The scripted leaf (the seam the portal leaf will drive)
 
     /// An in-memory OS clipboard: `apply` stores the text and fires

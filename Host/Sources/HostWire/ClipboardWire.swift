@@ -7,15 +7,58 @@
 // session's sync book tells them apart) flows back through
 // `Session.noteHostClipboardChanged`.
 //
-// The real leaf is Linux-only, out of this slice's scope, and QUEUED
-// as follow-up work (HANDOFF): the primary plan is the portal
-// Clipboard API attached to the existing RemoteDesktop session (host
-// build plan §6 — selection-change signals + fd-based transfer both
-// directions; `wl-clipboard` is NOT a real fallback on GNOME, no
-// wlr-data-control). The gate tests run a scripted implementation of
-// this protocol; lyte-host wires the real one when it exists and
-// declares capability key 10 only when the leaf is enabled (the
-// key-9/--no-audio precedent — declaration follows the leaf).
+// The real leaf EXISTS as of HS-19 (`MutterClipboardLeaf` in
+// lyte-host, Linux-only): the RemoteDesktop-session clipboard API of
+// host build plan §6 — selection-change signals + fd-based transfer
+// both directions — driven on a Mutter-internal RemoteDesktop session
+// (org.gnome.Mutter.RemoteDesktop, the CP-5 input-primary pattern; the
+// xdg portal's own RemoteDesktop Start auto-denies headless on GNOME,
+// and its Clipboard interface is a thin wrapper over this same Mutter
+// API). The gate tests still run a scripted implementation of this
+// protocol everywhere; lyte-host wires the real one behind
+// `--clipboard` and declares capability key 10 only when the leaf came
+// up (the key-9/--no-audio precedent — declaration follows the leaf).
+
+/// The v1 text-flavor policy the Linux leaf runs (HS-19) — pure and
+/// platform-neutral so the seam tests pin it everywhere. Selection
+/// owners advertise mime types; v1 syncs UTF-8 text only, so the leaf
+/// reads exactly one flavor (the most faithful one offered) and offers
+/// the standard trio when it owns the selection. `UTF8_STRING` is the
+/// X11-era target Xwayland clients still speak; matching is
+/// case-insensitive (mime types compare that way), and the OFFERED
+/// spelling is returned so the read request echoes the owner's own
+/// words.
+public enum ClipboardTextMime {
+    /// The canonical v1 flavor: whole UTF-8, no transcoding guesswork.
+    public static let utf8 = "text/plain;charset=utf-8"
+
+    /// What the leaf advertises when a client 0x1A makes it the
+    /// selection owner — faithful flavor first.
+    public static let offered = [utf8, "text/plain", "UTF8_STRING"]
+
+    /// Read preference against a foreign owner's advertisement:
+    /// explicit UTF-8, then the UTF-8-by-convention X11 target, then
+    /// bare text/plain (read as UTF-8; a lossy decode is the honest
+    /// remainder).
+    public static let readPreference = [utf8, "UTF8_STRING", "text/plain"]
+
+    /// The flavor to SelectionRead from `offeredByOwner`, or nil when
+    /// the owner holds nothing v1 can carry (images, rich flavors —
+    /// ignored, never an error).
+    public static func pickForRead(
+        fromOffered offeredByOwner: [String]
+    ) -> String? {
+        for want in readPreference {
+            let lowered = want.lowercased()
+            if let hit = offeredByOwner.first(
+                where: { $0.lowercased() == lowered }
+            ) {
+                return hit
+            }
+        }
+        return nil
+    }
+}
 
 /// What a host clipboard leaf owes the shell. Threading is the
 /// shell's concern (the leaf's signals arrive on its own loop; the

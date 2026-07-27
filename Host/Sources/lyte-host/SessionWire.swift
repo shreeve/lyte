@@ -112,6 +112,20 @@ final class SessionWire {
     /// lock: a flip is a PipeWire connect (milliseconds, and it must
     /// not stall the 5 ms audio thread against the lock).
     var audioRoutingHandler: ((HostAudioRoutingMode) -> Bool)?
+
+    /// HS-19: the shell's clipboard-apply sink (the leaf's
+    /// SetSelection). Nil = no leaf this run — the session core never
+    /// surfaces 0x1A then anyway (key 10 undeclared), so the arm is
+    /// defensive. Called OFF the session lock: SetSelection is a
+    /// blocking D-Bus round-trip.
+    var clipboardApplyHandler: ((String) -> Void)?
+    /// HS-19: the leaf's off-lock service pass (D-Bus signal drain +
+    /// fd transfer pumps), run once per `service()` like the routing
+    /// work — never under the lock, never on the audio thread.
+    var clipboardServiceHook: (() -> Void)?
+    /// 0x1A texts delivered by the session (under the lock), awaiting
+    /// the shell's apply outside it (drained by `service()`).
+    private var pendingClipboardApplies: [String] = []
     /// The posture the audio leaf is actually running (main seeds it;
     /// applied flips move it). Mutated under `lock`.
     private(set) var currentAudioRouting: HostAudioRoutingMode = .hostAudible
@@ -502,6 +516,8 @@ final class SessionWire {
         let announce = routingAnnounceOwed
         routingAnnounceOwed = false
         let standing = currentAudioRouting
+        let applies = pendingClipboardApplies
+        pendingClipboardApplies.removeAll()
         lock.unlock()
 
         // The starting-posture 0x19 (capabilities just agreed) and any
@@ -512,6 +528,36 @@ final class SessionWire {
         }
         for mode in requests {
             applyAudioRouting(mode)
+        }
+        // HS-19: apply client sets to the OS clipboard and give the
+        // leaf its signal/fd pass — both off the lock (D-Bus
+        // round-trips; the leaf's onLocalChange re-enters through
+        // noteHostClipboardChanged, which takes the lock itself).
+        for text in applies {
+            clipboardApplyHandler?(text)
+        }
+        clipboardServiceHook?()
+    }
+
+    /// HS-19: the leaf's report that the OS clipboard changed —
+    /// genuine host copies AND the echoes of our own applies; the
+    /// session's sync book tells them apart. The 0x1B (or the
+    /// suppression verdict) happens inside the core; a no-key-10
+    /// session stays silent (the rule-3 gate).
+    func noteHostClipboardChanged(_ text: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let session, session.phase == .established else { return }
+        for event in session.noteHostClipboardChanged(
+            text, now: monotonicNS(), hostMicroseconds: monotonicMicros()
+        ) {
+            log(event)
+        }
+        do {
+            try serviceOnce()
+            try flushOutbox()
+        } catch {
+            lastSendError = String(describing: error)
         }
     }
 
@@ -835,14 +881,23 @@ final class SessionWire {
         case .audioRoutingStatusSent(let mode):
             print("audio-routing: status \(mode) sent (0x19)")
         case .clipboardSetReceived(let text):
-            // CL-15: the session's gate + book already ran; without a
-            // clipboard leaf there is nothing to apply to. The real
-            // portal-Clipboard leaf is queued follow-up work — this
-            // shell never declares key 10 until it exists, so this
-            // case is unreachable today (defensive, never logs the
-            // payload).
-            print("clipboard: 0x1A set received (\(text.utf8.count) B) — "
-                + "no clipboard leaf, ignored")
+            // CL-15/HS-19: the session's gate + book already ran (the
+            // book is pre-armed against this apply's echo). Delivered
+            // under the lock mid-iteration: buffer only — the apply
+            // (a blocking D-Bus SetSelection) runs off-lock in
+            // service(). Never logs the payload.
+            if clipboardApplyHandler != nil {
+                print("clipboard: 0x1A set received "
+                    + "(\(text.utf8.count) B) — applying to the host "
+                    + "clipboard")
+                pendingClipboardApplies.append(text)
+            } else {
+                // Defensive: a leafless shell never declares key 10,
+                // so the core's rule-3 gate makes this unreachable.
+                print("clipboard: 0x1A set received "
+                    + "(\(text.utf8.count) B) — no clipboard leaf, "
+                    + "ignored")
+            }
         case .clipboardAnnounceSent(let byteCount):
             print("clipboard: announce sent (\(byteCount) B, 0x1B)")
         case .clipboardAnnounceSuppressed(let reason):
