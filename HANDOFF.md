@@ -736,23 +736,62 @@ its entry at the marker at the end of this block.*
   intersection both orders + false-not-equal-true; in-vivo negotiated
   flip both directions with byte-exact 0x19; rule-3 gate: refusal
   loud, status never volunteered, role confusion dropped).
-  **DEFERRED-PENDING-HOST (pup shut down for travel mid-slice; run on
-  its return, port 41121):** (a) pup build + suite (the C leaf is
-  Linux-only — uncompiled anywhere yet; expect an iteration pass on
-  pipewire API details), (b) hostMuted live leg — tone on pup, wpctl/
-  pactl prove the physical default sink silent + Lyte sink default
-  while the client-side 440 Hz RMS check proves the tone crosses,
-  (c) teardown restore exact (wpctl status name-match before/after) +
-  SIGTERM path, (d) kill -9 mid-session → sink auto-gone (connection-
-  owned) + next-start sweep restores the recorded default, (e) NIC
-  cadence p99 within 5±2 ms in BOTH modes (tcpdump inter-send, the
-  HS-15 method — the virtual sink changes graph topology), (f)
-  hostAudible regression leg unchanged, (g) all three secrets shas
-  byte-identical after everything (they were never touched — the new
-  state file lives BESIDE them, `audio_default_sink.prev`). Client
-  follow-up CL slice (flagged): declare key 9 + send 0x18 + render
-  0x19 in the control strip; promotion slice grows by key 9 +
-  0x18/0x19.
+  **PUP LEGS a–g ALL PASSED (2026-07-27 ~01:10–01:55 MDT catch-up,
+  port 41121, host at `71d936b` via rsync; full report
+  `docs/20260727-015500-pup-catchup.md`):** (a) the C leaf's FIRST
+  compile anywhere was CLEAN — zero code changes needed, pup build
+  green, Host suite **115/115 on pup** (count includes the later
+  clipboard slice); (b) hostMuted silence proof: default flipped to
+  "Lyte Audio" (metadata `{"name":"lyte-audio-sink"}`), a −24 dBFS
+  pw-play tone into the default landed on the Lyte sink's playback
+  ports, the PHYSICAL Speaker monitor recorded **Peak −inf / RMS −inf
+  dBFS** (pw-record `stream.capture.sink=true`, 4 s) while the client
+  measured the tone crossing at **~440 Hz** (sig −48.1 dBFS — pw-play's
+  remembered stream volume attenuates ~21 dB; the frequency is the
+  identity proof); (c) clean-end restore EXACT (`--seconds` expiry →
+  Lyte sink gone from the sinks list, default back to
+  `…HiFi__Speaker__sink`, metadata value byte-identical to the pre-run
+  dump) AND the SIGTERM path (`audio: routing restored — original
+  default sink back` + typed 0x0A + `teardown acknowledged — clean
+  close` on a mid-session kill); (d) kill -9 mid-session: the Lyte sink
+  AUTO-GONE (connection-owned), the metadata STRANDED at
+  `lyte-audio-sink` (the one strandable thing, exactly as designed),
+  `audio_default_sink.prev` held the Speaker name from BEFORE the
+  switch — the next start printed `audio: swept a dirty previous run —
+  default sink restored to {…Speaker…}`, metadata byte-exact, state
+  file consumed; (e) NIC cadence (tcpdump inter-send at pup's NIC, data
+  shards only per the AudioGateTests rule, 25 s windows): **hostMuted
+  p50 4.996 / p99 5.321 ms, deviation p99 0.354 ms, 0 of 4,997 deltas
+  outside 5±2**; **hostAudible p50 4.998 / p99 5.374 ms, deviation p99
+  0.407 ms, 1 of 4,393 outside (0.02%)** — the virtual-sink topology
+  holds the bound; (f) hostAudible regression unchanged: default-sink
+  monitor capture (`< Speaker:monitor` pinned in the streams listing),
+  tone crossed at ~440 Hz, 8,970 packets ≈ 200/s over the run, max
+  audio queue delay 0.56 ms; (g) all three secrets byte-identical after
+  everything (portal_token dadf9a66…37cf, noise_static.key
+  72860390…cfed, paired_clients 8dc1f88a…55fd; the config dir ends the
+  night holding exactly those three files). TWO ENVIRONMENTAL FINDINGS
+  (report §3–4, neither a code defect): (1) pup's unattended upgrade
+  moved NVIDIA userspace to 595.84 at 00:42 TONIGHT while the loaded
+  kernel module stayed 595.71.05 — NVENC refused every session
+  (`OpenEncodeSessionEx: unsupported device (2)`) until the host ran
+  against extracted 595.71.05 libs (Launchpad debs →
+  `/tmp/nv571/ext/usr/lib/x86_64-linux-gnu` on LD_LIBRARY_PATH;
+  compute+encode alone were NOT enough — `libnvidia-gpucomp` must
+  match too). The shim is pup-local and process-scoped; the next
+  REBOOT both clears /tmp and heals the mismatch, after which drop it;
+  (2) a live YouTube playback (Chrome) on pup's desktop degraded
+  AUDIBLE-mode capture cadence catastrophically while it played
+  (474 stream xruns/25 s, capture callback 1.4 ms busy vs the normal
+  0.2–0.5 ms, 35–79% of sends outside 5±2, ~25% packet shortfall) and
+  recovered when the media stopped; ladder-tested NOT a regression
+  (pre-HS-18 / HS-18 / promotion / HEAD builds all measure clean
+  after) — and hostMuted's graph-clocked null sink was IMMUNE even
+  during the bad window, an argument for the muted posture while
+  streaming; capture-thread RT priority filed as a deferred seam.
+  Client follow-up CL slice (flagged): declare key 9 + send 0x18 +
+  render 0x19 in the control strip; promotion slice grows by key 9 +
+  0x18/0x19. (Both since landed — CL-13 and the promotion, below.)
 
 - **CL-13 control strip + client audio routing** (root): HS-18's other
   half — the stream window grows its verbs and the client learns to
@@ -821,26 +860,42 @@ its entry at the marker at the end of this block.*
   agreement's 0x19 jumps ahead of the declaration on the ordered
   stream and the client rightly drops it loud (HS-11's first-word
   rule is load-bearing, not ceremony). Release builds green
-  (build-cli.sh + make-app.sh). **DEFERRED-PENDING-HOST (run with
-  HS-18's a–g on pup's return, port 41121):** (h) live negotiated
-  flip vs the real host — wire-view --audio, strip AND menu: posture
-  flips audibly mid-session both directions, 0x18/0x19 counters 1:1
-  against the host's audioRoutingRequestsReceived/StatusesSent,
-  posture line tracks; (i) session-start posture live —
-  `--host-audio muted` against a hostAudible host: exactly one 0x18
-  after the starting 0x19, session begins silent at the host's
-  speakers; (j) per-host default honored at connect — "Start with
-  Host Muted" set in the app, fresh connect starts muted with zero
-  strip interaction; (k) strip truthfulness vs a NO-key-9 host — run
-  lyte-host `--no-audio` (it never declares key 9; no older build
-  needed): the host-mute button must not exist, client-mute/stats/
-  fullscreen/disconnect all still work, `--host-audio muted` prints
-  the notNegotiated refusal and sends nothing; (l) app human-at-glass
-  (needs the human): strip reveal/fade feel, no strip-click leakage
-  to the host cursor, stats overlay legibility over live video,
-  ⌘⇧H/⌘⇧M/⌘⌥I/⌘D shortcuts, fullscreen round-trip. HS-18's own five
-  deferred legs are listed in ITS entry (a–g) — referenced here, not
-  duplicated. Deferred (non-live): the strip is flat buttons-in-a-
+  (build-cli.sh + make-app.sh). **PUP LEGS h–k PASSED, j's app half +
+  l REMAIN FOR THE HUMAN (2026-07-27 catch-up, port 41121, report
+  `docs/20260727-015500-pup-catchup.md`):** (h) PASSED in both
+  directions via the session-start ask (wire-view carries no
+  mid-session flip surface — the strip/menu drive rides leg l):
+  audible→muted (run A: starting 0x19 AUDIBLE → exactly one
+  `[0x18 0x02]` → 0x19 MUTED confirmed; client `routing 1 asks/2
+  statuses` ↔ host `1 flip requests, 2 statuses sent` — 1:1) and
+  muted→audible (run C: starting 0x19 muted → one 0x18 audible → flip
+  applied MID-SESSION — Lyte sink destroyed + Speaker default restored
+  while the session kept streaming — → 0x19 audible; counters 1:1
+  again); the wire-view posture line tracked every step; (i) PASSED —
+  run A is the leg verbatim: `session-start posture: asked host for
+  hostMuted (host default hostAudible)` printed, exactly one 0x18
+  after the starting 0x19, host speakers silent from the flip onward
+  (leg b's −inf monitor proof); (j) the WIRE MECHANISM is proven by
+  (i) — the app's `startHostAudioMuted → desiredHostAudioRouting`
+  connect seeding is the same config path wire-view's flag drives, and
+  the store plumbing is gate-pinned — but the at-glass half (set
+  "Start with Host Muted" in the app, fresh connect starts muted with
+  zero strip interaction) has NO scripted surface and rides the leg-l
+  checklist; (k) PASSED vs a `--no-audio` host: capabilities line
+  `hostAudioRouting no, clipboard no`, session line `host-audio
+  unnegotiated`, ZERO 0x18 on the wire (client 0 asks ↔ host `0 flip
+  requests, 0 statuses sent`), 16,955 datagrams / 0 unseal failures —
+  wire-view's `--host-audio muted` correctly never asked (the ask
+  triggers on the host's first 0x19, which a no-key-9 host never owes;
+  nothing left the client, which is the criterion) and the truthful
+  `unnegotiated` posture is exactly what gates the strip button's
+  existence; (l) STILL OPEN — the human checklist, to be run at or
+  past CL-16 `73ccd46` (the strip hit-test fix): reveal/fade feel,
+  buttons actually click, no strip-click leakage to the host cursor,
+  stats legibility over live video, ⌘⇧H/⌘⇧M/⌘⌥I/⌘D, fullscreen
+  round-trip, PLUS leg j's fresh-connect-starts-muted confirmation.
+  HS-18's own legs (a–g) are recorded in ITS entry — referenced here,
+  not duplicated. Deferred (non-live): the strip is flat buttons-in-a-
   capsule v1 (no volume slider, no latency badge — H3-era polish);
   posture-pending UX shows a disabled button (fine while the first
   0x19 arrives inside the agreement round-trip; revisit only if a
@@ -887,17 +942,21 @@ its entry at the marker at the end of this block.*
   value-space-coverage leg), Host **110/110 Mac** (unchanged),
   root **113/113 Mac** (unchanged); all 11 pre-existing vector files
   byte-identical; no-Foundation lint green; build-cli.sh release
-  links + signs. **DEFERRED-PENDING-HOST (pup offline — travel; runs
-  with tonight's catch-up, run the pup build FIRST):** (m) rsync BOTH
-  Wire/ and Host/ (Wire changed this slice — the sibling-checkout
-  recipe), Wire suite on pup expecting **388/388** with byte-exact
-  vector verification of all 12 files INCLUDING the new
-  control-v1.json (the W-G1 cross-platform gate for the promoted
-  codecs), (n) Host build + suite on pup expecting **110/110** over
-  the flipped imports (rides with HS-18's leg a — its C leaf is still
-  uncompiled anywhere), (o) no root leg exists (macOS-only client);
-  the HS-18/CL-13 live legs a–l already queued exercise the promoted
-  codecs end-to-end on the wire.
+  links + signs. **PUP LEGS m–n PASSED (2026-07-27 catch-up; the
+  counts had grown to CL-15's by run time):** (m) BOTH packages
+  rsynced as siblings, Wire suite on pup **402/402** (24.4 s) — the
+  388 expected here plus CL-15's 14 — with ALL THIRTEEN vector files
+  byte-identical Mac ↔ pup by sha256, control-v1.json (a0e3c398…) and
+  clipboard-v1.json (41aef674…) included alongside the 11 pre-existing
+  (a326b835…, a902805d…, 7b81dab0…, full table in
+  `docs/20260727-015500-pup-catchup.md`) — the W-G1 cross-platform
+  gate for the promoted codecs holds; (n) Host build + suite on pup
+  **115/115** over the flipped imports (with HS-18's C leaf compiling
+  clean on its first pass, zero fixes); (o) no root leg (macOS-only
+  client) — and the live legs a–k/p above exercised the promoted
+  codecs end-to-end on the wire tonight (0x15 idle frames, 0x16/0x17
+  input + echoes, 0x18/0x19 routing, TLV 0x03 stamps, the audio
+  interior at 200 pkts/s).
 
 - **CL-12 FOLLOW-THROUGH — repair-answer books** (`ab4f905`, root):
   commissioned in the wave plan as "CL-14: client NACK emission +
@@ -937,19 +996,31 @@ its entry at the marker at the end of this block.*
   Harness lesson: corpus frames run ~23 shards, so a straggler held
   past TWO follow-on frames falls off the 64-seq replay window and the
   demux rightly eats it — the leg keeps one follow-on frame and the
-  caveat is written in the test. **DEFERRED-PENDING-HOST (rides
-  tonight's catch-up, AFTER the queued HS-18 a–g / CL-13 h–l /
-  promotion m–n legs — referenced, not duplicated):** (p) live
-  video-scoped netem loss run vs the real host (fresh 41xxx port,
-  wire-view --audio, FOREGROUND per the CL-11 caution): the CL-12
-  1:1 wire correlation EXTENDED to the wasted-answer classes — client
-  repairShardsAccepted + late + dup + superseded reconciled against
-  the host's repair ledger (repair datagrams sent, honored/stale
-  verdicts); on a rough-Wi-Fi path expect superseded to track the
-  host's budget-stale → IDR arms (CL-12's live run saw 54 repairs
-  sent vs 17 accepted — the other 37 now get named buckets instead of
-  silence); no render corruption, 0 unseal failures, video .rendering
-  throughout, the new nack line quoted in the run log.
+  caveat is written in the test. **PUP LEG p PASSED (2026-07-27
+  catch-up, port 41139, 85 s wire-view --audio FOREGROUND; 15%
+  video-scoped netem — the h2gate prio+u32 pattern, dsfield 0xa0 +
+  dport 41139 on wlp0s20f3 egress — held 40 s mid-run, removed,
+  `noqueue` verified):** the 1:1 correlation EXTENDED to the
+  wasted-answer classes exactly as commissioned — client **58 asks
+  (253 shards) ↔ host 58 NACK entries consumed / 253 post-FEC shards
+  counted (exact)**; host honored 27 → **85 repair datagrams**, judged
+  31 stale → 30 IDR-armed; the client's answer books name **76 of the
+  85 by bucket: 28 accepted → 15 frames HEALED BY REPAIR, 48 late,
+  0 dup, 0 superseded** — the missing 9 died inside the netem band
+  itself (repairs ride 0xA0/videoTail THROUGH the impairment;
+  9/85 ≈ 10.6% ≈ the loss rate — the honest remainder); 28 rule-4
+  expiries → IDR client-side, **81 IDR requests sent = 81 seen by the
+  host (1:1)**; estimator: 33 rung-3 downshifts to the 500 kbps floor
+  + 3 regime steps (final lossy — the run ended before the quiet
+  hold); **46,369 datagrams ALL ok / 0 unseal failures both ends**,
+  video .rendering throughout, audio continuous (PLC 11 = 0.06%).
+  dup/superseded stayed ZERO on this path — with a 20 ms SRTT the
+  host's budget gate refuses early and late dominates; both buckets'
+  mechanics stay virtual-time-pinned in the Mac gate. Incidental
+  evidence for the CL-16-era input question: 5/5 scripted moves
+  exactly-once with echoes, host rx→inject p50 1.15 / p99 1.27 ms —
+  the wire/inject layer is clean. Logs
+  /tmp/pupcatch-{clientP2,hostP2}.log (Mac + pup).
 
 - **CL-15 clipboard sync — the first H3 feature, Mac-local end to end**
   (`ce50a20` Wire / `c16ff91` Host / `2f5f2f1` root; design record
@@ -1021,18 +1092,22 @@ its entry at the marker at the end of this block.*
   rule-3 refusal pre-wire + hostile/role-confused loud drops,
   over-budget verdict, pinned-store plumbing); no-Foundation lint
   green; build-cli.sh + make-app.sh release green.
-  **DEFERRED-PENDING-HOST (pup offline; run with the queued catch-up,
-  AFTER its m/n legs — this slice extends them):** (q) pup build +
-  suites over this slice's Wire/Host changes — Wire expecting
-  **402/402** with byte-exact verification of all THIRTEEN vector
-  files (clipboard-v1.json joins the set), Host expecting **115/115**
-  (the new lyte-host switch arms get their first compile with HS-18's
-  still-uncompiled C leaf); (r) key-10 truthfulness vs the real,
-  still-leafless host: wire-view --clipboard against lyte-host (which
-  deliberately does not declare key 10 yet) — capabilities line reads
-  "clipboard no", every local copy prints the notNegotiated verdict,
-  zero 0x1A on the wire, and the app's strip toggle must not exist;
-  (s) live end-to-end clipboard both ways — copy Mac→host and
+  **PUP LEGS q–r PASSED, (s) STAYS OPEN (2026-07-27 catch-up):**
+  (q) PASSED — the promotion entry's m/n numbers ARE this slice's
+  counts: Wire **402/402 on pup** with all THIRTEEN vector files
+  byte-exact by sha256 (clipboard-v1.json 41aef674… in the set), Host
+  **115/115 on pup** (the new lyte-host switch arms took their first
+  compile alongside HS-18's C leaf — zero fixes); (r) PASSED vs the
+  real leafless host (`--no-audio`, key 10 never declared; port
+  41135): wire-view --clipboard read **`clipboard no`** on the
+  capabilities line and `clipboard unnegotiated` on the session line,
+  two live pbcopy markers (32 B and 28 B) each printed **`local copy
+  (N B) — notNegotiated`**, ZERO 0x1A on the wire (no clipboard
+  counters on either end's final, no drops at the host), the Mac
+  pasteboard saved before and restored after the probe; the app strip
+  toggle's non-existence is UI-gated by the same negotiated flag
+  proven false here (eyeball rides CL-13 leg l); (s) live end-to-end
+  clipboard both ways — copy Mac→host and
   host→Mac, boomerang counters clean on both ends (loop-suppressed
   matches applies, no ping-pong), 1:1 reconciliation
   (clipboardSharesSent ↔ clipboardSetsReceived, clipboardAnnouncesSent
