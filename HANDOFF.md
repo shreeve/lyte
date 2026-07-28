@@ -1859,6 +1859,24 @@ its entry at the marker at the end of this block.*
   ≤128 KiB — default ArqConfig maxMessageByteCount 262,144 clears
   it; keep that headroom when the ends tune ARQ for chan 8).
 
+- **Video supremacy plan** (`557ab78`, docs only — full account in
+  `docs/20260728-165538-lyte-video-supremacy-plan.md`): the ranked
+  ladder vs Sunshine/Moonlight. Verdict: losses are POLICY+ROADMAP,
+  never architecture — behind on exactly (1) the 20 Mbps recipe cap
+  (38 fps motion on a 90 Mbps wire), (2) the armed policy's IDR bill
+  (110-vs-3), (3) 4:4:4 (Sunshine ships it; our pillar planned it) +
+  a FOUND BUG: `bgr0` into NVENC with NO colorspace/range VUI set
+  anywhere (smeared-desktop class, few-line fix, "Stage A"). Ranked:
+  R1 HS-22c (restore-only climb coalescing + estimator self-ref gate,
+  bar = armed within ≤3 IDR of disarmed twin) → R2 LAN cap 50 Mbps
+  (HS-23, ≥55 fps gate) → R3 4:4:4 Work mode + immediate Stage A
+  (Apple Silicon hw-decodes Rext 4:4:4; Moonlight's falls to sw) →
+  R4 encoder A/B ladder off Sunshine's p1 floor (p4, AQ; keep
+  no-B/no-lookahead) → R5 beauty-bar standing gate (two rows fail
+  today: fps + IDR/min — exactly the two losses). AV1 stays a browser
+  play (Ada AV1 is 4:2:0-only, M1/M2 can't decode it). Five owner
+  decisions queued in the doc §"owner decisions".
+
 - **Video quality probe** (`ca0172a`, docs only — full account in
   `docs/20260728-164746-lyte-video-quality-probe.md`): PSNR at the
   post-HS-22b build — static converges **53.5 dB luma** (gate ≥ 50,
