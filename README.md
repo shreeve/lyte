@@ -54,6 +54,22 @@ real PAKE, per-frame adaptive RS-FEC with targeted NACK repair, an
 ACTIVE/IDLE/FROZEN/RECOVERY session machine with idle silence, per-packet
 DSCP, and app-level congestion control fed by burst dispersion.
 
+## The media path: hardware at both ends
+
+The hard work of video never touches a CPU. On the host, PipeWire frames go
+straight into **NVENC** — the dedicated encode silicon on the GPU, separate
+from its 3D cores — as HEVC. On the client, compressed samples are handed to
+`AVSampleBufferDisplayLayer`, which drives **VideoToolbox** — the dedicated
+decode engine on Apple Silicon — through decode, color conversion, and
+display timing. The CPUs at both ends do only the light work: packetizing,
+ChaCha20-Poly1305 sealing, RS-FEC parity and repair, and pacing.
+
+Same silicon Sunshine/Moonlight drive — the difference is what we ask of it.
+Lyte's encoding is **damage-driven**: NVENC is asked to encode only the
+regions that actually changed, so a still desktop costs near-zero bandwidth
+at full sharpness, while fixed-cadence streamers re-encode every frame
+whether pixels moved or not.
+
 ## Status
 
 H2 functional parity: video, 5 ms audio, input injection, congestion
