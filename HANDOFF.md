@@ -1859,6 +1859,27 @@ its entry at the marker at the end of this block.*
   ≤128 KiB — default ArqConfig maxMessageByteCount 262,144 clears
   it; keep that headroom when the ends tune ARQ for chan 8).
 
+- **B-1 wasm attestation leg** (`51c058c`, Wire/): the overnight probe
+  becomes a repeatable check — `Wire/Scripts/wasm-test.sh` cross-builds
+  the whole Wire suite for wasm32-unknown-wasip1 (swiftly 6.3.3 +
+  swift-6.3.3-RELEASE_wasm SDK, located never auto-installed; missing
+  pieces fail with the scoping doc's exact install commands) and drives
+  the .xctest module directly under wasmtime (SwiftPM's `swift test`
+  can't run XCTest on WASI), with the package root resolved physically
+  so the macOS /tmp-symlink preopen quirk can't bite. The one repo
+  change the target needed: `#if !os(WASI)` around
+  NoFoundationLintTests (WASI has no Process; the source-text lint
+  keeps running fully on macOS/Linux). PROVEN AT HEAD, W10 included:
+  **448/448 under wasmtime 47.0.2, 23.5 s** (450 native minus the two
+  guarded lint tests) — all 14 frozen vector files byte-exact,
+  bulk-v1.json and the SimNet loss compositions among them; native
+  suite untouched at **450/450**. Vectors/README.md now names wasm as
+  the third attested platform. Owner answered B/C/D (2026-07-28
+  morning: codec [hevc, av1]; self-minted rotating cert, host serves
+  the page; cut line after B-4) and deferred A (QUIC posture) along
+  with all B-2+ work until F-3/F-4 land — browser sessions are
+  sequenced BEHIND file transfer by owner direction.
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
