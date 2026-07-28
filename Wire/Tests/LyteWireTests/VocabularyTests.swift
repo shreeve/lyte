@@ -114,10 +114,12 @@ final class ChannelIdTests: XCTestCase {
     }
 
     func testPriorityOrderIsTheUnifiedRuling() {
-        // CTRL > audio > fresh video > tail > refinement > feature > telemetry.
+        // CTRL > audio > fresh video > tail > refinement > feature >
+        // telemetry > bulk (the W10 rung: a file is infinitely
+        // patient; a stale congestion report is not).
         let order: [WirePriority] = [
             .control, .audio, .freshVideo, .videoTail, .refinement,
-            .feature, .telemetry,
+            .feature, .telemetry, .bulk,
         ]
         XCTAssertEqual(order, order.sorted())
         XCTAssertEqual(ChannelId.ctrl.priority, .control)
@@ -126,6 +128,8 @@ final class ChannelIdTests: XCTestCase {
         XCTAssertEqual(ChannelId.videoIdle.priority, .videoTail)
         XCTAssertEqual(ChannelId(rawValue: 9).priority, .feature)
         XCTAssertEqual(ChannelId.feedback.priority, .telemetry)
+        XCTAssertEqual(ChannelId.bulkTransfer.priority, .bulk)
+        XCTAssertEqual(ChannelId.bulkTransfer.rawValue, 8)
     }
 
     func testReservedRangeHasNoPolicy() {

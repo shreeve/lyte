@@ -94,6 +94,21 @@ public enum CapabilityKey {
     /// not consent: sharing is gated locally on each end (design doc
     /// §6).
     public static let clipboardText: UInt64 = 10
+    /// bool — this end speaks the v1 bulk-transfer channel (chan 8's
+    /// ARQ ordered stream carrying the 0x1C–0x21 sextet, W10 / F-2 —
+    /// the H3 file-transfer mechanism). Rides the forward-compat
+    /// spine through `unknownEntries` like keys 9 and 10 (one
+    /// canonical `0B F5` entry; capabilities-v1.json never moves),
+    /// surviving intersection only on mutual byte-equal declaration.
+    /// Deliberately NOT the featureChannels list (key 5, id 2): key
+    /// 5's ids are typed-set members whose fold-in belongs to the D-5
+    /// wire-version discussion, and this key gates the MECHANISM —
+    /// features riding it (file drop now, clipboard-v2 images later)
+    /// gate at the ends. Declaration is dialect, not consent: v1
+    /// direction (client→host only) and the standing per-host toggle
+    /// live in the end shells (design record 20260728-053300 §6).
+    /// Accessors in BulkMessages.swift.
+    public static let bulkTransfer: UInt64 = 11
 
     /// The renegotiable subset (transport pillar §4: "fixed after
     /// exchange except where a capability itself declares

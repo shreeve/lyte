@@ -131,6 +131,30 @@ public enum CtrlMessageType {
     /// Host→client clipboard-change report (ClipboardAnnounce, CL-15).
     /// Same carriage and gate.
     public static let clipboardAnnounce: UInt8 = 0x1B
+    /// Sender→receiver bulk-transfer offer (BulkOffer, W10 / F-2 —
+    /// the bulk channel's vocabulary, born in the registry like
+    /// CL-15's). The bulk sextet 0x1C–0x21 rides the ARQ ordered
+    /// stream of CHANNEL 8 (ChannelId.bulkTransfer), never CTRL —
+    /// the type space is shared across reliable channels (the W3
+    /// rule), the carriage is not. Gated on capability key 11
+    /// surviving intersection.
+    public static let bulkOffer: UInt8 = 0x1C
+    /// Receiver→sender consent + possession + opening credit
+    /// (BulkAccept, W10). Chan 8 ordered stream.
+    public static let bulkAccept: UInt8 = 0x1D
+    /// Sender→receiver one chunk (BulkChunk, W10). Chan 8 ordered
+    /// stream — deliberately not CTRL, so a file can never
+    /// head-of-line-block a keystroke.
+    public static let bulkChunk: UInt8 = 0x1E
+    /// Receiver→sender possession + credit heartbeat (BulkAck, W10).
+    /// Chan 8 ordered stream.
+    public static let bulkAck: UInt8 = 0x1F
+    /// Receiver→sender success verdict after digest verification
+    /// (BulkComplete, W10). Chan 8 ordered stream.
+    public static let bulkComplete: UInt8 = 0x20
+    /// Either direction: typed transfer abort with reason
+    /// (BulkAbort, W10). Chan 8 ordered stream.
+    public static let bulkAbort: UInt8 = 0x21
 
     /// The type byte of a CTRL payload, nil when the payload is empty.
     /// Dispatch on this, then hand the whole payload (type byte included)

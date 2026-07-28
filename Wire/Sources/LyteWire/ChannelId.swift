@@ -14,11 +14,16 @@ public enum DeliveryClass: Equatable, Sendable {
     case reliableOneShotGroups
 }
 
-/// The unified send-priority order (overview §2, conflict 13):
-/// CTRL/input > audio > fresh video > video tail + retransmits > ratchet
-/// refinement > feature channels > telemetry. Lower rank sends first.
-/// `refinement` has no channel of its own — it rides video-active and the
-/// pacer demotes it by content, not by channel number.
+/// The unified send-priority order (overview §2, conflict 13; the bulk
+/// rung is the W10/F-2 ruling): CTRL/input > audio > fresh video >
+/// video tail + retransmits > ratchet refinement > feature channels >
+/// telemetry > bulk. Lower rank sends first. `refinement` has no
+/// channel of its own — it rides video-active and the pacer demotes it
+/// by content, not by channel number. `bulk` sits STRICTLY below
+/// telemetry: the 25–50 ms feedback reports feed the congestion
+/// estimator that prices the path for every media class, and a 100 MB
+/// transfer is infinitely patient where a stale report mis-prices
+/// audio and video (design record 20260728-053300 §1).
 public enum WirePriority: UInt8, Comparable, Sendable {
     case control = 0
     case audio = 1
@@ -27,6 +32,7 @@ public enum WirePriority: UInt8, Comparable, Sendable {
     case refinement = 4
     case feature = 5
     case telemetry = 6
+    case bulk = 7
 
     public static func < (lhs: Self, rhs: Self) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -53,6 +59,13 @@ public struct ChannelId: RawRepresentable, Hashable, Sendable {
     public static let feedback = ChannelId(rawValue: 3)
     /// Sparse idle frames and the final converged ratchet frame.
     public static let videoIdle = ChannelId(rawValue: 4)
+    /// The bulk-transfer channel (W10 / F-2): chunked, resumable,
+    /// backpressured blob transfer over its own ARQ ordered stream —
+    /// the first feature channel actually built. Send class `.bulk`,
+    /// the ladder's tail; later feature channels (9+) keep `.feature`
+    /// so small interactive feature messages never queue behind a
+    /// file.
+    public static let bulkTransfer = ChannelId(rawValue: 8)
 
     /// Feature channels (clipboard, files, printing) start at 8.
     public static let firstFeatureChannel: UInt8 = 8
@@ -93,6 +106,7 @@ public struct ChannelId: RawRepresentable, Hashable, Sendable {
         case Self.videoActive.rawValue: return .freshVideo
         case Self.feedback.rawValue: return .telemetry
         case Self.videoIdle.rawValue: return .videoTail
+        case Self.bulkTransfer.rawValue: return .bulk
         case Self.firstFeatureChannel...: return .feature
         default: return nil
         }

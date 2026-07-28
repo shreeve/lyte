@@ -109,6 +109,29 @@ case in `FecCoderTests`, the hand-walked datagram in
   shapes; the three key-10 spine pins. `ClipboardVectorFileTests`
   asserts the coverage discipline (every error case name present, the
   ceiling pinned legal, the spine pinned both ways).
+- `bulk-v1.json` — the W10/F-2 bulk-transfer channel (design record
+  `docs/20260728-053300-lyte-bulk-channel.md`): the message sextet
+  0x1C–0x21 (offer/accept/chunk/ack/complete/abort, all
+  fixed-layout LE with the chunk-map credit spine shared by
+  accept/ack), capability key 11 (`bulkTransfer`) on the W7
+  forward-compat spine, and — new for this file — worked
+  multi-session TRANSFER traces: both engines run through the
+  deterministic `BulkTransferHarness` (TestKit) with every
+  per-direction emission frozen byte-exact, including a
+  teardown-resume (session 1 dies mid-flight, session 2 resumes from
+  the persisted possession and completes) and a holed-map resume
+  (contiguous prefix + bitmap extras). Message/capability sections
+  are anchored against the hand-computed bytes in `BulkCodecTests`;
+  transfer traces are pinned self-consistent (`provenance` says so —
+  the noise-transport precedent: no external oracle covers our
+  composition, the codecs beneath are hand-anchored). Inventory (68):
+  63 message vectors (roundtrips per codec covering nominal/minimum/
+  maximum shapes, the exact 131,072-byte chunk ceiling, the exact
+  1,024-byte bitmap ceiling, the u64-max total — the no-size-ceiling
+  claim as data — and the whole 7-reason abort space; rejects
+  covering every one of the 16 `BulkMessageError` case names),
+  3 key-11 spine pins, 2 transfer traces. `BulkVectorFileTests`
+  asserts the coverage discipline and replays every trace.
 
 ## The 24-byte envelope (wire v1)
 
