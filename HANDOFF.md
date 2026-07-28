@@ -85,6 +85,27 @@ pup** (unreachable this session — owner away). When pup returns:
 3. **HANDOFF.md commits are the coordinator's job**; workers edit only
    their own wave entries and leave the file uncommitted.
 
+**H3 §0 OWNER DECISIONS — ANSWERED (2026-07-27 ~21:22).** The seven
+decisions in `docs/20260723-051223-lyte-h3-plan.md` §0 are settled:
+1. **File-transfer consent**: standing per-host toggle, **client→host
+   only in v1** (per recommendation).
+2. **Clipboard v2 (images/rich)**: **deferred to H4** (not even an H3
+   stretch — drop it from the H3 ladder).
+3. **Browser client (WASM viewer)**: **PULLED INTO H3** (against the
+   doc's recommendation — the owner wants it this wave; scoping doc
+   commissioned, then slices).
+4. **Non-LAN reach**: LAN-first stands; F-5 roaming attacks the pain
+   (per recommendation).
+5. **Wire-version 2 batch**: design-discussion doc only in H3, no
+   bytes change (per recommendation).
+6/7. **Printing → H5, multi-monitor + dynamic resolution → H4**:
+   confirmed.
+The H3 ladder is therefore: F-2 bulk channel (IN FLIGHT as of ~21:25)
+→ F-3/F-4 file drop (client→host v1) → F-5 roaming → browser-viewer
+slices (post-scoping) + the wire-v2 design doc; J-G3 exit criteria
+adjust to drop clipboard-v2 and add the browser viewer's minimal bar
+(scoping doc to propose it).
+
 **UX INVESTIGATION CONCLUDED (2026-07-27 ~01:37) — fix items 1–4 LANDED
 (CL-16 `73ccd46`, ~01:47; details at the end of this block).**
 The owner's trip-era complaints ("can't control the host, duplicated
