@@ -304,9 +304,20 @@ final class SessionWire {
                 try receiveAll { [weak self] datagram, tuple in
                     guard let self else { return }
                     if self.session == nil {
-                        // First datagram: its source is the session's
-                        // initial tuple; connect() so the send path has
-                        // a peer.
+                        // Only a plausible handshake initiation may pick
+                        // the tuple the socket and session pin to. A host
+                        // relaunched under a live client (the F-5 restart
+                        // rung) binds while the client's dead session is
+                        // still spraying sealed feedback from its OLD
+                        // source port — latching onto that first arrival
+                        // connect()s the socket to a tuple that will never
+                        // handshake, and the kernel then filters the real
+                        // re-dial (fresh ephemeral port) forever. Shape
+                        // check, not trust: the gate still authenticates.
+                        guard Self.looksLikeHandshakeInitiation(datagram)
+                        else { return }
+                        // Its source is the session's initial tuple;
+                        // connect() so the send path has a peer.
                         var err = [CChar](repeating: 0, count: 256)
                         guard lyte_netio_set_peer(
                             self.netio, tuple.remoteAddress, tuple.remotePort,
@@ -352,6 +363,18 @@ final class SessionWire {
         throw HostError("no client handshake within \(Int(timeoutSeconds))s "
             + "— is lyte-cli wire-view pointed at this host and holding "
             + "the printed static key?")
+    }
+
+    /// True when `datagram` is shaped like a client handshake initiation:
+    /// a bare CTRL carriage whose payload is typed 0x05 (Noise message 1)
+    /// or 0x14 (the W8 cookie resubmission). This is a pre-latch shape
+    /// check only — admission, cookies, and Noise still judge the bytes.
+    static func looksLikeHandshakeInitiation(_ datagram: [UInt8]) -> Bool {
+        guard let (envelope, payload) = try? Envelope.decode(datagram),
+              envelope.channel == .ctrl
+        else { return false }
+        return payload.first == CtrlMessageType.noiseHandshake1
+            || payload.first == CtrlMessageType.retryHandshake1
     }
 
     /// The encoder-loop poll (HS-12 promotion, a client 0x10, or the
