@@ -1880,6 +1880,63 @@ its entry at the marker at the end of this block.*
   with all B-2+ work until F-3/F-4 land — browser sessions are
   sequenced BEHIND file transfer by owner direction.
 
+- **F-4 client file-drop sending end** (`d771e22`, root): a dropped
+  file finds its way to the wire — the client half of drag-and-drop,
+  Mac-local against W10's frozen bytes, NO live leg (F-3 built in
+  parallel; the joint gate below). TRANSPORT:
+  `ReliableCtrlEndpoint` made channel-generic (a `ChannelId`
+  parameter, ctrl default) so **chan 8 runs its OWN ArqEndpoint pair**
+  in `LyteUdpSessionCore` (`bulkReliable`), started/stopped/ticked
+  beside ctrl and borrowing the ctrl-learned connection ID
+  (`adoptConnectionId`) so the FIRST bulk datagram is already tagged;
+  key 11 declared in the core default config (dialect, not consent —
+  the key-9/10 rule, third verse); `sendBulkMessage` refuses without
+  agreed key 11 (`BulkChannelError.notNegotiated`), inbound chan-8
+  deliveries decode → `.bulkMessageReceived` event, unnegotiated or
+  malformed drops loud (`bulkDropsLoud`). `BulkSendShell`
+  (Sources/LyteTransport) answers the sans-IO engine: reads on a
+  utility queue via `BulkFileChunkReader`, `BulkFilePreparer` builds
+  the offer (streaming sha-256 through swift-crypto, name clamped to
+  the 255-byte UTF-8 wire bound, MIME hint from UTType), progress =
+  confirmed possession bytes / total. `BulkSendCoordinator` holds the
+  policy: **QUEUE RULING — multi-file drops queue and send SERIALLY**
+  (one transfer at a time, v1's wire shape; nothing declined, the
+  pill shows "+N queued"); cancel (× or menu) aborts the active
+  transfer AND clears the queue; entries persist for the session's
+  lifetime across teardowns — the next `sessionReady` **re-offers the
+  SAME id** and resumes from the accept's possession map (only the
+  gap is read/sent); `abort(resumeMismatch)` draws exactly ONE
+  fresh-id re-preparation. UI (ConnectionModel + ControlStrip +
+  LyteCommands): the stream container is the drop target
+  (`.onDrop` of `.fileURL`), a drag lights a hint overlay — "Drop to
+  send" when key 11 agreed, **"Host isn't accepting files" when
+  not** (spoken, never silent; same notice on an attempted drop);
+  progress rides a bottom-corner pill (name, phase, %, queue depth,
+  cancel ×) opposite the strip, transient notices ("sent",
+  "declined", failures) fade after ~4 s; Actions menu grew "Cancel
+  File Transfer". DROP/CAPTURE VERDICT: **structural coexistence** —
+  drag sessions ride NSDraggingDestination (SwiftUI `.onDrop`), a
+  path CL-16's capture never touches (the NSEvent monitor mask has
+  no drag events; `landsOnOverlay` hit-tests clicks, not drags), so
+  a drag cannot fight the capture geometry by construction;
+  hand-verify at the joint gate. GATE: root suite **142 → 153/153**
+  (`BulkSendClientGateTests`, 11 legs: key-11 spine pin, preparer
+  against a real temp file, progress arithmetic, shell happy/cancel
+  against a REAL BulkReceiveEngine in virtual time, coordinator
+  gating/serial-queue/teardown-resume/mismatch-retry, and two
+  in-vivo legs through the REAL session core against a scripted
+  key-11 host — offer + 64 KiB chunk byte-exact over chan 8's own
+  ARQ through Noise sealing, rule-3 refusal + hostile-message loud
+  drop against a no-key-11 host); build-cli.sh + make-app.sh release
+  green. WHAT THE JOINT GATE NEEDS (J-G3a-style, once F-3 lands):
+  host toggle ON → real drag Mac→host lands sha-exact in the host's
+  landing dir; toggle OFF → key 11 undeclared and the client speaks
+  "host isn't accepting files"; mid-transfer session kill →
+  reconnect resumes the same id from the possession map; cancel ×
+  mid-flight → host sees abort(cancelled) and cleans its partial;
+  drag-during-captured-input sanity (the structural claim above,
+  verified at the glass).
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
