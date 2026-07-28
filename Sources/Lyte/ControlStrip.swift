@@ -49,9 +49,23 @@ struct StreamContainer: View {
     var body: some View {
         StreamView(model: model, onMouseActivity: { pointerActivity($0) })
             .overlay(alignment: stripEdge == .top ? .bottom : .top) {
-                // CL-8: the FROZEN pill — subtle, never modal. Lives on
-                // the edge OPPOSITE the strip so they never stack.
-                if model.lyteFrozen {
+                // The connection-health pill, tiered (F-5 over CL-8):
+                // a short blip is the FROZEN pill; past the roaming
+                // thresholds the banner SAYS what is happening
+                // ("looking for pup…", "found at … — reconnecting…")
+                // instead of a silent frozen frame. Subtle, never
+                // modal; the edge OPPOSITE the strip so they never
+                // stack.
+                if let line = model.roamingStatusLine {
+                    Label(line, systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(.ultraThinMaterial))
+                        .foregroundStyle(.orange)
+                        .padding(stripEdge == .top ? .bottom : .top, 10)
+                        .transition(.opacity)
+                } else if model.lyteFrozen {
                     Label("Connection interrupted…",
                           systemImage: "wifi.exclamationmark")
                         .font(.caption.weight(.semibold))
@@ -163,6 +177,8 @@ struct StreamContainer: View {
                 reveal.task = nil
             }
             .animation(.easeInOut(duration: 0.3), value: model.lyteFrozen)
+            .animation(.easeInOut(duration: 0.3),
+                       value: model.roamingStatusLine)
             .animation(.easeInOut(duration: 0.25), value: stripVisible)
             .animation(.easeInOut(duration: 0.2), value: model.statsVisible)
             .animation(.easeInOut(duration: 0.15), value: dropTargeted)

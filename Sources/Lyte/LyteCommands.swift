@@ -111,9 +111,21 @@ struct LyteCommands: Commands {
 
             Divider()
 
+            // F-5: the manual re-acquisition verb — tears the wire
+            // session down (typed goodbye) and dials fresh at the
+            // last-known address while a discovery scan runs, ladders
+            // reset. Enabled for the window's whole streaming life:
+            // during a roaming hunt it is the "act now" nudge, over a
+            // limping session it is the honest kick.
+            Button("Reconnect") { connection?.reconnectNow() }
+                .keyboardShortcut("r", modifiers: [.command])
+                .disabled(connection?.canReconnect != true)
+
+            // Disconnect must work during roaming too — the session
+            // object is gone but the window still hunts (F-5).
             Button("Disconnect") { connection?.disconnect() }
                 .keyboardShortcut("d", modifiers: [.command])
-                .disabled(connection?.lyteSession == nil)
+                .disabled(connection?.canEndSession != true)
         }
     }
 }

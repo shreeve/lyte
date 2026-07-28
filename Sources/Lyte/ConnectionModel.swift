@@ -64,6 +64,35 @@ final class ConnectionModel {
     private(set) var hostPublicKeyHash: String?
     let displayLayer = AVSampleBufferDisplayLayer()
 
+    // F-5: roaming/reconnect. The policy exists for the whole
+    // streaming life of a window (it IS the "can this window
+    // reconnect" verdict); its status drives the stream overlay's
+    // banner. `sessionEpoch` fences late events from detached
+    // sessions — a re-dial mints a new epoch and the dead session's
+    // stragglers (a .closed racing the teardown, mostly) are noise.
+    private var roaming: RoamingPolicy?
+    private var roamingTask: Task<Void, Never>?
+    private(set) var roamingStatus: RoamingStatus = .attached
+    private var pathWatcher: NetworkPathWatcher?
+    private var sessionEpoch = 0
+
+    /// The stream overlay's roaming banner; nil while the session is
+    /// healthy (or merely FROZEN — the pill's tier).
+    var roamingStatusLine: String? {
+        RoamingStatusLine.line(
+            for: roamingStatus,
+            hostName: hostName ?? hostAddress ?? "the host")
+    }
+
+    /// The Actions menu's Reconnect verb exists while a streaming
+    /// window has an identity to hunt (roaming or not — a manual
+    /// reconnect over a limping session is legitimate).
+    var canReconnect: Bool { roaming != nil }
+
+    /// Disconnect must work during roaming too — the session object
+    /// is gone but the window still hunts.
+    var canEndSession: Bool { lyteSession != nil || roaming != nil }
+
     // The Lyte-UDP session (CL-8). Mode/pill mirror the session's
     // mediaReceiver machine for the stream overlay.
     private(set) var lyteSession: LyteUdpSession?
@@ -122,10 +151,6 @@ final class ConnectionModel {
             return
         }
 
-        displayLayer.videoGravity = .resizeAspect
-        displayLayer.backgroundColor = CGColor(gray: 0, alpha: 1)
-        let renderer = displayLayer.sampleBufferRenderer
-
         // CL-13/CL-18: the per-host preference seeds the session-start
         // posture — one 0x18 leaves after the host's first 0x19 when
         // they differ. Since CL-18 the unset default is hostMuted
@@ -139,31 +164,7 @@ final class ConnectionModel {
         // starting posture; the strip's toggle is the live override.
         sessionConfig.core.shareClipboard = pinned.shareClipboard == true
 
-        let lastDims = VideoDimsCell()
-        let lyte = LyteUdpSession(
-            crypto: crypto,
-            config: sessionConfig,
-            onSample: { [weak self] sample, _ in
-                renderer.enqueue(sample)
-                // Teach the input capture its coordinate space — once
-                // per size, not per sample (dimension changes are a
-                // renegotiation-era event, but wired honestly now).
-                if let format = CMSampleBufferGetFormatDescription(sample) {
-                    let dims = CMVideoFormatDescriptionGetDimensions(format)
-                    if lastDims.update(width: dims.width, height: dims.height) {
-                        Task { @MainActor [weak self] in
-                            self?.lyteVideoSize = CGSize(
-                                width: CGFloat(dims.width),
-                                height: CGFloat(dims.height))
-                        }
-                    }
-                }
-            },
-            onEvent: { [weak self] event in
-                Task { @MainActor [weak self] in
-                    self?.handleLyteEvent(event)
-                }
-            })
+        let lyte = makeLyteSession(crypto: crypto, config: sessionConfig)
 
         // start() blocks through bind + the Noise handshake (retry
         // timer inside) — off the main actor.
@@ -190,9 +191,60 @@ final class ConnectionModel {
         // The pinned lookup above guarantees a pkh in practice; the
         // address fallback keeps the key total.
         prepareBulkCoordinator(hostKey: host.publicKeyHash ?? host.address)
+        // F-5: the roaming brain + the client-side path monitor exist
+        // for the window's whole streaming life.
+        if let pkh = host.publicKeyHash {
+            startRoamingMachinery(
+                publicKeyHash: pkh, address: host.address, port: host.port)
+        }
         phase = .streaming
         statusLine = crypto.modeDescription
         AgentState.shared.streamBegan()
+    }
+
+    /// Builds one wire session against this window's display layer,
+    /// minting a fresh event epoch — the shared leg of the first
+    /// connect and every roaming re-dial.
+    private func makeLyteSession(
+        crypto: NoiseTransportCrypto, config: LyteUdpSession.Config
+    ) -> LyteUdpSession {
+        displayLayer.videoGravity = .resizeAspect
+        displayLayer.backgroundColor = CGColor(gray: 0, alpha: 1)
+        let renderer = displayLayer.sampleBufferRenderer
+        let lastDims = VideoDimsCell()
+        sessionEpoch += 1
+        let epoch = sessionEpoch
+        return LyteUdpSession(
+            crypto: crypto,
+            config: config,
+            onSample: { [weak self] sample, _ in
+                renderer.enqueue(sample)
+                // Teach the input capture its coordinate space — once
+                // per size, not per sample (dimension changes are a
+                // renegotiation-era event, but wired honestly now).
+                if let format = CMSampleBufferGetFormatDescription(sample) {
+                    let dims = CMVideoFormatDescriptionGetDimensions(format)
+                    if lastDims.update(width: dims.width, height: dims.height) {
+                        Task { @MainActor [weak self] in
+                            self?.lyteVideoSize = CGSize(
+                                width: CGFloat(dims.width),
+                                height: CGFloat(dims.height))
+                        }
+                    }
+                }
+            },
+            onEvent: { [weak self] event in
+                Task { @MainActor [weak self] in
+                    self?.handleLyteEvent(event, epoch: epoch)
+                }
+            })
+    }
+
+    private func handleLyteEvent(_ event: LyteUdpSessionEvent, epoch: Int) {
+        // A detached session's stragglers must not touch the model —
+        // the epoch fence (F-5): only the CURRENT session speaks.
+        guard epoch == sessionEpoch else { return }
+        handleLyteEvent(event)
     }
 
     private func handleLyteEvent(_ event: LyteUdpSessionEvent) {
@@ -234,6 +286,15 @@ final class ConnectionModel {
             lyteWireMode = wireMode
         case .stateChanged(let state):
             lyteFrozen = state == .frozen
+            // F-5: the FROZEN edge feeds the roaming silence clock;
+            // any other state is evidence moving again.
+            if state == .frozen {
+                roamingInput { policy, now in policy.wentSilent(now: now) }
+            } else {
+                roamingInput { policy, now in
+                    policy.evidenceReturned(now: now)
+                }
+            }
         case .idleFrameReceived, .teardownSent, .protocolNote:
             break
         case .closed(let reason):
@@ -241,19 +302,37 @@ final class ConnectionModel {
             case .localTeardown:
                 break   // endLyteSession is already driving the close
             case .peerTeardown(let why):
+                // A typed goodbye is a decision, not weather — the
+                // host MEANT to end this; roaming would fight it.
                 endLyteSession(reason: why == .takenOver
                     ? "session taken over by another client" : nil)
             case .livenessTimeout:
-                endLyteSession(reason: "host unreachable for 30 s")
+                // F-5: the liveness verdict was the hotel experience —
+                // a dead frame and a "host unreachable" bounce. Now it
+                // begins roaming: keep the window, hunt the identity.
+                beginRoamingAfterLoss()
             }
         }
     }
 
-    /// Ends the Lyte-UDP session: the typed goodbye (with its ACK
-    /// linger) runs off-main; UI state resets immediately.
+    /// Ends the Lyte-UDP session for good: the typed goodbye (with its
+    /// ACK linger) runs off-main; UI state resets immediately; any
+    /// roaming hunt stops — this is the human's exit, roaming's
+    /// included (during a hunt the session object is already gone and
+    /// only the roaming machinery needs stopping).
     private func endLyteSession(reason: String?) {
-        guard let lyte = lyteSession else { return }
-        lyteSession = nil
+        guard lyteSession != nil || roaming != nil else { return }
+        stopRoamingMachinery()
+        if let lyte = lyteSession {
+            lyteSession = nil
+            sessionEpoch += 1
+            Task.detached {
+                // A peer/liveness close has nobody to say goodbye to;
+                // a local end sends the typed 0x0A and lingers for
+                // its ACK.
+                lyte.close(reason: .shuttingDown)
+            }
+        }
         lyteFrozen = false
         hostAudioNegotiated = false
         hostAudioPosture = nil
@@ -270,11 +349,6 @@ final class ConnectionModel {
         lyteInputCapture?.stop()
         lyteInputCapture = nil
         lyteVideoSize = .zero
-        Task.detached {
-            // A peer/liveness close has nobody to say goodbye to; a
-            // local end sends the typed 0x0A and lingers for its ACK.
-            lyte.close(reason: .shuttingDown)
-        }
         AgentState.shared.streamEnded()
         if let reason {
             phase = .failed(reason)
@@ -289,6 +363,259 @@ final class ConnectionModel {
 
     func disconnect() {
         endSession(reason: nil)
+    }
+
+    // MARK: - Roaming/reconnect (F-5)
+
+    /// The Actions menu's Reconnect verb: tear the wire session down
+    /// (typed goodbye — a host that can still hear one frees its side
+    /// immediately) and act NOW — an immediate probe dial at the
+    /// last-known address plus a discovery scan, ladders reset.
+    func reconnectNow() {
+        guard roaming != nil else { return }
+        detachWireSession(goodbye: true)
+        roamingInput { policy, now in policy.manualReconnect(now: now) }
+    }
+
+    private func startRoamingMachinery(
+        publicKeyHash: String, address: String, port: UInt16
+    ) {
+        roaming = RoamingPolicy(
+            targetPublicKeyHash: publicKeyHash,
+            address: address, port: port)
+        roamingStatus = .attached
+        let watcher = NetworkPathWatcher()
+        pathWatcher = watcher
+        // The Mac hopped networks: HS-12 migration gets the policy's
+        // grace to carry the session (the feedback cadence keeps
+        // sending from the new source unprompted); the ladder runs
+        // only if the path stays dark.
+        watcher.start { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.roamingInput { policy, now in
+                    policy.pathChanged(now: now)
+                }
+            }
+        }
+    }
+
+    private func stopRoamingMachinery() {
+        roamingTask?.cancel()
+        roamingTask = nil
+        roaming = nil
+        roamingStatus = .attached
+        pathWatcher?.stop()
+        pathWatcher = nil
+    }
+
+    /// The 30 s liveness verdict: the peer is gone. Keep the window
+    /// (the last frame + the roaming banner), keep everything
+    /// per-host (coordinator, posture, consent), drop the wire
+    /// session, hunt the identity.
+    private func beginRoamingAfterLoss() {
+        guard roaming != nil else {
+            // No identity to hunt (shouldn't happen — the policy is
+            // born with the session): the pre-F-5 posture.
+            endLyteSession(reason: "host unreachable for 30 s")
+            return
+        }
+        detachWireSession(goodbye: false)
+        roamingInput { policy, now in policy.sessionClosed(now: now) }
+    }
+
+    /// Roaming-preserving teardown: the wire session goes away, the
+    /// stream window and everything per-HOST stays for the re-dial —
+    /// the live clipboard consent, the confirmed host-audio posture
+    /// (the reconnect config re-asks for it), the input capture (its
+    /// sends route through `lyteSession` live and simply drop while
+    /// nil), and the bulk coordinator (the next `sessionReady`
+    /// re-offers the same id — the F-4 resume path, which is exactly
+    /// what makes a mid-transfer roam finish sha-exact).
+    private func detachWireSession(goodbye: Bool) {
+        guard let lyte = lyteSession else { return }
+        lyteSession = nil
+        sessionEpoch += 1
+        lyteFrozen = false
+        hostAudioNegotiated = false
+        pasteboardSync?.stop()
+        pasteboardSync = nil
+        clipboardNegotiated = false
+        bulkCoordinator?.sessionEnded()
+        bulkNegotiated = false
+        Task.detached {
+            if goodbye {
+                lyte.close(reason: .shuttingDown)
+            } else {
+                lyte.stop()   // machine closed — nobody to say it to
+            }
+        }
+    }
+
+    /// One policy interaction: mutate under the injected wall clock,
+    /// execute the actions, mirror the status, re-arm the deadline
+    /// task. The single funnel for every roaming mutation.
+    private func roamingInput(
+        _ mutate: (inout RoamingPolicy, UInt64) -> [RoamingAction]
+    ) {
+        guard var policy = roaming else { return }
+        let now = Self.monotonicMicroseconds()
+        let actions = mutate(&policy, now)
+        roaming = policy
+        roamingStatus = policy.status
+        for action in actions {
+            switch action {
+            case .beginScan:
+                runRoamingScan()
+            case .dial(let address, let port, let discovered):
+                runRoamingDial(
+                    address: address, port: port, discovered: discovered)
+            }
+        }
+        armRoamingTask()
+    }
+
+    /// One standing task sleeps to the policy's next deadline and
+    /// ticks — the StripRevealPolicy driving shape.
+    private func armRoamingTask() {
+        roamingTask?.cancel()
+        roamingTask = nil
+        guard let deadline = roaming?.nextDeadline else { return }
+        roamingTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                let now = Self.monotonicMicroseconds()
+                if now < deadline {
+                    try? await Task.sleep(
+                        nanoseconds: (deadline - now) * 1_000)
+                    continue
+                }
+                break
+            }
+            guard !Task.isCancelled else { return }
+            self?.roamingTask = nil
+            self?.roamingInput { policy, now in policy.tick(now: now) }
+        }
+    }
+
+    /// One quiet browse pass; the completion ALWAYS answers the
+    /// policy (the beginScan/scanCompleted contract).
+    private func runRoamingScan() {
+        Task { @MainActor [weak self] in
+            let hosts = await LyteDiscovery.browse(duration: 2.0)
+            let sightings = hosts.compactMap { host -> RoamingSighting? in
+                guard let pkh = host.publicKeyHash else { return nil }
+                return RoamingSighting(
+                    publicKeyHash: pkh,
+                    address: host.address, port: host.port)
+            }
+            self?.roamingInput { policy, now in
+                policy.scanCompleted(sightings: sightings, now: now)
+            }
+        }
+    }
+
+    /// One re-acquisition dial: fresh 1-RTT Noise IK against the SAME
+    /// pinned static — same pairing, no re-PIN (the store keys by
+    /// identity; the address is just where the identity lives now).
+    /// A shorter retry window than the first connect (a host that
+    /// hasn't freed the dead session answers with silence — the
+    /// ladder retries, don't camp).
+    private func runRoamingDial(
+        address: String, port: UInt16, discovered: Bool
+    ) {
+        detachWireSession(goodbye: true)
+        guard let pkh = hostPublicKeyHash,
+              let pinned = PinnedHostStore.load().host(publicKeyHash: pkh),
+              let hostStatic = pinned.staticPublicKey else {
+            endLyteSession(
+                reason: "\(hostName ?? "host") is no longer paired")
+            return
+        }
+        let identity: NoiseKeyPair
+        let crypto: NoiseTransportCrypto
+        do {
+            identity = try ClientNoiseIdentity.loadOrCreate()
+            crypto = try NoiseTransportCrypto(
+                hostAddress: address,
+                hostPort: port,
+                hostStaticPublicKey: hostStatic,
+                staticKeys: identity,
+                attempts: 3,
+                attemptTimeoutMilliseconds: 700)
+        } catch {
+            roamingInput { policy, now in policy.dialFailed(now: now) }
+            return
+        }
+        // Restore the LIVE posture, not the per-host default: the
+        // confirmed host-audio state rides the session-start ask, the
+        // clipboard consent seeds the new core's gate directly.
+        var config = LyteUdpSession.Config()
+        config.core.desiredHostAudioRouting =
+            hostAudioPosture ?? pinned.sessionStartHostAudioRouting
+        config.core.shareClipboard = clipboardSharing
+        let lyte = makeLyteSession(crypto: crypto, config: config)
+        Task { @MainActor [weak self] in
+            do {
+                try await Task.detached { try lyte.start() }.value
+                self?.adoptReconnectedSession(
+                    lyte, crypto: crypto, address: address, port: port)
+            } catch {
+                self?.roamingInput { policy, now in
+                    policy.dialFailed(now: now)
+                }
+            }
+        }
+    }
+
+    /// A re-dial became a session: swap it in without touching the
+    /// per-host state, refresh the pinned dial hints (the host lives
+    /// HERE now), and let the capability agreement drive the rest —
+    /// the bulk coordinator's re-offer rides `.capabilitiesAgreed`
+    /// exactly as a first connect does.
+    private func adoptReconnectedSession(
+        _ lyte: LyteUdpSession, crypto: NoiseTransportCrypto,
+        address: String, port: UInt16
+    ) {
+        guard roaming != nil, case .streaming = phase else {
+            // The human disconnected mid-dial: this session has no
+            // owner — close it politely and walk away.
+            Task.detached { lyte.close(reason: .shuttingDown) }
+            return
+        }
+        lyteSession = lyte
+        lyte.setAudioMuted(muted)
+        lyteWireMode = .active
+        lyteFrozen = false
+        hostAddress = address
+        hostAudioNegotiated = false
+        // hostAudioPosture stays: the reconnect config already asked
+        // for it; the host's first 0x19 refreshes the truth.
+        clipboardNegotiated = false
+        pasteboardSync = PasteboardSync(onLocalChange: { [weak lyte] text in
+            lyte?.shareLocalClipboard(text)
+        })
+        bulkNegotiated = false
+        statusLine = crypto.modeDescription
+        // The dial hints follow the host (identity-keyed pin; the
+        // refresh keeps pairedAt and every per-host preference).
+        if let pkh = hostPublicKeyHash {
+            var store = PinnedHostStore.load()
+            if let pinned = store.host(publicKeyHash: pkh),
+               let key = pinned.staticPublicKey {
+                store.pin(
+                    staticPublicKey: key, name: pinned.name,
+                    address: address, port: port,
+                    pairedAt: pinned.pairedAt)
+                try? store.save()
+            }
+        }
+        roamingInput { policy, now in
+            policy.sessionEstablished(
+                address: address, port: port, now: now)
+        }
+    }
+
+    private static func monotonicMicroseconds() -> UInt64 {
+        DispatchTime.now().uptimeNanoseconds / 1_000
     }
 
     // MARK: - Host audio routing (CL-13)

@@ -30,7 +30,7 @@ struct StreamView: NSViewRepresentable {
             for attempt in 1...Self.installMaxAttempts {
                 // Session already gone (teardown race) or another
                 // make pass installed first: nothing left to do.
-                guard let lyte = model.lyteSession,
+                guard model.lyteSession != nil,
                       model.lyteInputCapture == nil else { return }
                 if let window = view.window {
                     // CL-9: evdev-speaking capture onto the session's
@@ -44,10 +44,15 @@ struct StreamView: NSViewRepresentable {
                         view: view, window: window,
                         videoSize: { model.lyteVideoSize },
                         send: { body in
+                            // Routed through the model's LIVE session
+                            // (F-5): the capture outlives a roaming
+                            // re-dial — sends against a detached
+                            // session simply drop, and the reconnected
+                            // one picks them up without a reinstall.
                             // A refused send is a teardown race — the
                             // session is already ending; never crash
                             // the event monitor over it.
-                            _ = try? lyte.sendInput(body)
+                            _ = try? model.lyteSession?.sendInput(body)
                         },
                         onActivity: onMouseActivity)
                     capture.start()
