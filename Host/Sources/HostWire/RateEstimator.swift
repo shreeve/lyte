@@ -107,6 +107,46 @@
 //     corroborates within a few 25–50 ms beats (inside one 500 ms
 //     fall-limiter window — at most one beat later than today).
 //     Self-caused burst bumps drain and reset the streak instead.
+//     THE STALL GATE (HS-23): the Wi-Fi study's finding — the
+//     RECEIVER's radio goes dark 70–100 ms in trains (scan dwells),
+//     the AP queues everything, then drains it in one compressed
+//     burst. Nothing is lost and nothing is slow; the path is merely
+//     time-shifted. But host-side that cycle reads as textbook
+//     overuse: two consecutive inflated reports, an anchor the fall
+//     limiter happily acts on twice a second, forever — the exact
+//     mechanism that pinned a ~100 Mbps-capable path at 13–17 Mbps.
+//     So an overuse fall is additionally refused when the evidence
+//     spells a CLOSED HOLE, not a squeeze: (1) the inflation streak's
+//     PEAK stays under `stallGapCeilingMicroseconds` (150 ms — a
+//     bounded dwell, not an outage; the peak inflation IS the hole
+//     length, because packets held for the dwell carry it as delay);
+//     (2) a fresh FULL train measured at ≥ `stallBurstRateFactor` ×
+//     the standing rate (the drain: a capacity-limited bottleneck
+//     spaces arrivals at capacity, BELOW our pace — only packets
+//     that accumulated and were released together can read
+//     measurably above it); (3) conservation — pre-FEC loss below
+//     the clean threshold and post-FEC loss inside the regime
+//     ladder's own clean column (< 0.5%): a hole that closed
+//     delivered everything, but it ECHOES as a few NACKs (the
+//     client's completion presumption expires mid-dwell, moments
+//     before the drain makes the frame whole — the first live gate
+//     measured 30 of 35 NACK entries judged stale), so demanding
+//     literal zero starves the gate on exactly the wire it exists
+//     for. A congested queue tail-drops its way past the clean
+//     column, and the rung-3 branch (> 2%) falls ungated regardless.
+//     Queue GROWTH deliberately does NOT defeat this gate (unlike
+//     the self-reference gate's corroboration): successive dwells
+//     rising 70→100 ms mimic growth report-to-report, and the drain
+//     evidence is the stronger discriminator — a genuinely building
+//     queue can never produce a super-rate full train, and if it
+//     somehow inflates anyway the 150 ms peak ceiling stops the
+//     holds. Loss-tolerance note: every condition reads POSITIVE
+//     evidence carried inside received reports (delay dynamics of
+//     matched samples, train rates, cumulative-counter deltas) —
+//     the 1.7% feedback-direction loss the study measured can starve
+//     cadence but can never fabricate a hold or masquerade as a
+//     delivery gap (a report gap contributes no samples, fires
+//     nothing, and leaves the streak standing).
 //     Floor 500 kbps (a paced IDR within 2 s even on a terrible path),
 //     ceiling = the negotiated session rate (W7 carries no bitrate key
 //     in v1, so the session config IS the negotiated ceiling).
@@ -185,6 +225,19 @@ public struct RateEstimatorConfig: Sendable {
     /// queued bytes at the standing rate (5 ms — more than mid-batch
     /// residue, far less than one squeezed IDR's drain).
     public var selfReferenceBacklogWindowNS: UInt64
+    /// HS-23: the largest closed-hole cycle the stall gate forgives —
+    /// an inflation streak whose PEAK exceeds this is sustained
+    /// degradation and falls as ever (the Wi-Fi study's dwells run
+    /// 70–100 ms; a real outage runs past 150 and into the freeze
+    /// machinery anyway).
+    public var stallGapCeilingMicroseconds: Int64
+    /// HS-23: the drain evidence bar — a fresh full train must measure
+    /// at least this multiple of the standing rate to prove packets
+    /// accumulated and were released (1.25: comfortably above
+    /// pacing-measurement noise, far below any real AP drain).
+    public var stallBurstRateFactor: Double
+    /// HS-23: how fresh the drain evidence must be at fall time.
+    public var stallEvidenceWindowNS: UInt64
     /// Pre-FEC loss fraction below which the window reads clean (the
     /// rate may rise). GCC's lower band.
     public var lossCleanThreshold: Double
@@ -239,6 +292,9 @@ public struct RateEstimatorConfig: Sendable {
         overuseConsecutiveReports: Int = 2,
         selfReferenceBandFraction: Double = 0.15,
         selfReferenceBacklogWindowNS: UInt64 = 5_000_000,
+        stallGapCeilingMicroseconds: Int64 = 150_000,
+        stallBurstRateFactor: Double = 1.25,
+        stallEvidenceWindowNS: UInt64 = 500_000_000,
         lossCleanThreshold: Double = 0.02,
         lossDownshiftThreshold: Double = 0.10,
         lossWindowNS: UInt64 = 1_000_000_000,
@@ -268,6 +324,9 @@ public struct RateEstimatorConfig: Sendable {
         self.overuseConsecutiveReports = max(overuseConsecutiveReports, 1)
         self.selfReferenceBandFraction = selfReferenceBandFraction
         self.selfReferenceBacklogWindowNS = selfReferenceBacklogWindowNS
+        self.stallGapCeilingMicroseconds = stallGapCeilingMicroseconds
+        self.stallBurstRateFactor = stallBurstRateFactor
+        self.stallEvidenceWindowNS = stallEvidenceWindowNS
         self.lossCleanThreshold = lossCleanThreshold
         self.lossDownshiftThreshold = max(
             lossDownshiftThreshold, lossCleanThreshold
@@ -334,6 +393,10 @@ public struct RateEstimatorStats: Equatable, Sendable {
     /// evidence measured our own pacing and nothing corroborated a
     /// real path problem (rate held, rises stayed blocked).
     public var selfReferenceHolds = 0
+    /// HS-23: overuse falls the stall gate refused — a bounded hole
+    /// that closed with a compressed drain and nothing lost (the
+    /// receiver's radio blinked; the path did not slow).
+    public var stallHolds = 0
     public var lossDownshifts = 0
     /// Rung-3 downshifts (post-FEC loss over threshold, HS-17).
     public var postFecDownshifts = 0
@@ -422,6 +485,17 @@ public final class RateEstimator {
     /// (HS-22c): a real standing queue grows past it, a self-caused
     /// burst bump drains and resets the streak.
     private var inflatedStreakStartMicros: Int64?
+    /// The worst inflation seen ANYWHERE in the current streak — the
+    /// stall gate's hole-length reading (HS-23): packets held through
+    /// a dwell carry its length as delay, so the streak peak bounds
+    /// the hole. Resets with the streak.
+    private var inflatedStreakPeakMicros: Int64?
+    /// The freshest FULL (≥ minTrainPackets) train's raw measurement —
+    /// the stall gate's drain evidence (HS-23). Short trains stay
+    /// excluded exactly as they are from the anchor votes: Wi-Fi
+    /// aggregation compresses small groups innocently.
+    private var lastFullTrainRate: Double?
+    private var lastFullTrainAt: UInt64?
 
     private struct LossSample {
         var at: UInt64
@@ -814,6 +888,12 @@ public final class RateEstimator {
                 if recentRawDeliveries.count > config.overuseAnchorSampleCount {
                     recentRawDeliveries.removeFirst()
                 }
+                // The stall gate's drain evidence (HS-23): the
+                // freshest full-train reading, not a window max — a
+                // squeeze that begins right after a genuine drain
+                // must not inherit the drain's super-rate sample.
+                lastFullTrainRate = rate
+                lastFullTrainAt = now
             }
             stats.deliverySamples += 1
             let weighted = train.count >= config.minTrainPackets
@@ -871,12 +951,19 @@ public final class RateEstimator {
         if worstInflation > config.overuseThresholdMicroseconds {
             if consecutiveInflatedReports == 0 {
                 inflatedStreakStartMicros = worstInflation
+                inflatedStreakPeakMicros = worstInflation
+            } else {
+                inflatedStreakPeakMicros = max(
+                    inflatedStreakPeakMicros ?? worstInflation,
+                    worstInflation
+                )
             }
             consecutiveInflatedReports += 1
             return true
         }
         consecutiveInflatedReports = 0
         inflatedStreakStartMicros = nil
+        inflatedStreakPeakMicros = nil
         return false
     }
 
@@ -919,11 +1006,36 @@ public final class RateEstimator {
             let corroborated = lossFraction >= config.lossCleanThreshold
                 || postFecLossFraction > 0
                 || queueGrew
+            // THE STALL GATE (HS-23, header): a bounded hole that
+            // closed with a compressed drain and nothing lost is the
+            // RECEIVER's radio blinking, not the path slowing. Queue
+            // growth does not defeat it (rising dwells mimic growth);
+            // the drain evidence and the 150 ms peak ceiling are the
+            // honest discriminators — a genuinely building queue can
+            // never produce a super-rate full train, and one that
+            // inflates past the ceiling falls as ever.
+            let holePeak = inflatedStreakPeakMicros ?? Int64.max
+            let drainFresh = lastFullTrainAt.map {
+                now &- $0 <= config.stallEvidenceWindowNS
+            } ?? false
+            let drainOutranPace = drainFresh
+                && (lastFullTrainRate ?? 0)
+                    >= Double(rateBitsPerSecond) * config.stallBurstRateFactor
+            let closedHole = holePeak <= config.stallGapCeilingMicroseconds
+                && drainOutranPace
+                && lossFraction < config.lossCleanThreshold
+                && postFecLossFraction < config.postFecCleanThreshold
             if selfReferential, !corroborated {
                 stats.selfReferenceHolds += 1
                 // Held, not fallen: the overuse verdict still blocks
                 // every rise below, and the fall limiter stays free so
                 // corroboration on the very next report may act.
+            } else if closedHole {
+                stats.stallHolds += 1
+                // Same posture as the self-reference hold: the rate
+                // stands, rises stay blocked this report, and the
+                // fall limiter is unconsumed — sustained evidence on
+                // the very next report may still act.
             } else {
                 rateBitsPerSecond = clamp(min(
                     Int(Double(anchor) * config.downshiftFactor),

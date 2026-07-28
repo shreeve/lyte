@@ -25,6 +25,10 @@ struct Options {
     var outputPath = "/tmp/lyte-h0a.hevc"
     var seconds = 5.0
     var bitrate: Int64 = 10_000_000
+    /// True when --bitrate-mbps was given: in session mode an
+    /// unspecified encoder recipe PAIRS to the wire rate (HS-23/R2 —
+    /// one knob moves both unless the operator splits them).
+    var bitrateExplicit = false
     var fps: Int32 = 60
     var backend: Backend = .portal
     var connector = ""
@@ -36,8 +40,11 @@ struct Options {
     var wireListen: UInt16?
     /// The session rate ceiling for the wire mode. HS-16's estimator
     /// starts here and moves the live pacer rate inside
-    /// [500 kbps, this] on feedback evidence.
-    var wireRateMbps = 20.0
+    /// [500 kbps, this] on feedback evidence. 50 is the owner-ruled
+    /// LAN ceiling (HS-23/R2): permission, not a promise — the
+    /// estimator still governs below it, and capped-CQ means an idle
+    /// desktop at a 50 Mbps cap still costs ~0.4 Mbps.
+    var wireRateMbps = 50.0
     /// CP-3 fallback (§4.1): passthrough seal, stream to the fixed peer
     /// without a handshake. The default is real Noise.
     var insecure = false
@@ -112,6 +119,7 @@ struct Options {
                     throw HostError("--bitrate-mbps needs a positive number")
                 }
                 opts.bitrate = Int64(v * 1_000_000)
+                opts.bitrateExplicit = true
             case "--backend":
                 i += 1
                 guard i < args.count, let b = Backend(rawValue: args[i]) else {
@@ -246,7 +254,12 @@ struct Options {
                   --insecure        CP-3 fallback: no handshake, passthrough
                                     seal, stream to the --wire-out peer
                                     immediately (re-gate with Noise later)
-                  --wire-rate-mbps  pacer rate in the wire mode (default 20)
+                  --wire-rate-mbps  session ceiling: pacer rate + the
+                                    estimator's negotiated cap
+                                    (default 50 — the owner-ruled LAN
+                                    ceiling; in session mode the
+                                    encoder recipe pairs to it unless
+                                    --bitrate-mbps splits them)
                   --no-advertise    skip the Avahi _lyte._udp advertisement
                                     in --wire-listen mode
                   --pair            pairing mode (with --wire-listen): mint
@@ -880,7 +893,17 @@ private func packetTrampoline(user: UnsafeMutableRawPointer?,
 func run() throws {
     lyte_stdout_linebuf()
 
-    let opts = try Options.parse(CommandLine.arguments)
+    var opts = try Options.parse(CommandLine.arguments)
+
+    // THE RECIPE PAIRING (HS-23, the supremacy plan's R2): a session's
+    // encoder recipe follows the wire rate unless --bitrate-mbps split
+    // them deliberately — the pacer's headroom and the encoder's cap
+    // move as ONE ceiling-relative recipe (the EncoderVbv k-ladder and
+    // clean boundary are fractions of it, so they scale with it).
+    // File mode keeps its own 10 Mbps default: no pacer to pair with.
+    if opts.wireOut != nil || opts.wireListen != nil, !opts.bitrateExplicit {
+        opts.bitrate = Int64(opts.wireRateMbps * 1_000_000)
+    }
 
     guard ProcessInfo.processInfo.environment["DBUS_SESSION_BUS_ADDRESS"] != nil
         || FileManager.default.fileExists(
@@ -1414,7 +1437,8 @@ func run() throws {
         \(wire.estimatorStats.downshifts) downshifts \
         (\(wire.estimatorStats.lossDownshifts) loss, \
         \(wire.estimatorStats.overuseVerdicts) overuse verdicts, \
-        \(wire.estimatorStats.selfReferenceHolds) self-ref holds), \
+        \(wire.estimatorStats.selfReferenceHolds) self-ref holds, \
+        \(wire.estimatorStats.stallHolds) stall holds), \
         \(wire.estimatorStats.upshifts) upshifts, \
         \(s.rateChanges) pacer moves; frameByteCeiling@\(opts.fps)fps \
         \(wire.frameByteCeiling(fps: Int(opts.fps))) B

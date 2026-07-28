@@ -97,13 +97,15 @@ final class RateEstimatorGateTests: XCTestCase {
     private func report(
         samples: [FeedbackReport.Dispersion.Sample],
         clientMicros: UInt64,
-        channels: [FeedbackReport.ChannelStats] = []
+        channels: [FeedbackReport.ChannelStats] = [],
+        nacks: [FeedbackReport.NackEntry] = []
     ) -> FeedbackReport {
         defer { arrivals.removeAll() }
         guard !samples.isEmpty else {
             return FeedbackReport(
                 clientTimestamp: ClientTimestamp(microseconds: clientMicros),
-                channels: channels
+                channels: channels,
+                nacks: nacks
             )
         }
         let base = arrivals.min()!
@@ -118,7 +120,8 @@ final class RateEstimatorGateTests: XCTestCase {
             channels: channels,
             dispersion: FeedbackReport.Dispersion(
                 base: ClientTimestamp(microseconds: base), samples: fixed
-            )
+            ),
+            nacks: nacks
         )
     }
 
@@ -664,7 +667,8 @@ final class RateEstimatorGateTests: XCTestCase {
         _ seq: inout Int, on estimator: RateEstimator,
         bottleneckMbps: Double, extraDelayMicros: UInt64,
         backlogBytes: Int,
-        channels: [FeedbackReport.ChannelStats] = []
+        channels: [FeedbackReport.ChannelStats] = [],
+        nacks: [FeedbackReport.NackEntry] = []
     ) -> RateEstimatorVerdict {
         now += 25 * Self.ms
         clientMicros += 25_000
@@ -677,7 +681,7 @@ final class RateEstimatorGateTests: XCTestCase {
         seq += 12
         return estimator.ingest(
             report(samples: samples, clientMicros: clientMicros,
-                   channels: channels),
+                   channels: channels, nacks: nacks),
             now: now, inRecovery: false,
             pacerBacklogBytes: backlogBytes
         )
@@ -860,6 +864,348 @@ final class RateEstimatorGateTests: XCTestCase {
             + "with standing backlog → fall to "
             + "\(verdict.newRateBitsPerSecond! / 1_000) kbps "
             + "(0.85 × measured), zero self-reference holds")
+    }
+
+    // MARK: Leg 3e — HS-23: the stall gate (the Wi-Fi study's receiver
+    // dwells). The client's radio goes dark 70–100 ms, the AP queues
+    // everything, then drains it in one compressed burst — nothing
+    // lost, nothing slow, the path merely time-shifted. Host-side that
+    // cycle is textbook overuse (two inflated reports, an anchor, a
+    // fall twice a second forever — the 13–17 Mbps pin). The gate
+    // refuses the fall when the evidence spells a CLOSED HOLE: streak
+    // peak ≤ 150 ms, a fresh full train at ≥ 1.25 × the standing rate
+    // (only accumulated-then-released packets can read above our own
+    // pace), and conservation (loss clean, zero post-FEC). Growth does
+    // NOT defeat it — rising dwells mimic growth — but a hole past the
+    // ceiling, a drain below the pace, or any loss falls as ever.
+
+    /// THE HS-23 HEADLINE: repeated sub-150 ms gap-burst cycles — the
+    /// scan-stall cadence — must not move the rate ONCE. Each cycle:
+    /// two dwell reports (80 ms of held delay, drain measured at
+    /// 200 Mbps — far above the 20 Mbps pace), then clean beats.
+    func testStallCyclesRideThroughWithoutAnchoringDown() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
+
+        var overuseVerdicts = 0
+        for _ in 0..<10 {
+            for _ in 0..<2 {
+                let verdict = selfRefBeat(
+                    &now, &clientMicros, &seq, on: estimator,
+                    bottleneckMbps: 200, extraDelayMicros: 80_000,
+                    backlogBytes: 0
+                )
+                if verdict.overuse { overuseVerdicts += 1 }
+                XCTAssertNil(verdict.newRateBitsPerSecond,
+                    "a closed hole must hold the rate, never anchor a fall")
+            }
+            for _ in 0..<6 {
+                _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                                bottleneckMbps: 20, extraDelayMicros: 0,
+                                backlogBytes: 0)
+            }
+        }
+        XCTAssertGreaterThanOrEqual(overuseVerdicts, 10,
+            "the overuse verdicts genuinely fired — the gate held the "
+            + "FALL, not the detector")
+        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling,
+            "the estimator rode through every stall cycle")
+        XCTAssertEqual(estimator.stats.downshifts, 0)
+        XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 10)
+
+        print("HS-23 gate (stall ride-through): 10 gap-burst cycles "
+            + "(80 ms holes, 200 Mbps drains) → \(overuseVerdicts) "
+            + "overuse verdicts, \(estimator.stats.stallHolds) stall "
+            + "holds, 0 falls, rate pinned at "
+            + "\(estimator.rateBitsPerSecond / 1_000) kbps (the old law "
+            + "fell twice a second on this shape, forever)")
+    }
+
+    /// A dwell TRAIN with rising peaks (70 → 90 ms) mimics queue
+    /// growth report-to-report — the exact signature the self-reference
+    /// gate treats as corroboration. The stall gate must not be
+    /// defeated by it: the drain evidence (super-rate full trains) and
+    /// the bounded peak are the stronger reading.
+    func testRisingDwellTrainHoldsDespiteGrowthSignature() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+
+        XCTAssertNil(selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 200, extraDelayMicros: 70_000,
+            backlogBytes: 0
+        ).newRateBitsPerSecond)
+        // +20 ms past the streak's opening — queueGrew reads true, and
+        // pre-HS-23 this beat fell.
+        let verdict = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 200, extraDelayMicros: 90_000,
+            backlogBytes: 0
+        )
+        XCTAssertTrue(verdict.overuse)
+        XCTAssertNil(verdict.newRateBitsPerSecond,
+            "rising dwells are not a building queue — the drain says "
+            + "the hole closed")
+        XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 1)
+        XCTAssertEqual(estimator.stats.downshifts, 0)
+    }
+
+    /// A hole past the 150 ms ceiling is sustained degradation, not a
+    /// dwell — the fall proceeds exactly as before the gate existed.
+    func testHoleBeyondTheCeilingFallsAsEver() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+
+        XCTAssertNil(selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 200, extraDelayMicros: 400_000,
+            backlogBytes: 0
+        ).newRateBitsPerSecond)
+        let verdict = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 200, extraDelayMicros: 400_000,
+            backlogBytes: 0
+        )
+        XCTAssertTrue(verdict.overuse)
+        XCTAssertEqual(verdict.change, .overuse)
+        XCTAssertEqual(Double(verdict.newRateBitsPerSecond!),
+                       20e6 * 0.85, accuracy: 1.0e6,
+            "a 400 ms hole is an outage, not a scan dwell — bite")
+        XCTAssertEqual(estimator.stats.stallHolds, 0)
+    }
+
+    /// Sustained rate reduction in the stall gate's own terms: the
+    /// "drain" measures BELOW the pace (8 Mbps under a 20 Mbps rate) —
+    /// a capacity-limited bottleneck spaces arrivals at capacity, and
+    /// no super-rate train exists to plead a closed hole. Falls to
+    /// measured delivery exactly as HS-21 pinned.
+    func testDrainBelowThePaceIsARealSqueezeAndFalls() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+
+        XCTAssertNil(selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 8, extraDelayMicros: 40_000,
+            backlogBytes: 0
+        ).newRateBitsPerSecond)
+        let verdict = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 8, extraDelayMicros: 40_000,
+            backlogBytes: 0
+        )
+        XCTAssertNotNil(verdict.newRateBitsPerSecond)
+        XCTAssertEqual(Double(verdict.newRateBitsPerSecond!),
+                       8e6 * 0.85, accuracy: 1.0e6)
+        XCTAssertEqual(estimator.stats.stallHolds, 0)
+    }
+
+    /// Conservation is the third leg: a gap-burst shape WITH loss is a
+    /// congested queue tail-dropping, not a hole that closed — the
+    /// fall proceeds despite the bounded peak and the super-rate drain.
+    func testLossDefeatsTheStallHold() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        var received: UInt32 = 0
+        var missing: UInt32 = 0
+
+        for _ in 0..<10 {
+            received += 100
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0,
+                            channels: lossLedger(received: received,
+                                                 missing: missing))
+        }
+
+        received += 85; missing += 15
+        XCTAssertNil(selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 200, extraDelayMicros: 80_000,
+            backlogBytes: 0,
+            channels: lossLedger(received: received, missing: missing)
+        ).newRateBitsPerSecond)
+        received += 85; missing += 15
+        let verdict = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 200, extraDelayMicros: 80_000,
+            backlogBytes: 0,
+            channels: lossLedger(received: received, missing: missing)
+        )
+        XCTAssertTrue(verdict.overuse)
+        XCTAssertNotNil(verdict.newRateBitsPerSecond,
+            "packets died — the hole did not close, the queue dropped")
+        XCTAssertEqual(estimator.stats.stallHolds, 0)
+    }
+
+    /// A closed hole ECHOES as a few NACKs: the client's completion
+    /// presumption expires mid-dwell, moments before the drain makes
+    /// the frame whole (the first live gate judged 30 of 35 NACK
+    /// entries stale). Post-FEC evidence inside the regime ladder's
+    /// own clean column (< 0.5%) must not defeat the hold — but a
+    /// rung-3-scale NACK storm still bites through its own ungated
+    /// branch.
+    func testNackEchoInsideTheHoleStillHolds() throws {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        var received: UInt32 = 0
+
+        for _ in 0..<10 {
+            received += 400
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0,
+                            channels: lossLedger(received: received,
+                                                 missing: 0))
+        }
+
+        // The dwell, echoing as one 2-shard NACK: 2 / ~4,800 attempted
+        // ≈ 0.04% post-FEC — deep inside the clean column.
+        received += 400
+        XCTAssertNil(selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 200, extraDelayMicros: 80_000,
+            backlogBytes: 0,
+            channels: lossLedger(received: received, missing: 0),
+            nacks: [try FeedbackReport.NackEntry(
+                frame: FrameNumber(rawValue: 7), missingShards: [3, 4]
+            )]
+        ).newRateBitsPerSecond)
+        received += 400
+        let verdict = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 200, extraDelayMicros: 80_000,
+            backlogBytes: 0,
+            channels: lossLedger(received: received, missing: 0)
+        )
+        XCTAssertTrue(verdict.overuse)
+        XCTAssertNil(verdict.newRateBitsPerSecond,
+            "a NACK echo inside the clean column is the hole's shadow, "
+            + "not congestion")
+        XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 1)
+
+        // A rung-3-scale storm through the same shape: > 2% post-FEC
+        // falls on its own branch, gate or no gate.
+        var stormNacks: [FeedbackReport.NackEntry] = []
+        for frame in 0..<6 {
+            stormNacks.append(try FeedbackReport.NackEntry(
+                frame: FrameNumber(rawValue: UInt32(100 + frame)),
+                missingShards: Array(0...30)
+            ))
+        }
+        received += 400
+        let storm = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 200, extraDelayMicros: 0,
+            backlogBytes: 0,
+            channels: lossLedger(received: received, missing: 0),
+            nacks: stormNacks
+        )
+        XCTAssertEqual(storm.change, .postFecLoss,
+            "loss FEC could not absorb still bites — rung 3 is ungated")
+        XCTAssertNotNil(storm.newRateBitsPerSecond)
+    }
+
+    /// The 1.7% feedback-direction loss the study measured: reports
+    /// are unreliable by design (cumulative ledgers differenced across
+    /// whatever arrives), so LOST reports must neither fabricate a
+    /// verdict nor mask one. Half the reports of a clean run vanish —
+    /// nothing fires; half the reports of a genuine squeeze vanish —
+    /// the fall still lands.
+    func testLostFeedbackReportsNeitherFabricateNorMask() {
+        // Clean run, every other report lost: the surviving reports'
+        // counters jump across the gaps (the differencing spans them),
+        // arrivals show 50 ms seams — no loss is invented, no overuse
+        // fires, no hold or fall moves the rate.
+        let clean = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        var received: UInt32 = 0
+        for beat in 0..<20 {
+            received += 100
+            if beat % 2 == 1 { // the odd reports never arrive
+                now += 25 * Self.ms
+                clientMicros += 25_000
+                continue
+            }
+            let verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: clean,
+                bottleneckMbps: 20, extraDelayMicros: 0,
+                backlogBytes: 0,
+                channels: lossLedger(received: received, missing: 0)
+            )
+            XCTAssertFalse(verdict.overuse)
+            XCTAssertEqual(verdict.lossFraction, 0,
+                "a lost REPORT is not lost PACKETS — the cumulative "
+                + "ledgers span the gap")
+        }
+        XCTAssertEqual(clean.rateBitsPerSecond, Self.ceiling)
+        XCTAssertEqual(clean.stats.downshifts, 0)
+        XCTAssertEqual(clean.stats.stallHolds, 0)
+
+        // Genuine squeeze, same 50% report loss: the ingested inflated
+        // reports still make the streak and the fall still bites.
+        let squeezed = makeEstimator()
+        now = 0; clientMicros = 0; seq = 0
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: squeezed,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        var fell = false
+        for beat in 0..<4 {
+            if beat % 2 == 1 {
+                now += 25 * Self.ms
+                clientMicros += 25_000
+                continue
+            }
+            let verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: squeezed,
+                bottleneckMbps: 8, extraDelayMicros: 40_000,
+                backlogBytes: 0
+            )
+            if verdict.newRateBitsPerSecond != nil { fell = true }
+        }
+        XCTAssertTrue(fell,
+            "feedback loss must not launder a genuine squeeze")
+        XCTAssertEqual(squeezed.stats.stallHolds, 0)
     }
 
     // MARK: Leg 4 — the machine's numbers

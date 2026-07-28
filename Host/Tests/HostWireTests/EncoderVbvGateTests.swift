@@ -140,6 +140,40 @@ final class EncoderVbvGateTests: XCTestCase {
         XCTAssertTrue(below.squeezeEngaged)
     }
 
+    /// HS-23: the recipe is 50 Mbps now, and every boundary must scale
+    /// WITH it — nothing in the clean-path rule or the k-ladder may be
+    /// an absolute number. At a 50 Mbps capped-CQ recipe: the clean
+    /// boundary is 45 Mbps (0.9 × recipe → ceiling 140,625 B at the
+    /// 25 ms window), and the ladder's rungs sit at the same fractions
+    /// of 50 M that the 10 M recipe pinned at fractions of 10 M.
+    func testRecipeBoundariesScaleWithTheFiftyMbpsCeiling() {
+        let policy = EncoderVbvPolicy(config: EncoderVbvConfig(
+            fps: 60,
+            baselineMaxBitsPerSecond: 50_000_000
+        ))
+        XCTAssertEqual(policy.cleanPathRateBitsPerSecond, 45_000_000)
+        // At the boundary: clean, silent — the recipe rides.
+        XCTAssertNil(policy.note(frameByteCeiling: 140_625, now: 0))
+        XCTAssertFalse(policy.squeezeEngaged)
+
+        // The k-ladder at 50-scale: fractions of the recipe, never
+        // absolute rates. 0.89 × 50 M → k=4; 0.79 → k=3 (< 0.80);
+        // 0.64 → k=2 (< 0.65); 0.49 → k=1 (< 0.50).
+        func windows(atFraction fraction: Double) -> Int {
+            let fresh = EncoderVbvPolicy(config: EncoderVbvConfig(
+                fps: 60, baselineMaxBitsPerSecond: 50_000_000
+            ))
+            let ceiling = Int(fraction * 50_000_000 * 0.025 / 8)
+            let directive = fresh.note(frameByteCeiling: ceiling, now: 0)
+            XCTAssertNotNil(directive)
+            return directive!.vbvBits / (ceiling * 8)
+        }
+        XCTAssertEqual(windows(atFraction: 0.89), 4)
+        XCTAssertEqual(windows(atFraction: 0.79), 3)
+        XCTAssertEqual(windows(atFraction: 0.64), 2)
+        XCTAssertEqual(windows(atFraction: 0.49), 1)
+    }
+
     // MARK: - The mapping under a squeeze
 
     func testRateDropMapsExactlyOntoTheEncoder() {
