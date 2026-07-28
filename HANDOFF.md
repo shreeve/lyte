@@ -12,14 +12,12 @@ EXIT demolition is DONE (commits `2018f6d` → `d5de430` → `9e1cd27`): the
 client's GameStream stack (LyteKit/CEnet/CNanors, ~14.3k lines) is deleted,
 Sunshine is uninstalled from pup, and both ends speak exactly one protocol —
 Lyte-UDP. H1 closed earlier the same day (`docs/20260722-h1-joint-gate.md`).
-Suites at HEAD: Wire **402/402**, Host **142/142 Mac** (136/136 was the
-last both-platform green, through HS-21; HS-22a's six new legs need
-their pup run), root **142/142** on
+Suites at HEAD: Wire **402/402**, Host **142/142 Mac AND pup**
+(HS-22b, 2026-07-27 late evening, drained the HS-22a live ledger —
+first Linux compile+green since HS-21; results in the wave entry),
+root **142/142** on
 Mac (grown through HS-22a — the quality-hunt wave, entry in the wave
-block) (pup legs for
-everything landed since the H2 exit are deferred — being drained NOW,
-see below; the H2-exit state 372/104/104 was the last green on BOTH
-platforms); `build-cli.sh` + `make-app.sh` release green. A live post-demolition proof
+block); `build-cli.sh` + `make-app.sh` release green. A live post-demolition proof
 ran at the H2-exit HEAD (60 s: 48,474/48,474 datagrams ok, 0 unseal
 failures, render + audio + input + clean teardown).
 
@@ -51,60 +49,66 @@ Mac**; build-cli.sh + make-app.sh release green. Its live legs are
 TOGETHER with HS-18's a–g on pup's return; port 41121 stays reserved for
 the pair).
 
-**pup status: UNREACHABLE AGAIN (2026-07-27 evening — owner away /
-host down; the HS-22a session ran fully Mac-local).** The ~00:57
-back-online window did happen: the catch-up worker drained the
-deferred ledger then (verdicts in the wave entries below), and leg
-(s), live end-to-end clipboard, is CLOSED — HS-19 (`73e5cdb`) landed
-the Mutter clipboard leaf and ran it live; verdict + evidence in the
-CL-15 wave entry. Everything since HS-22a's commits awaits pup per
-the RESTART block below.
+**pup status: BACK ONLINE (2026-07-27 ~21:20, HS-22b ran against it).**
+pup rebooted ~11:35 this morning — the reboot healed the NVENC driver
+mismatch exactly as the catch-up doc predicted (userspace AND kernel
+both 595.84; the /tmp/nv571 shim died with /tmp and is correctly
+GONE — no LD_LIBRARY_PATH on any lyte-host run tonight; the
+`~/.local/lib/swift-compat` libxml2 BUILD shim is untouched by
+reboots and still wraps `swift build`/`swift test`). The earlier
+~00:57 catch-up window did happen: leg (s), live end-to-end
+clipboard, is CLOSED — HS-19 (`73e5cdb`); verdict + evidence in the
+CL-15 wave entry. **HS-22b (this session) drained the HS-22a live
+ledger on port 41163** — per-leg verdicts at the end of the HS-22a
+wave entry; the owner's eyeball (leg e) is the one leg still open,
+and the host is up on 41151 at tonight's build waiting for it.
 
-**RESTART / RESUME PROTOCOL (updated 2026-07-27 evening):** The
-**Mac-local half of HS-22 is DONE — landed as HS-22a** (`17810b8`
-Host / `36f1dce` root; full entry at the end of the wave block). The
-dead worker's uncommitted tree was recovered and finished: quality
-instrumentation both ends, the clean-path VBV rule + multi-window
-ladder, the idle-flip quiet that retires the 1 Hz WAKE pulse, the
-full-trains-only overuse anchor — all unit-pinned (Host 142/142 Mac,
-root 142/142, both release builds green). **The LIVE half is PENDING
-pup** (unreachable this session — owner away). When pup returns:
-1. **Hygiene first, always**: `ssh pup 'pgrep -a lyte-host'` and
-   kill strays EXCEPT the owner's relaunch loop (`~/lyte-loop.sh` +
-   its lyte-host on :41151 — that pair stays; it runs a PRE-HS-22a
-   build until redeployed); netem gone (`tc qdisc show`); the three
-   secrets in `~/.config/lyte-host/` intact.
-2. **Run the HS-22a DEFERRED-PENDING-HOST ledger** (the numbered leg
-   list in the HS-22a wave entry, end of the wave block): pup
-   build + suite FIRST (HS-18's Linux-only leaf note still stands —
-   nothing Linux-gated has compiled anywhere since), then the
-   clean-path before/after books, the HS-20 squeeze re-proof, the
-   static-desktop 1 Hz pulse before/after, the owner's eyeball.
-   Live legs on port 41163; owner loop restored on 41151 at the new
-   build afterward.
+**RESTART / RESUME PROTOCOL (updated 2026-07-27 late evening):** The
+**Mac-local half of HS-22 landed as HS-22a** (`17810b8` Host /
+`36f1dce` root) and **the LIVE half is DONE — HS-22b ran the whole
+deferred ledger on pup tonight** (port 41163; per-leg verdicts +
+numbers at the end of the HS-22a wave entry). Headlines: pup suite
+**142/142**, the 1 Hz pulse is RETIRED live (183 → 3 IDRs over
+5 min-scale runs, 36.6 → 0.5 IDR/min), the B2 squeeze signature
+stays retired with the k-ladder visible in the books, and clean-path
+silence holds exactly as specified — zero directives while the
+ceiling-rate holds ≥ 90% of the recipe. What remains:
+1. **The owner's eyeball (leg e)** — the host is UP on 41151 at
+   tonight's build (relaunch loop fresh, 60 iterations, NO nv571
+   shim — the reboot healed the driver mismatch, both 595.84).
+   Connect and judge a clean-path session vs the trip-era
+   "moderate" verdict; the 1 Hz blur should be gone at the glass.
+2. **Two named policy findings for the next rung (HS-22c
+   candidate?)**, evidence in the wave entry: (i) the recovery
+   climb out of a squeeze emits a directive — now a KNOWN forced
+   IDR — per ~10% rung every rise-hold, so a single dip-and-recover
+   cycle costs ~8–10 IDRs (26 directives in a 150 s clean-path run
+   whose only sin was three Wi-Fi weather dips; 105 in the
+   saturated mild-band run); consider coalescing within-squeeze
+   loosenings (longer rise hold, or restore-only). (ii) One run's
+   dip fed on itself to the 500 kbps floor: ≥8-packet trains under
+   a squeezed pacer measure OUR OWN pacing, each directive-IDR
+   bumps the queue right when the estimator is touchy, and overuse
+   re-anchors to 0.85× of self — the min-train gate stopped garbage
+   anchors (the squeeze leg proves it: falls stop at 0.85× the true
+   shaper rate now) but not self-reference. Estimator territory.
 3. **HANDOFF.md commits are the coordinator's job**; workers edit only
    their own wave entries and leave the file uncommitted.
 
-**RESTART ADDENDUM (2026-07-27 ~22:55): three worker launches are
-QUEUED, none running.** The subagent launcher broke this evening
-(every launch timed out); the owner is restarting Cursor. Verified by
-transcript audit: **HS-22b never started** — the newest worker
-transcript is HS-22a finishing at 19:48. On the fresh session, launch
-in parallel (all three are territory-disjoint):
-1. **HS-22b** — Host/ territory + pup live rights, port 41163: run the
-   HS-22a six-leg DEFERRED ledger exactly as steps 1–2 above describe,
-   restore the owner loop on 41151 at the new build when done. pup was
-   reported live ~21:20; re-verify reachability + reboot state
-   (driver match: `nvidia-smi --query-gpu=driver_version
-   --format=csv,noheader` vs `/sys/module/nvidia/version` — post-reboot
-   both 595.84, no shim; mismatch recipe in
-   docs/20260727-015500-pup-catchup.md §3).
-2. **W10 (F-2 bulk channel)** — Wire/ territory, Mac-local: the
+**RESTART ADDENDUM (corrected ~23:25): two worker launches QUEUED,
+none running.** The ~22:55 version of this block wrongly declared
+HS-22b never-started (the audit read the top-level transcripts folder,
+not the session's subagents/ subfolder) — **HS-22b ran the whole time
+and COMPLETED ~23:22**; its verdicts are in the HS-22a wave entry and
+the RESTART block above. The launcher failures were real but only hit
+the two NEW launches attempted after ~21:25. On the fresh session,
+launch in parallel (territory-disjoint):
+1. **W10 (F-2 bulk channel)** — Wire/ territory, Mac-local: the
    chunked/resumable/backpressured transfer core per the H3 plan,
    design doc + vocabulary/codecs + sans-IO engines both roles + new
    frozen `bulk-v1.json` vectors + tests. Client→host only in v1 per
    §0 answer 1; next free capability key after 10.
-3. **Browser-viewer scoping** — docs/-only writer (read-only
+2. **Browser-viewer scoping** — docs/-only writer (read-only
    elsewhere): WASM compile probe of LyteWire (SDK availability,
    CNanorsWire under the wasm triple, swift-crypto), transport survey
    (WebTransport vs WebRTC vs WebSocket — LAN-direct per §0 answer 4),
@@ -1623,8 +1627,9 @@ its entry at the marker at the end of this block.*
   the opening recipe, mild squeezes borrow windows, a ticking desktop
   never WAKE-pulses, and micro-trains lose their anchor vote**
   (`17810b8` Host / `36f1dce` root; Wire untouched — read-only this
-  slice; pup UNREACHABLE the whole session, all live legs deferred
-  below). Recovered and finished the dead HS-22 worker's uncommitted
+  slice; pup UNREACHABLE the HS-22a session — **the live legs ran
+  2026-07-27 late evening as HS-22b, verdicts at the end of this
+  entry**). Recovered and finished the dead HS-22 worker's uncommitted
   tree (its quality books, client quality line, `--no-vbv-reconfigure`
   lever, and the estimator anchor gate — adopted, completed, pinned).
   **THE LOAD-BEARING FINDING (read from FFmpeg's nvenc wrapper, both
@@ -1697,37 +1702,97 @@ its entry at the marker at the end of this block.*
   in virtual time and forgets after ~5 s idle); build-cli.sh +
   make-app.sh release green; `swiftc -parse` clean on the Linux-only
   shell files (they have compiled NOWHERE yet — pup build first).
-  **DEFERRED-PENDING-HOST (HS-22a live legs — run on pup's return,
-  port 41163, after the hygiene pass):**
-  (a) pup build + full Host suite (142 legs — the first Linux compile
-      of everything since HS-21);
-  (b) clean-path BEFORE/AFTER books, 120 s+ wire-view --audio session:
-      AFTER must show `enc opening` posture riding (zero reconfigure
-      lines on a clean LAN), QP steady near the CQ target, estimator
-      at the 20,000 kbps ceiling with NO craters (D-3), frame p50/p95
-      shape vs the H2-era ~7.7 kB clean p50; BEFORE (the deployed
-      pre-HS-22a build or `--no-vbv-reconfigure` inverted) for the
-      side-by-side;
-  (c) the HS-20 squeeze RE-PROOF (its B2 retirement must survive):
-      the 6 Mbit video-scoped netem squeeze — directives track the
-      fall, deep-fall emission obeys the ceiling (the p50 623 B
-      shape), post-release the tail recovers to the ceiling AND the
-      restore directive returns the recipe (watch the new one-second
-      capped-CQ vbv in the books); the mild-squeeze band (~8.5 Mbps
-      netem) should show the k=4 multi-window posture with IDRs
-      borrowing windows — new territory, eyeball frame sizes vs
-      HS-20's single-window behavior;
-  (d) the static-desktop 1 Hz pulse BEFORE/AFTER: a ticking clock on
-      an otherwise static desktop (the owner's repro), 5 min each —
-      AFTER must hold ACTIVE (no IDLE flips between beats, mode
-      traffic ~0), IDR count ~0 (vs one per beat before), near-idle
-      bandwidth, no visible pulse at the glass; then stop the clock
-      and confirm the IDLE flip lands ~3 s later and input still
-      WAKEs with its IDR (the decision of record, alive);
-  (e) the owner's subjective eyeball on a clean-path session vs the
-      trip-era "moderate" verdict — the whole point;
-  (f) secrets shas byte-identical start AND end, no netem left, owner
-      loop back on 41151 at the NEW build (60 iterations, nv571 shim).
+  **HS-22b — the live half, run 2026-07-27 late evening on pup's
+  return (port 41163; nothing committed — no code changed, the legs
+  were pure evidence). Shim status: the reboot healed the NVENC
+  mismatch (userspace AND kernel 595.84, /tmp/nv571 gone with /tmp,
+  NO runtime shim on any run tonight); the `~/.local` libxml2
+  swift-compat BUILD shim still wraps swift build/test. The deployed
+  loop binary turned out to be the DEAD WORKER'S uncommitted
+  intermediate build (it answers `--no-vbv-reconfigure`; the
+  /tmp/hs22-host{A,B}.log strays corroborate it ran live legs before
+  pup went down), so the BEFORE panels were built honestly from a
+  `git archive` of Host at `2bc2bec` (= 17810b8^; Wire byte-identical
+  between there and HEAD) at `~/src/hs22b-pre` — left in place,
+  cookie-probe precedent, delete to reclaim. Logs: pup
+  /tmp/hs22b-*-host.log (+ the port-41163 netem helper
+  /tmp/hs22b-netem.sh), Mac /tmp/hs22b-*-client.log.**
+  (a) **PASSED** — rsync + build clean, Host suite **142/142 on pup**
+      (the first Linux compile+green of everything since HS-21).
+  (b) **PASSED with a sharpened claim** (150 s each, moves every
+      250 ms, wire-view --audio). The clean-path silence holds
+      EXACTLY as specified — zero directives while the
+      ceiling-derived rate holds ≥ 90% of the recipe (every
+      solid-20,000 stretch in every run rode `enc opening capped-cq`,
+      QP avg 12, frames p50 ~9.5 kB vs the H2-era ~7.7 kB) — but
+      tonight's Wi-Fi weather dipped the estimator BELOW the boundary
+      a few times per run, and those engages are real and expensive:
+      HEAD run 26 directives / 38 IDR, with the last dip feeding on
+      itself down to the 500 kbps floor (finding (ii) in the RESTART
+      block); the `--no-vbv-reconfigure` twin on the same weather (14
+      overuse dips, deepest ~5.2 Mbps) self-healed every dip back to
+      20,000 — 0 directives, 1 IDR, QP 12 FLAT. So the A/B sameness
+      proof holds on the clean stretches and the DIFFERENCE below the
+      boundary is the directive-IDR coupling, quantified. BEFORE
+      (2bc2bec): **68 directives — the FIRST at the ceiling itself,
+      the old clean-path imposition — 70 IDR (28/min)**, frame p95
+      pulsing 8.3 → 39 kB on the clean wire: the old pulsing,
+      reproduced and retired.
+  (c) **PASSED** (6 Mbit video-scoped netem t+55→t+115 of 170 s,
+      dsfield 0xa0 + dport 41163). Fall tracked (engage at pacer
+      4,752 kbps → `applied max 3932 kbps vbv 12289 B`, k=1 at 48% —
+      HS-20's posture byte-shape); frames CONFORMED under the
+      squeezed ceilings (p50 7–9 kB at ceilings 12–16 kB, QP 35–43);
+      the k-ladder is visible in the books on the way out — vbv = 2×,
+      3×, 4× the ceiling (32116/65085/100772 B) as the fraction
+      crossed 50/65/80% — and the restore carried the new one-second
+      capped-CQ vbv (`max 10000 kbps vbv 1250000 B`) then went
+      silent; a second knock repeated the same shape; **tail ended AT
+      20,000 kbps CLEAN — the B2 signature stays retired**. The
+      HS-20-era "p50 623 B" deep shape did NOT reproduce, and that is
+      the ESTIMATOR improvement, not a regression: the median +
+      min-train anchor stops the fall at ~4.8 Mbps (0.85× the
+      shaper's true rate) instead of crashing to ~1.3 Mbps. 21
+      directives / 22 IDR — the climb-ladder churn (finding (i)).
+      **Mild band PASSED** (9.5 Mbit shaper under REAL 60 fps content
+      — windowed ffplay testsrc2; fullscreen produced ZERO portal
+      frames, Mutter direct-scanout, an environmental find worth
+      remembering): heavy-content clean phase SILENT at 20,000 (60
+      fps, QP 25–26, p50 ~20 kB); in-window the **k=4 posture is
+      real** (vbv exactly 4× ceiling in the books, e.g. 110208 B @
+      27552 B) with QP gentle at 26–28 near the band — no quality
+      crater; deeper oscillations walked k=3/2/1 with QP to ~43;
+      post-release full recovery to 20,000 @ 60 fps. Honest reading:
+      offered load ≥ the shaper makes the estimator sawtooth
+      1.8↔12 Mbps, and the climb ladder cost **105 directives / 119
+      IDR in 150 s** — finding (i)'s strongest number.
+  (d) **PASSED — the 1 Hz pulse is retired at the glass.** Static
+      desktop, GNOME top-bar seconds ON (restored ON after). BEFORE
+      (2bc2bec, 300 s): **183 IDR (36.6/min)**, 175 reconfigures, 38
+      mode transitions, 3,214 ratchet frames, video wire 1.14 Mbps —
+      the WAKE-ratchet merry-go-round, recorded. AFTER (HEAD,
+      335 s): **3 IDR (0.5/min: the opening, the scripted input
+      WAKE, one once-a-minute HH:MM redraw)**, 0 reconfigures, 5 mode
+      transitions, ACTIVE on small P-frames (QP 12, p50 9.1 kB) for
+      the whole 300 s ticking phase, video wire 0.43 Mbps; ticker
+      gsettings'd off at t≈304 → converged one-shot + IDLE flip ~5 s
+      later (the 3 s quiet + convergence); `rel 10 0` at t=312 →
+      ACTIVE + IDR immediately (the decision of record, alive);
+      re-idled ~6 s after.
+  (e) **OPEN — the owner's eyeball** (the whole point): the host is
+      up on 41151 at tonight's build; connect and judge vs the
+      trip-era "moderate".
+  (f) **PASSED** — secrets shas byte-identical start AND end
+      (72860390…cfed / 8dc1f88a…55fd / dadf9a66…37cf); netem
+      applied/removed per window, `noqueue` verified after each;
+      no strays (ffplay killed, 41163 free); clock-show-seconds
+      restored true; owner loop restored FRESH (60 iterations, **no
+      shim** — drivers matched) and awaiting handshake on 41151 at
+      the HS-22b-verified build. One self-inflicted stray killed
+      mid-session: a backgrounded wire-view from a botched launch
+      survived App-Nap-throttled and held local UDP 41163 into a
+      later run (`bindFailed errno 48`) — foreground the client or
+      setsid it, and `lsof -nP -iUDP:<port>` before launching.
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
