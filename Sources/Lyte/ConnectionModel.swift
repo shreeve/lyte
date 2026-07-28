@@ -369,6 +369,17 @@ final class ConnectionModel {
         }
         lines.append(mode)
 
+        // The HS-22 quality line — what the receive side can say about
+        // incoming video from its own books (frame cadence, bitrate,
+        // frame-size percentiles over ~5 s). Host QP/encoder posture
+        // are host-log truth; this is the client-side half.
+        if let q = core.pipeline.snapshotStats().quality {
+            lines.append(String(
+                format: "video %.0f fps · %.1f Mbps · frame p50 %d B · p95 %d B",
+                q.framesPerSecond, Double(q.bitsPerSecond) / 1e6,
+                q.frameBytesP50, q.frameBytesP95))
+        }
+
         // Unconditional, capture verdict included (CL-16): "input 0
         // sent · capture INACTIVE" is the line that tells a client
         // failure from a host one.

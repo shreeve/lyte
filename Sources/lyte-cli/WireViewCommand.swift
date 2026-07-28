@@ -472,6 +472,20 @@ final class WireViewStatsPrinter: Sendable {
         render += " | layer \(rendererState())"
         print(render)
 
+        // The HS-22 quality line: the wire-view-side derivation of the
+        // host's per-second `quality:` books — frame cadence, video
+        // bitrate, frame-size percentiles over the last ~5 s. Host QP
+        // and the encoder's reconfigured posture stay host-log truth
+        // (no wire vocabulary carries them; read the two side by side).
+        if let q = s.quality {
+            print("\(prefix)   quality: " +
+                  String(format: "%.0f fps, %.1f Mbps",
+                         q.framesPerSecond,
+                         Double(q.bitsPerSecond) / 1e6) +
+                  ", frame p50 \(q.frameBytesP50) B / p95 " +
+                  "\(q.frameBytesP95) B / max \(q.frameBytesMax) B")
+        }
+
         // The CL-8 session line: the machine's verdicts.
         let counters = core.snapshotCounters()
         var sess = "\(prefix)   session: mode \(core.wireMode == .active ? "ACTIVE" : "IDLE")"

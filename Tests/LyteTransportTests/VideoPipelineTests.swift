@@ -267,6 +267,51 @@ final class VideoPipelineTests: XCTestCase {
         XCTAssertNotNil(stats.firstSampleMicroseconds)
     }
 
+    // MARK: - The HS-22 quality window (the overlay/wire-view line)
+
+    /// The receive-side quality snapshot derives entirely from decoded
+    /// frames: cadence and bitrate over the frames' actual span,
+    /// percentiles over their byte sizes — and the window forgets
+    /// everything older than ~5 s (an idle stream reads as no
+    /// evidence, not stale evidence).
+    func testQualityWindowDerivesCadenceBitrateAndPercentiles() throws {
+        let frames = try loadPrefix()
+        let shardGroups = try packetizePrefix(frames)
+
+        let collector = Collector()
+        // One frame every 20 ms: ten frames spanning 180 µs×… (9 gaps
+        // × 20 ms = 180 ms), well inside the window.
+        for (index, group) in shardGroups.enumerated() {
+            let at = ClientTimestamp(
+                microseconds: 1_000 + UInt64(index) * 20_000)
+            for shard in group {
+                collector.pipeline.ingest(
+                    envelope: shard.envelope, payload: shard.payload,
+                    now: at)
+            }
+        }
+        let lastAt = ClientTimestamp(microseconds: 1_000 + 9 * 20_000)
+        let quality = try XCTUnwrap(
+            collector.pipeline.snapshotStats(now: lastAt).quality)
+
+        // Span floors at 1 s, so ten frames read as 10 fps and the
+        // bitrate is the exact byte sum × 8 over that second.
+        let totalBytes = frames.reduce(0) { $0 + $1.count }
+        XCTAssertEqual(quality.framesPerSecond, 10, accuracy: 0.01)
+        XCTAssertEqual(quality.bitsPerSecond, totalBytes * 8)
+
+        // Percentiles over the corpus frame sizes themselves.
+        let sorted = frames.map(\.count).sorted()
+        XCTAssertEqual(quality.frameBytesP50, sorted[4])
+        XCTAssertEqual(quality.frameBytesP95, sorted[9])
+        XCTAssertEqual(quality.frameBytesMax, sorted[9])
+
+        // Six seconds of silence later the window is empty — quality
+        // reads nil, never a stale five-second-old story.
+        let idleAt = lastAt.advanced(byMicroseconds: 6_000_000)
+        XCTAssertNil(collector.pipeline.snapshotStats(now: idleAt).quality)
+    }
+
     // MARK: - Annex-B → length-prefix conversion (the copy-adapted core)
 
     func testLengthPrefixedConversionRoundTripsNalPayloads() throws {

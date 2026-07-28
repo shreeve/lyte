@@ -58,6 +58,27 @@ public struct VideoPipelineStats: Sendable {
     /// Client µs from the first ingested video datagram to the first
     /// delivered sample — the render path's bootstrap latency.
     public var firstSampleMicroseconds: Int64?
+    /// HS-22: the receive-side quality window — decoded frames over
+    /// the last ~5 s, derived entirely from what already arrives (no
+    /// wire vocabulary): frame cadence, video bitrate, frame-size
+    /// percentiles. Nil until a frame has decoded inside the window.
+    public var quality: VideoQualitySnapshot?
+}
+
+/// HS-22: what the client can say about incoming video quality from
+/// its own books — the overlay/wire-view quality line. Host-side
+/// truth (nvenc QP, the encoder's reconfigured posture) lives in the
+/// host's per-second `quality:` books; this is the wire-view-side
+/// derivation of the same story.
+public struct VideoQualitySnapshot: Sendable {
+    /// Decoded frames per second over the window.
+    public var framesPerSecond: Double
+    /// Decoded video bits per second over the window.
+    public var bitsPerSecond: Int
+    /// Frame-size percentiles over the window, bytes.
+    public var frameBytesP50: Int
+    public var frameBytesP95: Int
+    public var frameBytesMax: Int
 }
 
 /// What became of one reliable-channel frame handed to the pipeline.
@@ -82,6 +103,11 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     private let factory = VideoRenderFactory()
     private var stats = VideoPipelineStats()
     private var firstIngest: ClientTimestamp?
+    /// HS-22 quality window: (decode instant, Annex-B byte count) per
+    /// decoded frame, pruned to the last `qualityWindowMicroseconds`
+    /// on record and on snapshot. Confined by `lock`.
+    private var qualityWindow: [(at: ClientTimestamp, bytes: Int)] = []
+    private static let qualityWindowMicroseconds: Int64 = 5_000_000
     /// The newest frame number delivered by either path — the reliable
     /// idle frame's dedupe reference (its `frame` field names the
     /// number the converged frame last rode the datagram path with).
@@ -174,6 +200,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         captureTimestampMicroseconds: UInt64,
         annexB: [UInt8]
     ) -> ReliableFrameOutcome {
+        let now = Self.monotonicNow()
         lock.lock()
         if let newest = newestDeliveredFrame,
            Int32(bitPattern: frame.rawValue &- newest.rawValue) <= 0 {
@@ -194,6 +221,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
             sample = try factory.makeSampleBuffer(from: unit)
             if sample != nil {
                 stats.framesDecoded += 1
+                recordQuality(bytes: annexB.count, now: now)
                 stats.reliableFramesRendered += 1
                 stats.samplesDelivered += 1
                 newestDeliveredFrame = frame
@@ -224,9 +252,51 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     }
 
     public func snapshotStats() -> VideoPipelineStats {
+        snapshotStats(now: Self.monotonicNow())
+    }
+
+    /// Injected-clock variant (tests drive time explicitly).
+    public func snapshotStats(now: ClientTimestamp) -> VideoPipelineStats {
         lock.lock()
         defer { lock.unlock() }
-        return stats
+        var out = stats
+        pruneQualityWindow(now: now)
+        if !qualityWindow.isEmpty {
+            let sizes = qualityWindow.map(\.bytes).sorted()
+            func pct(_ q: Double) -> Int {
+                sizes[max(Int((q * Double(sizes.count)).rounded(.up)), 1) - 1]
+            }
+            // The span the frames actually cover, floored at 1 s so a
+            // young session reads as its true short-window rate rather
+            // than dividing by a few ms.
+            let span = max(
+                now.microseconds(since: qualityWindow.first!.at), 1_000_000
+            )
+            let bytes = sizes.reduce(0, +)
+            out.quality = VideoQualitySnapshot(
+                framesPerSecond: Double(sizes.count) * 1e6 / Double(span),
+                bitsPerSecond: Int(Double(bytes) * 8e6 / Double(span)),
+                frameBytesP50: pct(0.5),
+                frameBytesP95: pct(0.95),
+                frameBytesMax: sizes.last!
+            )
+        }
+        return out
+    }
+
+    /// Runs under `lock`.
+    private func recordQuality(bytes: Int, now: ClientTimestamp) {
+        qualityWindow.append((at: now, bytes: bytes))
+        pruneQualityWindow(now: now)
+    }
+
+    /// Runs under `lock`.
+    private func pruneQualityWindow(now: ClientTimestamp) {
+        while let first = qualityWindow.first,
+              now.microseconds(since: first.at)
+                  > Self.qualityWindowMicroseconds {
+            qualityWindow.removeFirst()
+        }
     }
 
     // MARK: - Interior
@@ -247,6 +317,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
             switch event {
             case .decoded(let unit):
                 stats.framesDecoded += 1
+                recordQuality(bytes: unit.annexB.count, now: now)
                 if let newest = newestDeliveredFrame {
                     if Int32(bitPattern: unit.frameNumber.rawValue
                         &- newest.rawValue) > 0 {
