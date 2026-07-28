@@ -1937,6 +1937,57 @@ its entry at the marker at the end of this block.*
   drag-during-captured-input sanity (the structural claim above,
   verified at the glass).
 
+- **F-3 host file-drop receiving end** (`66695e5`, Host/): the host
+  learns to receive files — the host half of drag-and-drop, built in
+  parallel with F-4 against W10's frozen bytes, NO live leg (the joint
+  gate below). CONSENT/FLAG SURFACE (what F-4 and the joint gate point
+  at): **`--accept-files[=DIR]`** on lyte-host — standing per-host
+  toggle, OFF by default; drop dir defaults to `~/Downloads`, created
+  if missing; **key 11 is declared iff the toggle is ON AND the drop
+  dir came up** (a failed dir prints loud and truthfully negotiates no
+  file transfer). Toggle OFF = no chan-8 machinery at all: Session
+  builds no bulk ArqEndpoint, inbound chan-8 drops loud
+  (`.dropped(.bulkNotNegotiated)`), `sendBulk` throws. TRANSPORT:
+  Session grows chan 8's OWN `ArqEndpoint` beside ctrl (same clamped
+  config — the 262,144 B message budget clears a max chunk with 2×
+  headroom), deliveries decode → `.bulkMessageReceived`, replies ride
+  `sendBulk`; new pacer rung **`PacerClass.bulk` (CS1, 0x20), strictly
+  below telemetry**, mapped to `.bulkTransfer` for the estimator.
+  SHELL (`BulkReceiveShell` + `BulkFileStore` in HostWire, POSIX, no
+  Foundation): consent = the shell existing; disk verdicts answer the
+  engine — pwrite+fsync into dotted `.lyte-bulk-<16hex>.part` at exact
+  offsets (fsync-BEFORE-ack, so persisted possession never lies),
+  streaming sha-256 (`Sha256Stream`, FIPS-pinned) at the finish,
+  promotion by fsync-then-rename + dir fsync under a SANITIZED
+  collision-numbered name (`BulkFileNaming`: last path component only,
+  control bytes stripped, no dotfiles, 200-byte budget keeping the
+  extension, "name (N).ext" numbering); offers past free space
+  (statvfs, resume charged only for its gap) refuse up front with
+  abort(storageFailure); **second concurrent offer → abort(busy) from
+  the dispatcher**, engine untouched. RESUME: teardown persists
+  `BulkResumeState` as `.lyte-bulk-<16hex>.resume` beside the .part
+  (LBR1 fixed-layout LE codec, atomic tmp+fsync+rename; torn records
+  are weather — unlinked, the digest arbitrates); construction loads
+  the book, matched re-offers resume the gap sha-exact; a mid-flight
+  WRITE failure also persists possession before aborting, so a
+  recovered disk resumes. lyte-host wiring: chan-8 messages buffer
+  under the session lock, the shell runs on SessionWire's off-lock
+  service pass (the clipboard pattern), stats grew a `files:` line.
+  GATE: Host suite **142 → 153/153 BOTH platforms** (Mac + pup;
+  `BulkReceiveGateTests`, 11 legs: happy path byte-exact to a real
+  dir with zero strays, teardown-resume, 16-row hostile-name table,
+  LBR1 byte pins + hostile decode, FIPS sha vectors + split-boundary
+  streaming, busy, both storage-failure paths, key-11 spine `0B F5`
+  mutual-only, rule-3 in vivo, full drop through a REAL Session pair
+  over sealed chan-8 ARQ); `swiftc -parse` clean on the Linux-only
+  files; **bulk-v1.json replays byte-exact on pup** (5/5). pup
+  hygiene: secrets shas identical start/end, no strays, 41151 quiet
+  throughout (an owner run on 41166 appeared mid-visit; untouched).
+  THE JOINT GATE (with F-4, separate later leg): see F-4's list —
+  host side arms with `--accept-files` (or `=DIR` for a scratch
+  landing dir), one transfer at a time, busy is the answer to a
+  second sender.
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
