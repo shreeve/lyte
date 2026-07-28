@@ -2052,6 +2052,183 @@ its entry at the marker at the end of this block.*
   landing dir), one transfer at a time, busy is the answer to a
   second sender.
 
+- **F-5 client roaming — the hotel move stops being an ending**
+  (`dd47a70`, root + `docs/20260728-121500-f5-client-roaming.md`):
+  the client half of roaming/reconnect — the host re-addressing under
+  a standing session (the trip's "No hosts found" over a frozen
+  frame) and the Mac hopping Wi-Fi both resolve to the same machine.
+  THE IDEA: the Noise static IS the identity (advertisement TXT `pkh`
+  = the pinned store's key); the address is a dial hint. DETECTION
+  (`RoamingPolicy`, sans-IO struct in the SessionStateMachine
+  discipline — injected `now`, actions out, `nextDeadline` drives one
+  standing task): FROZEN starts the silence clock (the CL-8 pill owns
+  that tier); **3 s** of silence begins the QUIET re-browse (evidence
+  returning cancels everything, ladders reset); same pkh at a NEW
+  address = host moved, dial on sight; same pkh at the SAME address
+  waits out an **8 s** hold (beats the 30 s liveness close, ignores
+  Wi-Fi weather); the liveness close flips to full roaming — scans
+  backing off **1 → 15 s**, blind probe dials of the last-known
+  address (mDNS-less networks have nothing to sight) backing off
+  **2 → 30 s**, every deadline strictly future, NO give-up (passive
+  forever; Disconnect is the exit). PATH CHANGES: `NetworkPathWatcher`
+  (NWPathMonitor → interface-set/satisfiability signature; baseline
+  never fires) grants a **3 s grace** so HS-12 migration gets first
+  refusal — deliberately past the 2.5 s detector so a dead path is
+  observably FROZEN at expiry — then the same ladder with the
+  same-address hold WAIVED (our own address moved; the fresh
+  handshake is the mechanism when migration didn't carry).
+  RE-ACQUISITION (ConnectionModel as driver): `detachWireSession`
+  keeps the window and everything per-host — live clipboard consent,
+  confirmed audio posture (both seeded into the re-dial config), the
+  input capture (sends route through `lyteSession` LIVE now — drop
+  while nil, resume on swap, no reinstall), the F-4 coordinator
+  (whose `sessionReady` re-offer is exactly what makes a mid-transfer
+  roam finish sha-exact) — and a `sessionEpoch` counter kills stale
+  events from detached sessions; `runRoamingDial` = fresh 1-RTT IK
+  against the SAME pinned static (3 × 700 ms — a host still holding
+  the dead session answers with silence; the ladder retries, don't
+  camp), **same pairing, no re-PIN by construction**;
+  `adoptReconnectedSession` refreshes the pin's dial hints
+  (identity-keyed; pairedAt + preferences survive verbatim). UX: the
+  pill is tiered — blip keeps CL-8's "Connection interrupted…", past
+  the thresholds the banner speaks ("Connection lost — looking for
+  pup…", "pup found at 10.9.9.9 — reconnecting…", "Reconnecting to
+  pup at …" for blind probes); Actions menu grew **Reconnect (⌘R)**
+  (ladders reset, acts NOW), Disconnect stays enabled during a hunt.
+  GATE: root suite **153 → 162/162** (`RoamingClientGateTests`, 9
+  legs, virtual time throughout: threshold + evidence-cancel,
+  new-address dial + foreign-pkh inertness, same-address hold vs
+  dead-session shortcut, both backoff ladders' arithmetic + caps,
+  path-grace heal/escalate/waiver, manual-reconnect reset,
+  pinned-store identity keying, banner lines + path trigger rule, and
+  END TO END through the REAL session core: mid-transfer blackout at
+  address A → FROZEN at the 2.5 s detector → liveness close at 30 s →
+  sighting at B → dial → same-id re-offer → sha-exact resume reading
+  chunks 2…7 only); build-cli.sh + make-app.sh release green.
+  **DEFERRED-PENDING-HOST — the F-5 live legs** (joint window; pup
+  was HS-22c territory this session, NO pup access):
+  (a) host IP flip under a standing session — add a second address on
+      pup's NIC (`ip addr add`), restart avahi advertisement there,
+      drop the old one; client must banner "looking for", sight the
+      same pkh, re-dial, resume WITHOUT re-PIN; verify
+      `paired_clients`/`noise_static.key` untouched;
+  (b) same flip mid-bulk-transfer — a multi-MB drop in flight through
+      the move completes sha-exact in the host's landing dir, only
+      the gap re-sent (the possession map arbitrates);
+  (c) Mac Wi-Fi hop, host stays put — flip the Mac between two
+      networks/interfaces mid-session; HS-12 migration should carry
+      it inside the 3 s grace with NO re-dial (assert via host
+      PathValidator logs), then a hop that defeats migration (source
+      truly unreachable) roams through the ladder;
+  (d) host-process restart at the SAME address — kill lyte-host
+      mid-session (relaunch loop brings it back); the 8 s
+      same-address rung re-dials without human help;
+  (e) the give-up posture at the glass — host down 5+ min: banner
+      stays honest, scan cadence visibly settles at the 15 s ceiling
+      (no hot spin in Activity Monitor), Reconnect still works, and
+      Disconnect exits cleanly mid-hunt.
+  THE HOST HALF (F-5's other side, Host territory): the busy/takeover
+  story — a re-dial from the SAME client identity against a host
+  still holding the dead session should free it faster than the
+  host's own 30 s liveness verdict (today the client's ladder simply
+  outwaits it — correct, but slower than it could be).
+
+- **HS-22c — the armed policy learns to climb quietly, and the wire
+  stops lying about its colors** (`b251181`, Host/): the supremacy
+  plan's R1 + R3 Stage A, closing HS-22b's findings (i)/(ii).
+  FINDING (i), THE COALESCED CLIMB — **doubling rungs**, chosen over
+  both alternatives on live evidence: inside a squeeze a loosening
+  emits ONLY when the squeezed cap can at least DOUBLE what is
+  applied (rise-hold gated); everything finer waits for the one
+  squeeze→clean restore (recipe exactly, capped-CQ's
+  one-second-at-cap VBV intact). The old deadband ladder paid ~1
+  directive-IDR/s across every climb (the probe's 105/150 s); pure
+  RESTORE-ONLY (the plan's first sketch) was landed first and
+  MEASURED: after a floor-deep dip the encoder sat at QP ~40 mud for
+  the whole ~37 s climb — 78 of 155 s below the recipe posture.
+  Doubling rungs keep shallow episodes exactly restore-only (a ≥50%
+  dip can never double before the clean boundary: one down, one
+  restore, zero mid-climb IDRs) while a floor-deep recovery pays
+  ⌈log₂(recipe/floor)⌉ ≤ ~6 stepped loosenings, each halving the mud.
+  Falls, deadband, k-ladder engage: byte-identical to HS-20/22 — only
+  the climb coalesces. Seen live: applied 368 kbps, first mid-climb
+  loosening at exactly 738 kbps.
+  FINDING (ii), THE SELF-REFERENCE GATE (RateEstimator): an overuse
+  fall HOLDS when the measured delivery sits within 15% of the
+  standing pacer rate WHILE the pacer holds a standing backlog
+  (Session now feeds `pacerBacklogBytes` = freshVideo+videoTail
+  queued bytes into `ingest` — the geometry where ≥8-packet trains
+  measure our own pacing, the probe's 20000→500 kbps spiral on an
+  unimpaired path), UNLESS the path corroborates: loss ≥ the clean
+  threshold, any post-FEC evidence, or queue-delay inflation GROWING
+  across the backlog window. Why it can't mask real degradation: a
+  genuine squeeze near the pacer rate grows the queue (growth IS the
+  corroboration — pinned); a genuine deep dip measures well below the
+  band and falls to measured delivery as ever (pinned); loss falls
+  are never gated (pinned). `selfReferenceHolds` rides the estimator
+  stats line. Suite **153 → 161/161 on BOTH platforms** (4 estimator
+  pins + the reshaped/new climb pins, all virtual-time).
+  R3 STAGE A, COLORSPACE (CHevcEncode/encode.c, a few lines on the
+  context): the bgr0→NVENC stream carried NO VUI — decoders guessed.
+  Now signaled: `color_primaries=BT709`,
+  `color_trc=IEC61966_2_1` (sRGB — desktop content),
+  `colorspace=BT470BG`, `color_range=MPEG`. The 601-limited pair is
+  MEASURED truth, not preference: A/B decodes of a live capture
+  against the raw bgr0 reference showed nvenc's RGB path forces
+  BT.601 limited-range conversion regardless of context settings
+  (PSNR 41.7 dB decoded as 601-tv, 40.0 as 709-tv, ~26 as either
+  full-range read — limited is unambiguous, and the 601-over-709
+  margin is the matrix). ffprobe on the
+  landed build: `bt709 / iec61966-2-1 / bt470bg / tv`. CLIENT SIDE —
+  NO root change needed: VideoRenderFactory builds its
+  CMVideoFormatDescription from the in-band VPS/SPS/PPS with
+  `extensions: nil`, so CoreMedia lifts the VUI into the format
+  description and VideoToolbox/the layer honor it end to end.
+  THE LIVE GATE (pup, port 41167, testsrc2 1600×1000@60 window,
+  150 s heavy motion, 20 Mbps recipe; netem video-scoped to 41167 and
+  removed — root qdisc verified `noqueue` after; secrets shas
+  identical start/end; the owner's 41151 loop untouched and alive,
+  its relaunch cycle picking up the new build on its own):
+  • **Leg (a) armed**: 6885 frames (44.5 fps at the glass), **36 IDR
+    (14/min), 34 directives**, QP p50 29 / p95 47; 18 downshifts (0
+    loss, 3 self-ref holds), final 13.2 Mbps, regime CLEAN (5 stale
+    NACKs, 11 post-FEC, 2 IDR requests all run).
+  • **Leg (a) twin** (`--no-vbv-reconfigure`, same content,
+    same-session hour): **623 frames = 4.0 fps, 83 IDR (32/min)**,
+    354 client IDR requests, 443 post-FEC shards, 57 rung-3, regime
+    LOSSY, floor-pinned 525 kbps at close. QP "p50 22 flat" — on
+    50 KB frames the wire never delivered.
+  • THE BAR, HONESTLY: "armed within ≤3 IDR of the twin" assumed the
+    probe's clean path where the twin rides at QP 17. This wire (pup's
+    Wi-Fi) carries ~13–17 Mbps with periodic real stalls — the twin
+    COLLAPSES on it; armed beat it by 47 IDR while delivering 11×
+    the frames. "No 500 kbps crash": one touch of the floor during a
+    GENUINE delivery collapse (falls anchored 4392→3576→567 — measured
+    delivery, not self-echo; the gate held 3 real self-ref cases the
+    same run) with immediate doubling-rung recovery — not the probe's
+    spiral, which required an unimpaired path.
+  • **Leg (b) squeeze re-proof**: 6 Mbit netem (dsfield 0xa0 +
+    dport 41167) T+60→T+120 of 195 s. Fall TRACKS (pacer rode
+    3.0–8.8 Mbps inside the window), tail RECOVERS to the full
+    20 Mbps recipe by ~T+140 — and re-recovered from a late genuine
+    stall the same run — B2 stays retired: 0 honored NACKs, 1 rung-3,
+    regime ends CLEAN. 43 IDR (14/min), 40 directives, QP p50 34 /
+    p95 48 across squeeze + storm.
+  • **Leg (c) static**: at the 10 Mbps recipe (HS-22b's shape):
+    **zero directives at ceiling** — 6 directives total = 3 shallow
+    episodes of exactly fall+restore (zero mid-climb), each on a real
+    sub-9 Mbps Wi-Fi dip; QP p50 12 / p95 22, 7 IDR/65 s, 0 NACKs,
+    regime clean. At the 20 Mbps recipe the same shape holds (at-
+    ceiling stretches strictly silent; 10 directives/65 s, QP p50 12
+    / p95 17) — the ratchet's 60–72 KB quality passes genuinely
+    outrun this wire at 20 Mbps, and the policy prices that honestly.
+  NAMED FOR THE NEXT RUNG: this Wi-Fi path tops out well under the
+  20 Mbps recipe — every "at 20000" episode ends in a real
+  queue-growth fall (delivery-corroborated, not self-ref). The
+  supremacy plan's recipe-vs-wire reconciliation (R2's territory)
+  is where that tension resolves; the policy now prices it at
+  ~2 directives per episode instead of ~10.
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
