@@ -1,10 +1,161 @@
 # Lyte — Session Handoff
 
-*Current as of 2026-07-27 ~02:30 MDT. The session ledger — tracked in the
+*Current as of 2026-07-28 ~17:20 MDT. The session ledger — tracked in the
 repo since `8da50bf` (the .gitignore entry is vestigial; the file is
 tracked). Update freely; commit updates in the ledger voice.*
 
-# CURRENT STATE — post-H2 (start here)
+# SESSION RESUME — START HERE (2026-07-28 ~17:20 MDT)
+
+**One-paragraph state.** We are deep in the H3 video-supremacy wave. Since
+the last resume: the Wi-Fi wire got fixed (owner moved the Mac off a weak
+6 GHz band to 5 GHz — see the "THE WIRE IS CLEAN NOW" block below; the old
+13–17 Mbps / scan-stall / full-dark-outage numbers are DEAD, re-baseline
+before trusting any pre-2026-07-28 latency claim). Then **HS-23** landed
+the 50 Mbps LAN ceiling + a stall-vs-congestion discriminator (`11f058f`),
+and **HS-24** raced the encoder A/B ladder and adopted the p4 preset
+(`1d65bad`) — +0.77/0.85 dB on motion, **+12.4 dB at half the bits on
+text**, encode still ~4.6 ms. Both are Host/ commits, NOT pushed; their
+HANDOFF wave entries are written but UNCOMMITTED (coordinator commits
+HANDOFF).
+
+**IN FLIGHT — HS-25 (`b896904b-a84d-431e-bd40-df0b649c75d8`), a
+session-killing bug.** The new 50 Mbps + p4 recipe makes IDR/full-screen
+frames big enough to packetize into **279 data shards**, but GF(2^8)
+Reed-Solomon caps a group at 255 total — the host threw
+`unprotectableDataShardCount(279)` at packet 963 and **exited**, killing
+the session (client goes black). HS-25's mandate: split oversized frames
+across multiple FEC groups at the HostWire packetizer seam AND make the
+host DEGRADE (drop/re-encode via the EncoderVbv `frameByteCeiling`
+machinery) instead of dying — no single frame may ever kill a session. It
+must also report whether the client depacketizer (root pkg, LyteTransport)
+already reassembles multi-group frames or needs a matching change. Live
+repro observed 2026-07-28 ~17:15. If resuming and HS-25 is done, read its
+wave entry; if it flagged a required client-side change, that root-package
+slice is the next launch.
+
+**LIVE OPS RIGHT NOW.**
+- pup standing host: `bash ~/lyte-loop.sh` respawns `lyte-host --backend
+  portal --wire-listen 41151 --ratchet --clipboard --seconds 7200` on
+  port **41151**. Leave it alive; it's the owner's eyeball host. The
+  session log is `/tmp/lyte-host-session.log` on pup.
+- The owner's client is the app bundle at
+  `.build/Lyte.app` — launch with `open .build/Lyte.app` (NEVER run the
+  raw binary under a parent process; it needs its own bundle for a proper
+  macOS window/menu bar). Client & host are PAIRED (paired_clients from
+  Jul 22 intact, client static `357a83cc…`) — a healthy reconnect shows
+  **no PIN**. If a 6-digit pairing box appears, the client lost its pinned
+  identity: restart the host loop with `--pair` so it mints+prints a PIN
+  to `/tmp/lyte-host-session.log`, read it off for the owner (3 wrong
+  guesses burn it).
+- **Black-screen playbook (hit twice today):** (1) portal wedges after
+  many rapid short lyte-host runs → `ssh pup 'systemctl --user restart
+  xdg-desktop-portal-gnome xdg-desktop-portal'`; (2) the app silently not
+  running → relaunch the bundle; (3) the FEC giant-frame crash above →
+  HS-25. A Wayland test pattern for live video legs must be launched
+  Wayland-native (`XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0
+  SDL_VIDEODRIVER=wayland ffplay -fs -f lavfi -i
+  "testsrc2=size=1920x1080:rate=60"`); Xwayland-over-ssh renders ~5 fps and
+  fakes a static leg. ALWAYS kill ffplay when done.
+
+**A STANDING WORKER-LIVENESS LOOP IS ARMED** (background shell, sentinel
+`AGENT_LOOP_TICK_WORKER_LIVENESS`, every 5 min): it checks subagent
+transcript growth, corroborates against work products (pup processes, git
+commits) when a transcript looks stalled, and interrupt+resumes any worker
+stalled >15 min with no live work. If you start a fresh chat, that loop's
+shell does NOT survive — re-arm it if the owner still wants the 5-min
+cadence, and don't leave a duplicate running.
+
+**IMMEDIATE RESUME POINT:** wait on HS-25; when it lands, (a) commit its
+Host/ work is already done by the worker — just commit the HANDOFF
+entries (HS-23 + HS-24 + HS-25) in the ledger voice, per-package
+`git add Host/`; (b) if HS-25 named a client-side depacketizer change,
+launch that root-package slice; (c) the owner's quality eyeball on the p4
+recipe is still open — a clean-path session should look markedly sharper
+than the trip-era "moderate". Then the ladder continues: Q-1 (fold
+`encoder-ab.sh` into the beauty-bar convention; fix the estimator
+formatter bug that prints "462,090 kbps delivery"), and the H4 4:4:4 wave.
+
+# RESTARTING WORKERS IN A NEW CHAT (read before resuming)
+
+**The worker model.** "Workers" are background subagents launched via the
+Task tool. They are **session-bound: a subagent from a previous chat CANNOT
+be resumed from a new chat** — you relaunch a FRESH worker with a full task
+prompt. Their file edits, commits, and pup-side state persist on disk
+regardless; only the live agent handle is lost. So resuming = (a) inspect
+what the stopped worker left on disk, (b) either keep or revert it, (c)
+relaunch a fresh worker to finish.
+
+**State at this chat's close (2026-07-28 ~17:29 MDT).** All this chat's
+workers are STOPPED (the 5-min liveness loop killed; HS-25 halted cleanly
+with a full report). GOOD NEWS: HS-25's FEC fix is **fully implemented and
+GREEN — Host suite 179/179 on BOTH Mac and pup** (sources already rsynced
+to pup). It is NOT broken WIP; it just never got its live proof or commit
+before the stop. Uncommitted at close:
+- `HANDOFF.md` (this file — coordinator's; safe to commit)
+- `Host/Sources/HostWire/Session.swift` — HS-25: `ingestVideoFrame`
+  pre-checks the frame against the live protectable ceiling; oversized
+  frames are DROPPED not thrown (`counters.videoFramesUnprotectable`,
+  `unprotectableKeyframePending` IDR latch, frame number NOT consumed so
+  the client sees no numbering gap).
+- `Host/Sources/HostWire/VideoChannel.swift` — HS-25: `maxProtectable
+  FrameByteCount` / `worstCaseProtectableFrameByteCount` (lossy+input-TLV
+  = 204 × 1095 = 223,380 B ceiling).
+- `Host/Sources/lyte-host/SessionWire.swift` — HS-25: read-only passthroughs.
+- `Host/Sources/lyte-host/main.swift` — HS-25: at encoder init in session
+  mode, caps opening VBV at 223,380 B if absent (capped-CQ, the live bug's
+  cause) or above worst-case, folded into frame 0's IDR; `armEncoderVbv`
+  baseline mirrors it so a squeeze→clean RESTORE can't re-open the hole.
+- `Host/Tests/HostWireTests/UnprotectableFrameGateTests.swift` — HS-25:
+  5 new pins (ceiling math, 255-shard boundary ships protected, 307 KB
+  repro drops without throwing + arms latch + keeps frame number, channel
+  seam still throws as backstop, lossy regime shrinks ceiling).
+(HS-23 `11f058f` and HS-24 `1d65bad` are already COMMITTED in Host/, not
+pushed; their HANDOFF wave entries plus HS-25's are the coordinator's to
+commit.) `git -C Host status` / `git diff Host/` to see it.
+
+**KEY FINDING — split-groups was ruled out (wire-contract reason).** The
+fec u64 (`Wire/Sources/LyteWire/FecField.swift`) has no group index; the
+group binding IS the envelope `frame` field, so multi-group-per-frame would
+be a wire-format change. Client side confirms it: `VideoAssembler` (Wire),
+consumed by `Sources/LyteTransport/LyteVideoPipeline.swift`, keys one group
+per frame number and can't reassemble a multi-group frame. So the chosen
+fix (byte-ceiling degrade + opening VBV cap) needs **NO client-side work** —
+this stays a Host-only slice. Don't re-litigate split-groups without a
+wire-v2 discussion first.
+
+**To FINISH HS-25 (not re-implement it), fresh worker, Host/ territory.**
+The code is done and green; three things remain: (1) **live repro-then-
+proof on pup** — put a Wayland-native 1080p60 pattern on the host screen
+(`XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0
+SDL_VIDEODRIVER=wayland ffplay -fs -f lavfi -i
+"testsrc2=size=1920x1080:rate=60"`), reproduce `unprotectableDataShard
+Count(279)` at the PRE-fix HEAD, then show the fix survives the same
+content with frames flowing via `.build/debug/lyte-cli wire-view <port>
+--host 10.0.0.249` on a 41180+ port; KILL ffplay after; (2) append the
+HS-25 HANDOFF wave entry (leave uncommitted); (3) `git add Host/` + commit
+in the declarative em-dash voice, no push. Do NOT touch the owner's 41151
+loop or the secrets. If `git diff Host/` shows the WIP was reverted for any
+reason, the full re-implementation brief is: byte-ceiling degrade (drop
+oversized frames, never throw/exit) + cap opening VBV at the worst-case
+protectable ceiling; pin with `UnprotectableFrameGateTests`.
+
+**To re-arm the 5-minute worker-liveness loop** (optional; only if the
+owner wants the auto-watchdog cadence). Start ONE background shell, unique
+sentinel, and monitor its stdout:
+```
+while true; do sleep 300; echo 'AGENT_LOOP_TICK_WORKER_LIVENESS {"prompt":"Confirm all Lyte workers alive: check subagent transcript growth + corroborate against work products (pup processes, git commits); interrupt+resume any worker stalled >15 min with no live work; message the owner only on a fix or completion."}'; done
+```
+Arm it with a `notify_on_output` watcher on `^AGENT_LOOP_TICK_WORKER_LIVENESS`.
+Track the PID so it can be killed on request. **Do not start a second copy**
+— check `ps` for an existing `AGENT_LOOP_TICK_WORKER_LIVENESS` loop first.
+(NOTE: an unrelated `AGENT_LOOP_TICK_devendor` loop from a different
+project's chat may also be running on this machine — leave it alone.)
+
+**Standing infra that is NOT a "worker" and should stay up:** the pup host
+loop `bash ~/lyte-loop.sh` (port 41151) and the owner's client app bundle.
+Do not kill these when stopping workers.
+
+# CURRENT STATE — post-H2
 
 **Where things stand.** H2 FUNCTIONAL PARITY IS CLOSED (joint gate passed
 2026-07-22 ~13:15 MDT, report `docs/20260722-h2-joint-gate.md`) and the H2
@@ -48,6 +199,18 @@ Mac**; build-cli.sh + make-app.sh release green. Its live legs are
 **DEFERRED-PENDING-HOST** (full list in the wave entry below — they run
 TOGETHER with HS-18's a–g on pup's return; port 41121 stays reserved for
 the pair).
+
+**THE WIRE IS CLEAN NOW (2026-07-28 ~15:40 MDT) — supersedes every
+earlier Wi-Fi caveat.** The owner moved the client Mac off the weak 6 GHz
+band (was -65 dBm, MCS 2) onto 5 GHz ch 44 (-60 dBm, MCS 7) and disabled
+the Mac-side scan triggers; the gateway's 6 GHz network is disabled.
+Measured after the change: Mac↔pup full path p50 7.6 ms / p99 18 ms /
+max 23 ms with ZERO >50 ms samples in 30 s; bulk ~160 Mbps pup→Mac and
+~175 Mbps Mac→pup (through ssh crypto). The scan-stall trains (70–100 ms
+dark every ~500 ms), the 13–17 Mbps real-time pin, and HS-23's observed
+1–2 s full-dark outages are all artifacts of the OLD wire — re-baseline
+before attributing tail latency to the radio. pup's link was already
+clean (5 GHz, -57 dBm, ~1 Gbps bitrates, power save off).
 
 **pup status: BACK ONLINE (2026-07-27 ~21:20, HS-22b ran against it).**
 pup rebooted ~11:35 this morning — the reboot healed the NVENC driver
@@ -2371,6 +2534,200 @@ its entry at the marker at the end of this block.*
   supremacy plan's recipe-vs-wire reconciliation (R2's territory)
   is where that tension resolves; the policy now prices it at
   ~2 directives per episode instead of ~10.
+
+- **HS-23 — fifty is permission, not a promise; the estimator learns
+  to tell a dark radio from a drowning wire** (`11f058f`, Host/): the
+  supremacy plan's R2, built on the Wi-Fi study
+  (`docs/20260728-201150-lyte-wifi-throughput-study.md`).
+  THE RECIPE: LAN cap 20 → 50 Mbps at the session seam —
+  `--wire-rate-mbps` defaults to 50, and in session mode the ENCODER
+  RECIPE PAIRS TO THE PACER RATE unless `--bitrate-mbps` is explicit
+  (the old default silently left the encoder at 20 under a 50 pacer).
+  The k-ladder and clean boundary were ALREADY ceiling-relative
+  fractions — verified scaling, not re-hardcoded; a new VBV pin proves
+  the boundary arithmetic at fifty. 50 is permission: the estimator
+  still governs below it.
+  THE STALL GATE (RateEstimator): the study's receiver-side scan
+  stalls (radio dark 70–100 ms, then a compressed burst) read as
+  overuse to the old law — every dark spell anchored the rate down;
+  that is what pinned 13–17 Mbps. An overuse fall now HOLDS when the
+  hole carries the stall signature, all three marks at once: (1) the
+  inflation streak's PEAK dwell stays under `stallGapCeilingMicros`
+  (150 ms — a closed hole, not a growing queue), (2) a FULL train
+  inside the last 500 ms measured drain at ≥1.25× the standing pace
+  (the burst PROVES the pipe still swallows faster than we feed it),
+  (3) conservation — pre-FEC loss and post-FEC evidence both under
+  the clean threshold (nothing died in the hole; a few NACK echoes
+  inside the dwell are priced in). Why real congestion still bites:
+  a hole past 150 ms is no stall (pinned — 400 ms falls as ever); a
+  drain BELOW the pace is a real squeeze regardless of hole shape
+  (pinned); loss past the clean threshold defeats the hold (pinned,
+  both pre-FEC and a rung-3 storm); and the self-ref gate from HS-22c
+  runs FIRST — the stall gate only sees falls the backlog test let
+  through. `stallHolds` rides the estimator stats line. FEEDBACK-LOSS
+  HARDENING (the study's 1.7% uplink loss): reports carry cumulative
+  counters + windowed dispersion samples, so a LOST report skips a
+  window and the next report's deltas absorb it — no fabricated gap,
+  no masked squeeze (pinned: `testLostFeedbackReportsNeitherFabricate
+  NorMask`). Suite **161 → 168/168 Mac, 169 Linux** (7 new pins:
+  ride-through cycles, rising-dwell hold, hole-past-ceiling fall,
+  drain-below-pace fall, loss defeat, NACK-echo hold vs rung-3 fall,
+  feedback-loss, plus the VBV fifty pin).
+  THE LIVE GATE (pup, port 41169, testsrc2 1600×1000@60 heavy motion;
+  NO Ethernet on pup — `ip -br link` shows lo + wlp0s20f3 only, so
+  wired 55+ is the OWNER'S path to 60; and TODAY'S wire ran visibly
+  rougher than the study's snapshot: recurring 1–2 s FULL-dark
+  outages every ~30–60 s — those exceed any stall ceiling and are
+  CORRECTLY priced as real):
+  • **Leg (a) heavy motion, 160 s**: client glass **fps p50 48 /
+    p75 50 / p95 56, mean 45.6** (HS-22c: 44.5 mean) — the gate's
+    honest read: this wire's outage trains cap p50 near ~48–50; the
+    clean stretches run 50–60 fps at QP 12. Host books: 7255 frames
+    (45.4 fps encoded), **44 IDR (16.5/min), 34 directives** (all
+    applied), 25 downshifts — **0 loss, 14 self-ref holds, 4 stall
+    holds**, 2 rung-3, regime ends CLEAN. THE PIN IS BROKEN: the
+    estimator no longer sits at 13–17 — it ranges the whole ladder,
+    repeatedly reaching 20–50 Mbps and touching the FULL 50,000 at
+    QP 12 mid-run; every crater below traces to a >150 ms genuine
+    outage, not a scan stall.
+  • **Leg (b) squeeze re-proof at fifty**: 6 Mbit netem
+    (dsfield 0xa0 + sport 41169), 60 s window mid-run, removal
+    verified (`noqueue` after). Fall TRACKS: 50,000 → 620 within
+    ~3 s of the shaper landing, then saw-tooth probes 0.6→10 Mbps
+    against the 6 Mbit pipe (104 overuse verdicts, 0 loss — the
+    stall gate stayed QUIET under a real shaper: 1 hold all run).
+    Tail RE-CONVERGES: unbroken doubling climb to the FULL 50,000
+    by ~50 s post-removal, HELD ~20 s at QP 12 — then a genuine
+    late Wi-Fi outage cratered it (netem long gone) and the run
+    closed mid-recovery at 4.2 Mbps, climbing. **B2 stays retired**:
+    0 honored NACKs, 11 stale, 0 rung-3, no floor-pin, regime CLEAN.
+    8835 frames (45.4 fps), 41 IDR, 35 directives.
+  • **Leg (c) clean-path silence at ceiling, 95 s**: **23
+    consecutive seconds at pacer 50,000 = 100% of the recipe with
+    the applied max AT the recipe and ZERO directives** — silent
+    above, exactly as specified. Below the boundary, the doubling
+    rung walks 368 → 739 → 1487 → 2977 → 5956 → 11925 → 24191 →
+    50000 (~×2 each — HS-22c's ladder scaling untouched to the new
+    ceiling). 16 directives / 16 applied, 17 IDR / 94.8 s, 0 NACKs,
+    regime clean; the two craters bracketing the silent stretch were
+    genuine 1–2 s full-dark outages (correctly bitten).
+  • **Leg (d) static desktop, 80 s**: **487 kbps average** (537
+    frames: 91 damage + 446 ratchet keepalives, 0 repeated), QP
+    pinned 12, 12 IDR — nearly all at outage-crater recoveries (6
+    downshifts, 2 loss during one genuine outage), not encoder
+    churn. Near-idle holds at the fifty recipe.
+  HYGIENE: netem removed + `noqueue` verified both interfaces; no
+  strays; owner's 41151 loop alive at close; noise_static.key /
+  paired_clients mtimes untouched (Jul 21/22), portal_token fresh
+  by DESIGN (restore-token rotation on every host run — headless
+  capture succeeded on every leg, chain intact).
+  NAMED FOR THE NEXT RUNG: (i) recovery out of a FULL-dark crater
+  costs ~45 s of doubling climb from the 500 kbps floor to 50,000 —
+  at the fifty ceiling that mud is long; conserved-drain evidence
+  could justify a faster climb. (ii) The AP dropped af21-MARKED TCP
+  outright mid-session (ssh needed `IPQoS=none`; a later 50/50
+  marked-vs-plain UDP probe passed clean — the penalty is
+  intermittent). The client marks its whole uplink 0xA0
+  (UdpReceiveEndpoint) — feedback and handshake ride whatever class
+  the AP is punishing; a marked-vs-unmarked A/B on this AP is owed
+  before blaming the protocol for uplink loss.
+
+- **HS-24 — the recipe stops shipping Sunshine's floor; every knob now
+  has to measure its way in** (`1d65bad`, Host/): the supremacy plan's
+  R4, the encoder A/B ladder, against the owner-blessed adoption bar
+  (PSNR-at-bitrate gain with fps and input→photon held).
+  THE HARNESS (the committed deliverable): the C leaf loses its
+  hard-coded posture — `lyte_hevc_enc_new` takes preset/tune/multipass/
+  spatial-AQ/temporal-AQ/aq-strength explicitly and rejects unknown
+  values LOUDLY at open; the shipped recipe is now
+  `HostCore.EncoderRecipe.sessionDefault` (test-pinned, with
+  `sunshineBaseline` kept as the named incumbent p1/ull/qres);
+  `--enc-*` flags on lyte-host for live A/B legs; `lyte-encode-check`
+  (new Linux executable) drives deterministic raw BGRx frames through
+  the exact production leaf — bytes/QP/per-frame-encode-µs books, a
+  `--static N` ratchet-convergence mode, one parseable RESULT line;
+  `Host/Scripts/encoder-ab.sh` generates two corpora (motion =
+  testsrc2 1600×1000@60; desk = gradients + scrolling monospace text),
+  races the ladder under MATCHED content and rate (CBR 8 + 20 Mbps,
+  capped-CQ cq12/cap50, static×300), and prints the delta table. The
+  latency frame (infinite GOP, 0 B-frames, 0 reorder, 1 surface) is
+  explicitly NOT a knob.
+  THE LADDER VERDICT (pup RTX 4050, 360-frame legs; motion legs
+  rate-matched within ~1%, so the deltas are honest PSNR-at-bitrate):
+  • **p4 ADOPTED** — motion +0.766/+0.849 dB at matched 8/19 Mbps;
+    desk +12.45/+12.42 dB at HALF the spend (3.5 vs 7.2 Mbps — p1's
+    rate control on scrolling text is genuinely pathological: 2× the
+    bits for −12 dB); capped-CQ session posture +0.265 dB at −4.7%
+    bits; static keepalives 563 → 227 B at converged QP 12 (~2.5×
+    cheaper ratchet); encode mean 3.1 → 4.6 ms, p99 ~6 ms, ~215 fps
+    capacity — the 60 fps budget and the input→photon band hold.
+  • REJECTED, each on the bar's own terms: **p2** (+0.05/+0.20, desk
+    ~0); **p3** (+0.41/+0.54 — real, but p4 dominates at the same
+    cost shape); **p5/p6** (byte-identical to each other, ≤+0.003
+    over p4, +0.4 ms); **p7** (≈p4, +0.5 ms); **spatial AQ** (−0.30/
+    −0.39 dB at p1 AND −0.29/−0.39 rel p4 — AQ optimizes perceptual
+    weighting against the very metric the bar names, and even the
+    text corpus lost); **temporal AQ** (opens WITHOUT lookahead on
+    this wrapper — contra the expected reject — but measures a no-op,
+    ±0.02 dB); **ll tuning** (≤+0.06 dB ≈ noise; ull keeps the
+    established latency posture); **multipass disabled** (−0.82/−2.11
+    dB on motion while UNDERSPENDING; its desk "+17.7 dB" was 2.8×
+    bit-spend, not quality-per-bit — qres is precisely what lets CBR
+    underspend quiet content, keep it); **multipass fullres**
+    (inconsistent sign vs p4, +0.5 ms).
+  THE LIVE GATE (port 41171, testsrc2 window, the HEALED wire — the
+  owner moved the Mac to 5 GHz: re-baseline 40 pings 0% loss, avg
+  8.9 ms, max 14.7 ms; HS-23's 1–2 s full-dark outages GONE, only
+  ordinary daytime dips remain):
+  • p1 legs (A/A2): glass fps p50 48/46, host QP mean 26.5/27.9,
+    first frame 20.4/16.6 ms, IDR-era churn only at real dips.
+  • p4 leg (B3, clean): 4,752 decoded / 110 s, fps p50 44, **QP mean
+    19.6 — clean stretches HOLD QP 12** (48 fr × ~63 KB ≈ 24 Mbps)
+    inside the same wire where p1 rode QP 26; 221/205,044 datagrams
+    missing (0.11%) all healed; first frame 19.7 ms. Two earlier p4
+    legs recorded but not comparative: B caught genuine end-of-run
+    weather (estimator ended mid-crater at 1.7 Mbps), B2's content
+    driver froze (see environmental find below).
+  • Static leg (C, p4): **166 kbps average** over 74.7 s (HS-23 leg d:
+    487), QP 12, **1 IDR**, 0 directives, ratchet converges in 4–11
+    passes and goes silent, 385/385 frames delivered.
+  • The honest fps read: glass p50 sits 44–48 under BOTH presets —
+    the Wi-Fi path, not the encoder, remains the fps limiter exactly
+    as HS-23 recorded; the encoder's 60 fps capacity is proven
+    offline. Wired is still the owner's path to 60 at the glass.
+  ENVIRONMENTAL FIND (for every future live leg): ffplay launched
+  over ssh with `DISPLAY=:0` renders ~5 fps through Xwayland — the
+  desktop composites almost no damage and a "heavy motion" leg
+  silently measures a static desktop. Launch Wayland-native
+  (`XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0
+  SDL_VIDEODRIVER=wayland ffplay …`) and PROBE the damage rate first
+  (8 s file-mode run should show ~60 fps damage). Wayland ffplay can
+  also freeze outright mid-run (leg B2: 37/110 s of supply) — check
+  supply before reading a leg.
+  Suites: **169 → 174/174 Mac AND Linux** (5 new EncoderRecipe pins:
+  the shipped recipe as data, the incumbent baseline, knob-space
+  validation both ways, summary format). HYGIENE: no netem applied
+  (noqueue verified both interfaces at close); noise_static.key /
+  paired_clients mtimes untouched (Jul 21 / Jul 22), portal_token
+  rotation by design (headless capture on every leg); no strays,
+  4117x ports free; ladder corpora removed (results kept at
+  `pup:~/encab/results.tsv`, run log `~/encab-run.log`, leg logs
+  `~/hs24-leg*-host.log` + Mac `/tmp/hs24-leg*-client.log`). The
+  owner's 41151 loop was found EXPIRED at 16:05 — its own design (60
+  iterations × the host's 120 s no-handshake timeout ≈ 2 h, cycling
+  since ~14:00, before this slice ran); restored FRESH at close, 60
+  iterations at the committed build — the loop now serves the p4
+  recipe for the still-open owner eyeball (leg e).
+  NAMED FOR THE NEXT RUNG: (i) Q-1 should fold `encoder-ab.sh` into
+  the beauty-bar convention — the ladder is now a standing instrument,
+  rerun it per recipe question, and the estimator formatter bug
+  (delivery printed as 462,090 kbps this session) is still waiting
+  there. (ii) The desk-corpus finding generalizes: ANY future recipe
+  question needs the text corpus in the race — motion-only A/Bs would
+  have called p4 a +0.8 dB nicety and missed the 2×-bits-for-−12 dB
+  text pathology it fixes. (iii) Temporal AQ's open-without-lookahead
+  means the wrapper accepts it silently — if a future SDK makes it
+  real, the ladder will see it; nothing to do now.
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
