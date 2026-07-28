@@ -1874,8 +1874,21 @@ its entry at the marker at the end of this block.*
   R4 encoder A/B ladder off Sunshine's p1 floor (p4, AQ; keep
   no-B/no-lookahead) → R5 beauty-bar standing gate (two rows fail
   today: fps + IDR/min — exactly the two losses). AV1 stays a browser
-  play (Ada AV1 is 4:2:0-only, M1/M2 can't decode it). Five owner
-  decisions queued in the doc §"owner decisions".
+  play (Ada AV1 is 4:2:0-only, M1/M2 can't decode it). **All five
+  owner decisions ANSWERED (2026-07-28 ~11:40), every recommendation
+  confirmed**: (1) LAN ceiling **50 Mbps** (HS-23's number); (2) NO
+  desktop/motion recipe split now — the split arrives as
+  Work(4:4:4)/Play(4:2:0) with H4; (3) **finish H3 first, 4:4:4
+  LEADS H4** (owner note: Sunshine's Linux 4:4:4 is still unreleased
+  master — we intend to ship before they do); (4) preset adoption
+  bar BLESSED (flags adopted only on measured PSNR-at-bitrate gain,
+  fps + input→photon held); (5) 10-bit deferral REAFFIRMED (after
+  4:4:4 converges). Owner hardware note for codec planning: the
+  client Mac is an **Apple M5** (AV1 hw decode present) — AV1
+  remains a browser play regardless, per the 4:4:4-needs-HEVC
+  argument. QUEUE after HS-22c frees Host territory: the F-3/F-4
+  JOINT live gate (drag-and-drop Mac→pup, legs listed in the F-4
+  entry) → HS-23 (50 Mbps cap, ≥55 fps gate).
 
 - **Video quality probe** (`ca0172a`, docs only — full account in
   `docs/20260728-164746-lyte-video-quality-probe.md`): PSNR at the
