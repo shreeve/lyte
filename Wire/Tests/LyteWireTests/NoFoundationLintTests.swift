@@ -1,3 +1,9 @@
+// WASI has no processes, so this Process-driven runner cannot exist there.
+// The lint is a source-text check and keeps running everywhere native CI
+// does (`swift test` on macOS and Linux); the wasm leg
+// (Scripts/wasm-test.sh) skips it by construction.
+#if !os(WASI)
+
 import XCTest
 import Foundation
 
@@ -69,3 +75,5 @@ final class NoFoundationLintTests: XCTestCase {
         XCTAssertEqual(try runLint(directory: scratch.path), 0)
     }
 }
+
+#endif // !os(WASI)

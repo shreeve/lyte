@@ -5,6 +5,8 @@ These files are first-class, versioned wire-contract artifacts (master plan
 codecs against exactly these bytes before the host ever sends a datagram,
 and `Wire/Tests` verifies `LyteWire` against them on macOS and Linux —
 byte-exact equality on both platforms is part of gate W-G1.
+`Scripts/wasm-test.sh` runs the same suite for wasm32-unknown-wasip1
+under wasmtime, attesting the same bytes on a third platform.
 
 **Freeze policy.** A committed vector file is frozen. If the codec and a
 vector ever disagree, that is a wire-contract break to investigate — never a
