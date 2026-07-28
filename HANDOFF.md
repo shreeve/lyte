@@ -120,6 +120,24 @@ read the wrong transcripts folder.) Results:
    (C) certificate/page UX, (D) confirm the B-4 cut line. B-slices
    wait on these; F-3/F-4 do not.
 
+**RESTART ADDENDUM 2 (2026-07-28 afternoon): the F-3×F-4×F-5 JOINT
+GATE is DRAINED — full verdict table in the JOINT-GATE wave entry.**
+Nine of ten legs PASS live; leg (i)'s real Wi-Fi hop is OWNER-PENDING
+(steps in the entry), and a five-minute owner eyeball remains for the
+UI verbs the headless harness can't touch (real mouse drag with the
+toggle ON, drag-during-captured-input, Disconnect mid-hunt, banners
+at the glass). One REAL host bug found by leg (h) and FIXED:
+`fea9149` (Host/) — a relaunched host latched its socket onto the
+dead session's feedback spray and could never hear the client's
+re-dial; suites 161/161 both platforms after. pup rebooted
+~14:03 mid-session (owner-initiated) — the standing session ended
+with a clean typed teardown (good SIGTERM behavior, noted in the
+entry); secrets byte-identical through everything. Next per the H3
+ladder: browser-viewer slices (owner decisions answered) + the
+wire-v2 design doc; HS-23 should read the entry's wire note
+(~150 Mbps bulk Wi-Fi 6E path, micro-stalls; bulk transfer
+Wi-Fi-shaped at ~1 Mbps effective under the 4 Mbps host cap).
+
 **H3 §0 OWNER DECISIONS — ANSWERED (2026-07-27 ~21:22).** The seven
 decisions in `docs/20260723-051223-lyte-h3-plan.md` §0 are settled:
 1. **File-transfer consent**: standing per-host toggle, **client→host
@@ -1943,6 +1961,131 @@ its entry at the marker at the end of this block.*
   the page; cut line after B-4) and deferred A (QUIC posture) along
   with all B-2+ work until F-3/F-4 land — browser sessions are
   sequenced BEHIND file transfer by owner direction.
+
+- **JOINT-GATE — file transfer (F-3×F-4) and roaming (F-5) live legs,
+  ten-leg union DRAINED** (live run 2026-07-28 afternoon; one REAL bug
+  found and fixed: `fea9149`, Host/). HOW IT RAN: a headless harness
+  (`jgbulk`, /tmp-only, not committed) links the REAL client stack —
+  `LyteUdpSession` + `BulkSendCoordinator` + `RoamingPolicy` +
+  `NetworkPathWatcher` wired exactly in `ConnectionModel`'s shape
+  (detach-then-dial, manualReconnect, sessionReady re-offer) — so
+  every leg below exercised the shipped transport/policy code;
+  only the literal AppKit drag/UI is out of its reach (eyeball items
+  ledgered OWNER-PENDING). Host instances: port 41168, bwrap-isolated
+  temp home (fresh throwaway identity; owner's identity/config never
+  touched), relaunch loop, `--backend mutter --accept-files`.
+  pup suite **161/161** (post-fix, re-verified post-reboot), root
+  **162/162**, builds green. MID-SESSION ENVIRONMENT FACT: pup was
+  rebooted (owner-initiated, ~14:03) under a standing leg — the host
+  sent a typed teardown on SIGTERM and the client ended cleanly
+  (peerTeardown(shuttingDown) at the glass); /tmp infra rebuilt,
+  no verdict affected. VERDICTS (a–j):
+  • **(a) toggle ON — PASS**: 12,582,912 B random file client→host,
+    sha-exact both ends (`3843ffc4…`), 192 chunks over chan 8,
+    ~103 s ≈ 1.0 Mbps effective under the host's 4 Mbps wire cap —
+    Wi-Fi-shaped (see the wire note below). The real mouse drag at
+    the glass is the one OWNER-PENDING sub-leg (drop any file on the
+    stream window, toggle ON).
+  • **(b) toggle OFF — PASS**: no `--accept-files` → key 11
+    undeclared, agreed bulkTransfer=false, drop verdict
+    hostNotAccepting (the "Host isn't accepting files" path), and
+    `sendBulkMessage` refuses with notNegotiated.
+  • **(c) mid-transfer session kill — PASS**: killed at 42% (typed
+    goodbye), re-dial 1.4 s, same-id re-offer → host accepts
+    RESUMING with possession prefix=96 chunks; exactly the
+    8,388,608 B gap re-sent; sha-exact.
+  • **(d) cancel mid-flight — PASS**: cancel at 41% (81 chunks /
+    5.3 MB stored) → host logs abort(cancelled, remote) and the
+    landing dir ends with zero .part/.resume strays.
+  • **(e) second offer while active — PASS**: hand-crafted concurrent
+    offer mid-flight → host refuses busy, client sees abort(busy),
+    the first transfer completes undisturbed sha-exact (`e992a1d4…`).
+  • **(f) host IP flip under a standing session — PASS.** THE FLIP
+    (documented for reuse; ssh and the owner's 41151 both untouched):
+    alias `10.0.0.250/24` on wlp0s20f3 + one nft DNAT rule scoped to
+    udp dport 41168 (`ip daddr .250 dnat to .249`) makes the host
+    wholly dial-able at .250; the flip is alias-del + table-del +
+    `conntrack -D --orig-port-dst 41168` (the entry KEEPS applying
+    NAT after rule deletion otherwise — first attempt proved it by
+    surviving 80 s unharmed) + a scoped output drop of the old
+    flow's client port. Client froze ~0.5 s post-flip, searching at
+    silent+3.06 s, sighted the same pkh at .249, NEW-address rung
+    dialed on sight (no hold), established in 17 ms —
+    **flip→reattached ≈ 5.1 s**. Wire fact worth keeping: the
+    client's receive path is source-agnostic (video from a new
+    source address feeds the same session), so the client-visible
+    outage is driven by the HOST letting go — here the old process
+    exited fast on send errors (EPERM from the drop; a real flip's
+    EADDRNOTAVAIL behaves the same), loop relaunched, fresh process
+    answered.
+  • **(g) same flip mid-bulk-transfer — PASS**: flip at 29% of a
+    12,582,912 B send → roam ≈ 5.1 s as above → same-id re-offer →
+    host accepts RESUMING with possession prefix=56, exactly the
+    136-chunk / 8,912,896 B gap re-sent, COMPLETE sha-verified
+    (`22f00c6a…`, host counter "1 resumes loaded"). Note: resume
+    state survived the host's ERROR-path exit, not just graceful
+    teardown — the possession map arbitrated across a hard death.
+  • **(h) host-process restart, same address — PASS after a REAL BUG
+    fixed (`fea9149`, Host/)**: pre-fix this leg FAILS
+    deterministically — `awaitClient` latched (connect()ed the
+    socket + pinned the session tuple) onto the FIRST datagram the
+    reborn host saw, which under a live client is the dead session's
+    sealed feedback spray from the OLD source port; the kernel then
+    filters every real re-dial (tcpdump: 15/15 message 1s reached
+    the interface, 0 reached the demux; ~200 notEstablished(3)
+    drops; 120 s handshake windows burned serially). The fix latches
+    only on a datagram SHAPED like a handshake initiation (bare CTRL
+    typed 0x05/0x14; admission/cookies/Noise still judge the bytes).
+    Post-fix, live: silent→searching 3.05 s, the **8 s same-address
+    hold honored** (dial at silent+8.05 s), handshake ~30 ms, first
+    attempt. Suite 161/161 both platforms.
+  • **(i) Mac-side network change — OWNER-PENDING (the live hop);
+    everything around it ran.** Not cleanly simulable on this Mac:
+    NWPathMonitor's interface-set signature only moves for a REAL
+    usable network — a routed feth pair and a Thunderbolt-Bridge
+    service toggle both produced ZERO path events (negative control:
+    the harness ran the real NetworkPathWatcher live, no false
+    positives), and the only real interface is the owner's Wi-Fi.
+    The pathChanged policy semantics (healthy grace / silent
+    escalate / same-address-hold waiver) are pinned in
+    RoamingClientGateTests. OWNER STEPS: app connected, session
+    healthy → join a different Wi-Fi network (or plug USB-Ethernet)
+    mid-session → expect HS-12 migration inside the 3 s grace with
+    no re-dial; then a hop that defeats migration → FROZEN at 2.5 s
+    → immediate scan (no 3 s wait) → re-dial with the hold waived;
+    reattach within ~5 s of silence.
+  • **(j) give-up posture — PASS** (host down 2.5 min, then back):
+    liveness close at silent+29.7 s; banner honest throughout
+    ("Connection lost — looking for jg-host…", "Reconnecting to
+    jg-host at 10.0.0.249…"); **scan cadence settles at the 15 s
+    cap** (steady state = 15 s idle between browses + the 2 s browse
+    itself) and blind probe dials settle at the **30 s cap** (+ the
+    2.1 s dial window); NO give-up across the window. **Manual
+    Reconnect (the ⌘R verb) acted in 0.1 ms** — dial fired
+    immediately AND both ladders reset (next auto-dial 4.2 s later,
+    floor cadence again). Host restored → next scan sighted it →
+    reattached in 24 ms, passively. (Disconnect-mid-hunt is a UI
+    verb — eyeball it with (a)'s drag.)
+  THE WIRE NOTE (for HS-23): this Wi-Fi path bulk-measures
+  ~150 Mbps (6E), but real-time delivery sees micro-stalls — bulk
+  chunks under the 4 Mbps host cap delivered ~1.0 Mbps effective
+  with stall-shaped ack gaps (worst observed 19 s between ack
+  bursts in leg (g)); roam timings themselves were NOT Wi-Fi-bound
+  (5 s flips, 30 ms handshakes). File-transfer throughput on this
+  path is Wi-Fi-shaped, not protocol-bound — say so wherever HS-23
+  picks up the thread. CAVEATS, honestly: legs rode the harness,
+  not the app window — the real drag (a), drag-during-captured-input
+  sanity (F-4's list), Disconnect-mid-hunt (j), and banners AT THE
+  GLASS remain the owner's five-minute eyeball; the no-re-PIN
+  assertion of the F-5 list wasn't exercised (throwaway statics, no
+  pairing in the harness) though `paired_clients` is verified
+  untouched. HYGIENE: netem none (root qdiscs `noqueue` verified);
+  alias/nft/conntrack/feth all removed and re-verified empty;
+  Thunderbolt Bridge service re-enabled; secrets byte-identical
+  (portal_token `dadf9a66…37cf`, noise_static.key `72860390…cfed`,
+  paired_clients `8dc1f88a…55fd`); all 41168 instances and the loop
+  dead at close; the owner's 41151 loop alive (post-reboot restart,
+  coordinator-owned).
 
 - **F-4 client file-drop sending end** (`d771e22`, root): a dropped
   file finds its way to the wire — the client half of drag-and-drop,
