@@ -1859,6 +1859,20 @@ its entry at the marker at the end of this block.*
   ≤128 KiB — default ArqConfig maxMessageByteCount 262,144 clears
   it; keep that headroom when the ends tune ARQ for chan 8).
 
+- **Video quality probe** (`ca0172a`, docs only — full account in
+  `docs/20260728-164746-lyte-video-quality-probe.md`): PSNR at the
+  post-HS-22b build — static converges **53.5 dB luma** (gate ≥ 50,
+  opening IDR 44.0 vs the old 38.6), motion 56.1–57.5 dB, static
+  time-series FLAT (no 1 Hz ghost); wire drops nothing (0.02% loss all
+  healed, 5,692 emitted → 5,689 decoded + 2 NACK-repaired). The
+  remaining supply-side story, A/B-quantified for **HS-22c**: heavy
+  motion at QP 17 wants ~24 Mbps > the 20 Mbps recipe so fps plateaus
+  ~38 smooth (not 60), and the ARMED policy spent 105 directives /
+  110 IDR (44/min, QP p95 47, one 500 kbps-floor crash) in 150 s where
+  the `--no-vbv-reconfigure` twin spent 0/3 at QP 17 FLAT — findings
+  (i)/(ii) now have hard numbers; owner's eyeball still owed on
+  whether 38 fps heavy motion reads as choppy.
+
 - **B-1 wasm attestation leg** (`51c058c`, Wire/): the overnight probe
   becomes a repeatable check — `Wire/Scripts/wasm-test.sh` cross-builds
   the whole Wire suite for wasm32-unknown-wasip1 (swiftly 6.3.3 +
