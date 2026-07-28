@@ -40,9 +40,43 @@ static void averr(char *err, size_t errlen, const char *what, int rc)
     set_err(err, errlen, "%s: %s", what, buf);
 }
 
+/* av_opt_set that fails the open loudly: the HS-24 A/B harness needs a
+   bad knob value to reject the run, never to ride a silent default. */
+static int set_opt(AVCodecContext *ctx, const char *name, const char *val,
+                   char *err, size_t errlen)
+{
+    int rc = av_opt_set(ctx->priv_data, name, val, 0);
+    if (rc < 0) {
+        char buf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(rc, buf, sizeof(buf));
+        set_err(err, errlen, "encoder option %s=%s rejected: %s",
+                name, val, buf);
+        return -1;
+    }
+    return 0;
+}
+
+static int set_opt_int(AVCodecContext *ctx, const char *name, int64_t val,
+                       char *err, size_t errlen)
+{
+    int rc = av_opt_set_int(ctx->priv_data, name, val, 0);
+    if (rc < 0) {
+        char buf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(rc, buf, sizeof(buf));
+        set_err(err, errlen, "encoder option %s=%lld rejected: %s",
+                name, (long long)val, buf);
+        return -1;
+    }
+    return 0;
+}
+
 lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
                                  const char *pix_fmt_name,
                                  int fps, int64_t bit_rate, int cq,
+                                 const char *preset, const char *tune,
+                                 const char *multipass,
+                                 int spatial_aq, int temporal_aq,
+                                 int aq_strength,
                                  char *err, size_t errlen)
 {
     const AVCodec *codec = avcodec_find_encoder_by_name("hevc_nvenc");
@@ -81,7 +115,11 @@ lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
     ctx->time_base = (AVRational){1, fps};
     ctx->framerate = (AVRational){fps, 1};
 
-    /* Sunshine's low-latency recipe (docs/sunshine-v2026.715.205118.md §7). */
+    /* The latency invariants (Sunshine's low-latency frame,
+       docs/sunshine-v2026.715.205118.md §7): infinite GOP, no B-frames,
+       no reorder delay. These are NOT recipe knobs — a B-frame or a
+       lookahead frame is buffered latency by definition, and the
+       packetizer's PTS invariant assumes display order. */
     ctx->gop_size = INT_MAX;
     ctx->keyint_min = INT_MAX;
     ctx->max_b_frames = 0;
@@ -133,12 +171,19 @@ lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
         av_opt_set(ctx->priv_data, "rc", "cbr", 0);
     }
 
-    av_opt_set(ctx->priv_data, "preset", "p1", 0);
-    av_opt_set(ctx->priv_data, "tune", "ull", 0);
-    /* Sunshine's two-pass quarter-res rate control. Besides better bit
-       placement, it lets CBR go quiet on static content (~4.5x fewer bytes
-       measured on a repeated still) instead of burning budget re-refining. */
-    av_opt_set(ctx->priv_data, "multipass", "qres", 0);
+    /* The recipe knobs (HS-24): preset/tune/multipass/AQ come from the
+       caller — HostCore.EncoderRecipe owns the product default. Every
+       set is checked: a knob this libavcodec build doesn't know fails
+       the open (the harness's reject evidence). */
+    if (set_opt(ctx, "preset", preset, err, errlen) < 0 ||
+        set_opt(ctx, "tune", tune, err, errlen) < 0 ||
+        set_opt(ctx, "multipass", multipass, err, errlen) < 0 ||
+        set_opt_int(ctx, "spatial-aq", spatial_aq ? 1 : 0, err, errlen) < 0 ||
+        set_opt_int(ctx, "temporal-aq", temporal_aq ? 1 : 0, err, errlen) < 0)
+        goto fail;
+    if (aq_strength > 0 &&
+        set_opt_int(ctx, "aq-strength", aq_strength, err, errlen) < 0)
+        goto fail;
     av_opt_set_int(ctx->priv_data, "zerolatency", 1, 0);
     av_opt_set_int(ctx->priv_data, "delay", 0, 0);
     av_opt_set_int(ctx->priv_data, "forced-idr", 1, 0);

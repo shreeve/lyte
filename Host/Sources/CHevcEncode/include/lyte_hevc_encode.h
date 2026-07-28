@@ -21,9 +21,21 @@ typedef struct lyte_hevc_enc lyte_hevc_enc;
 typedef void (*lyte_hevc_packet_cb)(void *user, const uint8_t *data,
                                     size_t size, int keyframe, int avg_qp);
 
-/* Opens hevc_nvenc with the Sunshine low-latency recipe: preset p1 + ull
-   tuning, multipass qres, GOP INT_MAX, zero B-frames, zero reorder delay,
-   one surface in flight.
+/* Opens hevc_nvenc with the caller's recipe on the fixed low-latency
+   frame (GOP INT_MAX, zero B-frames, zero reorder delay, one surface in
+   flight — those are latency invariants, not knobs). The recipe knobs
+   (HS-24, the encoder A/B ladder) are explicit; the DEFAULT lives in
+   Swift (HostCore.EncoderRecipe, test-pinned), not here:
+     `preset`     "p1".."p7" (NVENC perf→quality ladder)
+     `tune`       "ull" | "ll" (tuning owns the latency shape; both
+                  forbid lookahead/B-frames at our delay=0 posture)
+     `multipass`  "disabled" | "qres" | "fullres"
+     `spatial_aq` / `temporal_aq`  0/1 (temporal AQ needs lookahead on
+                  this wrapper — expected to fail to open; the ladder
+                  records that as evidence)
+     `aq_strength` 1..15, or 0 to leave nvenc's default
+   Unknown knob values fail the open with `err` filled — the A/B harness
+   depends on a loud reject, not a silent fallback.
    Rate control by `cq`:
      cq == 0: true CBR (max=min=bitrate), single-frame VBV, qmin 23 —
               the committed slice-2 recipe.
@@ -39,6 +51,10 @@ typedef void (*lyte_hevc_packet_cb)(void *user, const uint8_t *data,
 lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
                                  const char *pix_fmt_name,
                                  int fps, int64_t bit_rate, int cq,
+                                 const char *preset, const char *tune,
+                                 const char *multipass,
+                                 int spatial_aq, int temporal_aq,
+                                 int aq_strength,
                                  char *err, size_t errlen);
 
 /* Encodes one packed-RGB frame (single plane, `src_stride` bytes per row).

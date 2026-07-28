@@ -97,6 +97,10 @@ struct Options {
     /// the encoder keeps its opening recipe for the whole run (the
     /// pre-HS-20 posture, everything else identical). Debug only.
     var vbvReconfigure = true
+    /// HS-24: the NVENC recipe. The shipped posture is
+    /// EncoderRecipe.sessionDefault (test-pinned in HostCore); the
+    /// --enc-* knobs exist for A/B ladder legs, one flag per leg.
+    var encoderRecipe = EncoderRecipe.sessionDefault
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
@@ -214,6 +218,35 @@ struct Options {
                 opts.cookieExit = v
             case "--no-vbv-reconfigure":
                 opts.vbvReconfigure = false
+            case "--enc-preset":
+                i += 1
+                guard i < args.count else {
+                    throw HostError("--enc-preset needs p1…p7")
+                }
+                opts.encoderRecipe.preset = args[i]
+            case "--enc-tune":
+                i += 1
+                guard i < args.count else {
+                    throw HostError("--enc-tune needs ull or ll")
+                }
+                opts.encoderRecipe.tune = args[i]
+            case "--enc-multipass":
+                i += 1
+                guard i < args.count else {
+                    throw HostError(
+                        "--enc-multipass needs disabled, qres, or fullres")
+                }
+                opts.encoderRecipe.multipass = args[i]
+            case "--enc-spatial-aq":
+                opts.encoderRecipe.spatialAQ = true
+            case "--enc-temporal-aq":
+                opts.encoderRecipe.temporalAQ = true
+            case "--enc-aq-strength":
+                i += 1
+                guard i < args.count, let v = Int(args[i]) else {
+                    throw HostError("--enc-aq-strength needs 1…15")
+                }
+                opts.encoderRecipe.aqStrength = v
             case "--audio-bitrate-kbps":
                 i += 1
                 guard i < args.count, let v = Int32(args[i]), v > 0 else {
@@ -310,6 +343,21 @@ struct Options {
                                     estimator's ceiling (HS-22's
                                     isolation lever — the opening
                                     recipe rides the whole run)
+                  --enc-preset pN   NVENC preset override (p1…p7) for
+                                    an A/B ladder leg; the shipped
+                                    recipe is HostCore's test-pinned
+                                    EncoderRecipe.sessionDefault
+                  --enc-tune T      NVENC tuning override: ull or ll
+                  --enc-multipass M rate-control passes: disabled,
+                                    qres, or fullres
+                  --enc-spatial-aq  enable spatial adaptive quantization
+                  --enc-temporal-aq enable temporal AQ (expected to be
+                                    rejected at open: it needs
+                                    lookahead, which the latency frame
+                                    forbids)
+                  --enc-aq-strength N
+                                    spatial-AQ strength 1…15
+                                    (default: nvenc's 8)
                   --host-audio MODE audible (default) keeps the host's
                                     speakers playing (default-sink
                                     monitor capture); muted routes the
@@ -329,6 +377,21 @@ struct Options {
                 throw HostError("unknown argument \(args[i]) (try --help)")
             }
             i += 1
+        }
+        do {
+            _ = try opts.encoderRecipe.validated()
+        } catch let knob as EncoderRecipe.KnobError {
+            switch knob {
+            case .preset(let v):
+                throw HostError("--enc-preset must be p1…p7 (got \(v))")
+            case .tune(let v):
+                throw HostError("--enc-tune must be ull or ll (got \(v))")
+            case .multipass(let v):
+                throw HostError("--enc-multipass must be disabled, qres, "
+                    + "or fullres (got \(v))")
+            case .aqStrength(let v):
+                throw HostError("--enc-aq-strength must be 1…15 (got \(v))")
+            }
         }
         return opts
     }
@@ -463,8 +526,14 @@ final class Sink {
             }
             var err = [CChar](repeating: 0, count: 256)
             let cq: Int32 = opts.ratchet ? Int32(Ratchet.floorQP) : 0
+            let recipe = opts.encoderRecipe
             guard let enc = lyte_hevc_enc_new(Int32(width), Int32(height), name,
                                               opts.fps, opts.bitrate, cq,
+                                              recipe.preset, recipe.tune,
+                                              recipe.multipass,
+                                              recipe.spatialAQ ? 1 : 0,
+                                              recipe.temporalAQ ? 1 : 0,
+                                              Int32(recipe.aqStrength),
                                               &err, err.count) else {
                 fail("encoder init failed: \(errString(err))")
                 return
@@ -476,7 +545,7 @@ final class Sink {
                 ? "capped-CQ vbr cq=\(Ratchet.floorQP), cap \(opts.bitrate / 1_000_000) Mbps"
                 : "cbr \(opts.bitrate / 1_000_000) Mbps"
             print("capture: \(width)x\(height) \(name), stride \(stride) — "
-                + "encoding hevc_nvenc (\(rcDesc))")
+                + "encoding hevc_nvenc (\(recipe.summary), \(rcDesc))")
         }
 
         let now = monotonicNow()

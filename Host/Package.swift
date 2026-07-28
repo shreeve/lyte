@@ -118,6 +118,17 @@ targets += [
             .linkedLibrary("opus"),
         ]
     ),
+    // HS-24 A/B harness: deterministic raw frames through the exact
+    // CHevcEncode leaf with recipe knobs on the CLI; the ladder script
+    // (Scripts/encoder-ab.sh) pairs its Annex-B output with ffmpeg PSNR.
+    .executableTarget(
+        name: "lyte-encode-check",
+        dependencies: ["HostCore", "CHevcEncode"],
+        linkerSettings: [
+            .linkedLibrary("avcodec"),
+            .linkedLibrary("avutil"),
+        ]
+    ),
     .executableTarget(
         name: "lyte-host",
         dependencies: [
