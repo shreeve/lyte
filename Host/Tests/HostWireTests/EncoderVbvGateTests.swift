@@ -25,14 +25,24 @@ import LyteWire
 //     state);
 //   • HYSTERESIS — a 10% deadband holds small moves; a tightening past
 //     it applies immediately (the oversized-frame harm this rung
-//     exists to stop); a loosening additionally waits out the 500 ms
-//     rise hold;
+//     exists to stop);
+//   • THE COALESCED CLIMB (HS-22c, finding (i)) — inside a squeeze a
+//     loosening emits ONLY when the squeezed cap can at least DOUBLE
+//     what is applied. Every directive is a hidden encoder reset +
+//     forced IDR, and the old per-deadband climb paid ~8–10 of them
+//     per dip-and-recover (105 in the probe's saturated 150 s). A
+//     shallow episode (≥ 50% of the recipe — the clean-path weather
+//     dip) never doubles before the clean boundary, so it pays ONE
+//     directive down and ONE restore; a floor-deep recovery pays
+//     ⌈log₂(recipe/floor)⌉ stepped loosenings instead of ~37 s at the
+//     deepest posture (the pure restore-only variant's live cost);
 //   • recovery returns exactly to the baseline posture and then goes
 //     silent — the policy can never leave the encoder tighter (or
-//     looser) than its opening recipe once the squeeze lifts. For
-//     capped-CQ (whose "no VBV" is inexpressible on the way back —
-//     the wrapper only reads rc_buffer_size > 0) the restore carries
-//     one second at the baseline cap, effectively the recipe.
+//     looser) than its opening recipe once the squeeze lifts. The
+//     restore is the episode's ONE loosening and waits out the 500 ms
+//     rise hold. For capped-CQ (whose "no VBV" is inexpressible on the
+//     way back — the wrapper only reads rc_buffer_size > 0) the restore
+//     carries one second at the baseline cap, effectively the recipe.
 
 final class EncoderVbvGateTests: XCTestCase {
 
@@ -227,7 +237,7 @@ final class EncoderVbvGateTests: XCTestCase {
         XCTAssertEqual(policy.directivesIssued, 2)
     }
 
-    func testFallsApplyImmediatelyRisesWaitTheHold() {
+    func testFallsApplyImmediatelyClimbsBelowDoublingStaySilent() {
         let policy = cappedCqPolicy()
         XCTAssertNotNil(policy.note(frameByteCeiling: 15_000, now: 0))
 
@@ -238,20 +248,140 @@ final class EncoderVbvGateTests: XCTestCase {
             frameByteCeiling: 7_500, now: 10 * Self.ms
         ))
 
-        // A material rise 20 ms later: inside the 500 ms hold — held.
+        // A material within-squeeze rise below the doubling rung
+        // (11,000 B → 3.52 Mbps, 1.47× the applied 2.4 Mbps): SILENT —
+        // not deferred by the rise hold (the pre-HS-22c shape, which
+        // emitted it once the hold passed and paid an IDR per rung),
+        // suppressed outright, seconds later included.
         XCTAssertNil(policy.note(
-            frameByteCeiling: 15_000, now: 30 * Self.ms
+            frameByteCeiling: 11_000, now: 30 * Self.ms
         ))
-        // Still held at 400 ms after the fall's apply…
         XCTAssertNil(policy.note(
-            frameByteCeiling: 15_000, now: 410 * Self.ms
+            frameByteCeiling: 11_000, now: 510 * Self.ms
         ))
-        // …and released once the hold elapses.
-        let released = policy.note(
-            frameByteCeiling: 15_000, now: 510 * Self.ms
+        XCTAssertNil(policy.note(
+            frameByteCeiling: 11_000, now: 5_000 * Self.ms
+        ))
+        XCTAssertTrue(policy.squeezeEngaged)
+        XCTAssertEqual(policy.directivesIssued, 2)
+    }
+
+    // MARK: - The coalesced climb (HS-22c)
+
+    func testShallowEpisodeEmitsOnlyTheRestore() {
+        // THE HS-22c HEADLINE (finding (i)). A shallow episode — the
+        // clean-path weather dip that produced the probe's churn (105
+        // directives / 110 IDR in 150 s vs the disarmed twin's 0 / 3) —
+        // engages once, and its whole ≤10%/s climb back to clean can
+        // never double the squeezed cap: ZERO mid-climb directives,
+        // one restore. One directive down, one directive up.
+        let policy = cappedCqPolicy()
+        XCTAssertNotNil(policy.note(frameByteCeiling: 17_000, now: 0))
+        XCTAssertTrue(policy.squeezeEngaged)
+
+        // The climb: every deadband-material rise the old ladder paid
+        // an IDR for, all below 2× the applied 5.44 Mbps — silent.
+        XCTAssertNil(policy.note(
+            frameByteCeiling: 22_000, now: 1_000 * Self.ms
+        ))
+        XCTAssertNil(policy.note(
+            frameByteCeiling: 26_563, now: 2_000 * Self.ms
+        ))
+        XCTAssertTrue(policy.squeezeEngaged)
+
+        // Clean: the one restore — the recipe, with the expressible
+        // one-second VBV (HS-22's pinned restore shape, unchanged).
+        let restore = policy.note(
+            frameByteCeiling: Self.ceilingAt20M, now: 3_000 * Self.ms
         )
-        XCTAssertEqual(released?.vbvBits, 15_000 * 8)
-        XCTAssertEqual(policy.directivesIssued, 3)
+        XCTAssertEqual(restore, EncoderRateDirective(
+            averageBitsPerSecond: nil,
+            maxBitsPerSecond: 10_000_000,
+            vbvBits: 10_000_000,
+            frameByteCeiling: Self.ceilingAt20M
+        ))
+        XCTAssertFalse(policy.squeezeEngaged)
+        XCTAssertEqual(policy.directivesIssued, 2,
+            "one down, one up — the episode's whole directive bill")
+    }
+
+    func testDeepClimbPaysOnlyDoublingRungs() {
+        // A floor-deep episode climbs back through DOUBLING rungs: a
+        // loosening emits only when the squeezed cap at least doubles
+        // what is applied (⌈log₂⌉ steps total), so the recovery is
+        // stepped instead of 37 s at the deepest posture (pure
+        // restore-only's live cost) and instead of ~1 IDR/s (the old
+        // deadband ladder).
+        let policy = cappedCqPolicy()
+        // Engage deep: 3,000 B → 960 kbps, k = 1.
+        XCTAssertNotNil(policy.note(frameByteCeiling: 3_000, now: 0))
+
+        // 1.67× the applied cap: silent.
+        XCTAssertNil(policy.note(
+            frameByteCeiling: 5_000, now: 1_000 * Self.ms
+        ))
+        // 2.03×: the first doubling rung emits (k = 1 posture at its
+        // new depth — the mapping itself is untouched).
+        let firstRung = policy.note(
+            frameByteCeiling: 6_100, now: 2_000 * Self.ms
+        )
+        XCTAssertEqual(firstRung, EncoderRateDirective(
+            averageBitsPerSecond: nil,
+            maxBitsPerSecond: 1_952_000,
+            vbvBits: 6_100 * 8,
+            frameByteCeiling: 6_100
+        ))
+        // 1.8× of the new cap: silent again.
+        XCTAssertNil(policy.note(
+            frameByteCeiling: 11_000, now: 3_000 * Self.ms
+        ))
+        // 2.05×: the second doubling rung.
+        XCTAssertNotNil(policy.note(
+            frameByteCeiling: 12_500, now: 4_000 * Self.ms
+        ))
+        XCTAssertTrue(policy.squeezeEngaged)
+
+        // Clean: the restore closes the episode. Four directives for a
+        // floor-deep dip-and-recover: engage, two doublings, restore.
+        XCTAssertNotNil(policy.note(
+            frameByteCeiling: Self.ceilingAt20M, now: 5_000 * Self.ms
+        ))
+        XCTAssertFalse(policy.squeezeEngaged)
+        XCTAssertEqual(policy.directivesIssued, 4)
+    }
+
+    func testDoublingRungStillWaitsTheRiseHold() {
+        // A doubling-size loosening is still a loosening: inside the
+        // 500 ms rise hold it waits (one frame of quality, never a
+        // queue), and emits once the hold passes.
+        let policy = cappedCqPolicy()
+        XCTAssertNotNil(policy.note(frameByteCeiling: 3_000, now: 0))
+        XCTAssertNil(policy.note(
+            frameByteCeiling: 6_100, now: 100 * Self.ms
+        ))
+        XCTAssertNotNil(policy.note(
+            frameByteCeiling: 6_100, now: 600 * Self.ms
+        ))
+        XCTAssertEqual(policy.directivesIssued, 2)
+    }
+
+    func testMidClimbReTightenStillTracksDown() {
+        // HS-20's protection must survive the coalescing: a deeper dip
+        // BELOW the applied posture mid-climb falls immediately — only
+        // the climb is coalesced, never the fall.
+        let policy = cappedCqPolicy()
+        XCTAssertNotNil(policy.note(frameByteCeiling: 15_000, now: 0))
+        // Partial recovery: silent.
+        XCTAssertNil(policy.note(
+            frameByteCeiling: 22_000, now: 1_000 * Self.ms
+        ))
+        // The second knock, deeper than what is applied: immediate.
+        let deeper = policy.note(
+            frameByteCeiling: 7_500, now: 1_010 * Self.ms
+        )
+        XCTAssertEqual(deeper?.vbvBits, 7_500 * 8)
+        XCTAssertEqual(deeper?.maxBitsPerSecond, 2_400_000)
+        XCTAssertEqual(policy.directivesIssued, 2)
     }
 
     // MARK: - Recovery

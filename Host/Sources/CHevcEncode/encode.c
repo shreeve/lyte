@@ -87,6 +87,29 @@ lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
     ctx->max_b_frames = 0;
     ctx->flags |= AV_CODEC_FLAG_CLOSED_GOP | AV_CODEC_FLAG_LOW_DELAY;
 
+    /* R3 Stage A (HS-22c): sign the colors. We feed packed RGB and NVENC
+       converts to 4:2:0 internally; before this, no colorspace/range was
+       set anywhere, the VUI carried "unspecified", and every decoder
+       GUESSED the matrix and range — the classic smeared/washed-desktop
+       bug class (image-quality pillar §2). These fields flow into the
+       SPS VUI via the nvenc wrapper. The values are the MEASURED truth
+       of what the hardware conversion actually does with RGB input,
+       decided on the reference host by decoding a captured SMPTE-bars
+       stream under every candidate interpretation against the raw BGRx
+       dump: BT.601 limited wins (41.7 dB RGB vs 40.0 for 709-limited;
+       full-range collapses to ~26 dB) — and the wrapper agrees, forcing
+       colourMatrix to bt470bg for RGB input no matter what colorspace
+       says, so we set the field to match reality rather than fight it.
+       Transfer is signed sRGB (IEC 61966-2-1): the desktop framebuffer
+       IS sRGB-encoded and NVENC never touches the transfer — a bt709
+       tag would buy the classic gamma shift on any color-managed
+       decoder (the Mac client's exact pipeline). Primaries: sRGB and
+       BT.709 share them. */
+    ctx->color_primaries = AVCOL_PRI_BT709;
+    ctx->color_trc = AVCOL_TRC_IEC61966_2_1;
+    ctx->colorspace = AVCOL_SPC_BT470BG;
+    ctx->color_range = AVCOL_RANGE_MPEG;
+
     if (cq > 0) {
         /* Capped-CQ VBR (the quality-ratchet mode): a constant-quality
            target with `bit_rate` as the hard cap. FFmpeg's nvenc wrapper

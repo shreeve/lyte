@@ -614,6 +614,14 @@ public final class VideoChannel {
         pacer.telemetry
     }
 
+    /// Live queued bytes for one pacer class — the estimator's
+    /// self-reference gate reads the video backlog through this
+    /// (HS-22c): trains measured while we hold standing backlog are
+    /// measurements of our own pacing, not the path.
+    public func queuedBytes(_ priorityClass: PacerClass) -> Int {
+        pacer.queuedBytes(priorityClass)
+    }
+
     // MARK: Packetization (W2 semantics, HS-7 headroom)
 
     /// The W2 packetizer's exact behavior — frame-shape and IDR-claim

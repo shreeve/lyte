@@ -644,6 +644,224 @@ final class RateEstimatorGateTests: XCTestCase {
             + "the HS-21 median alone would have cratered to ~850 kbps)")
     }
 
+    // MARK: Leg 3d — HS-22c: the self-reference gate (finding (ii)).
+    // Under a squeezed pacer every multi-quantum frame drains as one
+    // ≥8-packet train paced at exactly the standing rate — a FULL train
+    // that measures our own pacing, not the path. The live probe: an
+    // overuse verdict anchored 0.85 × self, the fall re-squeezed the
+    // pacer, the next train measured the new self, and a 90 Mbps wire
+    // spiraled to the 500 kbps floor. With standing backlog and an
+    // anchor at ≈ (or above) the standing rate, an overuse verdict may
+    // HOLD the rate (rises stay blocked), never anchor a fall — unless
+    // corroborated by something a self-limited pacer cannot produce:
+    // loss, post-FEC evidence, or queue growth across the streak.
+
+    /// One beat of the self-reference shape: a full train at
+    /// `bottleneckMbps`, `extraDelayMicros` of standing queue, the
+    /// given backlog, optional loss.
+    private func selfRefBeat(
+        _ now: inout UInt64, _ clientMicros: inout UInt64,
+        _ seq: inout Int, on estimator: RateEstimator,
+        bottleneckMbps: Double, extraDelayMicros: UInt64,
+        backlogBytes: Int,
+        channels: [FeedbackReport.ChannelStats] = []
+    ) -> RateEstimatorVerdict {
+        now += 25 * Self.ms
+        clientMicros += 25_000
+        let samples = train(
+            estimator, seqStart: seq, count: 12,
+            sendStartNS: now - Self.ms,
+            bottleneckBitsPerSecond: bottleneckMbps * 1e6,
+            extraDelayMicros: extraDelayMicros
+        )
+        seq += 12
+        return estimator.ingest(
+            report(samples: samples, clientMicros: clientMicros,
+                   channels: channels),
+            now: now, inRecovery: false,
+            pacerBacklogBytes: backlogBytes
+        )
+    }
+
+    /// THE HS-22c HEADLINE: standing backlog, full trains measuring
+    /// exactly the standing 20 Mbps, constant (non-growing) inflation,
+    /// zero loss — the probe's floor-crash shape. A whole second of
+    /// overuse verdicts must not move the rate ONCE: every fall is a
+    /// self-reference hold, and the spiral (0.85ⁿ to the floor, which
+    /// the old law walked within these same beats) is dead.
+    func testSelfReferentialOveruseHoldsInsteadOfSpiraling() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        // Ten clean 20 Mbps trains: baseline delay, anchor window full
+        // of ≈standing-rate samples.
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
+
+        // 40 beats (1 s) of inflated reports with standing backlog:
+        // the trains still measure our own 20 Mbps pacing, inflation
+        // sits flat at 40 ms (a burst bump, not a building queue).
+        var overuseVerdicts = 0
+        for _ in 0..<40 {
+            let verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: 20, extraDelayMicros: 40_000,
+                backlogBytes: 40_000
+            )
+            if verdict.overuse { overuseVerdicts += 1 }
+            XCTAssertNil(verdict.newRateBitsPerSecond,
+                "a self-referential overuse verdict must hold, not fall")
+        }
+        XCTAssertGreaterThanOrEqual(overuseVerdicts, 30,
+            "the overuse verdicts genuinely fired — the gate held the "
+            + "FALL, not the detector")
+        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling,
+            "the rate never moved — the 500 kbps spiral is dead")
+        XCTAssertEqual(estimator.stats.downshifts, 0)
+        XCTAssertGreaterThanOrEqual(estimator.stats.selfReferenceHolds, 1)
+
+        print("HS-22c gate (self-reference): \(overuseVerdicts) overuse "
+            + "verdicts over 1 s at anchor ≈ standing rate with backlog "
+            + "→ 0 falls, \(estimator.stats.selfReferenceHolds) holds, "
+            + "rate pinned at \(estimator.rateBitsPerSecond / 1_000) kbps "
+            + "(the old law reached the floor in these beats)")
+    }
+
+    /// Real degradation whose capacity sits AT the standing rate: the
+    /// anchor is self-shaped, but the queue GROWS across the streak —
+    /// the deficit signature a self-limited pacer cannot produce. The
+    /// fall must proceed, one report after the growth clears the
+    /// threshold (inside the same 500 ms fall-limiter window).
+    func testQueueGrowthCorroboratesARealSqueezeNearTheRate() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+
+        // The streak opens at 25 ms of inflation…
+        XCTAssertNil(selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 20, extraDelayMicros: 25_000,
+            backlogBytes: 40_000
+        ).newRateBitsPerSecond)
+        // …and the second report shows the queue BUILT another 20 ms
+        // (past the 15 ms overuse threshold): corroborated — the fall
+        // lands at 0.85 × the standing rate despite the self-shaped
+        // anchor.
+        let verdict = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 20, extraDelayMicros: 45_000,
+            backlogBytes: 40_000
+        )
+        XCTAssertTrue(verdict.overuse)
+        XCTAssertEqual(verdict.change, .overuse)
+        XCTAssertNotNil(verdict.newRateBitsPerSecond)
+        XCTAssertEqual(Double(verdict.newRateBitsPerSecond!), 20e6 * 0.85,
+            accuracy: 1.0e6,
+            "a growing queue is a real squeeze — the gate must not mask it")
+        XCTAssertEqual(estimator.stats.selfReferenceHolds, 0)
+    }
+
+    /// Real distress at the standing rate WITH loss: pacing at or under
+    /// the path's capacity drops nothing, so any loss corroborates the
+    /// fall even when the anchor is self-shaped and inflation is flat.
+    func testLossCorroboratesDespiteSelfShapedAnchor() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        var received: UInt32 = 0
+        var missing: UInt32 = 0
+
+        for _ in 0..<10 {
+            received += 100
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0,
+                            channels: lossLedger(received: received,
+                                                 missing: missing))
+        }
+        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
+
+        // Two inflated reports, constant 40 ms, but the wire now drops
+        // 15 datagrams per beat — ~2.7% over the rolling 1 s window at
+        // fire time, past the 2% clean bar (FEC's hold band for the
+        // LOSS branch, but honest corroboration for the overuse one).
+        received += 85; missing += 15
+        XCTAssertNil(selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 20, extraDelayMicros: 40_000,
+            backlogBytes: 40_000,
+            channels: lossLedger(received: received, missing: missing)
+        ).newRateBitsPerSecond)
+        received += 85; missing += 15
+        let verdict = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 20, extraDelayMicros: 40_000,
+            backlogBytes: 40_000,
+            channels: lossLedger(received: received, missing: missing)
+        )
+        XCTAssertTrue(verdict.overuse)
+        XCTAssertNotNil(verdict.newRateBitsPerSecond,
+            "loss on the wire means the path is really hurting — fall")
+        XCTAssertEqual(estimator.stats.selfReferenceHolds, 0)
+    }
+
+    /// The fast-fall regression pin WITH backlog: a genuine deep dip
+    /// stretches every train, the anchor reads honestly low (far below
+    /// the self band), and the fall anchors to measured delivery
+    /// exactly as HS-21 pinned — standing backlog alone must never
+    /// blind the estimator to a path that measurably slowed.
+    func testGenuineDipWithBacklogStillFallsToMeasuredDelivery() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+
+        // The path genuinely drops to 5 Mbps; the pacer (still at 20)
+        // holds backlog the whole time. Arm, then fire.
+        XCTAssertNil(selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 5, extraDelayMicros: 40_000,
+            backlogBytes: 40_000
+        ).newRateBitsPerSecond)
+        let verdict = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 5, extraDelayMicros: 40_000,
+            backlogBytes: 40_000
+        )
+        XCTAssertTrue(verdict.overuse)
+        XCTAssertNotNil(verdict.newRateBitsPerSecond)
+        XCTAssertEqual(Double(verdict.newRateBitsPerSecond!), 5e6 * 0.85,
+            accuracy: 1.0e6,
+            "an honestly low anchor falls to measured delivery — the "
+            + "gate reads the evidence, it does not read the backlog")
+        XCTAssertEqual(estimator.stats.selfReferenceHolds, 0)
+
+        print("HS-22c gate (honest dip under backlog): 20 → 5 Mbps path "
+            + "with standing backlog → fall to "
+            + "\(verdict.newRateBitsPerSecond! / 1_000) kbps "
+            + "(0.85 × measured), zero self-reference holds")
+    }
+
     // MARK: Leg 4 — the machine's numbers
 
     func testIdrPacingNumbers() {

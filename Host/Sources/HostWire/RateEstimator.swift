@@ -80,6 +80,33 @@
 //       measurement to ≈R, so a standing 0.8×btlRate cap would spiral
 //       every clean path to the floor. The 0.8 factor applies where
 //       the pillar needs it — at the overuse fall.
+//     THE SELF-REFERENCE GATE (HS-22c, finding (ii)): the same
+//     self-limitation poisons the overuse ANCHOR. With the pacer
+//     holding standing backlog, a multi-quantum frame drains as one
+//     ≥8-packet train paced at exactly R — the train measures OUR OWN
+//     pacing, not the path — and an overuse verdict then anchors the
+//     fall to 0.85 × self; each fall re-squeezes the pacer, the next
+//     train measures the new self, and one probe run spiraled a
+//     90 Mbps wire to the 500 kbps floor. So: when the caller reports
+//     standing backlog (≥ `selfReferenceBacklogWindowNS` of bytes at
+//     the standing rate) AND the anchor median sits within
+//     `selfReferenceBandFraction` of the standing rate (or above it),
+//     the sample is a measurement of us — it may HOLD the rate (the
+//     overuse verdict still blocks every rise), it may not anchor a
+//     fall. The gate CANNOT mask real degradation, because a fall
+//     stays permitted on any of three honest signatures a
+//     self-limited pacer can never produce: (1) the anchor median
+//     measurably BELOW the band — a slower path stretches every
+//     train, so genuine dips read genuinely low (the HS-21/22 fast-
+//     fall pins are this case, intact); (2) loss — pre-FEC at or over
+//     the clean threshold, or ANY post-FEC evidence (pacing at ≤ the
+//     path's rate drops nothing); (3) queue GROWTH — a path whose
+//     capacity sits at/just under the standing rate builds delay
+//     monotonically at the deficit rate, so inflation grown another
+//     `overuseThresholdMicroseconds` past the streak's opening report
+//     corroborates within a few 25–50 ms beats (inside one 500 ms
+//     fall-limiter window — at most one beat later than today).
+//     Self-caused burst bumps drain and reset the streak instead.
 //     Floor 500 kbps (a paced IDR within 2 s even on a terrible path),
 //     ceiling = the negotiated session rate (W7 carries no bitrate key
 //     in v1, so the session config IS the negotiated ceiling).
@@ -149,6 +176,15 @@ public struct RateEstimatorConfig: Sendable {
     public var overuseThresholdMicroseconds: Int64
     /// Consecutive inflated reports before the overuse verdict fires.
     public var overuseConsecutiveReports: Int
+    /// HS-22c: an overuse anchor within this fraction of the standing
+    /// rate (or above it) is a measurement of our own pacing while the
+    /// pacer holds standing backlog — it may hold the rate, never
+    /// anchor a fall (see the header's self-reference gate).
+    public var selfReferenceBandFraction: Double
+    /// HS-22c: "standing backlog" = at least this much wire time of
+    /// queued bytes at the standing rate (5 ms — more than mid-batch
+    /// residue, far less than one squeezed IDR's drain).
+    public var selfReferenceBacklogWindowNS: UInt64
     /// Pre-FEC loss fraction below which the window reads clean (the
     /// rate may rise). GCC's lower band.
     public var lossCleanThreshold: Double
@@ -201,6 +237,8 @@ public struct RateEstimatorConfig: Sendable {
         overuseAnchorSampleCount: Int = 3,
         overuseThresholdMicroseconds: Int64 = 15_000,
         overuseConsecutiveReports: Int = 2,
+        selfReferenceBandFraction: Double = 0.15,
+        selfReferenceBacklogWindowNS: UInt64 = 5_000_000,
         lossCleanThreshold: Double = 0.02,
         lossDownshiftThreshold: Double = 0.10,
         lossWindowNS: UInt64 = 1_000_000_000,
@@ -228,6 +266,8 @@ public struct RateEstimatorConfig: Sendable {
         self.overuseAnchorSampleCount = max(overuseAnchorSampleCount, 1)
         self.overuseThresholdMicroseconds = overuseThresholdMicroseconds
         self.overuseConsecutiveReports = max(overuseConsecutiveReports, 1)
+        self.selfReferenceBandFraction = selfReferenceBandFraction
+        self.selfReferenceBacklogWindowNS = selfReferenceBacklogWindowNS
         self.lossCleanThreshold = lossCleanThreshold
         self.lossDownshiftThreshold = max(
             lossDownshiftThreshold, lossCleanThreshold
@@ -290,6 +330,10 @@ public struct RateEstimatorStats: Equatable, Sendable {
     public var downshifts = 0
     public var upshifts = 0
     public var overuseVerdicts = 0
+    /// HS-22c: overuse falls the self-reference gate refused — the
+    /// evidence measured our own pacing and nothing corroborated a
+    /// real path problem (rate held, rises stayed blocked).
+    public var selfReferenceHolds = 0
     public var lossDownshifts = 0
     /// Rung-3 downshifts (post-FEC loss over threshold, HS-17).
     public var postFecDownshifts = 0
@@ -373,6 +417,11 @@ public final class RateEstimator {
     /// lane must not mask a growing video queue).
     private var delayBaselineWindows: [UInt8: [DelaySample]] = [:]
     private var consecutiveInflatedReports = 0
+    /// The worst inflation of the CURRENT inflated streak's opening
+    /// report — the self-reference gate's queue-growth baseline
+    /// (HS-22c): a real standing queue grows past it, a self-caused
+    /// burst bump drains and resets the streak.
+    private var inflatedStreakStartMicros: Int64?
 
     private struct LossSample {
         var at: UInt64
@@ -461,8 +510,13 @@ public final class RateEstimator {
 
     /// Consumes one parsed chan-3 report. `inRecovery` gates the W4b
     /// window verdicts (the machine's state is the session's to know).
+    /// `pacerBacklogBytes` is the caller's live video-class backlog —
+    /// the self-reference gate's "are we the bottleneck right now"
+    /// evidence (HS-22c); 0 (the default) means no standing backlog
+    /// and the gate never engages.
     public func ingest(
-        _ report: FeedbackReport, now: UInt64, inRecovery: Bool
+        _ report: FeedbackReport, now: UInt64, inRecovery: Bool,
+        pacerBacklogBytes: Int = 0
     ) -> RateEstimatorVerdict {
         stats.reportsIngested += 1
         expireWindows(now: now)
@@ -484,6 +538,7 @@ public final class RateEstimator {
             overuse: overuse,
             lossFraction: lossFraction,
             postFecLossFraction: postFecLossFraction,
+            pacerBacklogBytes: pacerBacklogBytes,
             now: now
         )
         let steppedRegime = stepRegime(
@@ -814,10 +869,14 @@ public final class RateEstimator {
         }
         queuingDelayMicroseconds = worstInflation
         if worstInflation > config.overuseThresholdMicroseconds {
+            if consecutiveInflatedReports == 0 {
+                inflatedStreakStartMicros = worstInflation
+            }
             consecutiveInflatedReports += 1
             return true
         }
         consecutiveInflatedReports = 0
+        inflatedStreakStartMicros = nil
         return false
     }
 
@@ -825,6 +884,7 @@ public final class RateEstimator {
         overuse: Bool,
         lossFraction: Double,
         postFecLossFraction: Double,
+        pacerBacklogBytes: Int,
         now: UInt64
     ) -> RateEstimatorVerdict.Change? {
         let downshiftAllowed = lastDownshiftAt.map {
@@ -838,14 +898,42 @@ public final class RateEstimator {
             // recent raw samples (HS-21), not the single freshest: one
             // garbage short-train sample must not decide the fall.
             let anchor = overuseAnchorRate.map(Int.init) ?? rateBitsPerSecond
-            rateBitsPerSecond = clamp(min(
-                Int(Double(anchor) * config.downshiftFactor),
-                Int(Double(rateBitsPerSecond) * config.downshiftFactor)
+
+            // THE SELF-REFERENCE GATE (HS-22c, header): with standing
+            // backlog, an anchor at ≈ (or above) the standing rate
+            // measured OUR OWN pacing — it may hold the rate, never
+            // anchor a fall, unless something a self-limited pacer
+            // cannot produce corroborates a real path problem: loss,
+            // post-FEC evidence, or queue growth across the streak.
+            let backlogFloorBytes = max(1, Int(
+                Double(rateBitsPerSecond)
+                    * Double(config.selfReferenceBacklogWindowNS) / 8e9
             ))
-            lastDownshiftAt = now
-            lastAdjustAt = now
-            stats.downshifts += 1
-            return .overuse
+            let selfReferential = pacerBacklogBytes >= backlogFloorBytes
+                && Double(anchor) >= Double(rateBitsPerSecond)
+                    * (1 - config.selfReferenceBandFraction)
+            let queueGrew = inflatedStreakStartMicros.map {
+                (queuingDelayMicroseconds ?? 0)
+                    >= $0 + config.overuseThresholdMicroseconds
+            } ?? false
+            let corroborated = lossFraction >= config.lossCleanThreshold
+                || postFecLossFraction > 0
+                || queueGrew
+            if selfReferential, !corroborated {
+                stats.selfReferenceHolds += 1
+                // Held, not fallen: the overuse verdict still blocks
+                // every rise below, and the fall limiter stays free so
+                // corroboration on the very next report may act.
+            } else {
+                rateBitsPerSecond = clamp(min(
+                    Int(Double(anchor) * config.downshiftFactor),
+                    Int(Double(rateBitsPerSecond) * config.downshiftFactor)
+                ))
+                lastDownshiftAt = now
+                lastAdjustAt = now
+                stats.downshifts += 1
+                return .overuse
+            }
         }
 
         if lossFraction > config.lossDownshiftThreshold, downshiftAllowed {

@@ -1789,8 +1789,14 @@ public final class Session {
             return [.dropped(.malformedFeedback)]
         }
         counters.feedbackReportsParsed += 1
+        // The video-class backlog rides along (HS-22c): while the
+        // pacer holds a standing queue, delivery trains measure our
+        // own pacing — the estimator's self-reference gate needs to
+        // know when that is the case.
         let verdict = estimator.ingest(
-            report, now: now, inRecovery: machine?.state == .recovery
+            report, now: now, inRecovery: machine?.state == .recovery,
+            pacerBacklogBytes: channel.queuedBytes(.freshVideo)
+                + channel.queuedBytes(.videoTail)
         )
         var events: [SessionEvent] = []
         if let rate = verdict.newRateBitsPerSecond {

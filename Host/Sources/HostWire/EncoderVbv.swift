@@ -85,12 +85,46 @@
 //     at a squeezed pacer is the exact harm this exists to stop, and the
 //     estimator's own downshift limiter (≥15% falls, ≤1 per 500 ms)
 //     already bounds how often they can fire;
-//   • rises — the squeeze→clean restore included — additionally wait
-//     `riseHoldNS` (500 ms) after the last apply: a deferred loosening
-//     costs one frame of quality, never a queue — asymmetry in the safe
-//     direction. Flap-proofing at the clean boundary is structural:
-//     estimator falls are ≥15% steps and rises are ≤10%/s climbs, so
-//     the ceiling cannot oscillate ±2% across the threshold.
+//   • the restore waits `riseHoldNS` (500 ms) after the last apply: a
+//     deferred loosening costs one frame of quality, never a queue —
+//     asymmetry in the safe direction. Flap-proofing at the clean
+//     boundary is structural: estimator falls are ≥15% steps and rises
+//     are ≤10%/s climbs, so the ceiling cannot oscillate ±2% across
+//     the threshold.
+//
+// THE CLIMB IS COALESCED — DOUBLING RUNGS (HS-22c, finding (i)). The
+// old policy loosened the posture on every ≥10% rung of the estimator's
+// ≤10%/s recovery climb, and every one of those loosenings is a hidden
+// encoder reset + forced IDR (the HS-22 correction above): a single
+// dip-and-recover cycle cost ~8–10 IDRs, and the probe's saturated run
+// paid 105 directives / 110 IDR in 150 s where the disarmed twin paid
+// 0 / 3 at QP 17 flat. Now, INSIDE a squeeze a loosening may emit ONLY
+// when the squeezed cap can at least DOUBLE what is currently applied
+// (rise-hold gated as ever); everything finer waits for the
+// squeeze→clean restore (recipe exactly — capped-CQ's one-second-at-cap
+// VBV included). Falls track down exactly as before (the k-ladder
+// engage path, deadband and all — B2's protections are the fall side).
+// The candidates, judged on live evidence:
+//   • the old deadband ladder — ~1 directive-IDR/s across every climb
+//     (the probe's 105);
+//   • pure RESTORE-ONLY (the supremacy plan's first sketch) — one
+//     directive up per episode, but the first live storm run showed
+//     the cost: after a floor-deep dip the encoder sat at the deepest
+//     posture (QP ~40 mud) for the WHOLE ~37 s climb back to clean —
+//     78 of 155 s below the recipe posture;
+//   • DOUBLING RUNGS (chosen) — shallow episodes (≥ 50% of the recipe,
+//     the clean-path weather-dip case that produced the churn) never
+//     double before the clean boundary, so they still emit ZERO
+//     mid-climb directives and pay one restore, exactly restore-only;
+//     a floor-deep recovery pays ⌈log₂(recipe/floor)⌉ ≤ ~6 loosenings,
+//     each halving the mud (~7 s per doubling at the estimator's
+//     ≤10%/s), instead of 37 s at QP 40. Cost scales with episode
+//     depth, logarithmically.
+// Every frame mid-climb still conforms to a ceiling AT OR BELOW the
+// pacer's live budget — under-quality mid-climb is the safe direction,
+// oversized frames are the harm. The eyeball trade: a dip reads
+// "drop, hold, a few stepped recoveries, one clean pop" instead of
+// the QP 16↔50 sawtooth.
 
 /// What the shell pushes into the encoder leaf when the policy says the
 /// rate-control posture must move.
@@ -129,8 +163,9 @@ public struct EncoderVbvConfig: Sendable {
     public var baselineVbvBits: Int?
     /// Relative move below which nothing is pushed (the deadband).
     public var deadbandFraction: Double
-    /// A pure loosening waits this long after the last apply; a
-    /// tightening never waits.
+    /// Every loosening — a within-squeeze doubling rung or the
+    /// squeeze→clean restore (the only loosenings since HS-22c) —
+    /// waits this long after the last apply; a tightening never waits.
     public var riseHoldNS: UInt64
 
     public init(
@@ -249,6 +284,24 @@ public final class EncoderVbvPolicy {
             config.baselineVbvBits ?? Int.max, windows * ceiling * 8
         )
 
+        // THE COALESCED CLIMB (HS-22c): inside a squeeze a loosening is
+        // a hidden encoder reset + forced IDR the recovery ladder used
+        // to pay per ~10% rung. It may emit only when the squeezed cap
+        // at least DOUBLES what is applied (and after the rise hold);
+        // everything finer waits for the restore above.
+        let tightens = effectiveVbv < (appliedVbvBits ?? Int.max)
+            || effectiveMax < appliedMaxBitsPerSecond
+            || (effectiveAverage ?? Int.max)
+                < (appliedAverageBitsPerSecond ?? Int.max)
+        if squeezeEngaged, !tightens {
+            guard effectiveMax >= 2 * appliedMaxBitsPerSecond else {
+                return nil
+            }
+            if let last = lastAppliedAt, now &- last < config.riseHoldNS {
+                return nil
+            }
+        }
+
         // Material? The first imposition onto a no-VBV posture always
         // is; otherwise some param must move past the deadband relative
         // to what was last applied.
@@ -267,17 +320,6 @@ public final class EncoderVbvPolicy {
             material = true
         }
         guard material else { return nil }
-
-        // A pure loosening (nothing tightens) waits out the rise hold;
-        // any tightening applies now.
-        let tightens = effectiveVbv < (appliedVbvBits ?? Int.max)
-            || effectiveMax < appliedMaxBitsPerSecond
-            || (effectiveAverage ?? Int.max)
-                < (appliedAverageBitsPerSecond ?? Int.max)
-        if !tightens, let last = lastAppliedAt,
-           now &- last < config.riseHoldNS {
-            return nil
-        }
 
         squeezeEngaged = true
         appliedAverageBitsPerSecond = effectiveAverage
