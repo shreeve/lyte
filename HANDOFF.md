@@ -12,10 +12,11 @@ EXIT demolition is DONE (commits `2018f6d` → `d5de430` → `9e1cd27`): the
 client's GameStream stack (LyteKit/CEnet/CNanors, ~14.3k lines) is deleted,
 Sunshine is uninstalled from pup, and both ends speak exactly one protocol —
 Lyte-UDP. H1 closed earlier the same day (`docs/20260722-h1-joint-gate.md`).
-Suites at HEAD: Wire **402/402**, Host **136/136** (Mac AND pup, grown
-through HS-21), root **141/141** on
-Mac (grown through CL-18 — the strip-ergonomics + host-muted-default
-wave, entry in the wave block) (pup legs for
+Suites at HEAD: Wire **402/402**, Host **142/142 Mac** (136/136 was the
+last both-platform green, through HS-21; HS-22a's six new legs need
+their pup run), root **142/142** on
+Mac (grown through HS-22a — the quality-hunt wave, entry in the wave
+block) (pup legs for
 everything landed since the H2 exit are deferred — being drained NOW,
 see below; the H2-exit state 372/104/104 was the last green on BOTH
 platforms); `build-cli.sh` + `make-app.sh` release green. A live post-demolition proof
@@ -50,42 +51,37 @@ Mac**; build-cli.sh + make-app.sh release green. Its live legs are
 TOGETHER with HS-18's a–g on pup's return; port 41121 stays reserved for
 the pair).
 
-**pup is BACK ONLINE (2026-07-27 ~00:57 MDT).** `ssh pup` works (hotel
-detour over — never actually reachable there; 5 days uptime on return),
-secrets verified present at start of catch-up. **The catch-up worker is
-IN FLIGHT right now** draining the whole deferred ledger (legs a–r; its
-verdicts land in the wave entries below — do not edit the wave block
-while it runs). Leg (s), live end-to-end clipboard, is now CLOSED —
-HS-19 (`73e5cdb`) landed the Mutter clipboard leaf and ran it live;
-verdict + evidence in the CL-15 wave entry.
+**pup status: UNREACHABLE AGAIN (2026-07-27 evening — owner away /
+host down; the HS-22a session ran fully Mac-local).** The ~00:57
+back-online window did happen: the catch-up worker drained the
+deferred ledger then (verdicts in the wave entries below), and leg
+(s), live end-to-end clipboard, is CLOSED — HS-19 (`73e5cdb`) landed
+the Mutter clipboard leaf and ran it live; verdict + evidence in the
+CL-15 wave entry. Everything since HS-22a's commits awaits pup per
+the RESTART block below.
 
-**RESTART / RESUME PROTOCOL (updated 2026-07-27 ~13:45):** ONE worker
-may have died mid-task — **HS-22, the video-quality investigation**
-(launched ~12:13, frozen since ~12:34 when the owner left the home LAN;
-it committed NOTHING — a fresh relaunch loses only its private notes).
-To resume:
-1. **Hygiene first, always** (needs pup reachable — the owner was on a
-   hotspot when this was written): `ssh pup 'pgrep -a lyte-host'` and
+**RESTART / RESUME PROTOCOL (updated 2026-07-27 evening):** The
+**Mac-local half of HS-22 is DONE — landed as HS-22a** (`17810b8`
+Host / `36f1dce` root; full entry at the end of the wave block). The
+dead worker's uncommitted tree was recovered and finished: quality
+instrumentation both ends, the clean-path VBV rule + multi-window
+ladder, the idle-flip quiet that retires the 1 Hz WAKE pulse, the
+full-trains-only overuse anchor — all unit-pinned (Host 142/142 Mac,
+root 142/142, both release builds green). **The LIVE half is PENDING
+pup** (unreachable this session — owner away). When pup returns:
+1. **Hygiene first, always**: `ssh pup 'pgrep -a lyte-host'` and
    kill strays EXCEPT the owner's relaunch loop (`~/lyte-loop.sh` +
-   its lyte-host on :41151 — that pair stays); netem gone (`tc qdisc
-   show`); the three secrets in `~/.config/lyte-host/` intact.
-2. **Relaunch HS-22 as one worker owning Host/ + root** (Wire/
-   read-only), scope: (a) clean-path video-quality regression — owner
-   reports "moderate" quality vs the H2-era sessions; prime suspects
-   in order: HS-20's VBV caps engaging on a CLEAN path (vbv=8×C is a
-   squeeze tool, not steady-state posture — likely fix: no caps when
-   frameByteCeiling ≥ unconstrained budget), estimator below ceiling
-   on Wi-Fi, the new 595.84 driver; (b) quality instrumentation FIRST
-   — per-second host books with NVENC QP/held-rate/frame-size, a
-   quality line in the ⌘⌥I overlay and wire-view (no new wire
-   vocabulary; Wire/ is read-only); (c) the owner's "1 Hz blur while
-   paused" — the WAKE-ratchet pulse (a 1 Hz damage tick must not
-   restart the IDR+ratchet ladder; static desktop must hold near-idle
-   bandwidth, no visible pulse; symptom is intermittent — reproduce
-   with a ticking clock on a static desktop); (d) prove the fix on a
-   clean-path run AND re-prove HS-20's squeeze behavior (its B2
-   retirement must survive); (e) commits per package, owner loop on
-   41151 restored, live legs on port 41163.
+   its lyte-host on :41151 — that pair stays; it runs a PRE-HS-22a
+   build until redeployed); netem gone (`tc qdisc show`); the three
+   secrets in `~/.config/lyte-host/` intact.
+2. **Run the HS-22a DEFERRED-PENDING-HOST ledger** (the numbered leg
+   list in the HS-22a wave entry, end of the wave block): pup
+   build + suite FIRST (HS-18's Linux-only leaf note still stands —
+   nothing Linux-gated has compiled anywhere since), then the
+   clean-path before/after books, the HS-20 squeeze re-proof, the
+   static-desktop 1 Hz pulse before/after, the owner's eyeball.
+   Live legs on port 41163; owner loop restored on 41151 at the new
+   build afterward.
 3. **HANDOFF.md commits are the coordinator's job**; workers edit only
    their own wave entries and leave the file uncommitted.
 
@@ -1576,9 +1572,115 @@ its entry at the marker at the end of this block.*
   connect path is the flip's only live surface, which is exactly
   checklist item 7.
 
----
-
-# Hard-won findings index (details live at the named commits/files)
+- **HS-22a — the Mac-local half of the quality hunt: clean paths keep
+  the opening recipe, mild squeezes borrow windows, a ticking desktop
+  never WAKE-pulses, and micro-trains lose their anchor vote**
+  (`17810b8` Host / `36f1dce` root; Wire untouched — read-only this
+  slice; pup UNREACHABLE the whole session, all live legs deferred
+  below). Recovered and finished the dead HS-22 worker's uncommitted
+  tree (its quality books, client quality line, `--no-vbv-reconfigure`
+  lever, and the estimator anchor gate — adopted, completed, pinned).
+  **THE LOAD-BEARING FINDING (read from FFmpeg's nvenc wrapper, both
+  master and 6.1): every rate/VBV reconfigure sets `resetEncoder = 1,
+  forceIDR = 1`** — HS-20's "no IDR, no reset" belief was wrong (its
+  header now says so). Every EncoderVbvPolicy directive costs an
+  encoder reset + a full forced IDR at the newly capped budget, so
+  clean-path directives are quality pulses by construction. Also read
+  from the wrapper: reconfigure only honors `rc_buffer_size > 0` — a
+  VBV once set can be resized but never REMOVED, so capped-CQ's no-VBV
+  opening is inexpressible on the way back. **D-1 (the clean-path
+  rule, the suspected regression owner):** HS-20 imposed vbv=8×C on
+  capped-CQ at the FIRST look, clean path or not — every IDR/scene
+  change quantized to the ceiling on a wire with headroom. Now the
+  ceiling-derived rate (8×C/B) is judged against the recipe first:
+  at/above (1 − deadband) × baselineMax (= 90% — the threshold IS the
+  policy's own deadband, any engage is a ≥10% move by construction) ⇒
+  CLEAN: zero directives, the opening recipe rides; below ⇒ the HS-20
+  mapping engages with a MULTI-WINDOW VBV ladder — vbv = k×8×C, k =
+  4/3/2 windows at ≥80/65/50% of the recipe rate, k = 1 below 50%
+  (byte-identical to the posture that retired B2; a mild squeeze
+  mostly needs the AVERAGE held, so an IDR may borrow adjacent budget
+  windows the pacer absorbs). The squeeze→clean restore (rise-hold
+  gated, deadband-bypassing) returns the recipe exactly — CBR
+  bit-for-bit as pinned since HS-20; capped-CQ gets one second at the
+  baseline cap, the nearest expressible "no VBV". **D-2 (the 1 Hz
+  blur, the WAKE-ratchet pulse):** mechanism confirmed by
+  construction: a desktop metronome (1 Hz clock, ~1 Hz cursor blink)
+  ticks → ratchet converges ~0.5 s later → one-shot → IDLE → next
+  beat's damage is the WAKE → machine demands a FULL-FRAME IDR →
+  (post-HS-20) quantized to the ceiling → blur → ratchet re-sharpens →
+  repeat, 1 Hz. The pillar's idle→active-restarts-with-an-IDR decision
+  of record is UNTOUCHED (Wire unchanged): `Session` (HostWire) now
+  holds the idle handoff until damage stays quiet for
+  `idleFlipQuietNS` (3 s — three missed beats of the slowest common
+  ticker); the machine hears `.ratchetConverged` from `advance` once
+  the quiet holds, fresh damage drops the pending flip (never an
+  aborted handoff), convergence with NO damage history flips
+  immediately (every pre-HS-22 pin's shape — none needed edits). A
+  ticking desktop now stays ACTIVE on small P-frames at near-idle
+  bandwidth; a genuinely static one flips 3 s late. **D-3 (the
+  estimator crater — the dead worker's live catch, adopted):** the
+  HS-21 median promised a lone garbage sample cannot move the anchor,
+  but the live clean-path crater showed a MAJORITY of the 3-sample
+  window can be audio micro-trains (the 4+2 groups arrive as
+  2–3-packet trains measuring their own ~1 Mbps pacing, not the path)
+  — two of them anchored a fall from 17,000 to 709 kbps on a wire
+  delivering 90 Mbps. Only trains ≥ `minTrainPackets` (8) vote on the
+  anchor now; short trains keep feeding the ×0.5 windowed-max and
+  evidence freshness. **INSTRUMENTATION (the live legs' eyes):** host
+  Sink prints 1 s `quality:` books — nvenc frame-average QP (the
+  packet's AV_PKT_DATA_QUALITY_STATS side data, already delivered per
+  packet — no leaf change needed), frame-size p50/p95, the APPLIED
+  encoder posture vs the opening recipe, live ceiling + pacer rate —
+  and `--no-vbv-reconfigure` disarms the policy entirely (the A/B
+  lever). Client: `LyteVideoPipeline` keeps a ~5 s decoded-frame
+  window surfaced as fps/Mbps/frame-size percentiles — a `video` line
+  in the ⌘⌥I overlay and a `quality:` line in wire-view stats (no new
+  wire vocabulary; host QP stays host-log truth — read the two side by
+  side). **Gates: Host 136 → 142/142 Mac** (clean-path capped-CQ
+  silence over 100 looks; the clean/engaged boundary AT the deadband
+  edge both sides; the k-ladder rungs exact at 85/70/54/42%; the
+  capped-CQ restore posture + re-silence; convergence-after-damage
+  held 400 ms→3 s then the ordinary flip; the 5-beat 1 Hz metronome —
+  ACTIVE throughout, zero WAKE IDRs, zero mode traffic, IDLE 3 s after
+  the ticker stops; the micro-train-majority anchor at 0.85×20 Mbps —
+  and every HS-20 squeeze pin byte-identical: exact 5 Mbps mapping,
+  floor never degenerate, CBR recovery bit-for-bit), **root 141 →
+  142/142** (the quality window derives cadence/bitrate/percentiles
+  in virtual time and forgets after ~5 s idle); build-cli.sh +
+  make-app.sh release green; `swiftc -parse` clean on the Linux-only
+  shell files (they have compiled NOWHERE yet — pup build first).
+  **DEFERRED-PENDING-HOST (HS-22a live legs — run on pup's return,
+  port 41163, after the hygiene pass):**
+  (a) pup build + full Host suite (142 legs — the first Linux compile
+      of everything since HS-21);
+  (b) clean-path BEFORE/AFTER books, 120 s+ wire-view --audio session:
+      AFTER must show `enc opening` posture riding (zero reconfigure
+      lines on a clean LAN), QP steady near the CQ target, estimator
+      at the 20,000 kbps ceiling with NO craters (D-3), frame p50/p95
+      shape vs the H2-era ~7.7 kB clean p50; BEFORE (the deployed
+      pre-HS-22a build or `--no-vbv-reconfigure` inverted) for the
+      side-by-side;
+  (c) the HS-20 squeeze RE-PROOF (its B2 retirement must survive):
+      the 6 Mbit video-scoped netem squeeze — directives track the
+      fall, deep-fall emission obeys the ceiling (the p50 623 B
+      shape), post-release the tail recovers to the ceiling AND the
+      restore directive returns the recipe (watch the new one-second
+      capped-CQ vbv in the books); the mild-squeeze band (~8.5 Mbps
+      netem) should show the k=4 multi-window posture with IDRs
+      borrowing windows — new territory, eyeball frame sizes vs
+      HS-20's single-window behavior;
+  (d) the static-desktop 1 Hz pulse BEFORE/AFTER: a ticking clock on
+      an otherwise static desktop (the owner's repro), 5 min each —
+      AFTER must hold ACTIVE (no IDLE flips between beats, mode
+      traffic ~0), IDR count ~0 (vs one per beat before), near-idle
+      bandwidth, no visible pulse at the glass; then stop the clock
+      and confirm the IDLE flip lands ~3 s later and input still
+      WAKEs with its IDR (the decision of record, alive);
+  (e) the owner's subjective eyeball on a clean-path session vs the
+      trip-era "moderate" verdict — the whole point;
+  (f) secrets shas byte-identical start AND end, no netem left, owner
+      loop back on 41151 at the NEW build (60 iterations, nv571 shim).
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
