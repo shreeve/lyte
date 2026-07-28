@@ -1859,6 +1859,25 @@ its entry at the marker at the end of this block.*
   ≤128 KiB — default ArqConfig maxMessageByteCount 262,144 clears
   it; keep that headroom when the ends tune ARQ for chan 8).
 
+- **Wire-v2 design study** (`deb788e`, docs only — full account in
+  `docs/20260728-175200-lyte-wire-v2-study.md`): the H3 §0-answer-5
+  deliverable. Twelve debts inventoried (keys 9/10/11 fold-ins, key-5
+  featureChannels reconciliation, the av1=2 + Rext-tuple APPENDs,
+  HS-16's ECN + receive-window wants, the TLV→fixed-envelope fold-in,
+  WT datagram negotiate-down + transport binding, wireMinor
+  bookkeeping). THE SPLIT: **zero items force a major** — 11 absorb
+  via capability keys/appends/TLVs (the keys-9/10/11 fold-in is
+  byte-invariant on the wire — vector-file version + minor only;
+  negotiate-down needs a NEW key because key 8's frozen 1152 floor
+  rejects lower; ECN + rwnd ride the feedback report's TLV escape
+  hatch with 77 B headroom), and the TLV fold-in is v2-reserved but
+  never v2-forcing. Flagged: v1 handshake has NO downgrade path
+  (hard versionMismatch) — acceptable LAN-first; a discovery-TXT
+  major list is the prerequisite IF v2 ever goes. VERDICT: **no-go
+  at every horizon, never-unless** (forcing functions named: AEAD
+  migration, envelope layout break, TLV overhead proven costly);
+  §6 pre-writes the batch so a future v2 ships everything once.
+
 - **Video supremacy plan** (`557ab78`, docs only — full account in
   `docs/20260728-165538-lyte-video-supremacy-plan.md`): the ranked
   ladder vs Sunshine/Moonlight. Verdict: losses are POLICY+ROADMAP,
