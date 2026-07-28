@@ -95,25 +95,30 @@ ceiling-rate holds ≥ 90% of the recipe. What remains:
 3. **HANDOFF.md commits are the coordinator's job**; workers edit only
    their own wave entries and leave the file uncommitted.
 
-**RESTART ADDENDUM (corrected ~23:25): two worker launches QUEUED,
-none running.** The ~22:55 version of this block wrongly declared
-HS-22b never-started (the audit read the top-level transcripts folder,
-not the session's subagents/ subfolder) — **HS-22b ran the whole time
-and COMPLETED ~23:22**; its verdicts are in the HS-22a wave entry and
-the RESTART block above. The launcher failures were real but only hit
-the two NEW launches attempted after ~21:25. On the fresh session,
-launch in parallel (territory-disjoint):
-1. **W10 (F-2 bulk channel)** — Wire/ territory, Mac-local: the
-   chunked/resumable/backpressured transfer core per the H3 plan,
-   design doc + vocabulary/codecs + sans-IO engines both roles + new
-   frozen `bulk-v1.json` vectors + tests. Client→host only in v1 per
-   §0 answer 1; next free capability key after 10.
-2. **Browser-viewer scoping** — docs/-only writer (read-only
-   elsewhere): WASM compile probe of LyteWire (SDK availability,
-   CNanorsWire under the wasm triple, swift-crypto), transport survey
-   (WebTransport vs WebRTC vs WebSocket — LAN-direct per §0 answer 4),
-   codec reality (WebCodecs HEVC vs AV1/H.264 profile), proposed slice
-   ladder + H3 cut line + any new owner decisions.
+**RESTART ADDENDUM — RESOLVED (2026-07-28 morning): both queued
+launches ran overnight and COMPLETED.** (Earlier corrections in this
+block's history: HS-22b had run all along — the "never started" audit
+read the wrong transcripts folder.) Results:
+1. **W10 (F-2 bulk channel) — LANDED** as `7455911`; full wave entry
+   at the end of the wave block (chan 8, priority `.bulk` = 7,
+   sextet 0x1C–0x21, capability key 11, sans-IO engines both roles,
+   frozen `bulk-v1.json` with 68 vectors, Wire 402 → 450/450).
+   **F-3 (host end) and F-4 (client end) are UNBLOCKED** — both code
+   against the frozen vectors, launchable in parallel (Host/ vs root
+   territories); the wave entry's "WHAT F-3/F-4 DRIVE" paragraph is
+   their contract.
+2. **Browser-viewer scoping — LANDED** as `b0b9c75`
+   (`docs/20260728-054139-lyte-browser-viewer-scoping.md`). Headline:
+   LyteWire cross-compiles to wasm32 with ZERO source changes
+   (CNanorsWire and BoringSSL included), 400/400 tests pass under
+   wasmtime, all 13 vector files byte-exact — wasm is a de-facto
+   third attested platform. Recommends WebTransport/H3 (in-process
+   lsquic leaf behind `--browser`), codec offer [hevc, av1] (no
+   H.264), ladder B-1…B-6 with the H3 cut line after B-4 (video).
+   **Four NEW owner decisions pend** (§6 of the doc): (A) QUIC
+   posture in-process-leaf vs sidecar, (B) browser codec profile,
+   (C) certificate/page UX, (D) confirm the B-4 cut line. B-slices
+   wait on these; F-3/F-4 do not.
 
 **H3 §0 OWNER DECISIONS — ANSWERED (2026-07-27 ~21:22).** The seven
 decisions in `docs/20260723-051223-lyte-h3-plan.md` §0 are settled:
@@ -1793,6 +1798,66 @@ its entry at the marker at the end of this block.*
       survived App-Nap-throttled and held local UDP 41163 into a
       later run (`bindFailed errno 48`) — foreground the client or
       setsid it, and `lsof -nP -iUDP:<port>` before launching.
+
+- **W10 bulk channel** (`7455911`, Wire/ + docs/): the wire learns to
+  carry freight — F-2, the H3 wave's long pole, landed Mac-local and
+  frozen at birth so F-3 (host) and F-4 (client) code against bytes,
+  never against each other. Design record
+  `docs/20260728-053300-lyte-bulk-channel.md`; rulings: **chan 8**
+  (`ChannelId.bulkTransfer`, reliableOrdered — its OWN ArqEndpoint
+  pair, never the ctrl stream) under a **new priority rung `.bulk = 7`
+  strictly below telemetry** (the 25–50 ms feedback reports price the
+  path for every media class; a 100 MB file is infinitely patient
+  where a stale report mis-prices audio/video — feature channels 9+
+  keep `.feature` so interactive features never queue behind a file);
+  message sextet **0x1C–0x21** offer/accept/chunk/ack/complete/abort
+  (fixed-layout LE, accept/ack share the credit+chunk-map spine:
+  contiguous prefix u64 + bitmap ≤1024 B, canonical, under-claiming
+  legal); **capability key 11 `bulkTransfer`** on the W7 spine
+  (`declaringBulkTransfer()`, frozen proof = wireDefault + `0B F5`);
+  vocabulary direction-neutral, **v1 gates client→host at the ends**
+  per §0 answer 1 — the host declares key 11 iff the standing consent
+  toggle is ON, the client offers only into an agreed set, and Wire
+  never sees the toggle. Chunks 4,096–131,072 B (default 65,536),
+  **no transfer size ceiling by design** (u64-max total is pinned
+  legal in the vectors); credit is receiver-driven, cumulative,
+  chunk-denominated (grant = stored + window, default window 16 →
+  1 MiB memory bound on BOTH ends, refresh at half-window, always
+  once more at completion); resume = identity quadruple (id, size,
+  sha-256, chunk size) + persisted possession map, any quadruple
+  mismatch → abort(resumeMismatch), completion sha-exact by
+  construction. WHAT F-3/F-4 DRIVE: `BulkSendEngine` (client) /
+  `BulkReceiveEngine` (host) in LyteWire — sans-IO, NO timers (ARQ
+  owns retransmission below, humans own consent above); shells answer
+  actions (`emit` → chan-8 ARQ send; `readChunk` → `supplyChunk`;
+  `store` → `chunkStored`/`storageFailed`; `verify` →
+  `verificationResult`; `offered` → consent then `accept`/`decline`)
+  and feed decoded stream messages to `ingest` (never throws — remote
+  badness yields `.violated` + abort(protocolViolation); LOCAL API
+  misuse throws, loud). The RECEIVING end owes persistence: write
+  `BulkResumeState` (quadruple + name + possession) at teardown, seed
+  `resumeBook:` at construction; the sender re-offers the same id and
+  resumes from the accept's map. One transfer at a time per direction
+  in v1 — a second concurrent offer draws abort(busy) from the ends'
+  dispatcher (the id-carrying vocabulary is already shaped for v2
+  multiplexing). VECTORS: new frozen `bulk-v1.json` (68: 63 message —
+  every codec's roundtrips incl. the exact chunk/bitmap ceilings and
+  the whole 7-reason abort space, all 16 `BulkMessageError` names as
+  rejects; 3 key-11 spine pins; 2 worked multi-session TRANSFER
+  traces — teardown-resume and holed-map resume — authored AND
+  replayed by the same deterministic `BulkTransferHarness` in
+  TestKit, which the ends can crib as the reference driving loop);
+  vectorgen grew the `bulk` subcommand; regeneration verified
+  byte-identical. Gate: Wire **402 → 450/450 Mac**, lint green,
+  including the full composition — engines over REAL chan-8
+  ArqEndpoints through SimNet at 20% loss/duplication/jitter landing
+  100 chunks sha-exact, and a mid-flight blackout (everything
+  volatile lost) resuming in a fresh world re-sending only the
+  unconfirmed suffix. Deferred: the pup byte-exact leg for
+  bulk-v1.json queues with the other H3 vector files (same ledger);
+  chunk messages ride the ordered stream whole (17 B header +
+  ≤128 KiB — default ArqConfig maxMessageByteCount 262,144 clears
+  it; keep that headroom when the ends tune ARQ for chan 8).
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
