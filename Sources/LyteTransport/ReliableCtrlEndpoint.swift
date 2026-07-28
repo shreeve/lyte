@@ -36,6 +36,15 @@
 // through here (their type bytes are not 0x07/0x08, and their senders —
 // BeaconEchoResponder, IdrRequester — keep their own fire-and-forget
 // paths).
+//
+// F-4: the endpoint is channel-generic now (the ArqEndpoint beneath it
+// always was — W10 named this exact day). The default stays `.ctrl`;
+// the bulk-transfer channel (chan 8, `ChannelId.bulkTransfer`) runs a
+// SECOND instance of this same class so a file transfer and a keystroke
+// never share a stream — the transport pillar's independent-lanes rule,
+// now real. The budget arithmetic is channel-independent (same envelope
+// geometry on every channel); a chan-8 instance never sees non-ARQ
+// payloads (the whole channel is ARQ carriage by design).
 
 import Dispatch
 import Foundation
@@ -75,6 +84,9 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     )
 
     private let sender: TransportSender
+    /// The channel this endpoint's datagrams ride (`.ctrl` for the
+    /// session's control stream, `.bulkTransfer` for chan 8).
+    public let channel: ChannelId
     private let now: @Sendable () -> ClientTimestamp
     /// Every ARQ event, in ingest order, fired outside the lock —
     /// delivered messages, one-shot acknowledgments, ignore verdicts.
@@ -96,6 +108,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
 
     public init(
         sender: TransportSender,
+        channel: ChannelId = .ctrl,
         config: ArqConfig = ArqConfig(),
         now: @escaping @Sendable () -> ClientTimestamp = {
             ClientTimestamp(microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
@@ -110,8 +123,9 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
             clamped.maxSegmentBodyByteCount,
             Self.ctrlPlaintextBudget - ArqBounds.segmentHeaderByteCount
         )
-        self.arq = ArqEndpoint(channel: .ctrl, config: clamped)
+        self.arq = ArqEndpoint(channel: channel, config: clamped)
         self.sender = sender
+        self.channel = channel
         self.now = now
         self.onEvent = onEvent
     }
@@ -279,6 +293,17 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         return connectionId
     }
 
+    /// Adopts a connection ID learned elsewhere (F-4: the chan-8
+    /// endpoint borrows the ctrl endpoint's, so a bulk offer leaving
+    /// before any chan-8 inbound has taught it still carries the tag —
+    /// the HS-12 every-packet rule). First writer wins; nil is a no-op.
+    public func adoptConnectionId(_ id: ConnectionId?) {
+        guard let id else { return }
+        lock.lock()
+        if connectionId == nil { connectionId = id }
+        lock.unlock()
+    }
+
     public func snapshotStats() -> Stats {
         lock.lock()
         defer { lock.unlock() }
@@ -299,7 +324,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
             do {
                 for payload in try Self.repack(payloads) {
                     let sent = try sender.send(
-                        channel: .ctrl,
+                        channel: channel,
                         timestamp: now,
                         plaintext: payload,
                         extensions: extensions

@@ -59,6 +59,16 @@ public enum AudioRoutingAskError: Error, Equatable, Sendable {
     case notNegotiated
 }
 
+// MARK: - Client-side bulk-channel policy (F-4)
+
+/// The rule-3 gate, bulk verse: a bulk send when key 11 never
+/// survived intersection is refused before a byte leaves — the client
+/// OFFERS ONLY into an agreed set (H3 §0 decision 1; the host's
+/// standing consent toggle decides whether it declares).
+public enum BulkChannelError: Error, Equatable, Sendable {
+    case notNegotiated
+}
+
 // MARK: - Client-side clipboard policy (CL-15)
 
 /// One local clipboard change's fate (the pasteboard watcher calls on
@@ -117,6 +127,11 @@ public enum LyteUdpSessionEvent: Sendable {
     /// the apply's changeCount echo. Never fires while sharing is off:
     /// content must not land on the pasteboard without consent.
     case hostClipboardChanged(String)
+    /// One decoded chan-8 bulk message arrived (F-4): accept/ack/
+    /// complete/abort answers for the client's sending role. Already
+    /// through the rule-3 gate (key 11 agreed); the owner feeds it to
+    /// its BulkSendCoordinator.
+    case bulkMessageReceived(BulkMessage)
     /// Our typed teardown left on the ordered stream.
     case teardownSent(SessionTeardownReason)
     /// The session reached `closed` — peer teardown, local teardown,
@@ -160,6 +175,13 @@ public struct LyteUdpSessionCounters: Sendable {
     /// Loud clipboard drops: an unnegotiated 0x1B, or a role-confused
     /// 0x1A arriving AT the client.
     public var clipboardDropsLoud: UInt64 = 0
+    /// Bulk messages this end put on chan 8's ordered stream (F-4).
+    public var bulkMessagesSent: UInt64 = 0
+    /// Decoded chan-8 bulk messages surfaced to the owner (F-4).
+    public var bulkMessagesReceived: UInt64 = 0
+    /// Loud bulk drops: a chan-8 message without negotiated key 11,
+    /// or bytes the bulk codecs refused.
+    public var bulkDropsLoud: UInt64 = 0
 }
 
 // MARK: - Config
@@ -221,7 +243,14 @@ public struct LyteUdpSessionCoreConfig: Sendable {
 
     public init(
         capabilities: Capabilities = .wireDefault
-            .declaringHostAudioRouting().declaringClipboardText(),
+            .declaringHostAudioRouting().declaringClipboardText()
+            // F-4: key 11 (bulkTransfer) — dialect, not consent (the
+            // key-9/key-10 rule, third verse): this client can always
+            // SEND a dropped file, so it always declares; whether an
+            // offer is welcome is the HOST's standing toggle, which
+            // decides whether the host declares — the intersection
+            // gates the client's offers.
+            .declaringBulkTransfer(),
         machineConfig: SessionMachineConfig = SessionMachineConfig(
             blackoutSilenceMicroseconds: 2_500_000
         ),
@@ -254,6 +283,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     // PairingGateTests construction order).
     public private(set) var pipeline: LyteVideoPipeline!
     public private(set) var reliable: ReliableCtrlEndpoint!
+    /// F-4: chan 8's OWN ArqEndpoint pair (client side) — the bulk
+    /// stream never shares CTRL's, so a file cannot head-of-line-block
+    /// a keystroke by construction (the W10 channel ruling).
+    public private(set) var bulkReliable: ReliableCtrlEndpoint!
     public private(set) var echoResponder: BeaconEchoResponder!
     public private(set) var idrRequester: IdrRequester!
     public private(set) var feedback: FeedbackSender!
@@ -353,6 +386,13 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             onEvent: { [weak self] event in
                 self?.dispatchReliable(event)
             })
+        self.bulkReliable = ReliableCtrlEndpoint(
+            sender: sender,
+            channel: .bulkTransfer,
+            now: now,
+            onEvent: { [weak self] event in
+                self?.dispatchBulk(event)
+            })
         self.input = InputSender(
             clockModel: clockModel,
             send: { [weak self] message, now in
@@ -430,6 +470,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// Tests never call this — they drive `tick(now:)`.
     public func startTimers() {
         reliable.start()
+        bulkReliable.start()
         pipeline.start()
         feedback.start()
         lock.lock()
@@ -454,6 +495,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         timer?.cancel()
         feedback.stop()
         reliable.stop()
+        bulkReliable.stop()
         pipeline.stop()
     }
 
@@ -462,6 +504,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// are a cadence choice, not a correctness one).
     public func tick(now: ClientTimestamp) {
         reliable.tick(now: now)
+        bulkReliable.tick(now: now)
         pipeline.tick(now: now)
         nackPolicy.tick(now: now)
         applyMachine(nil, now: now)
@@ -611,6 +654,41 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         shareLocalClipboard(text, now: now())
     }
 
+    // MARK: Bulk transfer (F-4)
+
+    /// True when capability key 11 survived intersection — the host's
+    /// standing consent toggle is ON and it accepts file offers. The
+    /// drop target's gate.
+    public var bulkTransferNegotiated: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return agreed?.bulkTransfer == true
+    }
+
+    /// Queues one encoded bulk message on chan 8's ARQ ordered stream.
+    /// Refused HERE when key 11 never survived intersection (the
+    /// rule-3 gate: offer only into an agreed set — H3 §0 decision 1).
+    public func sendBulkMessage(
+        _ message: [UInt8], now: ClientTimestamp
+    ) throws {
+        lock.lock()
+        guard agreed?.bulkTransfer == true else {
+            lock.unlock()
+            throw BulkChannelError.notNegotiated
+        }
+        counters.bulkMessagesSent += 1
+        lock.unlock()
+        // Chan 8 borrows the ctrl-learned connection ID so the very
+        // first bulk datagram already carries the tag (HS-12's
+        // every-packet rule; chan-8 inbound teaches it too).
+        bulkReliable.adoptConnectionId(reliable.learnedConnectionId)
+        try bulkReliable.send(message, now: now)
+    }
+
+    public func sendBulkMessage(_ message: [UInt8]) throws {
+        try sendBulkMessage(message, now: now())
+    }
+
     // MARK: Ingest
 
     /// The endpoint's per-datagram hook: routes accepted payloads to
@@ -641,6 +719,12 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             // from this same pass.
             input.noteVideoShard(envelope: envelope)
             pipeline.ingest(envelope: envelope, payload: payload, now: now)
+        } else if envelope.channel == .bulkTransfer {
+            // F-4: the whole channel is ARQ carriage by design — no
+            // exempt path exists on chan 8.
+            bulkReliable.adoptConnectionId(reliable.learnedConnectionId)
+            _ = bulkReliable.handleCtrlDatagram(
+                envelope: envelope, payload: payload, now: now)
         } else if envelope.channel == .audio {
             // CL-11: the 5 ms path probe. Depacketize/recover/buffer,
             // and — first time only — tighten the blackout detector
@@ -859,6 +943,37 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 format: "unregistered reliable CTRL type 0x%02x (%d B)",
                 bytes.first ?? 0, bytes.count)))
         }
+    }
+
+    /// Every chan-8 ARQ delivery (F-4): decode the bulk message and
+    /// surface it for the owner's BulkSendCoordinator. Gated on the
+    /// agreed set (a bulk message from a host that never negotiated
+    /// key 11 is a protocol break — dropped loud, the rule-3 mirror);
+    /// bytes the codecs refuse drop loud too, payload never logged.
+    private func dispatchBulk(_ event: ArqEvent) {
+        guard case .message(_, let bytes) = event else { return }
+        lock.lock()
+        guard agreed?.bulkTransfer == true else {
+            counters.bulkDropsLoud += 1
+            lock.unlock()
+            onEvent(.protocolNote(
+                "bulk message without negotiated key 11 — dropped"))
+            return
+        }
+        lock.unlock()
+        guard let message = try? BulkMessage.decode(bytes) else {
+            lock.lock()
+            counters.bulkDropsLoud += 1
+            lock.unlock()
+            onEvent(.protocolNote(String(
+                format: "malformed bulk message dropped (type 0x%02x, %d B)",
+                bytes.first ?? 0, bytes.count)))
+            return
+        }
+        lock.lock()
+        counters.bulkMessagesReceived += 1
+        lock.unlock()
+        onEvent(.bulkMessageReceived(message))
     }
 
     /// The host's declaration: intersection = agreement. An unworkable
@@ -1174,6 +1289,21 @@ public final class LyteUdpSession: @unchecked Sendable {
     /// clipboard toggle exists exactly when this is true.
     public var clipboardNegotiated: Bool {
         core?.clipboardNegotiated ?? false
+    }
+
+    /// True when key 11 survived intersection (F-4) — the host's
+    /// standing consent toggle is on; the drop target offers exactly
+    /// when this is true.
+    public var bulkTransferNegotiated: Bool {
+        core?.bulkTransferNegotiated ?? false
+    }
+
+    /// The BulkSendCoordinator's chan-8 send leg (F-4). Throws
+    /// `BulkChannelError.notNegotiated` against a key-11-less host —
+    /// the coordinator's own gate means the app never hits that.
+    public func sendBulkMessage(_ message: [UInt8]) throws {
+        guard let core else { throw TransportEndpointError.notStarted }
+        try core.sendBulkMessage(message)
     }
 
     /// The live clipboard-sharing toggle (CL-15).

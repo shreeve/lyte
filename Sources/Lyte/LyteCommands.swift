@@ -76,6 +76,17 @@ struct LyteCommands: Commands {
 
             Divider()
 
+            // F-4: files travel by DROP (drag onto the stream window);
+            // the menu carries the cancel so a hidden strip still has
+            // a full surface (the CL-18 fallback rule). Cancels the
+            // active transfer AND the queue.
+            Button("Cancel File Transfer") {
+                connection?.cancelBulkTransfers()
+            }
+            .disabled(connection?.bulkActive != true)
+
+            Divider()
+
             Toggle("Session Stats", isOn: Binding(
                 get: { connection?.statsVisible ?? false },
                 set: { connection?.statsVisible = $0 }

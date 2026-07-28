@@ -1,6 +1,7 @@
 import SwiftUI
 import LyteTransport
 import LyteUI
+import UniformTypeIdentifiers
 
 /// The streaming state's whole surface (CL-13): the stream view plus
 /// its overlays — the FROZEN pill (CL-8), the stats readout, and the
@@ -37,6 +38,9 @@ struct StreamContainer: View {
     /// inside the box without invalidating any view; only actual
     /// visibility flips touch @State.
     @State private var reveal = StripRevealBooks()
+    /// F-4: a file drag is over the window (SwiftUI's isTargeted) —
+    /// the drop hint renders while true.
+    @State private var dropTargeted = false
 
     private var stripEdge: StripEdge {
         StripEdge(rawValue: stripEdgeRaw) ?? .bottom
@@ -66,6 +70,51 @@ struct StreamContainer: View {
                         .padding(12)
                         .transition(.opacity)
                 }
+            }
+            .overlay(alignment: stripEdge == .top ? .bottomTrailing : .topTrailing) {
+                // F-4: the transfer pill (progress + cancel ×) and the
+                // transient verdict line — the trailing corner of the
+                // strip's OPPOSITE edge, clear of the FROZEN pill
+                // (centered there) and the stats readout (leading).
+                VStack(alignment: .trailing, spacing: 6) {
+                    if model.bulkActive {
+                        BulkProgressPill(model: model)
+                    }
+                    if let notice = model.bulkNotice {
+                        Text(notice)
+                            .font(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(.ultraThinMaterial))
+                            .transition(.opacity)
+                    }
+                }
+                .padding(12)
+            }
+            .overlay {
+                // F-4: the drop hint, while a file drag hovers. The
+                // capability verdict shows DURING the drag, so nobody
+                // has to complete a doomed drop to learn the host's
+                // toggle is off (the drop itself answers with the
+                // notice either way).
+                if dropTargeted {
+                    DropHintOverlay(
+                        accepting: model.bulkNegotiated,
+                        hostName: model.hostName ?? "the host")
+                }
+            }
+            // F-4: the drop TARGET. Drag-and-drop never touches the
+            // CL-16 input-capture path by construction: the capture's
+            // NSEvent local monitors see only the mouse/key mask —
+            // drag sessions ride NSDraggingDestination, a separate
+            // pipeline — and this modifier lives on the SwiftUI
+            // overlay layer, whose claimed points the capture already
+            // returns to AppKit (the landsOnVideoSurface rule).
+            .onDrop(
+                of: [UTType.fileURL],
+                isTargeted: $dropTargeted
+            ) { providers in
+                model.handleDrop(providers: providers)
             }
             .overlay(alignment: stripEdge == .top ? .top : .bottom) {
                 if stripVisible {
@@ -116,6 +165,9 @@ struct StreamContainer: View {
             .animation(.easeInOut(duration: 0.3), value: model.lyteFrozen)
             .animation(.easeInOut(duration: 0.25), value: stripVisible)
             .animation(.easeInOut(duration: 0.2), value: model.statsVisible)
+            .animation(.easeInOut(duration: 0.15), value: dropTargeted)
+            .animation(.easeInOut(duration: 0.2), value: model.bulkActive)
+            .animation(.easeInOut(duration: 0.2), value: model.bulkNotice)
     }
 
     /// Every pointer event funnels here (capture primary, hover
@@ -371,6 +423,107 @@ struct ControlStrip: View {
         }
         .buttonStyle(.plain)
         .help(help)
+    }
+}
+
+/// The transfer pill (F-4): file name, phase/progress, queue depth,
+/// and a cancel × — small and non-intrusive (the CL-16/CL-18 overlay
+/// discipline). Its SwiftUI content claims its own points, so clicks
+/// here never reach the host cursor (the landsOnVideoSurface rule).
+struct BulkProgressPill: View {
+    let model: ConnectionModel
+
+    var body: some View {
+        let status = model.bulkStatus
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.up.doc")
+                .font(.system(size: 12, weight: .medium))
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(status.activeName ?? "File transfer")
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: 180, alignment: .leading)
+                    if status.queuedCount > 0 {
+                        Text("+\(status.queuedCount)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                HStack(spacing: 6) {
+                    if status.phase == .transferring,
+                       let progress = status.progress {
+                        ProgressView(value: progress.fraction)
+                            .progressViewStyle(.linear)
+                            .frame(width: 110)
+                        Text(String(format: "%.0f%%", progress.fraction * 100))
+                            .font(.caption2.monospacedDigit())
+                    } else {
+                        Text(phaseLabel(status.phase))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Button {
+                model.cancelBulkTransfers()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Cancel the file transfer (and anything queued)")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Capsule().fill(.ultraThinMaterial))
+        .overlay(Capsule().strokeBorder(.white.opacity(0.12)))
+        .transition(.opacity)
+    }
+
+    private func phaseLabel(_ phase: BulkSendSnapshot.Phase?) -> String {
+        switch phase {
+        case .preparing: return "Preparing…"
+        case .offering: return "Waiting for the host…"
+        case .transferring: return "Sending…"
+        case .verifying: return "Verifying…"
+        case .awaitingReconnect: return "Waiting to reconnect…"
+        case nil: return "…"
+        }
+    }
+}
+
+/// The drag-over hint (F-4): tells the truth about the host's file
+/// consent DURING the drag. Hit-test transparent — a hint must never
+/// eat the drop it is hinting about.
+struct DropHintOverlay: View {
+    let accepting: Bool
+    let hostName: String
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: accepting
+                ? "arrow.down.doc" : "nosign")
+                .font(.system(size: 28, weight: .medium))
+            Text(accepting
+                ? "Drop to send to \(hostName)"
+                : "\(hostName) isn't accepting files")
+                .font(.callout.weight(.semibold))
+        }
+        .foregroundStyle(accepting ? AnyShapeStyle(.primary)
+                                   : AnyShapeStyle(.orange))
+        .padding(24)
+        .background(
+            RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
+                .foregroundStyle(accepting ? AnyShapeStyle(.secondary)
+                                           : AnyShapeStyle(.orange)))
+        .allowsHitTesting(false)
+        .transition(.opacity)
     }
 }
 

@@ -234,6 +234,12 @@ struct WireView: AsyncParsableCommand {
                     print("wire-view: host clipboard → pasteboard "
                         + "(\(text.utf8.count) B, 0x1B)")
                     pasteboardBox.value?.apply(text)
+                case .bulkMessageReceived(let message):
+                    // F-4: the debug shell never offers files (the app
+                    // owns the drop UX), so a chan-8 answer here is
+                    // weather worth a line, nothing more.
+                    print("wire-view: bulk message (transfer "
+                        + "\(message.transferId)) — no transfer running")
                 case .idleFrameReceived(let frame, let outcome):
                     print("wire-view: reliable idle frame \(frame) — \(outcome)")
                 case .teardownSent(let reason):

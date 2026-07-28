@@ -3,6 +3,7 @@ import SwiftUI
 import LyteTransport
 import LyteUI
 import LyteWire
+import UniformTypeIdentifiers
 
 /// Per-window connection state machine: pick host → (pair) → connect →
 /// stream. Owns the Lyte-UDP session, display layer, and input capture.
@@ -37,6 +38,22 @@ final class ConnectionModel {
     private(set) var clipboardNegotiated = false
     private(set) var clipboardSharing = false
     private var pasteboardSync: PasteboardSync?
+    // F-4: bulk transfer — `bulkNegotiated` decides whether a drop can
+    // OFFER (key 11 survived intersection = the host's standing
+    // consent toggle is on); `bulkStatus` mirrors the coordinator's
+    // snapshot for the progress pill; `bulkNotice` is the transient
+    // verdict line ("sent", "host isn't accepting files", …).
+    private(set) var bulkNegotiated = false
+    private(set) var bulkStatus = BulkSendSnapshot.idle
+    private(set) var bulkNotice: String?
+    /// The coordinator OUTLIVES the wire session (that is what makes
+    /// resume-on-reconnect real: it keeps the transfer id + path and
+    /// re-offers the same id into the next session) but never a host
+    /// change — a file dropped for one host must not follow the user
+    /// to another.
+    private var bulkCoordinator: BulkSendCoordinator?
+    private var bulkCoordinatorHostKey: String?
+    private var bulkNoticeTask: Task<Void, Never>?
     /// The stats readout's visibility (the strip's chart toggle).
     var statsVisible = false
 
@@ -169,6 +186,10 @@ final class ConnectionModel {
         pasteboardSync = PasteboardSync(onLocalChange: { [weak lyte] text in
             lyte?.shareLocalClipboard(text)
         })
+        bulkNegotiated = false
+        // The pinned lookup above guarantees a pkh in practice; the
+        // address fallback keeps the key total.
+        prepareBulkCoordinator(hostKey: host.publicKeyHash ?? host.address)
         phase = .streaming
         statusLine = crypto.modeDescription
         AgentState.shared.streamBegan()
@@ -186,6 +207,19 @@ final class ConnectionModel {
             // survived; the watcher starts if consent is already on.
             clipboardNegotiated = agreed.clipboardText
             updatePasteboardWatcher()
+            // F-4: attach the coordinator's chan-8 leg. A transfer the
+            // last session interrupted re-offers its SAME id here.
+            bulkNegotiated = agreed.bulkTransfer
+            let session = lyteSession
+            bulkCoordinator?.sessionReady(
+                negotiated: agreed.bulkTransfer,
+                send: { [weak session] bytes in
+                    // A refused send is a teardown race — the ARQ
+                    // state is dying with the session; resume covers.
+                    try? session?.sendBulkMessage(bytes)
+                })
+        case .bulkMessageReceived(let message):
+            bulkCoordinator?.ingest(message)
         case .hostAudioRoutingStatus(let mode):
             hostAudioPosture = mode
         case .hostClipboardChanged(let text):
@@ -227,6 +261,11 @@ final class ConnectionModel {
         pasteboardSync = nil
         clipboardNegotiated = false
         clipboardSharing = false
+        // F-4: the coordinator survives the session end — a transfer
+        // interrupted mid-flight waits (id + path intact) for the next
+        // connect to this host and re-offers the same id.
+        bulkCoordinator?.sessionEnded()
+        bulkNegotiated = false
         statsVisible = false
         lyteInputCapture?.stop()
         lyteInputCapture = nil
@@ -331,6 +370,101 @@ final class ConnectionModel {
         }
     }
 
+    // MARK: - Bulk transfer (F-4)
+
+    /// True while a transfer (or its queue) is worth a pill.
+    var bulkActive: Bool { !bulkStatus.isIdle }
+
+    /// One coordinator per HOST: reconnects to the same host keep it
+    /// (resume); a different host abandons everything first (a dropped
+    /// file's consent was for that host, nobody else).
+    private func prepareBulkCoordinator(hostKey: String) {
+        if bulkCoordinatorHostKey == hostKey, bulkCoordinator != nil {
+            return
+        }
+        bulkCoordinator?.abandonAll()
+        bulkCoordinatorHostKey = hostKey
+        bulkCoordinator = BulkSendCoordinator(
+            onChange: { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.bulkStatus = self.bulkCoordinator?.snapshot() ?? .idle
+                }
+            },
+            onNotice: { [weak self] notice in
+                Task { @MainActor [weak self] in
+                    self?.showBulkNotice(notice)
+                }
+            })
+        bulkStatus = .idle
+    }
+
+    /// The stream view's drop handler: extract file URLs off the item
+    /// providers (async), then judge. Returns whether the drag is
+    /// worth accepting at all (any file-URL candidate while
+    /// streaming); the capability verdict surfaces as a NOTICE after
+    /// the drop — never a silent nothing (the F-4 gating rule).
+    func handleDrop(providers: [NSItemProvider]) -> Bool {
+        let candidates = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }
+        guard !candidates.isEmpty, lyteSession != nil else { return false }
+        Task { @MainActor [weak self] in
+            var urls: [URL] = []
+            for provider in candidates {
+                if let url = await Self.loadFileURL(from: provider) {
+                    urls.append(url)
+                }
+            }
+            self?.dropFiles(urls)
+        }
+        return true
+    }
+
+    /// The gating verdicts, spoken (multi-file drops queue and send
+    /// serially — the coordinator's documented v1 policy).
+    func dropFiles(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        guard let coordinator = bulkCoordinator else { return }
+        switch coordinator.drop(urls: urls) {
+        case .accepted:
+            break   // the pill takes over
+        case .hostNotAccepting:
+            showBulkNotice(
+                "\(hostName ?? "The host") isn't accepting files — "
+                + "enable file drops on the host")
+        case .notConnected:
+            showBulkNotice("Not connected — file not sent")
+        }
+    }
+
+    /// The pill's × and the Actions menu item: cancel the active
+    /// transfer AND the queue (cancel means stop sending).
+    func cancelBulkTransfers() {
+        bulkCoordinator?.cancelAll()
+    }
+
+    /// Transient verdict line under the pill; fades after a beat.
+    private func showBulkNotice(_ text: String) {
+        bulkNotice = text
+        bulkNoticeTask?.cancel()
+        bulkNoticeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            self?.bulkNotice = nil
+        }
+    }
+
+    private static func loadFileURL(
+        from provider: NSItemProvider
+    ) async -> URL? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                continuation.resume(returning: url)
+            }
+        }
+    }
+
     // MARK: - Window verbs (strip + Actions menu, same commands)
 
     func toggleFullscreen() {
@@ -408,6 +542,17 @@ final class ConnectionModel {
             lines.append("clipboard \(clipboard.clipboardSharesSent) sent"
                 + " · \(clipboard.clipboardAnnouncesReceived) recv"
                 + " · \(clipboard.clipboardLoopSuppressed) suppressed")
+        }
+
+        // F-4: the bulk channel's books, while it has any.
+        if clipboard.bulkMessagesSent + clipboard.bulkMessagesReceived > 0 {
+            var line = "bulk \(clipboard.bulkMessagesSent) sent"
+                + " · \(clipboard.bulkMessagesReceived) recv"
+            if let progress = bulkStatus.progress,
+               progress.totalByteCount > 0 {
+                line += String(format: " · %.0f%%", progress.fraction * 100)
+            }
+            lines.append(line)
         }
         return lines
     }
