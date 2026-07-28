@@ -22,7 +22,11 @@
 /// Send classes in strict priority order. Lower raw value = higher
 /// priority (drains first). The order is the protocol overview's unified
 /// ruling: CTRL/input > audio > fresh video > video tail + NACK
-/// retransmits > ratchet refinement > telemetry.
+/// retransmits > ratchet refinement > telemetry > bulk. The bulk rung is
+/// the W10/F-2 ruling (design record 20260728-053300 §1, mirrored as
+/// `WirePriority.bulk`): STRICTLY below telemetry, because the 25–50 ms
+/// feedback reports price the path for every media class and a 100 MB
+/// file is infinitely patient where a stale report mis-prices audio.
 public enum PacerClass: Int, CaseIterable, Comparable, Sendable {
     case control = 0
     case audio = 1
@@ -30,6 +34,7 @@ public enum PacerClass: Int, CaseIterable, Comparable, Sendable {
     case videoTail = 3
     case refinement = 4
     case telemetry = 5
+    case bulk = 6
 
     public static func < (a: PacerClass, b: PacerClass) -> Bool {
         a.rawValue < b.rawValue
@@ -43,6 +48,7 @@ public enum PacerClass: Int, CaseIterable, Comparable, Sendable {
         case .videoTail: return "videoTail"
         case .refinement: return "refinement"
         case .telemetry: return "telemetry"
+        case .bulk: return "bulk"
         }
     }
 }

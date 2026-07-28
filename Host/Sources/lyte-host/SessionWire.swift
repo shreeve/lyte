@@ -121,6 +121,17 @@ final class SessionWire {
     /// 0x1A texts delivered by the session (under the lock), awaiting
     /// the shell's apply outside it (drained by `service()`).
     private var pendingClipboardApplies: [String] = []
+
+    /// F-3: the file-drop shell. Nil = the standing consent toggle is
+    /// OFF this run — the session core never surfaces bulk messages
+    /// then anyway (key 11 undeclared, chan 8 drops loud), so the arm
+    /// is defensive. Driven OFF the session lock: every store action
+    /// is a pwrite + fsync and the verify is a whole-file hash.
+    var bulkShell: BulkReceiveShell?
+    /// Chan-8 messages delivered by the session (under the lock),
+    /// awaiting the shell's disk work outside it (drained by
+    /// `service()`).
+    private var pendingBulkMessages: [BulkMessage] = []
     /// The posture the audio leaf is actually running (main seeds it;
     /// applied flips move it). Mutated under `lock`.
     private(set) var currentAudioRouting: HostAudioRoutingMode = .hostAudible
@@ -565,6 +576,8 @@ final class SessionWire {
         let standing = currentAudioRouting
         let applies = pendingClipboardApplies
         pendingClipboardApplies.removeAll()
+        let bulk = pendingBulkMessages
+        pendingBulkMessages.removeAll()
         lock.unlock()
 
         // The starting-posture 0x19 (capabilities just agreed) and any
@@ -584,6 +597,67 @@ final class SessionWire {
             clipboardApplyHandler?(text)
         }
         clipboardServiceHook?()
+        // F-3: drive the file-drop shell (disk writes, fsync, the
+        // verify hash) off the lock; its replies re-take it per send.
+        driveBulkShell(bulk)
+    }
+
+    /// F-3: buffered chan-8 messages through the BulkReceiveShell —
+    /// every disk action answered synchronously — then the shell's
+    /// replies (accept/ack/complete/abort) back onto chan 8's ordered
+    /// stream under the lock.
+    private func driveBulkShell(_ messages: [BulkMessage]) {
+        guard let shell = bulkShell, !messages.isEmpty else { return }
+        var replies: [BulkMessage] = []
+        for message in messages {
+            for event in shell.ingest(message) {
+                switch event {
+                case .send(let reply):
+                    replies.append(reply)
+                case .offerAccepted(let id, let name, let bytes, let resuming):
+                    print("files: offer \(String(id, radix: 16)) accepted — "
+                        + "\"\(BulkFileNaming.sanitized(name))\" "
+                        + "(\(bytes) B\(resuming ? ", RESUMING" : ""))")
+                case .offerRefusedBusy(let id):
+                    print("files: offer \(String(id, radix: 16)) refused — "
+                        + "busy (one transfer at a time in v1)")
+                case .insufficientDiskSpace(let needed, let free):
+                    print("files: offer refused — needs \(needed) B, "
+                        + "\(free) B free")
+                case .fileCompleted(let name, let path, let bytes):
+                    print("files: COMPLETE — \"\(name)\" (\(bytes) B, "
+                        + "sha-verified) → \(path)")
+                case .transferAborted(let reason, let byRemote):
+                    print("files: transfer aborted (\(reason), "
+                        + (byRemote ? "remote" : "local") + ")")
+                case .storageFailure(let detail):
+                    print("files: STORAGE FAILURE — \(detail)")
+                case .violated(let violation):
+                    print("files: protocol violation — \(violation)")
+                }
+            }
+        }
+        guard !replies.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let session, session.phase == .established else { return }
+        for reply in replies {
+            do {
+                try session.sendBulk(
+                    reply.encode(),
+                    now: monotonicNS(), hostMicroseconds: monotonicMicros()
+                )
+            } catch {
+                lastSendError = String(describing: error)
+                print("files: bulk send failed: \(error)")
+            }
+        }
+        do {
+            try serviceOnce()
+            try flushOutbox()
+        } catch {
+            lastSendError = String(describing: error)
+        }
     }
 
     /// HS-19: the leaf's report that the OS clipboard changed —
@@ -964,6 +1038,11 @@ final class SessionWire {
             print("clipboard: announce sent (\(byteCount) B, 0x1B)")
         case .clipboardAnnounceSuppressed(let reason):
             print("clipboard: announce suppressed (\(reason))")
+        case .bulkMessageReceived(let message):
+            // Buffered for the off-lock shell pass (disk IO must not
+            // ride the session lock). Chunks arrive by the hundred —
+            // silent here; the shell's events narrate the transfer.
+            pendingBulkMessages.append(message)
         }
     }
 

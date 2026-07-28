@@ -72,6 +72,13 @@ struct Options {
     /// and capability key 10 is declared only when the leaf actually
     /// came up (the key-9/--no-audio precedent).
     var clipboard = false
+    /// F-3: the STANDING PER-HOST consent toggle for incoming file
+    /// transfer (H3 §0 owner decision 1). Default OFF — a plain run
+    /// declares no key 11 and any chan-8 byte is a protocol
+    /// violation; `--accept-files[=DIR]` opts in and names the drop
+    /// directory (default ~/Downloads, created if missing).
+    var acceptFiles = false
+    var acceptFilesDirectory: String?
     /// HS-21: arm the W8 retry-cookie dial. Off = the pure HS-9
     /// token-bucket posture (nil secret). On = a random cookie secret is
     /// minted and require-cookie mode engages when the msg1 arrival rate
@@ -174,6 +181,15 @@ struct Options {
                 }
             case "--clipboard":
                 opts.clipboard = true
+            case "--accept-files":
+                opts.acceptFiles = true
+            case let arg where arg.hasPrefix("--accept-files="):
+                opts.acceptFiles = true
+                let dir = String(arg.dropFirst("--accept-files=".count))
+                guard !dir.isEmpty else {
+                    throw HostError("--accept-files= needs a directory")
+                }
+                opts.acceptFilesDirectory = dir
             case "--require-cookie":
                 opts.requireCookie = true
             case "--cookie-enter":
@@ -262,6 +278,19 @@ struct Options {
                                     declared only when the leaf comes
                                     up, so a plain run truthfully
                                     negotiates no clipboard
+                  --accept-files[=DIR]
+                                    the standing per-host file-drop
+                                    consent (F-3, client→host only in
+                                    v1): incoming bulk transfers land
+                                    in DIR (default ~/Downloads,
+                                    created if missing) via staging +
+                                    fsync + atomic rename, resumable
+                                    across teardowns. Default OFF;
+                                    capability key 11 is declared only
+                                    when the toggle is ON and the drop
+                                    directory came up, so a plain run
+                                    truthfully negotiates no file
+                                    transfer
                   --no-vbv-reconfigure
                                     debug: never reconfigure the
                                     encoder's rate control from the
@@ -880,6 +909,7 @@ func run() throws {
     var advertiser: AvahiAdvertiser?
     var pairingService: PairingResponderService?
     var clipboardLeaf: MutterClipboardLeaf?
+    var bulkShell: BulkReceiveShell?
     if sessionMode {
         if opts.insecure, opts.wireOut == nil {
             throw HostError("--insecure streams to a fixed peer; "
@@ -953,17 +983,43 @@ func run() throws {
             }
         }
 
+        // F-3: the file-drop shell comes up BEFORE the declaration is
+        // built — key 11 follows the toggle AND the directory, never
+        // the flag alone (the key-10/leaf precedent: an uncreatable
+        // drop directory must not leave the host promising a dialect
+        // it cannot land bytes for). Consent is this standing toggle;
+        // the shell existing IS the yes, and Wire never sees it.
+        if opts.acceptFiles {
+            let dropDir = opts.acceptFilesDirectory
+                ?? FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent("Downloads").path
+            do {
+                let shell = try BulkReceiveShell(directoryPath: dropDir)
+                bulkShell = shell
+                print("files: accepting incoming transfers → \(dropDir) "
+                    + "(staging + fsync + atomic rename, resumable; "
+                    + "one transfer at a time)")
+            } catch {
+                print("files: drop directory unavailable (\(error)) — "
+                    + "file drop OFF this run, key 11 not declared")
+            }
+        }
+
         // The W7 declaration: key 9 (hostAudioRouting, the HS-18
         // virtual-sink mute) rides the forward-compat spine whenever
         // the audio leg exists — the client's control strip gates its
         // mute button on the intersection, so a --no-audio host
         // truthfully never declares it. Key 10 (clipboardText, CL-15)
-        // rides the same spine whenever the clipboard leaf is up.
+        // rides the same spine whenever the clipboard leaf is up, and
+        // key 11 (bulkTransfer, F-3) whenever the file-drop shell is.
         var declared = opts.audio
             ? Capabilities.wireDefault.declaringHostAudioRouting()
             : .wireDefault
         if clipboardLeaf != nil {
             declared = declared.declaringClipboardText()
+        }
+        if bulkShell != nil {
+            declared = declared.declaringBulkTransfer()
         }
 
         // HS-21: arm the retry-cookie dial when asked. A random secret,
@@ -1062,6 +1118,12 @@ func run() throws {
                 w?.noteHostClipboardChanged(text)
             }
         }
+
+        // F-3: the file-drop loop — chan-8 bulk messages buffered
+        // under the session lock, driven through the shell (disk IO,
+        // hashing) on the same off-lock service pass the clipboard
+        // rides; the shell's replies re-enter through sendBulk.
+        w.bulkShell = bulkShell
     }
 
     // HS-15: audio comes up with the session, on its own capture loop
@@ -1197,6 +1259,10 @@ func run() throws {
     // selection ownership and pending transfers die with it; the
     // connection-owned session can never be stranded by a crash).
     clipboardLeaf?.stop()
+    // F-3: the receiving end's one resume obligation — persist the
+    // mid-flight BulkResumeState beside its staging file so the next
+    // session's re-offer resumes from the gap, sha-exact.
+    bulkShell?.teardown()
 
     // Measurement aid: dump the final retained raw frame (stride-packed
     // BGRx as delivered by PipeWire) so decoded output can be PSNR'd
@@ -1266,6 +1332,20 @@ func run() throws {
                 + "kbps, vbv \(d.vbvBits / 8) B "
                 + "(ceiling \(d.frameByteCeiling) B)"
         }
+        // F-3: the shell's own books (chunk/byte-level evidence),
+        // appended to the files line when the shell ran.
+        var bulkShellStats = ""
+        if let shell = bulkShell {
+            let b = shell.counters
+            bulkShellStats = " (shell: \(b.offersAccepted) accepted"
+            bulkShellStats += ", \(b.chunksStored) chunks"
+            bulkShellStats += " / \(b.bytesStored) B stored"
+            bulkShellStats += ", \(b.filesCompleted) completed"
+            bulkShellStats += ", \(b.transfersAborted) aborted"
+            bulkShellStats += ", \(b.offersRefusedBusy) busy"
+            bulkShellStats += ", \(b.storageFailures) storage failures"
+            bulkShellStats += ", \(b.resumeStatesLoaded) resumes loaded)"
+        }
         var clipboardLeafStats = ""
         if let leaf = clipboardLeaf {
             clipboardLeafStats = " (leaf: \(leaf.appliesTaken) applies"
@@ -1317,6 +1397,9 @@ func run() throws {
         \(s.clipboardSetsReceived) sets received, \
         \(s.clipboardAnnouncesSent) announces sent, \
         \(s.clipboardAnnouncesSuppressed) suppressed\(clipboardLeafStats)
+        files: \(bulkShell != nil ? "ACCEPTING" : "off"), \
+        \(s.bulkMessagesReceived) bulk messages received, \
+        \(s.bulkArqDatagramsSent) chan-8 datagrams sent\(bulkShellStats)
         estimator: rate \(wire.estimatedRate / 1_000) kbps \
         (pacer \(wire.pacerRate / 1_000) kbps, ceiling \
         \(Int(opts.wireRateMbps * 1_000)) kbps), delivery \

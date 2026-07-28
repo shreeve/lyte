@@ -519,6 +519,30 @@ public final class VideoChannel {
         enqueue(datagram, urgent: false, frameID: nil, now: now)
     }
 
+    /// F-3: one already-sealed chan-8 bulk datagram (the bulk channel's
+    /// ARQ frames — accept/ack/complete/abort from the receiving host,
+    /// plus the ACKs that pace the sender's chunks) through the same
+    /// pacer, class `.bulk` — the ladder's tail, strictly below
+    /// telemetry, so a file transfer can never delay a feedback report
+    /// by even one batch (design record 20260728-053300 §1). Same
+    /// division of labor as `enqueueControl`: the session owns the
+    /// chan-8 seq space and sealed the payload.
+    public func enqueueBulk(
+        _ bytes: [UInt8],
+        seq: ChannelSeq,
+        now: UInt64
+    ) {
+        let datagram = VideoChannelDatagram(
+            bytes: bytes,
+            pacerClass: .bulk,
+            frameNumber: FrameNumber(rawValue: 0),
+            seq: seq,
+            isKeyframe: false,
+            destination: nil
+        )
+        enqueue(datagram, urgent: false, frameID: nil, now: now)
+    }
+
     /// Datagrams of `pacerClass` still waiting in the shared schedule —
     /// the audio thread's "did my packet actually leave" check (HS-15).
     public func queuedCount(_ pacerClass: PacerClass) -> Int {

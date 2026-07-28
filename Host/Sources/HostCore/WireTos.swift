@@ -28,6 +28,11 @@ public enum WireTos {
         case .videoTail: return 0xC0 // CS6 — the repair lane (HS-20)
         case .freshVideo, .refinement: return 0xA0 // CS5 / DSCP 40
         case .telemetry: return 0x00
+        // The design record's marking ruling (20260728-053300 §1):
+        // bulk is best-effort/background at the bottleneck too — CS1,
+        // zero protocol bytes, so a DSCP-aware queue dumps the file
+        // behind everything the session actually races.
+        case .bulk: return 0x20 // CS1 / DSCP 8
         }
     }
 }

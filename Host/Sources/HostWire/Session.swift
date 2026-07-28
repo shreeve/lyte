@@ -294,6 +294,12 @@ public enum SessionEvent: Equatable, Sendable {
     /// announced — the loop-prevention/dedupe/ceiling discipline
     /// holding (design doc §5).
     case clipboardAnnounceSuppressed(ClipboardSuppressReason)
+    /// F-3: one decoded bulk message off chan 8's ARQ ordered stream —
+    /// exactly once, in order. Only surfaces when the agreed
+    /// capabilities carry bulkTransfer (the W7 rule-3 gate, key 11);
+    /// the shell feeds it to the BulkReceiveShell, whose replies come
+    /// back through `sendBulk`.
+    case bulkMessageReceived(BulkMessage)
 }
 
 /// Why a leaf-reported host clipboard change did not become a 0x1B
@@ -373,11 +379,21 @@ public enum SessionDropReason: Equatable, Sendable {
     /// A 0x1A clipboard set without clipboardText in the agreed set
     /// (CL-15; the same rule-3 gate). Dropped loud, never fatal.
     case clipboardNotNegotiated
+    /// A chan-8 datagram without bulkTransfer in the agreed set (F-3;
+    /// the same rule-3 gate — the toggle-off host never declared key
+    /// 11, so any bulk traffic is a peer using a superpower it never
+    /// negotiated). Dropped loud, never fatal.
+    case bulkNotNegotiated
+    /// A chan-8 ARQ-delivered message that failed BulkMessage.decode
+    /// (outside the 0x1C–0x21 sextet, or hostile interior bytes).
+    case malformedBulk
 }
 
 public enum SessionError: Error, Equatable, Sendable {
     /// Video cannot flow before the transport exists.
     case notEstablished
+    /// Bulk sends are legal only when key 11 survived intersection.
+    case bulkNotNegotiated
 }
 
 /// Raw clock-mapping samples from the beacon/echo exchange.
@@ -472,6 +488,12 @@ public struct SessionCounters: Equatable, Sendable {
     public var clipboardAnnouncesSent = 0
     /// CL-15: leaf-reported changes the book/ceiling suppressed.
     public var clipboardAnnouncesSuppressed = 0
+    /// F-3: decoded bulk messages delivered off chan 8's ordered
+    /// stream (past the rule-3 gate).
+    public var bulkMessagesReceived = 0
+    /// F-3: sealed chan-8 datagrams carrying bulk ARQ frames, fresh
+    /// and retransmit alike.
+    public var bulkArqDatagramsSent = 0
 
     public init() {}
 }
@@ -519,6 +541,17 @@ public final class Session {
     /// TLV block and the AEAD tag both on every datagram (the HS-7
     /// accounting fix). ARQ poll output repacks to this.
     private let arqPayloadBudget: Int
+
+    /// F-3: the bulk channel's OWN reliable sublayer (design record
+    /// 20260728-053300 §2 — chan 8 runs its own ArqEndpoint, never the
+    /// CTRL stream, so a file can never head-of-line-block a
+    /// keystroke). Nil when the standing consent toggle left key 11
+    /// undeclared: a toggle-off host owns no bulk machinery at all.
+    private var bulkArq: ArqEndpoint<HostClock>?
+    /// The bulk endpoint's next PTO deadline, in the `now` ns domain.
+    private var nextBulkArqWakeNS: UInt64?
+    /// Chan 8's envelope seq space (each channel numbers its own).
+    private var bulkSeq = ChannelSeq(rawValue: 0)
 
     /// Message-1 admissions, consulted before any handshake allocation.
     private var handshakeGate: HandshakeGate
@@ -614,6 +647,13 @@ public final class Session {
     public var agreedClipboardText: Bool {
         negotiator.agreed?.clipboardText == true
     }
+    /// F-3: true when bulkTransfer (key 11) survived the intersection.
+    /// Gates chan-8 ingest and `sendBulk` — declaration is dialect,
+    /// consent is the standing toggle that decided whether key 11 was
+    /// declared at all (design record 20260728-053300 §6).
+    public var agreedBulkTransfer: Bool {
+        negotiator.agreed?.bulkTransfer == true
+    }
 
     /// CL-15: the loop-prevention/dedupe books (design doc §5) — one
     /// per session, shared by the 0x1A consume path (pre-arms echo
@@ -655,6 +695,14 @@ public final class Session {
             arqPayloadBudget - ArqBounds.segmentHeaderByteCount
         )
         self.arq = ArqEndpoint(channel: .ctrl, config: arqConfig)
+        // F-3: the bulk endpoint exists exactly when the standing
+        // consent toggle put key 11 in the declaration — a toggle-off
+        // host has no chan-8 machinery to confuse. Same clamped
+        // config as CTRL: the default 262,144 B message budget clears
+        // a max chunk message (17 B + 128 KiB) with 2× headroom.
+        self.bulkArq = config.capabilities.bulkTransfer
+            ? ArqEndpoint(channel: .bulkTransfer, config: arqConfig)
+            : nil
         self.estimator = RateEstimator(
             config: config.estimator
                 ?? RateEstimatorConfig(
@@ -875,6 +923,30 @@ public final class Session {
             )
             events += ingestFeedback(
                 plaintext, now: now, hostMicroseconds: hostMicroseconds
+            )
+        case .bulkTransfer:
+            // Liveness evidence like CTRL (an authenticated arrival
+            // proves the peer), deliberately NOT the 350 ms detector's.
+            events += runMachine(
+                .ctrlEvidence, now: now, hostMicroseconds: hostMicroseconds
+            )
+            // The W7 rule-3 gate, key 11 (F-3): chan-8 traffic outside
+            // the agreement is a peer using a superpower it never
+            // negotiated — the toggle-off host never declared the key,
+            // so the intersection cannot carry it. Dropped loud.
+            guard agreedBulkTransfer, bulkArq != nil else {
+                counters.dropped += 1
+                events.append(.dropped(.bulkNotNegotiated))
+                return events
+            }
+            events += absorbBulkArq(
+                bulkArq!.ingest(
+                    payload: plaintext[...], now: arqInstant(now)
+                ),
+                now: now, hostMicroseconds: hostMicroseconds
+            )
+            events += serviceBulkArq(
+                now: now, hostMicroseconds: hostMicroseconds
             )
         default:
             counters.dropped += 1
@@ -1244,10 +1316,117 @@ public final class Session {
         _ = serviceArq(now: now, hostMicroseconds: hostMicroseconds)
     }
 
-    /// True when the reliable sublayer has nothing left to send,
-    /// retransmit, or acknowledge (the W-G4 termination property,
-    /// exposed for the loop's idle accounting and the gate tests).
-    public var arqIsQuiescent: Bool { arq.isQuiescent }
+    /// True when the reliable sublayers (CTRL and, when it exists, the
+    /// bulk channel's) have nothing left to send, retransmit, or
+    /// acknowledge (the W-G4 termination property, exposed for the
+    /// loop's idle accounting and the gate tests). The teardown drain
+    /// waits on both: a final bulk ack/abort deserves its retransmits
+    /// exactly like the teardown message itself.
+    public var arqIsQuiescent: Bool {
+        arq.isQuiescent && (bulkArq?.isQuiescent ?? true)
+    }
+
+    // MARK: The bulk channel (F-3)
+
+    /// Queues one bulk message (the 0x1C–0x21 sextet's bytes — the
+    /// shell's accept/ack/complete/abort answers) on chan 8's ARQ
+    /// ordered stream. Exactly-once, in-order, RTT-adaptive
+    /// retransmit, on the bulk channel's OWN endpoint — never CTRL.
+    /// Throws `SessionError.notEstablished` before the transport
+    /// exists and `SessionError.bulkNotNegotiated` unless key 11
+    /// survived intersection (the shell never legitimately speaks
+    /// before an offer arrived, and offers only arrive negotiated).
+    public func sendBulk(
+        _ message: [UInt8], now: UInt64, hostMicroseconds: UInt64
+    ) throws {
+        guard phase == .established else {
+            throw SessionError.notEstablished
+        }
+        guard agreedBulkTransfer, bulkArq != nil else {
+            throw SessionError.bulkNotNegotiated
+        }
+        try bulkArq!.send(message: message, now: arqInstant(now))
+        _ = serviceBulkArq(now: now, hostMicroseconds: hostMicroseconds)
+    }
+
+    /// Chan-8 ingest events → session events: delivered messages
+    /// decode through the frozen sextet codecs and surface as
+    /// `.bulkMessageReceived` for the shell's BulkReceiveShell.
+    private func absorbBulkArq(
+        _ arqEvents: [ArqEvent], now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        var events: [SessionEvent] = []
+        for event in arqEvents {
+            switch event {
+            case .message(_, let bytes):
+                guard let message = try? BulkMessage.decode(bytes) else {
+                    counters.dropped += 1
+                    events.append(.dropped(.malformedBulk))
+                    continue
+                }
+                counters.bulkMessagesReceived += 1
+                events.append(.bulkMessageReceived(message))
+            case .oneShotAcknowledged:
+                break // bulk rides the ordered stream only (group 0)
+            case .ignored(let reason):
+                counters.arqIgnored += 1
+                events.append(.arqIgnored(reason))
+            }
+        }
+        return events
+    }
+
+    /// Polls the bulk endpoint and puts its output on the wire —
+    /// `serviceArq`'s shape on chan 8: repack to the session's real
+    /// plaintext budget, seal with the exact header bytes as AAD, and
+    /// enqueue at the pacer's `.bulk` class, the ladder's tail.
+    private func serviceBulkArq(
+        now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        guard phase == .established, bulkArq != nil else { return [] }
+        let (payloads, deadline) = bulkArq!.poll(now: arqInstant(now))
+        nextBulkArqWakeNS = deadline.map { $0.microseconds &* 1_000 }
+        guard !payloads.isEmpty else { return [] }
+
+        var events: [SessionEvent] = []
+        do {
+            for payload in try repackArq(payloads) {
+                try sendBulkDatagram(
+                    body: payload,
+                    now: now, hostMicroseconds: hostMicroseconds
+                )
+                counters.bulkArqDatagramsSent += 1
+            }
+        } catch {
+            // Segments the poll marked sent stay armed on their PTO
+            // timers — a refused send heals like a lost datagram.
+            events.append(.sendFailed("bulk arq: \(error)"))
+        }
+        return events
+    }
+
+    /// One chan-8 body onto the wire: conn-id-tagged envelope, header
+    /// bytes as AAD, sealed under the transport, then the pacer's
+    /// `.bulk` class of the shared schedule.
+    private func sendBulkDatagram(
+        body: [UInt8], now: UInt64, hostMicroseconds: UInt64
+    ) throws {
+        let envelope = Envelope(
+            channel: .bulkTransfer,
+            seq: bulkSeq,
+            frame: FrameNumber(rawValue: 0),
+            timestamp: hostMicroseconds,
+            fec: 0,
+            extensions: [connectionId.wireExtension]
+        )
+        let header = try envelope.encode(payload: [])
+        let payload = try sealPayload(
+            body[...], aad: header[...], envelope: envelope
+        )
+        let bytes = try envelope.encode(payload: payload)
+        bulkSeq = bulkSeq.next
+        channel.enqueueBulk(bytes, seq: envelope.seq, now: now)
+    }
 
     private func arqInstant(_ now: UInt64) -> HostTimestamp {
         HostTimestamp(microseconds: now / 1_000)
@@ -1387,6 +1566,15 @@ public final class Session {
             // Receiver-role messages arriving at the mediaSender /
             // sole proposer / echo emitter / status emitter / announce
             // emitter: hostile or confused. Dropped loud.
+            counters.dropped += 1
+            return [.dropped(.unexpectedCtrlType(message.first!))]
+        case CtrlMessageType.bulkOffer, CtrlMessageType.bulkAccept,
+             CtrlMessageType.bulkChunk, CtrlMessageType.bulkAck,
+             CtrlMessageType.bulkComplete, CtrlMessageType.bulkAbort:
+            // The bulk sextet rides chan 8's ordered stream, never
+            // CTRL (the W10 carriage rule) — a chunk on the input
+            // stream is exactly the head-of-line blocking F-2 exists
+            // to prevent. Hostile or confused; dropped loud.
             counters.dropped += 1
             return [.dropped(.unexpectedCtrlType(message.first!))]
         default:
@@ -1575,6 +1763,7 @@ public final class Session {
         switch datagram.pacerClass {
         case .control: channel = .ctrl
         case .audio: channel = .audio
+        case .bulk: channel = .bulkTransfer
         case .freshVideo, .videoTail, .refinement, .telemetry:
             channel = .videoActive
         }
@@ -1845,6 +2034,11 @@ public final class Session {
         if let due = nextArqWakeNS, now >= due {
             events += serviceArq(now: now, hostMicroseconds: hostMicroseconds)
         }
+        if let due = nextBulkArqWakeNS, now >= due {
+            events += serviceBulkArq(
+                now: now, hostMicroseconds: hostMicroseconds
+            )
+        }
         if let machine, machine.state != .closed,
            machineDeadlineNS.map({ now >= $0 }) ?? true {
             events += runMachine(
@@ -1867,8 +2061,8 @@ public final class Session {
     public func nextWake(now: UInt64) -> UInt64? {
         var wake = channel.nextWake(now: now)
         for candidate in [
-            nextBeaconAt, nextArqWakeNS, machineDeadlineNS,
-            validator.nextDeadline, pendingIdleFlipAt,
+            nextBeaconAt, nextArqWakeNS, nextBulkArqWakeNS,
+            machineDeadlineNS, validator.nextDeadline, pendingIdleFlipAt,
         ] {
             guard let candidate else { continue }
             wake = wake.map { min($0, candidate) } ?? candidate
