@@ -743,9 +743,22 @@ public final class RateEstimator {
             let rate = Double(bytes) * 8 / spanSeconds
             lastDeliveryRate = rate
             lastDeliveryAt = now
-            recentRawDeliveries.append(rate)
-            if recentRawDeliveries.count > config.overuseAnchorSampleCount {
-                recentRawDeliveries.removeFirst()
+            // Only FULL trains may anchor an overuse fall (HS-22). The
+            // HS-21 median outvotes ONE garbage sample, but the live
+            // clean-path crater proved a majority of the short window
+            // can be micro-trains that measure their own pacing, not
+            // the path: audio's 4+2 groups arrive as 2–3-packet trains
+            // reading ~1 Mbps (the audio class's self-paced rate), and
+            // two of those in the last three samples anchored a fall
+            // from 17,000 to 709 kbps on a path delivering 90 Mbps.
+            // Short trains keep informing the windowed-max (×0.5,
+            // below) and evidence freshness — they just get no vote on
+            // where a fall lands.
+            if train.count >= config.minTrainPackets {
+                recentRawDeliveries.append(rate)
+                if recentRawDeliveries.count > config.overuseAnchorSampleCount {
+                    recentRawDeliveries.removeFirst()
+                }
             }
             stats.deliverySamples += 1
             let weighted = train.count >= config.minTrainPackets

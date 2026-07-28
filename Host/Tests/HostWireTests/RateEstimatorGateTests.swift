@@ -565,6 +565,85 @@ final class RateEstimatorGateTests: XCTestCase {
             + "\(estimator.rateBitsPerSecond / 1_000) kbps")
     }
 
+    // MARK: Leg 3c — HS-22: only FULL trains vote on the anchor (the
+    // live clean-path crater: audio's 4+2 groups arrive as 2–3-packet
+    // micro-trains that measure their own ~1 Mbps pacing, not the path,
+    // and TWO of them in the 3-sample window outvoted the genuine
+    // 20 Mbps sample — the HS-21 median fell exactly where it promised
+    // not to. Short trains keep feeding the ×0.5 windowed-max and
+    // evidence freshness; they just get no anchor vote.)
+
+    /// A clean 20 Mbps path, but the reports leading into the overuse
+    /// fire carry only short audio-paced micro-trains: a MAJORITY of
+    /// the anchor window would be garbage under HS-21 alone. The fall
+    /// must still anchor to the 20 Mbps the last full train measured.
+    func testOveruseAnchorIgnoresMicroTrainMajority() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        // Ten clean 20 Mbps FULL trains: rate at the ceiling, anchor
+        // window full of genuine samples.
+        for _ in 0..<10 {
+            now += 25 * Self.ms
+            clientMicros += 25_000
+            let samples = train(
+                estimator, seqStart: seq, count: 12,
+                sendStartNS: now - Self.ms,
+                bottleneckBitsPerSecond: 20e6
+            )
+            seq += 12
+            _ = estimator.ingest(
+                report(samples: samples, clientMicros: clientMicros),
+                now: now, inRecovery: false
+            )
+        }
+        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
+
+        // Arm and fire on inflated reports whose ONLY delivery samples
+        // are 4-packet micro-trains reading ~1 Mbps (the audio class
+        // measuring its own pacing). Under the HS-21 median alone the
+        // window at fire time would hold [20M, 1M, 1M] — median 1 Mbps,
+        // a crater to ~850 kbps. With the full-train gate the window
+        // still holds the genuine 20 Mbps samples.
+        now += 25 * Self.ms; clientMicros += 25_000
+        let arm = train(
+            estimator, seqStart: seq, count: 4,
+            sendStartNS: now - Self.ms,
+            bottleneckBitsPerSecond: 1e6, extraDelayMicros: 40_000
+        )
+        seq += 4
+        XCTAssertFalse(estimator.ingest(
+            report(samples: arm, clientMicros: clientMicros),
+            now: now, inRecovery: false
+        ).overuse)
+
+        now += 25 * Self.ms; clientMicros += 25_000
+        let fire = train(
+            estimator, seqStart: seq, count: 4,
+            sendStartNS: now - Self.ms,
+            bottleneckBitsPerSecond: 1e6, extraDelayMicros: 40_000
+        )
+        seq += 4
+        let verdict = estimator.ingest(
+            report(samples: fire, clientMicros: clientMicros),
+            now: now, inRecovery: false
+        )
+        XCTAssertTrue(verdict.overuse)
+        let newRate = verdict.newRateBitsPerSecond
+        XCTAssertNotNil(newRate)
+        XCTAssertEqual(Double(newRate!), 20e6 * 0.85, accuracy: 1.0e6,
+            "a micro-train MAJORITY must not crater the rate — the "
+            + "anchor votes are full trains only "
+            + "(got \(newRate! / 1_000) kbps)")
+
+        print("HS-22 gate (micro-train majority): two 4-packet ~1 Mbps "
+            + "audio-paced samples at the overuse fire → "
+            + "\(newRate! / 1_000) kbps (full-train-anchored to 20 Mbps; "
+            + "the HS-21 median alone would have cratered to ~850 kbps)")
+    }
+
     // MARK: Leg 4 — the machine's numbers
 
     func testIdrPacingNumbers() {

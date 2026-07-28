@@ -107,6 +107,21 @@ public struct SessionConfig: Sendable {
     /// The W4b lifecycle machine's knobs: the 350 ms blackout detector,
     /// the 30 s liveness clock, RECOVERY's clean-window count.
     public var lifecycle: SessionMachineConfig
+    /// HS-22: how long damage must stay quiet AFTER the ratchet
+    /// converges before the idle handoff starts (the one-shot ride
+    /// whose ack flips the mode to IDLE). The pillar's decision of
+    /// record stands — idle→active restarts with an IDR — which is
+    /// exactly why the flip must not be entered eagerly: a desktop
+    /// metronome (a 1 Hz clock, a ~1 Hz cursor blink) that keeps
+    /// converging and re-damaging would otherwise cycle
+    /// IDLE→WAKE→full-frame-IDR every beat — the owner's "1 Hz blur
+    /// while paused". 3 s is three missed beats of the slowest common
+    /// ticker: a genuinely static desktop still flips (3 s late, one
+    /// converged frame held meanwhile), a ticking one stays ACTIVE on
+    /// small P-frames at near-idle bandwidth. Convergence noted with
+    /// NO damage ever recorded flips immediately (the pre-HS-22
+    /// behavior — and the shape every existing pin drives).
+    public var idleFlipQuietNS: UInt64
     /// The HS-16 congestion estimator's knobs. Nil derives the default
     /// config with `rateBitsPerSecond` as the ceiling — the negotiated
     /// session rate IS the ceiling (no capability key carries bitrate
@@ -137,6 +152,7 @@ public struct SessionConfig: Sendable {
         handshakeGate: HandshakeGate.Config = HandshakeGate.Config(),
         capabilities: Capabilities = .wireDefault,
         lifecycle: SessionMachineConfig = SessionMachineConfig(),
+        idleFlipQuietNS: UInt64 = 3_000_000_000,
         estimator: RateEstimatorConfig? = nil,
         repairFreezeBudgetNS: UInt64 = 33_333_333,
         repairRetentionNS: UInt64 = 4_000_000_000,
@@ -153,6 +169,7 @@ public struct SessionConfig: Sendable {
         self.handshakeGate = handshakeGate
         self.capabilities = capabilities
         self.lifecycle = lifecycle
+        self.idleFlipQuietNS = idleFlipQuietNS
         self.estimator = estimator
         self.repairFreezeBudgetNS = repairFreezeBudgetNS
         self.repairRetentionNS = repairRetentionNS
@@ -539,6 +556,16 @@ public final class Session {
     /// The converged ratchet frame awaiting its one-shot ride.
     private var convergedFrame:
         (annexB: [UInt8], frame: FrameNumber, captureMicros: UInt64)?
+    /// HS-22: when the last damage note arrived — the idle-flip quiet
+    /// clock. Nil until the first damage (convergence with no damage
+    /// history flips immediately, the pre-HS-22 shape).
+    private var lastDamageNoteAt: UInt64?
+    /// HS-22: a convergence waiting out `idleFlipQuietNS`. The machine
+    /// has NOT heard `.ratchetConverged` yet; `advance` feeds it once
+    /// damage stays quiet, and fresh damage simply drops it (the
+    /// session never leaves ACTIVE — no aborted handoff, no WAKE IDR
+    /// owed on the next tick of a desktop metronome).
+    private var pendingIdleFlipAt: UInt64?
     /// The in-flight final-frame one-shot; its full acknowledgment is
     /// the machine's `.finalFrameAcknowledged`.
     private var finalFrameGroup: ArqGroupId?
@@ -991,6 +1018,8 @@ public final class Session {
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
         convergedFrame = nil
+        lastDamageNoteAt = now
+        pendingIdleFlipAt = nil
         return runMachine(.damage, now: now, hostMicroseconds: hostMicroseconds)
     }
 
@@ -1130,6 +1159,16 @@ public final class Session {
     /// hold the converged frame before it learns the session went
     /// idle). When the agreed capabilities say the client does not
     /// speak idle silence, the session stays ACTIVE.
+    ///
+    /// HS-22: the handoff additionally waits out `idleFlipQuietNS`
+    /// from the LAST damage note (the machine hears `.ratchetConverged`
+    /// from `advance` once the quiet holds; fresh damage meanwhile
+    /// drops the pending flip). A desktop metronome — a 1 Hz clock, a
+    /// blinking cursor — used to converge, flip to IDLE, and pay a
+    /// full-frame WAKE IDR on its next beat, every beat: the owner's
+    /// "1 Hz blur while paused". The idle→active-restarts-with-an-IDR
+    /// decision of record is untouched; the session just refuses to
+    /// enter IDLE between the beats of a ticker.
     public func noteRatchetConverged(
         finalFrame annexB: [UInt8],
         captureTimestampMicroseconds: UInt64,
@@ -1145,6 +1184,12 @@ public final class Session {
             FrameNumber(rawValue: nextVideoFrameNumber.rawValue &- 1),
             captureTimestampMicroseconds
         )
+        if let damagedAt = lastDamageNoteAt,
+           now &- damagedAt < config.idleFlipQuietNS {
+            pendingIdleFlipAt = damagedAt &+ config.idleFlipQuietNS
+            return []
+        }
+        pendingIdleFlipAt = nil
         return runMachine(
             .ratchetConverged, now: now, hostMicroseconds: hostMicroseconds
         )
@@ -1789,6 +1834,14 @@ public final class Session {
             nextBeaconAt = next
         }
         events += flushInputEchoes(now: now, hostMicroseconds: hostMicroseconds)
+        // HS-22: a convergence that waited out the idle-flip quiet —
+        // damage stayed silent, the handoff may start now.
+        if let due = pendingIdleFlipAt, now >= due, convergedFrame != nil {
+            pendingIdleFlipAt = nil
+            events += runMachine(
+                .ratchetConverged, now: now, hostMicroseconds: hostMicroseconds
+            )
+        }
         if let due = nextArqWakeNS, now >= due {
             events += serviceArq(now: now, hostMicroseconds: hostMicroseconds)
         }
@@ -1815,7 +1868,7 @@ public final class Session {
         var wake = channel.nextWake(now: now)
         for candidate in [
             nextBeaconAt, nextArqWakeNS, machineDeadlineNS,
-            validator.nextDeadline,
+            validator.nextDeadline, pendingIdleFlipAt,
         ] {
             guard let candidate else { continue }
             wake = wake.map { min($0, candidate) } ?? candidate

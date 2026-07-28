@@ -518,6 +518,143 @@ final class SessionLifecycleGateTests: XCTestCase {
             + "one-shot ack flips nothing")
     }
 
+    // MARK: The HS-22 idle-flip quiet — a desktop metronome never
+    // WAKE-pulses. (The pillar's idle→active-restarts-with-an-IDR
+    // decision stands; the session just refuses to ENTER idle between
+    // the beats of a 1 Hz clock / blinking cursor, so the per-beat
+    // full-frame WAKE IDR — the owner's "1 Hz blur while paused" —
+    // structurally cannot happen.)
+
+    func testGateConvergenceAfterDamageWaitsOutTheQuiet() throws {
+        // Damage, then convergence 400 ms later: the one-shot must NOT
+        // leave until damage has been quiet for the 3 s holdoff — and
+        // once it has, the flip completes exactly as before.
+        let (loopValue, _) = try establish(lifecycle: SessionMachineConfig(
+            blackoutSilenceMicroseconds: 60_000_000
+        ))
+        var loop = loopValue
+        var t: UInt64 = 200_000
+
+        _ = try loop.session.ingestVideoFrame(
+            syntheticFrame(byteCount: 900),
+            captureTimestampMicroseconds: 42_000,
+            isKeyframe: false, now: t * 1_000
+        )
+        try loop.settle(t: &t)
+
+        loop.hostEvents += loop.session.noteDamage(
+            now: t * 1_000, hostMicroseconds: t
+        )
+        let damagedAt = t
+
+        // The ratchet converges 400 ms after the damage: held.
+        t = damagedAt + 400_000
+        loop.hostEvents += loop.session.noteRatchetConverged(
+            finalFrame: syntheticFrame(byteCount: 700),
+            captureTimestampMicroseconds: 42_000,
+            now: t * 1_000, hostMicroseconds: t
+        )
+        loop.session.pump(now: t * 1_000)
+        try loop.exchange(t: t + 2_000)
+        var oneShots = loop.events { event -> ArqGroupId? in
+            if case .finalFrameSent(let group) = event { return group }
+            return nil
+        }
+        XCTAssertTrue(oneShots.isEmpty,
+                      "no one-shot before the quiet holdoff elapses")
+
+        // Still held 100 ms shy of the boundary.
+        try loop.exchange(t: damagedAt + 2_900_000)
+        oneShots = loop.events { event -> ArqGroupId? in
+            if case .finalFrameSent(let group) = event { return group }
+            return nil
+        }
+        XCTAssertTrue(oneShots.isEmpty)
+        XCTAssertEqual(loop.session.wireMode, .active)
+
+        // Past the boundary: the handoff runs to completion — one-shot,
+        // ack, mode=idle (the HS-11 flip, merely 3 s later).
+        t = damagedAt + 3_050_000
+        try loop.settle(t: &t)
+        oneShots = loop.events { event -> ArqGroupId? in
+            if case .finalFrameSent(let group) = event { return group }
+            return nil
+        }
+        XCTAssertEqual(oneShots.count, 1, "exactly one one-shot, after quiet")
+        XCTAssertEqual(loop.session.wireMode, .idle)
+        XCTAssertEqual(loop.modeTransitions(), [.idle])
+
+        print("HS-22 gate (idle-flip quiet): convergence 400 ms after "
+            + "damage held for the 3 s quiet, then the ack flipped to "
+            + "IDLE as ever")
+    }
+
+    func testGateDesktopMetronomeNeverReachesIdle() throws {
+        // The pulse reproducer: a 1 Hz ticker — damage, convergence
+        // ~500 ms later, next damage on the second — for five beats.
+        // The session must stay ACTIVE the whole time (no flip, no
+        // mode traffic) and no WAKE IDR may ever be armed. When the
+        // ticker stops, the ordinary flip completes after the quiet.
+        let (loopValue, _) = try establish(lifecycle: SessionMachineConfig(
+            blackoutSilenceMicroseconds: 60_000_000
+        ))
+        var loop = loopValue
+        var t: UInt64 = 200_000
+
+        _ = try loop.session.ingestVideoFrame(
+            syntheticFrame(byteCount: 900),
+            captureTimestampMicroseconds: 42_000,
+            isKeyframe: false, now: t * 1_000
+        )
+        try loop.settle(t: &t)
+
+        var beatAt = t
+        for beat in 0..<5 {
+            loop.hostEvents += loop.session.noteDamage(
+                now: beatAt * 1_000, hostMicroseconds: beatAt
+            )
+            XCTAssertEqual(loop.session.wireMode, .active,
+                           "beat \(beat): damage lands in ACTIVE")
+            // Converged ~500 ms after the tick (settle 0.25 s + a few
+            // passes — the live cadence).
+            let convergedAt = beatAt + 500_000
+            loop.hostEvents += loop.session.noteRatchetConverged(
+                finalFrame: syntheticFrame(byteCount: 700),
+                captureTimestampMicroseconds: 42_000,
+                now: convergedAt * 1_000, hostMicroseconds: convergedAt
+            )
+            loop.session.pump(now: convergedAt * 1_000)
+            // The rest of the second passes in exchange beats.
+            for step in 1...5 {
+                try loop.exchange(t: convergedAt + UInt64(step) * 100_000)
+            }
+            XCTAssertFalse(loop.session.takeFreshKeyframeRequest(),
+                           "beat \(beat): no WAKE IDR may ever be armed")
+            beatAt += 1_000_000
+        }
+
+        XCTAssertEqual(loop.session.wireMode, .active,
+                       "five beats of a 1 Hz ticker: never IDLE")
+        XCTAssertTrue(loop.modeTransitions().isEmpty,
+                      "no mode traffic at all while the ticker runs")
+        XCTAssertTrue(loop.events { event -> ArqGroupId? in
+            if case .finalFrameSent(let group) = event { return group }
+            return nil
+        }.isEmpty, "no one-shot ever left")
+
+        // The ticker stops: the last convergence is still pending, and
+        // the ordinary flip completes once the quiet holds.
+        var quiet = beatAt - 1_000_000 + 3_050_000
+        try loop.settle(t: &quiet)
+        XCTAssertEqual(loop.session.wireMode, .idle,
+                       "a genuinely static desktop still reaches IDLE")
+        XCTAssertEqual(loop.modeTransitions(), [.idle])
+
+        print("HS-22 gate (metronome): 5 × 1 Hz damage/convergence beats "
+            + "→ ACTIVE throughout, zero WAKE IDRs, zero mode traffic; "
+            + "ticker stopped → IDLE after the 3 s quiet")
+    }
+
     // MARK: FROZEN / RECOVERY off the host's own silence detector
 
     func testGateFrozenRecoveryFromTheSilenceDetector() throws {

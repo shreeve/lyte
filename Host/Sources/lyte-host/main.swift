@@ -79,6 +79,10 @@ struct Options {
     var requireCookie = false
     var cookieEnter = 20
     var cookieExit = 5
+    /// HS-22 isolation lever: false = never arm the EncoderVbvPolicy —
+    /// the encoder keeps its opening recipe for the whole run (the
+    /// pre-HS-20 posture, everything else identical). Debug only.
+    var vbvReconfigure = true
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
@@ -184,6 +188,8 @@ struct Options {
                     throw HostError("--cookie-exit needs a non-negative integer")
                 }
                 opts.cookieExit = v
+            case "--no-vbv-reconfigure":
+                opts.vbvReconfigure = false
             case "--audio-bitrate-kbps":
                 i += 1
                 guard i < args.count, let v = Int32(args[i]), v > 0 else {
@@ -256,6 +262,12 @@ struct Options {
                                     declared only when the leaf comes
                                     up, so a plain run truthfully
                                     negotiates no clipboard
+                  --no-vbv-reconfigure
+                                    debug: never reconfigure the
+                                    encoder's rate control from the
+                                    estimator's ceiling (HS-22's
+                                    isolation lever — the opening
+                                    recipe rides the whole run)
                   --host-audio MODE audible (default) keeps the host's
                                     speakers playing (default-sink
                                     monitor capture); muted routes the
@@ -357,6 +369,18 @@ final class Sink {
     var frameWindowSizes: [Int] = []
     var frameWindowStartedAt: Double?
     static let frameWindowSeconds = 5.0
+    // HS-22 quality books: one line per second of session-mode
+    // encoding — nvenc's frame-average QP (the packet's quality-stats
+    // side data, already delivered per packet: the cheapest correct
+    // source), emitted frame-size percentiles, the encoder's CURRENT
+    // rate-control posture vs its opening recipe, and the live
+    // ceiling/pacer pair. The line that tells "the encoder is being
+    // squeezed on a clean path" from "the estimator is holding low".
+    var lastAppliedDirective: EncoderRateDirective?
+    var qualityWindowQPs: [Int] = []
+    var qualityWindowSizes: [Int] = []
+    var qualityWindowStartedAt: Double?
+    static let qualityWindowSeconds = 1.0
     // HS-11: the most recent encoded packet's bytes, retained only in
     // ratchet+session mode — on convergence this IS the final converged
     // frame, re-sent on a reliable one-shot before the idle flip.
@@ -476,6 +500,7 @@ final class Sink {
 
         wire?.service()
         flushFrameWindow(monotonicNow())
+        flushQualityWindow(monotonicNow())
 
         // The session is over (peer gone, teardown, liveness): stop the
         // capture loop cleanly — the HS-11 graceful exit.
@@ -581,6 +606,7 @@ final class Sink {
                 &err, err.count
             ) == 0 {
                 encoderReconfigures += 1
+                lastAppliedDirective = directive
                 let avg = directive.averageBitsPerSecond
                     .map { "avg \($0 / 1_000) kbps, " } ?? ""
                 print("encoder: rate reconfigure — \(avg)max "
@@ -629,6 +655,54 @@ final class Sink {
             + "pacer \(wire.pacerRate / 1_000) kbps")
     }
 
+    /// HS-22 quality books: every ~1 s of session-mode encoding, the
+    /// quality line — QP avg/max, frame-size percentiles, the
+    /// encoder's standing rate-control posture vs its opening recipe,
+    /// and the live ceiling + pacer rate. Skips windows that encoded
+    /// nothing (converged idle).
+    private func flushQualityWindow(_ now: Double) {
+        guard let wire else { return }
+        guard let started = qualityWindowStartedAt else {
+            qualityWindowStartedAt = now
+            return
+        }
+        guard now - started >= Self.qualityWindowSeconds else { return }
+        defer {
+            qualityWindowQPs.removeAll(keepingCapacity: true)
+            qualityWindowSizes.removeAll(keepingCapacity: true)
+            qualityWindowStartedAt = now
+        }
+        guard !qualityWindowSizes.isEmpty else { return }
+        let sorted = qualityWindowSizes.sorted()
+        func pct(_ q: Double) -> Int {
+            sorted[max(Int((q * Double(sorted.count)).rounded(.up)), 1) - 1]
+        }
+        let qp: String
+        if qualityWindowQPs.isEmpty {
+            qp = "—"
+        } else {
+            let avg = qualityWindowQPs.reduce(0, +) / qualityWindowQPs.count
+            qp = "avg \(avg) max \(qualityWindowQPs.max()!)"
+        }
+        let opening = opts.ratchet
+            ? "capped-cq cap \(opts.bitrate / 1_000) kbps vbv none"
+            : "cbr \(opts.bitrate / 1_000) kbps vbv "
+                + "\(Int(opts.bitrate) / Int(opts.fps) / 8) B"
+        let posture: String
+        if let d = lastAppliedDirective {
+            let avg = d.averageBitsPerSecond
+                .map { "avg \($0 / 1_000) kbps " } ?? ""
+            posture = "applied \(avg)max \(d.maxBitsPerSecond / 1_000) "
+                + "kbps vbv \(d.vbvBits / 8) B (opening \(opening))"
+        } else {
+            posture = "opening \(opening)"
+        }
+        print("quality: \(sorted.count) fr — qp \(qp), "
+            + "p50 \(pct(0.5)) B p95 \(pct(0.95)) B | enc \(posture) | "
+            + "ceiling \(wire.frameByteCeiling(fps: Int(opts.fps))) B, "
+            + "pacer \(wire.pacerRate / 1_000) kbps")
+    }
+
     private func quitIfElapsed(_ now: Double) {
         if let start = firstFrameAt, now - start >= opts.seconds, let capture {
             lyte_pw_capture_quit(capture)
@@ -654,7 +728,11 @@ final class Sink {
         packetsOut += 1
         bytesOut += size
         if keyframe { keyframes += 1 }
-        if wire != nil { frameWindowSizes.append(size) }
+        if wire != nil {
+            frameWindowSizes.append(size)
+            qualityWindowSizes.append(size)
+            if avgQP >= 0 { qualityWindowQPs.append(avgQP) }
+        }
         lastPacketBytes = size
         lastPacketQP = avgQP
         if opts.ratchet, wire != nil {
@@ -945,14 +1023,19 @@ func run() throws {
         // configure (CBR: avg = max = --bitrate-mbps, single-frame VBV;
         // capped-CQ: only the max-rate cap, no VBV) — the policy caps
         // against it and never pushes above it. Sink polls per encode.
-        w.armEncoderVbv(EncoderVbvConfig(
-            fps: Int(opts.fps),
-            baselineAverageBitsPerSecond:
-                opts.ratchet ? nil : Int(opts.bitrate),
-            baselineMaxBitsPerSecond: Int(opts.bitrate),
-            baselineVbvBits:
-                opts.ratchet ? nil : Int(opts.bitrate) / Int(opts.fps)
-        ))
+        if opts.vbvReconfigure {
+            w.armEncoderVbv(EncoderVbvConfig(
+                fps: Int(opts.fps),
+                baselineAverageBitsPerSecond:
+                    opts.ratchet ? nil : Int(opts.bitrate),
+                baselineMaxBitsPerSecond: Int(opts.bitrate),
+                baselineVbvBits:
+                    opts.ratchet ? nil : Int(opts.bitrate) / Int(opts.fps)
+            ))
+        } else {
+            print("encoder-vbv: DISABLED (--no-vbv-reconfigure) — the "
+                + "opening recipe rides the whole run")
+        }
 
         // HS-13: the injection backend comes up with the session — the
         // Mutter RemoteDesktop session is independent of the portal

@@ -398,7 +398,12 @@ final class SessionWire {
 
     /// HS-11: the ratchet converged (the all-skip stop). The final
     /// converged frame rides a reliable one-shot; its acknowledgment
-    /// flips the wire mode to IDLE and datagram video stops.
+    /// flips the wire mode to IDLE and datagram video stops. HS-22:
+    /// the session holds the handoff until damage has been quiet for
+    /// its idle-flip holdoff (3 s) — a desktop metronome (1 Hz clock,
+    /// blinking cursor) stays ACTIVE on small P-frames instead of
+    /// paying a full-frame WAKE IDR every beat — so the one-shot may
+    /// leave on a later service pass, not necessarily this one.
     func noteRatchetConverged(finalFrame: [UInt8], captureMicros: UInt64) {
         lock.lock()
         defer { lock.unlock() }
