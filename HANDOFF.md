@@ -85,6 +85,32 @@ pup** (unreachable this session — owner away). When pup returns:
 3. **HANDOFF.md commits are the coordinator's job**; workers edit only
    their own wave entries and leave the file uncommitted.
 
+**RESTART ADDENDUM (2026-07-27 ~22:55): three worker launches are
+QUEUED, none running.** The subagent launcher broke this evening
+(every launch timed out); the owner is restarting Cursor. Verified by
+transcript audit: **HS-22b never started** — the newest worker
+transcript is HS-22a finishing at 19:48. On the fresh session, launch
+in parallel (all three are territory-disjoint):
+1. **HS-22b** — Host/ territory + pup live rights, port 41163: run the
+   HS-22a six-leg DEFERRED ledger exactly as steps 1–2 above describe,
+   restore the owner loop on 41151 at the new build when done. pup was
+   reported live ~21:20; re-verify reachability + reboot state
+   (driver match: `nvidia-smi --query-gpu=driver_version
+   --format=csv,noheader` vs `/sys/module/nvidia/version` — post-reboot
+   both 595.84, no shim; mismatch recipe in
+   docs/20260727-015500-pup-catchup.md §3).
+2. **W10 (F-2 bulk channel)** — Wire/ territory, Mac-local: the
+   chunked/resumable/backpressured transfer core per the H3 plan,
+   design doc + vocabulary/codecs + sans-IO engines both roles + new
+   frozen `bulk-v1.json` vectors + tests. Client→host only in v1 per
+   §0 answer 1; next free capability key after 10.
+3. **Browser-viewer scoping** — docs/-only writer (read-only
+   elsewhere): WASM compile probe of LyteWire (SDK availability,
+   CNanorsWire under the wasm triple, swift-crypto), transport survey
+   (WebTransport vs WebRTC vs WebSocket — LAN-direct per §0 answer 4),
+   codec reality (WebCodecs HEVC vs AV1/H.264 profile), proposed slice
+   ladder + H3 cut line + any new owner decisions.
+
 **H3 §0 OWNER DECISIONS — ANSWERED (2026-07-27 ~21:22).** The seven
 decisions in `docs/20260723-051223-lyte-h3-plan.md` §0 are settled:
 1. **File-transfer consent**: standing per-host toggle, **client→host
