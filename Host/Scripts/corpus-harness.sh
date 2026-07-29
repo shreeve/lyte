@@ -31,9 +31,16 @@
 #   420  today's shipped path — measured as the REFERENCE ROW (gates
 #        evaluated but never failing: the baseline the pillar says to
 #        record alongside every 4:4:4 report). Banked FIRST per V-3.
-#   444  the decided Work-mode posture (owner decision 2): rgb_mode
-#        601-limited via --profile rext --rgb-mode yuv444. Gates
-#        ENFORCE.
+#        Rides the Good-tier floor (cq12).
+#   444  the shipped Best-tier posture (owner decisions 1+2, V-4 =
+#        EncoderRecipe.best444): rgb_mode 601-limited via
+#        --profile rext --rgb-mode yuv444, at the Best-mode floor
+#        (cq4 — the V-4 floor race's knee). Gates ENFORCE. Two bars
+#        are conversion-floored, not floor-tunable (V-4 measured the
+#        asymptote at transparent coding): the 601-limited round trip
+#        caps text at ~46–47 dB (bar ≥50) and the green-magenta
+#        grating at ±3 (bar ≤±2) — their status pends the owner's
+#        bar-vs-path ruling; every other 444 gate must PASS.
 #
 # Offline scope, stated honestly: the ratchet gate here is the
 # capped-CQ convergence walk (byte-stable ≤3 s) from the encoder's
@@ -49,7 +56,8 @@
 #
 # usage: corpus-harness.sh [420|444|both]     (default: both)
 # env: PUP, BIN (remote lyte-encode-check), CLI (local lyte-cli),
-#      STATIC, CQ, CAP_MBPS, GOLDEN=check|write|skip, KEEP (=1 keeps
+#      STATIC, CQ420/CQ444 (per-tier floors; CQ overrides BOTH for
+#      A/B hunts), CAP_MBPS, GOLDEN=check|write|skip, KEEP (=1 keeps
 #      remote artifacts), LOCAL, REMOTE.
 
 set -uo pipefail
@@ -69,7 +77,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CLI="${CLI:-$REPO_ROOT/.build/debug/lyte-cli}"
 GOLDEN_DIR="$REPO_ROOT/Goldens/corpus"
 STATIC="${STATIC:-240}"          # 4 s @60 — room to prove the ≤180-frame bar
-CQ="${CQ:-12}"
+# Per-tier ratchet floors, mirroring the shipped recipes: Good rides
+# spec §3's cq12 (EncoderRecipe.sessionDefault), Best rides the V-4
+# floor race's knee cq4 (EncoderRecipe.best444). CQ= overrides both
+# for a single-knob A/B hunt.
+CQ420="${CQ:-${CQ420:-12}}"
+CQ444="${CQ:-${CQ444:-4}}"
 CAP_MBPS="${CAP_MBPS:-50}"       # the shipped session posture (HS-24/HS-25)
 GOLDEN="${GOLDEN:-check}"
 KEEP="${KEEP:-0}"
@@ -109,21 +122,22 @@ leg_flags() { # chroma → extra lyte-encode-check flags
 }
 
 run_leg() { # $1 = chroma → writes $LOCAL/gates-$1.log, appends TABLE rows
-  local chroma="$1" flags mode
+  local chroma="$1" flags mode cq
   flags="$(leg_flags "$chroma")"
   mode=$([ "$chroma" = 444 ] && echo work || echo baseline)
+  cq=$([ "$chroma" = 444 ] && echo "$CQ444" || echo "$CQ420")
   local gatelog="$LOCAL/gates-$chroma.log"
   local enclog="$LOCAL/encode-$chroma.log"
   : > "$gatelog"; : > "$enclog"
   local legfail=0
 
   echo
-  echo "== leg $chroma ($mode: gates $([ "$mode" = work ] && echo ENFORCE || echo report as reference))"
+  echo "== leg $chroma (cq$cq; $mode: gates $([ "$mode" = work ] && echo ENFORCE || echo report as reference))"
   for name in $FRAMES; do
     local base="$name-$chroma"
     # 1. encode on pup — the production leaf, static-repeat mode.
     ssh "$PUP" "$BIN --raw ~/$REMOTE/corpus/$name.raw --width $W --height $H \
-        --fps 60 --static $STATIC --cq $CQ --bitrate-mbps $CAP_MBPS \
+        --fps 60 --static $STATIC --cq $cq --bitrate-mbps $CAP_MBPS \
         --out ~/$REMOTE/$base.hevc --sizes ~/$REMOTE/$base.sizes $flags" \
         >> "$enclog" 2>&1 \
       || { echo "   $name: ENCODE FAILED (see $enclog)"; tail -3 "$enclog" | sed 's/^/     /'; legfail=1; continue; }
@@ -195,7 +209,7 @@ SHA=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "?")
 verdict() { case "$1" in -) echo "not run" ;; 0) echo PASS ;; *) echo FAIL ;; esac; }
 SUMMARY=$(
   echo "=============== LYTE §7 CORPUS HARNESS — $(date +%Y-%m-%d) @ $SHA ==============="
-  echo "recipe: sessionDefault (p4) capped-CQ cq$CQ / cap $CAP_MBPS Mbps, static x$STATIC @ ${W}x${H}"
+  echo "recipe: sessionDefault (p4) — 420 leg cq$CQ420, 444 leg (best444) cq$CQ444 / cap $CAP_MBPS Mbps, static x$STATIC @ ${W}x${H}"
   echo "encode: $PUP production C leaf · decode: VideoToolbox HARDWARE (required) · math: pinned in code"
   printf "%-10s %-5s %6s %9s/%-9s %11s %13s %8s %11s %5s %12s %6s %s\n" \
     frame chroma idr-dB "act@1s-dB" conv-dB "text a/c dB" "white/syn dB" SSIM special cv "idr/keep B" golden verdict
