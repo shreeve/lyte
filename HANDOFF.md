@@ -126,15 +126,20 @@ V-2 data on the table).** All four are settled:
 4. **J-G4 = 4:4:4 core + P-1 (clipboard v2) only**; P-2/P-3 stay
    pre-declared droppable to H5.
 
-**IMMEDIATE RESUME POINT: probes done, decisions done — V-3 is next
-(the §7 corpus harness, Host/ scripts + root; its client half, the
-readback tap + decode-probe, already exists at `3f94a0f`; it banks the
-4:2:0 baseline table first). Then V-4 (host Best-mode 4:4:4, Host/) and
-V-5 (the client's three-tier Chroma control on the strip, root) —
-both now UNBLOCKED by the decisions above.** Also open: (a) the bar's two red rows as Host/
-slices — the **session-pipeline fps ceiling (~48/s ingest under
-load)** hunt and the **estimator ramp's IDR spend**; (b) the owner's
-p4 quality eyeball (41151 live and waiting). Farther out: J-G4a + P-1;
+**IMMEDIATE RESUME POINT: V-3 LANDED (`9bac47b` root + `c0129dc` Host
++ `f0d785b` report — wave entry below; harness standing, 4:2:0
+baseline banked, first 4:4:4 read +20–22 dB on text AT FEWER BITS;
+two honest Work-gate FAILs both trace to the cq12 floor). V-4 is next
+(host Best-mode 4:4:4, Host/): productionize the rgb_mode encode leg,
+give Work its own ratchet floor (the one knob — harness rerun per
+candidate is one command), rerun `corpus-harness.sh 444` as its gate.
+Then V-5 (the client's three-tier Chroma control on the strip,
+root).** Also open: (a) the bar's two red rows as Host/ slices — the
+**session-pipeline fps ceiling (~48/s ingest under load)** hunt and
+the **estimator ramp's IDR spend**; (b) the owner's p4 quality eyeball
+(41151 loop RESTARTED 03:29 — it was a finite 60-run loop that
+self-expired at 01:49; consider `while true`). Farther out: J-G4a
+(headline leg: the harness's live end-to-end re-run) + P-1;
 browser-viewer B-2+ still waits on the owner's QUIC posture decision.
 
 # RESTARTING WORKERS IN A NEW CHAT (read before resuming)
@@ -3208,6 +3213,67 @@ its entry at the marker at the end of this block.*
   if rgb_mode) — both proven client-clean; (iii) V-5's decoder→layer
   audit should assert '444v'/'444f' (by negotiated mode) at the tap
   and treat matrix-ABSENT as the identity fingerprint, never a default.
+
+- **V-3 — the §7 corpus harness stands, the 4:2:0 baseline is banked,
+  and 4:4:4's first measurement answers with +22 dB at fewer bits**
+  (`9bac47b` root + `c0129dc` Host script + `f0d785b` report =
+  **`docs/20260729-032500-lyte-v3-corpus-harness.md`** — the full
+  table and every argument live there). H4 wave 1's harness slice:
+  the pillar's §7 acceptance machinery as a standing instrument
+  (`Host/Scripts/corpus-harness.sh`, Mac-run, offline encode legs
+  ONLY — no wire, no secrets, safe beside the 41151 loop), composing
+  V-1's `lyte-encode-check` (production leaf on pup) and V-2's
+  readback tap (VT hardware REQUIRED).
+  THE INSTRUMENT: `lyte-cli corpus-gen` — the §7 corpus as
+  deterministic pure-Swift pixel math (bitmap-face dense text at
+  100/125/200%, 1-px chroma gratings, gradients, range patches,
+  procedural photo; 2048×1280 BGRX), HASH-FROZEN by root gate tests
+  like a wire vector; `lyte-cli corpus-gate` — the §7 thresholds
+  PINNED IN CODE (text 40/50, SSIM 0.995, gratings ±2, convergence
+  180 fr) + owner decision 2's limited601 range posture (+1 code,
+  byte-exact named-and-queued, raw deltas still reported);
+  decode-probe grew `--dump-frames 0,59,last` (cold IDR / active@1s /
+  post-ratchet, not a 2.5 GB dump); goldens for BOTH chromas
+  committed at `Goldens/corpus/` (12 MB, 6 PNGs). Root suite 167 →
+  **175/175**; Host **180/180 Mac AND pup** (scripts only).
+  THE BANKED BASELINE + FIRST 4:4:4 READ (one run, both legs, shipped
+  recipe p4/cq12/cap50): saturated-syntax text 16.4–19.8 dB at 4:2:0
+  → 39.6–42.7 dB at 4:4:4 (pooled text-region +19.6 to +22.2 dB, AT
+  FEWER BITS — text IDR 480 KB vs 578 KB); 1-px gratings ±255-code
+  garbage (100% of pixels beyond bar) → ±5 codes, SSIM 0.895 →
+  0.99995; photo a wash (45.27 vs 45.29 — Play loses nothing by
+  staying 4:2:0); 4:4:4 ratchet converges cv49–55 with 95–143 B
+  keepalives. DETERMINISM PROVEN: three independent pup-to-glass runs
+  byte-identical, goldens diff CLEAN (the table reproduced exactly at
+  committed HEAD `f0d785b`).
+  THE HONEST FAILS (V-4's homework, with numbers): 444 Work gates
+  fail text-converged (41.7–44.3 vs ≥50 — even pure-luma white text
+  caps at 46.3–46.8 dB) and gratings (±5 vs ±2) — BOTH trace to the
+  cq12 floor, not the chroma path: the Work recipe needs its own
+  ratchet floor (one knob) and now has exact before-numbers. Patches
+  pass under decision-2's posture (max ±2; raw byte-exact deltas
+  white ±1 / red ±2, IDENTICAL at 4:2:0 — the 601-limited round
+  trip's floor, not a 4:4:4 regression).
+  OFFLINE SCOPE, stated once: live-ratchet halves (zero frames
+  post-convergence, bytes ≤ surplus) and the negotiated end-to-end
+  path wait for V-4/J-G4a; the harness's END-TO-END live re-run is
+  J-G4a's headline leg. Rails held: pup workdir cleaned (default), no
+  session, no netem, secrets untouched by construction. Scratch at
+  `/tmp/corpus-harness/` (summary.txt + gates/encode logs + dumps).
+  ANOMALY (found, not caused, FIXED): the owner's standing 41151 loop
+  had self-expired at 01:49 — `~/lyte-loop.sh` is a FINITE 60-iteration
+  loop and run 60 was its last (each idle run exits at the 120 s
+  handshake timeout, so the loop lives ~2 h idle). Restarted 03:29
+  (pid 505593), advertising with the SAME pkh `3cf2bcc1…` and static
+  key `10e0f084…` — pairing intact, no PIN expected. If the loop
+  should be immortal, someone should make it `while true` instead of
+  `seq 1 60`.
+  NAMED FOR THE NEXT RUNG: (i) V-4 reruns `corpus-harness.sh 444`
+  as its encode-half gate and diffs the 444 goldens — GOLDEN=write
+  only when a recipe change MEANS to move pixels, said in the commit;
+  (ii) the Work-mode cq/qmin floor decision wants the harness rerun
+  per candidate (one command); (iii) J-G4a publishes the live delta
+  table next to this offline one.
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
