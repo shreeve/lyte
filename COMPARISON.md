@@ -2,20 +2,22 @@
 
 *Where Lyte-UDP desktop streaming stands against conferencing screen share,
 traditional remote desktop, and its own game-streaming lineage. Measured
-figures are from the J-G1 gate runs of 2026-07-21 and the H1/H2 joint gates
+figures are from the J-G1 gate runs of 2026-07-21, the H1/H2 joint gates
 of 2026-07-22 (`docs/20260722-h1-joint-gate.md`,
-`docs/20260722-h2-joint-gate.md`) — 2048×1280@60 real desktop, the
-reference host → Mac client over LAN Wi-Fi, Noise encryption end to end;
-competitor figures are typical published/observed ranges, not lab-matched
-benchmarks.*
+`docs/20260722-h2-joint-gate.md`), and the standing Beauty Bar rows of
+2026-07-29 (HANDOFF.md, `quality-probe.sh`) — 2048×1280@60 real desktop,
+the reference host → Mac client over LAN Wi-Fi, Noise encryption end to
+end; competitor figures are typical published/observed ranges, not
+lab-matched benchmarks.*
 
 ## The one-sentence summary
 
 Lyte delivers **game-streaming latency at screen-sharing bandwidth with
 remote-desktop idle behavior — and stronger encryption than all of them** —
-with input, audio, congestion control, and targeted loss repair now
-measured and landed, and the remaining gaps (WAN traversal, clipboard,
-4:4:4) scheduled work, not open questions.
+with input, audio, honest congestion control, targeted loss repair,
+clipboard (text and images, both ways), drag-and-drop file transfer, and
+4:4:4 chroma now measured and landed, and the remaining gaps (WAN
+traversal, browser client) scheduled work, not open questions.
 
 ## Our measured baseline (gate evidence, encrypted, live)
 
@@ -34,8 +36,18 @@ measured and landed, and the remaining gaps (WAN traversal, clipboard,
   0.037% through the squeeze). Audio keeps flowing through idle and
   frozen states as the always-on path probe.
 - **Quality**: damage-driven 60 fps HEVC (NVENC); the quality ratchet
-  converges static content to ~50 dB luma PSNR (visually lossless text)
-  in under a second, then goes silent.
+  converges static content to **52 dB luma PSNR** (visually lossless
+  text) then goes silent; sustained heavy motion decodes at **61 fps
+  p50 at the glass** with **0 frames lost in 150 s** (Beauty Bar row 4,
+  2026-07-29). **4:4:4 chroma is served live** — a client asking Best
+  gets an Rext yuv444 session end to end (measured **+22 dB on text at
+  fewer bits** vs 4:2:0 in the V-3 race; hardware-decoded on the Mac).
+- **Adaptation honesty** (2026-07-29): the estimator anchors every rate
+  fall to a capacity belief built only from evidence a self-limited
+  sender cannot fake — under a deliberate 25 Mbit squeeze it falls in
+  ~0.5 s anchored at the shaper's true rate, and while sharing air with
+  a 30 Mbps competing flood it holds ~40 Mbps at the glass instead of
+  spiraling (the truth-probe legs, HANDOFF wave entries).
 - **Resilience**: RS-FEC heals real Wi-Fi loss transparently; past
   parity, targeted NACK repair asks for exactly the missing shards (the
   H2 gate's 15%-loss leg: 71 asks ↔ 71 consumed, 1:1 on the wire, frames
@@ -85,9 +97,12 @@ good for office work: low bandwidth on static content, ~50–100 ms LAN
 latency, sharp text. Lyte deliberately steals its best property — send
 nothing when nothing changes — but marries it to a game-streaming video
 pipeline, so quality does not degrade when the content becomes video or
-animation. The one axis where RDP currently beats us: its 4:4:4 mode
-renders chroma-heavy text sharper than our 4:2:0 stream. That is exactly
-the H4 4:4:4 work on the roadmap.
+animation. RDP's one former advantage — its 4:4:4 mode rendering
+chroma-heavy text sharper than a 4:2:0 stream — fell with the H4 wave
+(2026-07-29): Lyte now negotiates and serves **4:4:4 (HEVC Rext)** live,
+measured +22 dB on text at fewer bits than the 4:2:0 recipe, hardware
+decoded at the glass — while keeping the 60 fps motion pipeline RDP's
+AVC444 cannot match.
 
 ## Vs. Sunshine / GameStream (Moonlight)
 
@@ -120,33 +135,38 @@ while both ran side by side, and what the lineage never had.
 | Axis | Lyte (measured) | Meet/Zoom/GTM | VNC | RDP (AVC444) | Sunshine/GameStream |
 |---|---|---|---|---|---|
 | Glass-to-glass latency | ~20 ms | 200–500+ ms | 100–300 ms | 50–100 ms | 5–20 ms |
-| Frame rate (desktop) | 60 fps | 5–15 fps | varies, poor | 30–60 fps | 60 fps |
+| Frame rate (desktop) | 60 fps (61 p50 sustained heavy motion, at the glass) | 5–15 fps | varies, poor | 30–60 fps | 60 fps |
 | Bandwidth (working desktop) | ~4 Mbps, ~0 idle | 1–4 Mbps, constant | spiky | low idle, poor motion | ~20 Mbps constant |
-| Static-content quality | ratchets to ~lossless | lossy | exact but slow | sharp (4:4:4) | fixed QP, lossy |
+| Static-content quality | ratchets to ~lossless; **4:4:4 live** (52 dB text) | lossy | exact but slow | sharp (4:4:4, but ≤30–60 fps) | fixed QP, lossy, 4:2:0 only in HW decode |
 | Encryption | everything (Noise IK) | TLS/SRTP | usually weak/none | TLS | video unencrypted |
 | Motion/video content | good (HEVC 60) | poor | very poor | fair | good |
-| Congestion control | measured-delivery CC | yes | none | fair | none (CBR) |
+| Congestion control | honest capacity-belief CC (falls ~0.5 s on real squeezes, no self-spiral) | yes | none | fair | none (CBR) |
+| Clipboard | text + images, both ways, sealed | partial | text | yes | no |
+| File transfer | drag-and-drop client→host, sealed wire | varies | no | yes | no |
 | WAN/NAT story | Tailscale/port-forward (bridge later) | excellent | poor | fair | fair (manual) |
 | Input + audio | yes (29–49 ms photon; 5 ms audio) | n/a / yes | yes | yes | yes |
 
 ## Where this gets awesome (roadmap features that widen the gap)
 
-The comparison above is Lyte at H2 — full streaming parity on our own
-wire. The ladder ahead adds the capabilities that make a remote desktop
-feel local, each riding the same encrypted, paced, FEC-protected wire:
+The comparison above began as Lyte at H2 — full streaming parity on our
+own wire — and the ladder has since delivered two rungs into the measured
+column:
 
-- **H3**: the feature channel — **clipboard** both ways, then
-  **drag-and-drop file transfer**, riding the ARQ reliable sublayer.
-  RDP has clipboard; conferencing tools mostly don't; GameStream never
-  did. Files-over-the-streaming-wire with E2E crypto is territory none
-  of the compared products occupy cleanly.
-- **H4**: 4:4:4 chroma + the full quality-ratchet policy — removing RDP's
-  last text-sharpness advantage while keeping 60 fps motion.
+- **H3 — LANDED**: clipboard both ways, drag-and-drop file transfer
+  (client→host v1), and connection roaming, all riding the sealed ARQ
+  sublayer. Files-over-the-streaming-wire with E2E crypto is territory
+  none of the compared products occupy cleanly.
+- **H4 — LANDED** (joint-gate eyeball pending): 4:4:4 chroma served
+  live behind a three-tier client control, clipboard images (PNG,
+  byte-exact both directions, measured), and the estimator-honesty
+  reform that took the Beauty Bar to five-of-six green.
 - **H5**: **printing** and file features — the classic "corporate RDP"
   differentiators, on a modern wire.
 - **H6+**: one `lyte` binary, macOS host, and the WASM/browser client via
   the datagram-relay bridge — the conferencing tools' "join from
-  anywhere" convenience, without their latency.
+  anywhere" convenience, without their latency. (The scoping doc already
+  proved LyteWire cross-compiles to wasm32 with zero source changes,
+  400/400 tests under wasmtime.)
 
 *Keep this document honest: update the measured column when new gate
 evidence lands, and mark competitor numbers as ranges unless they come
