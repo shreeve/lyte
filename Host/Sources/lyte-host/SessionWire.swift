@@ -179,6 +179,14 @@ final class SessionWire {
 
     var counters: VideoChannelCounters { session.videoCounters }
     var sessionCounters: SessionCounters { session.counters }
+    /// V-4: the agreed chroma list (nil until the client's declaration
+    /// lands — or forever, for a grandfathered pre-W7 peer). The Sink
+    /// branches the encoder posture on it at open.
+    var agreedChromaModes: [UInt64]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return session?.agreedCapabilities?.chromaModes
+    }
     /// HS-21: whether the flood dial currently demands a retry cookie.
     var handshakeCookieMode: Bool { session?.handshakeCookieMode ?? false }
     var clock: SessionClockStats { session.clock }

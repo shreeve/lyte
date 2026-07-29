@@ -391,6 +391,16 @@ struct Options {
                     + "or fullres (got \(v))")
             case .aqStrength(let v):
                 throw HostError("--enc-aq-strength must be 1…15 (got \(v))")
+            // No CLI flag reaches these three — the chroma knobs are
+            // negotiated (V-4), not operator-tunable; a hit here is a
+            // recipe-authoring bug, named plainly.
+            case .profile(let v):
+                throw HostError("recipe profile must be '' or rext (got \(v))")
+            case .rgbMode(let v):
+                throw HostError("recipe rgb-mode must be '' or yuv444 "
+                    + "(got \(v))")
+            case .ratchetFloorQP(let v):
+                throw HostError("recipe ratchet floor must be 1…51 (got \(v))")
             }
         }
         return opts
@@ -444,7 +454,10 @@ final class Sink {
     // lets nvenc walk the frame QP one rung down, so the ladder emerges from
     // rate control — Swift only decides when to feed passes and when to stop.
     enum Ratchet {
-        static let floorQP = 12       // visually-lossless target (spec §3)
+        // The floor QP itself lives on the EncoderRecipe (V-4: the
+        // Good tier ships 12 — spec §3's visually-lossless target —
+        // and the Best tier carries its own); the Sink reads it off
+        // the recipe the negotiated posture chose.
         static let settle = 0.25      // damage-quiet time before ratcheting
         static let paceDivisor = 4    // passes run at fps/paceDivisor
         static let skipBytes = 2048   // pass this small is ~all-skip: done
@@ -497,10 +510,26 @@ final class Sink {
     var openingVbvCapBits: Int64?
     var unprotectableLogged = 0
 
+    // V-4: the negotiated chroma posture (drives the encoder open), the
+    // recipe it chose (floor QP included — the ratchet reads it here),
+    // and the brief pre-agreement hold. The capability exchange rides
+    // the reliable stream right behind the handshake, so it is nearly
+    // always settled before the portal delivers a first frame; when it
+    // is not, encoding holds briefly rather than opening the wrong
+    // posture (chroma never moves mid-session — a wrong open would ride
+    // to teardown). A peer that never declares (the grandfathered
+    // pre-W7 posture) falls back to 4:2:0 at the deadline.
+    var activeChroma = ChromaPosture.yuv420
+    var activeRecipe: EncoderRecipe
+    var chromaHoldStartedAt: Double?
+    var framesHeldForChroma = 0
+    static let chromaHoldSeconds = 2.0
+
     init(opts: Options, file: UnsafeMutablePointer<FILE>?, wire: SessionWire?) {
         self.opts = opts
         self.file = file
         self.wire = wire
+        self.activeRecipe = opts.encoderRecipe
     }
 
     static func pixFmtName(_ fmt: lyte_pixfmt) -> String? {
@@ -530,11 +559,34 @@ final class Sink {
                     + "BGRx/BGRA/RGBx/RGBA")
                 return
             }
+            // V-4: the encoder posture branches on the agreed chroma
+            // singleton (declaration-as-choice, owner decision 1).
+            // Agreement pending → hold encoding briefly instead of
+            // opening a posture the client didn't choose.
+            if let wire {
+                let agreed = wire.agreedChromaModes
+                if agreed == nil {
+                    let now = monotonicNow()
+                    let started = chromaHoldStartedAt ?? now
+                    chromaHoldStartedAt = started
+                    if now - started < Self.chromaHoldSeconds {
+                        framesHeldForChroma += 1
+                        return
+                    }
+                    print("chroma: no capability declaration after "
+                        + "\(Int(Self.chromaHoldSeconds)) s "
+                        + "(\(framesHeldForChroma) frames held) — "
+                        + "grandfathered peer, opening 4:2:0")
+                }
+                activeChroma = ChromaPosture.from(agreedChromaModes: agreed)
+            }
+            var recipe = opts.encoderRecipe
+            if activeChroma == .yuv444 {
+                recipe = recipe.chroma444()
+            }
+            activeRecipe = recipe
             var err = [CChar](repeating: 0, count: 256)
-            let cq: Int32 = opts.ratchet ? Int32(Ratchet.floorQP) : 0
-            let recipe = opts.encoderRecipe
-            // Profile/rgb_mode stay wrapper defaults in the session path
-            // until V-4 lands the Work/Play recipe split.
+            let cq: Int32 = opts.ratchet ? Int32(recipe.ratchetFloorQP) : 0
             guard let enc = lyte_hevc_enc_new(Int32(width), Int32(height), name,
                                               opts.fps, opts.bitrate, cq,
                                               recipe.preset, recipe.tune,
@@ -542,7 +594,7 @@ final class Sink {
                                               recipe.spatialAQ ? 1 : 0,
                                               recipe.temporalAQ ? 1 : 0,
                                               Int32(recipe.aqStrength),
-                                              "", "",
+                                              recipe.profile, recipe.rgbMode,
                                               &err, err.count) else {
                 fail("encoder init failed: \(errString(err))")
                 return
@@ -551,10 +603,14 @@ final class Sink {
             negotiated = (width, height, name)
             wire?.noteMonitorExtent(width: width, height: height)
             let rcDesc = opts.ratchet
-                ? "capped-CQ vbr cq=\(Ratchet.floorQP), cap \(opts.bitrate / 1_000_000) Mbps"
+                ? "capped-CQ vbr cq=\(recipe.ratchetFloorQP), cap \(opts.bitrate / 1_000_000) Mbps"
                 : "cbr \(opts.bitrate / 1_000_000) Mbps"
+            let chromaDesc = activeChroma == .yuv444
+                ? "4:4:4 Rext rgb_mode (VUI 601-limited, signed truthfully)"
+                : "4:2:0"
             print("capture: \(width)x\(height) \(name), stride \(stride) — "
-                + "encoding hevc_nvenc (\(recipe.summary), \(rcDesc))")
+                + "encoding hevc_nvenc (\(recipe.summary), \(rcDesc), "
+                + "chroma \(chromaDesc))")
 
             // HS-25: in session mode the opening posture itself must
             // bound every frame to what ONE FEC group can protect (the
@@ -713,7 +769,7 @@ final class Sink {
 
         if lastPacketBytes <= Ratchet.skipBytes {
             ratchetConverged = true
-        } else if lastPacketQP <= Ratchet.floorQP, ratchetPrevBytes > 0,
+        } else if lastPacketQP <= activeRecipe.ratchetFloorQP, ratchetPrevBytes > 0,
                   abs(lastPacketBytes - ratchetPrevBytes)
                       <= Int(Double(ratchetPrevBytes) * Ratchet.stableRatio) {
             ratchetStableCount += 1
@@ -978,6 +1034,28 @@ func handlePairingEvent(_ event: PairingResponderService.Event) {
     }
 }
 
+/// V-4: the empirical 4:4:4 gate (pillar §1's probe discipline) — a
+/// real tiny Rext open through the production leaf, run at startup
+/// before the capability declaration is built. A successful open IS
+/// the NV_ENC_CAPS_SUPPORT_YUV444_ENCODE caps check (V-1: the wrapper
+/// rejects at open when the cap reads 0), so the host never declares a
+/// chroma it hasn't just proven on this exact silicon/driver/wrapper.
+/// Returns nil on success, the leaf's error on failure.
+func probeRext444Encode() -> String? {
+    var err = [CChar](repeating: 0, count: 256)
+    let r = EncoderRecipe.best444
+    guard let enc = lyte_hevc_enc_new(
+        320, 180, "bgr0", 60, 5_000_000, Int32(r.ratchetFloorQP),
+        r.preset, r.tune, r.multipass,
+        r.spatialAQ ? 1 : 0, r.temporalAQ ? 1 : 0, Int32(r.aqStrength),
+        r.profile, r.rgbMode, &err, err.count
+    ) else {
+        return errString(err)
+    }
+    lyte_hevc_enc_free(enc)
+    return nil
+}
+
 /// Decodes a NUL-terminated C error buffer.
 func errString(_ buf: [CChar]) -> String {
     let bytes = buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
@@ -1170,6 +1248,23 @@ func run() throws {
         }
         if bulkShell != nil {
             declared = declared.declaringBulkTransfer()
+        }
+
+        // V-4: chroma is declared on PROOF, never a hardcoded claim —
+        // the Best tier (4:4:4) joins the declaration only when the
+        // startup Rext self-probe just opened on this box. A failed
+        // probe truthfully declares [420] alone: a Best-declaring
+        // client then hits `noCommonChromaMode` and its auto-re-dial
+        // banner, the pillar's NAMED degradation.
+        if let probeError = probeRext444Encode() {
+            print("chroma: Rext 4:4:4 self-probe FAILED (\(probeError)) "
+                + "— declaring chroma [420] only; Best tier not offered")
+        } else {
+            declared.chromaModes = [
+                CapabilityChroma.yuv420, CapabilityChroma.yuv444,
+            ]
+            print("chroma: Rext 4:4:4 self-probe passed — declaring "
+                + "chroma [420, 444]")
         }
 
         // HS-21: arm the retry-cookie dial when asked. A random secret,
@@ -1535,6 +1630,11 @@ func run() throws {
         (ceiling \(wire.protectableFrameCeiling) B), \
         final state \(wire.lifecycleState.map { "\($0)" } ?? "—") \
         (wire mode \(wire.currentWireMode.map { "\($0)" } ?? "—"))
+        chroma: agreed \(wire.agreedChromaModes.map { "\($0)" } ?? "— (no declaration)"), \
+        encoder \(sink.activeChroma == .yuv444
+            ? "4:4:4 (\(sink.activeRecipe.summary), floor cq\(sink.activeRecipe.ratchetFloorQP))"
+            : "4:2:0 (\(sink.activeRecipe.summary))"), \
+        \(sink.framesHeldForChroma) frames held pre-agreement
         input: \(s.inputEventsReceived) events received, \
         \(wire.inputInjected) injected \
         (\(wire.inputInjectFailures) failed), \

@@ -49,6 +49,10 @@ struct CheckOptions {
     var idrEvery = 0
     // non-empty: write "idx key bytes qp" per frame (the size books).
     var sizesPath = ""
+    // >0: impose the HS-25 unprotectable-frame guard offline — cap the
+    // opening VBV at this many bytes via the same set_rate call the
+    // session Sink makes at encoder open (V-4's ceiling-conformance leg).
+    var vbvCapBytes = 0
 
     static func parse(_ args: [String]) throws -> CheckOptions {
         var o = CheckOptions()
@@ -119,6 +123,11 @@ struct CheckOptions {
                 }
                 o.idrEvery = v
             case "--sizes": o.sizesPath = try value("--sizes")
+            case "--vbv-cap-bytes":
+                guard let v = Int(try value("--vbv-cap-bytes")), v > 0 else {
+                    throw CheckError("--vbv-cap-bytes needs a positive integer")
+                }
+                o.vbvCapBytes = v
             case "--help", "-h":
                 print("""
                 usage: lyte-encode-check --raw FILE --width W --height H
@@ -129,7 +138,7 @@ struct CheckOptions {
                        [--spatial-aq] [--temporal-aq] [--aq-strength 1…15]
                        [--pix-fmt bgr0|gbrp|yuv444p] [--profile main|rext]
                        [--rgb-mode yuv420|yuv444]
-                       [--idr-every N] [--sizes FILE]
+                       [--idr-every N] [--sizes FILE] [--vbv-cap-bytes N]
                 Encodes rawvideo through CHevcEncode with the given
                 recipe and prints the A/B numbers; Annex-B lands at
                 --out for the PSNR half. Input is packed BGRx (ffmpeg
@@ -140,7 +149,10 @@ struct CheckOptions {
                 re-encodes the first frame N times (the
                 ratchet-convergence check). --idr-every N forces an IDR
                 every N frames; --sizes writes per-frame
-                "idx key bytes qp" books (H4 V-1).
+                "idx key bytes qp" books (H4 V-1). --vbv-cap-bytes N
+                imposes the HS-25 unprotectable-frame guard offline
+                (the session Sink's opening VBV cap, V-4's
+                ceiling-conformance leg).
                 """)
                 exit(0)
             default:
@@ -266,6 +278,21 @@ func run() throws {
         throw CheckError("encoder init failed: \(errString(err))")
     }
     defer { lyte_hevc_enc_free(enc) }
+
+    // The HS-25 guard, exactly as the session Sink imposes it at
+    // encoder open: opening VBV = the worst-case protectable frame
+    // ceiling, folded into the first send (which is the forced IDR
+    // frame 0 anyway).
+    if opts.vbvCapBytes > 0 {
+        guard lyte_hevc_enc_set_rate(
+            enc, 0, opts.bitrate, Int64(opts.vbvCapBytes) * 8,
+            &err, err.count) == 0 else {
+            throw CheckError("vbv cap rejected: \(errString(err))")
+        }
+        print("encoder: unprotectable-frame guard — opening vbv capped "
+            + "at \(opts.vbvCapBytes) B (one FEC group's worst-case "
+            + "ceiling)")
+    }
 
     let mode = opts.cq > 0 ? "capped-cq\(opts.cq)" : "cbr"
     print("encode-check: \(opts.width)x\(opts.height) \(opts.pixFmt) "

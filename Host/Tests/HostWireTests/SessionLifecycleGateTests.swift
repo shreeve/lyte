@@ -247,6 +247,7 @@ final class SessionLifecycleGateTests: XCTestCase {
     /// the exchange with the given client set.
     private func establish(
         clientCapabilities: Capabilities? = .wireDefault,
+        hostCapabilities: Capabilities = .wireDefault,
         lifecycle: SessionMachineConfig = SessionMachineConfig(),
         beaconIntervalNS: UInt64 = 1 << 62
     ) throws -> (loop: Loopback, box: DatagramBox) {
@@ -257,6 +258,7 @@ final class SessionLifecycleGateTests: XCTestCase {
                 crypto: .noise(hostStatic: hostStatic),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: beaconIntervalNS,
+                capabilities: hostCapabilities,
                 lifecycle: lifecycle
             ),
             clientTuple: Self.tupleA,
@@ -351,6 +353,116 @@ final class SessionLifecycleGateTests: XCTestCase {
         print("HS-11/HS-8 gate (capabilities): declaration first-word, "
             + "intersection agreed — codecs \(agreed.videoCodecs), "
             + "ceiling \(agreed.maxDatagramBytes) B")
+    }
+
+    // MARK: Chroma negotiation → encoder posture (H4 V-4)
+
+    /// A 4:4:4-capable host (the startup Rext self-probe passed, so it
+    /// declared [420, 444]) meets a Best-tier client declaring the
+    /// [444] singleton (declaration-as-choice, owner decision 1): the
+    /// agreed set is the singleton, and the singleton opens the
+    /// Best-tier encoder posture.
+    func testGateBestChromaSingletonAgreesAndPicksTheBestPosture() throws {
+        var hostSet = Capabilities.wireDefault
+        hostSet.chromaModes = [CapabilityChroma.yuv420,
+                               CapabilityChroma.yuv444]
+        var clientSet = Capabilities.wireDefault
+        clientSet.chromaModes = [CapabilityChroma.yuv444]
+        let (loopValue, _) = try establish(
+            clientCapabilities: clientSet, hostCapabilities: hostSet
+        )
+        var loop = loopValue
+
+        let agreements = loop.events { event -> Capabilities? in
+            if case .capabilitiesAgreed(let agreed) = event { return agreed }
+            return nil
+        }
+        XCTAssertEqual(agreements.count, 1)
+        XCTAssertEqual(agreements[0].chromaModes, [CapabilityChroma.yuv444],
+                       "declaration-as-choice: the client's singleton IS "
+                           + "the agreement")
+        XCTAssertEqual(
+            ChromaPosture.from(
+                agreedChromaModes: loop.session.agreedCapabilities?
+                    .chromaModes),
+            .yuv444,
+            "the [444] singleton opens the Best-tier encoder"
+        )
+        XCTAssertEqual(loop.session.lifecycleState, .active)
+
+        print("V-4 gate (chroma): host [420, 444] ∩ client [444] → "
+            + "agreed [444] → Best posture")
+    }
+
+    /// The same 4:4:4-capable host against a Good-tier client ([420]
+    /// singleton): agreed [420], today's encoder path — declaring 444
+    /// costs a 420 session nothing.
+    func testGateGoodChromaSingletonKeepsThe420Posture() throws {
+        var hostSet = Capabilities.wireDefault
+        hostSet.chromaModes = [CapabilityChroma.yuv420,
+                               CapabilityChroma.yuv444]
+        let (loopValue, _) = try establish(
+            clientCapabilities: .wireDefault, hostCapabilities: hostSet
+        )
+        var loop = loopValue
+
+        let agreements = loop.events { event -> Capabilities? in
+            if case .capabilitiesAgreed(let agreed) = event { return agreed }
+            return nil
+        }
+        XCTAssertEqual(agreements.count, 1)
+        XCTAssertEqual(agreements[0].chromaModes, [CapabilityChroma.yuv420])
+        XCTAssertEqual(
+            ChromaPosture.from(
+                agreedChromaModes: loop.session.agreedCapabilities?
+                    .chromaModes),
+            .yuv420
+        )
+    }
+
+    /// A [420]-only host (the self-probe failed — the truthful
+    /// declaration) against a Best-declaring client: empty chroma
+    /// intersection is the TYPED failure the client's auto-re-dial
+    /// banner keys on (the pillar's named degradation), never silence.
+    func testGateBestAgainst420OnlyHostIsATypedChromaFailure() throws {
+        var clientSet = Capabilities.wireDefault
+        clientSet.chromaModes = [CapabilityChroma.yuv444]
+        let (loopValue, _) = try establish(clientCapabilities: clientSet)
+        var loop = loopValue
+
+        XCTAssertTrue(loop.hostEvents.contains(
+            .capabilitiesFailed("noCommonChromaMode")
+        ), "the typed no the V-5 fallback re-dial keys on")
+        XCTAssertTrue(loop.hostEvents.contains(
+            .sessionClosed(.localTeardown(.shuttingDown))
+        ))
+        XCTAssertEqual(loop.session.lifecycleState, .closed)
+    }
+
+    /// The posture mapping's whole input space, pinned: ONLY the [444]
+    /// singleton opens Best — a both-declaring nonconforming peer, a
+    /// never-declaring grandfathered peer (nil), and the unreachable
+    /// empty list all ride 4:2:0.
+    func testGateChromaPostureMappingPinned() {
+        XCTAssertEqual(
+            ChromaPosture.from(agreedChromaModes: [CapabilityChroma.yuv444]),
+            .yuv444
+        )
+        XCTAssertEqual(
+            ChromaPosture.from(agreedChromaModes: [CapabilityChroma.yuv420]),
+            .yuv420
+        )
+        XCTAssertEqual(
+            ChromaPosture.from(agreedChromaModes: [
+                CapabilityChroma.yuv420, CapabilityChroma.yuv444,
+            ]),
+            .yuv420,
+            "a multi-mode agreement is not a choice — the conservative "
+                + "path rides"
+        )
+        XCTAssertEqual(ChromaPosture.from(agreedChromaModes: nil), .yuv420,
+                       "the grandfathered pre-W7 posture")
+        XCTAssertEqual(ChromaPosture.from(agreedChromaModes: []), .yuv420)
     }
 
     func testGateEmptyCodecIntersectionIsATypedTeardown() throws {
