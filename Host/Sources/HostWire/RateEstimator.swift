@@ -107,46 +107,18 @@
 //     corroborates within a few 25–50 ms beats (inside one 500 ms
 //     fall-limiter window — at most one beat later than today).
 //     Self-caused burst bumps drain and reset the streak instead.
-//     THE STALL GATE (HS-23): the Wi-Fi study's finding — the
-//     RECEIVER's radio goes dark 70–100 ms in trains (scan dwells),
-//     the AP queues everything, then drains it in one compressed
-//     burst. Nothing is lost and nothing is slow; the path is merely
-//     time-shifted. But host-side that cycle reads as textbook
-//     overuse: two consecutive inflated reports, an anchor the fall
-//     limiter happily acts on twice a second, forever — the exact
-//     mechanism that pinned a ~100 Mbps-capable path at 13–17 Mbps.
-//     So an overuse fall is additionally refused when the evidence
-//     spells a CLOSED HOLE, not a squeeze: (1) the inflation streak's
-//     PEAK stays under `stallGapCeilingMicroseconds` (150 ms — a
-//     bounded dwell, not an outage; the peak inflation IS the hole
-//     length, because packets held for the dwell carry it as delay);
-//     (2) a fresh FULL train measured at ≥ `stallBurstRateFactor` ×
-//     the standing rate (the drain: a capacity-limited bottleneck
-//     spaces arrivals at capacity, BELOW our pace — only packets
-//     that accumulated and were released together can read
-//     measurably above it); (3) conservation — pre-FEC loss below
-//     the clean threshold and post-FEC loss inside the regime
-//     ladder's own clean column (< 0.5%): a hole that closed
-//     delivered everything, but it ECHOES as a few NACKs (the
-//     client's completion presumption expires mid-dwell, moments
-//     before the drain makes the frame whole — the first live gate
-//     measured 30 of 35 NACK entries judged stale), so demanding
-//     literal zero starves the gate on exactly the wire it exists
-//     for. A congested queue tail-drops its way past the clean
-//     column, and the rung-3 branch (> 2%) falls ungated regardless.
-//     Queue GROWTH deliberately does NOT defeat this gate (unlike
-//     the self-reference gate's corroboration): successive dwells
-//     rising 70→100 ms mimic growth report-to-report, and the drain
-//     evidence is the stronger discriminator — a genuinely building
-//     queue can never produce a super-rate full train, and if it
-//     somehow inflates anyway the 150 ms peak ceiling stops the
-//     holds. Loss-tolerance note: every condition reads POSITIVE
-//     evidence carried inside received reports (delay dynamics of
-//     matched samples, train rates, cumulative-counter deltas) —
-//     the 1.7% feedback-direction loss the study measured can starve
-//     cadence but can never fabricate a hold or masquerade as a
-//     delivery gap (a report gap contributes no samples, fires
-//     nothing, and leaves the streak standing).
+//     THE STALL GATE (HS-23) lived here until HS-28 retired it: the
+//     Wi-Fi study's scan dwells (the receiver's radio dark 70–100 ms,
+//     the AP queuing, then one compressed drain — nothing lost,
+//     nothing slow) read host-side as textbook overuse and once pinned
+//     a ~100 Mbps-capable path at 13–17 Mbps. The capacity-belief
+//     model handles the cycle with no shape classifier: the drain's
+//     compressed super-rate train RAISES the belief, the drain report
+//     clears the pressure streak, and invariant 2's persistence means
+//     a bounded hole can never sustain pressure across a full
+//     fall-limiter window — so the fall the gate used to refuse is
+//     simply never corroborated. `stallHolds` keeps the vocabulary in
+//     the books for withheld beats with fresh drain evidence.
 //     Floor 500 kbps (a paced IDR within 2 s even on a terrible path),
 //     ceiling = the negotiated session rate (W7 carries no bitrate key
 //     in v1, so the session config IS the negotiated ceiling).
@@ -473,9 +445,10 @@ public struct RateEstimatorStats: Equatable, Sendable {
     /// evidence measured our own pacing and nothing corroborated a
     /// real path problem (rate held, rises stayed blocked).
     public var selfReferenceHolds = 0
-    /// HS-23: overuse falls the stall gate refused — a bounded hole
-    /// that closed with a compressed drain and nothing lost (the
-    /// receiver's radio blinked; the path did not slow).
+    /// Overuse falls withheld while fresh super-rate drain evidence
+    /// stood inside a bounded hole — the receiver's radio blinked, the
+    /// path did not slow (HS-23's stall gate, retired at HS-28: the
+    /// persistence machinery decides, this book keeps the vocabulary).
     public var stallHolds = 0
     /// Overuse falls withheld awaiting invariant 2's persistence
     /// (HS-28; the ramp hunt's dwell deferral, retired and
@@ -1263,56 +1236,48 @@ public final class RateEstimator {
             let corroborated = lossFraction >= config.lossCleanThreshold
                 || postFecLossFraction > 0
                 || queueGrew
-            // THE STALL GATE (HS-23, header): a bounded hole that
-            // closed with a compressed drain and nothing lost is the
-            // RECEIVER's radio blinking, not the path slowing. Queue
-            // growth does not defeat it (rising dwells mimic growth);
-            // the drain evidence and the 150 ms peak ceiling are the
-            // honest discriminators — a genuinely building queue can
-            // never produce a super-rate full train, and one that
-            // inflates past the ceiling falls as ever.
-            let holePeak = inflatedStreakPeakMicros ?? Int64.max
-            let drainFresh = lastFullTrainAt.map {
-                now &- $0 <= config.stallEvidenceWindowNS
-            } ?? false
-            let drainOutranPace = drainFresh
-                && (lastFullTrainRate ?? 0)
-                    >= Double(rateBitsPerSecond) * config.stallBurstRateFactor
-            let closedHole = holePeak <= config.stallGapCeilingMicroseconds
-                && drainOutranPace
-                && lossFraction < config.lossCleanThreshold
-                && postFecLossFraction < config.postFecCleanThreshold
             if selfReferential, !corroborated {
                 stats.selfReferenceHolds += 1
                 // Held, not fallen: the overuse verdict still blocks
                 // every rise below, and the fall limiter stays free so
                 // corroboration on the very next report may act.
-            } else if closedHole {
-                stats.stallHolds += 1
-                // Same posture as the self-reference hold: the rate
-                // stands, rises stay blocked this report, and the
-                // fall limiter is unconsumed — sustained evidence on
-                // the very next report may still act.
             } else if lossFraction < config.lossCleanThreshold,
                       postFecLossFraction < config.postFecCleanThreshold,
                       now &- (inflatedStreakSinceNS ?? now)
                           < config.beliefDemotionSustainNS {
-                // INVARIANT 2's PERSISTENCE (HS-28 — the dwell
-                // deferral, RETIRED and generalized): an overuse fall
+                // INVARIANT 2's PERSISTENCE (HS-28): an overuse fall
                 // with no instant corroboration (no loss the clean
                 // band would flag, no post-FEC evidence past the
                 // clean column) waits until the pressure streak has
                 // persisted a full fall-limiter window into the next
-                // (`beliefDemotionSustainNS`). No shape analysis: a
-                // dwell — ≤150 ms by the stall ceiling's own
-                // definition — structurally cannot sustain it (the
-                // drain clears the streak first), while a genuine
+                // (`beliefDemotionSustainNS`). This subsumed BOTH the
+                // dwell deferral and HS-23's stall gate: a scan-dwell
+                // cycle — a bounded hole that closes with a
+                // compressed drain — structurally cannot sustain
+                // pressure across the span (the drain report clears
+                // the streak and RAISES the belief), while a genuine
                 // squeeze sails through and falls within ~1 s, at
                 // most one limiter beat later than the old law. The
                 // overuse verdict still blocks every rise below, and
                 // the fall limiter stays unconsumed for the report
-                // that finally acts.
-                stats.fallDeferrals += 1
+                // that finally acts. The books keep the old gates'
+                // vocabulary: a withheld beat with fresh super-rate
+                // drain evidence inside a bounded hole is a stall
+                // hold; the rest are deferrals.
+                let holePeak = inflatedStreakPeakMicros ?? Int64.max
+                let drainFresh = lastFullTrainAt.map {
+                    now &- $0 <= config.stallEvidenceWindowNS
+                } ?? false
+                let drainOutranPace = drainFresh
+                    && (lastFullTrainRate ?? 0)
+                        >= Double(rateBitsPerSecond)
+                        * config.stallBurstRateFactor
+                if drainOutranPace,
+                   holePeak <= config.stallGapCeilingMicroseconds {
+                    stats.stallHolds += 1
+                } else {
+                    stats.fallDeferrals += 1
+                }
             } else {
                 // HS-28: the fall EXECUTES here — and the anchor
                 // answers to the CAPACITY BELIEF, never to the median
