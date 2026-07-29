@@ -78,23 +78,43 @@ stalled >15 min with no live work. If you start a fresh chat, that loop's
 shell does NOT survive — re-arm it if the owner still wants the 5-min
 cadence, and don't leave a duplicate running.
 
-**IMMEDIATE RESUME POINT: WAVE 0 IS COMPLETE — V-1 (`e232d61`) AND V-2
-(`3f94a0f` + co-sign `8fa44a2`) both landed; the joint conversion-path
-ruling is written into `docs/20260729-002000-lyte-v1-rext-probe.md`.
-V-2's headline: the M5 hardware-decodes every Rext 4:4:4 path with
-bit-exact planes and no chroma downsample decoder→glass, but the
-production render path mis-maps identity/GBR as bt601-full (structural
-— CoreVideo has no identity matrix vocabulary), so **gbrp is OUT**;
-601-limited and 709-full both render CORRECT at the glass — the race
-is now host-conversion vs rgb_mode.** Next: (a) the four H4 §0 owner
-decisions — V-1+V-2 data is ALL on the table now (decision 2 is a
-two-horse race, decision 3 has its ceiling books); (b) V-3 (the §7
-corpus harness — its client half, the readback tap + decode-probe,
-already exists at `3f94a0f`) banks the 4:2:0 baseline; (c) the bar's
-two red rows as Host/ slices — the **session-pipeline fps ceiling
-(~48/s ingest under load)** hunt and the **estimator ramp's IDR
-spend**; (d) the owner's p4 quality eyeball (41151 live and waiting).
-Farther out: V-4/V-5 (blocked on decisions 1–3), J-G4a + the P-track;
+**H4 §0 OWNER DECISIONS — ANSWERED (2026-07-29 ~01:05 MDT, with V-1 +
+V-2 data on the table).** All four are settled:
+1. **Mode selection: declaration-as-choice, surfaced as a TIERED
+   control** — the owner's design (from the Streamline discussion):
+   a **"Chroma"** control on the control strip (Actions-menu fallback
+   per the strip convention) with **Good = 4:2:0 / Better = 4:2:2 /
+   Best = 4:4:4**. Naming decided: "Chroma" (matches the wire's
+   `chromaModes` vocabulary; "Color" was runner-up). The 4:2:2 tier is
+   DORMANT hardware-wise (Ada NVENC has no 4:2:2 encode — that's
+   Blackwell 9th-gen NVENC; SDK app-note table confirms N for Ada) and
+   renders grayed/"not offered by this host"; capability negotiation
+   handles presence naturally. Wire: append `yuv422 = 3` to
+   `CapabilityChroma` (non-breaking — unknown values in id lists are
+   ignored by contract). Flip = clean reconnect, per the plan's V-5.
+2. **Conversion path: rgb_mode (601-limited)** — free, measured
+   equal-or-better (48.2 vs 47.8 dB text), gbrp struck by V-2's glass
+   verdict. The full-range row stays NAMED-AND-QUEUED (a host
+   conversion leaf can be added later if banding ever shows at the
+   glass; the deferred 10-bit rung moots the concern when it lands).
+3. **The FEC ceiling: keep the HS-25 capped-CQ posture** (conform
+   IDRs to 223,380 B, ratchet heals). Plus two banked notes: add the
+   **fec group-index to the pre-written wire-v2 batch** (so the
+   ceiling dies free if v2 ever ships), and **intra-refresh** (rolling
+   keyframe stripes — no giant frames ever) is the named H5
+   experiment if ceiling-IDR quality ever bothers the eyeball.
+4. **J-G4 = 4:4:4 core + P-1 (clipboard v2) only**; P-2/P-3 stay
+   pre-declared droppable to H5.
+
+**IMMEDIATE RESUME POINT: probes done, decisions done — V-3 is next
+(the §7 corpus harness, Host/ scripts + root; its client half, the
+readback tap + decode-probe, already exists at `3f94a0f`; it banks the
+4:2:0 baseline table first). Then V-4 (host Work/Best mode, Host/) and
+V-5 (client Chroma tier surface, root) — both now UNBLOCKED by the
+decisions above.** Also open: (a) the bar's two red rows as Host/
+slices — the **session-pipeline fps ceiling (~48/s ingest under
+load)** hunt and the **estimator ramp's IDR spend**; (b) the owner's
+p4 quality eyeball (41151 live and waiting). Farther out: J-G4a + P-1;
 browser-viewer B-2+ still waits on the owner's QUIC posture decision.
 
 # RESTARTING WORKERS IN A NEW CHAT (read before resuming)
