@@ -669,6 +669,7 @@ previous one) · **loss** ≤ 1 wire frame per 150 s leg.
 | 2026-07-28 @ 8dc049a | 51.27 PASS | 59.75 PASS | 47 FAIL¹ | 3.9 FAIL¹ | 0 PASS | 0 PASS |
 | 2026-07-29 @ 932a4c3 | 52.03 PASS | 59.73 PASS | 58 PASS² | 15.2 FAIL² | 0 PASS | 0 PASS |
 | 2026-07-29 @ 8e1e8ca | 52.03 PASS | 59.72 PASS | 61 PASS³ | 6.8 FAIL³ | 0 PASS | 6 FAIL³ |
+| 2026-07-29 @ be60e92 | 52.03 PASS | 59.73 PASS | 61 PASS⁴ | 6.4 FAIL⁴ | 0 PASS | 0 PASS⁴ |
 
 ² Post-HS-26/IDR-hunt re-measurement (row printed by quality-probe.sh
 at `932a4c3`; logs pup `~/qprobe/`, local `/tmp/qprobe-local`).
@@ -691,6 +692,26 @@ the frequency). Also eye-on: delivered ~20 Mbps on the post-move
 clean wire that bulk-tested ~160 Mbps — whether that's real airtime
 under 43 Mbps appetite or the HS-22b self-reference seam is part of
 slice (b)'s brief.
+
+⁴ Post-HS-29 row (probe at `be60e92`; logs pup `~/qprobe/`). **The
+loss red is RETIRED — 1 datagram missing in 117,192, 0 frames lost**
+(row ³'s 102/6 was the climb slamming the cap; the damped probe
+ceiling stopped buying loss at the top) and fps holds 61. The IDR
+residue (6.4/min, books: rung 8 + tighten 6 + client 1 + opening 1)
+now has a NAMED cause in the armed leg's own estimator line: **burst
+trains pollute the belief** — compressed drains raised it to
+207 Mbps (contaminated legs: 266 Mbps, 1.18 Gbps), so the probe
+ceiling `min(50M, belief×1.1)` almost never bound (2 damped rises
+all leg) and the climb still slammed the ~45 Mbps air 12 times.
+HS-30's brief: (i) split sustainable-vs-burst belief — drains purge
+mid-hole votes (HS-28's insight, keep) but must not set the probe
+ceiling; (ii) near-ceiling probe CADENCE (BBR PROBE_BW's shape) in
+place of continuous climb pressure. Honesty leg at this build:
+fall 517 ms after a 25 Mbit tbf onset, honest anchor, full recovery
+to the 50 Mbps ceiling after release, 0 self-ref holds, qdisc
+removed. Bonus: the owner live-stress-tested one leg (YouTube window
+dragged across the screen mid-squeeze) — same burst-pollution
+signature in those forensics, independently corroborated.
 
 ³ Post-HS-27/HS-28 row (probe at `8e1e8ca`; logs pup `~/qprobe/`).
 The composition flip is the story: the leg now RIDES THE AIR'S TRUE
@@ -3991,6 +4012,48 @@ its entry at the marker at the end of this block.*
   matched its own remote shell — the rails' bracket trick is not
   optional. Logs kept: pup /tmp/hs28-{legb,legb2,clean,honesty}-host.log,
   /tmp/hs28-honesty-probe.log; Mac /tmp/hs28-{legb,legb2,clean}-client.log.
+
+- **HS-29 — cap-aware probe damping: the climb learns where the wall
+  is, and the loss red dies** (`be60e92`, Host/ only, not pushed;
+  coordinator-inline slice — the worker pool was down on 529s, four
+  terminations, so the coordinator took the brief itself).
+  THE CHANGE (small on purpose): the upshift's target is now the
+  PROBE CEILING — `min(configured cap, belief × probeHeadroomFactor)`
+  (new config knob, default 1.10, precondition >1.0) — instead of
+  the raw configured cap; new stat `upshiftsDamped`, printed in the
+  estimator books line as "N upshifts (M probe-damped)". Fall law,
+  belief mechanics, HS-27's rung ladder: untouched.
+  GATES: Host 203 → **206/206 Mac AND pup**. The three new pins print
+  the physics: climb parks at 22.0 Mbps over a 20.0 belief under a
+  50 cap with ZERO falls (1 damped rise); capacity step 20→45 walks
+  the rate to 40 Mbps in 6.7 virtual seconds with the belief
+  following (ossification guard); factor 1.5 parks at 30.0.
+  THE ROW (bar row ⁴, probe at this HEAD): **loss 6 → 0 (1 datagram
+  in 117,192) — the loss red is RETIRED**; fps holds 61; IDR 6.8 →
+  6.4/min. Twin leg froze again (fps p50 6, 27.4/min) — directives
+  still load-bearing.
+  THE RESIDUE HAS A NAME (the books convict the next bug): the armed
+  leg's own estimator line shows **belief 207 Mbps** — compressed
+  drain trains raise the belief to instantaneous drain rates, so the
+  probe ceiling almost never bound (2 damped rises / 2,686 upshifts)
+  and the climb still slammed the ~45 Mbps air 12 times (12 honest
+  falls → rung 8 + tighten 6 IDRs). Corroborated in both honesty
+  legs (belief 266 Mbps, 1.18 Gbps) — one of them the OWNER'S OWN
+  STRESS TEST (a YouTube window dragged across the screen mid-leg).
+  HS-30 NAMED: (i) sustainable-vs-burst belief split — drains keep
+  purging mid-hole votes but stop setting the probe ceiling;
+  (ii) near-ceiling probe cadence (BBR PROBE_BW's shape) instead of
+  continuous climb pressure. The pairing is the endgame for the last
+  red cell (bar ≤2/min needs falls ≤ ~2 per 150 s).
+  HONESTY LEG (clean rerun after the stress contamination): 25 Mbit
+  tbf scoped to 41217 — fall **517 ms** after onset, honest anchor,
+  full recovery to the 50 Mbps ceiling after release, 0 self-ref
+  holds. Contaminated leg kept for the record (hs29-honesty vs
+  hs29-honesty2 logs).
+  RAILS: secrets byte-identical (pinned trio); wlp0s20f3 back to
+  noqueue after both tbf legs; ffplay + all test hosts dead; owner's
+  41151 loop untouched; logs pup `/tmp/hs29-*` + `~/qprobe/`, local
+  scratchpad `beauty-bar-run3.log`, `hs29-honesty*.log`.
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
