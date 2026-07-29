@@ -1,43 +1,47 @@
 # Lyte — Session Handoff
 
-*Current as of 2026-07-28 ~17:20 MDT. The session ledger — tracked in the
+*Current as of 2026-07-28 ~18:10 MDT. The session ledger — tracked in the
 repo since `8da50bf` (the .gitignore entry is vestigial; the file is
 tracked). Update freely; commit updates in the ledger voice.*
 
-# SESSION RESUME — START HERE (2026-07-28 ~17:20 MDT)
+# SESSION RESUME — START HERE (2026-07-28 ~18:10 MDT)
 
-**One-paragraph state.** We are deep in the H3 video-supremacy wave. Since
-the last resume: the Wi-Fi wire got fixed (owner moved the Mac off a weak
-6 GHz band to 5 GHz — see the "THE WIRE IS CLEAN NOW" block below; the old
-13–17 Mbps / scan-stall / full-dark-outage numbers are DEAD, re-baseline
-before trusting any pre-2026-07-28 latency claim). Then **HS-23** landed
-the 50 Mbps LAN ceiling + a stall-vs-congestion discriminator (`11f058f`),
-and **HS-24** raced the encoder A/B ladder and adopted the p4 preset
-(`1d65bad`) — +0.77/0.85 dB on motion, **+12.4 dB at half the bits on
-text**, encode still ~4.6 ms. Both are Host/ commits, NOT pushed; their
-HANDOFF wave entries are written but UNCOMMITTED (coordinator commits
-HANDOFF).
+**One-paragraph state.** We are deep in the H3 video-supremacy wave. The
+Wi-Fi wire is fixed (owner moved the Mac off a weak 6 GHz band to 5 GHz —
+see the "THE WIRE IS CLEAN NOW" block below; the old 13–17 Mbps /
+scan-stall / full-dark-outage numbers are DEAD, re-baseline before
+trusting any pre-2026-07-28 latency claim). The quality wave then landed
+in three Host/ commits, none pushed: **HS-23** — the 50 Mbps LAN ceiling
++ a stall-vs-congestion discriminator (`11f058f`); **HS-24** — the p4
+preset adoption off the encoder A/B ladder (`1d65bad`, +0.77/0.85 dB on
+motion, +12.4 dB at half the bits on text, encode still ~4.6 ms); and
+**HS-25** — the giant-frame FEC guard (`e82e88a`, this session).
 
-**IN FLIGHT — HS-25 (`b896904b-a84d-431e-bd40-df0b649c75d8`), a
-session-killing bug.** The new 50 Mbps + p4 recipe makes IDR/full-screen
-frames big enough to packetize into **279 data shards**, but GF(2^8)
-Reed-Solomon caps a group at 255 total — the host threw
-`unprotectableDataShardCount(279)` at packet 963 and **exited**, killing
-the session (client goes black). HS-25's mandate: split oversized frames
-across multiple FEC groups at the HostWire packetizer seam AND make the
-host DEGRADE (drop/re-encode via the EncoderVbv `frameByteCeiling`
-machinery) instead of dying — no single frame may ever kill a session. It
-must also report whether the client depacketizer (root pkg, LyteTransport)
-already reassembles multi-group frames or needs a matching change. Live
-repro observed 2026-07-28 ~17:15. If resuming and HS-25 is done, read its
-wave entry; if it flagged a required client-side change, that root-package
-slice is the next launch.
+**HS-25 IS CLOSED (`e82e88a`) — the 50 Mbps + p4 session-killer is
+dead.** The recipe's fat IDRs could packetize past the GF(2^8)
+Reed-Solomon 255-shard block and the thrown
+`unprotectableDataShardCount` EXITED the host mid-session. The fix is a
+ceiling, not a cliff: `Session.ingestVideoFrame` drops (never throws)
+frames past the live protectable ceiling, and the shell caps the opening
+VBV at the worst-case ceiling (223,380 B) whenever the recipe's own VBV
+is absent (capped-CQ, the live trigger) or larger — with the
+`armEncoderVbv` baseline mirroring the cap so a squeeze→clean RESTORE
+can't re-open the hole. Split-groups was RULED OUT as a wire-format
+change (fec u64 has no group index; the client's `VideoAssembler` keys
+one group per frame) — the fix is HOST-ONLY, no client work. Suite 174 →
+**179/179 Mac AND pup**; live repro-then-proof ran on pup (pre-fix HEAD
+threw and exited on demand; the fix took the same moving-noise leg for
+79.6 s / 1268 frames / 137 MB with zero unprotectable drops). Full
+account + two procedure findings in the HS-25 wave entry.
 
 **LIVE OPS RIGHT NOW.**
 - pup standing host: `bash ~/lyte-loop.sh` respawns `lyte-host --backend
   portal --wire-listen 41151 --ratchet --clipboard --seconds 7200` on
   port **41151**. Leave it alive; it's the owner's eyeball host. The
-  session log is `/tmp/lyte-host-session.log` on pup.
+  session log is `/tmp/lyte-host-session.log` on pup. The loop launches
+  `~/src/lyte-host/.build/debug/lyte-host`, which is the HS-25-FIXED
+  build (binary 17:28, current respawn 18:04) — the standing host is
+  already immune to the giant-frame crash, no redeploy step pending.
 - The owner's client is the app bundle at
   `.build/Lyte.app` — launch with `open .build/Lyte.app` (NEVER run the
   raw binary under a parent process; it needs its own bundle for a proper
@@ -47,15 +51,22 @@ slice is the next launch.
   identity: restart the host loop with `--pair` so it mints+prints a PIN
   to `/tmp/lyte-host-session.log`, read it off for the owner (3 wrong
   guesses burn it).
-- **Black-screen playbook (hit twice today):** (1) portal wedges after
-  many rapid short lyte-host runs → `ssh pup 'systemctl --user restart
-  xdg-desktop-portal-gnome xdg-desktop-portal'`; (2) the app silently not
-  running → relaunch the bundle; (3) the FEC giant-frame crash above →
-  HS-25. A Wayland test pattern for live video legs must be launched
-  Wayland-native (`XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0
-  SDL_VIDEODRIVER=wayland ffplay -fs -f lavfi -i
-  "testsrc2=size=1920x1080:rate=60"`); Xwayland-over-ssh renders ~5 fps and
-  fakes a static leg. ALWAYS kill ffplay when done.
+- **Black-screen playbook (battle-tested today):** (1) portal wedges
+  after many rapid short lyte-host runs → `ssh pup 'systemctl --user
+  restart xdg-desktop-portal-gnome xdg-desktop-portal'`; (2) the app
+  silently not running → relaunch the bundle; (3) ~~the FEC giant-frame
+  crash~~ — FIXED at `e82e88a` and the standing host runs the fixed
+  build; (4) NEW (HS-25 live find): **fullscreen `-fs` ffplay starves
+  the Mutter screencast** (direct scanout — portal grants the node but
+  PipeWire delivers ZERO frames; portal restarts don't help). Run test
+  patterns WINDOWED at full size, Wayland-native
+  (`XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0
+  SDL_VIDEODRIVER=wayland ffplay -f lavfi -i
+  "testsrc2=size=1920x1080:rate=60"`); Xwayland-over-ssh renders ~5 fps
+  and fakes a static leg. ALWAYS kill ffplay when done. (5) NEW (HS-25
+  live find): **harness lyte-hosts MUST run `--no-advertise`** — an
+  advertised test host is a second "pup" in discovery and the owner's
+  app WILL connect to it (it did; their glass went black mid-slice).
 
 **A STANDING WORKER-LIVENESS LOOP IS ARMED** (background shell, sentinel
 `AGENT_LOOP_TICK_WORKER_LIVENESS`, every 5 min): it checks subagent
@@ -65,15 +76,16 @@ stalled >15 min with no live work. If you start a fresh chat, that loop's
 shell does NOT survive — re-arm it if the owner still wants the 5-min
 cadence, and don't leave a duplicate running.
 
-**IMMEDIATE RESUME POINT:** wait on HS-25; when it lands, (a) commit its
-Host/ work is already done by the worker — just commit the HANDOFF
-entries (HS-23 + HS-24 + HS-25) in the ledger voice, per-package
-`git add Host/`; (b) if HS-25 named a client-side depacketizer change,
-launch that root-package slice; (c) the owner's quality eyeball on the p4
-recipe is still open — a clean-path session should look markedly sharper
-than the trip-era "moderate". Then the ladder continues: Q-1 (fold
-`encoder-ab.sh` into the beauty-bar convention; fix the estimator
-formatter bug that prints "462,090 kbps delivery"), and the H4 4:4:4 wave.
+**IMMEDIATE RESUME POINT:** HS-25 is landed and the ledger through its
+wave entry is committed — no slice is in flight. Open items, in order:
+(a) the owner's quality eyeball on the p4 recipe — a clean-path session
+should look markedly sharper than the trip-era "moderate" (the owner was
+re-attached to 41151 at ~18:00 after the black-screen detour; verdict
+still pending); (b) Q-1 (fold `encoder-ab.sh` into the beauty-bar
+convention; fix the estimator formatter bug that prints "462,090 kbps
+delivery"); (c) the H4 4:4:4 wave — noting HS-25's named question for
+R2: whether capped-CQ keeps the right to mint ceiling-sized (223 KB)
+frames at all if 4:4:4 fattens IDRs routinely.
 
 # RESTARTING WORKERS IN A NEW CHAT (read before resuming)
 
@@ -85,59 +97,25 @@ regardless; only the live agent handle is lost. So resuming = (a) inspect
 what the stopped worker left on disk, (b) either keep or revert it, (c)
 relaunch a fresh worker to finish.
 
-**State at this chat's close (2026-07-28 ~17:29 MDT).** All this chat's
-workers are STOPPED (the 5-min liveness loop killed; HS-25 halted cleanly
-with a full report). GOOD NEWS: HS-25's FEC fix is **fully implemented and
-GREEN — Host suite 179/179 on BOTH Mac and pup** (sources already rsynced
-to pup). It is NOT broken WIP; it just never got its live proof or commit
-before the stop. Uncommitted at close:
-- `HANDOFF.md` (this file — coordinator's; safe to commit)
-- `Host/Sources/HostWire/Session.swift` — HS-25: `ingestVideoFrame`
-  pre-checks the frame against the live protectable ceiling; oversized
-  frames are DROPPED not thrown (`counters.videoFramesUnprotectable`,
-  `unprotectableKeyframePending` IDR latch, frame number NOT consumed so
-  the client sees no numbering gap).
-- `Host/Sources/HostWire/VideoChannel.swift` — HS-25: `maxProtectable
-  FrameByteCount` / `worstCaseProtectableFrameByteCount` (lossy+input-TLV
-  = 204 × 1095 = 223,380 B ceiling).
-- `Host/Sources/lyte-host/SessionWire.swift` — HS-25: read-only passthroughs.
-- `Host/Sources/lyte-host/main.swift` — HS-25: at encoder init in session
-  mode, caps opening VBV at 223,380 B if absent (capped-CQ, the live bug's
-  cause) or above worst-case, folded into frame 0's IDR; `armEncoderVbv`
-  baseline mirrors it so a squeeze→clean RESTORE can't re-open the hole.
-- `Host/Tests/HostWireTests/UnprotectableFrameGateTests.swift` — HS-25:
-  5 new pins (ceiling math, 255-shard boundary ships protected, 307 KB
-  repro drops without throwing + arms latch + keeps frame number, channel
-  seam still throws as backstop, lossy regime shrinks ceiling).
-(HS-23 `11f058f` and HS-24 `1d65bad` are already COMMITTED in Host/, not
-pushed; their HANDOFF wave entries plus HS-25's are the coordinator's to
-commit.) `git -C Host status` / `git diff Host/` to see it.
-
-**KEY FINDING — split-groups was ruled out (wire-contract reason).** The
-fec u64 (`Wire/Sources/LyteWire/FecField.swift`) has no group index; the
-group binding IS the envelope `frame` field, so multi-group-per-frame would
-be a wire-format change. Client side confirms it: `VideoAssembler` (Wire),
-consumed by `Sources/LyteTransport/LyteVideoPipeline.swift`, keys one group
-per frame number and can't reassemble a multi-group frame. So the chosen
-fix (byte-ceiling degrade + opening VBV cap) needs **NO client-side work** —
-this stays a Host-only slice. Don't re-litigate split-groups without a
+**State (2026-07-28 ~18:10 MDT).** NO workers in flight. The HS-25
+finisher ran to completion this session: live repro at the pre-fix HEAD
+(threw `unprotectableDataShardCount(230)` at packet 106, exit 1), proof
+at the fix (79.6 s, 1268 frames, 137 MB, zero unprotectable drops),
+secrets byte-identical throughout, commit `e82e88a` in Host/. The
+working tree is clean apart from any live coordinator edits to this
+file. HS-23 `11f058f`, HS-24 `1d65bad`, HS-25 `e82e88a` are all in
+Host/ and NOT pushed. The split-groups wire-contract finding lives in
+the HS-25 wave entry — don't re-litigate multi-group frames without a
 wire-v2 discussion first.
 
-**To FINISH HS-25 (not re-implement it), fresh worker, Host/ territory.**
-The code is done and green; three things remain: (1) **live repro-then-
-proof on pup** — put a Wayland-native 1080p60 pattern on the host screen
-(`XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0
-SDL_VIDEODRIVER=wayland ffplay -fs -f lavfi -i
-"testsrc2=size=1920x1080:rate=60"`), reproduce `unprotectableDataShard
-Count(279)` at the PRE-fix HEAD, then show the fix survives the same
-content with frames flowing via `.build/debug/lyte-cli wire-view <port>
---host 10.0.0.249` on a 41180+ port; KILL ffplay after; (2) append the
-HS-25 HANDOFF wave entry (leave uncommitted); (3) `git add Host/` + commit
-in the declarative em-dash voice, no push. Do NOT touch the owner's 41151
-loop or the secrets. If `git diff Host/` shows the WIP was reverted for any
-reason, the full re-implementation brief is: byte-ceiling degrade (drop
-oversized frames, never throw/exit) + cap opening VBV at the worst-case
-protectable ceiling; pin with `UnprotectableFrameGateTests`.
+**Mid-slice ops lesson (cost the owner two black-screen scares):** the
+HS-25 live legs collided with the owner's session twice — once via an
+advertised harness host (now playbook rule 5: `--no-advertise` always)
+and once via fullscreen ffplay starving the screencast (now playbook
+rule 4: windowed patterns only). When a slice runs live legs on pup
+while the owner might connect, expect their glass to show the test
+pattern (both hosts capture the same physical screen) and tell them
+before the leg, not after they report black.
 
 **To re-arm the 5-minute worker-liveness loop** (optional; only if the
 owner wants the auto-watchdog cadence). Start ONE background shell, unique
@@ -2728,6 +2706,87 @@ its entry at the marker at the end of this block.*
   text pathology it fixes. (iii) Temporal AQ's open-without-lookahead
   means the wrapper accepts it silently — if a future SDK makes it
   real, the ladder will see it; nothing to do now.
+
+- **HS-25 — no single frame is worth the session; the FEC block's brim
+  becomes a ceiling, not a cliff** (`e82e88a`, Host/): the
+  session-killer the 50 Mbps + p4 recipe uncovered live (2026-07-28
+  ~17:15): a ~307 KB full-screen IDR packetized to **279 data shards**,
+  past the GF(2⁸) Reed-Solomon 255-shard block, and
+  `unprotectableDataShardCount(279)` thrown out of the send path EXITED
+  the host — client black, session dead. The trigger posture was
+  capped-CQ, which opened with NO VBV at all.
+  SPLIT-GROUPS RULED OUT (the wire-contract finding, settled): the fec
+  u64 (`FecField`) carries no group index — the group binding IS the
+  envelope `frame` field, and the client's `VideoAssembler` keys one
+  group per frame. Multi-group-per-frame is a wire-format change
+  needing a wire-version discussion. The chosen fix is a ceiling, and
+  it is HOST-ONLY — **no client-side depacketizer change is needed**.
+  THE FIX, enforced twice:
+  • `Session.ingestVideoFrame` reads the LIVE protectable ceiling
+    (`maxDataShards(regime)` × the config's real shard budget —
+    254,331 B clean / 223,380 B lossy-with-input-stamp) and DROPS a
+    frame past it: `videoFramesUnprotectable` counted, the coalesced
+    keyframe latch armed (the re-encode re-anchors the chain), the
+    frame number UNCONSUMED so the client sees no numbering gap. The
+    `VideoChannel` seam still throws — session guard is policy, the
+    channel invariant stays the loud W2 backstop.
+  • The shell caps the OPENING VBV at the worst-case ceiling
+    (223,380 B = 204 × 1,095, lossy + input TLV) whenever the recipe's
+    own VBV is absent (capped-CQ — the live trigger) or larger, folded
+    into frame 0's forced IDR (costs nothing); `armEncoderVbv`'s
+    baseline mirrors the same cap so a squeeze→clean RESTORE returns to
+    the guarded posture and can never re-open the >255-shard hole.
+  Suite **174 → 179/179, Mac AND pup** (5 new pins,
+  `UnprotectableFrameGateTests`): the ceiling is the block math
+  exactly; a ceiling-sized frame ships as 231+24 fully protected at the
+  brim; the 307 KB live-repro frame drops without throwing, arms the
+  latch ONCE, and keeps its frame number; the channel seam still throws
+  past the ceiling; a lossy regime flip shrinks the ceiling and the
+  guard follows.
+  THE LIVE GATE (pup; moving-noise leg — windowed ffplay
+  `color=gray:s=2048x1280:r=15,noise=alls=100:allf=t+u`; 15 fps because
+  50 Mbps VBR ÷ ~36 fps of testsrc2 averages ~104 KB/frame and its
+  IDRs peaked at 213 KB, UNDER the cap — the lower rate hands each
+  frame the budget to burst it):
+  • **Repro at 7e52ee0** (pre-fix, port 41181): host threw
+    `unprotectableDataShardCount(230)` at packet 106 and EXITED
+    (code 1) — moments after a ratchet clean-RESTORE re-opened the
+    encoder to `max 50000 kbps, vbv 6250000 B`, exactly the
+    squeeze→restore hole the baseline mirror closes; the client's
+    session CLOSED at 105 decoded frames. The live crash class, on
+    demand.
+  • **Proof at the fix** (port 41182, same content and flags, 79.6 s):
+    init logs `unprotectable-frame guard — opening vbv capped at
+    223380 B`; **1268 frames encoded (29 IDR) → 117,196 shards →
+    140,989 datagrams (137.4 MB), 0 dropped unprotectable** (live
+    ceiling 254,331 B clean); 15/15 vbv directives applied and every
+    RESTORE re-opened to `vbv 223380 B`, never above; client decoded
+    1243 / skipped 10 of 138,787 datagrams (all ok), frame max
+    132,016 B — comfortably under the ceiling, so the guard's drop
+    path stayed at ZERO by construction, exactly as designed. Host
+    exit 0, and only because the harness client left.
+  HYGIENE: all three secrets byte-identical before/after
+  (sha256 pinned: portal_token dadf9a66…, noise_static.key 72860390…,
+  paired_clients 8dc1f88a…); owner's 41151 loop alive throughout and
+  at close; ffplay killed, pup's `~/src/lyte-host-prefix` and the
+  local `/tmp/lyte-prefix` worktree removed.
+  BURNED INTO PROCEDURE (two live finds):
+  (i) **Harness hosts MUST run `--no-advertise`** — the first repro
+  attempt advertised `_lyte._udp` as "pup #2" and the OWNER'S APP
+  discovered and handshook it (their glass went black mid-slice; the
+  coordinator re-attached them to 41151). A wire-view harness connects
+  explicitly by `--host`; it never needs the advertisement.
+  (ii) **Fullscreen ffplay starves the Mutter screencast** — with
+  `-fs`, the portal granted the node but PipeWire delivered ZERO
+  frames for 105 s (direct scanout; portal restarts don't fix it).
+  Windowed at full size, frames flow. HS-24's Wayland-native rule
+  stands, minus the `-fs`.
+  NAMED FOR THE NEXT RUNG: the guard prices protection, not delivery —
+  a ceiling-sized 255-shard group is ~24 datagram-milliseconds of wire
+  at 50 Mbps; if the H4 4:4:4 wave fattens IDRs toward the ceiling
+  routinely, the recipe conversation (R2's recipe-vs-wire
+  reconciliation) should decide whether capped-CQ keeps the right to
+  mint 223 KB frames at all.
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
