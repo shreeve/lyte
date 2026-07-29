@@ -899,17 +899,14 @@ final class Sink {
             ) == 0 {
                 encoderReconfigures += 1
                 // The books' cause tag for the IDR this reconfigure is
-                // about to force (nvenc resets on any rc delta):
-                // tighten / rung (a coalesced loosening step) / restore
-                // (back at the recipe cap).
-                let before = lastAppliedDirective?.maxBitsPerSecond
-                    ?? Int(opts.bitrate)
-                if directive.maxBitsPerSecond >= Int(opts.bitrate) {
-                    pendingIdrCauses.append("vbv-restore")
-                } else if directive.maxBitsPerSecond < before {
-                    pendingIdrCauses.append("vbv-tighten")
-                } else {
-                    pendingIdrCauses.append("vbv-rung")
+                // about to force (nvenc resets on any rc delta) — the
+                // policy names its own move now (HS-27): tighten /
+                // rung (a sustained loosening step) / restore (the
+                // recipe back).
+                switch directive.kind {
+                case .tighten: pendingIdrCauses.append("vbv-tighten")
+                case .loosen: pendingIdrCauses.append("vbv-rung")
+                case .restore: pendingIdrCauses.append("vbv-restore")
                 }
                 lastAppliedDirective = directive
                 let avg = directive.averageBitsPerSecond
@@ -1881,7 +1878,9 @@ func run() throws {
         \(s.rateChanges) pacer moves; frameByteCeiling@\(opts.fps)fps \
         \(wire.frameByteCeiling(fps: Int(opts.fps))) B
         encoder-vbv: \(wire.vbvDirectivesIssued) directives, \
-        \(sink.encoderReconfigures) applied\(vbvFinal)
+        \(sink.encoderReconfigures) applied, \
+        \(wire.vbvRateMovesAbsorbed) rate moves absorbed \
+        (pacer-only, no encoder reset)\(vbvFinal)
         repair: \(s.nackEntriesReceived) NACK entries \
         (\(s.nacksHonored) honored → \(s.repairDatagramsEnqueued) repair \
         datagrams, \(s.nacksJudgedStale) stale, \

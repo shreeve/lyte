@@ -191,6 +191,13 @@ final class SessionWire {
     private var vbvPolicy: EncoderVbvPolicy?
     private(set) var vbvDirectivesIssued = 0
     private(set) var lastVbvDirective: EncoderRateDirective?
+    /// HS-27 books: estimator moves the rung ladder absorbed — the
+    /// pacer carried them alone, zero encoder resets, zero IDRs.
+    var vbvRateMovesAbsorbed: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return vbvPolicy?.rateMovesAbsorbed ?? 0
+    }
     /// ECONNREFUSED evidence (LYTE_NETIO_PEER_GONE): the client's socket
     /// is closed — session-ending, not an I/O failure (HS-11).
     private(set) var peerGone = false
