@@ -77,14 +77,41 @@ final class AudioPcmRing: @unchecked Sendable {
     let underrunFrames = Atomic<UInt64>(0)
     let framesRendered = Atomic<UInt64>(0)
 
+    /// HS-31 declick: a ring underrun used to hard-cut to zeros, and
+    /// every edge was an audible crack (worst live leg: 1.58 s of
+    /// zero-fill = hundreds of them). Instead, the pad now DECAYS the
+    /// boundary sample linearly to true zero over ~2 ms — continuous
+    /// by construction no matter where inside a callback the shortfall
+    /// lands — and recovery CROSSFADES from the tail's current value
+    /// into the real samples over the same window. All state below is
+    /// render-thread-only (the callback is the sole toucher) and
+    /// preallocated: no locks, no allocation, no runtime calls join
+    /// the hot path.
+    static let declickFrames = 96                    // 2 ms at 48 kHz
+    private let tailBase: UnsafeMutablePointer<Float>    // per channel
+    private let resumeBase: UnsafeMutablePointer<Float>  // per channel
+    private let lastOut: UnsafeMutablePointer<Float>     // per channel
+    private var tailDone = 0        // decay frames emitted this episode
+    private var fadeInLeft = 0      // crossfade-in frames still owed
+    private var inStarvation = false
+
     init() {
         let count = Self.capacityFrames * AudioWire.channels
         buffer = .allocate(capacity: count)
         buffer.initialize(repeating: 0, count: count)
+        tailBase = .allocate(capacity: AudioWire.channels)
+        tailBase.initialize(repeating: 0, count: AudioWire.channels)
+        resumeBase = .allocate(capacity: AudioWire.channels)
+        resumeBase.initialize(repeating: 0, count: AudioWire.channels)
+        lastOut = .allocate(capacity: AudioWire.channels)
+        lastOut.initialize(repeating: 0, count: AudioWire.channels)
     }
 
     deinit {
         buffer.deallocate()
+        tailBase.deallocate()
+        resumeBase.deallocate()
+        lastOut.deallocate()
     }
 
     var depthFrames: Int {
@@ -94,8 +121,11 @@ final class AudioPcmRing: @unchecked Sendable {
 
     /// Render-thread side: fills the DEINTERLEAVED channel buffers the
     /// engine hands a standard-format source node (mixer inputs must
-    /// be standard — an interleaved connection raises an NSException),
-    /// zero-padding a shortfall (counted while the stream flows).
+    /// be standard — an interleaved connection raises an NSException).
+    /// A shortfall is declicked (HS-31), never hard-cut: the pad
+    /// decays the boundary sample to zero over ~2 ms and recovery
+    /// crossfades back in; underruns are counted while the stream
+    /// flows, exactly as before.
     func render(
         into buffers: UnsafeMutableAudioBufferListPointer, wanted: Int
     ) {
@@ -103,17 +133,64 @@ final class AudioPcmRing: @unchecked Sendable {
         let write = writeCounter.load(ordering: .acquiring)
         let available = min(wanted, write - read)
         let channels = AudioWire.channels
+        let fade = Self.declickFrames
+        let invFade = 1 / Float(fade)
+        let starving = available < wanted
+        let episodeStart = starving && !inStarvation
+        let tailStart = episodeStart ? 0 : tailDone
+        // First callback after an episode: the crossfade-in starts
+        // from the tail's CURRENT value — zero once the decay ran its
+        // 2 ms (the common case: underruns last ≥ one 5 ms packet),
+        // mid-decay if recovery came sooner. Either way, continuous.
+        if !starving, inStarvation {
+            let level = Float(max(0, fade - tailDone)) * invFade
+            for channel in 0..<channels {
+                resumeBase[channel] = tailBase[channel] * level
+            }
+        }
+        let fadeInStart = fadeInLeft
         for channel in 0..<min(channels, buffers.count) {
             guard let out = buffers[channel].mData?
                 .assumingMemoryBound(to: Float.self)
             else { continue }
             for frame in 0..<available {
                 let slot = ((read + frame) % Self.capacityFrames) * channels
-                out[frame] = buffer[slot + channel]
+                var sample = buffer[slot + channel]
+                if frame < fadeInStart {
+                    // Linear crossfade: real ramps in, the held tail
+                    // value ramps out; the gains sum to one.
+                    let k = Float(fade - fadeInStart + frame)
+                    sample = sample * (k + 1) * invFade
+                        + resumeBase[channel] * (Float(fade) - k - 1)
+                        * invFade
+                }
+                out[frame] = sample
             }
-            for frame in available..<wanted {
-                out[frame] = 0
+            if starving {
+                if episodeStart {
+                    tailBase[channel] = available > 0
+                        ? out[available - 1] : lastOut[channel]
+                }
+                // The decay tail: continuous with the boundary sample
+                // wherever the shortfall lands, true zero from `fade`
+                // pad frames onward.
+                let base = tailBase[channel]
+                for frame in available..<wanted {
+                    let index = tailStart + (frame - available)
+                    out[frame] = index < fade
+                        ? base * Float(fade - 1 - index) * invFade
+                        : 0
+                }
             }
+            if wanted > 0 { lastOut[channel] = out[wanted - 1] }
+        }
+        if starving {
+            tailDone = tailStart + (wanted - available)
+            inStarvation = true
+            fadeInLeft = fade
+        } else {
+            fadeInLeft = max(0, fadeInStart - available)
+            inStarvation = false
         }
         if available < wanted {
             let last = lastWriteMicros.load(ordering: .relaxed)
