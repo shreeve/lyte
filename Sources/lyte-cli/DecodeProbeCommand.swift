@@ -46,6 +46,9 @@ struct DecodeProbe: AsyncParsableCommand {
     @Option(name: .long, help: "Append every decoded frame's planes (row padding stripped) to this raw file for offline comparison")
     var dump: String?
 
+    @Option(name: .long, help: "Dump only these decoded-frame indices (comma list; 'last' = final decoded frame, always written after the listed ones) — V-3's harness dumps '0,last' instead of a 240-frame static leg")
+    var dumpFrames: String?
+
     @Option(name: .long, help: "Render through a real AVSampleBufferDisplayLayer window and write a PNG screenshot here (the glass evidence)")
     var snapshot: String?
 
@@ -58,6 +61,16 @@ struct DecodeProbe: AsyncParsableCommand {
     func validate() throws {
         guard ["native", "bgra"].contains(pixelFormat) else {
             throw ValidationError("--pixel-format wants native|bgra, got '\(pixelFormat)'")
+        }
+        if let dumpFrames {
+            guard dump != nil else {
+                throw ValidationError("--dump-frames needs --dump")
+            }
+            for part in dumpFrames.split(separator: ",") {
+                guard part == "last" || Int(part) != nil else {
+                    throw ValidationError("--dump-frames wants comma-separated indices or 'last', got '\(part)'")
+                }
+            }
         }
     }
 
@@ -90,6 +103,25 @@ struct DecodeProbe: AsyncParsableCommand {
         }
         defer { try? dumpHandle?.close() }
 
+        // --dump-frames selection: explicit indices stream out in decode
+        // order; 'last' is held back and appended after the loop.
+        var wantedIndices: Set<Int>?
+        var wantLast = false
+        if let dumpFrames {
+            var indices = Set<Int>()
+            for part in dumpFrames.split(separator: ",") {
+                if part == "last" {
+                    wantLast = true
+                } else if let i = Int(part) {
+                    indices.insert(i)
+                }
+            }
+            wantedIndices = indices
+        }
+        var lastFrameData: Data?
+        var lastFrameIndex = -1
+        var dumpedIndices = Set<Int>()
+
         for (i, range) in ranges.enumerated() {
             let annexB = Array(bytes[range])
             let unit = DecodeUnit(
@@ -115,7 +147,19 @@ struct DecodeProbe: AsyncParsableCommand {
                     printPixelBuffer(buffer)
                 }
                 if let dumpHandle {
-                    try dumpPlanes(of: buffer, to: dumpHandle)
+                    let index = decoded - 1
+                    if let wantedIndices {
+                        if wantedIndices.contains(index) {
+                            try dumpHandle.write(contentsOf: planeData(of: buffer))
+                            dumpedIndices.insert(index)
+                        }
+                        if wantLast {
+                            lastFrameData = planeData(of: buffer)
+                            lastFrameIndex = index
+                        }
+                    } else {
+                        try dumpHandle.write(contentsOf: planeData(of: buffer))
+                    }
                 }
             } catch {
                 failures += 1
@@ -123,6 +167,12 @@ struct DecodeProbe: AsyncParsableCommand {
                     print("probe: frame \(i) decode FAILED — \(error)")
                 }
             }
+        }
+
+        if wantLast, let lastFrameData, let dumpHandle,
+           !dumpedIndices.contains(lastFrameIndex) {
+            try dumpHandle.write(contentsOf: lastFrameData)
+            print("probe: dumped last decoded frame (index \(lastFrameIndex))")
         }
 
         let hw: String
@@ -195,7 +245,7 @@ struct DecodeProbe: AsyncParsableCommand {
 
     // MARK: - Plane dump (row padding stripped, planes in order)
 
-    private func dumpPlanes(of buffer: CVPixelBuffer, to handle: FileHandle) throws {
+    private func planeData(of buffer: CVPixelBuffer) -> Data {
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
         let planes = CVPixelBufferIsPlanar(buffer)
@@ -211,15 +261,16 @@ struct DecodeProbe: AsyncParsableCommand {
                 CVPixelBufferGetWidth(buffer),
                 CVPixelBufferGetHeight(buffer),
                 planeBytesPerPixel(of: buffer, plane: nil))]
+        var out = Data()
         for (base, bytesPerRow, width, height, bytesPerPixel) in planes {
             guard let base else { continue }
             let rowBytes = min(width * bytesPerPixel, bytesPerRow)
-            var out = Data(capacity: rowBytes * height)
+            out.reserveCapacity(out.count + rowBytes * height)
             for row in 0..<height {
                 out.append(Data(bytes: base + row * bytesPerRow, count: rowBytes))
             }
-            try handle.write(contentsOf: out)
         }
+        return out
     }
 
     /// Bytes per pixel of one plane, from the CoreVideo pixel-format
