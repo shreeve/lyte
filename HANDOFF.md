@@ -3779,6 +3779,95 @@ its entry at the marker at the end of this block.*
   RAILS: secrets sha-identical (pinned trio); ffplay + iperf3 +
   test host killed at close; owner's 41151 loop untouched and alive.
 
+- **HS-27 slice (a) — rate moves stop minting IDRs: the encoder
+  posture parks on halving rungs and 2419 estimator moves ride the
+  pacer for zero resets** (`f0f62a4`, Host/ only, not pushed).
+  THE INVESTIGATION FIRST (the brief's option 1, closed honestly):
+  pup runs distro FFmpeg 8.0.1 (`libavcodec62 7:8.0.1-3ubuntu2`,
+  shared). n8.0.1 nvenc.c `reconfig_encoder` (fetched and read at the
+  tag) gates rc deltas on `support_dyn_bitrate` and sets
+  `resetEncoder = 1; forceIDR = 1` UNCONDITIONALLY for any
+  avg/max/VBV change — no AVOption avoids it. NVENC's own
+  NvEncReconfigureEncoder does support resetEncoder=0/forceIDR=0
+  rate moves, but the session handle lives in the wrapper's private
+  NvencContext: reaching it means offset-hacking a distro .so's
+  private struct (and desyncs the wrapper's cached encode_config,
+  whose diff drives reconfig), and a raw NVENC SDK rewrite of
+  CHevcEncode would re-risk everything landed (VUI truth-signing,
+  Rext 444, the ratchet). Non-IDR reconfigure through THIS libavcodec
+  is structurally unreachable — option 2 chosen, recorded here so
+  nobody re-derives it.
+  THE DESIGN (EncoderVbvPolicy, HostWire — RateEstimator untouched
+  by construction, slice (b) lands orthogonally): the posture is
+  QUANTIZED to halving rungs of the recipe cap (rung_i = cap/2^i),
+  applied rung = smallest rung ≥ the live ceiling-rate (round UP —
+  the posture never sits below the wire; the PACER enforces the
+  exact fine rate at zero encoder cost, the backpressure gate bounds
+  the ≤2.2× posture/pacer slack). Asymmetric hysteresis: a TIGHTEN
+  past a 10%-margined rung boundary fires instantly (the fall side
+  is B2's; protection stays real); a LOOSENING (rung climb or
+  restore) fires only after the want holds CONTINUOUSLY for 10 s
+  (`riseSustainNS`) and jumps to the rung of the window's MINIMUM
+  ceiling — a hunt whose falls recur inside the window resets the
+  clock every cycle, so the posture PARKS and the whole hunt is
+  absorbed. The k-window VBV ladder rides at the rung's own depth;
+  rung_0 mins back to the HS-25 guarded baseline, so marginal
+  squeezes and clean-boundary flapping cost NOTHING. Books:
+  `EncoderRateDirective.kind` (tighten/loosen/restore) makes the
+  idr-books tags policy-decided instead of sink-inferred, and
+  `rateMovesAbsorbed` counts every polled ceiling move that touched
+  no encoder — the stats line prints it ("2419 rate moves absorbed
+  (pacer-only, no encoder reset)"), the honest stand-in for the
+  unreachable "non-IDR reconfigures applied".
+  EVIDENCE (quality-probe.sh re-run whole at `cea0ef6`+slice, port
+  41209 `--no-advertise`, the standing recipe; summary
+  /tmp/quality-probe-summary.txt, logs pup /tmp/hs27-{before,after}-
+  wire-{armed,twin}.log + ~/qprobe/, local /tmp/hs27-qprobe-run.log
+  + /tmp/qprobe-local/):
+  **before (932a4c3 leg): 38 IDRs = 15.19/min, 31 directives / 31
+  applied — vbv-rung 17 + vbv-tighten 13 + vbv-restore 1 (+ client 7,
+  opening 1), ≈0.12 IDR per estimator move. After: 19 IDRs =
+  7.60/min, 14 directives / 14 applied / 2419 moves absorbed —
+  vbv-rung 7 + vbv-tighten 7 + restore 0 (+ client 4, opening 1):
+  the MULTIPLIER is 14/2433 ≈ 0.006 IDR per rate move, 20× down —
+  the slice's success metric, met.** Row printed: `2026-07-29 @
+  cea0ef6 | static 52.03 PASS | motion 59.72 PASS | fps 61 PASS |
+  IDR 7.6 FAIL | churn 0 PASS | loss 0 PASS` — fps p50 58 → 61.
+  THE RESIDUE IS SLICE (b)'S, VISIBLY: the per-IDR trace shows every
+  remaining reconfigure IDR inside the estimator's known HS-22b(ii)
+  floor spirals (three collapses; each walks the ladder down ~3
+  tightens in ~2 s, each recovery pays one rung per 10 s sustain;
+  the leg ENDS floor-pinned at 390 kbps believing 1.2 Mbps delivery
+  on the wire the truth-probe proved carries 30+ Mbps). Between
+  collapses the saw-tooth parked completely. IDR ≤2/min stays red
+  until the estimator stops diving — reported loudly, as briefed.
+  HONESTY LEG INTACT: the twin `--no-vbv-reconfigure` run froze the
+  glass again (fps p50 1, 81 IDR = 32.4/min of client begging) —
+  the directives stay load-bearing; the ladder coarsens their
+  cadence, never their protection.
+  Suites: Host 192 → **196/196 Mac AND pup** (new pins: the
+  saw-tooth hunt pays zero encoder touches; deep falls tighten
+  immediately through any hold; sustained loosening jumps to the
+  held minimum's rung; recurring falls reset the sustain clock;
+  guarded-baseline engage and restore are free; boundary dither
+  parks; absorbed moves counted only on real ceiling moves).
+  RAILS: three secrets sha-identical at close against the pinned
+  trio (dadf9a66…37cf / 72860390…cfed / 8dc1f88a…55fd — probe
+  verified + re-checked by hand); ffplay/iperf/test hosts all dead,
+  41209 free; the owner's 41151 loop untouched and alive (it
+  self-respawned mid-session per its own cadence and now runs the
+  HS-27 build — the HS-26 precedent).
+  NAMED FOR SLICE (b): (i) the estimator's floor spirals are now the
+  ONLY remaining reconfigure-IDR source at the bar — when the fall
+  law stops trusting self-squeezed delivery samples, the vbv books
+  should read ~opening-only and the IDR row goes green on this
+  ladder unchanged; (ii) `riseSustainNS` (10 s) sets the recovery
+  ladder's climb cadence — if slice (b) makes genuine recoveries
+  common, that knob trades climb IDRs against mud time and is the
+  first thing to retune (it is config, not law); (iii) the absorbed
+  counter gives slice (b) a free live discriminator: estimator moves
+  vs encoder touches, one stats line.
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
