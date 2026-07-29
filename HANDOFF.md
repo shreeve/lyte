@@ -151,12 +151,20 @@ of the wave block):
    BYTE-EXACT** (wl-copy PNG → Mac pasteboard sha-identical; Mac
    screenshot → pup wl-paste sha-identical; loopEcho suppressed
    live; the Mutter mime question answered — image/png, first try).
-4. **REMAINING**: the beauty-bar re-measurement — the fps row at the
-   glass (`quality-probe.sh`, post-HS-26) and the IDR row against
-   REAL Wi-Fi weather (post-dwell-deferral; the tbf dwell was
-   synthetic) — plus the owner's UI eyeball (Chroma tiers, photo
+4. ~~The beauty-bar re-measurement~~ — **RAN at `932a4c3`** (row +
+   footnote ² in the bar table): **fps 47 → 58 PASS (HS-26 confirmed
+   at the glass; that red is retired)**; static/motion/churn/loss all
+   PASS; **IDR 15.2/min FAIL, LOUDER** — the freed 60 fps appetite
+   saturates the path, the estimator saw-tooths (15 falls / 242
+   rises), every rc delta still mints an IDR (books: rung 17 +
+   tighten 13 + restore 1 + client 7 + opening 1). Two named slices:
+   non-IDR reconfigure (intra-refresh) in the encode leaf, and
+   near-ceiling hunt damping in the estimator (footnote ² is the
+   brief).
+5. **REMAINING**: the owner's UI eyeball (Chroma tiers, photo
    toggle, banners: `open .build/Lyte.app`, connect to pup 41151 —
-   it agrees at 444).
+   it agrees at 444), then the IDR slice(s) above — the last red
+   between H4 and a clean bar.
 Named-but-not-blocking: a genuine squeeze still costs 3 IDRs (every
 nvenc rc delta forces one — intra-refresh / non-IDR reconfigure is
 the candidate slice); no [420]-only host exists anywhere for a live
@@ -659,6 +667,29 @@ previous one) · **loss** ≤ 1 wire frame per 150 s leg.
 | date @ build | static dB | motion dB | fps p50 | IDR/min | churn | loss |
 |---|---|---|---|---|---|---|
 | 2026-07-28 @ 8dc049a | 51.27 PASS | 59.75 PASS | 47 FAIL¹ | 3.9 FAIL¹ | 0 PASS | 0 PASS |
+| 2026-07-29 @ 932a4c3 | 52.03 PASS | 59.73 PASS | 58 PASS² | 15.2 FAIL² | 0 PASS | 0 PASS |
+
+² Post-HS-26/IDR-hunt re-measurement (row printed by quality-probe.sh
+at `932a4c3`; logs pup `~/qprobe/`, local `/tmp/qprobe-local`).
+**fps 47 → 58 PASS — HS-26's fix is confirmed AT THE GLASS**; the
+fps red is RETIRED. **The IDR red got LOUDER (3.9 → 15.2/min) and
+the cause-tagged books name it exactly**: 38 IDRs = vbv-rung 17 +
+vbv-tighten 13 + vbv-restore 1 + client-request 7 + opening 1, over
+15 overuse falls / 242 evidence rises in 150 s. The freed 60 fps
+appetite (~43 Mbps at the recipe) saturates the delivered ~20 Mbps
+path, so the estimator hunts a saw-tooth the whole leg — and every
+nvenc rc delta still forces an IDR, so the hunt's frequency
+multiplies the known per-reconfigure cost. NOT the dwell bug
+returning (churn 0, loss 0 — the deferral held where it applies) and
+NOT deletable machinery (twin `--no-vbv-reconfigure` leg: glass
+FROZEN, fps p50 0, 30.2 IDR/min of client begging — directives stay
+load-bearing). Two named slices fall out: (a) a non-IDR rate
+reconfigure path in the encode leaf (intra-refresh — kills the
+multiplier); (b) near-ceiling hunt damping in the estimator (kills
+the frequency). Also eye-on: delivered ~20 Mbps on the post-move
+clean wire that bulk-tested ~160 Mbps — whether that's real airtime
+under 43 Mbps appetite or the HS-22b self-reference seam is part of
+slice (b)'s brief.
 
 ¹ The two reds are FINDINGS, dated at HEAD and reported loudly in the
 Q-1 wave entry (ledger-drain addendum): **fps** — the glass ran a
