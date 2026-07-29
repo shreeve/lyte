@@ -670,6 +670,7 @@ previous one) · **loss** ≤ 1 wire frame per 150 s leg.
 | 2026-07-29 @ 932a4c3 | 52.03 PASS | 59.73 PASS | 58 PASS² | 15.2 FAIL² | 0 PASS | 0 PASS |
 | 2026-07-29 @ 8e1e8ca | 52.03 PASS | 59.72 PASS | 61 PASS³ | 6.8 FAIL³ | 0 PASS | 6 FAIL³ |
 | 2026-07-29 @ be60e92 | 52.03 PASS | 59.73 PASS | 61 PASS⁴ | 6.4 FAIL⁴ | 0 PASS | 0 PASS⁴ |
+| 2026-07-29 @ db84c1b | 53.85 PASS | 59.72 PASS | 61 PASS⁵ | 8.4 FAIL⁵ | 0 PASS | 0 PASS⁵ |
 
 ² Post-HS-26/IDR-hunt re-measurement (row printed by quality-probe.sh
 at `932a4c3`; logs pup `~/qprobe/`, local `/tmp/qprobe-local`).
@@ -692,6 +693,27 @@ the frequency). Also eye-on: delivered ~20 Mbps on the post-move
 clean wire that bulk-tested ~160 Mbps — whether that's real airtime
 under 43 Mbps appetite or the HS-22b self-reference seam is part of
 slice (b)'s brief.
+
+⁵ HS-30 row AT THE LEAKED BUILD (probe at `db84c1b`) — recorded
+un-massaged per the bar's law, and its red taught the fix. Static
+improved (53.85), loss held green through visibly worse air (56
+missing datagrams, FEC healed every frame), fps 61 — but IDR ROSE to
+8.4 because mechanism 1's drains-only cap LEAKED: samples at
+1.0–1.25× pace slip the drain classification and raised the belief
+to 61 Mbps over the 50 cap, so the probe ceiling never bound while
+the cadence (545 held rises) worked alone. The refine (`3f6fcf1`):
+**every** belief raise caps at the pace behind it — no arrival
+outruns its sending. At the refined build (155 s armed leg, not yet
+an official row): belief an honest 50000, **IDR 4.26/min** (rung 4 +
+tighten 4 + client 2 + opening 1), 6 falls, 307 cadence-held rises.
+Honesty leg at the refine: fall **519 ms** after a 25 Mbit tbf
+onset, anchored 27.2 Mbps ≈ the shaper, full recovery to ceiling.
+THE REMAINDER, NAMED: each genuine weather dip deep enough to cross
+an HS-27 rung costs 2 IDRs (tighten down + rung back up) — ~4
+episodes in the leg. The endgame candidates: wider rung 0 /
+dip-scoped rung hysteresis (Host/, cheap), or the true kill — a
+non-IDR encoder reconfigure path (the FFmpeg wall, HS-27's named
+remainder). Official probe row for `3f6fcf1` queued.
 
 ⁴ Post-HS-29 row (probe at `be60e92`; logs pup `~/qprobe/`). **The
 loss red is RETIRED — 1 datagram missing in 117,192, 0 frames lost**
@@ -4054,6 +4076,44 @@ its entry at the marker at the end of this block.*
   noqueue after both tbf legs; ffplay + all test hosts dead; owner's
   41151 loop untouched; logs pup `/tmp/hs29-*` + `~/qprobe/`, local
   scratchpad `beauty-bar-run3.log`, `hs29-honesty*.log`.
+
+- **HS-30 — burst-vs-sustainable belief + probe cadence: the last
+  red's endgame opens, and the leak teaches the law its final form**
+  (`db84c1b` the two mechanisms + `3f6fcf1` the refine; Host/ only,
+  not pushed; coordinator-inline — the worker pool stayed down on
+  529s all afternoon).
+  MECHANISM 1 (sustainable belief): belief raises cap at the PACE the
+  train was sent behind. First cut capped only classified drains
+  (≥1.25× pace) — the official row ⁵ probe caught the leak (samples
+  at 1.0–1.25× pace raised the belief to 61 Mbps over the 50 cap;
+  IDR 8.4/min). The refine is the law's final form: `min(rate, pace)`
+  universally — **no arrival outruns its sending**. One HS-28 pin
+  amended with documentation (the drain-purge pin EXPECTED burst
+  inflation — that expectation was the bug; its protective
+  assertions stand, now bounded both sides).
+  MECHANISM 2 (probe cadence, BBR PROBE_BW's shape): an overuse fall
+  that fires inside the belief's headroom band arms a 10 s cadence
+  (`probeCadenceNS` knob); rises back INTO the band wait, climbs
+  below it stay continuous (HS-29's capacity-step pin unchanged —
+  20→45 in 6.7 virtual s). New stat `upshiftsCadenceHeld`, in the
+  books line.
+  GATES: Host 206 → **208/208 Mac AND pup** (drain-cap pin: a
+  300 Mbps burst moves the belief 20.0 → 20.5, not to 300; cadence
+  pin: fall in the band parks the climb below it, re-probes at
+  expiry).
+  MEASURED: official row ⁵ at `db84c1b` (leaked build) 8.4 FAIL —
+  recorded un-massaged, the red convicted the leak. At the refine
+  (155 s armed leg): belief honest 50000, **4.26 IDR/min** (rung 4 +
+  tighten 4 + client 2 + opening), 307 cadence-held rises, fps
+  intact. Honesty leg: fall **519 ms** after tbf onset anchored
+  27.2 Mbps ≈ the shaper, recovery to ceiling, qdisc removed,
+  secrets byte-identical, all test processes dead, owner's 41151
+  loop untouched. Official probe row for `3f6fcf1` queued.
+  THE REMAINDER (footnote ⁵): genuine weather dips crossing an HS-27
+  rung cost 2 IDRs each (tighten + recovery rung). Candidates:
+  dip-scoped rung hysteresis (cheap) vs the true kill, a non-IDR
+  encoder reconfigure (the FFmpeg wall). Bar ≤2/min needs roughly
+  half of 4.26's episode cost gone.
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
