@@ -4130,6 +4130,80 @@ its entry at the marker at the end of this block.*
   encoder reconfigure (the FFmpeg wall). Bar ≤2/min needs roughly
   half of 4.26's episode cost gone.
 
+- **HS-31 — the audio trio: the pops' three seams closed — audio
+  stops waiting out video's deficit, the parked sender thread gets
+  its wake, and the underrun boundary stops cracking** (`39d6786`
+  Host/, `2049ede` root; not pushed).
+  FIX 1 (the careful one, consult-corrected shape — NOT the §1
+  serialization floor, which converts delay into bursts): at deep
+  falls the 1 ms quantum shrinks below one datagram (62 B at the
+  500 kbps floor), so one ~1230 B video datagram emits alone and
+  drives the shared bucket ~19 ms negative; strict priority could
+  not preempt an in-flight deficit, and `setRate` carried the debt
+  across falls repriced at the new rate. Now LATENCY CLASSES
+  (control, audio) emit alone through a negative balance and CHARGE
+  the shared bucket (Pacer.swift nextBatch + nextWake): video repays
+  audio's bytes too, the wire total still honors the estimator's
+  verdict, the exemption's volume is structurally capped by strict
+  priority (~320 kbps incl. RS 4+2), and video never borrows it.
+  The trigger is surgical — only a negative balance (which only the
+  oversize-emit-alone clause can create), so every positive-bucket
+  behavior, the ≤1 ms batch bound, class order, DSCP 48, and R-G8
+  cadence are byte-identical.
+  FIX 2 (tiny): `sendAudioPacket` could exhaust its 4 bounded ~1 ms
+  retries and give up WITHOUT `signalDrain()` — the shard then sat
+  until the next video ingest woke the sender thread (+16 ms worst
+  on a 5 ms budget). Every exit now signals when audio is still
+  queued (including the error path).
+  FIX 3 (root): the client ring underrun hard zero-pad (every edge
+  an audible crack; worst leg 1.58 s of zero-fill) is declicked in
+  the render callback: the pad DECAYS the boundary sample to true
+  zero over ~2 ms — continuous by construction wherever the
+  shortfall lands, which a callback-local fade-out cannot promise —
+  and recovery CROSSFADES from the tail's standing value (covers
+  recovery landing mid-decay). Steady state byte-exact; underrun
+  books untouched; all state preallocated, render thread stays
+  lock/allocation-free.
+  PINNED: PacerTests ×2 (500 kbps deficit cadence ≤2 ms while video
+  pays the full debt + audio's charge; setRate-carried deficit) and
+  AudioGateTests through the REAL session path (nextWake=now with
+  audio queued under deficit — the seam fix 2's wake relies on; the
+  fix-2 sender-thread half itself is executable-only, code-reviewed
+  + live-proven). testGateAudioCadenceHoldsThroughRateCrash holds
+  unchanged. Root: AudioDeclickGateTests (4 legs) drives the
+  production render path into hand-built deinterleaved buffers —
+  no adjacent jump over the click threshold across cut/drought/both
+  recovery shapes, exact silence past the decay, byte-identical
+  steady state. Suites: Host 208 → **211/211 Mac AND pup**, root
+  193 → **197/197 Mac**.
+  LIVE PROOF (pup, tbf 25mbit dport-scoped dips ~t+30 for 20 s,
+  windowed Wayland testsrc2, wire-view --audio 90 s foreground;
+  logs /tmp/hs31-{before,after,after2}-*):
+  BEFORE (pre-fix binary, port 41225): falls to the 500 kbps floor;
+  **max audio queue delay 106.6 ms** (worse than the audit's
+  22.9–53.6); client plc 194 / late 192 / underrun 48,149 frames.
+  AFTER (fixed build): leg 1 (41227, floor hit twice) **6.16 ms**;
+  leg 2 (41229, fresh ffplay, much hotter — 84 MB vs 20 MB, 61 fps,
+  falls to 884 kbps) **8.07 ms**. Client books, honestly: leg 1
+  plc 112 / late 112 / underrun 31,934; leg 2 plc 191 / late 191 /
+  underrun 65,942 — the hotter leg's air cost more; underruns
+  remain radio-priced and their EDGES are now faded by fix 3 (the
+  counter is intentionally unchanged). The 20–50 ms → ≤ ~7 ms
+  target is met at 6.2 and grazed at 8.1 on the hot leg vs 106.6.
+  RAILS: secrets byte-identical before/after every leg (noise
+  72860390…cfed, paired 8dc1f88a…55fd; portal_token rotates by
+  design); wlp0s20f3 noqueue verified after each tbf; all leg
+  hosts/ffplay dead at close; owner's 41151 loop untouched (same
+  PID start to finish) — it launches `.build/debug/lyte-host`, so
+  its next respawn runs the HS-31 build (the HS-26 precedent).
+  NAMED FOR THE NEXT RUNG: (i) the 8.07 ms hot-leg max — worst
+  single wait in 17.7k packets, likely sender-thread scheduling
+  under load, worth a look if the owner still hears anything;
+  (ii) the leg-2 pattern "plc == late exactly" persists — arrivals
+  beyond the jitter target, the receiver's ledger is honest;
+  (iii) ffplay supply degrades over long runs (2,662 repeated
+  frames by leg AFTER-1) — fresh ffplay per leg stays the rule.
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
