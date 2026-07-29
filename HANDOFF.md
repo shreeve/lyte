@@ -3868,6 +3868,113 @@ its entry at the marker at the end of this block.*
   counter gives slice (b) a free live discriminator: estimator moves
   vs encoder touches, one stats line.
 
+- **HS-28 slice (b) — the estimator reformulation lands whole: a
+  capacity belief anchors every fall, all three shape-gates are
+  retired, and the truth-probe's limit cycle is dead at the glass**
+  (`03d96d1` the model + `ceed7b1` dwell-deferral retirement +
+  `1579043` stall-gate retirement + `544fa70` self-reference
+  retirement + `ed4d39f` the live-rerun fixes; Host/ only, not
+  pushed).
+  THE MODEL (RateEstimator, the brief's shape): the send ledger
+  records the pacer rate at each datagram's RELEASE; sample
+  production classifies every full train mechanically — CENSORED
+  (measures ≈ its own recorded pace; may only RAISE the belief),
+  HONEST (measured < 0.8 × pace — the path stretched it; it votes),
+  COMPRESSED (≥ 1.25 × pace — drain evidence, raises the belief AND
+  purges mid-hole honest votes). One belief `beliefBits`: raised
+  instantly by any delivery above it, demoted ONLY at an executing
+  fall to a fresh honest median (≤ 2 s old), NEVER by aging —
+  aging-while-censored was leg B's self-confirmation vector. The
+  fall law is one honesty law: verdicts decide WHEN (unchanged);
+  EXECUTE on instant corroboration (pre-FEC loss ≥ clean band, or
+  post-FEC > the rung-3 bar) or on pressure persisted a full
+  fall-limiter window into the next AND not purely self-explaining
+  (monotone queue growth, honest median under the belief, or no
+  standing backlog to blame); the fall lands at clamp(min(0.85 ×
+  demoted belief, 0.85 × rate)) — the raw-median anchor is
+  forensic-only now. Self-inflicted evidence recuses itself: NACKs
+  naming frames with shards still queued in our own pacer
+  (VideoChannel keeps per-frame books) feed nothing; the pre-FEC
+  ledger path was AUDITED CLEAN (host-side skips never consume a seq
+  or frame number). TX-stamp audit (measurement integrity i): the
+  ledger already stamps at pacer EGRESS — noteSent fires in the pump
+  sink with a fresh monotonic now, sendmmsg follows in the same
+  drain pass; contamination is µs-scale + ≤1 quantum of batch-shared
+  stamps. Full kernel-TX-stamp reconciliation (SO_TIMESTAMPING is
+  plumbed in CNetIO since HS-4 but unread by the live host) is the
+  named follow-on if socket-buffer blocking is ever suspected.
+  THE GATES: all three retired, one commit each, each justified by
+  its frozen pins passing without it (loop bounds widened from the
+  150 ms deferral budget to the 500 ms persistence span — the
+  brief's sanctioned ≤1 extra limiter beat; every asserted anchor
+  value untouched). The books keep the gates' vocabulary
+  (selfReferenceHolds / stallHolds / fallDeferrals) as
+  classification, not law; `selfReferenceBandFraction` retired with
+  its gate. New knobs: censoredSampleMarginFraction 0.2,
+  beliefDemotionSustainNS 500 ms, honestVoteWindowNS 2 s.
+  THE LIVE LOOP DID ITS JOB (the brief's "stop, fix the model"
+  path, exercised once): the first leg-B rerun beat the truth-probe
+  (recoveries to a restore, no limit cycle) but its forensics
+  convicted two residual seams in single lines — `honest 8316 kbps …
+  full-train 98429 kbps 0 ms ago` (mid-dwell stretched trains
+  reading honest while the drain that closed the hole sat in the
+  same report) and a 41 ms streak crashing to the floor on ~1%
+  post-FEC NACK echo as "instant" corroboration. Fixed in `ed4d39f`:
+  drains purge mid-hole votes at sample production (HS-23's insight
+  moved INTO the measurement), and sub-rung-3 post-FEC waits for
+  persistence. Both live shapes pinned verbatim in virtual time.
+  LEG B RERUN (pup 41213 `--no-advertise`, windowed testsrc2, Mac
+  wire-view 444 90 s, 35M flood at t+40; log /tmp/hs28-legb2-host.log):
+  **NO floor limit cycle.** Open → one honest fall (13.5 Mbps,
+  anchor = honest 15.9M, 521 ms streak) → steady climb to 49 Mbps —
+  the glass held 56–58 fps at ~39.7 Mbps steady pre-flood (vs the
+  truth-probe's 0.1–1.6 Mbps death). Flood window: genuine crash to
+  ~3M on 4.8% real pre-FEC loss (the flood took 35 of the ~45M the
+  air carries — iperf3 verified 45M/0% the same minute) with
+  IMMEDIATE recovery climb after; leg ended 22.6M still climbing.
+  5 falls total (was 9), every one carrying honest/corroborated
+  forensics; 1818 honest / 2628 censored trains classified live,
+  0 self-reference holds, 66 persistence deferrals, 5 stall holds.
+  HONESTY LEG (pup loopback 41217 + hs16-probe bind 41284, prio+u32
+  tbf 25mbit scoped to the probe port; /tmp/hs28-honesty-host.log):
+  squeeze onset → first fall in **519 ms**, anchored 22.0 Mbps =
+  0.85 × the honest 25.9M reading — at the shaper. Under the
+  sustained shaper the session parks in a tight 22.3–26.5M sawtooth
+  delivering ~23M through the 25M pipe. Fast fall intact, anchor
+  honest. Qdisc removed — lo back to noqueue, verified.
+  IDR/MIN, REPORTED STRAIGHT: clean armed leg (41215, no flood):
+  16 IDRs = 10.69/min (rung 5 + tighten 5 + restore 1 + client 4 +
+  opening 1) vs HS-27's 7.60/min — the counts are not comparable
+  leg-to-leg (this leg took real 3.3–8.9% loss overrun events) and
+  the composition is the story: HS-27's leg ended FLOOR-PINNED at
+  390 kbps believing 1.2M with every reconfigure-IDR inside the
+  false spirals; this leg never pinned, ended climbing, and its
+  reconfigure IDRs are genuine congestion-probe cycles — the 50M
+  recipe cap sits ABOVE the ~45M air, so each climb-to-cap overruns,
+  falls honestly, and pays a tighten+rung pair. The false-move
+  source slice (b) was commissioned to kill is dead; the residual
+  cost is the probe cadence against an over-capacity cap.
+  NAMED FOR THE NEXT RUNG: (i) cap-aware probe damping — the climb
+  re-walks to a cap the belief repeatedly disproves; a probe ceiling
+  near min(cap, belief × ~1.1) (config posture, not law) would kill
+  most remaining tighten+rung pairs and is the straightest path to
+  the IDR bar; (ii) the beauty-bar row itself still wants the
+  quality-probe re-measurement on the owner's weather (J-G4a's
+  remaining leg — this slice's legs ran under flood/shaper rigs);
+  (iii) kernel-TX-stamp reconciliation stays named-not-needed.
+  Suites: Host 196 → **203/203 Mac AND pup** (new pins: leg-B
+  replay gate, persistence twin, belief raise/demotion mechanics,
+  NACK recusal both ways, queued-shard books, drain purge, echo
+  persistence). RAILS: three secrets sha-identical at close against
+  the pinned trio (dadf9a66…37cf / 72860390…cfed / 8dc1f88a…55fd);
+  lo noqueue; all test hosts/probes/ffplay/iperf3 dead; the owner's
+  41151 loop untouched and alive (it self-respawned per its own
+  cadence and now runs the HS-28 build — the HS-26 precedent). One
+  ops lesson re-learned: an unbracketed pkill pattern over ssh
+  matched its own remote shell — the rails' bracket trick is not
+  optional. Logs kept: pup /tmp/hs28-{legb,legb2,clean,honesty}-host.log,
+  /tmp/hs28-honesty-probe.log; Mac /tmp/hs28-{legb,legb2,clean}-client.log.
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
