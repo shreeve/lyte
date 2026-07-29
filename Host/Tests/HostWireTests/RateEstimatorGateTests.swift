@@ -1798,9 +1798,19 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling,
             "the belief never demoted to the mid-hole trickle")
         XCTAssertEqual(estimator.stats.downshifts, 0)
+        // HS-30 amended this pin: the drains PROTECT (votes purged, no
+        // fall, rate held — the assertions above, unchanged) but no
+        // longer raise the belief to their burst rate — that was
+        // row ⁴'s pollution. The belief stays ≈ the pace the drains
+        // proved, and must never have dropped below it.
         XCTAssertGreaterThanOrEqual(
-            estimator.capacityBeliefBitsPerSecond ?? 0, 100_000_000,
-            "the drains kept raising the belief"
+            estimator.capacityBeliefBitsPerSecond ?? 0, Self.ceiling - 1_000_000,
+            "the hole cost the belief — the drains stopped protecting it"
+        )
+        XCTAssertLessThanOrEqual(
+            estimator.capacityBeliefBitsPerSecond ?? 0, 30_000_000,
+            "the drains raised the belief toward their burst rate again "
+            + "— HS-30's sustainable cap is dead"
         )
 
         print("HS-28 gate (drain purge): 30 mid-hole reports (3 Mbps "
@@ -2382,6 +2392,104 @@ final class RateEstimatorGateTests: XCTestCase {
             + "reached \(estimator.rateBitsPerSecond / 1_000) kbps in "
             + "\(beats) beats (\(Double(beats) * 0.025) s), belief "
             + "\((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) kbps")
+    }
+
+    // MARK: HS-30 — burst-vs-sustainable belief + probe cadence
+
+    /// A compressed drain may not set the probe ceiling: a queue
+    /// emptying at 300 Mbps proves the path carried our PACE through
+    /// the hole, not that the air offers 300 Mbps (row ⁴: drain-raised
+    /// beliefs of 207 Mbps–1.18 Gbps neutered HS-29's damping).
+    func testDrainRaisesTheBeliefOnlyToThePaceItDrainedBehind() {
+        let estimator = makeEstimator {
+            $0.ceilingBitsPerSecond = 50_000_000
+            $0.initialRateBitsPerSecond = 20_000_000
+        }
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        let before = estimator.capacityBeliefBitsPerSecond ?? 0
+        // A hole closes: one compressed drain at 300 Mbps (≫ pace ×
+        // stallBurstRateFactor). The belief may rise to ≈pace, never
+        // to the drain's instantaneous rate.
+        _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                        bottleneckMbps: 300, extraDelayMicros: 0,
+                        backlogBytes: 0)
+        let after = estimator.capacityBeliefBitsPerSecond ?? 0
+        XCTAssertLessThanOrEqual(after, Int(25e6),
+            "a 300 Mbps drain burst set the belief to \(after) — burst "
+            + "pollution is back")
+        XCTAssertGreaterThanOrEqual(after, before,
+            "the drain may never LOWER the belief")
+
+        print("HS-30 gate (drain cap): belief \(before / 1_000) → "
+            + "\(after / 1_000) kbps through a 300 Mbps drain burst")
+    }
+
+    /// A fall inside the belief's headroom band arms the probe
+    /// cadence: the recover-climb parks BELOW the band until the
+    /// cadence expires, then probes again — instead of re-slamming
+    /// the wall every recovery cycle (row ⁴: 12 slams / 150 s).
+    func testFailedProbeWaitsItsCadenceBeforeReenteringTheBand() {
+        let estimator = makeEstimator {
+            $0.ceilingBitsPerSecond = 50_000_000
+            $0.initialRateBitsPerSecond = 20_000_000
+            $0.probeCadenceNS = 5_000_000_000
+        }
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        // Probe into the wall: honest stretched trains + growing queue
+        // until the fall executes (invariant-2 persistence).
+        var fell = false
+        var delay: UInt64 = 30_000
+        for _ in 0..<60 where !fell {
+            let verdict = selfRefBeat(&now, &clientMicros, &seq,
+                                      on: estimator, bottleneckMbps: 15,
+                                      extraDelayMicros: delay,
+                                      backlogBytes: 60_000)
+            delay += 8_000
+            fell = verdict.change == .overuse
+        }
+        XCTAssertTrue(fell, "the wall never produced a fall")
+        let bandFloor = Double(estimator.capacityBeliefBitsPerSecond ?? 0)
+            / 1.10
+        // Clean beats follow: the climb recovers but must PARK below
+        // the band floor while the cadence holds.
+        for _ in 0..<80 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        XCTAssertLessThanOrEqual(
+            Double(estimator.rateBitsPerSecond), bandFloor + 0.1e6,
+            "the climb re-entered the failed band inside the cadence")
+        XCTAssertGreaterThanOrEqual(estimator.stats.upshiftsCadenceHeld, 1)
+        // The cadence expires (5 s): the next probe fires and the rate
+        // re-enters the band.
+        for _ in 0..<130 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        XCTAssertGreaterThan(
+            Double(estimator.rateBitsPerSecond), bandFloor,
+            "the probe never fired after the cadence expired")
+
+        print("HS-30 gate (cadence): fall at the wall parked the climb "
+            + "below \(Int(bandFloor) / 1_000) kbps for the cadence "
+            + "(\(estimator.stats.upshiftsCadenceHeld) held rises), "
+            + "then re-probed to \(estimator.rateBitsPerSecond / 1_000) kbps")
     }
 
     /// The headroom knob is honored: factor 1.5 parks the climb at

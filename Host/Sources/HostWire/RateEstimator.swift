@@ -300,6 +300,14 @@ public struct RateEstimatorConfig: Sendable {
     /// and the residual IDR spend). Must exceed 1.0 or the belief could
     /// never grow past itself.
     public var probeHeadroomFactor: Double
+    /// HS-30: after a fall that fired while probing NEAR the belief
+    /// (rate ≥ belief / probeHeadroomFactor — a probe that FAILED),
+    /// rises back into that band wait this long (BBR PROBE_BW's shape:
+    /// probe on a cadence, not on every recovery). Below the band the
+    /// climb stays continuous, so post-fall recovery and capacity
+    /// walk-ups are unaffected. Row ⁴'s residue: 12 wall-slams in
+    /// 150 s from continuous climb pressure.
+    public var probeCadenceNS: UInt64
     /// No upshift this long after a downshift (queue drain time).
     public var upshiftHoldAfterDownshiftNS: UInt64
     /// Delivery evidence must be at most this old for the rate to rise
@@ -343,6 +351,7 @@ public struct RateEstimatorConfig: Sendable {
         downshiftMinIntervalNS: UInt64 = 500_000_000,
         upshiftPerSecond: Double = 0.10,
         probeHeadroomFactor: Double = 1.10,
+        probeCadenceNS: UInt64 = 10_000_000_000,
         upshiftHoldAfterDownshiftNS: UInt64 = 1_000_000_000,
         upshiftEvidenceWindowNS: UInt64 = 2_000_000_000,
         recoveryWindowNS: UInt64 = 25_000_000,
@@ -383,6 +392,7 @@ public struct RateEstimatorConfig: Sendable {
         precondition(probeHeadroomFactor > 1.0)
         self.upshiftPerSecond = upshiftPerSecond
         self.probeHeadroomFactor = probeHeadroomFactor
+        self.probeCadenceNS = probeCadenceNS
         self.upshiftHoldAfterDownshiftNS = upshiftHoldAfterDownshiftNS
         self.upshiftEvidenceWindowNS = upshiftEvidenceWindowNS
         self.recoveryWindowNS = recoveryWindowNS
@@ -435,6 +445,9 @@ public struct RateEstimatorStats: Equatable, Sendable {
     /// past belief × headroom and was capped there instead of probing
     /// on toward a configured cap the belief says the air cannot honor.
     public var upshiftsDamped = 0
+    /// HS-30: rises held by the probe cadence — the rate was back in
+    /// the band where the last probe FAILED, inside the cadence window.
+    public var upshiftsCadenceHeld = 0
     public var overuseVerdicts = 0
     /// HS-22c: overuse falls the self-reference gate refused — the
     /// evidence measured our own pacing and nothing corroborated a
@@ -611,7 +624,17 @@ public final class RateEstimator {
     /// The one-number capacity belief (header: THE CAPACITY BELIEF).
     /// Raised instantly by any full-train sample above it; falls only
     /// by invariant-2 demotion at an executing fall — never by aging.
+    /// HS-30: compressed drains raise it at most to the pace they
+    /// drained behind — a queue emptying is not a sustainable rate.
     private var beliefBits: Double?
+    /// HS-30 probe cadence: after a failed probe (an overuse fall that
+    /// fired inside the belief's headroom band), rises back INTO the
+    /// band wait until this instant; climbs below the band stay
+    /// continuous. Band floor `.infinity` = no hold armed. If the path
+    /// genuinely improved meanwhile, the probe at cadence expiry
+    /// simply succeeds — no clearing logic needed.
+    private var cadenceHoldUntilNS: UInt64 = 0
+    private var cadenceBandFloorBits: Double = .infinity
     /// Fresh HONEST (path-limited) full-train votes: the only samples
     /// that may pull a fall anchor below the belief (invariant 1).
     /// FIFO of `overuseAnchorSampleCount`, additionally expired past
@@ -1125,8 +1148,18 @@ public final class RateEstimator {
                 }
                 // Delivery above the belief is always honest news —
                 // censored samples may RAISE it, never lower it.
-                if beliefBits.map({ rate > $0 }) ?? true {
-                    beliefBits = rate
+                // HS-30: a COMPRESSED drain's instantaneous rate is a
+                // queue emptying, not a sustainable throughput — it
+                // proves the path carried our PACE through the hole,
+                // no more (row ⁴: drain-raised beliefs of 207 Mbps to
+                // 1.18 Gbps on ~45 Mbps air neutered the probe
+                // ceiling — 2 damped rises in 2,686 upshifts). A drain
+                // raises the belief at most to the pace it drained
+                // behind; every other sample raises to its own rate.
+                let sustainable = rate >= pace * config.stallBurstRateFactor
+                    ? min(rate, pace) : rate
+                if beliefBits.map({ sustainable > $0 }) ?? true {
+                    beliefBits = sustainable
                     stats.beliefRaises += 1
                 }
             }
@@ -1305,6 +1338,15 @@ public final class RateEstimator {
                     honestAnchorBitsPerSecond: honestMedian.map(Int.init),
                     streakAgeNS: inflatedStreakSinceNS.map { now &- $0 }
                 )
+                // HS-30: a fall that fired while the rate sat inside
+                // the belief's headroom band is a probe that FAILED —
+                // arm the cadence so the recover-climb doesn't re-slam
+                // the same wall every cycle (row ⁴: 12 slams / 150 s).
+                let bandFloor = demoted / config.probeHeadroomFactor
+                if Double(rateBitsPerSecond) >= bandFloor {
+                    cadenceHoldUntilNS = now &+ config.probeCadenceNS
+                    cadenceBandFloorBits = bandFloor
+                }
                 rateBitsPerSecond = clamp(min(
                     Int(demoted * config.downshiftFactor),
                     Int(Double(rateBitsPerSecond) * config.downshiftFactor)
@@ -1399,6 +1441,16 @@ public final class RateEstimator {
                   now &- $0 >= config.upshiftHoldAfterDownshiftNS
               }) ?? true
         else {
+            lastAdjustAt = now
+            return nil
+        }
+        // HS-30: back inside the band where the last probe failed,
+        // within the cadence window — the next probe waits its turn.
+        // Below the band the climb is continuous (recovery speed and
+        // capacity walk-ups keep their HS-29 pins).
+        if Double(rateBitsPerSecond) >= cadenceBandFloorBits,
+           now < cadenceHoldUntilNS {
+            stats.upshiftsCadenceHeld += 1
             lastAdjustAt = now
             return nil
         }
