@@ -408,9 +408,40 @@ public struct RateEstimatorStats: Equatable, Sendable {
     public init() {}
 }
 
+/// The evidence on the table the moment an overuse FALL fired (holds
+/// are counted, not recorded — they changed nothing). The ramp hunt's
+/// forensics: enough to say, post-mortem, why neither the
+/// self-reference gate nor the stall gate held this particular fall.
+public struct OveruseFallForensics: Equatable, Sendable {
+    /// The anchor the fall multiplied (median of raw full-train samples).
+    public var anchorBitsPerSecond: Int
+    /// The standing rate the instant before the fall.
+    public var rateBeforeBitsPerSecond: Int
+    /// Worst inflation anywhere in the streak, µs (the stall gate's
+    /// hole bound — above `stallGapCeilingMicroseconds` the gate is out).
+    public var streakPeakMicroseconds: Int64?
+    /// Queuing delay at the streak's opening report, µs.
+    public var streakStartMicroseconds: Int64?
+    /// Queuing delay on THIS report, µs.
+    public var queuingDelayMicroseconds: Int64?
+    /// Pacer backlog at fall time (the self-reference gate's floor input).
+    public var pacerBacklogBytes: Int
+    /// The freshest full-train drain: its rate and how stale it was —
+    /// the stall gate's super-rate-drain evidence (or its absence).
+    public var lastFullTrainBitsPerSecond: Int?
+    public var lastFullTrainAgeNS: UInt64?
+    /// Loss posture on this report.
+    public var lossFraction: Double
+    public var postFecLossFraction: Double
+}
+
 public final class RateEstimator {
     public let config: RateEstimatorConfig
     public private(set) var stats = RateEstimatorStats()
+
+    /// The last overuse fall's forensics (nil until one fires) — read
+    /// by the session logs when a `.overuse` change surfaces.
+    public private(set) var lastOveruseFall: OveruseFallForensics?
 
     /// The standing pace, bits/s — what the pacer should run at.
     public private(set) var rateBitsPerSecond: Int
@@ -1050,6 +1081,23 @@ public final class RateEstimator {
                 // fall limiter is unconsumed — sustained evidence on
                 // the very next report may still act.
             } else {
+                // The ramp hunt's forensics: record exactly what was
+                // on the table when this fall fired — the evidence a
+                // post-mortem needs to say why neither gate held it.
+                lastOveruseFall = OveruseFallForensics(
+                    anchorBitsPerSecond: anchor,
+                    rateBeforeBitsPerSecond: rateBitsPerSecond,
+                    streakPeakMicroseconds: inflatedStreakPeakMicros,
+                    streakStartMicroseconds: inflatedStreakStartMicros,
+                    queuingDelayMicroseconds: queuingDelayMicroseconds,
+                    pacerBacklogBytes: pacerBacklogBytes,
+                    lastFullTrainBitsPerSecond:
+                        lastFullTrainRate.map(Int.init),
+                    lastFullTrainAgeNS:
+                        lastFullTrainAt.map { now &- $0 },
+                    lossFraction: lossFraction,
+                    postFecLossFraction: postFecLossFraction
+                )
                 rateBitsPerSecond = clamp(min(
                     Int(Double(anchor) * config.downshiftFactor),
                     Int(Double(rateBitsPerSecond) * config.downshiftFactor)

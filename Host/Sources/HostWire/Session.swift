@@ -177,6 +177,39 @@ public struct SessionConfig: Sendable {
     }
 }
 
+/// Why a fresh keyframe is owed (the estimator-ramp hunt's IDR books):
+/// every source `takeFreshKeyframeRequest` merges, named. An OptionSet
+/// because demands coalesce — one frame can answer several at once.
+public struct FreshKeyframeDemand: OptionSet, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+
+    /// HS-12: a path promotion re-anchors the new primary.
+    public static let pathPromotion = FreshKeyframeDemand(rawValue: 1 << 0)
+    /// A client 0x10 IDR request.
+    public static let clientRequest = FreshKeyframeDemand(rawValue: 1 << 1)
+    /// The lifecycle machine's WAKE (armNextDamageAsIdr, .lastGoodRate).
+    public static let machineWake = FreshKeyframeDemand(rawValue: 1 << 2)
+    /// The lifecycle machine's RECOVERY (forceIdr, .halfStaleEstimate).
+    public static let machineRecovery = FreshKeyframeDemand(rawValue: 1 << 3)
+    /// HS-17: a stale NACK verdict left the client stuck — re-anchor.
+    public static let staleNackArm = FreshKeyframeDemand(rawValue: 1 << 4)
+    /// HS-25: an unprotectable frame was dropped — re-anchor references.
+    public static let unprotectableDrop = FreshKeyframeDemand(rawValue: 1 << 5)
+
+    /// The books' short names, in bit order.
+    public var names: [String] {
+        var out: [String] = []
+        if contains(.pathPromotion) { out.append("path-promotion") }
+        if contains(.clientRequest) { out.append("client-request") }
+        if contains(.machineWake) { out.append("wake") }
+        if contains(.machineRecovery) { out.append("recovery") }
+        if contains(.staleNackArm) { out.append("stale-nack") }
+        if contains(.unprotectableDrop) { out.append("unprotectable") }
+        return out
+    }
+}
+
 /// What the caller must know about. Values, not callbacks — the loop
 /// executes/logs them in order (the PathValidator precedent).
 public enum SessionEvent: Equatable, Sendable {
@@ -595,6 +628,10 @@ public final class Session {
     /// encoder poll owes a fresh IDR (merged into
     /// `takeFreshKeyframeRequest`) so the reference chain re-anchors.
     private var unprotectableKeyframePending = false
+    /// HS-17's stale-NACK arm, split from the client-0x10 latch so the
+    /// IDR books (the estimator-ramp hunt) can name which one minted a
+    /// keyframe. Merged into the same poll; behavior unchanged.
+    private var staleNackKeyframePending = false
     /// The converged ratchet frame awaiting its one-shot ride.
     private var convergedFrame:
         (annexB: [UInt8], frame: FrameNumber, captureMicros: UInt64)?
@@ -1107,15 +1144,33 @@ public final class Session {
     /// armNextDamageAsIdr, RECOVERY's forceIdr). Clears every source;
     /// fires once per demand.
     public func takeFreshKeyframeRequest() -> Bool {
-        let fromValidator = validator.takeFreshKeyframeRequest()
-        let fromClient = clientKeyframePending
-        let fromMachine = machineIdrPacing != nil
-        let fromUnprotectable = unprotectableKeyframePending
+        !takeFreshKeyframeDemand().isEmpty
+    }
+
+    /// The same poll with its causes attached — the estimator-ramp
+    /// hunt's IDR books need to NAME why each keyframe was minted, not
+    /// just that one was owed. Clears every source; a demand may carry
+    /// several causes (they coalesced into the one frame).
+    public func takeFreshKeyframeDemand() -> FreshKeyframeDemand {
+        var demand: FreshKeyframeDemand = []
+        if validator.takeFreshKeyframeRequest() {
+            demand.insert(.pathPromotion)
+        }
+        if clientKeyframePending { demand.insert(.clientRequest) }
+        switch machineIdrPacing {
+        case .lastGoodRate: demand.insert(.machineWake)
+        case .halfStaleEstimate: demand.insert(.machineRecovery)
+        case nil: break
+        }
+        if staleNackKeyframePending { demand.insert(.staleNackArm) }
+        if unprotectableKeyframePending {
+            demand.insert(.unprotectableDrop)
+        }
         clientKeyframePending = false
         machineIdrPacing = nil
+        staleNackKeyframePending = false
         unprotectableKeyframePending = false
-        return fromValidator || fromClient || fromMachine
-            || fromUnprotectable
+        return demand
     }
 
     // MARK: Lifecycle inputs (HS-11)
@@ -1896,7 +1951,7 @@ public final class Session {
         ) -> [SessionEvent] {
             counters.nacksJudgedStale += 1
             if armIdr {
-                clientKeyframePending = true
+                staleNackKeyframePending = true
                 counters.idrArmedOnStaleNack += 1
             }
             return [.nackJudgedStale(frame: nack.frame, reason: reason)]
@@ -2153,6 +2208,12 @@ public final class Session {
     }
 
     public var estimatorStats: RateEstimatorStats { estimator.stats }
+
+    /// The last overuse fall's evidence (the ramp hunt's forensics) —
+    /// print alongside the `.overuse` rate change it belongs to.
+    public var lastOveruseFallForensics: OveruseFallForensics? {
+        estimator.lastOveruseFall
+    }
 
     /// The HS-6 frame ceiling at the LIVE estimate: R×B/8 −
     /// higherClassBytes(B), B = min(2/fps, 25 ms) — the single-frame

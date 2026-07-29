@@ -528,6 +528,19 @@ final class Sink {
     var openingVbvCapBits: Int64?
     var unprotectableLogged = 0
 
+    // The estimator-ramp hunt's cause-tagged IDR books (session mode):
+    // every keyframe the encoder emits is attributed to the demand(s)
+    // recorded at encode time — opening / the session's typed demands
+    // (client-request, wake, recovery, path-promotion, stale-nack,
+    // unprotectable) / a VBV reconfigure (every avcodec rate move is a
+    // hidden NVENC reset + forced IDR — the HS-22 correction, verified
+    // in FFmpeg 8.0's nvenc.c: any bitrate/max/VBV delta sets
+    // resetEncoder=1 + forceIDR=1) / spontaneous (nothing armed —
+    // gop=INT_MAX makes that a finding, not noise). One line per IDR
+    // (they are sparse by design), tallied on the final stats block.
+    var pendingIdrCauses: [String] = []
+    var idrCauseTally: [String: Int] = [:]
+
     // V-4: the negotiated chroma posture (drives the encoder open), the
     // recipe it chose (floor QP included — the ratchet reads it here),
     // and the brief pre-agreement hold. The capability exchange rides
@@ -848,7 +861,10 @@ final class Sink {
     private func encode(data: UnsafePointer<UInt8>, stride: Int32) -> Bool {
         var err = [CChar](repeating: 0, count: 256)
         let user = Unmanaged.passUnretained(self).toOpaque()
-        let forceIdr = framesIn == 0 || (wire?.takeForcedIdr() ?? false)
+        let demand = wire?.takeForcedIdrDemand() ?? []
+        let forceIdr = framesIn == 0 || !demand.isEmpty
+        pendingIdrCauses = framesIn == 0 ? ["opening"] : []
+        pendingIdrCauses += demand.names
         // HS-20: the estimator's ceiling into the encoder BEFORE this
         // frame — the wrapper folds the changed rc fields into one
         // NvEncReconfigureEncoder on the send below.
@@ -861,6 +877,19 @@ final class Sink {
                 &err, err.count
             ) == 0 {
                 encoderReconfigures += 1
+                // The books' cause tag for the IDR this reconfigure is
+                // about to force (nvenc resets on any rc delta):
+                // tighten / rung (a coalesced loosening step) / restore
+                // (back at the recipe cap).
+                let before = lastAppliedDirective?.maxBitsPerSecond
+                    ?? Int(opts.bitrate)
+                if directive.maxBitsPerSecond >= Int(opts.bitrate) {
+                    pendingIdrCauses.append("vbv-restore")
+                } else if directive.maxBitsPerSecond < before {
+                    pendingIdrCauses.append("vbv-tighten")
+                } else {
+                    pendingIdrCauses.append("vbv-rung")
+                }
                 lastAppliedDirective = directive
                 let avg = directive.averageBitsPerSecond
                     .map { "avg \($0 / 1_000) kbps, " } ?? ""
@@ -889,6 +918,9 @@ final class Sink {
             stageEncodeUs.append(
                 (total - min(sendFrameNanosThisEncode, total)) / 1_000)
         }
+        // Attribution done (zerolatency: the packet emerged inside the
+        // send above) — a cause never bleeds onto a later frame.
+        pendingIdrCauses.removeAll(keepingCapacity: true)
         framesIn += 1
         return true
     }
@@ -1049,6 +1081,20 @@ final class Sink {
         packetsOut += 1
         bytesOut += size
         if keyframe { keyframes += 1 }
+        if keyframe, wire != nil {
+            // The cause-tagged IDR books: attribute this keyframe to
+            // whatever armed it at encode time; nothing armed means the
+            // encoder minted it on its own (gop=INT_MAX → a finding).
+            let causes = pendingIdrCauses.isEmpty
+                ? ["spontaneous"] : pendingIdrCauses
+            for cause in causes { idrCauseTally[cause, default: 0] += 1 }
+            let elapsed = firstFrameAt.map {
+                monotonicNow() - $0
+            } ?? 0
+            print("idr: #\(keyframes) at t+"
+                + String(format: "%.1f", elapsed) + "s — "
+                + causes.joined(separator: "+") + " (\(size) B)")
+        }
         if wire != nil {
             frameWindowSizes.append(size)
             qualityWindowSizes.append(size)
@@ -1788,6 +1834,19 @@ func run() throws {
         srtt \(wire.srttMicros.map { "\($0) µs" } ?? "—"), \
         store \(wire.repairStoreBytes) B
         """)
+        // The estimator-ramp hunt's cause-tagged IDR books, tallied:
+        // which cause dominates, and the beauty-bar rate itself.
+        let idrPerMinute = captured > 0
+            ? Double(sink.keyframes) * 60.0 / captured : 0
+        let idrBook = sink.idrCauseTally.isEmpty ? "none"
+            : sink.idrCauseTally
+                .sorted { $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key) }
+                .map { "\($0.key) \($0.value)" }
+                .joined(separator: ", ")
+        print("idr-books: \(sink.keyframes) IDRs = "
+            + String(format: "%.2f", idrPerMinute)
+            + "/min over \(String(format: "%.0f", captured)) s — "
+            + idrBook)
         if let audio = audioWire {
             print("audio: \(audio.packetsEncoded) packets encoded "
                 + "(\(audio.encodeFailures) encode failures)"

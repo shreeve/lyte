@@ -450,11 +450,12 @@ final class SessionWire {
 
     /// The encoder-loop poll (HS-12 promotion, a client 0x10, or the
     /// lifecycle machine's WAKE/RECOVERY demand): consult before each
-    /// encode; true forces the next frame to IDR.
-    func takeForcedIdr() -> Bool {
+    /// encode; a non-empty demand forces the next frame to IDR, and
+    /// carries WHY (the IDR books' cause tags).
+    func takeForcedIdrDemand() -> FreshKeyframeDemand {
         lock.lock()
         defer { lock.unlock() }
-        return session?.takeFreshKeyframeRequest() ?? false
+        return session?.takeFreshKeyframeDemand() ?? []
     }
 
     /// HS-20: arm the encoder-VBV policy once the encoder's opening
@@ -1182,7 +1183,30 @@ final class SessionWire {
                 print("rate: ↑ \(bps / 1_000) kbps (evidence climb)")
             case .overuse:
                 lastPrintedRate = bps
-                print("rate: ↓ \(bps / 1_000) kbps (queuing-delay overuse)")
+                // The ramp hunt's forensics: the evidence at fall time,
+                // so a post-mortem can say why neither the
+                // self-reference gate nor the stall gate held it.
+                var forensics = ""
+                if let f = session?.lastOveruseFallForensics {
+                    let train = f.lastFullTrainBitsPerSecond.map {
+                        "\($0 / 1_000) kbps "
+                            + "\((f.lastFullTrainAgeNS ?? 0) / 1_000_000) ms ago"
+                    } ?? "none"
+                    forensics = " [anchor \(f.anchorBitsPerSecond / 1_000)"
+                        + " kbps from \(f.rateBeforeBitsPerSecond / 1_000)"
+                        + " kbps; streak "
+                        + "\(f.streakStartMicroseconds.map(String.init) ?? "—")"
+                        + "→\(f.queuingDelayMicroseconds.map(String.init) ?? "—")"
+                        + " µs, peak "
+                        + "\(f.streakPeakMicroseconds.map(String.init) ?? "—")"
+                        + " µs; backlog \(f.pacerBacklogBytes) B; "
+                        + "full-train \(train); loss "
+                        + String(format: "%.3f", f.lossFraction)
+                        + "/\(String(format: "%.3f", f.postFecLossFraction))"
+                        + " post-FEC]"
+                }
+                print("rate: ↓ \(bps / 1_000) kbps (queuing-delay overuse)"
+                    + forensics)
             case .loss:
                 lastPrintedRate = bps
                 print("rate: ↓ \(bps / 1_000) kbps (loss over threshold)")
