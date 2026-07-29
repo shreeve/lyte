@@ -155,6 +155,16 @@ public enum CtrlMessageType {
     /// Either direction: typed transfer abort with reason
     /// (BulkAbort, W10). Chan 8 ordered stream.
     public static let bulkAbort: UInt8 = 0x21
+    /// Either direction: clipboard-image cargo marker
+    /// (ClipboardImageCargo, P-1 — clipboard v2). Rides CHAN 8's ARQ
+    /// ordered stream immediately BEFORE its transfer's BulkOffer, so
+    /// the receiver always knows a transferId is clipboard cargo (and
+    /// its MIME) before the offer can reach the file machinery — the
+    /// ordered stream is the race-free carriage. Gated on capability
+    /// keys 10 AND 12 surviving intersection (the feature and the
+    /// dialect; key 11 — the file-drop consent — is deliberately not
+    /// in the gate).
+    public static let clipboardImageCargo: UInt8 = 0x22
 
     /// The type byte of a CTRL payload, nil when the payload is empty.
     /// Dispatch on this, then hand the whole payload (type byte included)

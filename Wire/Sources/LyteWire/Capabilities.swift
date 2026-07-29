@@ -109,6 +109,22 @@ public enum CapabilityKey {
     /// live in the end shells (design record 20260728-053300 §6).
     /// Accessors in BulkMessages.swift.
     public static let bulkTransfer: UInt64 = 11
+    /// bool — this end speaks the v2 clipboard-image sync (P-1):
+    /// image blobs as bulk-channel cargo marked by the 0x22
+    /// ClipboardImageCargo message, PNG in v2. Rides the
+    /// forward-compat spine through `unknownEntries` like keys 9–11
+    /// (one canonical `0C F5` entry; capabilities-v1.json never
+    /// moves), surviving intersection only on mutual byte-equal
+    /// declaration. Images move only when keys 10 AND 12 both
+    /// survived — the feature (clipboard) and the dialect (image
+    /// cargo). Key 11 is deliberately NOT in the gate: its
+    /// declaration is the standing FILE-DROP consent (F-2 §6), and
+    /// the Off / Text only / Text + images tier (LYTE-PLAN §8) must
+    /// not couple image sync to file consent — an images-tier end
+    /// runs the chan-8 bulk vocabulary for clipboard cargo whenever
+    /// key 12 agreed. A text-only HOST truthfully never declares
+    /// this key. Accessors in ClipboardImages.swift.
+    public static let clipboardImages: UInt64 = 12
 
     /// The renegotiable subset (transport pillar §4: "fixed after
     /// exchange except where a capability itself declares

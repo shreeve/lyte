@@ -1,0 +1,139 @@
+{
+  "format" : "lyte-wire-clipboard-image-vectors",
+  "formatVersion" : 1,
+  "vectors" : [
+    {
+      "codec" : "imageCargo",
+      "description" : "type ‖ id u64 LE ‖ mimeLen u8 ‖ mime: [0x22] + 08…01 + [0x09] + \"image\/png\" — the hand-computed anchor.",
+      "kind" : "roundtrip",
+      "messageHex" : "22080706050403020109696d6167652f706e67",
+      "mimeUtf8Hex" : "696d6167652f706e67",
+      "name" : "cargo-png-nominal",
+      "transferIdHex" : "0102030405060708"
+    },
+    {
+      "codec" : "imageCargo",
+      "description" : "The u64 ceiling id (all FF) rides LE without precision loss — ids ride as hex in this file for the same reason.",
+      "kind" : "roundtrip",
+      "messageHex" : "22ffffffffffffffff09696d6167652f706e67",
+      "mimeUtf8Hex" : "696d6167652f706e67",
+      "name" : "cargo-max-id",
+      "transferIdHex" : "ffffffffffffffff"
+    },
+    {
+      "codec" : "imageCargo",
+      "description" : "A mime v2 does not carry still DECODES — unsupported-mime is channel policy (abort declined), never a parse error, so future formats stay speakable.",
+      "kind" : "roundtrip",
+      "messageHex" : "22feca00000000000009696d6167652f6a786c",
+      "mimeUtf8Hex" : "696d6167652f6a786c",
+      "name" : "cargo-foreign-mime-wellformed",
+      "transferIdHex" : "000000000000cafe"
+    },
+    {
+      "codec" : "imageCargo",
+      "description" : "Exactly 255 mime bytes (\"image\/\" + 249 × 'a') — the u8 length ceiling is legal to the byte.",
+      "kind" : "roundtrip",
+      "messageHex" : "2201000000fecaad0bff696d6167652f616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+      "mimeUtf8Hex" : "696d6167652f616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+      "name" : "cargo-max-mime",
+      "transferIdHex" : "0badcafe00000001"
+    },
+    {
+      "codec" : "imageCargo",
+      "description" : "An empty payload rejects — no type byte to dispatch on.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "",
+      "name" : "cargo-empty-payload"
+    },
+    {
+      "codec" : "imageCargo",
+      "description" : "The type byte plus seven id bytes — one short of the fixed header.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "2208070605040302",
+      "name" : "cargo-truncated-header"
+    },
+    {
+      "codec" : "imageCargo",
+      "description" : "mimeLen promises more bytes than remain.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "22080706050403020109696d6167652f706e",
+      "name" : "cargo-truncated-mime"
+    },
+    {
+      "codec" : "imageCargo",
+      "description" : "A ClipboardSet's type byte (0x1A) rejects with what it found — the marker never cross-decodes.",
+      "error" : "unexpectedType",
+      "kind" : "decodeReject",
+      "messageHex" : "1a080706050403020109696d6167652f706e67",
+      "name" : "cargo-foreign-type"
+    },
+    {
+      "codec" : "imageCargo",
+      "description" : "One byte past the mime rejects — exactly its layout.",
+      "error" : "trailingBytes",
+      "kind" : "decodeReject",
+      "messageHex" : "22080706050403020109696d6167652f706e6700",
+      "name" : "cargo-trailing-bytes"
+    },
+    {
+      "codec" : "imageCargo",
+      "description" : "id 0 is always some layer's zero-fill bug.",
+      "error" : "zeroTransferId",
+      "kind" : "decodeReject",
+      "messageHex" : "22000000000000000009696d6167652f706e67",
+      "name" : "cargo-zero-transfer-id"
+    },
+    {
+      "codec" : "imageCargo",
+      "description" : "A mime-less marker is unroutable — v2 requires the format.",
+      "error" : "emptyMime",
+      "kind" : "decodeReject",
+      "messageHex" : "22070000000000000000",
+      "name" : "cargo-empty-mime"
+    },
+    {
+      "codec" : "imageCargo",
+      "description" : "0xFF is never valid UTF-8 — rejects, never replaces.",
+      "error" : "invalidUtf8",
+      "kind" : "decodeReject",
+      "messageHex" : "22070000000000000001ff",
+      "name" : "cargo-invalid-utf8-mime"
+    },
+    {
+      "codec" : "imageCargo",
+      "description" : "256 mime bytes cannot ride a u8 length — construction refuses (the wire form cannot even exist).",
+      "error" : "mimeOverBudget",
+      "kind" : "encodeReject",
+      "mimeUtf8Hex" : "61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+      "name" : "cargo-mime-over-budget"
+    },
+    {
+      "clipboardImages" : true,
+      "codec" : "capabilitySet",
+      "description" : "wireDefault's frozen encoding plus exactly the appended `0C F5` entry (map head 0xA8 → 0xA9): the clipboardImages accessor must read true and the set must re-encode byte-exactly — the \"no frozen bytes moved\" claim as data.",
+      "kind" : "roundtrip",
+      "messageHex" : "a9010002810103810104f5058006f407f4081904800cf5",
+      "name" : "capability-key12-declared"
+    },
+    {
+      "clipboardImages" : false,
+      "codec" : "capabilitySet",
+      "description" : "wireDefault's frozen encoding unchanged: absence reads false — \"not supported\", never an error.",
+      "kind" : "roundtrip",
+      "messageHex" : "a8010002810103810104f5058006f407f408190480",
+      "name" : "capability-key12-absent"
+    },
+    {
+      "clipboardImages" : true,
+      "codec" : "capabilitySet",
+      "description" : "All three spine keys together: map head 0xAB with `0A F5 0B F5 0C F5` trailing in canonical order — clipboard, file consent, and image dialect compose without moving each other's bytes (the image GATE is 10∧12; key 11 stays independent file consent).",
+      "kind" : "roundtrip",
+      "messageHex" : "ab010002810103810104f5058006f407f4081904800af50bf50cf5",
+      "name" : "capability-keys-10-11-12"
+    }
+  ],
+  "wireVersion" : 1
+}

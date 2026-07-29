@@ -228,7 +228,38 @@ public struct ClipboardSyncBook: Hashable, Sendable {
     /// clipboard has moved past whatever we last sent, so re-sharing
     /// that text later is legitimate again.
     public mutating func noteRemoteApplied(_ text: String) {
-        appliedFromRemote.append(Array(text.utf8))
+        noteRemoteApplied(bytes: Array(text.utf8))
+    }
+
+    /// The watcher's verdict for one local clipboard change.
+    /// Echo matches consume their ring entry (consume-once).
+    public mutating func admitLocalChange(
+        _ text: String
+    ) -> ClipboardLocalChangeVerdict {
+        admitLocalChange(bytes: Array(text.utf8))
+    }
+
+    /// A local change actually left on the wire. Sets the dedupe slot
+    /// and clears the echo ring: once the local clipboard genuinely
+    /// moved on, no earlier apply can echo anymore — and keeping stale
+    /// entries would wrongly suppress a deliberate future re-copy.
+    public mutating func noteShared(_ text: String) {
+        noteShared(bytes: Array(text.utf8))
+    }
+
+    // MARK: Byte-keyed entries (P-1, clipboard v2)
+
+    // One book serves text AND images so cross-modal moves stay
+    // honest: a remote IMAGE apply clears the text dedupe slot too —
+    // the peer's clipboard has moved past whatever we last sent,
+    // whatever kind it was. Text keys are the UTF-8 bytes (unchanged,
+    // v1 behavior byte-identical); image keys come from
+    // `ClipboardImageWire.bookKey(sha256:)` — 0xFF ‖ digest, and 0xFF
+    // is never valid UTF-8, so the key spaces cannot collide.
+
+    /// The byte-keyed form of `noteRemoteApplied`.
+    public mutating func noteRemoteApplied(bytes: [UInt8]) {
+        appliedFromRemote.append(bytes)
         if appliedFromRemote.count > capacity {
             appliedFromRemote.removeFirst(
                 appliedFromRemote.count - capacity
@@ -237,12 +268,10 @@ public struct ClipboardSyncBook: Hashable, Sendable {
         lastShared = nil
     }
 
-    /// The watcher's verdict for one local clipboard change.
-    /// Echo matches consume their ring entry (consume-once).
+    /// The byte-keyed form of `admitLocalChange`.
     public mutating func admitLocalChange(
-        _ text: String
+        bytes: [UInt8]
     ) -> ClipboardLocalChangeVerdict {
-        let bytes = Array(text.utf8)
         if let index = appliedFromRemote.firstIndex(of: bytes) {
             appliedFromRemote.remove(at: index)
             return .suppressEcho
@@ -253,12 +282,9 @@ public struct ClipboardSyncBook: Hashable, Sendable {
         return .share
     }
 
-    /// A local change actually left on the wire. Sets the dedupe slot
-    /// and clears the echo ring: once the local clipboard genuinely
-    /// moved on, no earlier apply can echo anymore — and keeping stale
-    /// entries would wrongly suppress a deliberate future re-copy.
-    public mutating func noteShared(_ text: String) {
-        lastShared = Array(text.utf8)
+    /// The byte-keyed form of `noteShared`.
+    public mutating func noteShared(bytes: [UInt8]) {
+        lastShared = bytes
         appliedFromRemote.removeAll()
     }
 }

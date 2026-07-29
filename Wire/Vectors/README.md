@@ -134,6 +134,31 @@ case in `FecCoderTests`, the hand-walked datagram in
   covering every one of the 16 `BulkMessageError` case names),
   3 key-11 spine pins, 2 transfer traces. `BulkVectorFileTests`
   asserts the coverage discipline and replays every trace.
+- `clipboard-images-v1.json` — the P-1 clipboard-image sync
+  (clipboard v2; the H4 plan's wave-2 P-1 section, inheriting the H3
+  F-6 sketch): ClipboardImageCargo 0x22, the direction-neutral cargo
+  marker (`type ‖ transferId u64 LE ‖ mimeLen u8 ‖ mime UTF-8`) that
+  rides chan 8's ordered stream immediately before its transfer's
+  BulkOffer so clipboard cargo and file drops never confuse each
+  other, plus capability key 12 (`clipboardImages`) on the W7
+  forward-compat spine as data (declared `0C F5`, absent, and the
+  keys-10/11/12 composition — the image GATE is 10∧12, key 11 stays
+  independent file consent; capabilities-v1.json never moves). A NEW
+  file for the same reason clipboard-v1.json was: appending is legal,
+  but a new file keeps the frozen ones untouched. Format mirrors the
+  bulk file (`roundtrip`/`decodeReject`/`encodeReject`; ids ride as
+  hex, mimes as `mimeUtf8Hex`); anchored against the hand-computed
+  bytes in `ClipboardImageCodecTests`. Inventory (16): roundtrips
+  covering the nominal marker, the u64-max id, a
+  foreign-but-well-formed mime (format policy is the channel's, never
+  the codec's — future formats stay speakable), and the exact
+  255-byte mime ceiling; rejects covering truncation (three shapes),
+  a foreign type, trailing bytes, the zero id, the empty mime, and
+  invalid UTF-8; the one wire-inexpressible encode reject
+  (mimeOverBudget); the three key-12 spine pins.
+  `ClipboardImageVectorFileTests` asserts the coverage discipline
+  (every decode-reachable error name present, the mime ceiling pinned
+  legal, the spine pinned both ways).
 
 ## The 24-byte envelope (wire v1)
 
