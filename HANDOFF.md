@@ -671,6 +671,7 @@ previous one) · **loss** ≤ 1 wire frame per 150 s leg.
 | 2026-07-29 @ 8e1e8ca | 52.03 PASS | 59.72 PASS | 61 PASS³ | 6.8 FAIL³ | 0 PASS | 6 FAIL³ |
 | 2026-07-29 @ be60e92 | 52.03 PASS | 59.73 PASS | 61 PASS⁴ | 6.4 FAIL⁴ | 0 PASS | 0 PASS⁴ |
 | 2026-07-29 @ db84c1b | 53.85 PASS | 59.72 PASS | 61 PASS⁵ | 8.4 FAIL⁵ | 0 PASS | 0 PASS⁵ |
+| 2026-07-29 @ ce952ec | 53.85 PASS | 59.73 PASS | 61 PASS⁶ | 8.4 FAIL⁶ | 1 FAIL⁶ | 0 PASS |
 
 ² Post-HS-26/IDR-hunt re-measurement (row printed by quality-probe.sh
 at `932a4c3`; logs pup `~/qprobe/`, local `/tmp/qprobe-local`).
@@ -693,6 +694,20 @@ the frequency). Also eye-on: delivered ~20 Mbps on the post-move
 clean wire that bulk-tested ~160 Mbps — whether that's real airtime
 under 43 Mbps appetite or the HS-22b self-reference seam is part of
 slice (b)'s brief.
+
+⁶ The refined build's official row (probe at `ce952ec`) — and the
+run drew CHOPPY AIR again (101 missing datagrams vs the clean
+manual leg's 0), which is the whole story of its IDR cell: the toll
+is weather-proportional (books: rung 8 + tighten 6 + client 4 +
+restore 1 + stale-nack 1 + opening — ~5 dip episodes × the 2-IDR
+rung crossing). Same build in clean air measured 4.26 (footnote ⁵).
+The IDR row's remaining fix is the rung-crossing toll, not the
+estimator — unchanged from ⁵'s naming. NEW FINDING, unexplored:
+**churn 1** (one directive with no estimator move since the last) —
+first nonzero churn since HS-22a; plausibly the vbv-restore
+interacting with the cadence hold; needs one session of books
+before it's called a bug. Loss stayed green THROUGH the chop —
+FEC healed all 101.
 
 ⁵ HS-30 row AT THE LEAKED BUILD (probe at `db84c1b`) — recorded
 un-massaged per the bar's law, and its red taught the fix. Static
