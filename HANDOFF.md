@@ -21,10 +21,13 @@ V-2's five AU-splitter gates; the old 142 is stale).
 probes' data on the table):**
 1. **Mode selection**: declaration-as-choice mechanics (client declares
    the one chroma it wants; empty intersection → typed failure →
-   auto re-dial at 4:2:0 + banner), WITH the owner's rider: **the
-   control strip gets a user-facing Work/Play mode toggle** (flip =
-   clean reconnect) **and sessions start from a per-host pinned
-   default** — exactly V-5's sketched surface, now owner-mandated.
+   auto re-dial at 4:2:0 + banner), surfaced NOT as the plan's
+   Work/Play binary but as the owner's **three-tier "Chroma" control**
+   on the strip: **Good = 4:2:0 / Better = 4:2:2 / Best = 4:4:4**
+   (flip = clean reconnect). The 4:2:2 tier is DORMANT — Ada NVENC
+   has no 4:2:2 encode (Blackwell 9th-gen only) — grayed as "not
+   offered by this host"; wire grows `yuv422 = 3` as a contract-safe
+   append. Full record in the ANSWERED block below the playbook.
 2. **Color path**: **rgb_mode 601-limited ships** — free,
    glass-correct, quality-equal (48.2 vs 47.8 dB text); gbrp is OUT
    (V-2: CoreMedia has no identity-matrix vocabulary — renders as
@@ -126,8 +129,8 @@ V-2 data on the table).** All four are settled:
 **IMMEDIATE RESUME POINT: probes done, decisions done — V-3 is next
 (the §7 corpus harness, Host/ scripts + root; its client half, the
 readback tap + decode-probe, already exists at `3f94a0f`; it banks the
-4:2:0 baseline table first). Then V-4 (host Work/Play mode, Host/) and
-V-5 (client mode surface with the owner-mandated strip toggle, root) —
+4:2:0 baseline table first). Then V-4 (host Best-mode 4:4:4, Host/) and
+V-5 (the client's three-tier Chroma control on the strip, root) —
 both now UNBLOCKED by the decisions above.** Also open: (a) the bar's two red rows as Host/
 slices — the **session-pipeline fps ceiling (~48/s ingest under
 load)** hunt and the **estimator ramp's IDR spend**; (b) the owner's
