@@ -4,20 +4,37 @@
 repo since `8da50bf` (the .gitignore entry is vestigial; the file is
 tracked). Update freely; commit updates in the ledger voice.*
 
-# SESSION RESUME — START HERE (2026-07-28 ~23:55 MDT)
+# SESSION RESUME — START HERE (2026-07-29 ~00:55 MDT)
 
-**One-paragraph state.** We are at the H3→H4 seam, everything landed
-and drained. pup's ~3 h network drop (20:35–23:30, NO reboot — the
-spontaneous-drop pattern) is over; **Q-1's six-leg deferred ledger is
-FULLY DRAINED** (verdicts in the Q-1 wave entry's drain addendum) and
-the owner's 41151 loop is LIVE again at the current build. The quality
-wave stands in Host/, none pushed: HS-23 `11f058f`, HS-24 `1d65bad`,
-HS-25 `e82e88a`, Q-1 `b1f027a`. The **H4 plan is committed** (`3b118ba`,
-`docs/20260728-194226-lyte-h4-plan.md`): 4:4:4 leads, probe-first
-ladder V-1…V-5 → J-G4a; four §0 owner decisions open, 2/3 wanting
-V-1/V-2 probe data first. Suites at HEAD: Host **180/180 Mac AND pup**
-(pup count is a commit-hash fact at `8dc049a`), Wire 450/450, root
-142/142.
+**One-paragraph state.** The H4 4:4:4 wave is UNDERWAY and both probes
+are LANDED: **V-1** (`e232d61` + report `7abaddb`) and **V-2**
+(`3f94a0f` + co-sign `8fa44a2`) — see the resume point below for the
+verdicts. Earlier today the quality wave landed (HS-23 `11f058f`, HS-24
+`1d65bad`, HS-25 `e82e88a`, Q-1 `b1f027a`, all Host/, none pushed),
+pup survived a ~3 h network drop (20:35–23:30, NO reboot), and Q-1's
+deferred ledger drained clean. The H4 plan is `3b118ba`
+(`docs/20260728-194226-lyte-h4-plan.md`). Suites at HEAD: Host
+**180/180 Mac AND pup**, Wire 450/450, root **167/167** (grown through
+V-2's five AU-splitter gates; the old 142 is stale).
+
+**H4 §0 OWNER DECISIONS — ANSWERED (2026-07-29 ~00:52, with both
+probes' data on the table):**
+1. **Mode selection**: declaration-as-choice mechanics (client declares
+   the one chroma it wants; empty intersection → typed failure →
+   auto re-dial at 4:2:0 + banner), WITH the owner's rider: **the
+   control strip gets a user-facing Work/Play mode toggle** (flip =
+   clean reconnect) **and sessions start from a per-host pinned
+   default** — exactly V-5's sketched surface, now owner-mandated.
+2. **Color path**: **rgb_mode 601-limited ships** — free,
+   glass-correct, quality-equal (48.2 vs 47.8 dB text); gbrp is OUT
+   (V-2: CoreMedia has no identity-matrix vocabulary — renders as
+   601-full garbage; structural, not fixable on the display-layer
+   path); the full-range row is named-and-queued, not gating.
+3. **FEC ceiling posture**: Work mode KEEPS the HS-25 capped-CQ
+   ceiling posture — ceiling-conformed IDRs legal but structurally
+   rare (V-1: 20/30 natural text IDRs exceed it; deltas never close).
+4. **J-G4 gate**: 4:4:4 core + P-1 (clipboard v2) only; P-2/P-3 stay
+   pre-declared droppable to H5.
 
 **THE BEAUTY BAR'S FIRST ROW IS IN — and its two reds are named
 findings, not noise** (full decomposition in the Q-1 drain addendum):
@@ -109,9 +126,9 @@ V-2 data on the table).** All four are settled:
 **IMMEDIATE RESUME POINT: probes done, decisions done — V-3 is next
 (the §7 corpus harness, Host/ scripts + root; its client half, the
 readback tap + decode-probe, already exists at `3f94a0f`; it banks the
-4:2:0 baseline table first). Then V-4 (host Work/Best mode, Host/) and
-V-5 (client Chroma tier surface, root) — both now UNBLOCKED by the
-decisions above.** Also open: (a) the bar's two red rows as Host/
+4:2:0 baseline table first). Then V-4 (host Work/Play mode, Host/) and
+V-5 (client mode surface with the owner-mandated strip toggle, root) —
+both now UNBLOCKED by the decisions above.** Also open: (a) the bar's two red rows as Host/
 slices — the **session-pipeline fps ceiling (~48/s ingest under
 load)** hunt and the **estimator ramp's IDR spend**; (b) the owner's
 p4 quality eyeball (41151 live and waiting). Farther out: J-G4a + P-1;
