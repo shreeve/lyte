@@ -80,33 +80,19 @@
 //       measurement to ≈R, so a standing 0.8×btlRate cap would spiral
 //       every clean path to the floor. The 0.8 factor applies where
 //       the pillar needs it — at the overuse fall.
-//     THE SELF-REFERENCE GATE (HS-22c, finding (ii)): the same
-//     self-limitation poisons the overuse ANCHOR. With the pacer
-//     holding standing backlog, a multi-quantum frame drains as one
-//     ≥8-packet train paced at exactly R — the train measures OUR OWN
-//     pacing, not the path — and an overuse verdict then anchors the
-//     fall to 0.85 × self; each fall re-squeezes the pacer, the next
-//     train measures the new self, and one probe run spiraled a
-//     90 Mbps wire to the 500 kbps floor. So: when the caller reports
-//     standing backlog (≥ `selfReferenceBacklogWindowNS` of bytes at
-//     the standing rate) AND the anchor median sits within
-//     `selfReferenceBandFraction` of the standing rate (or above it),
-//     the sample is a measurement of us — it may HOLD the rate (the
-//     overuse verdict still blocks every rise), it may not anchor a
-//     fall. The gate CANNOT mask real degradation, because a fall
-//     stays permitted on any of three honest signatures a
-//     self-limited pacer can never produce: (1) the anchor median
-//     measurably BELOW the band — a slower path stretches every
-//     train, so genuine dips read genuinely low (the HS-21/22 fast-
-//     fall pins are this case, intact); (2) loss — pre-FEC at or over
-//     the clean threshold, or ANY post-FEC evidence (pacing at ≤ the
-//     path's rate drops nothing); (3) queue GROWTH — a path whose
-//     capacity sits at/just under the standing rate builds delay
-//     monotonically at the deficit rate, so inflation grown another
-//     `overuseThresholdMicroseconds` past the streak's opening report
-//     corroborates within a few 25–50 ms beats (inside one 500 ms
-//     fall-limiter window — at most one beat later than today).
-//     Self-caused burst bumps drain and reset the streak instead.
+//     THE SELF-REFERENCE GATE (HS-22c) lived here until HS-28
+//     retired it: with the pacer holding standing backlog, a
+//     multi-quantum frame drains as a full train paced at exactly R —
+//     measuring OUR OWN pacing — and an overuse fall anchored to
+//     0.85 × self once spiraled a 90 Mbps wire to the 500 kbps floor.
+//     The band-vs-standing-rate heuristic is now invariant 1 as a
+//     mechanical property: the ledger records the pace at release,
+//     censored samples get no anchor vote, and persisted pressure
+//     whose only witnesses are censored samples under our own backlog
+//     holds (`selfReferenceHolds` keeps the book). The three honest
+//     fall signatures the gate enumerated — an honest median below
+//     the belief, loss, monotone queue growth — are exactly the
+//     honesty law's execute channels.
 //     THE STALL GATE (HS-23) lived here until HS-28 retired it: the
 //     Wi-Fi study's scan dwells (the receiver's radio dark 70–100 ms,
 //     the AP queuing, then one compressed drain — nothing lost,
@@ -243,11 +229,6 @@ public struct RateEstimatorConfig: Sendable {
     public var overuseThresholdMicroseconds: Int64
     /// Consecutive inflated reports before the overuse verdict fires.
     public var overuseConsecutiveReports: Int
-    /// HS-22c: an overuse anchor within this fraction of the standing
-    /// rate (or above it) is a measurement of our own pacing while the
-    /// pacer holds standing backlog — it may hold the rate, never
-    /// anchor a fall (see the header's self-reference gate).
-    public var selfReferenceBandFraction: Double
     /// HS-22c: "standing backlog" = at least this much wire time of
     /// queued bytes at the standing rate (5 ms — more than mid-batch
     /// residue, far less than one squeezed IDR's drain).
@@ -336,7 +317,6 @@ public struct RateEstimatorConfig: Sendable {
         overuseAnchorSampleCount: Int = 3,
         overuseThresholdMicroseconds: Int64 = 15_000,
         overuseConsecutiveReports: Int = 2,
-        selfReferenceBandFraction: Double = 0.15,
         selfReferenceBacklogWindowNS: UInt64 = 5_000_000,
         stallGapCeilingMicroseconds: Int64 = 150_000,
         stallBurstRateFactor: Double = 1.25,
@@ -371,7 +351,6 @@ public struct RateEstimatorConfig: Sendable {
         self.overuseAnchorSampleCount = max(overuseAnchorSampleCount, 1)
         self.overuseThresholdMicroseconds = overuseThresholdMicroseconds
         self.overuseConsecutiveReports = max(overuseConsecutiveReports, 1)
-        self.selfReferenceBandFraction = selfReferenceBandFraction
         self.selfReferenceBacklogWindowNS = selfReferenceBacklogWindowNS
         self.stallGapCeilingMicroseconds = stallGapCeilingMicroseconds
         self.stallBurstRateFactor = stallBurstRateFactor
@@ -1209,92 +1188,59 @@ public final class RateEstimator {
         } ?? true
 
         if overuse, downshiftAllowed {
-            // Fall to 0.85 × what the path measurably delivered — the
-            // GCC overuse response, anchored to evidence, never to the
-            // configured rate alone. The anchor is the MEDIAN of the
-            // recent raw samples (HS-21), not the single freshest: one
-            // garbage short-train sample must not decide the fall.
+            // THE HONESTY LAW (HS-28 — the three shape-gates' single
+            // successor). The verdict decided WHEN; this decides
+            // WHETHER and WHERE, from properties a censored sender
+            // cannot fake:
+            //   EXECUTE on instant corroboration (loss the clean band
+            //   flags, or post-FEC evidence past the clean column —
+            //   pacing at or under the path drops nothing), OR on
+            //   persisted pressure (a full fall-limiter window into
+            //   the next) that is not purely self-explaining:
+            //   a monotone-grown queue, a fresh honest median under
+            //   the belief, or pressure with no standing backlog all
+            //   testify; standing backlog with nothing but censored
+            //   samples is us measuring ourselves (HS-22c's
+            //   self-reference gate, retired into invariant 1: no
+            //   honest vote, no fall).
+            // The raw-median anchor is FORENSIC now — it convicted
+            // the old law and stays on the record, but the fall
+            // answers to the belief alone.
             let anchor = overuseAnchorRate.map(Int.init) ?? rateBitsPerSecond
-
-            // THE SELF-REFERENCE GATE (HS-22c, header): with standing
-            // backlog, an anchor at ≈ (or above) the standing rate
-            // measured OUR OWN pacing — it may hold the rate, never
-            // anchor a fall, unless something a self-limited pacer
-            // cannot produce corroborates a real path problem: loss,
-            // post-FEC evidence, or queue growth across the streak.
             let backlogFloorBytes = max(1, Int(
                 Double(rateBitsPerSecond)
                     * Double(config.selfReferenceBacklogWindowNS) / 8e9
             ))
-            let selfReferential = pacerBacklogBytes >= backlogFloorBytes
-                && Double(anchor) >= Double(rateBitsPerSecond)
-                    * (1 - config.selfReferenceBandFraction)
+            let backlogStanding = pacerBacklogBytes >= backlogFloorBytes
             let queueGrew = inflatedStreakStartMicros.map {
                 (queuingDelayMicroseconds ?? 0)
                     >= $0 + config.overuseThresholdMicroseconds
             } ?? false
-            let corroborated = lossFraction >= config.lossCleanThreshold
-                || postFecLossFraction > 0
-                || queueGrew
-            if selfReferential, !corroborated {
-                stats.selfReferenceHolds += 1
-                // Held, not fallen: the overuse verdict still blocks
-                // every rise below, and the fall limiter stays free so
-                // corroboration on the very next report may act.
-            } else if lossFraction < config.lossCleanThreshold,
-                      postFecLossFraction < config.postFecCleanThreshold,
-                      now &- (inflatedStreakSinceNS ?? now)
-                          < config.beliefDemotionSustainNS {
-                // INVARIANT 2's PERSISTENCE (HS-28): an overuse fall
-                // with no instant corroboration (no loss the clean
-                // band would flag, no post-FEC evidence past the
-                // clean column) waits until the pressure streak has
-                // persisted a full fall-limiter window into the next
-                // (`beliefDemotionSustainNS`). This subsumed BOTH the
-                // dwell deferral and HS-23's stall gate: a scan-dwell
-                // cycle — a bounded hole that closes with a
-                // compressed drain — structurally cannot sustain
-                // pressure across the span (the drain report clears
-                // the streak and RAISES the belief), while a genuine
-                // squeeze sails through and falls within ~1 s, at
-                // most one limiter beat later than the old law. The
-                // overuse verdict still blocks every rise below, and
-                // the fall limiter stays unconsumed for the report
-                // that finally acts. The books keep the old gates'
-                // vocabulary: a withheld beat with fresh super-rate
-                // drain evidence inside a bounded hole is a stall
-                // hold; the rest are deferrals.
-                let holePeak = inflatedStreakPeakMicros ?? Int64.max
-                let drainFresh = lastFullTrainAt.map {
-                    now &- $0 <= config.stallEvidenceWindowNS
-                } ?? false
-                let drainOutranPace = drainFresh
-                    && (lastFullTrainRate ?? 0)
-                        >= Double(rateBitsPerSecond)
-                        * config.stallBurstRateFactor
-                if drainOutranPace,
-                   holePeak <= config.stallGapCeilingMicroseconds {
-                    stats.stallHolds += 1
-                } else {
-                    stats.fallDeferrals += 1
-                }
-            } else {
-                // HS-28: the fall EXECUTES here — and the anchor
-                // answers to the CAPACITY BELIEF, never to the median
-                // of raw recent samples. Invariant 2's demotion rides
-                // the fall: a fresh honest (path-limited) median below
-                // the belief is evidence a censored sender cannot
-                // manufacture, so the belief follows the path down and
-                // the fall lands on measured delivery exactly as the
-                // HS-21 pins demand. With NO honest evidence the fall
-                // is bounded multiplicative (0.85 × standing rate per
-                // limiter beat) — a censored trickle can no longer
-                // crater the rate in one step (leg B's `full-train
-                // 398 kbps 0 ms ago` seam, closed by construction).
-                let honestMedian = honestAnchorRate
-                let belief = beliefBits ?? Double(rateBitsPerSecond)
+            let honestMedian = honestAnchorRate
+            let belief = beliefBits ?? Double(rateBitsPerSecond)
+            let honestLow = honestMedian.map { $0 < belief } ?? false
+            let selfExplaining = backlogStanding && honestMedian == nil
+            let instant = lossFraction >= config.lossCleanThreshold
+                || postFecLossFraction >= config.postFecCleanThreshold
+            let persisted = now &- (inflatedStreakSinceNS ?? now)
+                >= config.beliefDemotionSustainNS
+
+            if instant
+                || (persisted && (queueGrew || honestLow || !selfExplaining)) {
+                // The fall EXECUTES — anchored to the CAPACITY BELIEF,
+                // never to the median of raw recent samples.
+                // Invariant 2's demotion rides the fall: a fresh
+                // honest (path-limited) median below the belief is
+                // evidence a censored sender cannot manufacture, so
+                // the belief follows the path down and the fall lands
+                // on measured delivery exactly as the HS-21 pins
+                // demand. With NO honest evidence the fall is bounded
+                // multiplicative (0.85 × standing rate per limiter
+                // beat) — a censored trickle can no longer crater the
+                // rate in one step (leg B's `full-train 398 kbps
+                // 0 ms ago` seam, closed by construction).
                 let demoted: Double
-                if let honestMedian, honestMedian < belief {
+                if let honestMedian, honestLow {
                     demoted = honestMedian
                     beliefBits = honestMedian
                     stats.beliefDemotions += 1
@@ -1303,7 +1249,7 @@ public final class RateEstimator {
                 }
                 // The ramp hunt's forensics: record exactly what was
                 // on the table when this fall fired — the evidence a
-                // post-mortem needs to say why neither gate held it.
+                // post-mortem needs to say why the law let it through.
                 lastOveruseFall = OveruseFallForensics(
                     anchorBitsPerSecond: anchor,
                     rateBeforeBitsPerSecond: rateBitsPerSecond,
@@ -1329,6 +1275,33 @@ public final class RateEstimator {
                 lastAdjustAt = now
                 stats.downshifts += 1
                 return .overuse
+            } else if persisted {
+                // Persisted pressure whose only witnesses are censored
+                // samples under our own standing backlog: a
+                // measurement of us. Held — the overuse verdict still
+                // blocks every rise, and the fall limiter stays free
+                // so honest evidence on any later report may act.
+                stats.selfReferenceHolds += 1
+            } else {
+                // Withheld awaiting invariant 2's persistence. The
+                // books keep the retired gates' vocabulary: a beat
+                // with fresh super-rate drain evidence inside a
+                // bounded hole is a stall hold (the receiver's radio
+                // blinked); the rest are deferrals.
+                let holePeak = inflatedStreakPeakMicros ?? Int64.max
+                let drainFresh = lastFullTrainAt.map {
+                    now &- $0 <= config.stallEvidenceWindowNS
+                } ?? false
+                let drainOutranPace = drainFresh
+                    && (lastFullTrainRate ?? 0)
+                        >= Double(rateBitsPerSecond)
+                        * config.stallBurstRateFactor
+                if drainOutranPace,
+                   holePeak <= config.stallGapCeilingMicroseconds {
+                    stats.stallHolds += 1
+                } else {
+                    stats.fallDeferrals += 1
+                }
             }
         }
 
