@@ -104,8 +104,11 @@ public enum LyteUdpSessionEvent: Sendable {
     /// The W7 exchange settled: this is the session's agreed set.
     case capabilitiesAgreed(Capabilities)
     /// The peer's declaration produced an unworkable intersection —
-    /// the typed teardown followed automatically.
-    case capabilitiesFailed(String)
+    /// the typed teardown followed automatically. TYPED since V-5:
+    /// the app's chroma fallback keys on `.noCommonChromaMode`
+    /// specifically (a Best declaration against a 4:2:0-only host
+    /// auto-re-dials at Good — ChromaFallbackPolicy's verdict).
+    case capabilitiesFailed(CapabilityNegotiationError)
     /// A host renegotiation proposal (0x11) was answered (0x12).
     case capabilityUpdateAnswered(accepted: Bool)
     /// The wire mode changed (a delivered ModeTransition, or RECOVERY
@@ -317,6 +320,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// CL-15: the loop-prevention/dedupe books (the host runs the
     /// identical type on its side).
     private var clipboardBook = ClipboardSyncBook()
+    /// V-5: the negotiated-posture audit — SPS chroma_format_idc off
+    /// every IDR against the agreed chroma singleton (confirmation
+    /// once, DOCTOR line on a mismatch edge).
+    private var chromaAudit = ChromaStreamAudit()
     private var counters = LyteUdpSessionCounters()
     /// True once the first authenticated chan-1 datagram landed and
     /// (config permitting) the detector re-armed at 350 ms.
@@ -360,6 +367,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 if let self {
                     self.input.noteFrameDelivered(
                         frame: unit.frameNumber, now: self.now())
+                    // V-5: IDRs carry the parameter sets in-band —
+                    // audit the stream's actual chroma against the
+                    // negotiated posture (the plan's assert-on-
+                    // mismatch: a doctor line, never a silent
+                    // resample).
+                    if unit.isIDR {
+                        self.auditStreamChroma(annexB: unit.annexB)
+                    }
                 }
                 onSample(sample, unit)
             },
@@ -769,7 +784,30 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             tightened / 1_000)))
     }
 
+    /// One IDR's chroma audit pass: parse the in-band SPS, feed the
+    /// audit under the lock, surface whatever it has to say. A frame
+    /// without a parseable SPS says nothing (an IRAP without in-band
+    /// parameter sets keeps the current posture — the factory's rule).
+    private func auditStreamChroma(annexB: [UInt8]) {
+        guard let idc = HevcSpsChroma.chromaFormatIdc(inAnnexB: annexB)
+        else { return }
+        lock.lock()
+        let line = chromaAudit.observe(
+            chromaFormatIdc: idc, agreedChromaModes: agreed?.chromaModes)
+        lock.unlock()
+        if let line { onEvent(.protocolNote(line)) }
+    }
+
     // MARK: Snapshots
+
+    /// V-5: the stream's observed chroma ("4:2:0"/"4:4:4"), nil
+    /// before the first IDR with in-band parameter sets — the stats
+    /// overlay's truth about what the wire actually carries.
+    public var streamChromaDescription: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return chromaAudit.observedDescription
+    }
 
     public var state: SessionState {
         lock.lock()
@@ -1001,7 +1039,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             where failure == .noCommonVideoCodec
                 || failure == .noCommonChromaMode {
             lock.unlock()
-            onEvent(.capabilitiesFailed(String(describing: failure)))
+            onEvent(.capabilitiesFailed(failure))
             beginTeardown(reason: .shuttingDown, now: now)
         } catch {
             lock.unlock()

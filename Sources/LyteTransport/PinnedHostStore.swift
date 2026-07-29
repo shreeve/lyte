@@ -48,11 +48,20 @@ public struct PinnedHost: Codable, Equatable, Sendable {
     /// carry passwords, so the default is silence. The strip's toggle
     /// is the live override — this only seeds the connect.
     public var shareClipboard: Bool?
+    /// Per-host Chroma tier (V-5): the ChromaTier rawValue this host's
+    /// sessions declare ("best" = 4:4:4). Stored as the raw string —
+    /// not the enum — so a file written by a future build with a tier
+    /// this build doesn't know decodes fine and reads as the default.
+    /// Optional so older files decode unchanged; nil means Good
+    /// (4:2:0, the shipped posture). `sessionChromaTier` is the one
+    /// reading.
+    public var chromaTier: String?
 
     public init(name: String, address: String, port: UInt16,
                 staticPublicKeyHex: String, pairedAt: String,
                 startHostAudioMuted: Bool? = nil,
-                shareClipboard: Bool? = nil) {
+                shareClipboard: Bool? = nil,
+                chromaTier: String? = nil) {
         self.name = name
         self.address = address
         self.port = port
@@ -60,6 +69,7 @@ public struct PinnedHost: Codable, Equatable, Sendable {
         self.pairedAt = pairedAt
         self.startHostAudioMuted = startHostAudioMuted
         self.shareClipboard = shareClipboard
+        self.chromaTier = chromaTier
     }
 
     /// The raw 32-byte static, decoded from the stored hex.
@@ -95,6 +105,17 @@ public struct PinnedHost: Codable, Equatable, Sendable {
     /// no-key-9 host (the ask never fires without the host's 0x19).
     public var sessionStartHostAudioRouting: HostAudioRoutingMode {
         startHostAudioMuted == false ? .hostAudible : .hostMuted
+    }
+
+    /// The Chroma tier sessions against this host declare (V-5): the
+    /// one place the stored string is read. Unset, unknown-future, and
+    /// unselectable (the dormant Better) values all land on Good —
+    /// the connect must always have a declarable tier in hand.
+    public var sessionChromaTier: ChromaTier {
+        guard let raw = chromaTier,
+              let tier = ChromaTier(rawValue: raw),
+              tier.isSelectable else { return .good }
+        return tier
     }
 }
 
@@ -151,7 +172,8 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
             name: name, address: address, port: port,
             staticPublicKeyHex: hex, pairedAt: pairedAt,
             startHostAudioMuted: hosts[pkh]?.startHostAudioMuted,
-            shareClipboard: hosts[pkh]?.shareClipboard)
+            shareClipboard: hosts[pkh]?.shareClipboard,
+            chromaTier: hosts[pkh]?.chromaTier)
         return fresh
     }
 
@@ -176,6 +198,19 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
         let key = publicKeyHash.lowercased()
         guard hosts[key] != nil else { return false }
         hosts[key]?.shareClipboard = share
+        return true
+    }
+
+    /// Sets the per-host Chroma tier (V-5). Good writes nil — the
+    /// default posture keeps the file clean (the setShareClipboard
+    /// precedent). Returns false when the hash is not pinned.
+    @discardableResult
+    public mutating func setChromaTier(
+        publicKeyHash: String, tier: ChromaTier
+    ) -> Bool {
+        let key = publicKeyHash.lowercased()
+        guard hosts[key] != nil else { return false }
+        hosts[key]?.chromaTier = tier == .good ? nil : tier.rawValue
         return true
     }
 

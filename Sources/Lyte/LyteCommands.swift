@@ -1,4 +1,5 @@
 import SwiftUI
+import LyteTransport
 import LyteUI
 
 /// The Actions menu, driven by the focused window's connection. Every
@@ -84,6 +85,31 @@ struct LyteCommands: Commands {
                 connection?.cancelBulkTransfers()
             }
             .disabled(connection?.bulkActive != true)
+
+            Divider()
+
+            // Chroma (V-5): the strip control's full fallback (the
+            // CL-18 rule — with the strip hidden, everything still
+            // works from here). Same model verb, so menu and strip
+            // cannot disagree; picking a tier reconnects cleanly with
+            // the new declaration. The dormant Better row is visible
+            // but disabled — no yuv422 wire id, no host silicon.
+            Menu("Chroma") {
+                ForEach(ChromaTier.allCases, id: \.self) { tier in
+                    Toggle(
+                        "\(tier.displayName) (\(tier.samplingLabel))"
+                        + (tier.isSelectable
+                            ? "" : " — Not Offered by This Host"),
+                        isOn: Binding(
+                            get: { connection?.chromaTier == tier },
+                            set: { on in
+                                if on { connection?.setChromaTier(tier) }
+                            }
+                        ))
+                        .disabled(!tier.isSelectable)
+                }
+            }
+            .disabled(connection?.canReconnect != true)
 
             Divider()
 

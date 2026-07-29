@@ -56,26 +56,39 @@ struct StreamContainer: View {
                 // instead of a silent frozen frame. Subtle, never
                 // modal; the edge OPPOSITE the strip so they never
                 // stack.
-                if let line = model.roamingStatusLine {
-                    Label(line, systemImage: "arrow.triangle.2.circlepath")
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(.ultraThinMaterial))
-                        .foregroundStyle(.orange)
-                        .padding(stripEdge == .top ? .bottom : .top, 10)
-                        .transition(.opacity)
-                } else if model.lyteFrozen {
-                    Label("Connection interrupted…",
-                          systemImage: "wifi.exclamationmark")
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(.ultraThinMaterial))
-                        .foregroundStyle(.orange)
-                        .padding(stripEdge == .top ? .bottom : .top, 10)
-                        .transition(.opacity)
+                VStack(spacing: 6) {
+                    if let line = model.roamingStatusLine {
+                        Label(line, systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(.ultraThinMaterial))
+                            .foregroundStyle(.orange)
+                            .transition(.opacity)
+                    } else if model.lyteFrozen {
+                        Label("Connection interrupted…",
+                              systemImage: "wifi.exclamationmark")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(.ultraThinMaterial))
+                            .foregroundStyle(.orange)
+                            .transition(.opacity)
+                    }
+                    // V-5: the chroma fallback banner — non-modal,
+                    // never a dialog: the host lacked the declared
+                    // tier and the session already re-dialed at Good.
+                    if let notice = model.chromaNotice {
+                        Label(notice, systemImage: "camera.filters")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(.ultraThinMaterial))
+                            .foregroundStyle(.orange)
+                            .transition(.opacity)
+                    }
                 }
+                .padding(stripEdge == .top ? .bottom : .top, 10)
             }
             .overlay(alignment: stripEdge == .top ? .bottomLeading : .topLeading) {
                 // The stats readout keeps clear of the strip's edge too.
@@ -179,6 +192,7 @@ struct StreamContainer: View {
             .animation(.easeInOut(duration: 0.3), value: model.lyteFrozen)
             .animation(.easeInOut(duration: 0.3),
                        value: model.roamingStatusLine)
+            .animation(.easeInOut(duration: 0.3), value: model.chromaNotice)
             .animation(.easeInOut(duration: 0.25), value: stripVisible)
             .animation(.easeInOut(duration: 0.2), value: model.statsVisible)
             .animation(.easeInOut(duration: 0.15), value: dropTargeted)
@@ -330,6 +344,15 @@ struct ControlStrip: View {
                 }
             }
 
+            // Chroma (V-5, owner decision 1): the three-tier
+            // declaration control — Good 4:2:0 / Better 4:2:2
+            // (dormant: no wire id, no host silicon — visible but
+            // disabled) / Best 4:4:4. Picking a tier is a CLEAN
+            // RECONNECT with the new declaration; a host without the
+            // tier answers typed and the session auto-re-dials at
+            // Good with the banner above.
+            ChromaStripMenu(model: model)
+
             // The stats readout: the session's existing books, as a
             // compact overlay toggle.
             stripButton(
@@ -439,6 +462,59 @@ struct ControlStrip: View {
         }
         .buttonStyle(.plain)
         .help(help)
+    }
+}
+
+/// The strip's Chroma control (V-5): a tier menu wearing the strip's
+/// glyph+caption shape (the HOST/MAC precedent — the caption is the
+/// factual sampling, "4:2:0"/"4:4:4"). Non-Good renders active-orange
+/// like every other engaged strip state. The menu rows carry the
+/// owner's tier names; the dormant Better row is visible but disabled
+/// with the truth spelled out — the three-tier shape ships from day
+/// one even though only two rungs exist on today's wire.
+struct ChromaStripMenu: View {
+    @Bindable var model: ConnectionModel
+
+    var body: some View {
+        Menu {
+            ForEach(ChromaTier.allCases, id: \.self) { tier in
+                Button {
+                    model.setChromaTier(tier)
+                } label: {
+                    if model.chromaTier == tier {
+                        Label(rowTitle(tier), systemImage: "checkmark")
+                    } else {
+                        Text(rowTitle(tier))
+                    }
+                }
+                .disabled(!tier.isSelectable)
+            }
+        } label: {
+            VStack(spacing: 1) {
+                Image(systemName: "camera.filters")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(height: 17)
+                Text(model.chromaTier.samplingLabel)
+                    .font(.system(size: 7, weight: .semibold))
+                    .kerning(0.5)
+                    .opacity(0.75)
+            }
+            .frame(width: 28, height: 28)
+            .foregroundStyle(model.chromaTier != .good
+                ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .help("Chroma — Good 4:2:0 / Better 4:2:2 / Best 4:4:4 "
+            + "(changing the tier reconnects)")
+    }
+
+    private func rowTitle(_ tier: ChromaTier) -> String {
+        let base = "\(tier.displayName) (\(tier.samplingLabel))"
+        return tier.isSelectable
+            ? base : base + " — not offered by this host"
     }
 }
 

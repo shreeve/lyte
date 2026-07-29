@@ -47,6 +47,8 @@ struct WireView: AsyncParsableCommand {
     var hostAudio: String?
     @Flag(name: .long, help: "CL-15: share the clipboard (UTF-8 text, both ways) — real NSPasteboard glue behind the sans-IO core's gates. Needs capability key 10 on both ends; against a no-key-10 host every local copy reports notNegotiated (that refusal is the evidence). Payloads are never printed — byte counts only")
     var clipboard = false
+    @Option(name: .long, help: "V-5: the chroma tier this client DECLARES — 420 (Good, the default) or 444 (Best). Declaration-as-choice: the singleton is the ask; a host without the tier answers the typed noCommonChromaMode teardown (that refusal is the harness's fallback evidence — the debug shell never auto-re-dials; the app does)")
+    var chroma: String = "420"
     @Option(name: .long, help: "Debug: send one reliable CTRL ping every N seconds (0 = off) — exercises the CL-7 ARQ leg live")
     var arqPing: Int = 0
     @Option(name: .long, help: """
@@ -71,12 +73,23 @@ struct WireView: AsyncParsableCommand {
         if audioPrime != 0, !(5...60).contains(audioPrime) {
             throw ValidationError("--audio-prime wants 5…60 packets (25…300 ms), got \(audioPrime)")
         }
+        if Self.parseChroma(chroma) == nil {
+            throw ValidationError("--chroma wants 420|444, got '\(chroma)'")
+        }
     }
 
     static func parseHostAudio(_ word: String) -> HostAudioRoutingMode? {
         switch word {
         case "audible": return .hostAudible
         case "muted": return .hostMuted
+        default: return nil
+        }
+    }
+
+    static func parseChroma(_ word: String) -> ChromaTier? {
+        switch word {
+        case "420": return .good
+        case "444": return .best
         default: return nil
         }
     }
@@ -190,6 +203,11 @@ struct WireView: AsyncParsableCommand {
         // per-host default's role); the pasteboard watcher arms after
         // the session starts (it needs the session to funnel into).
         sessionConfig.core.shareClipboard = clipboard
+        // V-5: the declared chroma tier — the singleton IS the choice
+        // (the app's per-host preference plays this role; the flag is
+        // the harness's leg).
+        sessionConfig.core.capabilities = sessionConfig.core.capabilities
+            .declaringChroma(tier: Self.parseChroma(chroma) ?? .good)
         let pasteboardBox = LockedCell<PasteboardSync?>(nil)
         let session = LyteUdpSession(
             crypto: crypto,
@@ -205,8 +223,8 @@ struct WireView: AsyncParsableCommand {
                         + "maxDatagram \(agreed.maxDatagramBytes), "
                         + "hostAudioRouting \(agreed.hostAudioRouting ? "yes (key 9)" : "no"), "
                         + "clipboard \(agreed.clipboardText ? "yes (key 10)" : "no")")
-                case .capabilitiesFailed(let why):
-                    print("wire-view: capabilities FAILED (\(why)) — typed teardown sent")
+                case .capabilitiesFailed(let failure):
+                    print("wire-view: capabilities FAILED (\(failure)) — typed teardown sent")
                 case .capabilityUpdateAnswered(let accepted):
                     print("wire-view: capability update answered — "
                         + (accepted ? "accepted" : "rejected"))
@@ -498,6 +516,11 @@ final class WireViewStatsPrinter: Sendable {
         sess += core.isFrozen ? ", PILL (frozen)" : ""
         if core.state == .closed { sess += ", CLOSED" }
         sess += ", caps \(core.agreedCapabilities != nil ? "agreed" : "pending")"
+        // V-5: what the wire actually carries (SPS-parsed off IDRs) —
+        // the live leg's negotiated-posture evidence.
+        if let chroma = core.streamChromaDescription {
+            sess += ", stream chroma \(chroma)"
+        }
         // CL-13: the host-speaker posture — key 9 + the 0x19-confirmed
         // truth (never optimistic; "pending" between agreement and the
         // host's first status).

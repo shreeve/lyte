@@ -54,6 +54,17 @@ final class ConnectionModel {
     private var bulkCoordinator: BulkSendCoordinator?
     private var bulkCoordinatorHostKey: String?
     private var bulkNoticeTask: Task<Void, Never>?
+    // V-5: the Chroma tier (owner decision 1) — the live per-window
+    // declaration choice (Good = 4:2:0 / Better = 4:2:2 dormant /
+    // Best = 4:4:4), seeded from the per-host default at connect.
+    // Flipping it is a CLEAN RECONNECT with the new declaration
+    // (declaration-as-choice: chroma is connect-time only). The
+    // fallback path (Best against a host without it) downgrades THIS
+    // live state, never the persisted preference. `chromaNotice` is
+    // the non-modal fallback banner.
+    private(set) var chromaTier: ChromaTier = .good
+    private(set) var chromaNotice: String?
+    private var chromaNoticeTask: Task<Void, Never>?
     /// The stats readout's visibility (the strip's chart toggle).
     var statsVisible = false
 
@@ -163,6 +174,12 @@ final class ConnectionModel {
         // CL-15: the per-host clipboard consent seeds the session's
         // starting posture; the strip's toggle is the live override.
         sessionConfig.core.shareClipboard = pinned.shareClipboard == true
+        // V-5: the per-host Chroma tier seeds the declaration — the
+        // chroma singleton IS the choice (the host maps it straight
+        // to an encoder posture).
+        chromaTier = pinned.sessionChromaTier
+        sessionConfig.core.capabilities = sessionConfig.core.capabilities
+            .declaringChroma(tier: chromaTier)
 
         let lyte = makeLyteSession(crypto: crypto, config: sessionConfig)
 
@@ -278,8 +295,8 @@ final class ConnectionModel {
             // Already through the core's gates (negotiated + sharing
             // on, book pre-armed); the glue just applies.
             pasteboardSync?.apply(text)
-        case .capabilitiesFailed(let why):
-            endLyteSession(reason: "capabilities failed: \(why)")
+        case .capabilitiesFailed(let failure):
+            handleCapabilitiesFailure(failure)
         case .capabilityUpdateAnswered:
             break
         case .modeChanged(let wireMode):
@@ -345,6 +362,8 @@ final class ConnectionModel {
         // connect to this host and re-offers the same id.
         bulkCoordinator?.sessionEnded()
         bulkNegotiated = false
+        chromaNoticeTask?.cancel()
+        chromaNotice = nil
         statsVisible = false
         lyteInputCapture?.stop()
         lyteInputCapture = nil
@@ -363,6 +382,65 @@ final class ConnectionModel {
 
     func disconnect() {
         endSession(reason: nil)
+    }
+
+    // MARK: - Chroma tier (V-5)
+
+    /// The strip/menu Chroma control's verb: persist the per-host
+    /// preference and reconnect cleanly with the new declaration —
+    /// chroma is connect-time only (overview §2's renegotiation row),
+    /// so a flip IS a re-dial, never an in-session mutation. The
+    /// dormant Better tier is refused here too (the control disables
+    /// it; this is the model's own gate).
+    func setChromaTier(_ tier: ChromaTier) {
+        guard tier.isSelectable, tier != chromaTier else { return }
+        chromaTier = tier
+        if let pkh = hostPublicKeyHash {
+            var store = PinnedHostStore.load()
+            store.setChromaTier(publicKeyHash: pkh, tier: tier)
+            try? store.save()
+        }
+        // Flip = clean reconnect (typed goodbye + immediate re-dial;
+        // the F-5 machinery is the proven path).
+        reconnectNow()
+    }
+
+    /// The typed negotiation failure's fate: `noCommonChromaMode` on
+    /// a non-Good declaration auto-re-dials at Good with the banner
+    /// (the pillar's named degradation — never silent, never a hang:
+    /// V-4's host holds ≤2 s and fails typed); everything else stays
+    /// the failure it is.
+    private func handleCapabilitiesFailure(
+        _ failure: CapabilityNegotiationError
+    ) {
+        let declared = chromaTier
+        switch ChromaFallbackPolicy.verdict(
+            declaredTier: declared, failure: failure
+        ) {
+        case .redialAtGood where roaming != nil:
+            // Live downgrade only — the per-host preference stands
+            // (the host may gain the tier; the user said Best).
+            chromaTier = .good
+            showChromaNotice(
+                "\(hostName ?? "The host") doesn't offer "
+                + "\(declared.displayName) (\(declared.samplingLabel)) "
+                + "— reconnecting at Good (4:2:0)")
+            reconnectNow()
+        case .redialAtGood, .fail:
+            endLyteSession(reason: "capabilities failed: \(failure)")
+        }
+    }
+
+    /// The non-modal fallback banner; fades on its own (longer than
+    /// the bulk notice — it explains a whole reconnect).
+    private func showChromaNotice(_ text: String) {
+        chromaNotice = text
+        chromaNoticeTask?.cancel()
+        chromaNoticeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            self?.chromaNotice = nil
+        }
     }
 
     // MARK: - Roaming/reconnect (F-5)
@@ -552,6 +630,11 @@ final class ConnectionModel {
         config.core.desiredHostAudioRouting =
             hostAudioPosture ?? pinned.sessionStartHostAudioRouting
         config.core.shareClipboard = clipboardSharing
+        // V-5: the LIVE tier rides every re-dial — a mid-session flip
+        // and the chroma fallback both funnel through here with the
+        // tier they mean.
+        config.core.capabilities = config.core.capabilities
+            .declaringChroma(tier: chromaTier)
         let lyte = makeLyteSession(crypto: crypto, config: config)
         Task { @MainActor [weak self] in
             do {
@@ -835,10 +918,16 @@ final class ConnectionModel {
         // frame-size percentiles over ~5 s). Host QP/encoder posture
         // are host-log truth; this is the client-side half.
         if let q = core.pipeline.snapshotStats().quality {
-            lines.append(String(
+            var video = String(
                 format: "video %.0f fps · %.1f Mbps · frame p50 %d B · p95 %d B",
                 q.framesPerSecond, Double(q.bitsPerSecond) / 1e6,
-                q.frameBytesP50, q.frameBytesP95))
+                q.frameBytesP50, q.frameBytesP95)
+            // V-5: what the wire actually carries (SPS-parsed), the
+            // audit's truth — not the ask.
+            if let chroma = core.streamChromaDescription {
+                video += " · \(chroma)"
+            }
+            lines.append(video)
         }
 
         // Unconditional, capture verdict included (CL-16): "input 0
