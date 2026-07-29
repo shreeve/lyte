@@ -454,7 +454,7 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertNil(verdict.newRateBitsPerSecond,
                      "the dwell deferral holds a dwell-shaped fall first")
         var deferredBeats = 0
-        while verdict.newRateBitsPerSecond == nil, deferredBeats < 12 {
+        while verdict.newRateBitsPerSecond == nil, deferredBeats < 30 {
             verdict = beat(extraDelayMicros: 25_000)
             deferredBeats += 1
         }
@@ -543,9 +543,9 @@ final class RateEstimatorGateTests: XCTestCase {
                 now: now, inRecovery: false
             )
             deferredBeats += 1
-        } while verdict.newRateBitsPerSecond == nil && deferredBeats < 14
+        } while verdict.newRateBitsPerSecond == nil && deferredBeats < 30
         XCTAssertGreaterThanOrEqual(estimator.stats.fallDeferrals, 1,
-            "the dwell deferral held the dwell-shaped beats first")
+            "the persistence held the uncorroborated beats first")
         XCTAssertTrue(verdict.overuse)
         XCTAssertEqual(verdict.change, .overuse)
         let newRate = verdict.newRateBitsPerSecond
@@ -600,7 +600,7 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertFalse(beat(mbps: 5, inflate: true).overuse)
         var first = beat(mbps: 5, inflate: true)
         var deferredBeats = 0
-        while first.newRateBitsPerSecond == nil, deferredBeats < 12 {
+        while first.newRateBitsPerSecond == nil, deferredBeats < 30 {
             XCTAssertTrue(first.overuse)
             first = beat(mbps: 5, inflate: true)
             deferredBeats += 1
@@ -701,7 +701,7 @@ final class RateEstimatorGateTests: XCTestCase {
                 now: now, inRecovery: false
             )
             deferredBeats += 1
-        } while verdict.newRateBitsPerSecond == nil && deferredBeats < 14
+        } while verdict.newRateBitsPerSecond == nil && deferredBeats < 30
         XCTAssertTrue(verdict.overuse)
         let newRate = verdict.newRateBitsPerSecond
         XCTAssertNotNil(newRate)
@@ -842,8 +842,8 @@ final class RateEstimatorGateTests: XCTestCase {
         )
         var extraDelay: UInt64 = 45_000
         var deferredBeats = 0
-        while verdict.newRateBitsPerSecond == nil, deferredBeats < 12 {
-            extraDelay += 5_000 // keeps growing, stays under the ceiling
+        while verdict.newRateBitsPerSecond == nil, deferredBeats < 30 {
+            extraDelay += 3_000 // keeps growing, stays under the ceiling
             verdict = selfRefBeat(
                 &now, &clientMicros, &seq, on: estimator,
                 bottleneckMbps: 20, extraDelayMicros: extraDelay,
@@ -936,7 +936,7 @@ final class RateEstimatorGateTests: XCTestCase {
             backlogBytes: 40_000
         )
         var deferredBeats = 0
-        while verdict.newRateBitsPerSecond == nil, deferredBeats < 12 {
+        while verdict.newRateBitsPerSecond == nil, deferredBeats < 30 {
             verdict = selfRefBeat(
                 &now, &clientMicros, &seq, on: estimator,
                 bottleneckMbps: 5, extraDelayMicros: 40_000,
@@ -1146,12 +1146,24 @@ final class RateEstimatorGateTests: XCTestCase {
             bottleneckMbps: 200, extraDelayMicros: 400_000,
             backlogBytes: 0
         ).newRateBitsPerSecond)
-        let verdict = selfRefBeat(
+        // The pressure never clears (a real outage, not a dwell that
+        // drains), so invariant 2's persistence is satisfied within
+        // one extra fall-limiter beat and the fall bites.
+        var verdict = selfRefBeat(
             &now, &clientMicros, &seq, on: estimator,
             bottleneckMbps: 200, extraDelayMicros: 400_000,
             backlogBytes: 0
         )
         XCTAssertTrue(verdict.overuse)
+        var beats = 0
+        while verdict.newRateBitsPerSecond == nil, beats < 30 {
+            verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: 200, extraDelayMicros: 400_000,
+                backlogBytes: 0
+            )
+            beats += 1
+        }
         XCTAssertEqual(verdict.change, .overuse)
         XCTAssertEqual(Double(verdict.newRateBitsPerSecond!),
                        20e6 * 0.85, accuracy: 1.0e6,
@@ -1190,7 +1202,7 @@ final class RateEstimatorGateTests: XCTestCase {
             backlogBytes: 0
         )
         var deferredBeats = 0
-        while verdict.newRateBitsPerSecond == nil, deferredBeats < 12 {
+        while verdict.newRateBitsPerSecond == nil, deferredBeats < 30 {
             verdict = selfRefBeat(
                 &now, &clientMicros, &seq, on: estimator,
                 bottleneckMbps: 8, extraDelayMicros: 40_000,
@@ -1364,7 +1376,7 @@ final class RateEstimatorGateTests: XCTestCase {
         var fell = false
         // Enough ingested beats to arm, ride out the dwell deferral's
         // ≤150 ms budget across the 50 ms report seams, and bite.
-        for beat in 0..<16 {
+        for beat in 0..<32 {
             if beat % 2 == 1 {
                 now += 25 * Self.ms
                 clientMicros += 25_000
@@ -1459,7 +1471,7 @@ final class RateEstimatorGateTests: XCTestCase {
             backlogBytes: 40_000
         )
         var beats = 0
-        while verdict.newRateBitsPerSecond == nil, beats < 14 {
+        while verdict.newRateBitsPerSecond == nil, beats < 30 {
             verdict = selfRefBeat(
                 &now, &clientMicros, &seq, on: estimator,
                 bottleneckMbps: 4, extraDelayMicros: 60_000,

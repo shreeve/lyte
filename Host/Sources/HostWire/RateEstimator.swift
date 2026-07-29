@@ -477,9 +477,11 @@ public struct RateEstimatorStats: Equatable, Sendable {
     /// that closed with a compressed drain and nothing lost (the
     /// receiver's radio blinked; the path did not slow).
     public var stallHolds = 0
-    /// The dwell deferral (the ramp hunt): dwell-shaped falls held ONE
-    /// report so the drain evidence the stall gate needs — which can
-    /// only arrive after the hole closes — gets its chance to testify.
+    /// Overuse falls withheld awaiting invariant 2's persistence
+    /// (HS-28; the ramp hunt's dwell deferral, retired and
+    /// generalized): no instant corroboration yet, and the pressure
+    /// streak has not persisted a full fall-limiter window — the
+    /// report that finally acts still finds the limiter unconsumed.
     public var fallDeferrals = 0
     public var lossDownshifts = 0
     /// HS-28 (invariant 1): full-train samples classified CENSORED at
@@ -675,27 +677,12 @@ public final class RateEstimator {
     /// aggregation compresses small groups innocently.
     private var lastFullTrainRate: Double?
     private var lastFullTrainAt: UInt64?
-    /// THE DWELL DEFERRAL (the ramp hunt's fix): the stall gate's one
-    /// structural blind spot is TIMING — the overuse verdict fires
-    /// mid-dwell (two inflated reports, ~60–80 ms into the hole's
-    /// trickle), but the compressed super-rate drain that proves the
-    /// hole CLOSED can only arrive on a report AFTER it closes. The
-    /// verdict beat the evidence on every dwell, and each fall cost a
-    /// vbv-tighten + vbv-rung/restore IDR pair (7.42/min measured
-    /// against the ≤1/min bar; 10 induced dwells → 10 pairs). So: a
-    /// fall whose evidence is dwell-SHAPED (peak within the stall
-    /// ceiling, loss clean, post-FEC clean — everything the stall gate
-    /// wants except the drain) is DEFERRED, report by report, for at
-    /// most the stall ceiling's own span (a dwell is by definition no
-    /// longer than that). Drain arrives → the stall gate holds as
-    /// designed; the shape sours (peak past the ceiling, loss) → the
-    /// gates stop deferring at once; the budget expires → the fall
-    /// proceeds ≤150 ms late, inside the 500 ms fall limiter's own
-    /// granularity. Rises stay blocked the whole time (the overuse
-    /// verdict below), so deferral never feeds the queue it is
-    /// examining. Anchored at the first deferred verdict; resets with
-    /// the streak.
-    private var fallDeferredSince: UInt64?
+    // The dwell deferral's `fallDeferredSince` lived here from the
+    // ramp hunt until HS-28 retired it: invariant 2's persistence
+    // (`inflatedStreakSinceNS` against `beliefDemotionSustainNS`)
+    // subsumes the deferral with no shape analysis at all — a dwell
+    // cannot sustain pressure across a full fall-limiter window, so
+    // the drain always arrives inside the persistence span.
 
     private struct LossSample {
         var at: UInt64
@@ -1213,7 +1200,6 @@ public final class RateEstimator {
             queuingDelayMicroseconds = 0
             consecutiveInflatedReports = 0
             inflatedStreakSinceNS = nil
-            fallDeferredSince = nil
             return false
         }
         queuingDelayMicroseconds = worstInflation
@@ -1235,7 +1221,6 @@ public final class RateEstimator {
         inflatedStreakStartMicros = nil
         inflatedStreakPeakMicros = nil
         inflatedStreakSinceNS = nil
-        fallDeferredSince = nil
         return false
     }
 
@@ -1308,20 +1293,25 @@ public final class RateEstimator {
                 // stands, rises stay blocked this report, and the
                 // fall limiter is unconsumed — sustained evidence on
                 // the very next report may still act.
-            } else if holePeak <= config.stallGapCeilingMicroseconds,
-                      lossFraction < config.lossCleanThreshold,
+            } else if lossFraction < config.lossCleanThreshold,
                       postFecLossFraction < config.postFecCleanThreshold,
-                      now &- (fallDeferredSince ?? now)
-                          <= UInt64(config.stallGapCeilingMicroseconds)
-                          * 1_000 {
-                // THE DWELL DEFERRAL (see the field): dwell-shaped in
-                // every respect but the drain, which structurally
-                // cannot have arrived yet — keep holding, up to the
-                // stall ceiling's own span, so the stall gate gets to
-                // see the drain. The overuse verdict still blocks
-                // every rise below, and the fall limiter stays
-                // unconsumed for the report that finally acts.
-                if fallDeferredSince == nil { fallDeferredSince = now }
+                      now &- (inflatedStreakSinceNS ?? now)
+                          < config.beliefDemotionSustainNS {
+                // INVARIANT 2's PERSISTENCE (HS-28 — the dwell
+                // deferral, RETIRED and generalized): an overuse fall
+                // with no instant corroboration (no loss the clean
+                // band would flag, no post-FEC evidence past the
+                // clean column) waits until the pressure streak has
+                // persisted a full fall-limiter window into the next
+                // (`beliefDemotionSustainNS`). No shape analysis: a
+                // dwell — ≤150 ms by the stall ceiling's own
+                // definition — structurally cannot sustain it (the
+                // drain clears the streak first), while a genuine
+                // squeeze sails through and falls within ~1 s, at
+                // most one limiter beat later than the old law. The
+                // overuse verdict still blocks every rise below, and
+                // the fall limiter stays unconsumed for the report
+                // that finally acts.
                 stats.fallDeferrals += 1
             } else {
                 // HS-28: the fall EXECUTES here — and the anchor
