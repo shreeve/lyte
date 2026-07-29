@@ -144,6 +144,23 @@ struct ConnectView: View {
                         pinnedStore = store
                     }
                 ))
+                // P-1: the images rung — meaningful only with text
+                // consent on (the Off / Text only / Text + images
+                // tier); OFF by default like text.
+                Toggle("Share Clipboard Images", isOn: Binding(
+                    get: {
+                        pinnedStore.host(publicKeyHash: host.publicKeyHash)?
+                            .shareClipboardImages == true
+                    },
+                    set: { share in
+                        guard let pkh = host.publicKeyHash else { return }
+                        var store = PinnedHostStore.load()
+                        store.setShareClipboardImages(
+                            publicKeyHash: pkh, share: share ? true : nil)
+                        try? store.save()
+                        pinnedStore = store
+                    }
+                ))
                 Divider()
                 Button("Unpair \(pinned.name)", role: .destructive) {
                     var store = PinnedHostStore.load()

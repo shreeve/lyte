@@ -37,6 +37,12 @@ final class ConnectionModel {
     // passwords). The pasteboard watcher runs only while both hold.
     private(set) var clipboardNegotiated = false
     private(set) var clipboardSharing = false
+    // P-1: the images rung — `clipboardImagesNegotiated` decides
+    // whether the rung's toggle EXISTS (keys 10∧12 both survived);
+    // `clipboardImageSharing` is its live consent state. Images move
+    // only when text sharing AND this both hold (Text + images).
+    private(set) var clipboardImagesNegotiated = false
+    private(set) var clipboardImageSharing = false
     private var pasteboardSync: PasteboardSync?
     // F-4: bulk transfer — `bulkNegotiated` decides whether a drop can
     // OFFER (key 11 survived intersection = the host's standing
@@ -174,6 +180,10 @@ final class ConnectionModel {
         // CL-15: the per-host clipboard consent seeds the session's
         // starting posture; the strip's toggle is the live override.
         sessionConfig.core.shareClipboard = pinned.shareClipboard == true
+        // P-1: the images rung rides only on top of text consent.
+        sessionConfig.core.shareClipboardImages =
+            pinned.shareClipboard == true
+            && pinned.shareClipboardImages == true
         // V-5: the per-host Chroma tier seeds the declaration — the
         // chroma singleton IS the choice (the host maps it straight
         // to an encoder posture).
@@ -198,12 +208,12 @@ final class ConnectionModel {
         hostAudioPosture = nil
         clipboardNegotiated = false
         clipboardSharing = pinned.shareClipboard == true
+        clipboardImagesNegotiated = false
+        clipboardImageSharing = sessionConfig.core.shareClipboardImages
         // The watcher exists per session, started only once key 10
         // agrees AND sharing is on (updatePasteboardWatcher). The
         // core judges every change; the glue only reads and applies.
-        pasteboardSync = PasteboardSync(onLocalChange: { [weak lyte] text in
-            lyte?.shareLocalClipboard(text)
-        })
+        pasteboardSync = makePasteboardSync(for: lyte)
         bulkNegotiated = false
         // The pinned lookup above guarantees a pkh in practice; the
         // address fallback keeps the key total.
@@ -275,6 +285,9 @@ final class ConnectionModel {
             // CL-15: the clipboard toggle exists exactly when key 10
             // survived; the watcher starts if consent is already on.
             clipboardNegotiated = agreed.clipboardText
+            // P-1: the images rung exists exactly when 10∧12 survived
+            // (a text-only host truthfully never declares key 12).
+            clipboardImagesNegotiated = agreed.clipboardImagesAgreed
             updatePasteboardWatcher()
             // F-4: attach the coordinator's chan-8 leg. A transfer the
             // last session interrupted re-offers its SAME id here.
@@ -295,6 +308,10 @@ final class ConnectionModel {
             // Already through the core's gates (negotiated + sharing
             // on, book pre-armed); the glue just applies.
             pasteboardSync?.apply(text)
+        case .hostClipboardImageChanged(let data, _):
+            // P-1: sha-verified PNG through the core's gates (10∧12 +
+            // the images tier, book pre-armed); the glue just applies.
+            pasteboardSync?.apply(imageData: data)
         case .capabilitiesFailed(let failure):
             handleCapabilitiesFailure(failure)
         case .capabilityUpdateAnswered:
@@ -357,6 +374,8 @@ final class ConnectionModel {
         pasteboardSync = nil
         clipboardNegotiated = false
         clipboardSharing = false
+        clipboardImagesNegotiated = false
+        clipboardImageSharing = false
         // F-4: the coordinator survives the session end — a transfer
         // interrupted mid-flight waits (id + path intact) for the next
         // connect to this host and re-offers the same id.
@@ -518,6 +537,7 @@ final class ConnectionModel {
         pasteboardSync?.stop()
         pasteboardSync = nil
         clipboardNegotiated = false
+        clipboardImagesNegotiated = false
         bulkCoordinator?.sessionEnded()
         bulkNegotiated = false
         Task.detached {
@@ -630,6 +650,7 @@ final class ConnectionModel {
         config.core.desiredHostAudioRouting =
             hostAudioPosture ?? pinned.sessionStartHostAudioRouting
         config.core.shareClipboard = clipboardSharing
+        config.core.shareClipboardImages = clipboardImageSharing
         // V-5: the LIVE tier rides every re-dial — a mid-session flip
         // and the chroma fallback both funnel through here with the
         // tier they mean.
@@ -673,9 +694,8 @@ final class ConnectionModel {
         // hostAudioPosture stays: the reconnect config already asked
         // for it; the host's first 0x19 refreshes the truth.
         clipboardNegotiated = false
-        pasteboardSync = PasteboardSync(onLocalChange: { [weak lyte] text in
-            lyte?.shareLocalClipboard(text)
-        })
+        clipboardImagesNegotiated = false
+        pasteboardSync = makePasteboardSync(for: lyte)
         bulkNegotiated = false
         statusLine = crypto.modeDescription
         // The dial hints follow the host (identity-keyed pin; the
@@ -752,14 +772,42 @@ final class ConnectionModel {
         updatePasteboardWatcher()
     }
 
+    /// The images rung's live toggle (P-1). Only reachable when
+    /// `clipboardImagesNegotiated`; images move only while text
+    /// sharing is ALSO on — the tier, not a second channel.
+    func setClipboardImageSharing(_ enabled: Bool) {
+        guard clipboardImagesNegotiated else { return }
+        clipboardImageSharing = enabled
+        lyteSession?.setClipboardImageSharing(enabled)
+        updatePasteboardWatcher()
+    }
+
     /// The watcher polls exactly while consent AND capability hold —
-    /// while off, the pasteboard is never even read.
+    /// while off, the pasteboard is never even read. The images rung
+    /// gates the watcher's IMAGE reads the same way (never read
+    /// without consent), on top of the running/stopped state.
     private func updatePasteboardWatcher() {
+        pasteboardSync?.setImagesEnabled(
+            clipboardImagesNegotiated && clipboardImageSharing)
         if clipboardNegotiated, clipboardSharing, lyteSession != nil {
             pasteboardSync?.start()
         } else {
             pasteboardSync?.stop()
         }
+    }
+
+    /// One watcher per session, both flavors funneled into the core's
+    /// judges (P-1 grew the image leg beside CL-15's text leg).
+    private func makePasteboardSync(
+        for lyte: LyteUdpSession
+    ) -> PasteboardSync {
+        let sync = PasteboardSync(onLocalChange: { [weak lyte] text in
+            lyte?.shareLocalClipboard(text)
+        })
+        sync.onLocalImageChange = { [weak lyte] data in
+            lyte?.shareLocalClipboardImage(data)
+        }
+        return sync
     }
 
     /// The per-host "share clipboard" default, read live from the
@@ -775,6 +823,22 @@ final class ConnectionModel {
             guard let pkh = hostPublicKeyHash else { return }
             var store = PinnedHostStore.load()
             store.setShareClipboard(
+                publicKeyHash: pkh, share: newValue ? true : nil)
+            try? store.save()
+        }
+    }
+
+    /// The per-host images-rung default (P-1) — the third tier step.
+    var shareClipboardImagesPreference: Bool {
+        get {
+            guard let pkh = hostPublicKeyHash else { return false }
+            return PinnedHostStore.load()
+                .host(publicKeyHash: pkh)?.shareClipboardImages == true
+        }
+        set {
+            guard let pkh = hostPublicKeyHash else { return }
+            var store = PinnedHostStore.load()
+            store.setShareClipboardImages(
                 publicKeyHash: pkh, share: newValue ? true : nil)
             try? store.save()
         }
@@ -958,6 +1022,17 @@ final class ConnectionModel {
             lines.append("clipboard \(clipboard.clipboardSharesSent) sent"
                 + " · \(clipboard.clipboardAnnouncesReceived) recv"
                 + " · \(clipboard.clipboardLoopSuppressed) suppressed")
+        }
+
+        // P-1: the image lane's books, while it has any.
+        let images = core.clipboardImageCounters
+        let imageActivity = images.sharesStarted + images.imagesApplied
+            + images.sharesSuppressed + images.receivesRefused
+        if clipboardImagesNegotiated, imageActivity > 0 {
+            lines.append("clip images \(images.sharesCompleted)"
+                + "/\(images.sharesStarted) sent"
+                + " · \(images.imagesApplied) applied"
+                + " · \(images.sharesSuppressed) suppressed")
         }
 
         // F-4: the bulk channel's books, while it has any.

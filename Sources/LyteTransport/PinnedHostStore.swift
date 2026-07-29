@@ -48,6 +48,12 @@ public struct PinnedHost: Codable, Equatable, Sendable {
     /// carry passwords, so the default is silence. The strip's toggle
     /// is the live override — this only seeds the connect.
     public var shareClipboard: Bool?
+    /// P-1: the images rung of the per-host consent tier (Off / Text
+    /// only / Text + images). Meaningful only with `shareClipboard`
+    /// true; nil and false both mean text-only. Optional so older
+    /// files decode unchanged; same seeding/override story as
+    /// `shareClipboard`.
+    public var shareClipboardImages: Bool?
     /// Per-host Chroma tier (V-5): the ChromaTier rawValue this host's
     /// sessions declare ("best" = 4:4:4). Stored as the raw string —
     /// not the enum — so a file written by a future build with a tier
@@ -61,6 +67,7 @@ public struct PinnedHost: Codable, Equatable, Sendable {
                 staticPublicKeyHex: String, pairedAt: String,
                 startHostAudioMuted: Bool? = nil,
                 shareClipboard: Bool? = nil,
+                shareClipboardImages: Bool? = nil,
                 chromaTier: String? = nil) {
         self.name = name
         self.address = address
@@ -69,6 +76,7 @@ public struct PinnedHost: Codable, Equatable, Sendable {
         self.pairedAt = pairedAt
         self.startHostAudioMuted = startHostAudioMuted
         self.shareClipboard = shareClipboard
+        self.shareClipboardImages = shareClipboardImages
         self.chromaTier = chromaTier
     }
 
@@ -173,6 +181,7 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
             staticPublicKeyHex: hex, pairedAt: pairedAt,
             startHostAudioMuted: hosts[pkh]?.startHostAudioMuted,
             shareClipboard: hosts[pkh]?.shareClipboard,
+            shareClipboardImages: hosts[pkh]?.shareClipboardImages,
             chromaTier: hosts[pkh]?.chromaTier)
         return fresh
     }
@@ -198,6 +207,19 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
         let key = publicKeyHash.lowercased()
         guard hosts[key] != nil else { return false }
         hosts[key]?.shareClipboard = share
+        return true
+    }
+
+    /// Sets the per-host images rung (P-1). Text-only writes nil —
+    /// the default posture keeps the file clean. Returns false when
+    /// the hash is not pinned.
+    @discardableResult
+    public mutating func setShareClipboardImages(
+        publicKeyHash: String, share: Bool?
+    ) -> Bool {
+        let key = publicKeyHash.lowercased()
+        guard hosts[key] != nil else { return false }
+        hosts[key]?.shareClipboardImages = share == true ? true : nil
         return true
     }
 

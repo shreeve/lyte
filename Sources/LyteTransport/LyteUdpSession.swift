@@ -44,6 +44,7 @@
 // injection point; nothing in Wire/ changes.
 
 import CoreMedia
+import Crypto
 import Dispatch
 import Foundation
 import LyteWire
@@ -82,6 +83,10 @@ public enum ClipboardShareOutcome: Equatable, Sendable {
     case suppressedEcho
     /// Identical to the last text we shared — the host already holds it.
     case suppressedDuplicate
+    /// P-1 (images only): the clipboard send lane already carries a
+    /// transfer — v2 syncs latest-wins clipboards, so the superseded
+    /// copy just drops. Text never reports this (0x1A has no lane).
+    case suppressedBusy
     /// The session toggle (or per-host default) says clipboard
     /// sharing is off: nothing leaves.
     case sharingDisabled
@@ -130,6 +135,15 @@ public enum LyteUdpSessionEvent: Sendable {
     /// the apply's changeCount echo. Never fires while sharing is off:
     /// content must not land on the pasteboard without consent.
     case hostClipboardChanged(String)
+    /// P-1 (clipboard v2): a host clipboard IMAGE landed sha-verified
+    /// off the chan-8 clipboard lane and passed every gate (keys 10∧12
+    /// agreed, sharing on, images tier on) — the glue applies `data`
+    /// (PNG in v2) to the pasteboard. The sync book is already
+    /// pre-armed against the apply's changeCount echo. Never fires
+    /// while sharing/images are off: an unwelcome marker draws the
+    /// typed abort(declined) instead — the sender waits on a verdict,
+    /// so images cannot use text's silent-deafness posture.
+    case hostClipboardImageChanged(data: [UInt8], mime: String)
     /// One decoded chan-8 bulk message arrived (F-4): accept/ack/
     /// complete/abort answers for the client's sending role. Already
     /// through the rule-3 gate (key 11 agreed); the owner feeds it to
@@ -243,6 +257,14 @@ public struct LyteUdpSessionCoreConfig: Sendable {
     /// `setClipboardSharing`. While off, nothing leaves and nothing
     /// lands.
     public var shareClipboard: Bool
+    /// P-1: the images rung of the consent tier (Off / Text only /
+    /// Text + images — LYTE-PLAN §8). Images move only when THIS and
+    /// `shareClipboard` are both on; default OFF like text. Declaration
+    /// is unaffected — key 12 is always declared (dialect, not consent,
+    /// the key-9/10/11 rule) — but an unwelcome inbound marker draws
+    /// abort(declined) rather than text's silent ignore, because the
+    /// image sender waits on a verdict.
+    public var shareClipboardImages: Bool
 
     public init(
         capabilities: Capabilities = .wireDefault
@@ -253,7 +275,14 @@ public struct LyteUdpSessionCoreConfig: Sendable {
             // offer is welcome is the HOST's standing toggle, which
             // decides whether the host declares — the intersection
             // gates the client's offers.
-            .declaringBulkTransfer(),
+            .declaringBulkTransfer()
+            // P-1: key 12 (clipboardImages) — dialect, fourth verse:
+            // this client can always speak the 0x22 image-cargo
+            // dialect, so it always declares; whether images actually
+            // MOVE is the consent tier at both ends (the host's
+            // --clipboard=images flag decides ITS declaration; ours
+            // is gated live by shareClipboardImages).
+            .declaringClipboardImages(),
         machineConfig: SessionMachineConfig = SessionMachineConfig(
             blackoutSilenceMicroseconds: 2_500_000
         ),
@@ -261,7 +290,8 @@ public struct LyteUdpSessionCoreConfig: Sendable {
         audioJitter: AudioJitterConfig = AudioJitterConfig(),
         nackPolicy: NackPolicyConfig = NackPolicyConfig(),
         desiredHostAudioRouting: HostAudioRoutingMode? = .hostMuted,
-        shareClipboard: Bool = false
+        shareClipboard: Bool = false,
+        shareClipboardImages: Bool = false
     ) {
         self.capabilities = capabilities
         self.machineConfig = machineConfig
@@ -271,6 +301,7 @@ public struct LyteUdpSessionCoreConfig: Sendable {
         self.nackPolicy = nackPolicy
         self.desiredHostAudioRouting = desiredHostAudioRouting
         self.shareClipboard = shareClipboard
+        self.shareClipboardImages = shareClipboardImages
     }
 }
 
@@ -320,6 +351,18 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// CL-15: the loop-prevention/dedupe books (the host runs the
     /// identical type on its side).
     private var clipboardBook = ClipboardSyncBook()
+    /// P-1: the images rung's live toggle (seeded from the config's
+    /// per-host default). Images move only when clipboardSharingOn
+    /// AND this are true — the Text + images tier.
+    private var clipboardImagesOn: Bool
+    /// P-1: the clipboard-image lane (Wire's sans-IO channel — the
+    /// host runs the identical type). Shares clipboardBook so
+    /// cross-modal echoes suppress.
+    private var imageChannel = ClipboardImageChannel()
+    /// Transfer-id minting for image shares. System randomness is
+    /// fine here — ids only need collision resistance on one chan-8
+    /// stream, not determinism (tests drive the channel directly).
+    private var imageRng = SystemRandomNumberGenerator()
     /// V-5: the negotiated-posture audit — SPS chroma_format_idc off
     /// every IDR against the agreed chroma singleton (confirmation
     /// once, DOCTOR line on a mismatch edge).
@@ -347,6 +390,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         self.now = now
         self.onEvent = onEvent
         self.clipboardSharingOn = config.shareClipboard
+        self.clipboardImagesOn = config.shareClipboardImages
         // The machine begins at establishment (the shell constructs the
         // core only after the Noise handshake), streaming: ACTIVE.
         self.machine = SessionStateMachine(
@@ -669,6 +713,139 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         shareLocalClipboard(text, now: now())
     }
 
+    // MARK: Clipboard images (P-1, clipboard v2)
+
+    /// True when capability keys 10 AND 12 both survived intersection
+    /// — the images rung of the consent tier exists exactly when this
+    /// is true. Key 11 (file consent) is deliberately not consulted:
+    /// the tiers do not couple (a no-files host still syncs images).
+    public var clipboardImagesNegotiated: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return agreed?.clipboardImagesAgreed == true
+    }
+
+    /// The images rung's live state: images move only when sharing
+    /// is on AND the rung is on (Text + images, LYTE-PLAN §8).
+    public var clipboardImageSharingEnabled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return clipboardSharingOn && clipboardImagesOn
+    }
+
+    /// The strip's live override for the images rung. Local policy
+    /// only, like `setClipboardSharing` — but a disabled end is not
+    /// merely deaf: an inbound marker draws abort(declined), because
+    /// the image sender waits on a verdict.
+    public func setClipboardImageSharing(_ enabled: Bool) {
+        lock.lock()
+        clipboardImagesOn = enabled
+        lock.unlock()
+    }
+
+    /// The image lane's own books (Wire's channel counts; these
+    /// complement the session counters the same way audio's do).
+    public var clipboardImageCounters: ClipboardImageChannelCounters {
+        lock.lock()
+        defer { lock.unlock() }
+        return imageChannel.counters
+    }
+
+    /// The pasteboard watcher's image funnel: one local image copy
+    /// (PNG bytes in v2), judged (negotiated → tier → the shared sync
+    /// book → the lane → the 32 MiB ceiling) and shared as 0x22 cargo
+    /// on chan 8 when it survives. Never throws — the poller has
+    /// nobody to catch for it.
+    @discardableResult
+    public func shareLocalClipboardImage(
+        _ data: [UInt8], now: ClientTimestamp
+    ) -> ClipboardShareOutcome {
+        lock.lock()
+        guard agreed?.clipboardImagesAgreed == true else {
+            lock.unlock()
+            return .notNegotiated
+        }
+        guard clipboardSharingOn, clipboardImagesOn else {
+            lock.unlock()
+            return .sharingDisabled
+        }
+        let events = imageChannel.shareLocalImage(
+            data, sha256: Self.sha256(data),
+            book: &clipboardBook, rng: &imageRng
+        )
+        lock.unlock()
+        return processImageEvents(events, now: now)
+    }
+
+    @discardableResult
+    public func shareLocalClipboardImage(
+        _ data: [UInt8]
+    ) -> ClipboardShareOutcome {
+        shareLocalClipboardImage(data, now: now())
+    }
+
+    /// One batch of channel events into the world: `.send` rides
+    /// chan 8's ordered stream, `.applyImage` becomes the typed event
+    /// (payload bytes appear THERE and nowhere else — the CL-15 rule),
+    /// the rest is protocol weather. Returns the share verdict for
+    /// the funnel's caller; called OUTSIDE the lock (the v1 send
+    /// pattern — the reliable endpoint's callbacks take our lock).
+    @discardableResult
+    private func processImageEvents(
+        _ events: [ClipboardImageEvent], now: ClientTimestamp
+    ) -> ClipboardShareOutcome {
+        var outcome: ClipboardShareOutcome = .shared
+        for event in events {
+            switch event {
+            case .send(let bytes):
+                bulkReliable.adoptConnectionId(reliable.learnedConnectionId)
+                do {
+                    try bulkReliable.send(bytes, now: now)
+                } catch {
+                    outcome = .sendRefused(String(describing: error))
+                }
+            case .shareStarted:
+                outcome = .shared
+            case .shareCompleted(_, let byteCount):
+                onEvent(.protocolNote(
+                    "clipboard image landed on the host sha-exact "
+                        + "(\(byteCount) B)"))
+            case .shareAborted(let reason, let byRemote):
+                onEvent(.protocolNote(
+                    "clipboard image share aborted "
+                        + "(\(reason), \(byRemote ? "remote" : "local"))"))
+            case .receiveAborted(let reason, let byRemote):
+                onEvent(.protocolNote(
+                    "incoming clipboard image aborted "
+                        + "(\(reason), \(byRemote ? "remote" : "local"))"))
+            case .suppressed(let reason):
+                switch reason {
+                case .loopEcho: outcome = .suppressedEcho
+                case .duplicate: outcome = .suppressedDuplicate
+                case .overBudget(let count): outcome = .overBudget(count)
+                case .emptyImage: outcome = .overBudget(0)
+                case .sendBusy: outcome = .suppressedBusy
+                }
+            case .refused(let reason):
+                onEvent(.protocolNote(
+                    "incoming clipboard image refused (\(reason))"))
+            case .applyImage(let data, let mime):
+                onEvent(.hostClipboardImageChanged(data: data, mime: mime))
+            case .violated(let violation):
+                onEvent(.protocolNote(
+                    "clipboard image lane violation: \(violation)"))
+            }
+        }
+        return outcome
+    }
+
+    /// swift-crypto is the client package's sanctioned SHA-256 (the
+    /// BulkSendShell/LyteDiscovery precedent; LyteWire's is internal
+    /// to its Crypto/ leaf, and the channel takes digests injected).
+    private static func sha256(_ bytes: [UInt8]) -> [UInt8] {
+        Array(SHA256.hash(data: Data(bytes)))
+    }
+
     // MARK: Bulk transfer (F-4)
 
     /// True when capability key 11 survived intersection — the host's
@@ -983,22 +1160,21 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         }
     }
 
-    /// Every chan-8 ARQ delivery (F-4): decode the bulk message and
-    /// surface it for the owner's BulkSendCoordinator. Gated on the
-    /// agreed set (a bulk message from a host that never negotiated
-    /// key 11 is a protocol break — dropped loud, the rule-3 mirror);
-    /// bytes the codecs refuse drop loud too, payload never logged.
+    /// Every chan-8 ARQ delivery: the stream now carries TWO lanes.
+    /// A 0x22 marker or any bulk message the image channel claims is
+    /// the clipboard lane's (P-1); the rest is the file lane's (F-4),
+    /// decoded and surfaced for the owner's BulkSendCoordinator. Each
+    /// lane wears its OWN rule-3 gate — a file message without key 11
+    /// drops loud even when images agreed, and vice versa (the tiers
+    /// do not couple); bytes the codecs refuse drop loud too, payload
+    /// never logged.
     private func dispatchBulk(_ event: ArqEvent) {
         guard case .message(_, let bytes) = event else { return }
-        lock.lock()
-        guard agreed?.bulkTransfer == true else {
-            counters.bulkDropsLoud += 1
-            lock.unlock()
-            onEvent(.protocolNote(
-                "bulk message without negotiated key 11 — dropped"))
+        let now = now()
+        if bytes.first == CtrlMessageType.clipboardImageCargo {
+            receiveImageCargo(bytes, now: now)
             return
         }
-        lock.unlock()
         guard let message = try? BulkMessage.decode(bytes) else {
             lock.lock()
             counters.bulkDropsLoud += 1
@@ -1009,9 +1185,62 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             return
         }
         lock.lock()
+        if imageChannel.claims(message) {
+            let events = imageChannel.ingest(
+                message, book: &clipboardBook, sha256: Self.sha256
+            )
+            lock.unlock()
+            processImageEvents(events, now: now)
+            return
+        }
+        guard agreed?.bulkTransfer == true else {
+            counters.bulkDropsLoud += 1
+            lock.unlock()
+            onEvent(.protocolNote(
+                "bulk message without negotiated key 11 — dropped"))
+            return
+        }
         counters.bulkMessagesReceived += 1
         lock.unlock()
         onEvent(.bulkMessageReceived(message))
+    }
+
+    /// One 0x22 clipboard-image marker (P-1): gate (keys 10∧12), then
+    /// tier — a welcome marker arms the channel's receive lane for the
+    /// offer riding behind it; an unwelcome one draws abort(declined)
+    /// through the channel so the trailing offer is swallowed rather
+    /// than leaking to the file lane.
+    private func receiveImageCargo(
+        _ bytes: [UInt8], now: ClientTimestamp
+    ) {
+        guard let cargo = try? ClipboardImageCargo.decode(bytes) else {
+            lock.lock()
+            counters.clipboardDropsLoud += 1
+            lock.unlock()
+            onEvent(.protocolNote(String(
+                format: "malformed clipboard-image marker dropped (%d B)",
+                bytes.count)))
+            return
+        }
+        lock.lock()
+        guard agreed?.clipboardImagesAgreed == true else {
+            counters.clipboardDropsLoud += 1
+            lock.unlock()
+            onEvent(.protocolNote(
+                "clipboard-image 0x22 without negotiated keys 10∧12 "
+                    + "— dropped"))
+            return
+        }
+        let events: [ClipboardImageEvent]
+        if clipboardSharingOn && clipboardImagesOn {
+            events = imageChannel.ingestCargo(cargo)
+        } else {
+            // Text's off-posture is silent deafness; the image sender
+            // waits on a verdict, so off answers typed instead.
+            events = imageChannel.declineCargo(cargo)
+        }
+        lock.unlock()
+        processImageEvents(events, now: now)
     }
 
     /// The host's declaration: intersection = agreement. An unworkable
@@ -1358,6 +1587,31 @@ public final class LyteUdpSession: @unchecked Sendable {
     @discardableResult
     public func shareLocalClipboard(_ text: String) -> ClipboardShareOutcome {
         core?.shareLocalClipboard(text) ?? .sendRefused("not started")
+    }
+
+    /// P-1: true when keys 10∧12 both survived intersection — the
+    /// images rung of the consent tier exists exactly when this is.
+    public var clipboardImagesNegotiated: Bool {
+        core?.clipboardImagesNegotiated ?? false
+    }
+
+    /// The images rung's live state (sharing on AND images on).
+    public var clipboardImageSharingEnabled: Bool {
+        core?.clipboardImageSharingEnabled ?? false
+    }
+
+    public func setClipboardImageSharing(_ enabled: Bool) {
+        core?.setClipboardImageSharing(enabled)
+    }
+
+    /// The pasteboard watcher's image funnel (P-1): one local image
+    /// copy (PNG bytes) through the core's gates. Safe before start.
+    @discardableResult
+    public func shareLocalClipboardImage(
+        _ data: [UInt8]
+    ) -> ClipboardShareOutcome {
+        core?.shareLocalClipboardImage(data)
+            ?? .sendRefused("not started")
     }
 
     /// Orderly close: the typed 0x0A on the ordered stream, a linger

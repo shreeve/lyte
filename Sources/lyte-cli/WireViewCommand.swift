@@ -47,6 +47,8 @@ struct WireView: AsyncParsableCommand {
     var hostAudio: String?
     @Flag(name: .long, help: "CL-15: share the clipboard (UTF-8 text, both ways) — real NSPasteboard glue behind the sans-IO core's gates. Needs capability key 10 on both ends; against a no-key-10 host every local copy reports notNegotiated (that refusal is the evidence). Payloads are never printed — byte counts only")
     var clipboard = false
+    @Flag(name: .long, help: "P-1: the images rung on top of --clipboard (the Text + images tier) — clipboard PNGs ride chan 8 as 0x22 cargo, both ways. Needs keys 10 AND 12 on both ends (a --clipboard=text host declines with abort). Byte counts only, as ever")
+    var clipboardImages = false
     @Option(name: .long, help: "V-5: the chroma tier this client DECLARES — 420 (Good, the default) or 444 (Best). Declaration-as-choice: the singleton is the ask; a host without the tier answers the typed noCommonChromaMode teardown (that refusal is the harness's fallback evidence — the debug shell never auto-re-dials; the app does)")
     var chroma: String = "420"
     @Option(name: .long, help: "Debug: send one reliable CTRL ping every N seconds (0 = off) — exercises the CL-7 ARQ leg live")
@@ -202,7 +204,10 @@ struct WireView: AsyncParsableCommand {
         // CL-15: --clipboard seeds the sharing gate ON (the app's
         // per-host default's role); the pasteboard watcher arms after
         // the session starts (it needs the session to funnel into).
-        sessionConfig.core.shareClipboard = clipboard
+        // P-1: --clipboard-images implies --clipboard (the tier's
+        // shape — images never move without text consent).
+        sessionConfig.core.shareClipboard = clipboard || clipboardImages
+        sessionConfig.core.shareClipboardImages = clipboardImages
         // V-5: the declared chroma tier — the singleton IS the choice
         // (the app's per-host preference plays this role; the flag is
         // the harness's leg).
@@ -222,7 +227,8 @@ struct WireView: AsyncParsableCommand {
                         + "chroma \(agreed.chromaModes), idleSilence \(agreed.idleSilence), "
                         + "maxDatagram \(agreed.maxDatagramBytes), "
                         + "hostAudioRouting \(agreed.hostAudioRouting ? "yes (key 9)" : "no"), "
-                        + "clipboard \(agreed.clipboardText ? "yes (key 10)" : "no")")
+                        + "clipboard \(agreed.clipboardText ? "yes (key 10)" : "no"), "
+                        + "clipImages \(agreed.clipboardImagesAgreed ? "yes (10∧12)" : "no")")
                 case .capabilitiesFailed(let failure):
                     print("wire-view: capabilities FAILED (\(failure)) — typed teardown sent")
                 case .capabilityUpdateAnswered(let accepted):
@@ -252,6 +258,12 @@ struct WireView: AsyncParsableCommand {
                     print("wire-view: host clipboard → pasteboard "
                         + "(\(text.utf8.count) B, 0x1B)")
                     pasteboardBox.value?.apply(text)
+                case .hostClipboardImageChanged(let data, let mime):
+                    // P-1: sha-verified image cargo off chan 8. Byte
+                    // count only, same rule.
+                    print("wire-view: host clipboard image → pasteboard "
+                        + "(\(data.count) B, \(mime), 0x22 cargo)")
+                    pasteboardBox.value?.apply(imageData: data)
                 case .bulkMessageReceived(let message):
                     // F-4: the debug shell never offers files (the app
                     // owns the drop UX), so a chan-8 answer here is
@@ -302,16 +314,27 @@ struct WireView: AsyncParsableCommand {
         // runs; every local copy funnels through the core's gates
         // (negotiated → enabled → sync book → ceiling), and every
         // verdict prints as evidence. Byte counts only, never content.
-        if clipboard {
+        if clipboard || clipboardImages {
             let sync = PasteboardSync(onLocalChange: { [weak session] text in
                 guard let session else { return }
                 let outcome = session.shareLocalClipboard(text)
                 print("wire-view: local copy (\(text.utf8.count) B) — \(outcome)")
             })
+            if clipboardImages {
+                sync.onLocalImageChange = { [weak session] data in
+                    guard let session else { return }
+                    let outcome = session.shareLocalClipboardImage(data)
+                    print("wire-view: local image copy (\(data.count) B) "
+                        + "— \(outcome)")
+                }
+                sync.setImagesEnabled(true)
+            }
             sync.start()
             pasteboardBox.value = sync
-            print("wire-view: clipboard sharing ON — NSPasteboard poll "
-                + "200 ms (key 10 pending agreement)")
+            print("wire-view: clipboard sharing ON"
+                + (clipboardImages ? " + images" : "")
+                + " — NSPasteboard poll 200 ms (key 10"
+                + (clipboardImages ? "∧12" : "") + " pending agreement)")
         }
 
         // The CL-7 live probe: reliable pings on the ordered stream.
@@ -573,6 +596,16 @@ final class WireViewStatsPrinter: Sendable {
         }
         if counters.clipboardDropsLoud > 0 {
             sess += ", \(counters.clipboardDropsLoud) clip-drops"
+        }
+        // P-1: the image lane's books, while it has any.
+        let images = core.clipboardImageCounters
+        let imageActivity = images.sharesStarted + images.imagesApplied
+            + images.sharesSuppressed + images.receivesRefused
+        if imageActivity > 0 {
+            sess += ", clipImages \(images.sharesCompleted)/"
+                + "\(images.sharesStarted) sent"
+                + " \(images.imagesApplied) applied"
+                + " \(images.sharesSuppressed) suppressed"
         }
         print(sess)
 

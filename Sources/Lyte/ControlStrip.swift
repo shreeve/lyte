@@ -344,6 +344,28 @@ struct ControlStrip: View {
                 }
             }
 
+            // The images rung (P-1) — EXISTS only when keys 10∧12
+            // both survived (a text-only host never shows it). Its
+            // consent rides ON TOP of text sharing: the tier is
+            // Off / Text only / Text + images, so the button is
+            // meaningful only while the clipboard toggle is on.
+            if model.clipboardImagesNegotiated {
+                stripButton(
+                    systemImage: model.clipboardImageSharing
+                        ? "photo.fill.on.rectangle.fill"
+                        : "photo.on.rectangle",
+                    active: model.clipboardImageSharing
+                        && model.clipboardSharing,
+                    help: model.clipboardImageSharing
+                        ? "Stop sharing clipboard images with the host"
+                        : "Share clipboard images with the host too "
+                            + "(PNG, both ways)"
+                ) {
+                    model.setClipboardImageSharing(
+                        !model.clipboardImageSharing)
+                }
+            }
+
             // Chroma (V-5, owner decision 1): the three-tier
             // declaration control — Good 4:2:0 / Better 4:2:2
             // (dormant: no wire id, no host silicon — visible but

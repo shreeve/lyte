@@ -67,11 +67,26 @@ struct LyteCommands: Commands {
             .keyboardShortcut("c", modifiers: [.command, .shift])
             .disabled(connection?.clipboardNegotiated != true)
 
-            // The per-host consent default (CL-15): applied at the
-            // NEXT connect to this host.
+            // The images rung (P-1): the tier's third step, gated on
+            // keys 10∧12 — disabled against a text-only host. Images
+            // move only while "Share Clipboard" is ALSO on.
+            Toggle("Share Clipboard Images", isOn: Binding(
+                get: { connection?.clipboardImageSharing ?? false },
+                set: { connection?.setClipboardImageSharing($0) }
+            ))
+            .disabled(connection?.clipboardImagesNegotiated != true)
+
+            // The per-host consent defaults (CL-15 text, P-1 images):
+            // applied at the NEXT connect to this host.
             Toggle("Share Clipboard with This Host by Default", isOn: Binding(
                 get: { connection?.shareClipboardPreference ?? false },
                 set: { connection?.shareClipboardPreference = $0 }
+            ))
+            .disabled(connection?.hostPublicKeyHash == nil)
+
+            Toggle("Share Clipboard Images by Default", isOn: Binding(
+                get: { connection?.shareClipboardImagesPreference ?? false },
+                set: { connection?.shareClipboardImagesPreference = $0 }
             ))
             .disabled(connection?.hostPublicKeyHash == nil)
 
