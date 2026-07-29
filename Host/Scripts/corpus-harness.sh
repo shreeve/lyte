@@ -20,11 +20,12 @@
 #                              construction (AnnexBAccessUnits →
 #                              VideoRenderFactory), hardware REQUIRED,
 #                              BGRA readback (V-2's tap)
-#   lyte-cli corpus-gate       the §7 math, thresholds pinned in code:
+#   lyte-cli corpus-gate       the §7 math, thresholds pinned in code
+#                              (2026-07-29 bar-vs-path ruling applied):
 #                              text-region RGB PSNR (per-channel min)
-#                              ≥40 active / ≥50 post-ratchet, SSIM
+#                              ≥40 active / ≥45 post-ratchet, SSIM
 #                              ≥0.995 on (a)–(c), range patches
-#                              byte-exact, gratings ≤±2 codes,
+#                              exact+1 limited601, gratings ≤±4 codes,
 #                              convergence ≤180 frames, golden diff
 #
 # Legs by chroma mode:
@@ -215,7 +216,7 @@ SUMMARY=$(
     frame chroma idr-dB "act@1s-dB" conv-dB "text a/c dB" "white/syn dB" SSIM special cv "idr/keep B" golden verdict
   [ "$LEGS" != 444 ] && leg_table 420
   [ "$LEGS" != 420 ] && leg_table 444
-  echo "bars: text ≥40 active(@1 s) / ≥50 conv (per-ch min) · SSIM ≥0.995 · gratings ≤±2 · patches exact+1 (limited601, owner decision 2;"
+  echo "bars: text ≥40 active(@1 s) / ≥45 conv (per-ch min, 2026-07-29 ruling) · SSIM ≥0.995 · gratings ≤±4 · patches exact+1 (limited601, owner decision 2;"
   echo "      byte-exact named-and-queued) · converge ≤180 fr · cold IDR reported unmetered (VBV posture, the ratchet heals it)"
   echo "420 rows are the REFERENCE (recorded alongside, gates never fail it — gratings CANNOT pass there, which is the point)"
   echo "offline scope: live-ratchet halves (zero frames post-convergence, bytes ≤ surplus) wait for V-4/J-G4a"
