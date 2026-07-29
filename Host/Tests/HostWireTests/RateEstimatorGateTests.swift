@@ -442,11 +442,23 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.queuingDelayMicroseconds, 0)
 
         // The queue grows 25 ms past baseline: the first inflated
-        // report arms, the second fires the overuse verdict and the
-        // fall anchors to 0.85 × the measured delivery rate.
+        // report arms, the second fires the overuse verdict — which
+        // the dwell deferral holds (loss-clean, inside the stall
+        // ceiling: a drain would exonerate) until its ≤150 ms budget
+        // expires — and the fall then lands anchored to 0.85 × the
+        // measured delivery rate.
         XCTAssertFalse(beat(extraDelayMicros: 25_000).overuse,
                        "one inflated report must not fire (2 consecutive)")
-        let verdict = beat(extraDelayMicros: 25_000)
+        var verdict = beat(extraDelayMicros: 25_000)
+        XCTAssertTrue(verdict.overuse)
+        XCTAssertNil(verdict.newRateBitsPerSecond,
+                     "the dwell deferral holds a dwell-shaped fall first")
+        var deferredBeats = 0
+        while verdict.newRateBitsPerSecond == nil, deferredBeats < 12 {
+            verdict = beat(extraDelayMicros: 25_000)
+            deferredBeats += 1
+        }
+        XCTAssertGreaterThanOrEqual(estimator.stats.fallDeferrals, 1)
         XCTAssertTrue(verdict.overuse)
         let newRate = verdict.newRateBitsPerSecond
         XCTAssertNotNil(newRate)
@@ -510,23 +522,30 @@ final class RateEstimatorGateTests: XCTestCase {
             now: now, inRecovery: false
         ).overuse)
 
-        // Fire: the second inflated report — and its ONLY delivery
-        // sample is a garbage short train that measures ~2 Mbps. The
-        // one-deep anchor of old would fall to 0.85 × 2 Mbps = 1.7 Mbps
-        // (a crater); the median of the last three raw samples is still
-        // 20 Mbps (garbage outvoted 2-to-1), so the fall lands at
-        // 0.85 × 20 Mbps.
-        now += 25 * Self.ms; clientMicros += 25_000
-        let garbage = train(
-            estimator, seqStart: seq, count: 4,
-            sendStartNS: now - Self.ms,
-            bottleneckBitsPerSecond: 2e6, extraDelayMicros: 40_000
-        )
-        seq += 4
-        let verdict = estimator.ingest(
-            report(samples: garbage, clientMicros: clientMicros),
-            now: now, inRecovery: false
-        )
+        // Fire: inflated reports whose ONLY delivery samples are
+        // garbage short trains measuring ~2 Mbps. The one-deep anchor
+        // of old would fall to 0.85 × 2 Mbps = 1.7 Mbps (a crater);
+        // the median of the last three raw samples is still 20 Mbps
+        // (garbage outvoted), so when the dwell deferral's budget
+        // expires the fall lands at 0.85 × 20 Mbps.
+        var verdict: RateEstimatorVerdict
+        var deferredBeats = 0
+        repeat {
+            now += 25 * Self.ms; clientMicros += 25_000
+            let garbage = train(
+                estimator, seqStart: seq, count: 4,
+                sendStartNS: now - Self.ms,
+                bottleneckBitsPerSecond: 2e6, extraDelayMicros: 40_000
+            )
+            seq += 4
+            verdict = estimator.ingest(
+                report(samples: garbage, clientMicros: clientMicros),
+                now: now, inRecovery: false
+            )
+            deferredBeats += 1
+        } while verdict.newRateBitsPerSecond == nil && deferredBeats < 14
+        XCTAssertGreaterThanOrEqual(estimator.stats.fallDeferrals, 1,
+            "the dwell deferral held the dwell-shaped beats first")
         XCTAssertTrue(verdict.overuse)
         XCTAssertEqual(verdict.change, .overuse)
         let newRate = verdict.newRateBitsPerSecond
@@ -575,9 +594,17 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
 
         // The squeeze: delivery genuinely drops to ~5 Mbps and the
-        // queue inflates. Arm, then fire.
+        // queue inflates. Arm; the dwell deferral holds the loss-clean
+        // bounded-peak beats until its ≤150 ms budget expires (the
+        // honesty cost on a genuine squeeze that mimics a dwell); fire.
         XCTAssertFalse(beat(mbps: 5, inflate: true).overuse)
-        let first = beat(mbps: 5, inflate: true)
+        var first = beat(mbps: 5, inflate: true)
+        var deferredBeats = 0
+        while first.newRateBitsPerSecond == nil, deferredBeats < 12 {
+            XCTAssertTrue(first.overuse)
+            first = beat(mbps: 5, inflate: true)
+            deferredBeats += 1
+        }
         XCTAssertTrue(first.overuse)
         XCTAssertEqual(first.change, .overuse)
         XCTAssertNotNil(first.newRateBitsPerSecond)
@@ -657,17 +684,24 @@ final class RateEstimatorGateTests: XCTestCase {
             now: now, inRecovery: false
         ).overuse)
 
-        now += 25 * Self.ms; clientMicros += 25_000
-        let fire = train(
-            estimator, seqStart: seq, count: 4,
-            sendStartNS: now - Self.ms,
-            bottleneckBitsPerSecond: 1e6, extraDelayMicros: 40_000
-        )
-        seq += 4
-        let verdict = estimator.ingest(
-            report(samples: fire, clientMicros: clientMicros),
-            now: now, inRecovery: false
-        )
+        // The dwell deferral holds the dwell-shaped beats; the fall
+        // bites on a micro-train report once the budget expires.
+        var verdict: RateEstimatorVerdict
+        var deferredBeats = 0
+        repeat {
+            now += 25 * Self.ms; clientMicros += 25_000
+            let fire = train(
+                estimator, seqStart: seq, count: 4,
+                sendStartNS: now - Self.ms,
+                bottleneckBitsPerSecond: 1e6, extraDelayMicros: 40_000
+            )
+            seq += 4
+            verdict = estimator.ingest(
+                report(samples: fire, clientMicros: clientMicros),
+                now: now, inRecovery: false
+            )
+            deferredBeats += 1
+        } while verdict.newRateBitsPerSecond == nil && deferredBeats < 14
         XCTAssertTrue(verdict.overuse)
         let newRate = verdict.newRateBitsPerSecond
         XCTAssertNotNil(newRate)
@@ -795,15 +829,28 @@ final class RateEstimatorGateTests: XCTestCase {
             bottleneckMbps: 20, extraDelayMicros: 25_000,
             backlogBytes: 40_000
         ).newRateBitsPerSecond)
-        // …and the second report shows the queue BUILT another 20 ms
-        // (past the 15 ms overuse threshold): corroborated — the fall
-        // lands at 0.85 × the standing rate despite the self-shaped
-        // anchor.
-        let verdict = selfRefBeat(
+        // …the second report shows the queue BUILT another 20 ms
+        // (past the 15 ms overuse threshold): corroborated, but still
+        // dwell-SHAPED (rising dwells mimic growth), so the deferral
+        // holds while its budget lasts — and the queue keeps building
+        // with NO drain, so the fall lands at 0.85 × the standing rate
+        // despite the self-shaped anchor.
+        var verdict = selfRefBeat(
             &now, &clientMicros, &seq, on: estimator,
             bottleneckMbps: 20, extraDelayMicros: 45_000,
             backlogBytes: 40_000
         )
+        var extraDelay: UInt64 = 45_000
+        var deferredBeats = 0
+        while verdict.newRateBitsPerSecond == nil, deferredBeats < 12 {
+            extraDelay += 5_000 // keeps growing, stays under the ceiling
+            verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: 20, extraDelayMicros: extraDelay,
+                backlogBytes: 40_000
+            )
+            deferredBeats += 1
+        }
         XCTAssertTrue(verdict.overuse)
         XCTAssertEqual(verdict.change, .overuse)
         XCTAssertNotNil(verdict.newRateBitsPerSecond)
@@ -876,17 +923,27 @@ final class RateEstimatorGateTests: XCTestCase {
         }
 
         // The path genuinely drops to 5 Mbps; the pacer (still at 20)
-        // holds backlog the whole time. Arm, then fire.
+        // holds backlog the whole time. Arm, ride out the dwell
+        // deferral's budget (the honesty cost), then fire.
         XCTAssertNil(selfRefBeat(
             &now, &clientMicros, &seq, on: estimator,
             bottleneckMbps: 5, extraDelayMicros: 40_000,
             backlogBytes: 40_000
         ).newRateBitsPerSecond)
-        let verdict = selfRefBeat(
+        var verdict = selfRefBeat(
             &now, &clientMicros, &seq, on: estimator,
             bottleneckMbps: 5, extraDelayMicros: 40_000,
             backlogBytes: 40_000
         )
+        var deferredBeats = 0
+        while verdict.newRateBitsPerSecond == nil, deferredBeats < 12 {
+            verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: 5, extraDelayMicros: 40_000,
+                backlogBytes: 40_000
+            )
+            deferredBeats += 1
+        }
         XCTAssertTrue(verdict.overuse)
         XCTAssertNotNil(verdict.newRateBitsPerSecond)
         XCTAssertEqual(Double(verdict.newRateBitsPerSecond!), 5e6 * 0.85,
@@ -1002,6 +1059,74 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.stats.downshifts, 0)
     }
 
+    /// THE RAMP HUNT'S PIN (the dwell deferral): the stall gate's one
+    /// blind spot was TIMING. The overuse verdict fires MID-dwell (two
+    /// inflated reports, ~80 ms into the hole), but the compressed
+    /// super-rate drain that proves the hole closed can only arrive on
+    /// the report AFTER it closes — the verdict beat the evidence on
+    /// every single dwell. The live books measured the bill: each fall
+    /// minted a vbv-tighten + vbv-restore IDR pair, 7.09 IDR/min
+    /// against the ≤1/min bar (10 induced dwells → exactly 10 pairs).
+    /// A dwell-SHAPED fall (peak inside the stall ceiling, loss clean,
+    /// post-FEC clean) is now deferred, report by report, for at most
+    /// the stall ceiling's own 150 ms (a dwell is by definition no
+    /// longer); the drain then arrives and the stall gate holds as it
+    /// was designed to. Genuine squeezes that mimic the shape fall
+    /// ≤150 ms later — inside the 500 ms fall limiter's granularity.
+    func testFirstDwellFallDeferredUntilTheDrainTestifies() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
+
+        // Mid-dwell: two inflated reports whose trains still measure
+        // our own 20 Mbps pace — the hole has NOT closed, so no
+        // super-rate drain exists yet. Pre-deferral, this beat fell.
+        XCTAssertNil(selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 20, extraDelayMicros: 80_000,
+            backlogBytes: 0
+        ).newRateBitsPerSecond)
+        let midDwell = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 20, extraDelayMicros: 80_000,
+            backlogBytes: 0
+        )
+        XCTAssertTrue(midDwell.overuse)
+        XCTAssertNil(midDwell.newRateBitsPerSecond,
+            "the verdict fired mid-dwell — the deferral holds the fall "
+            + "so the drain can testify")
+        XCTAssertGreaterThanOrEqual(estimator.stats.fallDeferrals, 1)
+
+        // The hole closes: the drain arrives compressed at 200 Mbps.
+        // The stall gate reads the closed hole and holds as designed.
+        let drained = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 200, extraDelayMicros: 80_000,
+            backlogBytes: 0
+        )
+        XCTAssertNil(drained.newRateBitsPerSecond,
+            "the drain proves the hole closed — stall hold, no fall")
+        XCTAssertGreaterThanOrEqual(estimator.stats.stallHolds, 1)
+        XCTAssertEqual(estimator.stats.downshifts, 0)
+        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling,
+            "the dwell cost ZERO rate moves — and therefore zero "
+            + "VBV-forced IDRs")
+
+        print("ramp-hunt gate (dwell deferral): mid-dwell verdict "
+            + "deferred, drain testified one report later → "
+            + "\(estimator.stats.fallDeferrals) deferral, "
+            + "\(estimator.stats.stallHolds) stall hold(s), 0 falls, "
+            + "rate pinned at \(estimator.rateBitsPerSecond / 1_000) kbps")
+    }
+
     /// A hole past the 150 ms ceiling is sustained degradation, not a
     /// dwell — the fall proceeds exactly as before the gate existed.
     func testHoleBeyondTheCeilingFallsAsEver() {
@@ -1056,11 +1181,23 @@ final class RateEstimatorGateTests: XCTestCase {
             bottleneckMbps: 8, extraDelayMicros: 40_000,
             backlogBytes: 0
         ).newRateBitsPerSecond)
-        let verdict = selfRefBeat(
+        // The verdict beats are deferred (dwell-shaped); the sub-pace
+        // drain never improves, so the budget expires and the fall
+        // bites.
+        var verdict = selfRefBeat(
             &now, &clientMicros, &seq, on: estimator,
             bottleneckMbps: 8, extraDelayMicros: 40_000,
             backlogBytes: 0
         )
+        var deferredBeats = 0
+        while verdict.newRateBitsPerSecond == nil, deferredBeats < 12 {
+            verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: 8, extraDelayMicros: 40_000,
+                backlogBytes: 0
+            )
+            deferredBeats += 1
+        }
         XCTAssertNotNil(verdict.newRateBitsPerSecond)
         XCTAssertEqual(Double(verdict.newRateBitsPerSecond!),
                        8e6 * 0.85, accuracy: 1.0e6)
@@ -1225,7 +1362,9 @@ final class RateEstimatorGateTests: XCTestCase {
                             backlogBytes: 0)
         }
         var fell = false
-        for beat in 0..<4 {
+        // Enough ingested beats to arm, ride out the dwell deferral's
+        // ≤150 ms budget across the 50 ms report seams, and bite.
+        for beat in 0..<16 {
             if beat % 2 == 1 {
                 now += 25 * Self.ms
                 clientMicros += 25_000

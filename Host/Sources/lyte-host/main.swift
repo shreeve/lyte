@@ -1818,7 +1818,8 @@ func run() throws {
         (\(wire.estimatorStats.lossDownshifts) loss, \
         \(wire.estimatorStats.overuseVerdicts) overuse verdicts, \
         \(wire.estimatorStats.selfReferenceHolds) self-ref holds, \
-        \(wire.estimatorStats.stallHolds) stall holds), \
+        \(wire.estimatorStats.stallHolds) stall holds, \
+        \(wire.estimatorStats.fallDeferrals) dwell deferrals), \
         \(wire.estimatorStats.upshifts) upshifts, \
         \(s.rateChanges) pacer moves; frameByteCeiling@\(opts.fps)fps \
         \(wire.frameByteCeiling(fps: Int(opts.fps))) B
