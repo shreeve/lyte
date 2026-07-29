@@ -1,47 +1,56 @@
 # Lyte — Session Handoff
 
-*Current as of 2026-07-28 ~18:10 MDT. The session ledger — tracked in the
+*Current as of 2026-07-28 ~21:45 MDT. The session ledger — tracked in the
 repo since `8da50bf` (the .gitignore entry is vestigial; the file is
 tracked). Update freely; commit updates in the ledger voice.*
 
-# SESSION RESUME — START HERE (2026-07-28 ~18:10 MDT)
+# SESSION RESUME — START HERE (2026-07-28 ~21:45 MDT)
 
-**One-paragraph state.** We are deep in the H3 video-supremacy wave. The
-Wi-Fi wire is fixed (owner moved the Mac off a weak 6 GHz band to 5 GHz —
-see the "THE WIRE IS CLEAN NOW" block below; the old 13–17 Mbps /
-scan-stall / full-dark-outage numbers are DEAD, re-baseline before
-trusting any pre-2026-07-28 latency claim). The quality wave then landed
-in three Host/ commits, none pushed: **HS-23** — the 50 Mbps LAN ceiling
-+ a stall-vs-congestion discriminator (`11f058f`); **HS-24** — the p4
-preset adoption off the encoder A/B ladder (`1d65bad`, +0.77/0.85 dB on
-motion, +12.4 dB at half the bits on text, encode still ~4.6 ms); and
-**HS-25** — the giant-frame FEC guard (`e82e88a`, this session).
+**⚠️ PUP IS DOWN.** The box dropped off-network ~20:35 MDT (no ping, no
+ssh route; the spontaneous-drop pattern) and stayed dark through this
+writing. The owner's 41151 host is down with it (its loop had ALREADY
+self-expired at run 60 before that — see Q-1's wave entry). Q-1's
+six-leg deferred ledger (below) drains on its return.
 
-**HS-25 IS CLOSED (`e82e88a`) — the 50 Mbps + p4 session-killer is
-dead.** The recipe's fat IDRs could packetize past the GF(2^8)
-Reed-Solomon 255-shard block and the thrown
-`unprotectableDataShardCount` EXITED the host mid-session. The fix is a
-ceiling, not a cliff: `Session.ingestVideoFrame` drops (never throws)
-frames past the live protectable ceiling, and the shell caps the opening
-VBV at the worst-case ceiling (223,380 B) whenever the recipe's own VBV
-is absent (capped-CQ, the live trigger) or larger — with the
-`armEncoderVbv` baseline mirroring the cap so a squeeze→clean RESTORE
-can't re-open the hole. Split-groups was RULED OUT as a wire-format
-change (fec u64 has no group index; the client's `VideoAssembler` keys
-one group per frame) — the fix is HOST-ONLY, no client work. Suite 174 →
-**179/179 Mac AND pup**; live repro-then-proof ran on pup (pre-fix HEAD
-threw and exited on demand; the fix took the same moving-noise leg for
-79.6 s / 1268 frames / 137 MB with zero unprotectable drops). Full
-account + two procedure findings in the HS-25 wave entry.
+**One-paragraph state.** We are at the H3→H4 seam. The Wi-Fi wire is
+fixed (see "THE WIRE IS CLEAN NOW" below; re-baseline before trusting
+any pre-2026-07-28 latency claim). The quality wave is fully landed in
+Host/, none pushed: **HS-23** — the 50 Mbps LAN ceiling +
+stall-vs-congestion discriminator (`11f058f`); **HS-24** — p4 preset
+adoption (`1d65bad`); **HS-25** — the giant-frame FEC guard (`e82e88a`,
+live repro-then-proof on pup); **Q-1** — the beauty-bar standing gate
+(`b1f027a`, Mac-side; live bar row DEFERRED-PENDING-HOST). The **H4
+plan is authored and committed** (`3b118ba`,
+`docs/20260728-194226-lyte-h4-plan.md`): 4:4:4 leads, probe-first
+ladder V-1…V-5 → J-G4a, then clipboard v2 / multi-monitor / dyn-res;
+four §0 owner decisions are open (mode-selection mechanics,
+conversion-path order + range gating, the HS-25 ceiling posture in Work
+mode, P-track gate coupling) — decisions 2/3 want V-1/V-2 probe data
+first. Suites at HEAD: Host **180/180 Mac AND pup** (pup ran green at
+this exact Swift state at ~19:47, BEFORE the box dropped — only
+bash-script deltas are unsynced there), Wire 450/450, root 142/142.
+
+**Q-1's DEFERRED-PENDING-HOST ledger (drain IN ORDER on pup's
+return; full detail in the Q-1 wave entry):** (a) stray sweep — the
+aborted probe run's windowed ffplay + `~/qprobe` raw/hevc leftovers;
+(b) rsync + rebuild (bash-only deltas; the Swift state on pup already
+matches `b1f027a`); (c) pup suite at the committed hash; (d) the
+end-to-end `quality-probe.sh` run filling the beauty bar's dated first
+row — fps and IDR/min are the real open rows (partial evidence already
+bar-clearing: static 51.3 dB, motion ~59.7 dB median); (e) restore the
+owner's 41151 loop (fresh 60 iterations); (f) secrets sha-verify
+(pinned: portal_token `dadf9a66…`, noise_static.key `72860390…`,
+paired_clients `8dc1f88a…`).
 
 **LIVE OPS RIGHT NOW.**
 - pup standing host: `bash ~/lyte-loop.sh` respawns `lyte-host --backend
   portal --wire-listen 41151 --ratchet --clipboard --seconds 7200` on
   port **41151**. Leave it alive; it's the owner's eyeball host. The
   session log is `/tmp/lyte-host-session.log` on pup. The loop launches
-  `~/src/lyte-host/.build/debug/lyte-host`, which is the HS-25-FIXED
-  build (binary 17:28, current respawn 18:04) — the standing host is
-  already immune to the giant-frame crash, no redeploy step pending.
+  `~/src/lyte-host/.build/debug/lyte-host` — the HS-25-fixed, Q-1-tested
+  build. **CURRENTLY DOWN with the box** (and the loop had self-expired
+  at run 60 even earlier); restoring it fresh is leg (e) of Q-1's
+  deferred ledger.
 - The owner's client is the app bundle at
   `.build/Lyte.app` — launch with `open .build/Lyte.app` (NEVER run the
   raw binary under a parent process; it needs its own bundle for a proper
@@ -76,16 +85,18 @@ stalled >15 min with no live work. If you start a fresh chat, that loop's
 shell does NOT survive — re-arm it if the owner still wants the 5-min
 cadence, and don't leave a duplicate running.
 
-**IMMEDIATE RESUME POINT:** HS-25 is landed and the ledger through its
-wave entry is committed — no slice is in flight. Open items, in order:
-(a) the owner's quality eyeball on the p4 recipe — a clean-path session
-should look markedly sharper than the trip-era "moderate" (the owner was
-re-attached to 41151 at ~18:00 after the black-screen detour; verdict
-still pending); (b) Q-1 (fold `encoder-ab.sh` into the beauty-bar
-convention; fix the estimator formatter bug that prints "462,090 kbps
-delivery"); (c) the H4 4:4:4 wave — noting HS-25's named question for
-R2: whether capped-CQ keeps the right to mint ceiling-sized (223 KB)
-frames at all if 4:4:4 fattens IDRs routinely.
+**IMMEDIATE RESUME POINT:** no slice is in flight; everything through
+Q-1 and the H4 plan is committed (ledger included). Open items, in
+order: (a) **pup's return** → drain Q-1's six-leg deferred ledger above
+(one small worker, Host/ territory); (b) the owner's quality eyeball on
+the p4 recipe — verdict still pending (needs the 41151 loop back, leg
+e); (c) **H4 V-1** (pup NVENC Rext probe, Host/ territory) — launchable
+once pup is back and the Q-1 ledger is drained; V-2 (Mac VideoToolbox
+probe, root territory) can run in parallel with either; (d) the four H4
+§0 owner decisions — 2/3 want V-1/V-2 data first, so put them to the
+owner when the probes land. Farther out: J-G4a and the P-track per the
+H4 plan; the browser-viewer B-2+ slices still wait on the owner's QUIC
+posture decision (H3's last open thread).
 
 # RESTARTING WORKERS IN A NEW CHAT (read before resuming)
 
@@ -551,6 +562,39 @@ the later H2 slices keep their full entries in the CURRENT WAVE block):**
 - pup has dropped off-network spontaneously before (usually recovers in
   minutes; twice needed a physical power/Wi-Fi check). Post-travel, see
   the hotel-network note in CURRENT STATE first.
+
+---
+
+# THE BEAUTY BAR — standing video-quality gate (Q-1, the plan's R5)
+
+*The per-release quality numbers with pass bars — one dated row per
+measurement, at the named build. `Host/Scripts/quality-probe.sh` (run
+from the Mac; it orchestrates pup over ssh) produces the whole row
+mechanically and prints it verbatim as "BEAUTY BAR ROW". Never massage
+a red cell: a FAIL at HEAD is a finding — report it loudly in the wave
+entry that dated the row. Companion instrument:
+`Host/Scripts/encoder-ab.sh` answers "which recipe" (rerun it per
+recipe question, ALWAYS with the desk/text corpus in the race — the
+HS-24 rule); this bar answers "did the glass get better".*
+
+The bars: **static** converged luma PSNR ≥ 50 dB (file-mode ratchet
+leg, series max vs the LYTE_DUMP_RAW reference) · **motion**
+last-frame PSNR ≥ 55 dB at the recipe cap (median of 12 runs) ·
+**fps** heavy-motion sustained ≥ 55 at the glass (p50 of per-second
+decodes, clean LAN) · **IDR** ≤ 2/min under motion on the clean path ·
+**churn** = 0 standing-rate directives (HS-22a's silence-above-the-
+boundary, mechanized: a directive with no estimator move since the
+previous one) · **loss** ≤ 1 wire frame per 150 s leg.
+
+| date @ build | static dB | motion dB | fps p50 | IDR/min | churn | loss |
+|---|---|---|---|---|---|---|
+| 2026-07-28 @ Q-1 | pending¹ | pending¹ | pending¹ | pending¹ | pending¹ | pending¹ |
+
+¹ PENDING-MEASUREMENT: pup dropped off-network mid-probe (~20:00 MDT
+2026-07-28) before the wire legs could run — the Q-1 wave entry
+carries the deferred ledger and the partial (non-row) evidence: static
+converged 51.26/51.27 dB across the two aborted runs, motion median
+~59.7 dB across 23 completed runs, both bar-clearing.
 
 ---
 
@@ -2787,6 +2831,134 @@ its entry at the marker at the end of this block.*
   routinely, the recipe conversation (R2's recipe-vs-wire
   reconciliation) should decide whether capped-CQ keeps the right to
   mint 223 KB frames at all.
+
+- **H4 wave plan** (docs only — the plan of record is
+  `docs/20260728-194226-lyte-h4-plan.md`): 4:4:4 leads, per the
+  answered supremacy-plan decisions; Stage A is banked (HS-22c), this
+  covers Stage B onward. THE WIRE FINDING, verified at HEAD: **4:4:4
+  needs NO new vocabulary and NO new vector files** — yuv444=2 has
+  existed since W7, the frozen full-house vector already pins chroma
+  `[1,2]` byte-exact, and the stream's actual chroma rides the SPS
+  through VideoRenderFactory's existing in-band rebuild. One trap
+  named: `wireDefault` is the frozen wire-default anchor — 4:4:4
+  declaration is shell-side construction (the declaringX posture),
+  never a wireDefault edit. THE ENCODER FINDING (FFmpeg nvenc.c,
+  read): three 4:4:4 input paths with different color truths — gbrp
+  planar = **identity-matrix FULL-RANGE RGB in HEVC, mathematically
+  exact** (the pillar's 0/255 round trip by construction, IF the Mac
+  display path renders GBR right); bgr0+rgb_mode=444 = free but
+  VUI-FORCED 601-limited (Stage A's finding generalizes); a BT.709
+  full conversion leaf = Sunshine-parity, most work. The ladder
+  fronts two S-effort probes (V-1 pup encode, V-2 Mac
+  VideoToolbox/render) to settle the path BEFORE conversion code
+  exists. Slices: V-1/V-2 probes → V-3 (the pillar-§7 corpus harness,
+  4:2:0 baseline banked first) → V-4 (host Work/Play recipe split +
+  self-probed declaration) → V-5 (client mode surface,
+  declaration-as-choice + named 420 fallback) → **J-G4a the chroma
+  gate** (early, the race headline) → P-1 clipboard v2 / P-2
+  multi-monitor / P-3 dynamic resolution (P-2/P-3 pre-declared
+  droppable) → J-G4. HS-25's ceiling question gets its answer shape:
+  Work KEEPS the 223,380 B capped-CQ posture (Work IDRs are
+  structurally rare; the ratchet erases IDR debt), V-1 books the
+  4:4:4 IDR distribution, J-G4a demands zero unprotectable drops.
+  RACE UPDATE (checked 2026-07-28): Sunshine's Linux NVENC 4:4:4 is
+  now in PRE-RELEASE builds (v2026.704.34109+; last stable predates
+  it) — the ship-first window is real but narrowing, which is why
+  J-G4a, not J-G4, is the race claim. Four §0 decisions open for the
+  owner: mode-selection mechanics (recommend declaration-as-choice,
+  zero vocabulary), the conversion-path preference order + whether
+  full-range hard-gates the ship (recommend chroma first, range
+  named-and-queued if gbrp fails), the ceiling posture (recommend
+  keep HS-25's), and the P-track's gate coupling (recommend J-G4
+  needs P-1 only).
+
+- **Q-1 — the beauty bar stands watch; the probe becomes a script that
+  cannot rot** (`b1f027a`, Host/): the supremacy plan's R5, LANDED ON THE MAC
+  GATES with the live legs **DEFERRED-PENDING-HOST** (pup dropped
+  off-network mid-probe — ledger below, the HS-18 pattern).
+  THE INSTRUMENT (`Host/Scripts/quality-probe.sh`, runs from the Mac,
+  orchestrates pup over ssh): the quality probe's once-rediscovered
+  method, mechanized end to end — the LYTE_DUMP_RAW static leg (60 s
+  capped-CQ file mode; per-frame luma PSNR against the final retained
+  raw frame, converged = series max), the motion leg (12 × 6 s
+  file-mode runs against a WINDOWED Wayland-native testsrc2 window,
+  last-frame PSNR median — the dump is last-frame-only, one pair per
+  run), and the wire A/B (150 s policy-armed + --no-vbv-reconfigure
+  twin: glass fps p50 from per-second decode deltas, IDR/min,
+  standing-rate directive churn, wire frame loss) — ONE summary block
+  ending in the verbatim row for THE BEAUTY BAR standing table (new
+  section above the wave block; bars: static ≥50 dB, motion ≥55 dB,
+  fps ≥55, IDR ≤2/min, churn =0, loss ≤1). Rails baked into the
+  script, not the operator: --no-advertise on 41183+ and a hard
+  refusal to bind 41151; windowed patterns with a damage-supply
+  preflight that ABORTS on the frozen-ffplay/Xwayland trap (HS-24's
+  environmental find, now a tripwire); secrets sha'd before/after
+  inside the run (noise_static.key + paired_clients must be
+  byte-identical, portal_token rotation named as by-design); ssh
+  connect timeouts + keepalives so a pup drop fails loud in seconds
+  (tonight's drop took ~15 min to surface through default TCP).
+  THE FORMATTER BUG, root-caused (probe §5's "462,090 kbps delivery"):
+  NO unit was wrong anywhere — bytes are bytes, µs are µs. The final
+  receipts printed the estimator's windowed-MAX delivery filter (the
+  BBR-shaped bottleneck probe), and a receiver radio draining a queued
+  dwell in one compressed burst hands that max a LEGITIMATE super-rate
+  sample (clumped arrivals measure hundreds of Mbps across microsecond
+  spans — the same physics behind HS-23's stall gate). The control law
+  keeps its burst-tolerant max untouched; the summary now prints
+  `measuredDeliveryRateBitsPerSecond` — the median of the last few
+  full-train raw samples, the exact evidence the HS-21 overuse anchor
+  trusts — with the old max demoted to a labeled "burst max". Pinned:
+  `testReportedDeliveryOutvotesClumpedBurstSample` (two 8 Mbps full
+  trains + one 400 Mbps clump → the max window keeps the burst, the
+  reported figure holds 8 Mbps).
+  THE LADDER JOINS THE CONVENTION: encoder-ab.sh's header now carries
+  the rerun rule (every recipe question re-races the ladder, ALWAYS
+  with the desk/text corpus — motion-only A/Bs would have called p4 a
+  +0.8 dB nicety and missed the 2×-bits-for-−12 dB text pathology) and
+  its table prints under the same dated banner shape as the probe's
+  summary block.
+  Suites: **179 → 180/180 Mac AND pup** — the pup suite ran GREEN at
+  this exact Swift state (~19:47 MDT, BEFORE the box dropped); the
+  only unsynced deltas there are bash-side script fixes. The binary at
+  pup `~/src/lyte-host/.build/debug/lyte-host` is already the
+  Q-1-fixed build (built 19:47, suite green) — the standing loop is
+  NOT mid-broken.
+  PARTIAL LIVE EVIDENCE (two aborted probe runs, NOT bar rows —
+  script-reproduced twice, consistently): static converged
+  **51.26/51.27 dB** (bar ≥50; opening IDR 43.5/43.8; the desktop
+  wasn't perfectly quiet — 61/63 damage frames of the ~310); motion
+  last-frame median **~59.7 dB** across 23 completed runs
+  (59.66–59.86 — the probe-day median was 56.7 at the 20 Mbps cap:
+  HS-23's fifty + HS-24's p4 are visible in the number). The wire
+  legs never started; the bar row stays pending, nothing invented.
+  **DEFERRED-PENDING-HOST (pup dark since ~20:00 MDT 2026-07-28; run
+  2 of the probe died at motion run 12; drain in order on return):**
+  (a) stray sweep — the aborted run's windowed ffplay (testsrc2
+      1600x1000) was alive at the drop (a reboot clears it; kill it
+      if not); remove `~/qprobe/*.raw` and `*.hevc` leftovers; keep
+      the `~/qprobe/*.log` + `*.psnr` evidence until the row lands;
+  (b) rsync Host/ → pup:src/lyte-host and rebuild (bash-only deltas:
+      the probe script's ssh timeout/keepalive wrapper and two parse
+      fixes; Swift is already built + green there);
+  (c) pup suite at the committed tree — expected 180/180 (it already
+      passed at this Swift state pre-drop; this leg makes it a
+      commit-hash fact instead of a working-tree fact);
+  (d) THE LIVE PROBE ROW — `bash Host/Scripts/quality-probe.sh` from
+      the Mac, end to end, fills the beauty bar's dated first row.
+      The open question is exactly the plan's two previously-failing
+      rows (fps ≥55, IDR ≤2/min) which HS-23/HS-22c should have
+      turned green: if either is red at HEAD that is a FINDING to
+      report loudly, not a number to massage;
+  (e) restore the owner's standing loop (`bash ~/lyte-loop.sh`,
+      41151) — it had ALREADY expired at run 60 before this slice
+      touched anything (log evidence in /tmp/lyte-host-session.log)
+      and pup died before the HS-24-precedent fresh restore could
+      happen;
+  (f) secrets sha-verify against the pinned baseline (verified
+      byte-identical at 19:46 MDT tonight: portal_token
+      dadf9a66…37cf, noise_static.key 72860390…cfed, paired_clients
+      8dc1f88a…55fd; portal_token rotation on later runs is by
+      design).
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
