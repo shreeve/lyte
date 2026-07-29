@@ -221,6 +221,11 @@ public final class VideoChannel {
     /// Datagrams waiting in the pacer, keyed by their token tag.
     private var pending: [UInt64: VideoChannelDatagram] = [:]
     private var nextTag: UInt64 = 0
+    /// Video-class shards still queued, per frame number (HS-28): the
+    /// estimator recuses NACKs against frames we have not finished
+    /// sending — the client's completion presumption expired mid-drain,
+    /// which measures our pacer, not the path.
+    private var queuedShardsByFrame: [UInt32: Int] = [:]
 
     // MARK: Repair store (HS-17)
 
@@ -589,6 +594,10 @@ public final class VideoChannel {
         let tag = nextTag
         nextTag &+= 1
         pending[tag] = datagram
+        if datagram.pacerClass == .freshVideo
+            || datagram.pacerClass == .videoTail {
+            queuedShardsByFrame[datagram.frameNumber.rawValue, default: 0] += 1
+        }
         pacer.enqueue(
             datagram.pacerClass,
             bytes: datagram.bytes.count,
@@ -611,6 +620,17 @@ public final class VideoChannel {
                 send(datagram)
                 if datagram.pacerClass == .freshVideo {
                     store[datagram.frameNumber.rawValue]?.lastSentAtNS = now
+                }
+                if datagram.pacerClass == .freshVideo
+                    || datagram.pacerClass == .videoTail {
+                    let frame = datagram.frameNumber.rawValue
+                    if let left = queuedShardsByFrame[frame] {
+                        if left <= 1 {
+                            queuedShardsByFrame.removeValue(forKey: frame)
+                        } else {
+                            queuedShardsByFrame[frame] = left - 1
+                        }
+                    }
                 }
                 counters.datagramsSent += 1
                 counters.bytesSent += datagram.bytes.count
@@ -651,6 +671,14 @@ public final class VideoChannel {
     /// measurements of our own pacing, not the path.
     public func queuedBytes(_ priorityClass: PacerClass) -> Int {
         pacer.queuedBytes(priorityClass)
+    }
+
+    /// Frame numbers with video-class shards still waiting in the
+    /// pacer (HS-28): a NACK against one of these is the client
+    /// presuming completion of a flight we have not finished — the
+    /// estimator recuses it from the post-FEC path evidence.
+    public func framesWithQueuedShards() -> Set<UInt32> {
+        Set(queuedShardsByFrame.keys)
     }
 
     // MARK: Packetization (W2 semantics, HS-7 headroom)

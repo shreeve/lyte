@@ -1860,14 +1860,19 @@ func run() throws {
         (pacer \(wire.pacerRate / 1_000) kbps, ceiling \
         \(Int(opts.wireRateMbps * 1_000)) kbps), delivery \
         \(wire.measuredDeliveryRate.map { "\($0 / 1_000) kbps" } ?? "—") \
-        (burst max \(wire.deliveryRate.map { "\($0 / 1_000)" } ?? "—")), \
+        (burst max \(wire.deliveryRate.map { "\($0 / 1_000)" } ?? "—"), \
+        belief \(wire.capacityBelief.map { "\($0 / 1_000)" } ?? "—")), \
         queuing delay \(wire.queuingDelayMicros.map { "\($0) µs" } ?? "—"); \
         \(wire.estimatorStats.reportsIngested) reports \
         (\(s.feedbackReportsParsed) parsed, \
         \(s.feedbackReportsMalformed) malformed), \
         \(wire.estimatorStats.deliverySamples) delivery samples \
         (\(wire.estimatorStats.dispersionSamplesMatched) matched / \
-        \(wire.estimatorStats.dispersionSamplesUnmatched) unmatched), \
+        \(wire.estimatorStats.dispersionSamplesUnmatched) unmatched; \
+        \(wire.estimatorStats.honestSamples) honest / \
+        \(wire.estimatorStats.censoredSamples) censored full trains, \
+        \(wire.estimatorStats.beliefRaises) belief raises / \
+        \(wire.estimatorStats.beliefDemotions) demotions), \
         \(wire.estimatorStats.downshifts) downshifts \
         (\(wire.estimatorStats.lossDownshifts) loss, \
         \(wire.estimatorStats.overuseVerdicts) overuse verdicts, \
@@ -1885,7 +1890,8 @@ func run() throws {
         (\(s.nacksHonored) honored → \(s.repairDatagramsEnqueued) repair \
         datagrams, \(s.nacksJudgedStale) stale, \
         \(s.idrArmedOnStaleNack) IDR-armed), \
-        \(wire.estimatorStats.nackShardsCounted) post-FEC shards counted, \
+        \(wire.estimatorStats.nackShardsCounted) post-FEC shards counted \
+        (\(wire.estimatorStats.nackShardsRecused) recused as self-drain), \
         \(wire.estimatorStats.postFecDownshifts) rung-3 downshifts, \
         \(s.fecRegimeSteps) regime steps (final \(wire.fecRegime.rawValue)); \
         srtt \(wire.srttMicros.map { "\($0) µs" } ?? "—"), \

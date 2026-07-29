@@ -2075,7 +2075,11 @@ public final class Session {
         let verdict = estimator.ingest(
             report, now: now, inRecovery: machine?.state == .recovery,
             pacerBacklogBytes: channel.queuedBytes(.freshVideo)
-                + channel.queuedBytes(.videoTail)
+                + channel.queuedBytes(.videoTail),
+            // HS-28: NACKs against frames we have not finished sending
+            // are the client's completion presumption expiring
+            // mid-drain — self-inflicted, recused from path evidence.
+            recusedNackFrames: channel.framesWithQueuedShards()
         )
         var events: [SessionEvent] = []
         if let rate = verdict.newRateBitsPerSecond {
@@ -2388,6 +2392,13 @@ public final class Session {
     /// The current queuing-delay inflation estimate, µs.
     public var queuingDelayMicroseconds: Int64? {
         estimator.queuingDelayMicroseconds
+    }
+
+    /// HS-28: the estimator's capacity belief — what it honestly
+    /// believes the path can carry (raised by any delivery above it,
+    /// demoted only by evidence a censored sender cannot manufacture).
+    public var capacityBeliefBitsPerSecond: Int? {
+        estimator.capacityBeliefBitsPerSecond
     }
 
     public var estimatorStats: RateEstimatorStats { estimator.stats }

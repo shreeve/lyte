@@ -253,6 +253,7 @@ final class SessionWire {
     var pacerRate: Int { session.pacerRateBitsPerSecond }
     var deliveryRate: Int? { session.deliveryRateBitsPerSecond }
     var measuredDeliveryRate: Int? { session.measuredDeliveryRateBitsPerSecond }
+    var capacityBelief: Int? { session.capacityBeliefBitsPerSecond }
     var queuingDelayMicros: Int64? { session.queuingDelayMicroseconds }
     func frameByteCeiling(fps: Int) -> Int { session.frameByteCeiling(fps: fps) }
     // HS-25 unprotectable-frame guard surfaces: the live drop count
@@ -1239,7 +1240,16 @@ final class SessionWire {
                     } ?? "none"
                     forensics = " [anchor \(f.anchorBitsPerSecond / 1_000)"
                         + " kbps from \(f.rateBeforeBitsPerSecond / 1_000)"
-                        + " kbps; streak "
+                        + " kbps; belief "
+                        + (f.capacityBeliefBitsPerSecond.map {
+                            "\($0 / 1_000)"
+                        } ?? "—")
+                        + " kbps, honest "
+                        + (f.honestAnchorBitsPerSecond.map {
+                            "\($0 / 1_000) kbps"
+                        } ?? "none")
+                        + ", streak age "
+                        + "\((f.streakAgeNS ?? 0) / 1_000_000) ms; streak "
                         + "\(f.streakStartMicroseconds.map(String.init) ?? "—")"
                         + "→\(f.queuingDelayMicroseconds.map(String.init) ?? "—")"
                         + " µs, peak "

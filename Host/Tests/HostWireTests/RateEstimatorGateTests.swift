@@ -1382,6 +1382,355 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(squeezed.stats.stallHolds, 0)
     }
 
+    // MARK: Leg 3g — HS-28: the estimator-honesty reformulation. A
+    // paced sender can never measure more than it sends — every
+    // delivery sample is censored from above by our own rate — so the
+    // ledger now records the pace at each datagram's release, samples
+    // are classified at production (censored / honest / compressed),
+    // and the fall anchor answers to the CAPACITY BELIEF: raised by
+    // any delivery above it, demoted only by fresh honest evidence.
+    // The truth-probe's conviction (a session pinned at 0.1–1.6 Mbps
+    // while 30 Mbps flowed through the same air) dies by construction:
+    // a censored trickle can neither vote in a fall anchor nor age
+    // the belief down.
+
+    /// Invariant 1's mechanics: censored samples (measuring ≈ our own
+    /// recorded pace) RAISE the belief and never lower it — even a
+    /// whole second of censored trickle below the belief leaves it
+    /// standing — and the fall anchor then lands on honest evidence
+    /// when it exists (demoting the belief to what the path proved).
+    func testBeliefRisesOnCensoredDeliveryAndFallsOnlyOnHonestEvidence() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        // Ten censored beats at the standing 20 Mbps: the belief
+        // rises to what delivery proved; nothing reads honest (the
+        // trains measure our own pace).
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        XCTAssertEqual(
+            Double(estimator.capacityBeliefBitsPerSecond ?? 0),
+            20e6, accuracy: 2e6
+        )
+        XCTAssertGreaterThanOrEqual(estimator.stats.censoredSamples, 5)
+        XCTAssertEqual(estimator.stats.honestSamples, 0)
+
+        // The pacer is forced down to 10 Mbps (an IDR-pacing move) and
+        // a full second of CENSORED trickle at the new pace follows —
+        // samples at half the belief, with backlog and standing
+        // inflation. Invariant 1: the belief must not move a bit, and
+        // no fall may anchor to the trickle.
+        _ = estimator.applyIdrPacing(.halfStaleEstimate, now: now)
+        XCTAssertEqual(Double(estimator.rateBitsPerSecond), 10e6,
+                       accuracy: 0.2e6)
+        for _ in 0..<40 {
+            let verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: 10, extraDelayMicros: 40_000,
+                backlogBytes: 40_000
+            )
+            XCTAssertNotEqual(verdict.change, .overuse,
+                "a censored trickle at half the belief must not anchor "
+                + "a fall")
+        }
+        XCTAssertEqual(Double(estimator.rateBitsPerSecond), 10e6,
+                       accuracy: 0.5e6,
+            "the rate rode the trickle without falling")
+        XCTAssertEqual(
+            Double(estimator.capacityBeliefBitsPerSecond ?? 0),
+            20e6, accuracy: 2e6,
+            "censored samples may raise the belief, never lower it — "
+            + "one second of half-belief trickle left it standing"
+        )
+        XCTAssertEqual(estimator.stats.beliefDemotions, 0)
+
+        // Honest evidence at last: the path measurably stretches the
+        // trains to 4 Mbps (well under the 10 Mbps pace). The fall
+        // executes and lands on measured delivery — and the belief
+        // demotes to what the path proved, not a step sooner.
+        var verdict = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 4, extraDelayMicros: 60_000,
+            backlogBytes: 40_000
+        )
+        var beats = 0
+        while verdict.newRateBitsPerSecond == nil, beats < 14 {
+            verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: 4, extraDelayMicros: 60_000,
+                backlogBytes: 40_000
+            )
+            beats += 1
+        }
+        XCTAssertNotNil(verdict.newRateBitsPerSecond)
+        XCTAssertEqual(Double(verdict.newRateBitsPerSecond!), 4e6 * 0.85,
+                       accuracy: 0.6e6,
+            "honest evidence anchors the fall at measured delivery")
+        XCTAssertGreaterThanOrEqual(estimator.stats.beliefDemotions, 1)
+        XCTAssertEqual(
+            Double(estimator.capacityBeliefBitsPerSecond ?? 0),
+            4e6, accuracy: 0.6e6,
+            "the belief follows the path down on honest evidence"
+        )
+
+        print("HS-28 gate (belief): 1 s of censored 10 Mbps trickle "
+            + "left the 20 Mbps belief standing; honest 4 Mbps "
+            + "evidence demoted it to "
+            + "\((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) kbps "
+            + "and the fall landed at "
+            + "\(verdict.newRateBitsPerSecond! / 1_000) kbps")
+    }
+
+    /// THE LEG-B REPLAY GATE (the truth-probe's shape, virtual time):
+    /// a genuine loss episode falls honestly, then the fallen pacer
+    /// can only produce censored trickle — while fresh compressed
+    /// super-rate drains keep proving the path. The standing rate must
+    /// ride the limbo WITHOUT ratcheting toward the floor and recover
+    /// toward the belief when the weather clears. The live probe
+    /// measured the old law here: 9 falls in 90 s, a 0.1–1.6 Mbps
+    /// limit cycle against a wire carrying 30 Mbps at 0% loss.
+    func testLegBReplayCensoredTrickleRecoversTowardTheBelief() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        var received: UInt32 = 0
+        var missing: UInt32 = 0
+
+        // Phase 1 — clean baseline: belief at the proven 20 Mbps.
+        for _ in 0..<10 {
+            received += 100
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0,
+                            channels: lossLedger(received: received,
+                                                 missing: missing))
+        }
+        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
+
+        // Phase 2 — the genuine loss episode (the flood arrives): 25%
+        // loss for 1.2 s. The loss branch falls exactly as ever.
+        for _ in 0..<48 {
+            received += 75; missing += 25
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0,
+                            channels: lossLedger(received: received,
+                                                 missing: missing))
+        }
+        let afterEpisode = estimator.rateBitsPerSecond
+        XCTAssertLessThan(afterEpisode, Self.ceiling,
+            "genuine loss still falls — the honesty work must not "
+            + "blunt the loss branch")
+        XCTAssertGreaterThanOrEqual(estimator.stats.lossDownshifts, 2)
+
+        // Phase 3 — the limbo that killed the old law: 1.5 s of
+        // censored trickle at the fallen pace, standing inflation,
+        // standing backlog — and every 8th report a compressed drain
+        // proving the path still flies. NO fall may anchor to the
+        // trickle; the rate must not ratchet.
+        let downshiftsBeforeLimbo = estimator.stats.downshifts
+        for beat in 0..<60 {
+            received += 100
+            let paceMbps = Double(estimator.rateBitsPerSecond) / 1e6
+            let verdict: RateEstimatorVerdict
+            if beat % 8 == 7 {
+                // The drain: a compressed super-rate full train, clean
+                // delay (the hole closed — the streak resets, exactly
+                // the cadence the live forensics recorded).
+                verdict = selfRefBeat(
+                    &now, &clientMicros, &seq, on: estimator,
+                    bottleneckMbps: 300, extraDelayMicros: 0,
+                    backlogBytes: 40_000,
+                    channels: lossLedger(received: received,
+                                         missing: missing)
+                )
+            } else {
+                verdict = selfRefBeat(
+                    &now, &clientMicros, &seq, on: estimator,
+                    bottleneckMbps: paceMbps, extraDelayMicros: 40_000,
+                    backlogBytes: 40_000,
+                    channels: lossLedger(received: received,
+                                         missing: missing)
+                )
+            }
+            if let newRate = verdict.newRateBitsPerSecond,
+               verdict.change == .overuse {
+                XCTAssertGreaterThanOrEqual(
+                    Double(newRate),
+                    Double(estimator.rateBitsPerSecond) * 0.84,
+                    "an overuse fall in the limbo may be bounded "
+                    + "multiplicative at worst — never a crater to "
+                    + "0.85 × trickle"
+                )
+            }
+        }
+        XCTAssertGreaterThanOrEqual(
+            estimator.rateBitsPerSecond,
+            Int(Double(afterEpisode) * 0.7),
+            "the limbo must not ratchet the rate toward the floor "
+            + "(the old law lived at 0.1–1.6 Mbps here)"
+        )
+        XCTAssertLessThanOrEqual(
+            estimator.stats.downshifts - downshiftsBeforeLimbo, 2,
+            "the trickle-fall cascade is dead"
+        )
+        XCTAssertGreaterThanOrEqual(
+            estimator.capacityBeliefBitsPerSecond ?? 0, 20_000_000,
+            "the drains kept the belief honest about the path"
+        )
+
+        // Phase 4 — the weather clears: clean reports, fresh evidence.
+        // The rate recovers toward the belief instead of staying
+        // pinned.
+        let beforeRecovery = estimator.rateBitsPerSecond
+        for _ in 0..<80 {
+            received += 100
+            let paceMbps = Double(estimator.rateBitsPerSecond) / 1e6
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: paceMbps, extraDelayMicros: 0,
+                            backlogBytes: 0,
+                            channels: lossLedger(received: received,
+                                                 missing: missing))
+        }
+        XCTAssertGreaterThanOrEqual(
+            Double(estimator.rateBitsPerSecond),
+            Double(beforeRecovery) * 1.15,
+            "clean air climbs toward the belief (10%/s), not a pin"
+        )
+
+        print("HS-28 gate (leg-B replay): loss episode "
+            + "\(Self.ceiling / 1_000) → \(afterEpisode / 1_000) kbps; "
+            + "1.5 s censored limbo held "
+            + "\(beforeRecovery / 1_000) kbps (0 crater falls, belief "
+            + "\((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) "
+            + "kbps); recovery reached "
+            + "\(estimator.rateBitsPerSecond / 1_000) kbps")
+    }
+
+    /// The persistence twin the brief demands beside the replay: a
+    /// GENUINE capacity drop — honest stretched trains, a building
+    /// queue, standing backlog — still falls within ~1 s of onset,
+    /// anchored at measured delivery.
+    func testGenuineCapacityDropFallsWithinOneSecondOfOnset() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+
+        // The squeeze: the path drops to 6 Mbps, the queue builds
+        // +10 ms per beat, the pacer holds backlog. Count beats to
+        // the first fall.
+        var extraDelay: UInt64 = 30_000
+        var fell: RateEstimatorVerdict?
+        var beats = 0
+        while fell?.newRateBitsPerSecond == nil, beats < 40 {
+            extraDelay += 10_000
+            let verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: 6, extraDelayMicros: extraDelay,
+                backlogBytes: 40_000
+            )
+            if verdict.newRateBitsPerSecond != nil { fell = verdict }
+            beats += 1
+        }
+        XCTAssertNotNil(fell?.newRateBitsPerSecond,
+            "a genuine capacity drop must fall")
+        XCTAssertLessThanOrEqual(beats, 40,
+            "within ~1 s of onset (the pillar's fast fall, at most one "
+            + "limiter beat later than the old law)")
+        XCTAssertEqual(Double(fell!.newRateBitsPerSecond!), 6e6 * 0.85,
+                       accuracy: 1.0e6,
+            "anchored at measured delivery — the belief followed the "
+            + "path down")
+
+        print("HS-28 gate (persistence twin): 20 → 6 Mbps genuine drop "
+            + "fell in \(beats) beats (\(beats * 25) ms) to "
+            + "\(fell!.newRateBitsPerSecond! / 1_000) kbps")
+    }
+
+    /// Self-inflicted evidence recuses itself: NACKs against frames
+    /// whose shards are still queued in our own pacer (the client's
+    /// completion presumption expiring mid-drain — the deep-floor
+    /// starvation seam) feed neither the post-FEC fractions nor the
+    /// regime ladder. The same storm unrecused still bites.
+    func testRecusedNackShardsAreNotPathEvidence() throws {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        var received: UInt32 = 0
+
+        for _ in 0..<10 {
+            received += 400
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0,
+                            channels: lossLedger(received: received,
+                                                 missing: 0))
+        }
+
+        func storm(_ frames: Range<UInt32>) throws
+            -> [FeedbackReport.NackEntry] {
+            try frames.map {
+                try FeedbackReport.NackEntry(
+                    frame: FrameNumber(rawValue: $0),
+                    missingShards: Array(0...30)
+                )
+            }
+        }
+
+        // A rung-3-scale storm, every frame still draining in our own
+        // pacer: recused whole. No post-FEC fraction, no rung-3 fall,
+        // no regime step — the evidence measured our drain, not the
+        // path.
+        now += 25 * Self.ms; clientMicros += 25_000
+        received += 400
+        let recused = estimator.ingest(
+            report(samples: [], clientMicros: clientMicros,
+                   channels: lossLedger(received: received, missing: 0),
+                   nacks: try storm(100..<106)),
+            now: now, inRecovery: false,
+            recusedNackFrames: Set(100..<106)
+        )
+        XCTAssertEqual(recused.postFecLossFraction, 0)
+        XCTAssertNil(recused.newRateBitsPerSecond)
+        XCTAssertNil(recused.fecRegime)
+        XCTAssertEqual(estimator.fecRegime, .clean)
+        XCTAssertEqual(estimator.stats.nackShardsRecused, 6 * 31)
+        XCTAssertEqual(estimator.stats.nackShardsCounted, 0)
+
+        // The same storm against frames the pacer has long released:
+        // honest path evidence — rung 3 bites and the regime steps.
+        now += 500 * Self.ms; clientMicros += 500_000
+        received += 400
+        let honest = estimator.ingest(
+            report(samples: [], clientMicros: clientMicros,
+                   channels: lossLedger(received: received, missing: 0),
+                   nacks: try storm(200..<206)),
+            now: now, inRecovery: false
+        )
+        XCTAssertEqual(honest.change, .postFecLoss,
+            "unrecused NACK storms still bite — the recusal is "
+            + "surgical, not a muzzle")
+        XCTAssertEqual(honest.fecRegime, .lossy)
+
+        print("HS-28 gate (recusal): 186 NACK shards against draining "
+            + "frames → 0 path evidence; the same storm against "
+            + "released frames → rung-3 fall + regime step")
+    }
+
     // MARK: Leg 4 — the machine's numbers
 
     func testIdrPacingNumbers() {

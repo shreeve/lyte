@@ -150,6 +150,61 @@
 //     Floor 500 kbps (a paced IDR within 2 s even on a terrible path),
 //     ceiling = the negotiated session rate (W7 carries no bitrate key
 //     in v1, so the session config IS the negotiated ceiling).
+//   • THE CAPACITY BELIEF (HS-28 — the estimator-honesty reformulation):
+//     a paced sender can never measure more than it sends — every
+//     delivery sample is censored from above by our own rate — and the
+//     old law treated censored samples as unbiased capacity estimates,
+//     so any rate reduction self-confirmed forever (the truth-probe:
+//     a session pinned at 0.1–1.6 Mbps while a concurrent flood
+//     delivered 30 Mbps at 0% loss through the same air). Measurement
+//     is now separated from control:
+//     - INVARIANT 1 (app-limited discipline): the send ledger records
+//       the pacer's standing rate at each datagram's RELEASE, so every
+//       full train is classified mechanically at sample production:
+//       CENSORED (measured ≈ or above its own recorded pace — the
+//       train measures us, and can only prove capacity ≥ that rate),
+//       HONEST (measured below `censoredSampleMarginFraction` under
+//       the pace — the path stretched the train, the sample speaks
+//       for the path), or COMPRESSED (≥ `stallBurstRateFactor` × pace
+//       — accumulated-and-released drain evidence). Censored and
+//       compressed samples may RAISE the belief — delivery above
+//       expectation is always honest news — they never vote in a
+//       fall anchor and never lower the belief.
+//     - THE BELIEF `beliefBits` is one number: raised instantly by any
+//       full-train sample above it, and it FALLS only by invariant-2
+//       demotion — never by aging, because aging-while-censored was
+//       exactly the self-confirmation vector (leg B: ten seconds at
+//       the floor aged every honest sample out of the max window and
+//       the windowed max itself became the trickle).
+//     - INVARIANT 2 (sustained corroboration): the belief demotes only
+//       on evidence a censored sender cannot manufacture — a fresh
+//       honest-sample median below the belief — and the demotion rides
+//       the executing fall. `inflatedStreakSinceNS` tracks how long
+//       overuse pressure has persisted (`beliefDemotionSustainNS`,
+//       ≥ one full 500 ms fall-limiter window into the next — a dwell
+//       structurally cannot sustain it; a genuine squeeze does within
+//       ~1 s). While the three shape-gates below still stand they
+//       decide WHEN a fall executes; the persistence machinery is
+//       their staged replacement (retired one commit at a time, each
+//       justified by the gate's frozen pins passing without it).
+//     - CONTROL is unchanged in role, honest in inputs: verdicts
+//       (delay inflation, loss bands) still decide WHEN; the fall
+//       anchor answers to the BELIEF — clamp(min(0.85 × demoted
+//       belief, 0.85 × standing rate)) — never to the median of raw
+//       recent samples. A censored trickle therefore cannot crater
+//       the rate in one step: with no honest evidence the fall is
+//       bounded multiplicative (0.85 × rate per limiter beat), and
+//       with honest evidence it lands exactly on measured delivery
+//       as the HS-21 pins always demanded.
+//     - SELF-INFLICTED EVIDENCE RECUSES ITSELF: NACK entries naming
+//       frames whose shards are still queued in our own pacer are the
+//       client's completion presumption expiring mid-drain (the
+//       deep-floor starvation seam), not path evidence — the session
+//       passes them as `recusedNackFrames` and they feed neither the
+//       post-FEC fractions nor the regime ladder. The pre-FEC ledger
+//       deltas were audited clean: host-side skips (pre-encode
+//       backpressure, unprotectable drops) never consume a seq or a
+//       frame number, so they cannot read as client-visible gaps.
 //   • RECOVERY VERDICTS — W4b's `.feedbackWindow(clean:)` input, owned
 //     here now (the 25 ms stub in Session retires): while the machine
 //     is in RECOVERY every parsed report closes windows of ≥25 ms;
@@ -238,6 +293,25 @@ public struct RateEstimatorConfig: Sendable {
     public var stallBurstRateFactor: Double
     /// HS-23: how fresh the drain evidence must be at fall time.
     public var stallEvidenceWindowNS: UInt64
+    /// HS-28 (invariant 1): a full train measuring at or above
+    /// (1 − this fraction) × the pacer rate recorded at its release is
+    /// CENSORED — it measures our own pacing and can only prove
+    /// capacity ≥ that rate. It may raise the belief, never lower it,
+    /// and never votes in a fall anchor. 0.2: comfortably past
+    /// dispersion noise, tight enough that a genuinely stretched train
+    /// (a real bottleneck under the pace) still testifies.
+    public var censoredSampleMarginFraction: Double
+    /// HS-28 (invariant 2): how long overuse pressure must persist
+    /// before an uncorroborated fall may execute once the shape-gates
+    /// retire — one full 500 ms fall-limiter window into the next, so
+    /// the evidence spans ≥2 consecutive windows. A dwell (≤150 ms by
+    /// the stall ceiling's own definition) structurally cannot sustain
+    /// it; a genuine squeeze does, within ~1 s of onset.
+    public var beliefDemotionSustainNS: UInt64
+    /// HS-28: honest (path-limited) anchor votes older than this no
+    /// longer speak for the path — a stale low reading from a healed
+    /// dip must not demote the belief later.
+    public var honestVoteWindowNS: UInt64
     /// Pre-FEC loss fraction below which the window reads clean (the
     /// rate may rise). GCC's lower band.
     public var lossCleanThreshold: Double
@@ -295,6 +369,9 @@ public struct RateEstimatorConfig: Sendable {
         stallGapCeilingMicroseconds: Int64 = 150_000,
         stallBurstRateFactor: Double = 1.25,
         stallEvidenceWindowNS: UInt64 = 500_000_000,
+        censoredSampleMarginFraction: Double = 0.2,
+        beliefDemotionSustainNS: UInt64 = 500_000_000,
+        honestVoteWindowNS: UInt64 = 2_000_000_000,
         lossCleanThreshold: Double = 0.02,
         lossDownshiftThreshold: Double = 0.10,
         lossWindowNS: UInt64 = 1_000_000_000,
@@ -327,6 +404,9 @@ public struct RateEstimatorConfig: Sendable {
         self.stallGapCeilingMicroseconds = stallGapCeilingMicroseconds
         self.stallBurstRateFactor = stallBurstRateFactor
         self.stallEvidenceWindowNS = stallEvidenceWindowNS
+        self.censoredSampleMarginFraction = censoredSampleMarginFraction
+        self.beliefDemotionSustainNS = beliefDemotionSustainNS
+        self.honestVoteWindowNS = honestVoteWindowNS
         self.lossCleanThreshold = lossCleanThreshold
         self.lossDownshiftThreshold = max(
             lossDownshiftThreshold, lossCleanThreshold
@@ -402,6 +482,22 @@ public struct RateEstimatorStats: Equatable, Sendable {
     /// only arrive after the hole closes — gets its chance to testify.
     public var fallDeferrals = 0
     public var lossDownshifts = 0
+    /// HS-28 (invariant 1): full-train samples classified CENSORED at
+    /// production — they measured our own recorded pace, raised the
+    /// belief when above it, and got no fall-anchor vote.
+    public var censoredSamples = 0
+    /// HS-28: full-train samples classified HONEST (path-limited) —
+    /// the path measurably stretched them; they vote.
+    public var honestSamples = 0
+    /// HS-28: times any sample raised the capacity belief.
+    public var beliefRaises = 0
+    /// HS-28 (invariant 2): times an executing fall demoted the belief
+    /// to the fresh honest median.
+    public var beliefDemotions = 0
+    /// HS-28: NACK shards recused as self-inflicted (their frame's
+    /// shards were still queued in our own pacer — the client's
+    /// completion presumption expired mid-drain).
+    public var nackShardsRecused = 0
     /// Rung-3 downshifts (post-FEC loss over threshold, HS-17).
     public var postFecDownshifts = 0
     /// Distinct (frame, shard) pairs the NACK sections named.
@@ -437,6 +533,14 @@ public struct OveruseFallForensics: Equatable, Sendable {
     /// Loss posture on this report.
     public var lossFraction: Double
     public var postFecLossFraction: Double
+    /// HS-28: the capacity belief the moment the fall fired, and the
+    /// fresh honest-vote median (nil = no honest evidence — the fall
+    /// was bounded multiplicative, never trickle-anchored).
+    public var capacityBeliefBitsPerSecond: Int?
+    public var honestAnchorBitsPerSecond: Int?
+    /// HS-28: how long the overuse pressure had persisted at fall
+    /// time (the invariant-2 persistence clock).
+    public var streakAgeNS: UInt64?
 }
 
 public final class RateEstimator {
@@ -468,6 +572,12 @@ public final class RateEstimator {
         overuseAnchorRate.map { Int($0) }
     }
 
+    /// HS-28: the capacity belief, bits/s — what the estimator honestly
+    /// believes the path can carry. Nil before any full-train evidence.
+    public var capacityBeliefBitsPerSecond: Int? {
+        beliefBits.map(Int.init)
+    }
+
     /// The current queuing-delay inflation estimate, µs (nil before
     /// two reports establish a baseline).
     public private(set) var queuingDelayMicroseconds: Int64?
@@ -494,6 +604,11 @@ public final class RateEstimator {
         var key: UInt32
         var sendNS: UInt64
         var bytes: Int
+        /// HS-28 (invariant 1): the pacer's standing rate the instant
+        /// this datagram was RELEASED — the mark that lets sample
+        /// production decide, mechanically, whether a train measured
+        /// the path or measured us.
+        var paceBitsPerSecond: Int
     }
 
     /// (channel << 16 | seq) → ledger slot; slots recycle FIFO.
@@ -517,8 +632,24 @@ public final class RateEstimator {
     /// median so a lone garbage short-train sample cannot crater the
     /// rate (HS-21). Raw, deliberately: this is the same measurement
     /// `lastDeliveryRate` records, kept over a short window instead of
-    /// one-deep.
+    /// one-deep. Since HS-28 this median is REPORTING-grade and gate
+    /// input only — the fall anchor answers to the capacity belief.
     private var recentRawDeliveries: [Double] = []
+
+    // MARK: HS-28 — the capacity belief
+
+    /// The one-number capacity belief (header: THE CAPACITY BELIEF).
+    /// Raised instantly by any full-train sample above it; falls only
+    /// by invariant-2 demotion at an executing fall — never by aging.
+    private var beliefBits: Double?
+    /// Fresh HONEST (path-limited) full-train votes: the only samples
+    /// that may pull a fall anchor below the belief (invariant 1).
+    /// FIFO of `overuseAnchorSampleCount`, additionally expired past
+    /// `honestVoteWindowNS`.
+    private var recentHonestDeliveries: [(at: UInt64, rate: Double)] = []
+    /// When the CURRENT overuse-pressure streak opened — invariant 2's
+    /// persistence clock. Resets with the streak.
+    private var inflatedStreakSinceNS: UInt64?
 
     private struct DelaySample {
         var at: UInt64
@@ -633,7 +764,10 @@ public final class RateEstimator {
         if let evicted = ledger[ledgerHead], ledgerIndex[evicted.key] == ledgerHead {
             ledgerIndex.removeValue(forKey: evicted.key)
         }
-        ledger[ledgerHead] = SendRecord(key: key, sendNS: now, bytes: bytes)
+        ledger[ledgerHead] = SendRecord(
+            key: key, sendNS: now, bytes: bytes,
+            paceBitsPerSecond: rateBitsPerSecond
+        )
         ledgerIndex[key] = ledgerHead
         ledgerHead = (ledgerHead + 1) % ledger.count
     }
@@ -656,16 +790,23 @@ public final class RateEstimator {
     /// `pacerBacklogBytes` is the caller's live video-class backlog —
     /// the self-reference gate's "are we the bottleneck right now"
     /// evidence (HS-22c); 0 (the default) means no standing backlog
-    /// and the gate never engages.
+    /// and the gate never engages. `recusedNackFrames` (HS-28) names
+    /// frames whose shards are still queued in the caller's own pacer:
+    /// NACKs against them are the client's completion presumption
+    /// expiring mid-drain — self-inflicted, not path evidence — and
+    /// feed neither the post-FEC fractions nor the regime ladder.
     public func ingest(
         _ report: FeedbackReport, now: UInt64, inRecovery: Bool,
-        pacerBacklogBytes: Int = 0
+        pacerBacklogBytes: Int = 0,
+        recusedNackFrames: Set<UInt32> = []
     ) -> RateEstimatorVerdict {
         stats.reportsIngested += 1
         expireWindows(now: now)
 
         let (newMissing, _) = absorbChannelLedgers(report, now: now)
-        let newNackShards = absorbNacks(report, now: now)
+        let newNackShards = absorbNacks(
+            report, recusedFrames: recusedNackFrames, now: now
+        )
         let matched = matchDispersion(report)
         absorbDeliveryTrains(matched, now: now)
         let inflated = absorbDelay(matched, now: now)
@@ -782,6 +923,17 @@ public final class RateEstimator {
         return sorted[sorted.count / 2]
     }
 
+    /// HS-28: the median of the FRESH honest (path-limited) votes —
+    /// the only evidence allowed to pull a fall anchor below the
+    /// capacity belief (invariant 1: censored samples never vote).
+    /// Nil when nothing fresh and honest exists — the fall is then
+    /// bounded multiplicative, never trickle-anchored.
+    private var honestAnchorRate: Double? {
+        guard !recentHonestDeliveries.isEmpty else { return nil }
+        let sorted = recentHonestDeliveries.map(\.rate).sorted()
+        return sorted[sorted.count / 2]
+    }
+
     private func expireWindows(now: UInt64) {
         deliveryWindow.removeAll {
             now &- $0.at > config.sampleWindowNS
@@ -799,6 +951,9 @@ public final class RateEstimator {
         }
         recentNackShards = recentNackShards.filter {
             now &- $0.value <= config.lossWindowNS
+        }
+        recentHonestDeliveries.removeAll {
+            now &- $0.at > config.honestVoteWindowNS
         }
     }
 
@@ -838,11 +993,18 @@ public final class RateEstimator {
     /// Counts the report's NACK section into the post-FEC window:
     /// distinct (frame, shard) pairs, deduped across reports inside the
     /// window (a re-NACK is the client insisting, not new loss).
+    /// Frames in `recusedFrames` contribute nothing (HS-28): their
+    /// shards are still queued in our own pacer, so the NACK measures
+    /// our drain speed, not the path.
     private func absorbNacks(
-        _ report: FeedbackReport, now: UInt64
+        _ report: FeedbackReport, recusedFrames: Set<UInt32>, now: UInt64
     ) -> Int {
         var fresh = 0
         for nack in report.nacks {
+            if recusedFrames.contains(nack.frame.rawValue) {
+                stats.nackShardsRecused += nack.missingShards.count
+                continue
+            }
             for shard in nack.missingShards {
                 let key = UInt64(nack.frame.rawValue) << 8 | UInt64(shard)
                 if recentNackShards[key] == nil { fresh += 1 }
@@ -884,6 +1046,8 @@ public final class RateEstimator {
         var sendNS: UInt64
         var bytes: Int
         var arrivalMicros: UInt64
+        /// The pacer rate recorded at this datagram's release (HS-28).
+        var paceBitsPerSecond: Int
     }
 
     private func matchDispersion(
@@ -906,7 +1070,8 @@ public final class RateEstimator {
                 sendNS: record.sendNS,
                 bytes: record.bytes,
                 arrivalMicros: dispersion.base.microseconds
-                    &+ UInt64(sample.arrivalDeltaMicroseconds)
+                    &+ UInt64(sample.arrivalDeltaMicroseconds),
+                paceBitsPerSecond: record.paceBitsPerSecond
             ))
         }
         matched.sort { $0.sendNS < $1.sendNS }
@@ -963,6 +1128,39 @@ public final class RateEstimator {
                 // must not inherit the drain's super-rate sample.
                 lastFullTrainRate = rate
                 lastFullTrainAt = now
+                // HS-28 invariant 1, at sample production: was the
+                // pacer the constraint? The ledger's recorded pace at
+                // the train's send window answers mechanically. The
+                // pace across a train is taken at its MAX — a train
+                // straddling a rate move is judged against the faster
+                // pace, the conservative side (fewer honest votes).
+                let pace = Double(
+                    train.map(\.paceBitsPerSecond).max() ?? rateBitsPerSecond
+                )
+                let honest = rate
+                    < pace * (1 - config.censoredSampleMarginFraction)
+                if honest {
+                    // The path measurably stretched this train — it
+                    // speaks for the path and may vote in a fall
+                    // anchor (and, at an executing fall, demote the
+                    // belief to what the path really carries).
+                    stats.honestSamples += 1
+                    recentHonestDeliveries.append((at: now, rate: rate))
+                    if recentHonestDeliveries.count
+                        > config.overuseAnchorSampleCount {
+                        recentHonestDeliveries.removeFirst()
+                    }
+                } else {
+                    // Censored (≈ our pace) or compressed (a drain):
+                    // either way it can only prove capacity ≥ itself.
+                    stats.censoredSamples += 1
+                }
+                // Delivery above the belief is always honest news —
+                // censored samples may RAISE it, never lower it.
+                if beliefBits.map({ rate > $0 }) ?? true {
+                    beliefBits = rate
+                    stats.beliefRaises += 1
+                }
             }
             stats.deliverySamples += 1
             let weighted = train.count >= config.minTrainPackets
@@ -1014,6 +1212,7 @@ public final class RateEstimator {
         guard haveBaseline else {
             queuingDelayMicroseconds = 0
             consecutiveInflatedReports = 0
+            inflatedStreakSinceNS = nil
             fallDeferredSince = nil
             return false
         }
@@ -1022,6 +1221,7 @@ public final class RateEstimator {
             if consecutiveInflatedReports == 0 {
                 inflatedStreakStartMicros = worstInflation
                 inflatedStreakPeakMicros = worstInflation
+                inflatedStreakSinceNS = now
             } else {
                 inflatedStreakPeakMicros = max(
                     inflatedStreakPeakMicros ?? worstInflation,
@@ -1034,6 +1234,7 @@ public final class RateEstimator {
         consecutiveInflatedReports = 0
         inflatedStreakStartMicros = nil
         inflatedStreakPeakMicros = nil
+        inflatedStreakSinceNS = nil
         fallDeferredSince = nil
         return false
     }
@@ -1123,6 +1324,28 @@ public final class RateEstimator {
                 if fallDeferredSince == nil { fallDeferredSince = now }
                 stats.fallDeferrals += 1
             } else {
+                // HS-28: the fall EXECUTES here — and the anchor
+                // answers to the CAPACITY BELIEF, never to the median
+                // of raw recent samples. Invariant 2's demotion rides
+                // the fall: a fresh honest (path-limited) median below
+                // the belief is evidence a censored sender cannot
+                // manufacture, so the belief follows the path down and
+                // the fall lands on measured delivery exactly as the
+                // HS-21 pins demand. With NO honest evidence the fall
+                // is bounded multiplicative (0.85 × standing rate per
+                // limiter beat) — a censored trickle can no longer
+                // crater the rate in one step (leg B's `full-train
+                // 398 kbps 0 ms ago` seam, closed by construction).
+                let honestMedian = honestAnchorRate
+                let belief = beliefBits ?? Double(rateBitsPerSecond)
+                let demoted: Double
+                if let honestMedian, honestMedian < belief {
+                    demoted = honestMedian
+                    beliefBits = honestMedian
+                    stats.beliefDemotions += 1
+                } else {
+                    demoted = belief
+                }
                 // The ramp hunt's forensics: record exactly what was
                 // on the table when this fall fired — the evidence a
                 // post-mortem needs to say why neither gate held it.
@@ -1138,10 +1361,13 @@ public final class RateEstimator {
                     lastFullTrainAgeNS:
                         lastFullTrainAt.map { now &- $0 },
                     lossFraction: lossFraction,
-                    postFecLossFraction: postFecLossFraction
+                    postFecLossFraction: postFecLossFraction,
+                    capacityBeliefBitsPerSecond: Int(demoted),
+                    honestAnchorBitsPerSecond: honestMedian.map(Int.init),
+                    streakAgeNS: inflatedStreakSinceNS.map { now &- $0 }
                 )
                 rateBitsPerSecond = clamp(min(
-                    Int(Double(anchor) * config.downshiftFactor),
+                    Int(demoted * config.downshiftFactor),
                     Int(Double(rateBitsPerSecond) * config.downshiftFactor)
                 ))
                 lastDownshiftAt = now

@@ -259,6 +259,49 @@ final class VideoChannelGateTests: XCTestCase {
         XCTAssertTrue(order.dropFirst(idrShards).allSatisfy { !$0.isKeyframe })
     }
 
+    /// HS-28: the queued-shard books behind the NACK recusal — a frame
+    /// reads as "still draining" exactly while any of its video-class
+    /// shards wait in the pacer (repairs re-open it), and drops off
+    /// the moment its last shard leaves. This is what lets the
+    /// estimator recuse NACKs that measure our own drain speed.
+    func testQueuedShardBooksTrackTheDrain() throws {
+        let frame = try load("frame-000-idr.annexb")
+        let channel = VideoChannel(
+            config: VideoChannelConfig(rateBitsPerSecond: Self.rateBPS),
+            now: 0
+        ) { _ in }
+
+        XCTAssertTrue(channel.framesWithQueuedShards().isEmpty)
+        try channel.ingest(
+            frame: frame, frameNumber: FrameNumber(rawValue: 7),
+            captureTimestampMicroseconds: 1, isKeyframe: true, now: 0
+        )
+        XCTAssertEqual(channel.framesWithQueuedShards(), [7],
+            "a NACK against this frame right now would measure our "
+            + "pacer, not the path — it must read as draining")
+
+        var now: UInt64 = 0
+        channel.pump(now: now)
+        while let wake = channel.nextWake(now: now) {
+            now = max(now &+ 1, wake)
+            channel.pump(now: now)
+        }
+        XCTAssertTrue(channel.framesWithQueuedShards().isEmpty,
+            "fully drained — NACKs against it are path evidence again")
+
+        // A repair retransmit re-opens the books until it leaves too.
+        try channel.enqueueRepair(
+            frame: FrameNumber(rawValue: 7), shardIndices: [0], now: now
+        )
+        XCTAssertEqual(channel.framesWithQueuedShards(), [7])
+        channel.pump(now: now)
+        while let wake = channel.nextWake(now: now) {
+            now = max(now &+ 1, wake)
+            channel.pump(now: now)
+        }
+        XCTAssertTrue(channel.framesWithQueuedShards().isEmpty)
+    }
+
     func testLyingKeyframeFlagIsLoud() throws {
         // The packetizer's isIDR cross-check surfaces through the wiring
         // unmuted — a lying encoder flag is a bug, not a datagram.
