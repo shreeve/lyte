@@ -190,6 +190,7 @@ final class SessionWire {
     var estimatedRate: Int { session.estimatedRateBitsPerSecond }
     var pacerRate: Int { session.pacerRateBitsPerSecond }
     var deliveryRate: Int? { session.deliveryRateBitsPerSecond }
+    var measuredDeliveryRate: Int? { session.measuredDeliveryRateBitsPerSecond }
     var queuingDelayMicros: Int64? { session.queuingDelayMicroseconds }
     func frameByteCeiling(fps: Int) -> Int { session.frameByteCeiling(fps: fps) }
     // HS-25 unprotectable-frame guard surfaces: the live drop count

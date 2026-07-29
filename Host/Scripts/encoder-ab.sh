@@ -15,6 +15,16 @@
 #   extras:   capped-CQ motion leg and a static ratchet-convergence leg
 #             for base + $CANDIDATES (the session posture check).
 #
+# STANDING INSTRUMENT (Q-1, the beauty-bar convention): rerun this
+# ladder for EVERY recipe question — a new preset/tune/AQ/multipass
+# idea, an SDK bump, the 4:4:4/10-bit profile work — and ALWAYS with
+# the desk corpus in the race: HS-24's text finding (p1 spent 2× the
+# bits for −12 dB on scrolling text) was invisible to motion-only
+# A/Bs. Adoption bar unchanged: PSNR-at-bitrate gain with encode time
+# (input→photon) and 60 fps capacity held. This ladder answers "which
+# recipe"; Host/Scripts/quality-probe.sh answers "did the glass get
+# better" (its BEAUTY BAR row is the per-release gate in HANDOFF.md).
+#
 # PSNR method (the probe's, mechanized): decode the Annex-B output and
 # compare against the raw BGRx reference with both sides in yuv420p.
 # swscale's default RGB→YUV matrix is BT.601/470BG limited — the same
@@ -150,6 +160,7 @@ done
 
 # ---- the table ----------------------------------------------------------
 echo
+echo "=============== LYTE ENCODER A/B LADDER — $(date +%Y-%m-%d)$(git -C "$(dirname "$0")" rev-parse --short HEAD 2>/dev/null | sed 's/^/ @ /') ==============="
 echo "== ladder table (delta vs base at the same corpus+rate)"
 awk -F'\t' '
   $1 == "base" { base[$2 "@" $3] = $4 }
@@ -168,4 +179,6 @@ awk -F'\t' '
   }' "$RESULTS"
 echo
 echo "results at $RESULTS — adoption bar: PSNR-at-bitrate gain with"
-echo "encode time (input→photon) and 60 fps capacity held."
+echo "encode time (input→photon) and 60 fps capacity held. Companion:"
+echo "quality-probe.sh fills the BEAUTY BAR row (HANDOFF.md) per release."
+echo "=============================================================================="

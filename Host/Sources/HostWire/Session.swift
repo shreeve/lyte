@@ -2129,6 +2129,13 @@ public final class Session {
         estimator.deliveryRateBitsPerSecond
     }
 
+    /// The reporting-grade delivery figure (full-train median — the
+    /// overuse anchor's evidence); the windowed max above is the
+    /// control law's burst-tolerant probe, not a summary number.
+    public var measuredDeliveryRateBitsPerSecond: Int? {
+        estimator.measuredDeliveryRateBitsPerSecond
+    }
+
     /// The current queuing-delay inflation estimate, µs.
     public var queuingDelayMicroseconds: Int64? {
         estimator.queuingDelayMicroseconds

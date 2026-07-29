@@ -180,6 +180,41 @@ final class RateEstimatorGateTests: XCTestCase {
                        "short-train dispersion noise must not win the max")
     }
 
+    /// Q-1, the receipts fix: a receiver radio that drains a queued
+    /// dwell in one compressed burst hands the windowed-MAX filter a
+    /// legitimate super-rate full train (the quality probe's summary
+    /// printed 272–777 Mbps "delivery" on a ~90 Mbps wire). The
+    /// control law keeps its burst-tolerant max, but the REPORTED
+    /// delivery figure is the full-train median — one burst sample
+    /// stays outvoted and the receipts read the path, not the drain.
+    func testReportedDeliveryOutvotesClumpedBurstSample() {
+        let estimator = makeEstimator()
+        for (i, bottleneck) in [8e6, 8e6, 400e6].enumerated() {
+            let samples = train(
+                estimator, seqStart: i * 100, count: 40,
+                sendStartNS: UInt64(10 + 100 * i) * Self.ms,
+                bottleneckBitsPerSecond: bottleneck
+            )
+            _ = estimator.ingest(
+                report(samples: samples,
+                       clientMicros: UInt64(50_000 + 100_000 * i)),
+                now: UInt64(60 + 100 * i) * Self.ms, inRecovery: false
+            )
+        }
+        XCTAssertEqual(estimator.stats.deliverySamples, 3)
+        let burstMax = estimator.deliveryRateBitsPerSecond
+        XCTAssertNotNil(burstMax)
+        XCTAssertGreaterThan(burstMax!, 100_000_000,
+                             "the max window keeps the burst sample — "
+                             + "the control law's probe is untouched")
+        let reported = estimator.measuredDeliveryRateBitsPerSecond
+        XCTAssertNotNil(reported)
+        XCTAssertEqual(Double(reported!), 8e6, accuracy: 0.4e6,
+                       "the reported delivery is the full-train median "
+                       + "— a lone clumped burst cannot print as the "
+                       + "session's delivery rate")
+    }
+
     func testUnmatchedSamplesAreIgnoredNotInvented() {
         let estimator = makeEstimator()
         // Samples naming datagrams the ledger never saw (a client

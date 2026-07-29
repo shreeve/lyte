@@ -420,6 +420,19 @@ public final class RateEstimator {
         deliveryWindow.map { Int($0.rate) }.max()
     }
 
+    /// The reporting-grade measured delivery: the median of the last
+    /// few FULL-train raw samples — the same evidence the overuse
+    /// anchor trusts (HS-21). Deliberately distinct from
+    /// `deliveryRateBitsPerSecond`: that one is the control law's
+    /// windowed-MAX bottleneck probe (BBR's shape), and a receiver
+    /// radio that drains a queued dwell in one compressed burst hands
+    /// the max a legitimate super-rate sample — the quality probe's
+    /// receipts printed 272–777 Mbps "delivery" on a ~90 Mbps wire
+    /// (Q-1). The median outvotes the lone burst; summaries print THIS.
+    public var measuredDeliveryRateBitsPerSecond: Int? {
+        overuseAnchorRate.map { Int($0) }
+    }
+
     /// The current queuing-delay inflation estimate, µs (nil before
     /// two reports establish a baseline).
     public private(set) var queuingDelayMicroseconds: Int64?

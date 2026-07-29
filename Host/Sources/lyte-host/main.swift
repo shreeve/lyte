@@ -1559,7 +1559,8 @@ func run() throws {
         estimator: rate \(wire.estimatedRate / 1_000) kbps \
         (pacer \(wire.pacerRate / 1_000) kbps, ceiling \
         \(Int(opts.wireRateMbps * 1_000)) kbps), delivery \
-        \(wire.deliveryRate.map { "\($0 / 1_000) kbps" } ?? "—"), \
+        \(wire.measuredDeliveryRate.map { "\($0 / 1_000) kbps" } ?? "—") \
+        (burst max \(wire.deliveryRate.map { "\($0 / 1_000)" } ?? "—")), \
         queuing delay \(wire.queuingDelayMicros.map { "\($0) µs" } ?? "—"); \
         \(wire.estimatorStats.reportsIngested) reports \
         (\(s.feedbackReportsParsed) parsed, \
