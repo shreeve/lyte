@@ -3442,6 +3442,63 @@ its entry at the marker at the end of this block.*
   rerun) is unblocked; (ii) J-G4a runs the negotiated 444 session
   live end-to-end.
 
+- **HS-26 — the fps ceiling hunt lands its fix: the capture thread
+  stops waiting for the wire, and the session pipeline ingests the
+  full 60** (`f00d2a9`, Host/ only, not pushed). Q-1's first red row
+  (fps p50 47, bar ≥55, decomposed to "~48/s ingest under full session
+  load") is ROOT-CAUSED with stage books and FIXED.
+  THE ROOT CAUSE (books, not vibes): `SessionWire.sendFrame` ran
+  encode → ingest → `drainToIdle()` SERIALLY on the one PipeWire video
+  loop thread. The drain blocks until the token-bucket pacer walks the
+  whole frame out at 1 ms quanta — a full frame's wire time stolen
+  from `on_process` every frame. At the probe recipe that was ~7 ms of
+  sleep per ~16.7 ms budget: the compositor queued buffers nobody
+  dequeued and dropped the overflow — exactly the "not the wire, not
+  the compositor" residue Q-1 measured. New per-stage books
+  (gap/encode/ingest/drain µs, printed every 5 s in session mode, free
+  when idle) showed drain eating the budget; file-mode never saw it
+  because file-mode never paces.
+  THE FIX (two seams, both lyte-host — HostWire's pacer untouched):
+  (i) pacer drain moves to a dedicated sender thread
+  (NSCondition-signaled, 1 ms pacer wakes; `nonisolated(unsafe)` under
+  the existing lock discipline). The capture stack now pays ingest +
+  the FIRST burst quantum only (the bucket is credited while idle, so
+  that's one batch + one sendmmsg, tens of µs) and returns to the
+  loop. (ii) a capture-side backlog gate: `Session.queuedVideoBytes`
+  (new, pinned by a SessionGateTests case) → wire-time backlog; if it
+  exceeds min(2 frame intervals, 25 ms) the frame is SKIPPED before
+  encode — counted (`throttledFrames`), printed in the stage books and
+  the final stats line. The old implicit compositor drops become an
+  explicit bounded number; the estimator's rate is respected instead
+  of the pacer queue growing.
+  EVIDENCE (pup, 41183+/41187 `--no-advertise`, windowed testsrc2;
+  client = the headless hs16-probe since wire-view still wedges on
+  V-5's Keychain prompt; probe patched to make its 2 s IDR chirp
+  opt-out via PROBE_IDR_SECONDS so the chirp couldn't skew the row):
+  **before 48.5 fps ingest, after 60.8 fps** (1831 frames / 30.1 s,
+  zero throttles at the 50 Mbps recipe, freshVideo max queue delay
+  ~31 ms at session open only). Gate leg: encoder forced 40 Mbps over
+  an 8 Mbps pacer throttles at the gate, counted, no queue blowup.
+  Logs kept: pup /tmp/fpshunt-{baseline,fixed,gate,final}-{host,probe}.log.
+  Suites: Host 186 → **187/187 Mac AND pup** (pup at the identical
+  rsynced tree).
+  RAILS: three secrets sha-identical at close against the pinned trio
+  (portal_token dadf9a66…37cf, noise_static.key 72860390…cfed,
+  paired_clients 8dc1f88a…55fd; key/paired mtimes still Jul 21/22);
+  no netem; all test hosts + probes dead at close. The owner's 41151
+  loop SELF-EXPIRED at run 60 (05:31 — its finite design, the resume
+  brief predicted it; untouched by this worker) — restored fresh
+  ~06:04, and it launches `~/src/lyte-host/.build/debug/lyte-host`, so
+  it now runs the HS-26 build.
+  NAMED FOR THE NEXT RUNG: (i) the beauty-bar fps row should be
+  RE-MEASURED AT THE GLASS (quality-probe.sh) once wire-view's
+  Keychain grant exists — this slice proved the decomposed quantity
+  (ingest), which was the named bottleneck; (ii) the gate's throttle
+  counter is the new tripwire — a nonzero count at a sane recipe means
+  encoder rate and pacer rate disagree, look at the estimator first;
+  (iii) `~/lyte-loop.sh` is still a finite 60-run loop — the standing
+  "consider `while true`" note stands.
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
