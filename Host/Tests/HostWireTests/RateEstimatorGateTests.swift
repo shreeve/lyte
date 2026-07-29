@@ -2286,6 +2286,135 @@ final class RateEstimatorGateTests: XCTestCase {
             + "\(Double(deviations.last!) / 1e6) ms; audio max queue delay "
             + "\(Double(session.pacerTelemetry[.audio].maxQueueDelayNS) / 1e6) ms")
     }
+
+    // MARK: HS-29 — cap-aware probe damping (row ³'s shared cause)
+
+    /// THE HS-29 HEADLINE: with the belief parked at ~20 Mbps and a
+    /// 50 Mbps configured cap, the climb stops at belief × headroom
+    /// instead of probing on toward a cap the belief says the air
+    /// cannot honor (row ³: that probing bought 102 lost datagrams and
+    /// the residual IDR spend). Five virtual seconds of clean evidence
+    /// beats: the rate must park at ~22 Mbps, damped, with zero falls.
+    func testProbeCeilingDampsClimbAtBeliefHeadroom() {
+        let estimator = makeEstimator {
+            $0.ceilingBitsPerSecond = 50_000_000
+            $0.initialRateBitsPerSecond = 20_000_000
+        }
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        // Establish the belief at ~20 Mbps: censored beats at pace.
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        let belief = Double(estimator.capacityBeliefBitsPerSecond ?? 0)
+        XCTAssertEqual(belief, 20e6, accuracy: 2.5e6)
+
+        // 200 clean beats (5 s): the air still delivers only ~20 —
+        // trains keep measuring ≈20 whatever the pace wants. The climb
+        // must park at belief × 1.1, not walk to the 50 Mbps cap.
+        for _ in 0..<200 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        let parked = Double(estimator.rateBitsPerSecond)
+        let ceiling = (estimator.capacityBeliefBitsPerSecond
+            .map { Double($0) * 1.10 }) ?? 0
+        XCTAssertLessThanOrEqual(parked, ceiling + 0.1e6,
+            "the climb crossed belief × headroom — probe damping is dead")
+        XCTAssertGreaterThanOrEqual(parked, belief,
+            "the climb never used its headroom over the belief")
+        XCTAssertGreaterThanOrEqual(estimator.stats.upshiftsDamped, 1,
+            "the damped-climb counter never fired")
+        XCTAssertEqual(estimator.stats.downshifts, 0,
+            "damping must come from the probe ceiling, not from falls")
+
+        print("HS-29 gate (damping): belief "
+            + "\(Int(belief) / 1_000) kbps, 50 Mbps cap — climb parked at "
+            + "\(Int(parked) / 1_000) kbps "
+            + "(\(estimator.stats.upshiftsDamped) damped rises, 0 falls)")
+    }
+
+    /// THE OSSIFICATION GUARD: the belief must still grow when the air
+    /// improves. Capacity step 20 → 45 Mbps: censored samples above the
+    /// belief RAISE it (invariant 1), each raise lifts the probe
+    /// ceiling, and the climb walks up geometrically — the standing
+    /// rate must reach ≥ 40 Mbps within a bounded window (upshift
+    /// ≤10%/s ⇒ 20 → 40 needs ~7.3 s; allow 12).
+    func testCapacityStepTheBeliefWalksUpUnderHeadroom() {
+        let estimator = makeEstimator {
+            $0.ceilingBitsPerSecond = 50_000_000
+            $0.initialRateBitsPerSecond = 20_000_000
+        }
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+
+        // The air steps to 45: from here every train drains at the
+        // pace we offer (self-limited against generous air), so each
+        // beat's sample tracks the risen rate and drags the belief up.
+        var beats = 0
+        while estimator.rateBitsPerSecond < 40_000_000, beats < 480 {
+            let paceMbps = Double(estimator.rateBitsPerSecond) / 1e6
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: min(paceMbps, 45),
+                            extraDelayMicros: 0, backlogBytes: 0)
+            beats += 1
+        }
+        XCTAssertGreaterThanOrEqual(estimator.rateBitsPerSecond, 40_000_000,
+            "the belief ossified: 12 virtual seconds of improved air "
+            + "never walked the rate up — headroom probing is dead")
+        XCTAssertLessThanOrEqual(beats, 480)
+        XCTAssertGreaterThanOrEqual(
+            estimator.capacityBeliefBitsPerSecond ?? 0, 36_000_000,
+            "the belief did not follow the walk up")
+
+        print("HS-29 gate (capacity step): 20 → 45 Mbps air — rate "
+            + "reached \(estimator.rateBitsPerSecond / 1_000) kbps in "
+            + "\(beats) beats (\(Double(beats) * 0.025) s), belief "
+            + "\((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) kbps")
+    }
+
+    /// The headroom knob is honored: factor 1.5 parks the climb at
+    /// belief × 1.5 instead of the default 1.1.
+    func testProbeHeadroomKnobHonored() {
+        let estimator = makeEstimator {
+            $0.ceilingBitsPerSecond = 50_000_000
+            $0.initialRateBitsPerSecond = 20_000_000
+            $0.probeHeadroomFactor = 1.5
+        }
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        for _ in 0..<400 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        let belief = Double(estimator.capacityBeliefBitsPerSecond ?? 0)
+        let parked = Double(estimator.rateBitsPerSecond)
+        XCTAssertLessThanOrEqual(parked, belief * 1.5 + 0.1e6)
+        XCTAssertGreaterThanOrEqual(parked, belief * 1.3,
+            "factor 1.5 should park the climb well past the 1.1 default")
+
+        print("HS-29 gate (knob): factor 1.5 parked the climb at "
+            + "\(Int(parked) / 1_000) kbps over a "
+            + "\(Int(belief) / 1_000) kbps belief")
+    }
 }
 
 private func XCTAssertEqual(

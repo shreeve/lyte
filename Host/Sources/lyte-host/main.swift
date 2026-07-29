@@ -1879,7 +1879,8 @@ func run() throws {
         \(wire.estimatorStats.selfReferenceHolds) self-ref holds, \
         \(wire.estimatorStats.stallHolds) stall holds, \
         \(wire.estimatorStats.fallDeferrals) dwell deferrals), \
-        \(wire.estimatorStats.upshifts) upshifts, \
+        \(wire.estimatorStats.upshifts) upshifts \
+        (\(wire.estimatorStats.upshiftsDamped) probe-damped), \
         \(s.rateChanges) pacer moves; frameByteCeiling@\(opts.fps)fps \
         \(wire.frameByteCeiling(fps: Int(opts.fps))) B
         encoder-vbv: \(wire.vbvDirectivesIssued) directives, \

@@ -291,6 +291,15 @@ public struct RateEstimatorConfig: Sendable {
     public var downshiftMinIntervalNS: UInt64
     /// Upshift budget per second toward the ceiling (≤10%/s).
     public var upshiftPerSecond: Double
+    /// HS-29: the climb's headroom over the capacity belief. The probe
+    /// ceiling is min(configured ceiling, belief × this) — the climb may
+    /// probe ABOVE the belief (that is how the belief grows: honest
+    /// samples above it raise it, invariant 1), but it stops repeatedly
+    /// slamming a wall the belief already located (row ³'s shared cause:
+    /// a 50 Mbps recipe cap over ~45 Mbps air bought 102 lost datagrams
+    /// and the residual IDR spend). Must exceed 1.0 or the belief could
+    /// never grow past itself.
+    public var probeHeadroomFactor: Double
     /// No upshift this long after a downshift (queue drain time).
     public var upshiftHoldAfterDownshiftNS: UInt64
     /// Delivery evidence must be at most this old for the rate to rise
@@ -333,6 +342,7 @@ public struct RateEstimatorConfig: Sendable {
         downshiftFactor: Double = 0.85,
         downshiftMinIntervalNS: UInt64 = 500_000_000,
         upshiftPerSecond: Double = 0.10,
+        probeHeadroomFactor: Double = 1.10,
         upshiftHoldAfterDownshiftNS: UInt64 = 1_000_000_000,
         upshiftEvidenceWindowNS: UInt64 = 2_000_000_000,
         recoveryWindowNS: UInt64 = 25_000_000,
@@ -370,7 +380,9 @@ public struct RateEstimatorConfig: Sendable {
         self.regimeStepDownHoldNS = regimeStepDownHoldNS
         self.downshiftFactor = downshiftFactor
         self.downshiftMinIntervalNS = downshiftMinIntervalNS
+        precondition(probeHeadroomFactor > 1.0)
         self.upshiftPerSecond = upshiftPerSecond
+        self.probeHeadroomFactor = probeHeadroomFactor
         self.upshiftHoldAfterDownshiftNS = upshiftHoldAfterDownshiftNS
         self.upshiftEvidenceWindowNS = upshiftEvidenceWindowNS
         self.recoveryWindowNS = recoveryWindowNS
@@ -419,6 +431,10 @@ public struct RateEstimatorStats: Equatable, Sendable {
     public var deliverySamples = 0
     public var downshifts = 0
     public var upshifts = 0
+    /// HS-29: climbs the probe ceiling bounded — the rise wanted to go
+    /// past belief × headroom and was capped there instead of probing
+    /// on toward a configured cap the belief says the air cannot honor.
+    public var upshiftsDamped = 0
     public var overuseVerdicts = 0
     /// HS-22c: overuse falls the self-reference gate refused — the
     /// evidence measured our own pacing and nothing corroborated a
@@ -1364,8 +1380,17 @@ public final class RateEstimator {
 
         // Rise only on evidence: fresh delivery samples, loss below
         // the CLEAN band (2–10% holds — FEC's band), no active
-        // hold-down, headroom to the ceiling.
-        guard rateBitsPerSecond < config.ceilingBitsPerSecond,
+        // hold-down, headroom to the PROBE ceiling — the configured
+        // ceiling damped by the capacity belief (HS-29). The climb may
+        // probe above the belief (honest samples above it raise it, so
+        // the belief walks up geometrically when the air improves); it
+        // may not keep slamming a wall the belief already located.
+        let probeCeiling = beliefBits.map {
+            min(config.ceilingBitsPerSecond,
+                max(config.floorBitsPerSecond,
+                    Int($0 * config.probeHeadroomFactor)))
+        } ?? config.ceilingBitsPerSecond
+        guard rateBitsPerSecond < probeCeiling,
               !overuse, lossFraction < config.lossCleanThreshold,
               postFecLossFraction <= config.postFecCleanThreshold,
               let deliveredAt = lastDeliveryAt,
@@ -1380,9 +1405,11 @@ public final class RateEstimator {
         let elapsedSeconds = Double(now &- lastAdjustAt) / 1e9
         guard elapsedSeconds > 0 else { return nil }
         let factor = 1 + config.upshiftPerSecond * min(elapsedSeconds, 1)
-        rateBitsPerSecond = clamp(
-            Int(Double(rateBitsPerSecond) * factor)
-        )
+        let wanted = Int(Double(rateBitsPerSecond) * factor)
+        if wanted > probeCeiling, probeCeiling < config.ceilingBitsPerSecond {
+            stats.upshiftsDamped += 1
+        }
+        rateBitsPerSecond = clamp(min(wanted, probeCeiling))
         lastAdjustAt = now
         stats.upshifts += 1
         return .evidence
