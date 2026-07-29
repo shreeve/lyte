@@ -1,9 +1,12 @@
 # LYTE-PLAN — The Overall Strategy
 
 *The one linear plan: what Lyte is becoming, why we're building both ends in
-Swift, and the order we get there. This is the strategy document; the client
-implementation blueprint lives in [PLAN.md](PLAN.md) and product decisions in
-[docs/DESIGN.md](docs/DESIGN.md).*
+Swift, and the order we get there. This is the strategy document; the living
+build plan is [docs/20260720-222500-lyte-build-plan.md](docs/20260720-222500-lyte-build-plan.md)
+(with its client/host companions) and product decisions live in
+[docs/DESIGN.md](docs/DESIGN.md). The GameStream-era client blueprint this
+header once pointed at is archived as
+[docs/20260722-gamestream-client-plan-historical.md](docs/20260722-gamestream-client-plan-historical.md).*
 
 ---
 
