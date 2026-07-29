@@ -78,22 +78,24 @@ stalled >15 min with no live work. If you start a fresh chat, that loop's
 shell does NOT survive — re-arm it if the owner still wants the 5-min
 cadence, and don't leave a duplicate running.
 
-**IMMEDIATE RESUME POINT: V-1 IS LANDED (`e232d61` + the probe report
-`docs/20260729-002000-lyte-v1-rext-probe.md`) — headline: Rext opens on
-all three paths, gbrp wins text +16.0 dB at 34% fewer bits with a TRUE
-identity-full VUI, every path holds 60 fps (gbrp worst at 99 incl. its
-4.4 ms repack), and 20/30 natural text IDRs exceed the 223,380 B FEC
-ceiling (decision-3's number). V-2's 11 bitstreams wait at
-`pup:~/rext-probe/keep/`.** Next: **V-2** (Mac VideoToolbox Rext decode
-probe, root territory) — its make-or-break is whether the production
-render path hardware-decodes and renders identity-matrix GBR full-range
-correctly; the probe report carries V-2's co-sign slot. Then: (a) the
-four H4 §0 owner decisions with V-1+V-2 data on the table; (b) the
-bar's two red rows as Host/ slices — the **session-pipeline fps
-ceiling (~48/s ingest under load)** hunt and the **estimator ramp's IDR
-spend**; (c) the owner's p4 quality eyeball (41151 live and waiting).
-Farther out: J-G4a + the P-track; browser-viewer B-2+ still waits on
-the owner's QUIC posture decision.
+**IMMEDIATE RESUME POINT: WAVE 0 IS COMPLETE — V-1 (`e232d61`) AND V-2
+(`3f94a0f` + co-sign `8fa44a2`) both landed; the joint conversion-path
+ruling is written into `docs/20260729-002000-lyte-v1-rext-probe.md`.
+V-2's headline: the M5 hardware-decodes every Rext 4:4:4 path with
+bit-exact planes and no chroma downsample decoder→glass, but the
+production render path mis-maps identity/GBR as bt601-full (structural
+— CoreVideo has no identity matrix vocabulary), so **gbrp is OUT**;
+601-limited and 709-full both render CORRECT at the glass — the race
+is now host-conversion vs rgb_mode.** Next: (a) the four H4 §0 owner
+decisions — V-1+V-2 data is ALL on the table now (decision 2 is a
+two-horse race, decision 3 has its ceiling books); (b) V-3 (the §7
+corpus harness — its client half, the readback tap + decode-probe,
+already exists at `3f94a0f`) banks the 4:2:0 baseline; (c) the bar's
+two red rows as Host/ slices — the **session-pipeline fps ceiling
+(~48/s ingest under load)** hunt and the **estimator ramp's IDR
+spend**; (d) the owner's p4 quality eyeball (41151 live and waiting).
+Farther out: V-4/V-5 (blocked on decisions 1–3), J-G4a + the P-track;
+browser-viewer B-2+ still waits on the owner's QUIC posture decision.
 
 # RESTARTING WORKERS IN A NEW CHAT (read before resuming)
 
@@ -3104,6 +3106,68 @@ its entry at the marker at the end of this block.*
   repack wants SIMD before anyone calls 4.4 ms/frame a cost; (iii)
   the IDR-books method (--idr-every + --sizes) is reusable for any
   future ceiling question.
+
+- **V-2 — the glass takes the stand; gbrp dies at the render, not the
+  decode** (`3f94a0f` code + `8fa44a2` report co-sign, root): H4 wave
+  0's Mac VideoToolbox Rext probe — all 11 V-1 bitstreams through the
+  EXACT production construction (AnnexBAccessUnits → DecodeUnit →
+  VideoRenderFactory → CMSampleBuffer) on the M5, offline, no host
+  contact. Verdict table + joint ruling co-signed into
+  **`docs/20260729-002000-lyte-v1-rext-probe.md`** (V-1's slot).
+  THE INSTRUMENT (committed, deliberately not throwaway — the §7
+  harness's client half per the plan): `VideoReadbackTap`
+  (VTDecompressionSession fed the same factory samples; hardware
+  engagement read from the LIVE session property; native/BGRA
+  readback), `AnnexBAccessUnits` (file → frame-shaped units, gated in
+  the suite), `lyte-cli decode-probe` (plane dumps for offline
+  referees + a real AVSampleBufferDisplayLayer window screenshotted
+  for glass truth; `--window-scale 0.5` puts video texels 1:1 with
+  Retina device pixels — the resample-free glass measurement).
+  THE VERDICTS:
+  • **Everything hardware-decodes** — 11/11 streams, zero failures,
+    session property asserts hardware; `--require-hardware` (the
+    VT *Require* spec) also opens on Rext 4:4:4. Moonlight's #1852
+    software-fallback failure mode does not exist on this fleet.
+  • **Bit-exact planes, no chroma downsample decoder→glass** — VT's
+    4:4:4 output planes are byte-identical to ffmpeg software decode
+    on all three paths (gbrp's coded G/B/R planes come back untouched
+    in the Y/Cb/Cr slots); at the glass the desk corpus matches
+    full-chroma truth at 39.9 dB, ABOVE the 38.0 dB separation from a
+    simulated chroma-halved hypothesis — the compositor samples full
+    chroma. Buffers: '444f'/'444v' biplanar full-res 4:4:4 (nv24
+    layout) vs today's '420v' NV12.
+  • **THE MAKE-OR-BREAK, negative: identity/GBR full-range renders
+    WRONG through the production path.** Both VT's own RGB converter
+    and the display-layer composite read matrix-0 as **bt601-full**
+    (range honored, matrix ignored) — candidate sweep crowns 601-full
+    by ~30 dB over identity on both instruments; bars render as
+    green/magenta garbage. Structural, not a bug to file: CoreVideo
+    has NO identity/GBR YCbCrMatrix vocabulary (our matrix surfaces
+    as ABSENT + fullRange 1 — the fingerprint V-5's VUI assert should
+    key on), so nothing can be tagged; honoring gbrp would mean a
+    custom Metal view instead of AVSampleBufferDisplayLayer.
+  • **The alternates render CORRECT at the glass, asserted** —
+    rgbmode wins as bt601-limited (46.1 dB) and conv as bt709-full
+    (47.7 dB), 17+ dB over runners-up on both instruments (glass
+    numbers carry the Display-P3 round-trip noise floor; readback
+    equivalents 51+ dB).
+  THE JOINT RULING (owner decision 2, co-signed in the report):
+  **gbrp is OUT** — encode king, render corpse. The race is
+  host-conversion (709-full, the leaf's build cost, fastest encode
+  measured) vs rgb_mode (601-limited, free today); both roads paved
+  and priced, the owner picks.
+  Suites: root **167/167** Mac at `3f94a0f` (the AU-splitter gate is
+  new; wire/host untouched). HYGIENE: zero host contact (bitstreams
+  scp'd read-only; pup's 41151 loop untouched), no Lyte processes
+  disturbed, probe windows opened/closed on the Mac only. Evidence in
+  /tmp (scratch, disposable): glass PNGs + scripts under
+  `/tmp/v2-work/`, bitstreams at `/tmp/v2-bitstreams/`.
+  NAMED FOR THE NEXT RUNG: (i) V-3's client half exists — feed the
+  harness corpus through `decode-probe --dump` and the readback tap;
+  (ii) V-4 signs VUI per the ruling (709-full if the leaf, 601-limited
+  if rgb_mode) — both proven client-clean; (iii) V-5's decoder→layer
+  audit should assert '444v'/'444f' (by negotiated mode) at the tap
+  and treat matrix-ABSENT as the identity fingerprint, never a default.
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
