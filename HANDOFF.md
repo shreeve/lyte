@@ -126,15 +126,20 @@ V-2 data on the table).** All four are settled:
 4. **J-G4 = 4:4:4 core + P-1 (clipboard v2) only**; P-2/P-3 stay
    pre-declared droppable to H5.
 
-**IMMEDIATE RESUME POINT: V-3 LANDED (`9bac47b` root + `c0129dc` Host
-+ `f0d785b` report — wave entry below; harness standing, 4:2:0
-baseline banked, first 4:4:4 read +20–22 dB on text AT FEWER BITS;
-two honest Work-gate FAILs both trace to the cq12 floor). V-4 is next
-(host Best-mode 4:4:4, Host/): productionize the rgb_mode encode leg,
-give Work its own ratchet floor (the one knob — harness rerun per
-candidate is one command), rerun `corpus-harness.sh 444` as its gate.
-Then V-5 (the client's three-tier Chroma control on the strip,
-root).** Also open: (a) the bar's two red rows as Host/ slices — the
+**IMMEDIATE RESUME POINT: V-4 LANDED (`60dac56` Host code +
+`653f8b1` harness/goldens — wave entry below). The host now SERVES
+Best: agreed [444] singleton → Rext rgb_mode 601-limited session at
+the Best floor cq4 (the race's knee: text +3.6…+3.9 dB over cq12 at
+~zero steady cost), declaration gated on a startup Rext self-probe,
+grandfathered peers ride 4:2:0 after a 2 s hold, and every capped
+IDR fits the 223,380 B ceiling (549→194 KB worst text, deltas
+clear, ratchet heals in ≤47 fr). Suites Host **186/186 Mac AND
+pup**. ONE OWNER DECISION SURFACED: the ≥50 dB text bar and ±2
+gratings bar are UNREACHABLE on the 601-limited path at ANY floor
+(caps ~46–47 dB / ±3–4 at transparent coding — the conversion, not
+bits); those two gates stay honest FAILs pending a bar-vs-path
+ruling. V-5 is next (the client's three-tier Chroma control +
+auto-re-dial-at-420, root); then J-G4a's live negotiated run.** Also open: (a) the bar's two red rows as Host/ slices — the
 **session-pipeline fps ceiling (~48/s ingest under load)** hunt and
 the **estimator ramp's IDR spend**; (b) the owner's p4 quality eyeball
 (41151 loop RESTARTED 03:29 — it was a finite 60-run loop that
@@ -3274,6 +3279,78 @@ its entry at the marker at the end of this block.*
   (ii) the Work-mode cq/qmin floor decision wants the harness rerun
   per candidate (one command); (iii) J-G4a publishes the live delta
   table next to this offline one.
+
+- **V-4 — the host serves Best for real: the [444] singleton opens a
+  Rext session at its own cq4 floor, every IDR fits the ceiling, and
+  the two remaining reds are the CONVERSION'S, not the floor's**
+  (`60dac56` Host code + `653f8b1` harness floors/goldens; Host-only,
+  not pushed). The production path, not probe machinery:
+  THE MECHANICS (owner decision 1, declaration-as-choice):
+  `EncoderRecipe` grows the chroma split (profile / rgb_mode /
+  ratchetFloorQP) and pins **`best444` = p4/ull/qres + rext/yuv444 +
+  floor cq4**; `ChromaPosture` (HostWire) maps EXACTLY the agreed
+  `[yuv444]` singleton to the Best encoder — a [420] singleton, a
+  nonconforming both-declarer, and the never-declaring grandfathered
+  peer all ride the shipped 4:2:0 path (multi-mode is not a choice).
+  The host's declaration is gated on a startup **Rext self-probe**
+  (opens+frees a tiny 4:4:4 encoder): a box that can't do it never
+  claims it, so `noCommonChromaMode` (the typed teardown V-5's
+  re-dial keys on) only ever means what it says. The sink holds
+  frames ≤2 s awaiting the agreement instead of opening a posture
+  the client didn't pick; operator `--enc-*` overrides ride into a
+  444 session unchanged (`chroma444()` moves only the chroma knobs).
+  VUI stays truthfully 601-limited per V-1/V-2.
+  THE FLOOR RACE (cq12/8/4/1, one harness command each): **cq4 is
+  the knee** — pooled text-converged 41.7–44.3 → **45.6–47.1 dB**
+  (+3.6…+3.9 over the shipped cq12), gratings ±5 → ±4, SSIM ≥0.9996;
+  cq1 buys ≤+0.2 dB more on two corpora and LOSES 0.46 dB on
+  text-200. COST: ~zero steady-state (keepalives 95→98 B, converged
+  all-skip either way, offline capacity ~145 fps at both floors);
+  natural text IDRs grow 480→549 KB — which the ceiling eats, see
+  below. Convergence cv35–47, well under the 180-frame bar.
+  THE STOP-CLAUSE EVIDENCE (owner decision needed, NOT forced): the
+  ≥50 dB text-converged bar and the ≤±2 gratings bar are
+  **unreachable on this path at ANY floor** — at transparent coding
+  (cq1) text caps at ~46–47 dB and gratings at ±3–4 codes; the
+  residual is the 601-limited YCbCr round trip (8-bit limited-range
+  quantization), not bits. The harness leg comment says so; the two
+  gates stay HONEST FAILs pending the owner's bar-vs-path ruling
+  (options: recalibrate the bars to the conversion's floor, or queue
+  the named full-range/identity-matrix path as the road to ≥50).
+  Every other 444 Work gate PASSES at cq4.
+  THE CEILING VERDICT (decision 3 holds): `lyte-encode-check` grew
+  `--vbv-cap-bytes` (the HS-25 guard offline); under the 223,380 B
+  cap the natural 549/453/293 KB text IDRs squeeze to **194/193/168
+  KB — zero frames over the ceiling anywhere in any walk, deltas
+  clear** (max 174–185 KB immediately post-IDR, 97–98 B steady), no
+  crash, and the ratchet heals the squeezed opener to IDENTICAL
+  converged quality within 47 frames. The session-side guard itself
+  is chroma-agnostic (imposed at encoder-open in session mode).
+  ACCEPTANCE: `corpus-harness.sh` now carries per-tier floors (420
+  rides cq12, 444 rides cq4; CQ= overrides both for A/B). Full
+  both-legs run at HEAD banked; **444 text goldens INTENTIONALLY
+  rewritten** (the floor moved the pixels — said in `653f8b1`), 420
+  goldens byte-identical on the same run (determinism check), and a
+  GOLDEN=check confirm pass reproduced all three new 444 goldens
+  clean. Suites: Host 180 → **186/186 Mac AND pup** (recipe pins,
+  posture-map pins, three negotiation gates through the real session
+  machine). Rails held: offline encode legs only (no wire, no
+  session), owner's 41151 loop untouched (pid 505593 alive after),
+  secrets' mtimes all predate the slice (key Jul 21, paired Jul 22,
+  portal_token Jul 28 23:41), pup scratch (`~/v4-ceiling`) removed.
+  ANOMALY (mine, fixed in-slice): the KnobError switch in lyte-host's
+  CLI seam is Linux-only code — the new enum cases broke the pup
+  build until made exhaustive; Mac's green suite never sees that
+  target. Worth remembering: any KnobError growth needs a pup build
+  before it's real.
+  NAMED FOR THE NEXT RUNG: (i) V-5 (root) builds the three-tier
+  Chroma control and the auto-re-dial-at-420 on
+  `noCommonChromaMode`; (ii) the owner rules on the two
+  conversion-floored bars (recalibrate vs full-range road); (iii)
+  J-G4a runs the negotiated 4:4:4 session live end-to-end and
+  publishes the delta table; (iv) the 2 s chroma hold is untested
+  against a real pre-W7 client — J-G4a should watch the
+  "grandfathered peer" print.
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
