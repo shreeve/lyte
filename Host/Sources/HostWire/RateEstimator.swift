@@ -1148,16 +1148,18 @@ public final class RateEstimator {
                 }
                 // Delivery above the belief is always honest news —
                 // censored samples may RAISE it, never lower it.
-                // HS-30: a COMPRESSED drain's instantaneous rate is a
-                // queue emptying, not a sustainable throughput — it
-                // proves the path carried our PACE through the hole,
-                // no more (row ⁴: drain-raised beliefs of 207 Mbps to
-                // 1.18 Gbps on ~45 Mbps air neutered the probe
-                // ceiling — 2 damped rises in 2,686 upshifts). A drain
-                // raises the belief at most to the pace it drained
-                // behind; every other sample raises to its own rate.
-                let sustainable = rate >= pace * config.stallBurstRateFactor
-                    ? min(rate, pace) : rate
+                // HS-30: capped at the PACE the train was sent behind.
+                // ANY arrival faster than we sent is queue compression
+                // — packets accumulated somewhere and were released
+                // together — so a super-pace reading proves the path
+                // carried our pace, not that the air offers the burst
+                // rate. Row ⁴ measured the uncapped version: beliefs
+                // of 207 Mbps–1.18 Gbps on ~45 Mbps air neutered the
+                // probe ceiling (2 damped rises in 2,686 upshifts);
+                // the first drains-only cap still leaked via samples
+                // at 1.0–1.25× pace under the drain threshold (row ⁵'s
+                // belief 61 Mbps over a 50 Mbps cap).
+                let sustainable = min(rate, pace)
                 if beliefBits.map({ sustainable > $0 }) ?? true {
                     beliefBits = sustainable
                     stats.beliefRaises += 1
