@@ -3499,6 +3499,79 @@ its entry at the marker at the end of this block.*
   (iii) `~/lyte-loop.sh` is still a finite 60-run loop — the standing
   "consider `while true`" note stands.
 
+- **The IDR hunt — Q-1's last red row (IDR 3.9/min, bar ≤1) is
+  ROOT-CAUSED with cause-tagged books and FIXED with the dwell
+  deferral** (`5ea92ba` the books, `c2b58f1` the fix; Host/ only, not
+  pushed).
+  THE BOOKS (5ea92ba): `Session.takeFreshKeyframeDemand()` returns a
+  typed OptionSet naming every keyframe source (path-promotion /
+  client-request / wake / recovery / stale-nack / unprotectable; the
+  stale-NACK latch split from the client 0x10 latch so they stop
+  aliasing — behavior identical, the Bool poll delegates); the sink
+  tags each emitted IDR (`idr:` line per event, `idr-books:` tally +
+  IDR/min in the final stats) with the demand's names, "opening",
+  "spontaneous", or the VBV reconfigure that forced it
+  (vbv-tighten / vbv-rung / vbv-restore — every avcodec rc delta is a
+  hidden NVENC reset + forced IDR, verified in FFmpeg 8.0 nvenc.c).
+  The estimator records `OveruseFallForensics` at each fall and the
+  `rate: ↓` line prints it (anchor, streak start/now/peak, backlog,
+  freshest full train + age, loss posture) — the why-neither-gate-held
+  post-mortem, inline.
+  THE ROOT CAUSE (books, not vibes): the overuse verdict fires
+  MID-dwell — ~60–80 ms into the hole's sub-pace trickle (the live
+  forensics' "full-train 36 Mbps, 0 ms old" is the depressed trickle,
+  not the drain) — but the compressed super-rate drain that lets
+  HS-23's stall gate hold can only arrive on a report AFTER the hole
+  closes. The verdict structurally beat the evidence on EVERY dwell;
+  each fall then spent a vbv-tighten + vbv-rung/restore IDR pair
+  (HS-22c's rungs coalesce the climb fine — the cost was the fall
+  itself). Q-1's 3.9/min ≈ 2 IDRs × dwell rate.
+  THE FIX (c2b58f1, RateEstimator only): a fall whose evidence is
+  dwell-SHAPED — streak peak ≤ the 150 ms stall ceiling, loss clean,
+  post-FEC clean, i.e. everything the stall gate wants except the
+  drain — DEFERS report by report for at most the ceiling's own span
+  (a dwell is by definition no longer). Drain arrives → stall hold as
+  designed; shape sours (peak past ceiling, loss) → deferral aborts at
+  once; budget expires → the fall proceeds ≤150 ms late (inside the
+  500 ms fall limiter's granularity). Rises stay blocked throughout.
+  New stat `fallDeferrals`, printed in the estimator books line.
+  EVIDENCE (pup, 41183–41191 `--no-advertise`, windowed testsrc2,
+  headless hs16-probe chirp-off; dwells induced with a tbf pulse
+  scoped to the probe's bind port 41284 — 25 Mbit trickle 120 ms +
+  100 Mbit drain 150 ms, ten per leg, ZERO loss; netem delay pulses
+  were tried first and discarded: constant delay time-shifts without
+  compressing, and its release REORDERS → fake loss falls):
+  **before 22 IDRs = 7.42/min (10 tighten + 10 rung); after 1 IDR =
+  0.34/min (the opening alone — 15 overuse verdicts, 14 deferrals,
+  0 falls, rate never moved)**. Clean-loopback control: 0.41/min
+  (opening only) both ends. Honesty leg (600 ms sustained 25 Mbit
+  squeezes, inflation past the ceiling): **all five fell** ~150 ms
+  late, anchored to measured delivery as ever — the deferral does not
+  mask genuine squeezes (also pinned in the suite: every fall test
+  rides out the budget; new headline pin
+  `testFirstDwellFallDeferredUntilTheDrainTestifies`).
+  Logs kept: pup `/tmp/idrhunt-{baseline,weather,dwell3-before,
+  dwell3-after2,honesty}-{host,probe}.log` (dwell/dwell2/fixed legs =
+  methodology dead-ends, kept for the netem-artifact record).
+  Suites: Host 187 → **188/188 Mac AND pup**.
+  RAILS: three secrets sha-identical at close against the pinned trio
+  (dadf9a66…37cf / 72860390…cfed / 8dc1f88a…55fd); tbf/prio qdisc
+  removed (lo back to noqueue); ffplay + all test hosts/probes dead;
+  the owner's 41151 loop UNTOUCHED and alive at close (it relaunched
+  mid-session per its own cadence and now runs the fixed build — the
+  HS-26 precedent).
+  NAMED FOR THE NEXT RUNG: (i) the beauty-bar IDR row should be
+  re-measured against the REAL Wi-Fi weather (the owner's glass, Q-1
+  methodology) — the tbf trickle-dwell is this worker's best synthetic
+  of the study's dwells, not the weather itself; (ii) a GENUINE
+  squeeze still costs 3 IDRs (tighten + rung + restore) because every
+  nvenc rc delta forces an IDR — the structural remainder, named as a
+  possible slice: an intra-refresh or non-IDR reconfigure path in the
+  encode leaf; (iii) the baseline leg's `throttled 1364` at the
+  50 Mbps recipe tripped HS-26's tripwire (frames p50 ~90 KB ≈ 43 Mbps
+  vs 50 Mbps pacer — steady-state saturation headroom, not a stall);
+  worth an eye on the next fps leg.
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
