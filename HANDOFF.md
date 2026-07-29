@@ -3572,6 +3572,87 @@ its entry at the marker at the end of this block.*
   vs 50 Mbps pacer — steady-state saturation headroom, not a stall);
   worth an eye on the next fps leg.
 
+- **P-1 — the clipboard learns pictures: clipboard v2 lands whole,
+  images ride chan 8 as marked cargo behind a Text + images consent
+  rung** (`69cf895` Wire / `c4fae97` Host / `85571e2` root; none
+  pushed). J-G4's second required half (owner decision 4) is CODE-
+  AND-GATES DONE; the live NSPasteboard↔Mutter leg waits on J-G4a.
+  ⚠️ WIRE WAS TOUCHED — a frozen-contract APPEND, per the P-1 plan
+  row's allowance: capability key 12 (`clipboardImages`, dialect on
+  the W7 spine like 9–11) and CTRL **0x22 ClipboardImageCargo**
+  (transferId + mime), plus NEW vector file
+  `clipboard-images-v1.json` (cargo codec nominal/boundary/reject +
+  the key-12 spine bytes, anchored by ClipboardImageVectorFileTests).
+  NO existing vector file moved — verified by suite AND git status.
+  THE DESIGN (the H3 F-6 sketch inherited): an image copy rides
+  F-2's bulk engines as memory-backed cargo on chan 8's ordered
+  stream, the 0x22 marker travelling immediately BEFORE its
+  transfer's BulkOffer — ordered carriage makes the marker race-free,
+  so the receiver always knows a transferId is clipboard cargo (and
+  its mime) before the offer could reach the file machinery.
+  `ClipboardImageChannel` (Wire, sans-IO, BOTH session cores embed
+  the identical type) owns the lane: marker handshake, the 32 MiB
+  ceiling (local over-ceiling suppresses unsent; over-ceiling OFFERS
+  draw abort(declined)), PNG-only mime in v2 (a foreign mime — say a
+  v3 peer's JPEG XL — answers abort(declined) and the trailing offer
+  is SWALLOWED, never leaked to the file lane), latest-wins lane
+  occupancy (one transfer per direction; a superseded copy drops as
+  sendBusy — clipboards are latest-wins by nature), and byte-keyed
+  `ClipboardSyncBook` entries (image key = 0xFF‖sha256; 0xFF is never
+  valid UTF-8 so the key spaces cannot collide) — ONE book per end
+  suppresses text AND image echoes cross-modally.
+  THE GATE IS 10∧12 AND NEVER 11 (the negotiation story): key 12
+  is dialect and both clients always declare it; the HOST declares
+  only under `--clipboard=images` (truthfulness — a text-only host
+  never speaks it and v2 clients degrade to v1 against it with zero
+  ceremony); images move only when 10 AND 12 both survived. Key 11
+  (file-drop consent) is deliberately NOT in the gate — the consent
+  tiers do not couple: a no-files host still syncs images, and each
+  chan-8 lane wears its OWN rule-3 gate (unnegotiated 0x22 drops
+  loud on a files-open channel; a bare file offer drops loud on an
+  images-only one — both directions pinned both ends). The chan-8
+  ARQ endpoint now arms on EITHER key.
+  THE CONSENT TIER (LYTE-PLAN §8, Off / Text only / Text + images):
+  host = `--clipboard` vs `--clipboard=images`; client = the images
+  rung ON TOP of CL-15's text consent (per-host default on
+  `PinnedHost.shareClipboardImages`, live strip photo-glyph +
+  Actions-menu toggles, all gated on 10∧12 existing). One deliberate
+  asymmetry from text: an unwelcome inbound marker draws a TYPED
+  abort(declined) instead of text's silent deafness — the image
+  sender waits on a digest verdict, so silence would leak nothing
+  but strand the lane. PasteboardSync reads image flavors ONLY while
+  the rung consents (public.png verbatim, TIFF transcoded through
+  NSBitmapImageRep when the copying app never promised PNG) and
+  writes applies as PNG + a TIFF rendition; the Mutter leaf mirrors
+  it (portal read flavors behind `imagesEnabled`, PNG apply, owned-
+  content serve). `wire-view --clipboard-images` is the J-G4a leg's
+  harness surface.
+  ACCEPTANCE (all unit/in-vivo sans-IO — the v1 CL-15 pattern; no
+  live host processes were run): Wire 450 → **475/475 Mac AND pup**
+  (codec + spine + channel loopback/refusal/violation + the vector
+  anchor), Host 188 → **192/192 Mac AND pup** (4 gate legs: 10∧12
+  negotiation sans key 11 + text-only degrade; both directions
+  byte-exact through the sealed stack with both boomerang proofs;
+  per-lane rule-3 drops; foreign-mime decline + offer swallow), root
+  188 → **193/193 Mac** (5 legs: key-12 spine + default declaration;
+  both directions + echoes through the REAL core against a stand-in
+  running the production channel; tier off = typed decline, live
+  toggle opens; per-lane rule 3 + ceilings incl. suppressedBusy;
+  pinned-store plumbing incl. legacy decode + re-pair survival).
+  RAILS: owner's 41151 loop untouched (no live legs at all this
+  slice); three secrets sha-identical against the pinned trio
+  (dadf9a66…37cf / 72860390…cfed / 8dc1f88a…55fd); no test hosts,
+  no netem, no scratch.
+  NAMED FOR J-G4a: (i) the LIVE leg — a real screenshot copied on
+  pup landing on the Mac pasteboard and a Mac image copy landing in
+  pup's clipboard, both under `--clipboard=images` + the client rung
+  ON (the unit gates prove the whole wire path; the leaf↔OS edges
+  want eyeballs); (ii) the strip's photo toggle + menu items are
+  compiled-and-reviewed only (the V-5 Keychain wall stands);
+  (iii) the portal clipboard's image-flavor serve on pup has never
+  run against a REAL `wl-copy`/GNOME screenshot — first J-G4a
+  minutes should confirm the mime list Mutter actually offers.
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
