@@ -129,3 +129,53 @@ an executing fall — new, evidence-backed, unsized.
    estimator-adjacent work.
 Dropped: backlog-gate tightening (measured ~0 gain); cap-raise to
 60 Mbps (unassessed, expected ~nil at 59.7 dB motion).
+
+---
+
+# Addendum — independent consult (gpt-5.6-sol via rip-ai, 2026-07-29 ~16:15)
+
+An external model reviewed the five verdicts on the four judgment
+questions (ranking, A2 route, WAKE-lite safety, repair-lane design).
+Agreements and CORRECTIONS adopted:
+
+**Two framing errors caught (motivated reasoning, conceded):**
+1. "The repair-lane fix stops IDR churn" — WRONG as written: aligning
+   the client's patience to a dead lane reaches the IDR path SOONER;
+   only the 250 ms dead wait is saved. The honest fix makes the lane
+   WORK: **widen the HOST freeze budget** (~1.5× feedback cadence as
+   the first experiment, derived not constant), add an EXPLICIT
+   repair-refused/expired signal so the client never blind-waits
+   (⚠️ wire touch — contract-safe append or wire-v2 batch), THEN
+   derive the client deadline from the advertised budget + RTT.
+   Opening-IDR exemption bounded by age/bytes/attempts.
+2. "Wrapper byte-identical ⇒ measured truths unchanged" (A2) —
+   INVALID: the changed transition semantics are exactly what must be
+   revalidated. The static-recipe truths ride; the reconfigure-
+   adjacent behavior (reference continuity across no-reset rate
+   moves, under loss) is new surface. Also flagged: DYN_BITRATE cap
+   does not prove every field combo (VBV size, multipass, AQ);
+   check whether anything client-side implicitly leans on the forced
+   IDR as a sync boundary; carry-costs (security tracking, rebase,
+   dual-libav symbol risk) acknowledged. A2 still the right route.
+
+**Ranking adjusted (consult + concessions):**
+1. **Audio trio** — but the pacer fix reshaped: a 5 Mbps
+   serialization floor under a 500 kbps verdict converts delay into
+   bursts at the bottleneck; prefer the audio-reservation /
+   bounded-preemption shape (exempt audio bytes from the shared
+   bucket — strict priority already caps its volume). signalDrain +
+   declick unchanged.
+2. **Repair lane** — as the coordinated host+client fix above, not
+   the client-only patience cut.
+3. **Non-IDR reconfigure A2** — unchanged route, honester validation
+   scope (reconfigure-adjacent truths re-measured, not assumed).
+4. **Fall-repricing** — promoted above WAKE-lite: fund a bounded
+   design/prototype (80–895 ms stale queues are severe and the purge
+   helps multiple transitions).
+5. **WAKE-lite** — demoted: weakest safety argument. Consult's
+   failure catalog adopted into its future brief: ACK proves
+   transport, not decode/DPB retention; concealment divergence;
+   suspend/resume/decoder-reset during idle; epoch confusion across
+   the idle boundary; the escape hatch itself being lost or answered
+   with more P-frames. Required belts: decode-ack (not assembly-ack),
+   stream epochs, periodic timeout IDR.
