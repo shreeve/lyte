@@ -449,6 +449,11 @@ public struct SessionCounters: Equatable, Sendable {
     /// Video frames the lifecycle machine refused to put on the wire
     /// (FROZEN's freezeDatagramSends, or a closed session).
     public var videoFramesSuppressed = 0
+    /// HS-25: encoded frames too large for one protected FEC group
+    /// (the GF(2⁸) 255-shard block) — dropped with the keyframe latch
+    /// armed instead of thrown; one oversized frame must never kill
+    /// the session.
+    public var videoFramesUnprotectable = 0
     /// ModeTransitions emitted (HS-11's live evidence).
     public var modeTransitionsSent = 0
     /// Client input events delivered off the reliable stream (HS-13).
@@ -586,6 +591,10 @@ public final class Session {
     /// policy into a number and re-paced the wire the moment the
     /// machine demanded it (HS-16).
     private var machineIdrPacing: IdrPacing?
+    /// HS-25: an unprotectable frame was dropped at ingest — the next
+    /// encoder poll owes a fresh IDR (merged into
+    /// `takeFreshKeyframeRequest`) so the reference chain re-anchors.
+    private var unprotectableKeyframePending = false
     /// The converged ratchet frame awaiting its one-shot ride.
     private var convergedFrame:
         (annexB: [UInt8], frame: FrameNumber, captureMicros: UInt64)?
@@ -989,6 +998,24 @@ public final class Session {
             counters.videoFramesSuppressed += 1
             return 0
         }
+        // HS-25: a frame beyond what one FEC group can protect is
+        // UNSHIPPABLE (the 255-shard GF(2⁸) block; the fec field binds
+        // one group per frame number, so splitting is a wire-contract
+        // change, not an option here). Throwing killed the live session
+        // — the 279-shard IDR at the 50 Mbps/p4 recipe — so the frame
+        // is dropped instead: counted, its frame number unconsumed (the
+        // client sees no numbering gap), and a fresh IDR armed through
+        // the same coalesced latch client 0x10s pull, because whatever
+        // referenced the dropped frame must be re-anchored. The shell's
+        // opening VBV cap makes the re-encode fit by construction.
+        let ceiling = channel.maxProtectableFrameByteCount(
+            hasLastInputSeq: lastInputSeq != nil
+        )
+        guard annexB.count <= ceiling else {
+            counters.videoFramesUnprotectable += 1
+            unprotectableKeyframePending = true
+            return 0
+        }
         let shards = try channel.ingest(
             frame: annexB,
             frameNumber: nextVideoFrameNumber,
@@ -1072,9 +1099,12 @@ public final class Session {
         let fromValidator = validator.takeFreshKeyframeRequest()
         let fromClient = clientKeyframePending
         let fromMachine = machineIdrPacing != nil
+        let fromUnprotectable = unprotectableKeyframePending
         clientKeyframePending = false
         machineIdrPacing = nil
+        unprotectableKeyframePending = false
         return fromValidator || fromClient || fromMachine
+            || fromUnprotectable
     }
 
     // MARK: Lifecycle inputs (HS-11)
@@ -2112,6 +2142,22 @@ public final class Session {
     /// deferred item, now derived from evidence instead of config).
     public func frameByteCeiling(fps: Int) -> Int {
         estimator.frameByteCeiling(fps: fps)
+    }
+
+    /// HS-25: the largest frame the CURRENT regime and TLV posture can
+    /// ship as one protected FEC group — the ingest guard's live bound
+    /// (logs and tests read it here).
+    public var protectableFrameByteCeiling: Int {
+        channel.maxProtectableFrameByteCount(
+            hasLastInputSeq: lastInputSeq != nil
+        )
+    }
+
+    /// HS-25: that ceiling's session-static worst case (lossy regime,
+    /// input stamp riding) — what the shell caps the encoder's opening
+    /// VBV to, so no reachable posture can mint an unshippable frame.
+    public var worstCaseProtectableFrameByteCeiling: Int {
+        channel.worstCaseProtectableFrameByteCount
     }
 
     /// The rate the shared pacer is actually running at.

@@ -491,6 +491,12 @@ final class Sink {
     // frame, re-sent on a reliable one-shot before the idle flip.
     var lastEncodedPacket: [UInt8] = []
 
+    // HS-25: the opening VBV cap actually applied (nil = the recipe's
+    // own VBV already sat under the protectable ceiling), and the last
+    // unprotectable-drop count already logged.
+    var openingVbvCapBits: Int64?
+    var unprotectableLogged = 0
+
     init(opts: Options, file: UnsafeMutablePointer<FILE>?, wire: SessionWire?) {
         self.opts = opts
         self.file = file
@@ -546,6 +552,39 @@ final class Sink {
                 : "cbr \(opts.bitrate / 1_000_000) Mbps"
             print("capture: \(width)x\(height) \(name), stride \(stride) — "
                 + "encoding hevc_nvenc (\(recipe.summary), \(rcDesc))")
+
+            // HS-25: in session mode the opening posture itself must
+            // bound every frame to what ONE FEC group can protect (the
+            // GF(2⁸) 255-shard block — a 307 KB IDR at the 50 Mbps/p4
+            // recipe packetized to 279 data shards and killed the
+            // session at HEAD). Capped-CQ opens with NO VBV at all and
+            // CBR's single-frame VBV can exceed the block at high
+            // rates, so whenever the opening VBV is absent or larger
+            // than the worst-case protectable ceiling (lossy column,
+            // input stamp riding), impose exactly that ceiling. The
+            // wrapper folds it into the first send — which is the
+            // forced IDR frame 0 anyway, so the reconfigure costs
+            // nothing extra.
+            if let wire {
+                let capBits =
+                    Int64(wire.worstCaseProtectableFrameCeiling) * 8
+                let openingVbv: Int64? = opts.ratchet
+                    ? nil : Int64(opts.bitrate) / Int64(opts.fps)
+                if openingVbv == nil || openingVbv! > capBits {
+                    if lyte_hevc_enc_set_rate(enc, 0, opts.bitrate,
+                                              capBits,
+                                              &err, err.count) == 0 {
+                        openingVbvCapBits = capBits
+                        print("encoder: unprotectable-frame guard — "
+                            + "opening vbv capped at \(capBits / 8) B "
+                            + "(one FEC group's worst-case ceiling)")
+                    } else {
+                        print("encoder: unprotectable-frame guard vbv "
+                            + "cap REJECTED: \(errString(err)) — the "
+                            + "session-side drop guard still holds")
+                    }
+                }
+            }
         }
 
         let now = monotonicNow()
@@ -795,10 +834,14 @@ final class Sink {
             let avg = qualityWindowQPs.reduce(0, +) / qualityWindowQPs.count
             qp = "avg \(avg) max \(qualityWindowQPs.max()!)"
         }
-        let opening = opts.ratchet
-            ? "capped-cq cap \(opts.bitrate / 1_000) kbps vbv none"
-            : "cbr \(opts.bitrate / 1_000) kbps vbv "
-                + "\(Int(opts.bitrate) / Int(opts.fps) / 8) B"
+        let openingVbv = openingVbvCapBits
+            .map { "\($0 / 8) B (guard)" }
+            ?? (opts.ratchet
+                ? "none"
+                : "\(Int(opts.bitrate) / Int(opts.fps) / 8) B")
+        let opening = (opts.ratchet
+            ? "capped-cq cap" : "cbr")
+            + " \(opts.bitrate / 1_000) kbps vbv \(openingVbv)"
         let posture: String
         if let d = lastAppliedDirective {
             let avg = d.averageBitsPerSecond
@@ -832,6 +875,18 @@ final class Sink {
             } catch {
                 fail("session send failed at packet \(packetsOut): \(error)")
                 return
+            }
+            // HS-25: the session drops (never throws) a frame one FEC
+            // group cannot protect — loud in the log, invisible to the
+            // process lifetime. Should only fire if a frame slips past
+            // the opening VBV cap above.
+            let dropped = wire.videoFramesUnprotectable
+            if dropped > unprotectableLogged {
+                unprotectableLogged = dropped
+                print("video: packet \(packetsOut) UNPROTECTABLE "
+                    + "(\(size) B > ceiling "
+                    + "\(wire.protectableFrameCeiling) B) — frame "
+                    + "dropped, fresh IDR armed (total \(dropped))")
             }
         } else if let file {
             fwrite(data, 1, size, file)
@@ -1169,16 +1224,23 @@ func run() throws {
         // HS-20: the encoder finally consumes frameByteCeiling. The
         // baseline mirrors the opening posture lyte_hevc_enc_new will
         // configure (CBR: avg = max = --bitrate-mbps, single-frame VBV;
-        // capped-CQ: only the max-rate cap, no VBV) — the policy caps
-        // against it and never pushes above it. Sink polls per encode.
+        // capped-CQ: only the max-rate cap) — the policy caps against
+        // it and never pushes above it. Sink polls per encode.
+        // HS-25: the baseline VBV is now the unprotectable-frame
+        // guard's ceiling wherever the recipe's own VBV was absent or
+        // larger (the Sink imposes the same cap at encoder open) — so
+        // a squeeze→clean RESTORE returns to the guarded posture and
+        // can never re-open the >255-shard hole.
         if opts.vbvReconfigure {
+            let guardBits = w.worstCaseProtectableFrameCeiling * 8
             w.armEncoderVbv(EncoderVbvConfig(
                 fps: Int(opts.fps),
                 baselineAverageBitsPerSecond:
                     opts.ratchet ? nil : Int(opts.bitrate),
                 baselineMaxBitsPerSecond: Int(opts.bitrate),
-                baselineVbvBits:
-                    opts.ratchet ? nil : Int(opts.bitrate) / Int(opts.fps)
+                baselineVbvBits: opts.ratchet
+                    ? guardBits
+                    : min(Int(opts.bitrate) / Int(opts.fps), guardBits)
             ))
         } else {
             print("encoder-vbv: DISABLED (--no-vbv-reconfigure) — the "
@@ -1466,6 +1528,8 @@ func run() throws {
         \(wire.handshakeCookieMode ? "ON" : "off")
         lifecycle: \(s.modeTransitionsSent) mode transitions, \
         \(s.videoFramesSuppressed) frames suppressed (FROZEN/closed), \
+        \(s.videoFramesUnprotectable) dropped unprotectable \
+        (ceiling \(wire.protectableFrameCeiling) B), \
         final state \(wire.lifecycleState.map { "\($0)" } ?? "—") \
         (wire mode \(wire.currentWireMode.map { "\($0)" } ?? "—"))
         input: \(s.inputEventsReceived) events received, \

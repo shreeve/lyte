@@ -282,6 +282,37 @@ public final class VideoChannel {
         self.regime = regime
     }
 
+    // MARK: Protectable-frame ceiling (HS-25)
+
+    /// The largest encoded frame the CURRENT regime and TLV posture can
+    /// ship as ONE protected FEC group — the GF(2⁸) block holds at most
+    /// 255 total shards, so the §5.2 ladder protects at most
+    /// `maxDataShards(regime)` data shards (231 clean / 204 lossy), each
+    /// filled to this config's real shard budget. The wire cannot say
+    /// more: the fec field binds one group per frame number and carries
+    /// no group index, so a frame above this ceiling is unshippable, not
+    /// merely unprotected. The session's ingest guard reads this before
+    /// every packetize (frameByteCeiling's resiliency-§2.4 promise,
+    /// enforced at the seam that owns geometry).
+    public func maxProtectableFrameByteCount(hasLastInputSeq: Bool) -> Int {
+        FecGeometryTable.maxDataShards(regime)
+            * config.shardBudgetByteCount(
+                extraTlvByteCount: hasLastInputSeq
+                    ? LastInputSeqTlv.encodedByteCount : 0
+            )
+    }
+
+    /// The ceiling's session-static worst case — the lossy column with
+    /// the lastInputSeq stamp riding — for postures that must hold no
+    /// matter how the regime or the input stream moves mid-session (the
+    /// shell's opening encoder VBV cap derives from this).
+    public var worstCaseProtectableFrameByteCount: Int {
+        FecGeometryTable.maxDataShards(.lossy)
+            * config.shardBudgetByteCount(
+                extraTlvByteCount: LastInputSeqTlv.encodedByteCount
+            )
+    }
+
     /// Packetizes one encoded frame and enqueues every shard. Throws what
     /// the packetization/envelope/seal steps throw (non-frame-shaped
     /// bytes, a lying keyframe flag, an unprotectable frame size, a

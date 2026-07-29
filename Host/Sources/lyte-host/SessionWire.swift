@@ -192,6 +192,18 @@ final class SessionWire {
     var deliveryRate: Int? { session.deliveryRateBitsPerSecond }
     var queuingDelayMicros: Int64? { session.queuingDelayMicroseconds }
     func frameByteCeiling(fps: Int) -> Int { session.frameByteCeiling(fps: fps) }
+    // HS-25 unprotectable-frame guard surfaces: the live drop count
+    // (the Sink logs increments) and the worst-case ceiling the shell
+    // caps the encoder's opening VBV to.
+    var videoFramesUnprotectable: Int {
+        session.counters.videoFramesUnprotectable
+    }
+    var protectableFrameCeiling: Int {
+        session.protectableFrameByteCeiling
+    }
+    var worstCaseProtectableFrameCeiling: Int {
+        session.worstCaseProtectableFrameByteCeiling
+    }
     // HS-17 repair surfaces for the final stats block.
     var fecRegime: FecRegime { session.fecRegime }
     var srttMicros: Int64? { session.srttMicroseconds }
