@@ -668,6 +668,7 @@ previous one) · **loss** ≤ 1 wire frame per 150 s leg.
 |---|---|---|---|---|---|---|
 | 2026-07-28 @ 8dc049a | 51.27 PASS | 59.75 PASS | 47 FAIL¹ | 3.9 FAIL¹ | 0 PASS | 0 PASS |
 | 2026-07-29 @ 932a4c3 | 52.03 PASS | 59.73 PASS | 58 PASS² | 15.2 FAIL² | 0 PASS | 0 PASS |
+| 2026-07-29 @ 8e1e8ca | 52.03 PASS | 59.72 PASS | 61 PASS³ | 6.8 FAIL³ | 0 PASS | 6 FAIL³ |
 
 ² Post-HS-26/IDR-hunt re-measurement (row printed by quality-probe.sh
 at `932a4c3`; logs pup `~/qprobe/`, local `/tmp/qprobe-local`).
@@ -690,6 +691,22 @@ the frequency). Also eye-on: delivered ~20 Mbps on the post-move
 clean wire that bulk-tested ~160 Mbps — whether that's real airtime
 under 43 Mbps appetite or the HS-22b self-reference seam is part of
 slice (b)'s brief.
+
+³ Post-HS-27/HS-28 row (probe at `8e1e8ca`; logs pup `~/qprobe/`).
+The composition flip is the story: the leg now RIDES THE AIR'S TRUE
+EDGE — 210,941 datagrams (2.4× row ²'s 85,958) at fps 61 — because
+the honest belief chases the ~45 Mbps the air offers instead of
+spiraling. IDR halves again (15.2 → 6.8/min; twin overhead −14, bar
+≤3 held) and churn stays 0, but edge-riding buys a NEW red: 102
+missing datagrams (0.048%) cost 6 unrepaired frames (bar ≤1/150 s),
+and those losses also feed the remaining IDR count (client requests
++ genuine probe cycles into the 50 Mbps recipe cap that exceeds the
+air). Both reds now share one cause — probing into the wall — and
+one named fix: **cap-aware probe damping** (probe ceiling ≈
+min(cap, belief×1.1), HS-28's named next rung), which stops the
+estimator from repeatedly testing a ceiling the belief already
+locates. Row ²'s clean loss cell was the self-limited estimator
+barely using the link — a PASS bought dishonestly.
 
 ¹ The two reds are FINDINGS, dated at HEAD and reported loudly in the
 Q-1 wave entry (ledger-drain addendum): **fps** — the glass ran a
