@@ -1090,6 +1090,17 @@ public final class Session {
         channel.queuedCount(.audio)
     }
 
+    /// Video-class bytes (fresh + repair tail) still waiting in the
+    /// shared pacer — the capture loop's backpressure gate reads this
+    /// (the fps-ceiling fix): at 8×this/pacerRate of standing wire
+    /// time, encoding another capture frame only deepens the queue,
+    /// so the frame is skipped pre-encode instead (the same drop that
+    /// used to happen invisibly at the PipeWire buffer pool while the
+    /// loop thread sat inside a synchronous drain).
+    public var queuedVideoBytes: Int {
+        channel.queuedBytes(.freshVideo) + channel.queuedBytes(.videoTail)
+    }
+
     /// The encoder-loop poll (one per tick, before encoding): true when
     /// a fresh IDR is owed — HS-12's path promotion, a client 0x10 IDR
     /// request, or the lifecycle machine's demand (WAKE's

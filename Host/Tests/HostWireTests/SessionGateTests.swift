@@ -586,6 +586,55 @@ final class SessionGateTests: XCTestCase {
             + [UInt8](repeating: 0xAA, count: byteCount - 6)
     }
 
+    // MARK: The capture gate's backlog surface (the fps-ceiling fix)
+
+    /// `queuedVideoBytes` is what the capture loop's backpressure gate
+    /// reads now that the pacer drain runs off the capture thread: a
+    /// multi-quantum frame shows up as standing video backlog the
+    /// moment it is ingested, and the surface reads zero again once
+    /// the pacer has walked it out at its own wake instants.
+    func testQueuedVideoBytesSurfacesTheCaptureGateBacklog() throws {
+        var sent: [VideoChannelDatagram] = []
+        let session = Session(
+            config: SessionConfig(
+                crypto: .insecure,
+                rateBitsPerSecond: Self.rateBPS
+            ),
+            clientTuple: Self.tupleA,
+            now: 0,
+            rng: SplitMix64(seed: 0x22)
+        ) { sent.append($0) }
+        XCTAssertEqual(session.queuedVideoBytes, 0,
+                       "an idle session holds no video backlog")
+        // The opening declaration + beacon leave first — CTRL traffic
+        // must never read as video backlog.
+        _ = session.advance(now: 0, hostMicroseconds: 0)
+        session.pump(now: 0)
+        XCTAssertEqual(session.queuedVideoBytes, 0,
+                       "CTRL bytes are not the capture gate's business")
+
+        // One 40 KB frame at 20 Mbps spans ~16 pacer quanta: after the
+        // first pump only one quantum has left, the rest is exactly
+        // the standing backlog the gate reads.
+        let frame = syntheticFrame(byteCount: 40_000)
+        try session.ingestVideoFrame(
+            frame, captureTimestampMicroseconds: 1,
+            isKeyframe: false, now: 1
+        )
+        session.pump(now: 1)
+        let backlog = session.queuedVideoBytes
+        XCTAssertGreaterThan(
+            backlog, frame.count - 5_000,
+            "a just-ingested multi-quantum frame stands as backlog "
+                + "(shard bytes minus at most the burst quantum)"
+        )
+
+        // The pacer walks it out at its own wakes; the gate reopens.
+        _ = drain(session, from: 1, horizon: 900_000_000)
+        XCTAssertEqual(session.queuedVideoBytes, 0,
+                       "a drained pacer means no standing backlog")
+    }
+
     func testShardBudgetLandsExactlyOnTheDatagramCeiling() throws {
         // With the conn-id TLV the plaintext budget is 1101 B: a
         // single-shard frame + a real 16 B tag lands on 1152 exactly.

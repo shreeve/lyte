@@ -499,6 +499,24 @@ final class Sink {
     var qualityWindowSizes: [Int] = []
     var qualityWindowStartedAt: Double?
     static let qualityWindowSeconds = 1.0
+    // The fps-ceiling stage books (Q-1's red row): where each frame
+    // period actually went, in µs — the capture inter-arrival gap,
+    // the synchronous NVENC encode, the packetize+FEC+seal ingest,
+    // and the pacer-drain wait — plus capture frames the backpressure
+    // gate skipped. Session mode only; one `stages:` line per ~5 s.
+    var stageGapUs: [UInt64] = []
+    var stageEncodeUs: [UInt64] = []
+    var stageIngestUs: [UInt64] = []
+    var stageDrainUs: [UInt64] = []
+    var stageWindowStartedAt: Double?
+    var lastOnFrameAt: Double?
+    /// Nanoseconds onPacket spent inside wire.sendFrame during the
+    /// current encode call — the packet callback runs INSIDE
+    /// lyte_hevc_enc_send, so the encoder's own share is the
+    /// difference.
+    var sendFrameNanosThisEncode: UInt64 = 0
+    var throttledFrames = 0
+    static let stageWindowSeconds = 5.0
     // HS-11: the most recent encoded packet's bytes, retained only in
     // ratchet+session mode — on convergence this IS the final converged
     // frame, re-sent on a reliable one-shot before the idle flip.
@@ -648,6 +666,33 @@ final class Sink {
 
         let now = monotonicNow()
         if firstFrameAt == nil { firstFrameAt = now }
+        if wire != nil {
+            if let last = lastOnFrameAt {
+                stageGapUs.append(UInt64(max(now - last, 0) * 1e6))
+            }
+            lastOnFrameAt = now
+        }
+
+        // The backpressure gate (the fps-ceiling fix's second half):
+        // with the pacer drain on its own thread, a capture frame that
+        // arrives while more than the resiliency drain bound
+        // (min(2×frameInterval, 25 ms) — §2.4's per-frame promise,
+        // applied to the standing queue) of video wire-time is still
+        // queued would only deepen the queue and stretch the glass —
+        // skip it BEFORE spending an encode. This is the same frame
+        // the old synchronous drain silently starved out of the
+        // PipeWire buffer pool, now counted (the stages line carries
+        // the tally). Post-IDR is the designed case: a ceiling-sized
+        // IDR occupies ~36 ms of wire at 50 Mbps, so the next capture
+        // frame or two yield while it drains.
+        if let wire {
+            let boundNS = min(
+                2 * UInt64(1_000_000_000) / UInt64(opts.fps), 25_000_000)
+            if wire.videoBacklogWireTimeNS > boundNS {
+                throttledFrames += 1
+                return
+            }
+        }
 
         if opts.idleFloor || opts.ratchet {
             let count = Int(size)
@@ -710,6 +755,7 @@ final class Sink {
         wire?.service()
         flushFrameWindow(monotonicNow())
         flushQualityWindow(monotonicNow())
+        flushStageWindow(monotonicNow())
 
         // The session is over (peer gone, teardown, liveness): stop the
         // capture loop cleanly — the HS-11 graceful exit.
@@ -827,12 +873,21 @@ final class Sink {
                     + errString(err))
             }
         }
+        sendFrameNanosThisEncode = 0
+        let encodeStart = monotonicNS()
         let rc = lyte_hevc_enc_send(encoder, data, stride, Int64(framesIn),
                                     forceIdr ? 1 : 0,
                                     packetTrampoline, user, &err, err.count)
         if rc != 0 {
             fail("encode failed at frame \(framesIn): \(errString(err))")
             return false
+        }
+        if wire != nil {
+            // The packet callback (→ sendFrame) runs inside the send
+            // call; the encoder's own share is what remains.
+            let total = monotonicNS() - encodeStart
+            stageEncodeUs.append(
+                (total - min(sendFrameNanosThisEncode, total)) / 1_000)
         }
         framesIn += 1
         return true
@@ -916,6 +971,43 @@ final class Sink {
             + "pacer \(wire.pacerRate / 1_000) kbps")
     }
 
+    /// The fps-ceiling stage books: one line per ~5 s of session-mode
+    /// encoding — µs percentiles of the capture inter-arrival gap and
+    /// the per-frame encode / ingest (packetize+FEC+seal) / pacer-drain
+    /// stages. This is the book that says where a 60 Hz frame period
+    /// went when the glass reads 48.
+    private func flushStageWindow(_ now: Double) {
+        guard wire != nil else { return }
+        guard let started = stageWindowStartedAt else {
+            stageWindowStartedAt = now
+            return
+        }
+        guard now - started >= Self.stageWindowSeconds else { return }
+        defer {
+            stageGapUs.removeAll(keepingCapacity: true)
+            stageEncodeUs.removeAll(keepingCapacity: true)
+            stageIngestUs.removeAll(keepingCapacity: true)
+            stageDrainUs.removeAll(keepingCapacity: true)
+            stageWindowStartedAt = now
+        }
+        guard !stageEncodeUs.isEmpty else { return }
+        func book(_ samples: [UInt64]) -> String {
+            let sorted = samples.sorted()
+            guard !sorted.isEmpty else { return "—" }
+            func pct(_ q: Double) -> Double {
+                Double(sorted[max(
+                    Int((q * Double(sorted.count)).rounded(.up)), 1) - 1])
+                    / 1_000
+            }
+            return String(format: "p50 %.1f p95 %.1f max %.1f",
+                          pct(0.5), pct(0.95), Double(sorted.last!) / 1_000)
+        }
+        print("stages: \(stageEncodeUs.count) fr — "
+            + "gap \(book(stageGapUs)) | encode \(book(stageEncodeUs)) | "
+            + "ingest \(book(stageIngestUs)) | drain \(book(stageDrainUs)) "
+            + "ms | throttled \(throttledFrames)")
+    }
+
     private func quitIfElapsed(_ now: Double) {
         if let start = firstFrameAt, now - start >= opts.seconds, let capture {
             lyte_pw_capture_quit(capture)
@@ -927,6 +1019,7 @@ final class Sink {
             firstPacket = Array(UnsafeBufferPointer(start: data, count: size))
         }
         if let wire {
+            let sendStart = monotonicNS()
             do {
                 try wire.sendFrame(data: data, size: size,
                                    isKeyframe: keyframe,
@@ -935,6 +1028,9 @@ final class Sink {
                 fail("session send failed at packet \(packetsOut): \(error)")
                 return
             }
+            sendFrameNanosThisEncode &+= monotonicNS() - sendStart
+            stageIngestUs.append(wire.lastFrameIngestNanos / 1_000)
+            stageDrainUs.append(wire.lastFrameDrainNanos / 1_000)
             // HS-25: the session drops (never throws) a frame one FEC
             // group cannot protect — loud in the log, invisible to the
             // process lifetime. Should only fire if a frame slips past
@@ -1628,6 +1724,7 @@ func run() throws {
         \(s.videoFramesSuppressed) frames suppressed (FROZEN/closed), \
         \(s.videoFramesUnprotectable) dropped unprotectable \
         (ceiling \(wire.protectableFrameCeiling) B), \
+        \(sink.throttledFrames) capture frames throttled (backlog gate), \
         final state \(wire.lifecycleState.map { "\($0)" } ?? "—") \
         (wire mode \(wire.currentWireMode.map { "\($0)" } ?? "—"))
         chroma: agreed \(wire.agreedChromaModes.map { "\($0)" } ?? "— (no declaration)"), \

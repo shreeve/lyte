@@ -17,20 +17,35 @@
 //   • `--insecure` (CP-3 fallback, §4.1): stream to the fixed peer
 //     immediately, passthrough seal — same wiring, mandatory re-gate.
 //
-// Threading honesty, amended at HS-15: the VIDEO PipeWire loop thread
-// still runs capture → encode → sendFrame → drainToIdle and the
-// idle-floor tick's service pass, but audio arrives on ITS OWN PipeWire
-// loop thread (CPipeWireAudio owns a separate pw_main_loop) at the 5 ms
-// cadence — a cadence the ~16.7 ms video tick could never honor, which
-// is exactly why audio cannot funnel through the video thread. One
-// NSLock therefore guards the (single-threaded by design) Session and
-// the outbox: every service pass holds it, every sleep releases it. The
-// hold times are tens of µs (one pacer batch + one sendmmsg), so the
-// audio thread's 5 ms cadence never waits meaningfully — the in-tree
-// virtual-time gate bounds the pacer's share and the live tcpdump gate
-// bounds the whole. sendFrame still drains the pacer to empty before
-// returning; `--no-idle-floor` still stalls beacons between damage
-// frames (the documented stub limitation).
+// Threading honesty, amended at HS-15 and again at the fps-ceiling fix:
+// the VIDEO PipeWire loop thread runs capture → encode → sendFrame
+// (ingest only) and the idle-floor tick's service pass; audio arrives on
+// ITS OWN PipeWire loop thread (CPipeWireAudio owns a separate
+// pw_main_loop) at the 5 ms cadence — a cadence the ~16.7 ms video tick
+// could never honor, which is exactly why audio cannot funnel through
+// the video thread. One NSLock therefore guards the (single-threaded by
+// design) Session and the outbox: every service pass holds it, every
+// sleep releases it. The hold times are tens of µs (one pacer batch +
+// one sendmmsg), so the audio thread's 5 ms cadence never waits
+// meaningfully — the in-tree virtual-time gate bounds the pacer's share
+// and the live tcpdump gate bounds the whole.
+//
+// THE FPS-CEILING FIX (Q-1's red row, hunted 2026-07-29): sendFrame
+// used to drain the pacer to empty before returning — the capture
+// thread paid the frame's full wire serialization time (~8·bytes/rate:
+// ~11 ms for a 61 KB motion frame at 50 Mbps) IN SERIES with the ~7 ms
+// NVENC encode, so the loop cycled at ~21 ms and the compositor only
+// got a buffer back ~48 times a second. The drain now runs on a
+// DEDICATED SENDER THREAD (`drainLoop`, parked on a condition variable
+// while the pacer is idle): sendFrame ingests, signals, and returns in
+// ~1.5 ms, so capture+encode of frame N+1 overlaps the wire time of
+// frame N. Backpressure moved with it: the capture loop consults
+// `videoBacklogWireTimeNS` pre-encode and SKIPS a capture frame while
+// more than the resiliency bound of video wire-time is queued — the
+// same frame the old synchronous drain silently starved out of the
+// PipeWire buffer pool, now counted and cheap (no encode is spent on
+// it). `--no-idle-floor` still stalls beacons between damage frames
+// while the pacer is empty (the documented stub limitation).
 //
 // HS-12 rebind wiring: media re-routing executes .promoted by
 // connect()ing to the new tuple, and challenges to unvalidated tuples
@@ -148,6 +163,12 @@ final class SessionWire {
     private var inputNoInjectorWarned = false
 
     private(set) var framesSent = 0
+    /// Stage books for the fps-ceiling hunt (Q-1's red row): the last
+    /// sendFrame's packetize+FEC+seal time and its pacer-drain time,
+    /// split so the Sink's 5 s stage window can say where the frame
+    /// period went. Written and read on the video loop thread only.
+    private(set) var lastFrameIngestNanos: UInt64 = 0
+    private(set) var lastFrameDrainNanos: UInt64 = 0
     /// HS-15 audio-thread counters (mutated under `lock`).
     private(set) var audioPacketsSent = 0
     private(set) var audioSendFailures = 0
@@ -168,13 +189,29 @@ final class SessionWire {
     /// is closed — session-ending, not an I/O failure (HS-11).
     private(set) var peerGone = false
 
+    /// The sender thread (the fps-ceiling fix): parks on `drainCondition`
+    /// while the pacer is idle; `signalDrain()` wakes it whenever bytes
+    /// were enqueued. It runs the exact drainToIdle loop the capture
+    /// thread used to run inline.
+    private let drainCondition = NSCondition()
+    private var drainWork = false
+    private var drainStop = false
+    private var drainExited = false
+    /// A drain-thread send failure (not peer-gone — that has its own
+    /// flag): recorded loud and session-ending, mirroring what a thrown
+    /// sendFrame used to do to the capture loop.
+    private var drainFailed = false
+
     /// True once nothing more can usefully happen: the peer's socket is
     /// closed, or the lifecycle machine reached `closed` (teardown either
     /// way, or the 30 s liveness timeout). The capture loop quits on it.
     var sessionEnded: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return peerGone || session?.lifecycleState == .closed
+        if peerGone || session?.lifecycleState == .closed { return true }
+        drainCondition.lock()
+        defer { drainCondition.unlock() }
+        return drainFailed
     }
 
     var counters: VideoChannelCounters { session.videoCounters }
@@ -263,6 +300,19 @@ final class SessionWire {
             capacity: Self.scratchCapacity)
         recvScratch = UnsafeMutablePointer<UInt8>.allocate(
             capacity: Int(LYTE_NETIO_MAX_BATCH) * Self.recvSlotCapacity)
+
+        // The sender thread comes up parked (no work until the first
+        // ingest signals it); it holds `self` for its lifetime, so the
+        // shell must stop it (shutdown does) before the process lets
+        // the SessionWire go. SessionWire is cross-thread by design
+        // (video loop, audio loop, sender thread) with `lock` as the
+        // discipline — the unsafe capture states that fact to the
+        // compiler, exactly like the audio thread's Unmanaged
+        // trampoline does implicitly.
+        nonisolated(unsafe) let shared = self
+        let thread = Thread { shared.drainLoop() }
+        thread.name = "lyte-wire-drain"
+        thread.start()
 
         if insecure {
             guard let peer else {
@@ -485,6 +535,10 @@ final class SessionWire {
     /// the ECONNREFUSED fix: the client learns the session ended instead
     /// of inferring it from silence).
     func shutdown(reason: SessionTeardownReason, lingerSeconds: Double = 0.5) {
+        // The sender thread goes first: teardown owns the send path
+        // from here (and the thread holds `self` — this is also its
+        // lifetime end).
+        stopDrain()
         lock.lock()
         guard let session, session.phase == .established,
               session.lifecycleState != .closed, !peerGone else {
@@ -528,6 +582,7 @@ final class SessionWire {
         data: UnsafePointer<UInt8>, size: Int, isKeyframe: Bool,
         captureMicros: UInt64
     ) throws {
+        let ingestStart = monotonicNS()
         let frame = Array(UnsafeBufferPointer(start: data, count: size))
         lock.lock()
         guard let session else {
@@ -546,8 +601,36 @@ final class SessionWire {
             throw error
         }
         framesSent += 1
+        // First quantum leaves on this stack (the bucket is credited
+        // while idle, so this is one batch + one sendmmsg, tens of µs);
+        // the sender thread paces out the rest while the capture loop
+        // returns to the compositor.
+        session.pump(now: monotonicNS())
+        do {
+            try flushOutbox()
+        } catch {
+            lock.unlock()
+            throw error
+        }
         lock.unlock()
-        try drainToIdle()
+        lastFrameIngestNanos = monotonicNS() - ingestStart
+        lastFrameDrainNanos = 0 // the capture thread no longer waits
+        signalDrain()
+    }
+
+    /// The capture loop's backpressure gate (the fps-ceiling fix):
+    /// video-class bytes still queued in the pacer, as wire time at the
+    /// live pacer rate. Above the resiliency drain bound, encoding
+    /// another capture frame only deepens the queue — the caller skips
+    /// the frame pre-encode instead.
+    var videoBacklogWireTimeNS: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let session else { return 0 }
+        let bytes = session.queuedVideoBytes
+        guard bytes > 0 else { return 0 }
+        let rate = max(session.pacerRateBitsPerSecond, 1)
+        return UInt64(Double(bytes) * 8e9 / Double(rate))
     }
 
     /// HS-15: one encoded 5 ms Opus packet from the AUDIO capture
@@ -613,6 +696,10 @@ final class SessionWire {
         } catch {
             lastSendError = String(describing: error)
         }
+        // Anything this pass enqueued but could not emit inside one
+        // quantum (repair retransmits from a NACK, a burst of ARQ
+        // segments) belongs to the sender thread, not the next tick.
+        let leftovers = !(session?.isIdle ?? true)
         let requests = pendingAudioRouting
         pendingAudioRouting.removeAll()
         let announce = routingAnnounceOwed
@@ -623,6 +710,7 @@ final class SessionWire {
         let bulk = pendingBulkMessages
         pendingBulkMessages.removeAll()
         lock.unlock()
+        if leftovers { signalDrain() }
 
         // The starting-posture 0x19 (capabilities just agreed) and any
         // client flips — both re-take the lock per send, neither holds
@@ -797,6 +885,64 @@ final class SessionWire {
             + "— closing cleanly")
     }
 
+    /// Wakes the sender thread: bytes were enqueued (or leftovers were
+    /// observed) and the pacer needs pumping at its own wake instants.
+    /// Never call while holding `lock` — the lock order is
+    /// `lock` → `drainCondition` (sessionEnded) and must stay acyclic.
+    private func signalDrain() {
+        drainCondition.lock()
+        drainWork = true
+        drainCondition.signal()
+        drainCondition.unlock()
+    }
+
+    /// Stops the sender thread and waits for it to exit (it holds
+    /// `self` and shares the send scratch, so teardown must not race
+    /// it). Idempotent; a parked thread exits within one signal, a
+    /// draining thread within its current drain.
+    private func stopDrain() {
+        drainCondition.lock()
+        drainStop = true
+        drainCondition.signal()
+        while !drainExited { drainCondition.wait() }
+        drainCondition.unlock()
+    }
+
+    /// The sender thread's whole life: park until signaled, drain the
+    /// pacer to idle at its own wake instants, park again. A send
+    /// failure is recorded and ends the session (mirroring what a
+    /// thrown sendFrame used to do to the capture loop) — the thread
+    /// itself parks and stays stoppable.
+    private func drainLoop() {
+        while true {
+            drainCondition.lock()
+            while !drainWork && !drainStop { drainCondition.wait() }
+            if drainStop {
+                drainExited = true
+                drainCondition.broadcast()
+                drainCondition.unlock()
+                return
+            }
+            drainWork = false
+            drainCondition.unlock()
+            do {
+                try drainToIdle()
+            } catch {
+                lock.lock()
+                lastSendError = String(describing: error)
+                lock.unlock()
+                drainCondition.lock()
+                let firstFailure = !drainFailed
+                drainFailed = true
+                drainCondition.unlock()
+                if firstFailure {
+                    print("session: wire drain failed (\(error)) — "
+                        + "closing")
+                }
+            }
+        }
+    }
+
     /// Callers must NOT hold `lock`: each pass takes it for the service
     /// work and releases it across the sleep, so the audio thread's
     /// 5 ms sends interleave with a long video drain (the structural
@@ -805,6 +951,10 @@ final class SessionWire {
     private func drainToIdle() throws {
         while true {
             lock.lock()
+            guard session != nil else {
+                lock.unlock()
+                return
+            }
             do {
                 try serviceOnce()
                 try flushOutbox()
