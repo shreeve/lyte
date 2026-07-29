@@ -1,46 +1,41 @@
 # Lyte — Session Handoff
 
-*Current as of 2026-07-28 ~21:45 MDT. The session ledger — tracked in the
+*Current as of 2026-07-28 ~23:55 MDT. The session ledger — tracked in the
 repo since `8da50bf` (the .gitignore entry is vestigial; the file is
 tracked). Update freely; commit updates in the ledger voice.*
 
-# SESSION RESUME — START HERE (2026-07-28 ~21:45 MDT)
+# SESSION RESUME — START HERE (2026-07-28 ~23:55 MDT)
 
-**⚠️ PUP IS DOWN.** The box dropped off-network ~20:35 MDT (no ping, no
-ssh route; the spontaneous-drop pattern) and stayed dark through this
-writing. The owner's 41151 host is down with it (its loop had ALREADY
-self-expired at run 60 before that — see Q-1's wave entry). Q-1's
-six-leg deferred ledger (below) drains on its return.
-
-**One-paragraph state.** We are at the H3→H4 seam. The Wi-Fi wire is
-fixed (see "THE WIRE IS CLEAN NOW" below; re-baseline before trusting
-any pre-2026-07-28 latency claim). The quality wave is fully landed in
-Host/, none pushed: **HS-23** — the 50 Mbps LAN ceiling +
-stall-vs-congestion discriminator (`11f058f`); **HS-24** — p4 preset
-adoption (`1d65bad`); **HS-25** — the giant-frame FEC guard (`e82e88a`,
-live repro-then-proof on pup); **Q-1** — the beauty-bar standing gate
-(`b1f027a`, Mac-side; live bar row DEFERRED-PENDING-HOST). The **H4
-plan is authored and committed** (`3b118ba`,
+**One-paragraph state.** We are at the H3→H4 seam, everything landed
+and drained. pup's ~3 h network drop (20:35–23:30, NO reboot — the
+spontaneous-drop pattern) is over; **Q-1's six-leg deferred ledger is
+FULLY DRAINED** (verdicts in the Q-1 wave entry's drain addendum) and
+the owner's 41151 loop is LIVE again at the current build. The quality
+wave stands in Host/, none pushed: HS-23 `11f058f`, HS-24 `1d65bad`,
+HS-25 `e82e88a`, Q-1 `b1f027a`. The **H4 plan is committed** (`3b118ba`,
 `docs/20260728-194226-lyte-h4-plan.md`): 4:4:4 leads, probe-first
-ladder V-1…V-5 → J-G4a, then clipboard v2 / multi-monitor / dyn-res;
-four §0 owner decisions are open (mode-selection mechanics,
-conversion-path order + range gating, the HS-25 ceiling posture in Work
-mode, P-track gate coupling) — decisions 2/3 want V-1/V-2 probe data
-first. Suites at HEAD: Host **180/180 Mac AND pup** (pup ran green at
-this exact Swift state at ~19:47, BEFORE the box dropped — only
-bash-script deltas are unsynced there), Wire 450/450, root 142/142.
+ladder V-1…V-5 → J-G4a; four §0 owner decisions open, 2/3 wanting
+V-1/V-2 probe data first. Suites at HEAD: Host **180/180 Mac AND pup**
+(pup count is a commit-hash fact at `8dc049a`), Wire 450/450, root
+142/142.
 
-**Q-1's DEFERRED-PENDING-HOST ledger (drain IN ORDER on pup's
-return; full detail in the Q-1 wave entry):** (a) stray sweep — the
-aborted probe run's windowed ffplay + `~/qprobe` raw/hevc leftovers;
-(b) rsync + rebuild (bash-only deltas; the Swift state on pup already
-matches `b1f027a`); (c) pup suite at the committed hash; (d) the
-end-to-end `quality-probe.sh` run filling the beauty bar's dated first
-row — fps and IDR/min are the real open rows (partial evidence already
-bar-clearing: static 51.3 dB, motion ~59.7 dB median); (e) restore the
-owner's 41151 loop (fresh 60 iterations); (f) secrets sha-verify
-(pinned: portal_token `dadf9a66…`, noise_static.key `72860390…`,
-paired_clients `8dc1f88a…`).
+**THE BEAUTY BAR'S FIRST ROW IS IN — and its two reds are named
+findings, not noise** (full decomposition in the Q-1 drain addendum):
+`2026-07-28 @ 8dc049a | static 51.27 PASS | motion 59.75 PASS |
+fps 47 FAIL | IDR 3.9/min FAIL | churn 0 PASS | loss 0 PASS`.
+- **fps p50 47 (bar ≥55)**: NOT the wire (0 loss / 5178 frames), NOT
+  the compositor (file-mode captures the full 60) — under full session
+  load the host's capture→encode path ingests only ~48/s. **The
+  session pipeline is now the fps bottleneck**; HS-23's cap lift alone
+  did not buy 55+. This is the top open competitive row.
+- **IDR 3.9/min (bar ≤2)**: zero client requests, zero loss — all 10
+  IDRs host-originated (opening + the estimator's cold-start evidence
+  climb spending 4 directive-IDRs + a dip/recover spending 3 + 2 idle
+  wakes). Every rate reconfigure forces an IDR, so the RAMP alone busts
+  the bar. Estimator-territory follow-on to HS-22c's coalescing.
+- Bonus live proof from the twin leg: `--no-vbv-reconfigure` collapsed
+  to 1368 kbps with 304 client IDR requests and a frozen glass — the
+  VBV directives are load-bearing; nobody gets to "simplify" them away.
 
 **LIVE OPS RIGHT NOW.**
 - pup standing host: `bash ~/lyte-loop.sh` respawns `lyte-host --backend
@@ -48,9 +43,7 @@ paired_clients `8dc1f88a…`).
   port **41151**. Leave it alive; it's the owner's eyeball host. The
   session log is `/tmp/lyte-host-session.log` on pup. The loop launches
   `~/src/lyte-host/.build/debug/lyte-host` — the HS-25-fixed, Q-1-tested
-  build. **CURRENTLY DOWN with the box** (and the loop had self-expired
-  at run 60 even earlier); restoring it fresh is leg (e) of Q-1's
-  deferred ledger.
+  build. LIVE (restored fresh ~23:44 as Q-1 drain leg e, 60 iterations).
 - The owner's client is the app bundle at
   `.build/Lyte.app` — launch with `open .build/Lyte.app` (NEVER run the
   raw binary under a parent process; it needs its own bundle for a proper
@@ -85,17 +78,18 @@ stalled >15 min with no live work. If you start a fresh chat, that loop's
 shell does NOT survive — re-arm it if the owner still wants the 5-min
 cadence, and don't leave a duplicate running.
 
-**IMMEDIATE RESUME POINT:** no slice is in flight; everything through
-Q-1 and the H4 plan is committed (ledger included). Open items, in
-order: (a) **pup's return** → drain Q-1's six-leg deferred ledger above
-(one small worker, Host/ territory); (b) the owner's quality eyeball on
-the p4 recipe — verdict still pending (needs the 41151 loop back, leg
-e); (c) **H4 V-1** (pup NVENC Rext probe, Host/ territory) — launchable
-once pup is back and the Q-1 ledger is drained; V-2 (Mac VideoToolbox
-probe, root territory) can run in parallel with either; (d) the four H4
-§0 owner decisions — 2/3 want V-1/V-2 data first, so put them to the
-owner when the probes land. Farther out: J-G4a and the P-track per the
-H4 plan; the browser-viewer B-2+ slices still wait on the owner's QUIC
+**IMMEDIATE RESUME POINT:** the Q-1 ledger is drained; **H4 V-1** (pup
+NVENC Rext probe, Host/ territory) is the slice in flight/next per the
+H4 plan; V-2 (Mac VideoToolbox probe, root territory) follows on V-1's
+bitstreams. Then: (a) the four H4 §0 owner decisions — 2/3 want the
+V-1/V-2 data, put them to the owner together when it exists; (b) the
+bar's two red rows are open slice candidates in Host/ AFTER V-1 frees
+the territory — the **session-pipeline fps ceiling (~48/s ingest under
+load)** hunt, and the **estimator ramp's IDR spend** (follow-on to
+HS-22c's coalescing; a rate reconfigure that doesn't force an IDR is
+the prize). (c) The owner's quality eyeball on the p4 recipe — the
+41151 loop is live and waiting. Farther out: J-G4a + the P-track per
+the H4 plan; browser-viewer B-2+ still waits on the owner's QUIC
 posture decision (H3's last open thread).
 
 # RESTARTING WORKERS IN A NEW CHAT (read before resuming)
@@ -588,13 +582,19 @@ previous one) · **loss** ≤ 1 wire frame per 150 s leg.
 
 | date @ build | static dB | motion dB | fps p50 | IDR/min | churn | loss |
 |---|---|---|---|---|---|---|
-| 2026-07-28 @ Q-1 | pending¹ | pending¹ | pending¹ | pending¹ | pending¹ | pending¹ |
+| 2026-07-28 @ 8dc049a | 51.27 PASS | 59.75 PASS | 47 FAIL¹ | 3.9 FAIL¹ | 0 PASS | 0 PASS |
 
-¹ PENDING-MEASUREMENT: pup dropped off-network mid-probe (~20:00 MDT
-2026-07-28) before the wire legs could run — the Q-1 wave entry
-carries the deferred ledger and the partial (non-row) evidence: static
-converged 51.26/51.27 dB across the two aborted runs, motion median
-~59.7 dB across 23 completed runs, both bar-clearing.
+¹ The two reds are FINDINGS, dated at HEAD and reported loudly in the
+Q-1 wave entry (ledger-drain addendum): **fps** — the glass ran a
+steady 46–49 through the leg's healthy window and never touched 55;
+file mode captures the full 60 (367 damage per 6.1 s motion run), so
+the ceiling is the host's capture→encode path UNDER FULL SESSION LOAD,
+not the wire (0 loss, decode kept pace) and not the compositor.
+**IDR** — 0 client IDR requests, 0 loss; all 10 IDRs are
+host-originated (1 opening + 7 VBV-directive IDRs + 2 post-idle
+wakes) — every rate reconfigure forces an IDR, so the estimator's
+cold-start climb alone busts ≤2/min. HS-22c's armed-overhead bar is a
+different measurement and passed huge (armed 10 vs twin 64).
 
 ---
 
@@ -2931,8 +2931,10 @@ its entry at the marker at the end of this block.*
   (59.66–59.86 — the probe-day median was 56.7 at the 20 Mbps cap:
   HS-23's fifty + HS-24's p4 are visible in the number). The wire
   legs never started; the bar row stays pending, nothing invented.
-  **DEFERRED-PENDING-HOST (pup dark since ~20:00 MDT 2026-07-28; run
-  2 of the probe died at motion run 12; drain in order on return):**
+  **DEFERRED-PENDING-HOST — DRAINED 2026-07-28 ~23:45 MDT, all six
+  legs (results appended below the list; pup came back ~23:32 —
+  network-level drop only, NO reboot, up since ~14:03, all on-disk
+  state intact):**
   (a) stray sweep — the aborted run's windowed ffplay (testsrc2
       1600x1000) was alive at the drop (a reboot clears it; kill it
       if not); remove `~/qprobe/*.raw` and `*.hevc` leftovers; keep
@@ -2959,6 +2961,63 @@ its entry at the marker at the end of this block.*
       dadf9a66…37cf, noise_static.key 72860390…cfed, paired_clients
       8dc1f88a…55fd; portal_token rotation on later runs is by
       design).
+  **THE DRAIN (2026-07-28 ~23:34–23:45 MDT, per-leg):**
+  (a) the aborted run's ffplay (PID 294448, testsrc2 1600x1000) had
+      SURVIVED the drop — no reboot — and was killed; `~/qprobe`
+      raw/hevc removed, the log/psnr evidence kept until this row
+      landed (it now has);
+  (b) rsync + rebuild: a 2.3 s no-op build — bash-only deltas, as
+      predicted;
+  (c) suite **180/180 on pup at `8dc049a`** — a commit-hash fact now,
+      not a working-tree one;
+  (d) THE ROW LANDED, end to end, one unattended run (~8 min):
+      `| 2026-07-28 @ 8dc049a | 51.27 PASS | 59.75 PASS | 47 FAIL |
+      3.9 FAIL | 0 PASS | 0 PASS |` — static converged 51.27 dB
+      (opening IDR 43.82; 311 fr, 61 damage), motion median 59.75 dB
+      (59.69–59.87 × 12 runs @ 50 Mbps), churn 0 (all 7 directives
+      evidence-backed), loss 0 of 5178 frames (0/285,117 dgrams
+      missing). THE TWO REDS ARE THE PLAN'S EXACT OPEN ROWS, now
+      dated and decomposed — findings, not massaged:
+      **fps p50 47** — the glass ran a steady 46–49 through the
+      healthy window and never touched 55. NOT the wire (0 loss,
+      decode kept pace), NOT the compositor (the file-mode motion
+      legs capture the full 60 — 367 damage per 6.1 s): under full
+      wire-session load (encode+seal+FEC+pace+5 ms audio) the host's
+      capture→encode path ingests ~48/s. HS-23's fifty raised the
+      ceiling; the session pipeline is now the bottleneck — that's
+      the next fps thread to pull.
+      **IDR 3.9/min** — 0 client IDR requests, 0 loss; all 10 IDRs
+      are host-originated: 1 opening + 7 VBV-directive IDRs (the
+      cold-start evidence climb 6.7→13.4→26.9→50 Mbps spends 4, a
+      mid-leg overuse dip to 16 + recovery spends 3) + 2 post-idle
+      wakes. Every rate reconfigure forces an IDR, so the estimator's
+      ramp alone busts ≤2/min — the bar and HS-22c's armed-overhead
+      bar (≤3 vs the twin) measure different things, and the latter
+      passed huge: armed 10 vs twin 64 IDRs (overhead −54).
+      ANOMALY, named: the testsrc2 window FROZE ~110 s into the armed
+      leg — HS-24's trap striking MID-LEG, past the probe's
+      run-1-only damage preflight. The host behaved by design
+      (ratchet converged in 4 passes → IDLE; two damage-trickle wakes,
+      each a wake IDR) and the tail zeros did NOT move the fps median
+      (the healthy window's p50 is still ~48) — but a mid-leg
+      damage-supply tripwire is a probe hardening candidate if the
+      freeze recurs.
+      BONUS RECEIPT: the twin leg doubled as the directive policy's
+      live proof — `--no-vbv-reconfigure` collapsed the estimator to
+      1368 kbps (91 overuse verdicts, 49 downshifts, 4.3 s max queue
+      delay), the client hammered 304 IDR requests, and the glass
+      froze (fps p50 0). The VBV directives are load-bearing.
+      And the Q-1 formatter fix printed exactly as designed: delivery
+      76,614 kbps median with the burst max (272,333) demoted to its
+      label.
+  (e) fresh `bash ~/lyte-loop.sh` live at ~23:44 MDT (nohup/disowned,
+      60 iterations): advertising "pup" on 41151, clipboard leaf up,
+      pinned static key intact (10e0f084…6201) — the owner's eyeball
+      host is back and waiting;
+  (f) all THREE shas byte-identical to the pinned baseline —
+      portal_token dadf9a66…37cf, noise_static.key 72860390…cfed,
+      paired_clients 8dc1f88a…55fd; portal_token did not even rotate
+      across the probe's headless captures or the loop restart.
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
