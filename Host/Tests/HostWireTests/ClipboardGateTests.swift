@@ -151,14 +151,24 @@ final class ClipboardGateTests: XCTestCase {
     /// at the host's keyboard.
     private final class ScriptedClipboardLeaf: HostClipboardLeaf {
         var onLocalChange: ((String) -> Void)?
+        var onLocalImageChange: (([UInt8]) -> Void)?
         private(set) var content = ""
         private(set) var applied: [String] = []
+        private(set) var appliedImages: [[UInt8]] = []
         private(set) var started = false
 
         func apply(text: String) {
             applied.append(text)
             content = text
             onLocalChange?(text)
+        }
+
+        /// P-1's image half of the seam — this text-only gate never
+        /// exercises it beyond conformance; the image gate has its
+        /// own file.
+        func apply(imageData: [UInt8]) {
+            appliedImages.append(imageData)
+            onLocalImageChange?(imageData)
         }
 
         /// A genuine host-side copy.

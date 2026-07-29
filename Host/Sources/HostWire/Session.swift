@@ -333,6 +333,38 @@ public enum SessionEvent: Equatable, Sendable {
     /// the shell feeds it to the BulkReceiveShell, whose replies come
     /// back through `sendBulk`.
     case bulkMessageReceived(BulkMessage)
+    /// P-1: a sha-verified clipboard IMAGE arrived over the bulk
+    /// channel — the shell applies it through the leaf's image seam.
+    /// Only surfaces when the image gate (keys 10 ∧ 12) survived
+    /// intersection; the sync book is already pre-armed against the
+    /// apply's OS echo. Payload bytes appear here and nowhere else —
+    /// never in logs (the CL-15 rule).
+    case clipboardImageReceived(data: [UInt8], mime: String)
+    /// P-1: a host image copy left as bulk-channel cargo (marker +
+    /// offer in flight; byte count only).
+    case clipboardImageShareStarted(byteCount: Int)
+    /// P-1: the client verified the digest — the image landed.
+    case clipboardImageShareCompleted(byteCount: Int)
+    /// P-1: an image share died; `byRemote` says whose abort it was
+    /// (a remote declined/busy is routine weather — best-effort
+    /// latest-wins).
+    case clipboardImageShareAborted(
+        reason: BulkAbortReason, byRemote: Bool
+    )
+    /// P-1: an admitted incoming image died before landing — nothing
+    /// was applied.
+    case clipboardImageReceiveAborted(
+        reason: BulkAbortReason, byRemote: Bool
+    )
+    /// P-1: a leaf-reported image copy was judged and NOT shared —
+    /// the loop-prevention/dedupe/ceiling/lane discipline holding.
+    case clipboardImageSuppressed(ClipboardImageSuppressReason)
+    /// P-1: incoming image cargo was refused; the typed abort is
+    /// already queued on chan 8.
+    case clipboardImageRefused(ClipboardImageRefuseReason)
+    /// P-1: the peer broke the bulk state machine inside the
+    /// clipboard lane (the abort is already queued).
+    case clipboardImageViolation(BulkTransferViolation)
 }
 
 /// Why a leaf-reported host clipboard change did not become a 0x1B
@@ -418,8 +450,13 @@ public enum SessionDropReason: Equatable, Sendable {
     /// negotiated). Dropped loud, never fatal.
     case bulkNotNegotiated
     /// A chan-8 ARQ-delivered message that failed BulkMessage.decode
-    /// (outside the 0x1C–0x21 sextet, or hostile interior bytes).
+    /// (outside the 0x1C–0x21 sextet and the 0x22 marker, or hostile
+    /// interior bytes).
     case malformedBulk
+    /// A 0x22 clipboard-image cargo marker without the image gate
+    /// (keys 10 ∧ 12) in the agreed set (P-1; the same rule-3 gate).
+    /// Dropped loud, never fatal.
+    case clipboardImagesNotNegotiated
 }
 
 public enum SessionError: Error, Equatable, Sendable {
@@ -700,12 +737,34 @@ public final class Session {
     public var agreedBulkTransfer: Bool {
         negotiator.agreed?.bulkTransfer == true
     }
+    /// P-1: true when the image gate (keys 10 ∧ 12) survived the
+    /// intersection. Gates 0x22 consumption and image cargo emission.
+    /// Key 11 is deliberately not consulted — the file-drop consent
+    /// must not couple to the clipboard tier.
+    public var agreedClipboardImages: Bool {
+        negotiator.agreed?.clipboardImagesAgreed == true
+    }
 
     /// CL-15: the loop-prevention/dedupe books (design doc §5) — one
     /// per session, shared by the 0x1A consume path (pre-arms echo
     /// suppression) and `noteHostClipboardChanged` (judges the leaf's
-    /// change signals).
+    /// change signals). P-1 keys images into the SAME book (0xFF ‖
+    /// sha256 — disjoint from any text's UTF-8 by construction), so
+    /// cross-modal moves stay honest.
     private var clipboardBook = ClipboardSyncBook()
+
+    /// P-1: the clipboard-image lane — F-2's engines driven with
+    /// memory-backed cargo, one per session. Inert unless the image
+    /// gate (keys 10 ∧ 12) agreed: every entry point checks first.
+    private var clipboardImageChannel = ClipboardImageChannel()
+    /// Id mint for image cargo (sans-IO: the init's injected
+    /// generator, boxed so the stored property stays concrete).
+    private var imageRng: BoxedRng
+
+    /// P-1: the image lane's own books (share/apply/refuse verdicts).
+    public var clipboardImageCounters: ClipboardImageChannelCounters {
+        clipboardImageChannel.counters
+    }
 
     /// - Parameters:
     ///   - clientTuple: the peer's 4-tuple at session start — the
@@ -741,14 +800,18 @@ public final class Session {
             arqPayloadBudget - ArqBounds.segmentHeaderByteCount
         )
         self.arq = ArqEndpoint(channel: .ctrl, config: arqConfig)
-        // F-3: the bulk endpoint exists exactly when the standing
-        // consent toggle put key 11 in the declaration — a toggle-off
-        // host has no chan-8 machinery to confuse. Same clamped
-        // config as CTRL: the default 262,144 B message budget clears
-        // a max chunk message (17 B + 128 KiB) with 2× headroom.
-        self.bulkArq = config.capabilities.bulkTransfer
+        // F-3/P-1: the bulk endpoint exists exactly when something
+        // declared chan-8 carriage — key 11 (the standing file-drop
+        // consent) or key 12 (the clipboard-image dialect; its cargo
+        // rides the same stream). A host declaring neither has no
+        // chan-8 machinery to confuse. Same clamped config as CTRL:
+        // the default 262,144 B message budget clears a max chunk
+        // message (17 B + 128 KiB) with 2× headroom.
+        self.bulkArq = (config.capabilities.bulkTransfer
+            || config.capabilities.clipboardImages)
             ? ArqEndpoint(channel: .bulkTransfer, config: arqConfig)
             : nil
+        self.imageRng = BoxedRng(base: rng)
         self.estimator = RateEstimator(
             config: config.estimator
                 ?? RateEstimatorConfig(
@@ -976,11 +1039,12 @@ public final class Session {
             events += runMachine(
                 .ctrlEvidence, now: now, hostMicroseconds: hostMicroseconds
             )
-            // The W7 rule-3 gate, key 11 (F-3): chan-8 traffic outside
-            // the agreement is a peer using a superpower it never
-            // negotiated — the toggle-off host never declared the key,
-            // so the intersection cannot carry it. Dropped loud.
-            guard agreedBulkTransfer, bulkArq != nil else {
+            // The W7 rule-3 gate (F-3/P-1): chan-8 traffic outside
+            // BOTH agreements (key 11 files, keys 10∧12 images) is a
+            // peer using a superpower it never negotiated — dropped
+            // loud. Message-level routing separates the two lanes.
+            guard agreedBulkTransfer || agreedClipboardImages,
+                  bulkArq != nil else {
                 counters.dropped += 1
                 events.append(.dropped(.bulkNotNegotiated))
                 return events
@@ -1320,6 +1384,31 @@ public final class Session {
         }
     }
 
+    /// P-1: the shell's report that the OS clipboard now holds an
+    /// image — the leaf's PNG read (genuine host copies AND the
+    /// echoes of our own applies; the shared book tells them apart,
+    /// keyed 0xFF ‖ sha256). Judges the gate, the book, the send
+    /// lane, and the 32 MiB ceiling before cargo leaves on chan 8.
+    /// Silently a no-op unless the image gate (keys 10 ∧ 12)
+    /// survived intersection. Payloads never appear in events or
+    /// logs — byte counts only.
+    public func noteHostClipboardImageChanged(
+        _ data: [UInt8], now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        guard agreedClipboardImages, phase == .established else {
+            return []
+        }
+        let channelEvents = clipboardImageChannel.shareLocalImage(
+            data, sha256: Sha256Stream.digest(data),
+            book: &clipboardBook, rng: &imageRng
+        )
+        var events = processImageEvents(channelEvents, now: now)
+        events += serviceBulkArq(
+            now: now, hostMicroseconds: hostMicroseconds
+        )
+        return events
+    }
+
     /// The ratchet's all-skip stop (HS-3's detector via HS-11): retains
     /// the final converged frame and starts the idle handoff — the
     /// frame rides a reliable one-shot group, and ONLY its full
@@ -1446,8 +1535,10 @@ public final class Session {
     }
 
     /// Chan-8 ingest events → session events: delivered messages
-    /// decode through the frozen sextet codecs and surface as
-    /// `.bulkMessageReceived` for the shell's BulkReceiveShell.
+    /// decode through the frozen codecs; the 0x22 marker and
+    /// clipboard-claimed bulk messages feed the image lane (P-1),
+    /// everything else surfaces as `.bulkMessageReceived` for the
+    /// shell's BulkReceiveShell.
     private func absorbBulkArq(
         _ arqEvents: [ArqEvent], now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -1455,18 +1546,110 @@ public final class Session {
         for event in arqEvents {
             switch event {
             case .message(_, let bytes):
-                guard let message = try? BulkMessage.decode(bytes) else {
-                    counters.dropped += 1
-                    events.append(.dropped(.malformedBulk))
-                    continue
-                }
-                counters.bulkMessagesReceived += 1
-                events.append(.bulkMessageReceived(message))
+                events += consumeBulkStreamMessage(bytes, now: now)
             case .oneShotAcknowledged:
                 break // bulk rides the ordered stream only (group 0)
             case .ignored(let reason):
                 counters.arqIgnored += 1
                 events.append(.arqIgnored(reason))
+            }
+        }
+        return events
+    }
+
+    /// One chan-8 ARQ-delivered message through the P-1 routing
+    /// question: marker → image lane; claimed id → image lane;
+    /// everything else → the file lane (which still demands its own
+    /// key-11 agreement — the two lanes' gates are independent).
+    private func consumeBulkStreamMessage(
+        _ bytes: [UInt8], now: UInt64
+    ) -> [SessionEvent] {
+        if bytes.first == CtrlMessageType.clipboardImageCargo {
+            guard let cargo = try? ClipboardImageCargo.decode(bytes)
+            else {
+                counters.dropped += 1
+                return [.dropped(.malformedBulk)]
+            }
+            // The W7 rule-3 gate, keys 10 ∧ 12 (P-1): image cargo
+            // outside the agreement is a peer using a superpower it
+            // never negotiated. Dropped loud, never fatal.
+            guard agreedClipboardImages else {
+                counters.dropped += 1
+                return [.dropped(.clipboardImagesNotNegotiated)]
+            }
+            return processImageEvents(
+                clipboardImageChannel.ingestCargo(cargo), now: now
+            )
+        }
+        guard let message = try? BulkMessage.decode(bytes) else {
+            counters.dropped += 1
+            return [.dropped(.malformedBulk)]
+        }
+        if clipboardImageChannel.claims(message) {
+            return processImageEvents(
+                clipboardImageChannel.ingest(
+                    message, book: &clipboardBook,
+                    sha256: Sha256Stream.digest
+                ),
+                now: now
+            )
+        }
+        guard agreedBulkTransfer else {
+            // Chan 8 was admitted for the image lane only — a file
+            // message without key 11 is still ungated traffic.
+            counters.dropped += 1
+            return [.dropped(.bulkNotNegotiated)]
+        }
+        counters.bulkMessagesReceived += 1
+        return [.bulkMessageReceived(message)]
+    }
+
+    /// Image-lane channel events → chan-8 sends + session events.
+    /// Callers owe a `serviceBulkArq` pass afterward (the receive
+    /// path already runs one; `noteHostClipboardImageChanged` runs
+    /// its own).
+    private func processImageEvents(
+        _ channelEvents: [ClipboardImageEvent], now: UInt64
+    ) -> [SessionEvent] {
+        var events: [SessionEvent] = []
+        for event in channelEvents {
+            switch event {
+            case .send(let bytes):
+                do {
+                    try bulkArq?.send(
+                        message: bytes, now: arqInstant(now)
+                    )
+                } catch {
+                    events.append(
+                        .sendFailed("clipboard image: \(error)")
+                    )
+                }
+            case .shareStarted(_, let byteCount):
+                events.append(
+                    .clipboardImageShareStarted(byteCount: byteCount)
+                )
+            case .shareCompleted(_, let byteCount):
+                events.append(
+                    .clipboardImageShareCompleted(byteCount: byteCount)
+                )
+            case .shareAborted(let reason, let byRemote):
+                events.append(.clipboardImageShareAborted(
+                    reason: reason, byRemote: byRemote
+                ))
+            case .receiveAborted(let reason, let byRemote):
+                events.append(.clipboardImageReceiveAborted(
+                    reason: reason, byRemote: byRemote
+                ))
+            case .suppressed(let reason):
+                events.append(.clipboardImageSuppressed(reason))
+            case .refused(let reason):
+                events.append(.clipboardImageRefused(reason))
+            case .applyImage(let data, let mime):
+                events.append(
+                    .clipboardImageReceived(data: data, mime: mime)
+                )
+            case .violated(let violation):
+                events.append(.clipboardImageViolation(violation))
             }
         }
         return events
@@ -2540,4 +2723,13 @@ public final class Session {
             )
         }
     }
+}
+
+/// A concrete `RandomNumberGenerator` boxing the init's injected
+/// generator — a stored `some` isn't expressible, and P-1's image-id
+/// mint (session-lifetime) shouldn't force Session generic. The
+/// sans-IO injection seam survives intact.
+struct BoxedRng: RandomNumberGenerator {
+    var base: any RandomNumberGenerator
+    mutating func next() -> UInt64 { base.next() }
 }

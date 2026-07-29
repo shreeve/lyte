@@ -79,6 +79,12 @@ struct Options {
     /// and capability key 10 is declared only when the leaf actually
     /// came up (the key-9/--no-audio precedent).
     var clipboard = false
+    /// P-1: the images rung of the consent tier (LYTE-PLAN §8's
+    /// Off / Text only / Text + images). `--clipboard=images` sets
+    /// both flags; key 12 is declared only when the leaf came up
+    /// with images enabled — a text-only run truthfully never
+    /// promises the image dialect.
+    var clipboardImages = false
     /// F-3: the STANDING PER-HOST consent toggle for incoming file
     /// transfer (H3 §0 owner decision 1). Default OFF — a plain run
     /// declares no key 11 and any chan-8 byte is a protocol
@@ -193,6 +199,12 @@ struct Options {
                 }
             case "--clipboard":
                 opts.clipboard = true
+            case "--clipboard=images":
+                opts.clipboard = true
+                opts.clipboardImages = true
+            case let arg where arg.hasPrefix("--clipboard="):
+                throw HostError("--clipboard takes no value or "
+                    + "=images (the consent tier's third rung)")
             case "--accept-files":
                 opts.acceptFiles = true
             case let arg where arg.hasPrefix("--accept-files="):
@@ -324,6 +336,15 @@ struct Options {
                                     declared only when the leaf comes
                                     up, so a plain run truthfully
                                     negotiates no clipboard
+                  --clipboard=images
+                                    the consent tier's third rung
+                                    (P-1): text AND images (PNG, both
+                                    ways, 32 MiB ceiling) as chan-8
+                                    cargo. Key 12 declared only when
+                                    the leaf comes up with images
+                                    enabled; independent of
+                                    --accept-files (file consent
+                                    never couples to the clipboard)
                   --accept-files[=DIR]
                                     the standing per-host file-drop
                                     consent (F-3, client→host only in
@@ -1341,12 +1362,19 @@ func run() throws {
         // dialect it cannot speak).
         if opts.clipboard {
             do {
-                let leaf = try MutterClipboardLeaf()
+                let leaf = try MutterClipboardLeaf(
+                    imagesEnabled: opts.clipboardImages
+                )
                 try leaf.start()
                 clipboardLeaf = leaf
+                let tier = opts.clipboardImages
+                    ? "text + images (PNG, "
+                        + "\(ClipboardImageWire.maxImageByteCount) B "
+                        + "image ceiling)"
+                    : "text only"
                 print("clipboard: leaf up — RemoteDesktop-session "
-                    + "clipboard (Mutter), text both ways, "
-                    + "\(ClipboardWire.maxTextByteCount) B ceiling")
+                    + "clipboard (Mutter), \(tier), "
+                    + "\(ClipboardWire.maxTextByteCount) B text ceiling")
             } catch {
                 print("clipboard: leaf unavailable (\(error)) — "
                     + "clipboard sync OFF this run, key 10 not declared")
@@ -1387,6 +1415,13 @@ func run() throws {
             : .wireDefault
         if clipboardLeaf != nil {
             declared = declared.declaringClipboardText()
+            // P-1: key 12 follows the TIER, not the flag alone — the
+            // leaf must be up AND images enabled (a text-only run
+            // truthfully never promises the image dialect, and the
+            // key is independent of key 11's file consent).
+            if opts.clipboardImages {
+                declared = declared.declaringClipboardImages()
+            }
         }
         if bulkShell != nil {
             declared = declared.declaringBulkTransfer()
@@ -1510,6 +1545,18 @@ func run() throws {
             }
             leaf.onLocalChange = { [weak w] text in
                 w?.noteHostClipboardChanged(text)
+            }
+            // P-1: the image loop rides the same seams — client
+            // images apply through the leaf; leaf-observed image
+            // copies (genuine AND the applies' echoes) flow back
+            // through the session's shared book.
+            if opts.clipboardImages {
+                w.clipboardImageApplyHandler = { [weak leaf] data in
+                    leaf?.apply(imageData: data)
+                }
+                leaf.onLocalImageChange = { [weak w] data in
+                    w?.noteHostClipboardImageChanged(data)
+                }
             }
         }
 
@@ -1744,6 +1791,8 @@ func run() throws {
         if let leaf = clipboardLeaf {
             clipboardLeafStats = " (leaf: \(leaf.appliesTaken) applies"
             clipboardLeafStats += ", \(leaf.changesReported) changes reported"
+            clipboardLeafStats += ", \(leaf.imageAppliesTaken) image applies"
+            clipboardLeafStats += ", \(leaf.imageChangesReported) image changes"
             clipboardLeafStats += ", \(leaf.transfersServed) transfers served"
             clipboardLeafStats += ", \(leaf.transfersFailed) failed"
             clipboardLeafStats += ", \(leaf.readsAbandoned) reads abandoned"
@@ -1799,6 +1848,14 @@ func run() throws {
         \(s.clipboardSetsReceived) sets received, \
         \(s.clipboardAnnouncesSent) announces sent, \
         \(s.clipboardAnnouncesSuppressed) suppressed\(clipboardLeafStats)
+        clipboard-images: tier \(opts.clipboardImages ? "ON" : "off"), \
+        \(wire.clipboardImageCounters.sharesCompleted)/\
+        \(wire.clipboardImageCounters.sharesStarted) shares completed, \
+        \(wire.clipboardImageCounters.imagesApplied) applied, \
+        \(wire.clipboardImageCounters.sharesSuppressed) suppressed, \
+        \(wire.clipboardImageCounters.receivesRefused) refused, \
+        \(wire.clipboardImageCounters.sharesAborted)+\
+        \(wire.clipboardImageCounters.receivesAborted) aborted
         files: \(bulkShell != nil ? "ACCEPTING" : "off"), \
         \(s.bulkMessagesReceived) bulk messages received, \
         \(s.bulkArqDatagramsSent) chan-8 datagrams sent\(bulkShellStats)

@@ -34,6 +34,15 @@
 // No new C shim: CDBus carries the D-Bus plumbing (fds ride the 'h'
 // type SessionBus already decodes) and Glibc carries the fd syscalls.
 // Payloads never log — byte counts only, the CL-15 rule.
+//
+// P-1 (clipboard v2) adds the image half on the SAME machinery: on
+// the images tier (`--clipboard=images`) a foreign owner offering no
+// text flavor but a PNG one is read whole (32 MiB + 1 cap) and
+// reported through `onLocalImageChange`; a client image landing
+// becomes ownership with the PNG flavor, served per SelectionTransfer
+// exactly like text. Text always wins when both flavors are offered
+// (ClipboardImageFlavor's rule). Off the images tier the leaf is
+// byte-identical to its v1 self.
 
 import Foundation
 import HostWire
@@ -44,6 +53,15 @@ import CDBus
 
 final class MutterClipboardLeaf: HostClipboardLeaf {
     var onLocalChange: ((String) -> Void)?
+    /// P-1: image copies (whole PNG bytes), echoes included — nil
+    /// callback or `imagesEnabled == false` both mean the text-only
+    /// tier, where non-text flavors stay ignored weather (v1 exactly).
+    var onLocalImageChange: (([UInt8]) -> Void)?
+
+    /// P-1: the consent tier's leaf half (`--clipboard=images`). When
+    /// false the leaf is byte-identical to its v1 self: image flavors
+    /// are never read, never offered, never reported.
+    private let imagesEnabled: Bool
 
     private let bus: SessionBus
     private var rdSession = ""
@@ -52,21 +70,44 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
     private static let sessionInterface =
         "org.gnome.Mutter.RemoteDesktop.Session"
 
-    /// Read cap: the wire ceiling plus one byte — enough to KNOW a
+    /// Read caps: the wire ceiling plus one byte — enough to KNOW a
     /// copy is over-ceiling (the session suppresses it as overBudget
-    /// weather) without swallowing an arbitrarily large pipe.
-    private static let readCap = ClipboardWire.maxTextByteCount + 1
+    /// weather) without swallowing an arbitrarily large pipe. Images
+    /// get the P-1 ceiling (32 MiB) the same way.
+    private static let textReadCap = ClipboardWire.maxTextByteCount + 1
+    private static let imageReadCap =
+        ClipboardImageWire.maxImageByteCount + 1
     /// A transfer that makes no progress for this long is abandoned
     /// (the owner died mid-pipe; routine weather, counted).
     private static let transferTimeoutSeconds = 2.0
 
-    /// The UTF-8 bytes we own on the OS clipboard (the last applied
-    /// 0x1A), served on every SelectionTransfer while we stay owner.
-    private var ownedText: [UInt8] = []
+    /// What we own on the OS clipboard (the last applied client set),
+    /// served on every SelectionTransfer while we stay owner.
+    private enum OwnedContent {
+        case none
+        /// UTF-8 bytes of an applied 0x1A.
+        case text([UInt8])
+        /// PNG bytes of an applied clipboard-image landing (P-1).
+        case image([UInt8])
+
+        var bytes: [UInt8] {
+            switch self {
+            case .none: return []
+            case .text(let bytes), .image(let bytes): return bytes
+            }
+        }
+    }
+    private var owned: OwnedContent = .none
     private var sessionIsOwner = false
+
+    private enum ReadKind {
+        case text
+        case image
+    }
 
     private struct PendingRead {
         var fd: Int32
+        var kind: ReadKind
         var buffer: [UInt8] = []
         var startedAt: Double
     }
@@ -89,8 +130,12 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
     private(set) var readsAbandoned = 0
     private(set) var nonTextChangesIgnored = 0
     private(set) var baselineReplaysSkipped = 0
+    // P-1: the image lane's own books.
+    private(set) var imageChangesReported = 0
+    private(set) var imageAppliesTaken = 0
 
-    init() throws {
+    init(imagesEnabled: Bool = false) throws {
+        self.imagesEnabled = imagesEnabled
         // A dedicated connection: the clipboard session's lifetime is
         // this object's, independent of capture and input (a SIGKILL
         // closes the connection, which closes the session — nothing
@@ -155,20 +200,38 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
     /// become the selection owner. The text is retained and served
     /// lazily per SelectionTransfer — the Wayland ownership model.
     func apply(text: String) {
-        ownedText = Array(text.utf8)
+        owned = .text(Array(text.utf8))
         appliesTaken += 1
+        setSelection(
+            mimes: ClipboardTextMime.offered,
+            byteCount: text.utf8.count
+        )
+    }
+
+    /// P-1: a sha-verified client image landed (the session's gate +
+    /// book already ran): become the selection owner with the PNG
+    /// flavor, served lazily like text.
+    func apply(imageData: [UInt8]) {
+        owned = .image(imageData)
+        imageAppliesTaken += 1
+        setSelection(
+            mimes: ClipboardImageFlavor.offered,
+            byteCount: imageData.count
+        )
+    }
+
+    private func setSelection(mimes: [String], byteCount: Int) {
         do {
             let reply = try bus.call(
                 dest: Self.rdService, path: rdSession,
                 interface: Self.sessionInterface, method: "SetSelection",
                 appendArgs: { iter in
-                    try self.appendMimeTypesOptions(
-                        &iter, ClipboardTextMime.offered)
+                    try self.appendMimeTypesOptions(&iter, mimes)
                 })
             dbus_message_unref(reply)
         } catch {
             print("clipboard: SetSelection failed (\(error)) — "
-                + "apply dropped (\(ownedText.count) B)")
+                + "apply dropped (\(byteCount) B)")
         }
     }
 
@@ -226,16 +289,33 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             // Our own SetSelection landing — the apply's echo. Report
             // it upward; the session's pre-armed book suppresses it
             // (the boomerang proof runs through the REAL signal path).
-            if !ownedText.isEmpty {
-                deliver(String(decoding: ownedText, as: UTF8.self))
+            switch owned {
+            case .none:
+                break
+            case .text(let bytes):
+                deliver(String(decoding: bytes, as: UTF8.self))
+            case .image(let bytes):
+                deliverImage(bytes)
             }
             return
         }
 
-        guard let mime = ClipboardTextMime.pickForRead(
-            fromOffered: mimeTypes) else {
-            // Images/rich flavors (or a cleared selection): v1 carries
-            // text only — ignored, never an error.
+        // Text always wins when an owner offers both (the
+        // ClipboardImageFlavor rule); images are the fallback flavor,
+        // and only on the images tier.
+        let kind: ReadKind
+        let mime: String
+        if let textMime = ClipboardTextMime.pickForRead(
+            fromOffered: mimeTypes) {
+            kind = .text
+            mime = textMime
+        } else if imagesEnabled, let imageMime =
+            ClipboardImageFlavor.pickForRead(fromOffered: mimeTypes) {
+            kind = .image
+            mime = imageMime
+        } else {
+            // Rich/unknown flavors (or a cleared selection): ignored,
+            // never an error.
             nonTextChangesIgnored += 1
             return
         }
@@ -249,7 +329,9 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             defer { dbus_message_unref(reply) }
             let fd = try SessionBus.unixFd(fromReply: reply)
             Self.setNonBlocking(fd)
-            pendingRead = PendingRead(fd: fd, startedAt: monotonicNow())
+            pendingRead = PendingRead(
+                fd: fd, kind: kind, startedAt: monotonicNow()
+            )
             pumpRead()
         } catch {
             readsAbandoned += 1
@@ -259,6 +341,8 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
 
     private func pumpRead() {
         guard var read = pendingRead else { return }
+        let cap = read.kind == .image
+            ? Self.imageReadCap : Self.textReadCap
         var scratch = [UInt8](repeating: 0, count: 16_384)
         while true {
             let n = scratch.withUnsafeMutableBytes { buf in
@@ -266,13 +350,13 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             }
             if n > 0 {
                 read.buffer.append(contentsOf: scratch[0..<n])
-                if read.buffer.count >= Self.readCap {
+                if read.buffer.count >= cap {
                     // Over the wire ceiling: enough is known. Deliver
                     // what we have — the session judges it overBudget
                     // and suppresses; the payload never leaves.
                     close(read.fd)
                     pendingRead = nil
-                    deliver(String(decoding: read.buffer, as: UTF8.self))
+                    finishRead(read)
                     return
                 }
                 continue
@@ -280,8 +364,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             if n == 0 { // EOF — the whole selection arrived
                 close(read.fd)
                 pendingRead = nil
-                let text = String(decoding: read.buffer, as: UTF8.self)
-                if !text.isEmpty { deliver(text) }
+                if !read.buffer.isEmpty { finishRead(read) }
                 return
             }
             if errno == EAGAIN || errno == EWOULDBLOCK {
@@ -306,16 +389,30 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
         }
     }
 
+    private func finishRead(_ read: PendingRead) {
+        switch read.kind {
+        case .text:
+            deliver(String(decoding: read.buffer, as: UTF8.self))
+        case .image:
+            deliverImage(read.buffer)
+        }
+    }
+
     private func deliver(_ text: String) {
         changesReported += 1
         onLocalChange?(text)
+    }
+
+    private func deliverImage(_ data: [UInt8]) {
+        imageChangesReported += 1
+        onLocalImageChange?(data)
     }
 
     // MARK: - Selection transfers (serving what a 0x1A applied)
 
     private func handleTransfer(_ msg: OpaquePointer) {
         guard let (mime, serial) = Self.parseTransfer(msg) else { return }
-        _ = mime // every offered flavor is served as the UTF-8 bytes
+        _ = mime // every offered flavor is served as the owned bytes
         do {
             let reply = try bus.call(
                 dest: Self.rdService, path: rdSession,
@@ -329,7 +426,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             let fd = try SessionBus.unixFd(fromReply: reply)
             Self.setNonBlocking(fd)
             pendingWrites.append(PendingWrite(
-                serial: serial, fd: fd, data: ownedText,
+                serial: serial, fd: fd, data: owned.bytes,
                 startedAt: monotonicNow()))
             pumpWrites()
         } catch {

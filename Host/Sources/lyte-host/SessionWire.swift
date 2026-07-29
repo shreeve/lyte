@@ -129,6 +129,9 @@ final class SessionWire {
     /// defensive. Called OFF the session lock: SetSelection is a
     /// blocking D-Bus round-trip.
     var clipboardApplyHandler: ((String) -> Void)?
+    /// P-1: the image half of the same sink (the leaf's SetSelection
+    /// with the PNG flavor). Same off-lock discipline.
+    var clipboardImageApplyHandler: (([UInt8]) -> Void)?
     /// HS-19: the leaf's off-lock service pass (D-Bus signal drain +
     /// fd transfer pumps), run once per `service()` like the routing
     /// work — never under the lock, never on the audio thread.
@@ -136,6 +139,9 @@ final class SessionWire {
     /// 0x1A texts delivered by the session (under the lock), awaiting
     /// the shell's apply outside it (drained by `service()`).
     private var pendingClipboardApplies: [String] = []
+    /// P-1: sha-verified images delivered by the session (under the
+    /// lock), awaiting the leaf apply outside it.
+    private var pendingClipboardImageApplies: [[UInt8]] = []
 
     /// F-3: the file-drop shell. Nil = the standing consent toggle is
     /// OFF this run — the session core never surfaces bulk messages
@@ -216,6 +222,10 @@ final class SessionWire {
 
     var counters: VideoChannelCounters { session.videoCounters }
     var sessionCounters: SessionCounters { session.counters }
+    /// P-1: the image lane's books (share/apply/refuse verdicts).
+    var clipboardImageCounters: ClipboardImageChannelCounters {
+        session.clipboardImageCounters
+    }
     /// V-4: the agreed chroma list (nil until the client's declaration
     /// lands — or forever, for a grandfathered pre-W7 peer). The Sink
     /// branches the encoder posture on it at open.
@@ -708,6 +718,8 @@ final class SessionWire {
         let standing = currentAudioRouting
         let applies = pendingClipboardApplies
         pendingClipboardApplies.removeAll()
+        let imageApplies = pendingClipboardImageApplies
+        pendingClipboardImageApplies.removeAll()
         let bulk = pendingBulkMessages
         pendingBulkMessages.removeAll()
         lock.unlock()
@@ -728,6 +740,10 @@ final class SessionWire {
         // noteHostClipboardChanged, which takes the lock itself).
         for text in applies {
             clipboardApplyHandler?(text)
+        }
+        // P-1: sha-verified client images the same way.
+        for data in imageApplies {
+            clipboardImageApplyHandler?(data)
         }
         clipboardServiceHook?()
         // F-3: drive the file-drop shell (disk writes, fsync, the
@@ -804,6 +820,28 @@ final class SessionWire {
         guard let session, session.phase == .established else { return }
         for event in session.noteHostClipboardChanged(
             text, now: monotonicNS(), hostMicroseconds: monotonicMicros()
+        ) {
+            log(event)
+        }
+        do {
+            try serviceOnce()
+            try flushOutbox()
+        } catch {
+            lastSendError = String(describing: error)
+        }
+    }
+
+    /// P-1: the leaf's report that the OS clipboard now holds an
+    /// image (whole PNG bytes) — genuine host copies AND the echoes
+    /// of our own applies; the session's shared book tells them
+    /// apart. Cargo (or the suppression verdict) happens inside the
+    /// core; an ungated session stays silent (the keys-10∧12 gate).
+    func noteHostClipboardImageChanged(_ data: [UInt8]) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let session, session.phase == .established else { return }
+        for event in session.noteHostClipboardImageChanged(
+            data, now: monotonicNS(), hostMicroseconds: monotonicMicros()
         ) {
             log(event)
         }
@@ -1261,6 +1299,38 @@ final class SessionWire {
             // ride the session lock). Chunks arrive by the hundred —
             // silent here; the shell's events narrate the transfer.
             pendingBulkMessages.append(message)
+        case .clipboardImageReceived(let data, let mime):
+            // P-1: sha-verified — buffer for the off-lock leaf apply
+            // (a blocking D-Bus SetSelection). Never logs the payload.
+            if clipboardImageApplyHandler != nil {
+                print("clipboard: image received (\(data.count) B, "
+                    + "\(mime)) — applying to the host clipboard")
+                pendingClipboardImageApplies.append(data)
+            } else {
+                // Defensive: an imageless shell never declares key
+                // 12, so the core's gate makes this unreachable.
+                print("clipboard: image received (\(data.count) B) — "
+                    + "no image leaf, ignored")
+            }
+        case .clipboardImageShareStarted(let byteCount):
+            print("clipboard: image share started (\(byteCount) B "
+                + "as chan-8 cargo)")
+        case .clipboardImageShareCompleted(let byteCount):
+            print("clipboard: image share completed (\(byteCount) B, "
+                + "sha-verified by the client)")
+        case .clipboardImageShareAborted(let reason, let byRemote):
+            print("clipboard: image share aborted (\(reason), "
+                + "\(byRemote ? "remote" : "local"))")
+        case .clipboardImageReceiveAborted(let reason, let byRemote):
+            print("clipboard: image receive aborted (\(reason), "
+                + "\(byRemote ? "remote" : "local"))")
+        case .clipboardImageSuppressed(let reason):
+            print("clipboard: image suppressed (\(reason))")
+        case .clipboardImageRefused(let reason):
+            print("clipboard: image refused (\(reason))")
+        case .clipboardImageViolation(let violation):
+            print("clipboard: image lane protocol violation "
+                + "(\(violation)) — aborted")
         }
     }
 

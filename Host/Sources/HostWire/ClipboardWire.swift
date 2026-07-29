@@ -19,6 +19,8 @@
 // `--clipboard` and declares capability key 10 only when the leaf came
 // up (the key-9/--no-audio precedent — declaration follows the leaf).
 
+import LyteWire
+
 /// The v1 text-flavor policy the Linux leaf runs (HS-19) — pure and
 /// platform-neutral so the seam tests pin it everywhere. Selection
 /// owners advertise mime types; v1 syncs UTF-8 text only, so the leaf
@@ -60,18 +62,61 @@ public enum ClipboardTextMime {
     }
 }
 
+/// The v2 image-flavor policy (P-1, clipboard v2) — pure and
+/// platform-neutral like the text policy above. v2 carries PNG only
+/// (`ClipboardImageWire.acceptedMimes`); TEXT ALWAYS WINS when an
+/// owner offers both (a spreadsheet cell copy advertises text and an
+/// image render — the text is what the human copied; a screenshot
+/// offers image/png alone and lands here). Formats append in Wire's
+/// list and this policy follows with zero change.
+public enum ClipboardImageFlavor {
+    /// What the leaf advertises when it owns the selection with image
+    /// cargo (a client image landing).
+    public static let offered = [ClipboardImageWire.pngMime]
+
+    /// The flavor to SelectionRead from `offeredByOwner`, or nil when
+    /// the owner holds no image v2 can carry. Only consulted AFTER
+    /// the text policy answered nil, and only when the images tier is
+    /// on. Case-insensitive; the OFFERED spelling is returned (the
+    /// read request echoes the owner's own words).
+    public static func pickForRead(
+        fromOffered offeredByOwner: [String]
+    ) -> String? {
+        for want in ClipboardImageWire.acceptedMimes {
+            if let hit = offeredByOwner.first(
+                where: { $0.lowercased() == want }
+            ) {
+                return hit
+            }
+        }
+        return nil
+    }
+}
+
 /// What a host clipboard leaf owes the shell. Threading is the
 /// shell's concern (the leaf's signals arrive on its own loop; the
 /// shell marshals onto the session's), text is always whole UTF-8 —
-/// v1 syncs text only, and never clearing.
+/// text sync never carries clearing. P-1 adds the image half: a
+/// text-only tier simply never fires the image signal and never
+/// receives an image apply (the session's keys-10∧12 gate holds
+/// upstream either way).
 public protocol HostClipboardLeaf: AnyObject {
-    /// Fired for every OS clipboard change the leaf observes,
+    /// Fired for every OS clipboard TEXT change the leaf observes,
     /// including the ones `apply(text:)` itself causes — the session's
     /// sync book suppresses those; the leaf stays dumb by design.
     var onLocalChange: ((String) -> Void)? { get set }
 
+    /// P-1: fired for every OS clipboard IMAGE change the leaf
+    /// observes (whole PNG bytes — the one v2 read flavor), echoes of
+    /// `apply(imageData:)` included; the same book suppresses those.
+    var onLocalImageChange: (([UInt8]) -> Void)? { get set }
+
     /// Make `text` the OS clipboard's content (a client 0x1A landing).
     func apply(text: String)
+
+    /// P-1: make the PNG bytes the OS clipboard's content (a
+    /// sha-verified client image landing).
+    func apply(imageData: [UInt8])
 
     /// Begin observing (the portal selection-change subscription).
     func start() throws
