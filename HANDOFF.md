@@ -139,26 +139,24 @@ V-2 data on the table).** All four are settled:
 4. **J-G4 = 4:4:4 core + P-1 (clipboard v2) only**; P-2/P-3 stay
    pre-declared droppable to H5.
 
-**IMMEDIATE RESUME POINT (2026-07-29 ~10:55): J-G4a — the live
-joint-gate legs. Everything gate-shaped is code-done; what remains is
-live.** The ladder in order:
-1. **The Keychain grant** (owner, one click): wire-view and the app
-   wedge in `SecItemCopyMatching` awaiting a SecurityAgent grant for
-   the client Noise identity — click **"Always Allow"** when the
-   prompt appears. Until then NO live wire leg runs from any shell.
-2. **The 444 warmup leg**: `wire-view <port> --host 10.0.0.249
-   --chroma 444` against a `--no-advertise` V-4+ host on a fresh
-   41xxx port — proves the negotiated Rext session end-to-end.
-3. **The J-G4a headline legs**: live negotiated 444 session (harness
-   re-run at the glass), P-1's live clipboard-image legs (pup
-   screenshot → Mac pasteboard and back, under `--clipboard=images`
-   + the client images rung ON — first minutes should confirm the
-   mime list Mutter actually offers `wl-copy`/GNOME-screenshot), and
-   the owner's UI eyeball (Chroma control, photo toggle, banners —
-   compiled-and-reviewed only so far).
-4. **Beauty-bar re-measurement**: the fps row at the glass
-   (`quality-probe.sh`, post-HS-26) and the IDR row against REAL
-   Wi-Fi weather (post-dwell-deferral; the tbf dwell was synthetic).
+**IMMEDIATE RESUME POINT (updated 2026-07-29 ~11:15): J-G4a is
+UNDERWAY and its first three rungs are DONE** (full entry at the end
+of the wave block):
+1. ~~The Keychain grant~~ — **EXISTS**; wire-view runs from any shell
+   with zero wedge. The blocker is retired.
+2. ~~The 444 warmup leg~~ — **PASSED live** (41201: negotiated 4:4:4,
+   67,937/67,937 ok, clean teardown; the owner's unprompted verdict:
+   "MASSIVELY improved").
+3. ~~P-1's live clipboard-image legs~~ — **BOTH DIRECTIONS PASS
+   BYTE-EXACT** (wl-copy PNG → Mac pasteboard sha-identical; Mac
+   screenshot → pup wl-paste sha-identical; loopEcho suppressed
+   live; the Mutter mime question answered — image/png, first try).
+4. **REMAINING**: the beauty-bar re-measurement — the fps row at the
+   glass (`quality-probe.sh`, post-HS-26) and the IDR row against
+   REAL Wi-Fi weather (post-dwell-deferral; the tbf dwell was
+   synthetic) — plus the owner's UI eyeball (Chroma tiers, photo
+   toggle, banners: `open .build/Lyte.app`, connect to pup 41151 —
+   it agrees at 444).
 Named-but-not-blocking: a genuine squeeze still costs 3 IDRs (every
 nvenc rc delta forces one — intra-refresh / non-IDR reconfigure is
 the candidate slice); no [420]-only host exists anywhere for a live
@@ -3661,6 +3659,57 @@ its entry at the marker at the end of this block.*
   (iii) the portal clipboard's image-flavor serve on pup has never
   run against a REAL `wl-copy`/GNOME screenshot — first J-G4a
   minutes should confirm the mime list Mutter actually offers.
+
+- **J-G4a first live legs — the Keychain wall falls, Best runs live
+  end-to-end, and the clipboard carries real pictures both ways**
+  (2026-07-29 ~11:10 MDT; live evidence only, no code commits — the
+  ledger commit is the record).
+  THE WALL: the SecurityAgent grant for the client Noise identity now
+  EXISTS — wire-view ran from the agent shell with zero wedge. Every
+  live leg below is unblocked; V-5's blocker note is retired.
+  WARMUP LEG (pup 41201, `--no-advertise`, fresh `build-cli.sh`
+  wire-view): negotiated **chroma 4:4:4 live** — host log `agreed [2]`,
+  Rext rgb_mode "(VUI 601-limited, signed truthfully)", client SPS
+  audit printed OBSERVED 4:4:4; **67,937/67,937 datagrams ok** (0
+  unseal failures), first frame 495 ms, ~70 fps at 2.2 Mbps (static
+  desktop, ratchet converged), clean typed teardown both directions
+  (client shuttingDown → host peerTeardown, exit clean). **THE OWNER'S
+  FIRST AT-THE-GLASS VERDICT ON THE NEW STACK, unprompted, mid-leg:
+  "Video quality on that last test was MASSIVELY improved!!!"** — the
+  444 + HS-26 + IDR-hunt stack's first eyeball, and it's a rave.
+  Eye-on datum: `91 capture frames throttled` at session open
+  (open-ramp shaped — freshVideo queue delay peaked 79 ms at open,
+  then quiet; the HS-26 tripwire says watch it at the next fps leg).
+  P-1 LIVE LEGS (fresh hosts 41203/41205 `--no-advertise
+  --clipboard=images`, wire-view `--clipboard --clipboard-images`,
+  one direction per run for unambiguous end states):
+  - **Leg A pup→Mac PASS BYTE-EXACT**: a real `wl-copy -t image/png`
+    (9,193 B ffmpeg testsrc2 PNG) mid-session → Mutter leaf reported
+    1 image change → `image share completed (9193 B, sha-verified by
+    the client)` → Mac pasteboard holds PNGf **sha-identical**
+    (`de0cb363…`) plus the TIFF rendition, exactly as designed. The
+    ledger's open Mutter-mime question is ANSWERED: the leaf reads
+    wl-copy's image/png offer fine, first try.
+  - **Leg B Mac→pup PASS BYTE-EXACT**: a real 60,607 B Mac
+    screenshot set mid-session → client `clipImages 1/1 sent` → host
+    `image received (60607 B, image/png) — applying`, `wl-paste
+    --list-types` offers image/png and the served bytes are
+    **sha-identical** (`4f0c9068…`, read live while the leaf owned
+    the selection; 2 transfers served, 0 failed). BONUS LIVE PROOF:
+    the host's own apply came back as a change and was **suppressed
+    (loopEcho)** — the shared ClipboardSyncBook working live.
+  Logs kept: pup `/tmp/jg4a-{warmup,clipA,clipB}-host.log`.
+  RAILS: three secrets sha-identical at close against the pinned trio
+  (dadf9a66…37cf / 72860390…cfed / 8dc1f88a…55fd); no netem; test
+  hosts + the standing wl-copy killed at close; the owner's 41151
+  loop untouched and alive (now `while true` + images tier, backup
+  `~/lyte-loop.sh.bak-20260729`); Lyte.app rebuilt+re-signed at HEAD
+  (`make-app.sh`) so the owner's bundle has the P-1/V-5 UI.
+  REMAINING FOR J-G4a: (i) the harness's live end-to-end re-run at
+  the glass — the beauty-bar fps row (quality-probe.sh, post-HS-26)
+  and the IDR row vs REAL Wi-Fi weather; (ii) the owner's UI eyeball
+  — Chroma control tiers, the photo-glyph toggle, fallback banner
+  (`open .build/Lyte.app`, connect to pup 41151 — it agrees at 444).
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
