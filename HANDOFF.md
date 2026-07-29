@@ -3742,6 +3742,43 @@ its entry at the marker at the end of this block.*
   — Chroma control tiers, the photo-glyph toggle, fallback banner
   (`open .build/Lyte.app`, connect to pup 41151 — it agrees at 444).
 
+- **The truth-probe — the IDR red's 20 Mbps "path" is exposed as the
+  estimator measuring itself; the hunt is DISHONEST and slice (b) is
+  confirmed-needed** (2026-07-29 ~12:05 MDT; live evidence only, logs
+  kept — pup `/tmp/truthprobe-host.log`, local scratchpad
+  `legB-flood.log`, iperf3 legs inline in the session transcript).
+  LEG A (path capacity, session-shaped): iperf3 UDP pup→Mac at the
+  wire's own 1152 B datagrams — **25 M offered → 22.8 delivered 0%
+  loss; 45 M → 44.5, 0% loss; 80 M → 66.9, 0% loss**. The path
+  comfortably carries the freed 60 fps appetite (~43 Mbps); ~20 Mbps
+  is NOT an airtime ceiling.
+  LEG B (the discriminator, 90 s armed 444 heavy-motion session +
+  35 M side-flood at t+40): the session opened clean at **~40 Mbps /
+  55 fps**, then fell into the KNOWN HS-22b(ii) floor spiral — a
+  limit cycle between 0.1 and 1.6 Mbps for the rest of the leg,
+  never recovering — **while the side-flood delivered 30.0 Mbps at
+  0% loss THROUGH the same air at the same moment**. The estimator
+  held the glass at the floor with 30+ Mbps of headroom provably
+  idle.
+  THE CONFESSION IN THE FORENSICS (the IDR-hunt books, doing their
+  job): one fall recorded `full-train 348492 kbps 39 ms ago` — fresh
+  evidence of a ~348 Mbps drain — and fell anyway, anchored to a
+  5.6 Mbps delivery figure; the final fall anchored to `full-train
+  398 kbps 0 ms ago` — its own starved pacing, re-anchored at
+  0.85×self, exactly the HS-22b(ii) self-reference seam. 9 falls in
+  90 s. The dwell deferral held where it applies (first fall's
+  streak peaked 164 ms — past the ceiling, correctly not deferred).
+  VERDICT: the saw-tooth behind the 15.2/min IDR red is largely the
+  estimator's own artifact. **Slice (b) is upgraded from
+  "if-proven" to CONFIRMED-NEEDED**: the anchor must not trust
+  delivery samples measured under its own squeezed pacer (windowed-
+  max robustness / self-reference guard — HS-16's flagged revisit +
+  HS-22b(ii), now with decisive instrument evidence). Slice (a)
+  (non-IDR reconfigure) proceeds first per the owner's ruling — it
+  kills the per-move cost in both worlds.
+  RAILS: secrets sha-identical (pinned trio); ffplay + iperf3 +
+  test host killed at close; owner's 41151 loop untouched and alive.
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
