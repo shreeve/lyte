@@ -1093,6 +1093,19 @@ public final class RateEstimator {
                     // Censored (≈ our pace) or compressed (a drain):
                     // either way it can only prove capacity ≥ itself.
                     stats.censoredSamples += 1
+                    if rate >= pace * config.stallBurstRateFactor {
+                        // A COMPRESSED drain: packets accumulated in a
+                        // hole and were released together — the hole
+                        // CLOSED. Every "honest" stretched reading
+                        // taken before this instant measured the hole,
+                        // not the path (the first live leg-B rerun:
+                        // an 8.3 Mbps mid-dwell median demoted the
+                        // belief while a 98 Mbps drain sat 0 ms old in
+                        // the same forensics line). The drain purges
+                        // those votes — HS-23's insight, moved from a
+                        // fall-time gate into the measurement itself.
+                        recentHonestDeliveries.removeAll()
+                    }
                 }
                 // Delivery above the belief is always honest news —
                 // censored samples may RAISE it, never lower it.
@@ -1220,8 +1233,17 @@ public final class RateEstimator {
             let belief = beliefBits ?? Double(rateBitsPerSecond)
             let honestLow = honestMedian.map { $0 < belief } ?? false
             let selfExplaining = backlogStanding && honestMedian == nil
+            // Instant corroboration: pre-FEC loss the clean band
+            // flags, or post-FEC evidence at RUNG-3 scale (the same
+            // bar the ungated rung-3 branch falls on). Post-FEC
+            // between the clean column and rung 3 waits for the
+            // persistence instead: a closed hole ECHOES a percent or
+            // two of NACKs whose frames already drained (the client's
+            // presumption expiring moments before the drain), and the
+            // first live leg-B rerun showed a 41 ms streak crashing
+            // to the floor on exactly that echo.
             let instant = lossFraction >= config.lossCleanThreshold
-                || postFecLossFraction >= config.postFecCleanThreshold
+                || postFecLossFraction > config.postFecDownshiftThreshold
             let persisted = now &- (inflatedStreakSinceNS ?? now)
                 >= config.beliefDemotionSustainNS
 

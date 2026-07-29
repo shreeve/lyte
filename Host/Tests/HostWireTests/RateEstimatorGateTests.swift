@@ -1743,6 +1743,161 @@ final class RateEstimatorGateTests: XCTestCase {
             + "released frames → rung-3 fall + regime step")
     }
 
+    /// The first live leg-B rerun's confession, pinned: a Wi-Fi hole
+    /// stretches mid-dwell trains into honest-LOOKING low readings,
+    /// and the compressed drain that proves the hole closed arrives
+    /// in the SAME report (`honest 8316 kbps … full-train 98429 kbps
+    /// 0 ms ago`). The drain must purge the mid-hole votes — they
+    /// measured the hole, not the path — so the fall-check finds no
+    /// honest evidence and holds instead of demoting the belief to
+    /// the hole's trickle.
+    func testDrainPurgesMidHoleStretchReadings() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        for _ in 0..<10 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
+
+        // 30 beats of the live shape: every report carries a
+        // mid-hole STRETCHED train (3 Mbps — honest-looking) AND a
+        // compressed 200 Mbps drain, all under held delay (the hole
+        // chain never lets the streak reset, so persistence IS
+        // reached — the purge is the only thing standing between the
+        // belief and the 3 Mbps trickle).
+        for _ in 0..<30 {
+            now += 25 * Self.ms
+            clientMicros += 25_000
+            let stretched = train(
+                estimator, seqStart: seq, count: 12,
+                sendStartNS: now - 20 * Self.ms,
+                bottleneckBitsPerSecond: 3e6, extraDelayMicros: 80_000
+            )
+            seq += 12
+            let drain = train(
+                estimator, seqStart: seq, count: 12,
+                sendStartNS: now - Self.ms,
+                bottleneckBitsPerSecond: 200e6, extraDelayMicros: 80_000
+            )
+            seq += 12
+            let verdict = estimator.ingest(
+                report(samples: stretched + drain,
+                       clientMicros: clientMicros),
+                now: now, inRecovery: false,
+                pacerBacklogBytes: 40_000
+            )
+            XCTAssertNil(verdict.newRateBitsPerSecond,
+                "a hole whose own drain testifies in the same report "
+                + "must not anchor a fall")
+        }
+        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling,
+            "the belief never demoted to the mid-hole trickle")
+        XCTAssertEqual(estimator.stats.downshifts, 0)
+        XCTAssertGreaterThanOrEqual(
+            estimator.capacityBeliefBitsPerSecond ?? 0, 100_000_000,
+            "the drains kept raising the belief"
+        )
+
+        print("HS-28 gate (drain purge): 30 mid-hole reports (3 Mbps "
+            + "stretch + 200 Mbps drain, held delay) → 0 falls, belief "
+            + "\((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) "
+            + "kbps, rate pinned at "
+            + "\(estimator.rateBitsPerSecond / 1_000) kbps")
+    }
+
+    /// The other live confession: a 41 ms streak crashed to the floor
+    /// because ~1% post-FEC NACK echo read as INSTANT corroboration.
+    /// Post-FEC between the clean column and rung 3 is a closed
+    /// hole's shadow (frames already drained, presumption expired) —
+    /// it must wait for persistence like any other pressure; only
+    /// rung-3 scale is instant (and rung 3's own branch still falls).
+    func testPostFecEchoBelowRungThreeNeedsPersistence() throws {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        var received: UInt32 = 0
+
+        for _ in 0..<10 {
+            received += 1_200
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0,
+                            channels: lossLedger(received: received,
+                                                 missing: 0))
+        }
+
+        // One NACK-echo burst: 4 frames × 31 shards ≈ 1% of the
+        // rolling window's attempted — past the clean column, well
+        // under rung 3.
+        let echo = try (0..<4).map {
+            try FeedbackReport.NackEntry(
+                frame: FrameNumber(rawValue: UInt32(50 + $0)),
+                missingShards: Array(0...30)
+            )
+        }
+        received += 1_200
+        XCTAssertNil(selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 20, extraDelayMicros: 60_000,
+            backlogBytes: 0,
+            channels: lossLedger(received: received, missing: 0),
+            nacks: echo
+        ).newRateBitsPerSecond)
+
+        // Ten more inflated beats inside the persistence span: the
+        // echo must NOT act as instant corroboration (the old law
+        // fell here on a 41 ms streak).
+        for _ in 0..<10 {
+            received += 1_200
+            let verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: 20, extraDelayMicros: 60_000,
+                backlogBytes: 0,
+                channels: lossLedger(received: received, missing: 0)
+            )
+            XCTAssertNil(verdict.newRateBitsPerSecond,
+                "a sub-rung-3 NACK echo is a shadow, not instant "
+                + "corroboration")
+        }
+
+        // Pressure that outlives the persistence still falls — and
+        // bounded multiplicative (no honest votes), never anchored
+        // to the echo.
+        var verdict = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 20, extraDelayMicros: 60_000,
+            backlogBytes: 0,
+            channels: lossLedger(received: received, missing: 0)
+        )
+        var beats = 0
+        while verdict.newRateBitsPerSecond == nil, beats < 20 {
+            received += 1_200
+            verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: 20, extraDelayMicros: 60_000,
+                backlogBytes: 0,
+                channels: lossLedger(received: received, missing: 0)
+            )
+            beats += 1
+        }
+        XCTAssertNotNil(verdict.newRateBitsPerSecond)
+        XCTAssertGreaterThanOrEqual(verdict.newRateBitsPerSecond!,
+                                    16_000_000,
+            "the persisted fall is bounded multiplicative — the echo "
+            + "never became an anchor")
+
+        print("HS-28 gate (echo persistence): 0.8% post-FEC echo + "
+            + "young streak → 0 instant falls; persisted pressure "
+            + "fell bounded to "
+            + "\(verdict.newRateBitsPerSecond! / 1_000) kbps")
+    }
+
     // MARK: Leg 4 — the machine's numbers
 
     func testIdrPacingNumbers() {
