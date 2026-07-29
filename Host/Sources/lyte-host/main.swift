@@ -533,6 +533,8 @@ final class Sink {
             var err = [CChar](repeating: 0, count: 256)
             let cq: Int32 = opts.ratchet ? Int32(Ratchet.floorQP) : 0
             let recipe = opts.encoderRecipe
+            // Profile/rgb_mode stay wrapper defaults in the session path
+            // until V-4 lands the Work/Play recipe split.
             guard let enc = lyte_hevc_enc_new(Int32(width), Int32(height), name,
                                               opts.fps, opts.bitrate, cq,
                                               recipe.preset, recipe.tune,
@@ -540,6 +542,7 @@ final class Sink {
                                               recipe.spatialAQ ? 1 : 0,
                                               recipe.temporalAQ ? 1 : 0,
                                               Int32(recipe.aqStrength),
+                                              "", "",
                                               &err, err.count) else {
                 fail("encoder init failed: \(errString(err))")
                 return

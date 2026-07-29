@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 struct lyte_hevc_enc {
     AVCodecContext *ctx;
@@ -18,6 +19,7 @@ struct lyte_hevc_enc {
     int width;
     int height;
     int cbr; /* opened in CBR mode (cq == 0): min-rate tracks the avg */
+    uint64_t repack_us_total; /* BGRx→planar repack wall time (gbrp path) */
 };
 
 void lyte_stdout_linebuf(void) { setvbuf(stdout, NULL, _IOLBF, 0); }
@@ -77,6 +79,8 @@ lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
                                  const char *multipass,
                                  int spatial_aq, int temporal_aq,
                                  int aq_strength,
+                                 const char *profile,
+                                 const char *rgb_mode,
                                  char *err, size_t errlen)
 {
     const AVCodec *codec = avcodec_find_encoder_by_name("hevc_nvenc");
@@ -89,6 +93,16 @@ lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
     enum AVPixelFormat pix_fmt = av_get_pix_fmt(pix_fmt_name);
     if (pix_fmt == AV_PIX_FMT_NONE) {
         set_err(err, errlen, "unknown pixel format \"%s\"", pix_fmt_name);
+        return NULL;
+    }
+    /* The input formats this leaf actually plumbs (send() owns a copy
+       path per family). Anything else is a loud reject, not a maybe. */
+    if (pix_fmt != AV_PIX_FMT_BGR0 && pix_fmt != AV_PIX_FMT_BGRA &&
+        pix_fmt != AV_PIX_FMT_RGB0 && pix_fmt != AV_PIX_FMT_RGBA &&
+        pix_fmt != AV_PIX_FMT_GBRP && pix_fmt != AV_PIX_FMT_YUV444P) {
+        set_err(err, errlen,
+                "pixel format \"%s\" has no input plumbing in this leaf "
+                "(packed RGB, gbrp, yuv444p only)", pix_fmt_name);
         return NULL;
     }
 
@@ -125,28 +139,40 @@ lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
     ctx->max_b_frames = 0;
     ctx->flags |= AV_CODEC_FLAG_CLOSED_GOP | AV_CODEC_FLAG_LOW_DELAY;
 
-    /* R3 Stage A (HS-22c): sign the colors. We feed packed RGB and NVENC
-       converts to 4:2:0 internally; before this, no colorspace/range was
-       set anywhere, the VUI carried "unspecified", and every decoder
-       GUESSED the matrix and range — the classic smeared/washed-desktop
-       bug class (image-quality pillar §2). These fields flow into the
-       SPS VUI via the nvenc wrapper. The values are the MEASURED truth
-       of what the hardware conversion actually does with RGB input,
-       decided on the reference host by decoding a captured SMPTE-bars
-       stream under every candidate interpretation against the raw BGRx
-       dump: BT.601 limited wins (41.7 dB RGB vs 40.0 for 709-limited;
-       full-range collapses to ~26 dB) — and the wrapper agrees, forcing
-       colourMatrix to bt470bg for RGB input no matter what colorspace
-       says, so we set the field to match reality rather than fight it.
-       Transfer is signed sRGB (IEC 61966-2-1): the desktop framebuffer
-       IS sRGB-encoded and NVENC never touches the transfer — a bt709
-       tag would buy the classic gamma shift on any color-managed
-       decoder (the Mac client's exact pipeline). Primaries: sRGB and
-       BT.709 share them. */
+    /* Sign the colors per input path — the VUI must carry the MEASURED
+       truth of what actually happens to the pixels, never a hope.
+       Transfer is signed sRGB (IEC 61966-2-1) on every path: the
+       desktop framebuffer IS sRGB-encoded and neither NVENC nor a
+       repack touches the transfer — a bt709 tag would buy the classic
+       gamma shift on any color-managed decoder (the Mac client's exact
+       pipeline). Primaries: sRGB and BT.709 share them. */
     ctx->color_primaries = AVCOL_PRI_BT709;
     ctx->color_trc = AVCOL_TRC_IEC61966_2_1;
-    ctx->colorspace = AVCOL_SPC_BT470BG;
-    ctx->color_range = AVCOL_RANGE_MPEG;
+    if (pix_fmt == AV_PIX_FMT_GBRP) {
+        /* Planar RGB rides Rext as raw GBR planes: identity matrix,
+           full range, zero matrix conversion anywhere (V-1; nvenc.c
+           forces colourMatrix=RGB for gbrp and honors color_range). */
+        ctx->colorspace = AVCOL_SPC_RGB;
+        ctx->color_range = AVCOL_RANGE_JPEG;
+    } else if (pix_fmt == AV_PIX_FMT_YUV444P) {
+        /* The host-side conversion path: the caller hands YUV444 it
+           converted itself, BT.709 full-range by contract (the V-1
+           probe's third candidate; a real conversion leaf would sign
+           the matrix it applies here). */
+        ctx->colorspace = AVCOL_SPC_BT709;
+        ctx->color_range = AVCOL_RANGE_JPEG;
+    } else {
+        /* R3 Stage A (HS-22c): packed RGB in, NVENC converts
+           internally; the wrapper forces colourMatrix to bt470bg
+           limited for packed-RGB input no matter what colorspace says
+           (measured on the reference host: BT.601 limited wins, 41.7 dB
+           RGB vs 40.0 for 709-limited; full-range collapses to ~26 dB)
+           — so we set the field to match reality rather than fight it.
+           Holds for the rgb_mode=yuv444 4:4:4 path too: the internal
+           conversion stays 601-limited (V-1 re-measured). */
+        ctx->colorspace = AVCOL_SPC_BT470BG;
+        ctx->color_range = AVCOL_RANGE_MPEG;
+    }
 
     if (cq > 0) {
         /* Capped-CQ VBR (the quality-ratchet mode): a constant-quality
@@ -183,6 +209,16 @@ lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
         goto fail;
     if (aq_strength > 0 &&
         set_opt_int(ctx, "aq-strength", aq_strength, err, errlen) < 0)
+        goto fail;
+    /* H4 probe knobs (V-1): profile ("main"/"main10"/"rext") and
+       rgb_mode ("yuv420"/"yuv444", the wrapper's packed-RGB handling).
+       Empty means "leave the wrapper's default"; a value this build
+       doesn't know fails the open loudly like every other knob. */
+    if (profile && profile[0] &&
+        set_opt(ctx, "profile", profile, err, errlen) < 0)
+        goto fail;
+    if (rgb_mode && rgb_mode[0] &&
+        set_opt(ctx, "rgb_mode", rgb_mode, err, errlen) < 0)
         goto fail;
     av_opt_set_int(ctx->priv_data, "zerolatency", 1, 0);
     av_opt_set_int(ctx->priv_data, "delay", 0, 0);
@@ -240,6 +276,33 @@ static int drain(lyte_hevc_enc *e, lyte_hevc_packet_cb cb, void *user,
     }
 }
 
+static uint64_t now_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
+}
+
+/* BGRx → gbrp: split the packed capture buffer into the G/B/R planes
+   nvenc's identity-matrix Rext path encodes verbatim. This is the
+   production-shaped repack the gbrp path costs (V-1 measures it via
+   lyte_hevc_enc_repack_us_total). */
+static void repack_bgrx_gbrp(const uint8_t *src, int src_stride,
+                             AVFrame *f, int width, int height)
+{
+    for (int y = 0; y < height; y++) {
+        const uint8_t *row = src + (ptrdiff_t)y * src_stride;
+        uint8_t *g = f->data[0] + (ptrdiff_t)y * f->linesize[0];
+        uint8_t *b = f->data[1] + (ptrdiff_t)y * f->linesize[1];
+        uint8_t *r = f->data[2] + (ptrdiff_t)y * f->linesize[2];
+        for (int x = 0; x < width; x++) {
+            b[x] = row[4 * x + 0];
+            g[x] = row[4 * x + 1];
+            r[x] = row[4 * x + 2];
+        }
+    }
+}
+
 int lyte_hevc_enc_send(lyte_hevc_enc *e, const uint8_t *data, int src_stride,
                        int64_t pts, int force_idr,
                        lyte_hevc_packet_cb cb, void *user,
@@ -251,12 +314,29 @@ int lyte_hevc_enc_send(lyte_hevc_enc *e, const uint8_t *data, int src_stride,
         return -1;
     }
 
-    const int row_bytes = e->width * 4;
-    uint8_t *dst = e->frame->data[0];
-    const int dst_stride = e->frame->linesize[0];
-    for (int y = 0; y < e->height; y++)
-        memcpy(dst + (ptrdiff_t)y * dst_stride,
-               data + (ptrdiff_t)y * src_stride, row_bytes);
+    if (e->frame->format == AV_PIX_FMT_GBRP) {
+        /* Input stays packed BGRx (the capture contract); the leaf owns
+           the planar split. */
+        uint64_t t0 = now_us();
+        repack_bgrx_gbrp(data, src_stride, e->frame, e->width, e->height);
+        e->repack_us_total += now_us() - t0;
+    } else if (e->frame->format == AV_PIX_FMT_YUV444P) {
+        /* Pre-converted planar input: three tightly-packed w×h planes
+           (Y, Cb, Cr); src_stride is ignored. */
+        for (int p = 0; p < 3; p++) {
+            const uint8_t *src = data + (ptrdiff_t)p * e->width * e->height;
+            for (int y = 0; y < e->height; y++)
+                memcpy(e->frame->data[p] + (ptrdiff_t)y * e->frame->linesize[p],
+                       src + (ptrdiff_t)y * e->width, e->width);
+        }
+    } else {
+        const int row_bytes = e->width * 4;
+        uint8_t *dst = e->frame->data[0];
+        const int dst_stride = e->frame->linesize[0];
+        for (int y = 0; y < e->height; y++)
+            memcpy(dst + (ptrdiff_t)y * dst_stride,
+                   data + (ptrdiff_t)y * src_stride, row_bytes);
+    }
 
     e->frame->pts = pts;
     e->frame->pict_type = force_idr ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
@@ -267,6 +347,11 @@ int lyte_hevc_enc_send(lyte_hevc_enc *e, const uint8_t *data, int src_stride,
         return -1;
     }
     return drain(e, cb, user, err, errlen);
+}
+
+uint64_t lyte_hevc_enc_repack_us_total(const lyte_hevc_enc *e)
+{
+    return e->repack_us_total;
 }
 
 int lyte_hevc_enc_set_rate(lyte_hevc_enc *e, int64_t avg_bits,

@@ -40,6 +40,15 @@ struct CheckOptions {
     var bitrate: Int64 = 20_000_000
     var cq: Int32 = 0
     var recipe = EncoderRecipe.sessionDefault
+    // H4 V-1 probe knobs — pass-through to the C leaf's loud-reject
+    // option surface; "" leaves the wrapper default.
+    var pixFmt = "bgr0"
+    var profile = ""
+    var rgbMode = ""
+    // >0: force an IDR every N frames (the IDR-size-distribution books).
+    var idrEvery = 0
+    // non-empty: write "idx key bytes qp" per frame (the size books).
+    var sizesPath = ""
 
     static func parse(_ args: [String]) throws -> CheckOptions {
         var o = CheckOptions()
@@ -101,6 +110,15 @@ struct CheckOptions {
                     throw CheckError("--aq-strength needs 1…15")
                 }
                 o.recipe.aqStrength = v
+            case "--pix-fmt": o.pixFmt = try value("--pix-fmt")
+            case "--profile": o.profile = try value("--profile")
+            case "--rgb-mode": o.rgbMode = try value("--rgb-mode")
+            case "--idr-every":
+                guard let v = Int(try value("--idr-every")), v > 0 else {
+                    throw CheckError("--idr-every needs a positive integer")
+                }
+                o.idrEvery = v
+            case "--sizes": o.sizesPath = try value("--sizes")
             case "--help", "-h":
                 print("""
                 usage: lyte-encode-check --raw FILE --width W --height H
@@ -109,12 +127,20 @@ struct CheckOptions {
                        [--preset p1…p7] [--tune ull|ll]
                        [--multipass disabled|qres|fullres]
                        [--spatial-aq] [--temporal-aq] [--aq-strength 1…15]
-                Encodes packed-BGRx rawvideo (ffmpeg -pix_fmt bgr0 -f
-                rawvideo) through CHevcEncode with the given recipe and
-                prints the A/B numbers; Annex-B lands at --out for the
-                PSNR half. --cq 0 (default) is CBR at --bitrate-mbps;
-                --cq N is capped-CQ. --static N re-encodes the first
-                frame N times (the ratchet-convergence check).
+                       [--pix-fmt bgr0|gbrp|yuv444p] [--profile main|rext]
+                       [--rgb-mode yuv420|yuv444]
+                       [--idr-every N] [--sizes FILE]
+                Encodes rawvideo through CHevcEncode with the given
+                recipe and prints the A/B numbers; Annex-B lands at
+                --out for the PSNR half. Input is packed BGRx (ffmpeg
+                -pix_fmt bgr0 -f rawvideo) for bgr0 AND gbrp (the leaf
+                repacks to planes — the production shape); planar
+                yuv444p raw for yuv444p. --cq 0 (default) is CBR at
+                --bitrate-mbps; --cq N is capped-CQ. --static N
+                re-encodes the first frame N times (the
+                ratchet-convergence check). --idr-every N forces an IDR
+                every N frames; --sizes writes per-frame
+                "idx key bytes qp" books (H4 V-1).
                 """)
                 exit(0)
             default:
@@ -141,6 +167,7 @@ final class Collector {
     var keyframes = 0
     var frameBytes: [Int] = []
     var frameQPs: [Int] = []
+    var frameKeys: [Bool] = []
 
     init(file: UnsafeMutablePointer<FILE>) { self.file = file }
 
@@ -151,6 +178,7 @@ final class Collector {
         if keyframe { keyframes += 1 }
         frameBytes.append(size)
         frameQPs.append(avgQP)
+        frameKeys.append(keyframe)
     }
 }
 
@@ -199,12 +227,16 @@ func run() throws {
     let rawSize = ftell(raw)
     fseek(raw, 0, SEEK_SET)
 
-    let frameSize = opts.width * opts.height * 4
+    // bgr0 AND gbrp legs both read packed BGRx (the leaf owns the gbrp
+    // repack); yuv444p legs read pre-converted planar 4:4:4.
+    let planarInput = opts.pixFmt == "yuv444p"
+    let frameSize = opts.width * opts.height * (planarInput ? 3 : 4)
     let rowStride = Int32(opts.width * 4)
     let framesInFile = rawSize / frameSize
     guard framesInFile > 0 else {
         throw CheckError("\(opts.rawPath) holds no complete "
-            + "\(opts.width)x\(opts.height) BGRx frame "
+            + "\(opts.width)x\(opts.height) "
+            + (planarInput ? "yuv444p" : "BGRx") + " frame "
             + "(\(rawSize) bytes < \(frameSize))")
     }
 
@@ -220,21 +252,27 @@ func run() throws {
     var err = [CChar](repeating: 0, count: 256)
     let r = opts.recipe
     guard let enc = lyte_hevc_enc_new(
-        Int32(opts.width), Int32(opts.height), "bgr0",
+        Int32(opts.width), Int32(opts.height), opts.pixFmt,
         opts.fps, opts.bitrate, opts.cq,
         r.preset, r.tune, r.multipass,
         r.spatialAQ ? 1 : 0, r.temporalAQ ? 1 : 0, Int32(r.aqStrength),
+        opts.profile, opts.rgbMode,
         &err, err.count) else {
         // The reject IS a ladder verdict — surface it in parseable form.
-        print("RESULT recipe=\(r.summary) verdict=open-rejected "
-            + "error=\"\(errString(err))\"")
+        print("RESULT recipe=\(r.summary) pixfmt=\(opts.pixFmt) "
+            + "profile=\(opts.profile.isEmpty ? "default" : opts.profile) "
+            + "rgbmode=\(opts.rgbMode.isEmpty ? "default" : opts.rgbMode) "
+            + "verdict=open-rejected error=\"\(errString(err))\"")
         throw CheckError("encoder init failed: \(errString(err))")
     }
     defer { lyte_hevc_enc_free(enc) }
 
     let mode = opts.cq > 0 ? "capped-cq\(opts.cq)" : "cbr"
-    print("encode-check: \(opts.width)x\(opts.height) bgr0 @\(opts.fps), "
-        + "\(total) frames (\(framesInFile) in file"
+    print("encode-check: \(opts.width)x\(opts.height) \(opts.pixFmt) "
+        + "@\(opts.fps)"
+        + (opts.profile.isEmpty ? "" : ", profile \(opts.profile)")
+        + (opts.rgbMode.isEmpty ? "" : ", rgb_mode \(opts.rgbMode)")
+        + ", \(total) frames (\(framesInFile) in file"
         + (opts.staticRepeats > 0 ? ", static-repeat mode" : "")
         + "), recipe \(r.summary), \(mode) "
         + "\(opts.bitrate / 1_000_000) Mbps")
@@ -258,10 +296,12 @@ func run() throws {
                 throw CheckError("short read on frame \(i)")
             }
         }
+        let forceIdr = i == 0
+            || (opts.idrEvery > 0 && i % opts.idrEvery == 0)
         let t0 = nowMicros()
         let rc = frame.withUnsafeBufferPointer { buf in
             lyte_hevc_enc_send(enc, buf.baseAddress!, rowStride, Int64(i),
-                               i == 0 ? 1 : 0,
+                               forceIdr ? 1 : 0,
                                packetTrampoline, user, &err, err.count)
         }
         if rc != 0 {
@@ -273,6 +313,18 @@ func run() throws {
         throw CheckError("flush failed: \(errString(err))")
     }
     lyte_stdout_flush()
+
+    // The per-frame size books (H4 V-1: the IDR-size-distribution vs
+    // FEC-ceiling question reads these offline).
+    if !opts.sizesPath.isEmpty {
+        var lines = ""
+        for i in 0..<collector.frameBytes.count {
+            lines += "\(i) \(collector.frameKeys[i] ? 1 : 0) "
+                + "\(collector.frameBytes[i]) \(collector.frameQPs[i])\n"
+        }
+        try Data(lines.utf8)
+            .write(to: URL(fileURLWithPath: opts.sizesPath))
+    }
 
     let sortedUs = encodeMicros.sorted()
     let meanUs = encodeMicros.reduce(0, +) / UInt64(max(1, encodeMicros.count))
@@ -305,7 +357,15 @@ func run() throws {
         Double(sortedUs.last ?? 0) / 1000,
         meanUs > 0 ? 1_000_000 / Double(meanUs) : 0))
 
+    // gbrp legs: the BGRx→planar repack rides inside send(), so
+    // enc_us_* above INCLUDES it; repack_us_mean names its share.
+    let repackMeanUs = lyte_hevc_enc_repack_us_total(enc)
+        / UInt64(max(1, total))
+
     print("RESULT recipe=\(r.summary) mode=\(mode) "
+        + "pixfmt=\(opts.pixFmt) "
+        + "profile=\(opts.profile.isEmpty ? "default" : opts.profile) "
+        + "rgbmode=\(opts.rgbMode.isEmpty ? "default" : opts.rgbMode) "
         + "rate_mbps=\(opts.bitrate / 1_000_000) frames=\(total) "
         + "bytes=\(collector.bytesOut) "
         + "kbps=\(Int(kbps)) idr=\(collector.keyframes) "
@@ -318,6 +378,7 @@ func run() throws {
         + "enc_us_p95=\(percentile(sortedUs, 0.95)) "
         + "enc_us_p99=\(percentile(sortedUs, 0.99)) "
         + "enc_us_max=\(sortedUs.last ?? 0) "
+        + "repack_us_mean=\(repackMeanUs) "
         + "enc_fps_capacity=\(meanUs > 0 ? 1_000_000 / Int(meanUs) : 0)")
 }
 

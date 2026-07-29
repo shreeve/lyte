@@ -46,8 +46,19 @@ typedef void (*lyte_hevc_packet_cb)(void *user, const uint8_t *data,
               repeated identical frames (the quality-ratchet mechanism);
               note the walk overshoots a few QP below `cq` — `cq` is a soft
               target, not a floor.
-   `pix_fmt_name` is an FFmpeg pixel format name ("bgr0", "bgra", "rgb0",
-   "rgba"). Returns NULL with `err` filled on failure. */
+   `pix_fmt_name` is an FFmpeg pixel format name; the plumbed set is
+   packed RGB ("bgr0", "bgra", "rgb0", "rgba"), "gbrp" (planar RGB —
+   the Rext identity-matrix 4:4:4 path; send() still takes packed BGRx
+   and the leaf repacks), and "yuv444p" (pre-converted planar input).
+   Anything else fails the open loudly.
+   H4 probe knobs (V-1): `profile` "main"|"main10"|"rext" and `rgb_mode`
+   "yuv420"|"yuv444" (how the wrapper handles packed-RGB input) pass
+   through to the wrapper when non-empty; empty leaves the wrapper's
+   default. The VUI color signing follows the input path: packed RGB →
+   BT.601 limited (the wrapper's forced internal-conversion truth,
+   Stage A), gbrp → identity/GBR full-range, yuv444p → BT.709
+   full-range (the conversion contract). Transfer is sRGB on every path.
+   Returns NULL with `err` filled on failure. */
 lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
                                  const char *pix_fmt_name,
                                  int fps, int64_t bit_rate, int cq,
@@ -55,15 +66,25 @@ lyte_hevc_enc *lyte_hevc_enc_new(int width, int height,
                                  const char *multipass,
                                  int spatial_aq, int temporal_aq,
                                  int aq_strength,
+                                 const char *profile,
+                                 const char *rgb_mode,
                                  char *err, size_t errlen);
 
-/* Encodes one packed-RGB frame (single plane, `src_stride` bytes per row).
+/* Encodes one frame. For packed-RGB and gbrp opens, `data` is packed
+   BGRx (single plane, `src_stride` bytes per row) — the gbrp path
+   repacks to planes inside the leaf. For yuv444p opens, `data` is
+   three tightly-packed w×h planes and `src_stride` is ignored.
    `force_idr` nonzero forces an IDR picture. Returns 0 on success, -1 on
    error with `err` filled. */
 int lyte_hevc_enc_send(lyte_hevc_enc *e, const uint8_t *data, int src_stride,
                        int64_t pts, int force_idr,
                        lyte_hevc_packet_cb cb, void *user,
                        char *err, size_t errlen);
+
+/* Total wall-clock µs spent in the BGRx→gbrp repack across all send()
+   calls (0 unless the encoder was opened with "gbrp") — the V-1 probe's
+   repack-cost book. */
+uint64_t lyte_hevc_enc_repack_us_total(const lyte_hevc_enc *e);
 
 /* Reconfigures the open encoder's rate control mid-stream (HS-20: the
    congestion controller's frameByteCeiling finally reaches NVENC).
