@@ -7,7 +7,7 @@ struct LyteCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "lyte-cli",
         abstract: "Lyte development CLI — discover, pair with, and stream from Lyte-UDP hosts.",
-        subcommands: [WireListen.self, WireView.self, WireSend.self, WireDiscover.self, WirePair.self, WireUnpair.self]
+        subcommands: [WireListen.self, WireView.self, WireSend.self, WireDiscover.self, WirePair.self, WireUnpair.self, DecodeProbe.self]
     )
 }
 
@@ -23,9 +23,11 @@ struct LyteCLI: AsyncParsableCommand {
 enum Main {
     static func main() {
         // wire-view opens a render window and needs NSApplication.run()
-        // on the raw main thread; everything else is headless.
+        // on the raw main thread; decode-probe's --snapshot leg does the
+        // same (it exits itself in every mode); everything else is
+        // headless.
         let firstArg = CommandLine.arguments.dropFirst().first ?? ""
-        let wantsAppKit = firstArg == "wire-view"
+        let wantsAppKit = firstArg == "wire-view" || firstArg == "decode-probe"
         if wantsAppKit {
             // Unbundled binaries inherit the launcher's app identity in the
             // menu bar ("iTerm2" / "lyte-cli"). Rename the LaunchServices
