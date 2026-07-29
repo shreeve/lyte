@@ -1,21 +1,26 @@
 # Lyte — Session Handoff
 
-*Current as of 2026-07-28 ~23:55 MDT. The session ledger — tracked in the
+*Current as of 2026-07-29 ~10:55 MDT. The session ledger — tracked in the
 repo since `8da50bf` (the .gitignore entry is vestigial; the file is
 tracked). Update freely; commit updates in the ledger voice.*
 
-# SESSION RESUME — START HERE (2026-07-29 ~00:55 MDT)
+# SESSION RESUME — START HERE (2026-07-29 ~10:55 MDT)
 
-**One-paragraph state.** The H4 4:4:4 wave is UNDERWAY and both probes
-are LANDED: **V-1** (`e232d61` + report `7abaddb`) and **V-2**
-(`3f94a0f` + co-sign `8fa44a2`) — see the resume point below for the
-verdicts. Earlier today the quality wave landed (HS-23 `11f058f`, HS-24
-`1d65bad`, HS-25 `e82e88a`, Q-1 `b1f027a`, all Host/, none pushed),
-pup survived a ~3 h network drop (20:35–23:30, NO reboot), and Q-1's
-deferred ledger drained clean. The H4 plan is `3b118ba`
-(`docs/20260728-194226-lyte-h4-plan.md`). Suites at HEAD: Host
-**180/180 Mac AND pup**, Wire 450/450, root **167/167** (grown through
-V-2's five AU-splitter gates; the old 142 is stale).
+**One-paragraph state.** The H4 4:4:4 wave is CODE-COMPLETE up to the
+joint gate: V-1…V-5 all landed, the owner's bar recalibration is applied
+(`fecd646`/`f783006`), and the 444 harness leg reads **PASS on all seven
+rows** (`a53737f`). Since then THREE more waves landed (wave entries at
+the bottom of the wave block): **HS-26** (`f00d2a9`) fixed the fps red —
+capture-thread pacer drain moved to a sender thread, ingest 48.5 →
+60.8 fps live; **the IDR hunt** (`5ea92ba` books + `c2b58f1` dwell
+deferral) fixed the IDR red — 7.42 → 0.34 IDR/min on the synthetic dwell
+leg with the honesty leg intact; and **P-1 clipboard images** landed
+whole (`69cf895` Wire / `c4fae97` Host / `85571e2` root — key 12, CTRL
+0x22, new frozen `clipboard-images-v1.json`). J-G4's two required halves
+(4:4:4 core + P-1) are both CODE-AND-GATES DONE. The H4 plan is
+`3b118ba` (`docs/20260728-194226-lyte-h4-plan.md`). Suites at HEAD:
+Wire **475/475**, Host **192/192 Mac AND pup**, root **193/193** (older
+counts in wave entries are historical).
 
 **H4 §0 OWNER DECISIONS — ANSWERED (2026-07-29 ~00:52, with both
 probes' data on the table):**
@@ -40,7 +45,11 @@ probes' data on the table):**
    pre-declared droppable to H5.
 
 **THE BEAUTY BAR'S FIRST ROW IS IN — and its two reds are named
-findings, not noise** (full decomposition in the Q-1 drain addendum):
+findings, not noise. ⚠️ BOTH REDS ARE NOW FIXED at the decomposed
+quantity (HS-26 for fps, the IDR hunt for IDR — wave entries at the
+bottom); the bar row itself awaits RE-MEASUREMENT at the glass once
+the Keychain grant exists** (full decomposition in the Q-1 drain
+addendum):
 `2026-07-28 @ 8dc049a | static 51.27 PASS | motion 59.75 PASS |
 fps 47 FAIL | IDR 3.9/min FAIL | churn 0 PASS | loss 0 PASS`.
 - **fps p50 47 (bar ≥55)**: NOT the wire (0 loss / 5178 frames), NOT
@@ -59,11 +68,15 @@ fps 47 FAIL | IDR 3.9/min FAIL | churn 0 PASS | loss 0 PASS`.
 
 **LIVE OPS RIGHT NOW.**
 - pup standing host: `bash ~/lyte-loop.sh` respawns `lyte-host --backend
-  portal --wire-listen 41151 --ratchet --clipboard --seconds 7200` on
-  port **41151**. Leave it alive; it's the owner's eyeball host. The
+  portal --wire-listen 41151 --ratchet --clipboard=images --seconds 7200`
+  on port **41151**. Leave it alive; it's the owner's eyeball host. The
   session log is `/tmp/lyte-host-session.log` on pup. The loop launches
-  `~/src/lyte-host/.build/debug/lyte-host` — the HS-25-fixed, Q-1-tested
-  build. LIVE (restored fresh ~23:44 as Q-1 drain leg e, 60 iterations).
+  `~/src/lyte-host/.build/debug/lyte-host` — the P-1 build (192/192).
+  REWRITTEN 2026-07-29 ~10:50: `while true` (the finite-60 self-expiry
+  bit twice — retired) and the clipboard tier raised to Text + images
+  for J-G4a (backup: `~/lyte-loop.sh.bak-20260729`). LIVE — the log
+  shows the Rext self-probe passing and chroma **[420, 444]** declared:
+  a Best connect here AGREES AT 444 and takes the owner's session over.
 - The owner's client is the app bundle at
   `.build/Lyte.app` — launch with `open .build/Lyte.app` (NEVER run the
   raw binary under a parent process; it needs its own bundle for a proper
@@ -126,40 +139,36 @@ V-2 data on the table).** All four are settled:
 4. **J-G4 = 4:4:4 core + P-1 (clipboard v2) only**; P-2/P-3 stay
    pre-declared droppable to H5.
 
-**IMMEDIATE RESUME POINT: V-4 LANDED (`60dac56` Host code +
-`653f8b1` harness/goldens — wave entry below). The host now SERVES
-Best: agreed [444] singleton → Rext rgb_mode 601-limited session at
-the Best floor cq4 (the race's knee: text +3.6…+3.9 dB over cq12 at
-~zero steady cost), declaration gated on a startup Rext self-probe,
-grandfathered peers ride 4:2:0 after a 2 s hold, and every capped
-IDR fits the 223,380 B ceiling (549→194 KB worst text, deltas
-clear, ratchet heals in ≤47 fr). Suites Host **186/186 Mac AND
-pup**. THE BAR-VS-PATH RULING IS IN (owner, 2026-07-29 ~04:15): the
-≥50 dB text bar and ±2 gratings bar were written for a perfect path
-and are UNREACHABLE on 601-limited at ANY floor (caps ~46–47 dB /
-±3–4 at transparent coding — the conversion, not bits). **Owner ruled
-RECALIBRATE: text-converged ≥45 dB, gratings ≤±4** — consistent with
-decision 2's Option-A posture; the full-range road stays queued if
-the eyeball ever disagrees. **RECALIBRATION APPLIED (coordinator
-micro-slice, ~05:15): `fecd646` root (constants + pin tests + the
-trip-point test moves to ±4/±5) + `f783006` Host (the harness banner
-legend stops quoting the old bars). Root 188/188 green; harness 444
-leg rerun at `b07d91f`-era HEAD — VERDICT FLIPS TO 444 PASS, all
-seven rows green, goldens untouched.**
-V-5 LANDED (`a8b9fa4`, root 175 → 188/188 — wave entry below; finished
-by a second worker after the first died to an ~04:26 infra timeout;
-control + persistence + typed fallback + SPS audit in, 444 decode
-proven offline 60/60 hardware). Two blockers noted in the wave entry: the
-41151 loop now declares [420, 444] (any "it's 4:2:0" note is stale —
-don't connect Best to it), and live wire legs from the agent shell
-wedge on a Keychain SecurityAgent prompt the owner should "Always
-Allow". Next: J-G4a's live negotiated run.** Also open: (a) the bar's two red rows as Host/ slices — the
-**session-pipeline fps ceiling (~48/s ingest under load)** hunt and
-the **estimator ramp's IDR spend**; (b) the owner's p4 quality eyeball
-(41151 loop RESTARTED 03:29 — it was a finite 60-run loop that
-self-expired at 01:49; consider `while true`). Farther out: J-G4a
-(headline leg: the harness's live end-to-end re-run) + P-1;
-browser-viewer B-2+ still waits on the owner's QUIC posture decision.
+**IMMEDIATE RESUME POINT (2026-07-29 ~10:55): J-G4a — the live
+joint-gate legs. Everything gate-shaped is code-done; what remains is
+live.** The ladder in order:
+1. **The Keychain grant** (owner, one click): wire-view and the app
+   wedge in `SecItemCopyMatching` awaiting a SecurityAgent grant for
+   the client Noise identity — click **"Always Allow"** when the
+   prompt appears. Until then NO live wire leg runs from any shell.
+2. **The 444 warmup leg**: `wire-view <port> --host 10.0.0.249
+   --chroma 444` against a `--no-advertise` V-4+ host on a fresh
+   41xxx port — proves the negotiated Rext session end-to-end.
+3. **The J-G4a headline legs**: live negotiated 444 session (harness
+   re-run at the glass), P-1's live clipboard-image legs (pup
+   screenshot → Mac pasteboard and back, under `--clipboard=images`
+   + the client images rung ON — first minutes should confirm the
+   mime list Mutter actually offers `wl-copy`/GNOME-screenshot), and
+   the owner's UI eyeball (Chroma control, photo toggle, banners —
+   compiled-and-reviewed only so far).
+4. **Beauty-bar re-measurement**: the fps row at the glass
+   (`quality-probe.sh`, post-HS-26) and the IDR row against REAL
+   Wi-Fi weather (post-dwell-deferral; the tbf dwell was synthetic).
+Named-but-not-blocking: a genuine squeeze still costs 3 IDRs (every
+nvenc rc delta forces one — intra-refresh / non-IDR reconfigure is
+the candidate slice); no [420]-only host exists anywhere for a live
+fallback leg (wants a pre-V-4 build or probe-forced-off host); the
+HS-26 baseline leg's `throttled 1364` at the 50 Mbps recipe (steady-
+state saturation headroom — eye on the next fps leg); browser-viewer
+B-2+ still waits on the owner's QUIC posture decision (§6 of the
+scoping doc). The standing 41151 loop is `while true` now and
+declares [420, 444] + clipboard images — the live-ops block above is
+current.
 
 # RESTARTING WORKERS IN A NEW CHAT (read before resuming)
 
