@@ -68,13 +68,17 @@ final class CorpusHarnessGateTests: XCTestCase {
         }
     }
 
-    // MARK: - 2. The thresholds (§7 verbatim)
+    // MARK: - 2. The thresholds (§7 + the 2026-07-29 bar-vs-path ruling)
 
     func testGateThresholdsArePinned() {
         XCTAssertEqual(CorpusGates.textActiveMinDB, 40.0)
-        XCTAssertEqual(CorpusGates.textConvergedMinDB, 50.0)
+        // Owner ruling 2026-07-29: 50 dB / ±2 were written for an exact
+        // path; 601-limited caps at ~46–47 dB / ±3–4 at transparent
+        // coding (V-4's STOP-clause evidence). Recalibrated to the
+        // path's proven ceiling.
+        XCTAssertEqual(CorpusGates.textConvergedMinDB, 45.0)
         XCTAssertEqual(CorpusGates.ssimConvergedMin, 0.995)
-        XCTAssertEqual(CorpusGates.gratingMaxCodes, 2)
+        XCTAssertEqual(CorpusGates.gratingMaxCodes, 4)
         XCTAssertEqual(CorpusGates.convergenceMaxFrames, 180)
         // Owner decision 2's shipped posture: one code for the
         // 601-limited round trip, byte-exact named-and-queued.
@@ -176,26 +180,27 @@ final class CorpusHarnessGateTests: XCTestCase {
                              width: w, height: h), 1.0)
     }
 
-    func testGratingGateTripsAtThreeCodes() {
+    func testGratingGateTripsAtFiveCodes() {
         let frame = corpus.first { $0.spec.name == "gratings" }!
         let grating = frame.spec.gratings[0]
         let cx = grating.rect.x + grating.rect.width / 2
         let cy = grating.rect.y + grating.rect.height / 2
 
-        // ±2 codes on an interior pixel: at the bar, not over it.
+        // ±4 codes on an interior pixel: at the recalibrated bar
+        // (2026-07-29 owner ruling), not over it.
         var atBar = frame.bgrx
-        atBar[(cy * w + cx) * 4 + 1] = atBar[(cy * w + cx) * 4 + 1] &+ 2
+        atBar[(cy * w + cx) * 4 + 1] = atBar[(cy * w + cx) * 4 + 1] &+ 4
         let ok = CorpusGates.gratingError(reference: frame.bgrx, decoded: atBar,
                                           width: w, height: h, rect: grating.rect)
-        XCTAssertEqual(ok.maxChannel, 2)
+        XCTAssertEqual(ok.maxChannel, 4)
         XCTAssertEqual(ok.offendersBeyondGate, 0)
 
-        // ±3 codes: over.
+        // ±5 codes: over.
         var over = frame.bgrx
-        over[(cy * w + cx) * 4 + 1] = over[(cy * w + cx) * 4 + 1] &+ 3
+        over[(cy * w + cx) * 4 + 1] = over[(cy * w + cx) * 4 + 1] &+ 5
         let bad = CorpusGates.gratingError(reference: frame.bgrx, decoded: over,
                                            width: w, height: h, rect: grating.rect)
-        XCTAssertEqual(bad.maxChannel, 3)
+        XCTAssertEqual(bad.maxChannel, 5)
         XCTAssertEqual(bad.offendersBeyondGate, 1)
 
         // Damage inside the inset margin is the neighbor seam's

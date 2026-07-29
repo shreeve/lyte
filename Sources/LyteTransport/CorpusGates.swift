@@ -19,11 +19,20 @@ public enum CorpusGates {
     /// Text-region RGB PSNR (per-channel min), Work-mode active phase.
     public static let textActiveMinDB = 40.0
     /// Text-region RGB PSNR (per-channel min), post-ratchet.
-    public static let textConvergedMinDB = 50.0
+    /// Owner ruling 2026-07-29 (bar-vs-path, after V-4's STOP-clause):
+    /// the pillar's 50 dB was written for a mathematically exact path;
+    /// the shipped rgb_mode 601-limited conversion caps text at
+    /// ~46–47 dB at TRANSPARENT coding (cq1 — the residual is the
+    /// 8-bit limited-range YCbCr round trip, not bits). The bar moves
+    /// to the path's proven ceiling; the full-range/identity road
+    /// stays named-and-queued for the eyeball's veto.
+    public static let textConvergedMinDB = 45.0
     /// Full-frame SSIM post-ratchet, corpus kinds (a)–(c).
     public static let ssimConvergedMin = 0.995
     /// Per-channel error at grating edges, Work mode, in codes.
-    public static let gratingMaxCodes = 2
+    /// Same 2026-07-29 ruling: ±2 is unreachable on 601-limited
+    /// (±3–4 at transparent coding); recalibrated to ±4.
+    public static let gratingMaxCodes = 4
     /// Ratchet convergence budget at LAN surplus: ≤ 3 s at 60 fps.
     public static let convergenceMaxFrames = 180
     /// Owner decision 2 (2026-07-29): rgb_mode 601-limited ships and
