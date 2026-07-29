@@ -78,19 +78,22 @@ stalled >15 min with no live work. If you start a fresh chat, that loop's
 shell does NOT survive — re-arm it if the owner still wants the 5-min
 cadence, and don't leave a duplicate running.
 
-**IMMEDIATE RESUME POINT:** the Q-1 ledger is drained; **H4 V-1** (pup
-NVENC Rext probe, Host/ territory) is the slice in flight/next per the
-H4 plan; V-2 (Mac VideoToolbox probe, root territory) follows on V-1's
-bitstreams. Then: (a) the four H4 §0 owner decisions — 2/3 want the
-V-1/V-2 data, put them to the owner together when it exists; (b) the
-bar's two red rows are open slice candidates in Host/ AFTER V-1 frees
-the territory — the **session-pipeline fps ceiling (~48/s ingest under
-load)** hunt, and the **estimator ramp's IDR spend** (follow-on to
-HS-22c's coalescing; a rate reconfigure that doesn't force an IDR is
-the prize). (c) The owner's quality eyeball on the p4 recipe — the
-41151 loop is live and waiting. Farther out: J-G4a + the P-track per
-the H4 plan; browser-viewer B-2+ still waits on the owner's QUIC
-posture decision (H3's last open thread).
+**IMMEDIATE RESUME POINT: V-1 IS LANDED (`e232d61` + the probe report
+`docs/20260729-002000-lyte-v1-rext-probe.md`) — headline: Rext opens on
+all three paths, gbrp wins text +16.0 dB at 34% fewer bits with a TRUE
+identity-full VUI, every path holds 60 fps (gbrp worst at 99 incl. its
+4.4 ms repack), and 20/30 natural text IDRs exceed the 223,380 B FEC
+ceiling (decision-3's number). V-2's 11 bitstreams wait at
+`pup:~/rext-probe/keep/`.** Next: **V-2** (Mac VideoToolbox Rext decode
+probe, root territory) — its make-or-break is whether the production
+render path hardware-decodes and renders identity-matrix GBR full-range
+correctly; the probe report carries V-2's co-sign slot. Then: (a) the
+four H4 §0 owner decisions with V-1+V-2 data on the table; (b) the
+bar's two red rows as Host/ slices — the **session-pipeline fps
+ceiling (~48/s ingest under load)** hunt and the **estimator ramp's IDR
+spend**; (c) the owner's p4 quality eyeball (41151 live and waiting).
+Farther out: J-G4a + the P-track; browser-viewer B-2+ still waits on
+the owner's QUIC posture decision.
 
 # RESTARTING WORKERS IN A NEW CHAT (read before resuming)
 
@@ -3018,6 +3021,89 @@ its entry at the marker at the end of this block.*
       portal_token dadf9a66…37cf, noise_static.key 72860390…cfed,
       paired_clients 8dc1f88a…55fd; portal_token did not even rotate
       across the probe's headless captures or the loop restart.
+
+- **V-1 — the colors take the stand; every 4:4:4 claim becomes a
+  measurement** (`e232d61`, Host/): H4 wave 0's NVENC Rext probe —
+  offline encode legs on pup (RTX 4050, driver 595.84, libavcodec
+  8.0.1), no wire, no session, no capture; every §1 [probe] mark in
+  the H4 plan now carries a number. Full report with tables:
+  **`docs/20260729-002000-lyte-v1-rext-probe.md`** (uncommitted, per
+  the worker mandate — it carries V-2's co-sign slot).
+  THE INSTRUMENT (the committed deliverable): the C leaf grows
+  pix-fmt/profile/rgb_mode knobs on the HS-24 loud-reject pattern —
+  gbrp (planar RGB) and yuv444p input plumbing, the production-shaped
+  BGRx→gbrp repack measured in-leaf
+  (`lyte_hevc_enc_repack_us_total`), and per-path VUI truth signing
+  (identity/full for gbrp, 709/full for yuv444p, Stage A's
+  601-limited for packed); `lyte-encode-check` grows
+  `--pix-fmt/--profile/--rgb-mode`, `--idr-every N`, `--sizes` books;
+  `Host/Scripts/rext-probe.sh` runs the whole ladder. Session path
+  untouched (profile/rgb_mode ride "" defaults until V-4).
+  THE VERDICTS (all legs 2048×1280@60 p4 capped-CQ cq12/cap50, the
+  shipped posture; encodes measured deterministic across reruns):
+  • **Rext OPENS on all three input paths** through the production
+    leaf (a successful open IS the YUV444 caps check); `rgb_mode` is
+    on pup's option surface; the wrapper auto-selects Rext for gbrp
+    even without `-profile` (we'll still declare it, V-4).
+  • **The race: gbrp wins text by a landslide** — 53.84 dB RGB-PSNR
+    at 14.0 Mbps vs p420's 37.80 at 21.1 Mbps (**+16.0 dB at 34%
+    fewer bits**); rgbmode 48.21/9.0 Mbps and conv (pre-converted
+    709-full yuv444p) 47.81/11.5 Mbps sit ~5.5 dB under gbrp. Motion:
+    all three 4:4:4 paths 46.6–47.0 dB at the cap vs p420 33.4.
+  • **Color truth (Stage A's candidate sweep, bars): nobody lies** —
+    gbrp measures identity-full 69.99 dB (next candidate 14.25),
+    rgbmode measures bt601-limited 56.04 (the forced-601 finding
+    holds on the 4:4:4 path), conv measures bt709-full 50.92; every
+    VUI tag TRUE by 20–56 dB margins.
+  • **Throughput: 60 fps holds everywhere.** Worst is gbrp 99–103 fps
+    capacity (10.0 ms/frame INCLUDING its 4.4 ms CPU repack; encoder
+    share ~5.6 ms ≈ 180 fps); conv 170–180 fps and rgbmode 133–139
+    both BEAT p420's 137–145 at this geometry (NVENC's internal
+    RGB→420 conversion costs more than encoding pre-converted 4:4:4).
+    p1 fallback banked: 115/163/213 fps. Encoder capacity is NOT the
+    ~48/s session-ingest ceiling — that hunt stays open, upstream.
+  • **Capped-CQ at 4:4:4 behaves**: QP walks to 12 and holds on every
+    path, byte-stable ≤ frame 25/300, and static keepalives get
+    CHEAPER than 4:2:0 (141/163/160 B vs 208 B at converged QP 12).
+  • **The ceiling books (owner decision 3's evidence)**: VBV-uncapped
+    natural demand on the text corpus, 30 forced IDRs/path (6 scroll
+    positions × 5 — percentiles quantized): 4:4:4 IDRs p50 263–397 KB,
+    max 572–720 KB, **20/30 ≥ the 223,380 B ceiling** (p420 already
+    crosses 15/30 at p50 210 KB); deltas never threaten it (p50
+    17–28 KB, max ≤145 KB). Under the HS-25 posture essentially EVERY
+    Work-mode text IDR is a ceiling-conformed ~24-datagram-ms frame —
+    the guard becomes the routine IDR shape, exposure = IDR frequency
+    (structurally rare in Work). The owner rules with that number.
+  • **Repack bill (question 5)**: 4.34–4.45 ms/frame single-threaded
+    naive C (~2.4 GB/s, 26% of one core's frame period), measured
+    in-leaf, overlappable in a pipelined session, unvectorized —
+    SIMD/threads/CUDA all untouched headroom.
+  OWNER DECISION 2 EVIDENCE: the recommended order gbrp →
+  host-conversion → rgb_mode HOLDS host-side — gbrp is the only
+  mathematically-exact path and the quality king; conv shows NO
+  quality edge over free rgbmode (47.8 vs 48.2 text), only the range
+  win, so if gbrp fails V-2's render test the real fight is
+  "conversion-leaf build cost vs 601-limited-for-free". Joint ruling
+  awaits V-2 (identity/GBR full-range render is gbrp's
+  make-or-break).
+  Suites: **180/180 Mac AND pup** at the exact committed tree (pup
+  ran the identical rsynced source pre-commit). HYGIENE: offline legs
+  only — 41151 loop alive and untouched throughout, no ports bound,
+  no netem, no strays (verified at close); secrets by construction
+  plus mtime-verified (noise_static Jul 21, paired_clients Jul 22,
+  portal_token 23:41 pre-session). Evidence on pup: run log
+  `~/rext-probe-run.log`, parseable rows `~/rext-probe/results.tsv`,
+  IDR books `~/rext-probe/sizes-{p420,gbrp,rgbmode,conv}.txt`, and
+  **V-2's bitstreams at `~/rext-probe/keep/` (11 files:
+  {desk,motion,bars}×{gbrp,rgbmode,conv} + desk/motion-p420)** —
+  corpora (~20 GB) removed after harvest.
+  NAMED FOR THE NEXT RUNG: (i) V-2 consumes `keep/` through the
+  production `VideoRenderFactory` path and co-signs the
+  conversion-path ruling into the probe report; (ii) V-4 can rely on
+  auto-Rext but should declare `-profile rext` anyway, and the gbrp
+  repack wants SIMD before anyone calls 4.4 ms/frame a cost; (iii)
+  the IDR-books method (--idr-every + --sizes) is reusable for any
+  future ceiling question.
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
