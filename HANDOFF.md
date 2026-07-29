@@ -144,8 +144,15 @@ the eyeball ever disagrees. The threshold constants + their pin tests
 live in root (`CorpusGates.swift`) which V-5 holds — **apply the
 recalibration as a micro-slice the moment root frees** (rerun the
 harness once; verdict should flip to all-PASS with no golden moves).
-V-5 is IN FLIGHT (the client's three-tier Chroma control +
-auto-re-dial-at-420, root); then J-G4a's live negotiated run.** Also open: (a) the bar's two red rows as Host/ slices — the
+V-5 LANDED (`a8b9fa4`, root 175 → 188/188 — wave entry below; finished
+by a second worker after the first died to an ~04:26 infra timeout;
+control + persistence + typed fallback + SPS audit in, 444 decode
+proven offline 60/60 hardware). ROOT IS FREE — the recalibration
+micro-slice is unblocked. Two blockers noted in the wave entry: the
+41151 loop now declares [420, 444] (any "it's 4:2:0" note is stale —
+don't connect Best to it), and live wire legs from the agent shell
+wedge on a Keychain SecurityAgent prompt the owner should "Always
+Allow". Next: J-G4a's live negotiated run.** Also open: (a) the bar's two red rows as Host/ slices — the
 **session-pipeline fps ceiling (~48/s ingest under load)** hunt and
 the **estimator ramp's IDR spend**; (b) the owner's p4 quality eyeball
 (41151 loop RESTARTED 03:29 — it was a finite 60-run loop that
@@ -3357,6 +3364,82 @@ its entry at the marker at the end of this block.*
   publishes the delta table; (iv) the 2 s chroma hold is untested
   against a real pre-W7 client — J-G4a should watch the
   "grandfathered peer" print.
+
+- **V-5 — the client asks for Best by name: Good/Better/Best on the
+  strip, the ask persists per host, a refused Best re-dials at Good
+  under a banner, and the SPS audit swears to what the wire carries**
+  (`a8b9fa4`, root only, not pushed). FINISHED BY A SECOND WORKER:
+  the first V-5 worker died ~04:26 to an infrastructure timeout (not
+  a task failure) leaving ~317 coherent uncommitted insertions; the
+  finisher inspected the tree, kept ALL of it, fixed exactly one bug
+  (the corpus-IDR gate read `frame-000.annexb`; the committed vector
+  is `frame-000-idr.annexb`), and ran the verification legs.
+  THE MECHANICS (owner decision 1's client half): `ChromaTier`
+  (LyteTransport) is the tier vocabulary — Good→[420], Best→[444],
+  Better DORMANT (declares nothing, unselectable: no yuv422 wire id —
+  that append is a Wire/ slice — and no Ada silicon) yet VISIBLE in
+  both surfaces as "not offered by this host", so the three-rung
+  shape ships whole. The declaration is a singleton via
+  `declaringChroma(tier:)` at connect AND on every F-5 re-dial; the
+  per-host tier rides `PinnedHost.chromaTier` beside the CL-13/CL-15
+  preferences (raw string, nil = Good, unknown-future tiers read
+  Good, a re-pair preserves it). The strip's `ChromaStripMenu`
+  (camera.filters glyph over the factual sampling caption, orange
+  when non-Good) and the Actions-menu Chroma submenu share one model
+  verb: flip = persist + clean reconnect on the proven F-5 machinery
+  (chroma is connect-time only). `capabilitiesFailed` went TYPED
+  (`CapabilityNegotiationError`, not a string) so
+  `ChromaFallbackPolicy` can key on `noCommonChromaMode` + non-Good
+  ONLY: downgrade the LIVE tier to Good, show the non-modal banner
+  (8 s fade, stacked with the roaming banner's VStack), re-dial —
+  the STORED ask stands (the host may gain the tier), and Good has
+  nowhere lower so the re-dial cannot loop.
+  THE AUDIT (4:4:4's win dies on a silent resample): `HevcSpsChroma`
+  parses `chroma_format_idc` off every in-band IDR SPS (minimal
+  spec walk, EPB strip, hostile bytes answer nil never trap);
+  `ChromaStreamAudit` judges it against the agreed singleton — one
+  confirmation line, a DOCTOR line on any mismatch edge, and the
+  stats overlay + wire-view stats line print the OBSERVED chroma,
+  not the ask. `wire-view --chroma 420|444` is the harness's
+  declaration leg (the debug shell never auto-re-dials; the app
+  does).
+  ACCEPTANCE: root 175 → **188/188 (0 failures)** — 13 chroma gates:
+  declaration singletons + frozen-CBOR round-trip, negotiator
+  agreement against a V-4-shaped [420,444] declarer and the typed
+  refusal against [420]-only, fallback verdicts (chroma-only,
+  non-Good-only), persistence round-trips incl. unknown-future and
+  hand-edited "better" strings, the SPS walk on pup's frozen
+  production Rext SPS (EPBs included) plus every truncation, and
+  the audit's once-then-silent discipline. DECODE PROOF (offline,
+  M5): a fresh 60-frame Rext rgb_mode yuv444 cq4 stream off pup's
+  production leaf (`lyte-encode-check`, p4/ull/qres) through
+  `decode-probe --require-hardware` — 60/60 decoded, HARDWARE
+  asserted, output '444v' with full-resolution chroma planes, no
+  silent downsample.
+  RAILS: owner's 41151 loop untouched (alive after); the three
+  secrets sha-identical before/after; the 41183 `--no-advertise`
+  test host and the windowed ffplay pattern killed; pup + local
+  scratch removed.
+  ANOMALIES / OPEN: (i) the resume brief's "41151 is 4:2:0" is
+  STALE — the loop runs the V-4 build and its log shows the
+  self-probe pass declaring [420, 444], so a Best connect there
+  would AGREE at 444 and take the owner's session over; the
+  fallback therefore stayed unit-gated — NO [420]-only host exists
+  anywhere right now (a live fallback leg wants a pre-V-4 build or
+  a probe-forced-off host). (ii) The LIVE wire leg is BLOCKED on a
+  macOS Keychain prompt: wire-view (freshly build-cli.sh-signed,
+  Authority=Lyte Dev verified) wedges in `SecItemCopyMatching`
+  awaiting a SecurityAgent grant for the client Noise identity —
+  the owner should click "Always Allow", after which `wire-view
+  41183 --host 10.0.0.249 --chroma 444` against a `--no-advertise`
+  V-4 host is the ready-made J-G4a warmup. (iii) The strip/menu/
+  banner UI is code-reviewed + compiled only (launching the app
+  hits the same Keychain wall); J-G4a's live leg should eyeball it.
+  NAMED FOR THE NEXT RUNG: (i) root is FREE — the owner's bar
+  recalibration micro-slice (`CorpusGates.swift`: text-converged
+  ≥45 dB, gratings ≤±4, pin tests moved with them, one harness
+  rerun) is unblocked; (ii) J-G4a runs the negotiated 444 session
+  live end-to-end.
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
