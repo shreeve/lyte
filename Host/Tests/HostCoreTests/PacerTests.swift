@@ -27,6 +27,9 @@ import XCTest
 
 private let ms: UInt64 = 1_000_000
 
+/// One 1 ms quantum of bytes at `rate` — the pacer's burst cap.
+private func quantumBytes(_ rate: Int) -> Double { Double(rate) / 8e3 }
+
 private struct Arrival {
     let at: UInt64
     let cls: PacerClass
@@ -410,6 +413,133 @@ final class PacerTests: XCTestCase {
         }
         XCTAssertEqual(Double(drainedAt) / 1e6, 29.0, accuracy: 0.6)
         XCTAssertGreaterThan(drainedAt, baseDrain + 8 * ms)
+    }
+
+    // MARK: - HS-31: the latency exemption at the rate floor
+
+    /// THE PIN (squeeze review §1, consult-corrected shape): at the
+    /// 500 kbps estimator floor the 1 ms quantum is 62 B, so one
+    /// max-size (~1230 B) video datagram emits alone and drives the
+    /// bucket ~19 ms negative — and audio used to wait the whole
+    /// deficit out (22.9–53.6 ms measured live vs §4.1's 5 ± 2 ms
+    /// bound). With the exemption, every audio datagram enqueued
+    /// through the deficit emits within ≤2 ms, audio's bytes CHARGE
+    /// the shared bucket (video repays them — the wire total still
+    /// honors the rate), and video never borrows the exemption.
+    func testAudioExemptFromVideoIncurredDeficitAtRateFloor() {
+        let rate = 500_000
+        let pacer = Pacer(rateBitsPerSecond: rate, now: 0)
+
+        // One max-size video datagram at t=0 (bucket starts full →
+        // the oversize-alone clause fires), then a second one queued
+        // behind the deficit, then 5 ms audio at ~320 kbps (200 B —
+        // the real reserve incl. RS 4+2) and 10 ms control through
+        // and past the deficit window.
+        var arrivals: [Arrival] = [
+            Arrival(at: 0, cls: .freshVideo, bytes: 1230, frameID: 1,
+                    urgent: false),
+            Arrival(at: 0, cls: .freshVideo, bytes: 1230, frameID: 2,
+                    urgent: false),
+        ]
+        var t: UInt64 = 500_000 // first audio lands mid-deficit
+        while t < 100 * ms {
+            arrivals.append(Arrival(at: t, cls: .audio, bytes: 200,
+                                    frameID: nil, urgent: false))
+            t += 5 * ms
+        }
+        t = 2 * ms
+        while t < 100 * ms {
+            arrivals.append(Arrival(at: t, cls: .control, bytes: 64,
+                                    frameID: nil, urgent: false))
+            t += 10 * ms
+        }
+
+        let checks = drive(pacer, arrivals: arrivals, deadline: 400 * ms)
+
+        // 1. THE BOUND: no audio (or control) datagram waited more
+        //    than 2 ms — through a bucket pinned ~19 ms negative.
+        let audioWait = pacer.telemetry[.audio].maxQueueDelayNS
+        XCTAssertLessThanOrEqual(audioWait, 2 * ms,
+            "audio waited \(Double(audioWait) / 1e6) ms behind a "
+            + "video-incurred deficit")
+        let controlWait = pacer.telemetry[.control].maxQueueDelayNS
+        XCTAssertLessThanOrEqual(controlWait, 2 * ms)
+
+        // 2. Exempt emissions ride ALONE (one datagram per batch) —
+        //    never bundled into a quantum they cannot fit.
+        for c in checks where c.batch.tokens
+            .contains(where: { $0.priorityClass <= .audio }) {
+            XCTAssertEqual(c.batch.tokens.count, 1,
+                "an exempt emission must not drag other tokens along")
+        }
+
+        // 3. Video never borrows the exemption: the second video
+        //    datagram pays the first's full overrun (~18.7 ms bare)
+        //    PLUS every audio/control byte charged inside the window,
+        //    so it lands far past the bare repayment.
+        let video2At = checks.first {
+            $0.batch.tokens.contains { $0.frameID == 2 }
+        }!.batch.emittedAt
+        XCTAssertGreaterThan(video2At, 18 * ms,
+            "the deficit must still be real for video")
+        XCTAssertGreaterThan(video2At, 30 * ms,
+            "audio's charge must deepen video's repayment, not vanish")
+
+        // 4. Conservation with the charge-back: total bytes ≤ rate ×
+        //    elapsed + one burst + the CLOSING DEBT (the run ends with
+        //    the last exempt emission mid-repayment; that debt — here
+        //    at most one video overrun plus one exempt charge — is
+        //    still video's to repay, not free bytes).
+        let last = checks.last!.batch
+        let closingDebt = 1230.0 + 200.0
+        let allowance = Double(last.emittedAt) * Double(rate) / 8e9
+            + quantumBytes(rate) + closingDebt + 1
+        XCTAssertLessThanOrEqual(Double(pacer.telemetry.bytesSent), allowance)
+
+        // 5. Nothing starved; everything offered eventually left.
+        XCTAssertTrue(pacer.isEmpty)
+        for c in PacerClass.allCases {
+            XCTAssertEqual(pacer.telemetry[c].tokensSent,
+                           pacer.telemetry[c].tokensEnqueued,
+                           "\(c.name) lost tokens")
+        }
+
+        print("HS-31 pin @500 kbps: max audio wait "
+            + "\(Double(audioWait) / 1e6) ms, max control wait "
+            + "\(Double(controlWait) / 1e6) ms through a "
+            + "~19 ms video-incurred deficit; second video datagram "
+            + "emitted at \(Double(video2At) / 1e6) ms")
+    }
+
+    /// `setRate` carries an in-flight deficit across a fall (the
+    /// squeeze review's second finding: a datagram admitted at 5 Mbps
+    /// reprices to ~9.7 ms of debt at 500 kbps). The debt stays real
+    /// for video — audio still does not wait behind it.
+    func testRateFallCarriesDeficitButAudioStaysExempt() {
+        let pacer = Pacer(rateBitsPerSecond: 5_000_000, now: 0)
+        // 5 Mbps → 625 B quantum: a 1230 B datagram overruns by 605 B.
+        pacer.enqueue(.freshVideo, bytes: 1230, frameID: 1, now: 0)
+        XCTAssertNotNil(pacer.nextBatch(now: 0))
+        // The estimator crashes the rate mid-repayment.
+        pacer.setRate(bitsPerSecond: 500_000, now: 0)
+
+        // Audio enqueued into the carried deficit: wake is NOW and the
+        // batch is the audio datagram, alone.
+        pacer.enqueue(.audio, bytes: 200, now: 0)
+        XCTAssertEqual(pacer.nextWake(now: 0), 0)
+        let batch = pacer.nextBatch(now: 0)
+        XCTAssertEqual(batch?.tokens.map(\.priorityClass), [.audio])
+        XCTAssertEqual(pacer.telemetry[.audio].maxQueueDelayNS, 0)
+
+        // Video queued behind the same deficit still pays all of it —
+        // the 605 B overrun plus audio's 200 B charge at 62.5 B/ms —
+        // and then needs a full bucket (oversize-alone clause).
+        pacer.enqueue(.freshVideo, bytes: 1230, frameID: 2, now: 0)
+        let wake = pacer.nextWake(now: 0)!
+        XCTAssertGreaterThan(wake, 12 * ms,
+            "video must repay the carried deficit plus audio's charge")
+        XCTAssertNil(pacer.nextBatch(now: 1 * ms),
+            "video must not borrow the exemption")
     }
 
     // MARK: - Wake computation

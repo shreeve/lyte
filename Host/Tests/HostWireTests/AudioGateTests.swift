@@ -297,6 +297,74 @@ final class AudioGateTests: XCTestCase {
         }
     }
 
+    /// HS-31 (squeeze review §1, consult-corrected shape): at the
+    /// 500 kbps estimator floor one max-size video datagram drives the
+    /// shared bucket ~19 ms negative — and audio used to wait the
+    /// whole deficit out (22.9–53.6 ms measured live vs §4.1's
+    /// 5 ± 2 ms bound). Through the REAL ingest → pacer → sink path:
+    /// audio enqueued mid-deficit emits at once, `nextWake` is NOW
+    /// while audio is queued (what the sender thread's signalDrain
+    /// wake relies on — the fix-2 seam), and the video tail stays
+    /// parked until the deficit is truly repaid.
+    func testAudioEmitsThroughVideoIncurredDeficitAtRateFloor() throws {
+        var sent: [VideoChannelDatagram] = []
+        let session = Session(
+            config: SessionConfig(
+                crypto: .insecure, rateBitsPerSecond: 500_000,
+                beaconIntervalNS: 1 << 62
+            ),
+            clientTuple: Self.tupleA,
+            now: 0,
+            rng: SplitMix64(seed: 0x31)
+        ) { sent.append($0) }
+        let ms: UInt64 = 1_000_000
+
+        // A multi-shard frame at t=0: the first max-size datagram
+        // emits alone (oversize-alone clause) and the bucket goes
+        // ~19 ms negative; the rest of the frame parks.
+        _ = try session.ingestVideoFrame(
+            syntheticFrame(byteCount: 8_000),
+            captureTimestampMicroseconds: 1, isKeyframe: false, now: 0
+        )
+        session.pump(now: 0)
+        let videoSentAtOpen = sent.count { $0.pacerClass == .freshVideo }
+        XCTAssertEqual(videoSentAtOpen, 1,
+            "exactly the one oversize datagram leaves; the tail parks "
+            + "behind the deficit")
+        XCTAssertGreaterThan(session.queuedVideoBytes, 0)
+
+        // Audio lands 1 ms into the deficit. The wake must be NOW —
+        // not the deficit's repayment instant ~19 ms out.
+        _ = try session.ingestAudioPacket(
+            opusPacket(0), captureTimestampMicroseconds: 1_000, now: 1 * ms
+        )
+        XCTAssertGreaterThan(session.queuedAudioDatagramCount, 0)
+        let wake = session.nextWake(now: 1 * ms)
+        XCTAssertNotNil(wake)
+        XCTAssertLessThanOrEqual(wake ?? .max, 1 * ms,
+            "a parked sender thread woken by signalDrain must find "
+            + "immediate work, not a 19 ms sleep")
+
+        session.pump(now: 1 * ms)
+        XCTAssertEqual(sent.count { $0.pacerClass == .audio }, 1,
+            "audio must emit through the video-incurred deficit")
+        XCTAssertEqual(session.queuedAudioDatagramCount, 0)
+        XCTAssertEqual(sent.count { $0.pacerClass == .freshVideo },
+                       videoSentAtOpen,
+                       "video must not borrow audio's exemption")
+
+        // The 5 ms cadence holds while the deficit repays.
+        _ = try session.ingestAudioPacket(
+            opusPacket(1), captureTimestampMicroseconds: 6_000, now: 6 * ms
+        )
+        session.pump(now: 6 * ms)
+        XCTAssertEqual(sent.count { $0.pacerClass == .audio }, 2)
+        XCTAssertLessThanOrEqual(
+            session.pacerTelemetry[.audio].maxQueueDelayNS, 2 * ms,
+            "audio queue delay must hold §4.1's bound through the "
+            + "deficit")
+    }
+
     // MARK: Leg 5 — sealed round trip through the LyteWire client build-up
 
     /// The minimal client far end (the SessionGateTests discipline):

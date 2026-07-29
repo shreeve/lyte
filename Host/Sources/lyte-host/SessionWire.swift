@@ -678,7 +678,9 @@ final class SessionWire {
         } catch {
             audioSendFailures += 1
             lastSendError = String(describing: error)
+            let leftover = session.queuedAudioDatagramCount > 0 && !peerGone
             lock.unlock()
+            if leftover { signalDrain() }
             return
         }
         // A concurrent video drain can hold the bucket in deficit for
@@ -697,7 +699,14 @@ final class SessionWire {
             try? flushOutbox()
             passes += 1
         }
+        // HS-31 fix 2: the retry loop is bounded — if the datagram
+        // outlived it (a deficit deeper than ~4 ms, a busy wire), the
+        // SENDER THREAD owns it. It used to stay parked until the next
+        // video ingest's signalDrain: up to +16 ms of hold for a shard
+        // whose whole budget is 5 ms.
+        let leftover = session.queuedAudioDatagramCount > 0 && !peerGone
         lock.unlock()
+        if leftover { signalDrain() }
     }
 
     /// The between-frames service hook (idle-floor tick cadence):

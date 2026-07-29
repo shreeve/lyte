@@ -12,6 +12,16 @@
 //   refinement > telemetry. A lower class never sends while a higher
 //   class has a queued token. FIFO within a class; `urgent` tokens jump
 //   only their own class's queue (IDR-on-demand), never a higher class.
+// - Latency exemption (HS-31): a NEGATIVE bucket balance is only ever
+//   the overrun of an oversize lower-class emission (see nextBatch) —
+//   at a 500 kbps floor one ~1230 B video datagram is ~19 ms of
+//   deficit, and audio must not wait it out (audio-continuity §4.1's
+//   5 ms ± 2 ms bound). Latency classes (control, audio) emit alone
+//   through a negative balance and CHARGE the shared bucket, so video
+//   repays their bytes too: the wire total still honors the configured
+//   rate, and the exemption's volume is structurally capped by strict
+//   priority (~320 kbps of audio incl. RS 4+2). Video classes never
+//   borrow it.
 // - Rate is an injected parameter (the HS-16 seam): `setRate` mid-stream
 //   re-caps the bucket and stretches subsequent batches; the pacer never
 //   estimates anything.
@@ -269,6 +279,18 @@ public final class Pacer {
                 out.append(t)
                 outBytes += t.bytes
             }
+            // The latency exemption (HS-31): a negative balance is a
+            // lower-class overrun being repaid — control and audio
+            // emit alone through it (charging the bucket, so the
+            // repayment grows by exactly their bytes) instead of
+            // waiting out a deficit video incurred. Video and below
+            // never take this path.
+            else if out.isEmpty, head.priorityClass <= .audio,
+                    tokens < 0 {
+                let t = queues[head.priorityClass.rawValue].pop()!
+                out.append(t)
+                outBytes += t.bytes
+            }
             break
         }
 
@@ -297,6 +319,10 @@ public final class Pacer {
     public func nextWake(now: UInt64) -> UInt64? {
         refill(now: now)
         guard let head = highestHead() else { return nil }
+        // The latency exemption's wake half: a queued control/audio
+        // token emits through a negative balance NOW (nextBatch's
+        // exempt clause) — the loop must not sleep out the deficit.
+        if head.priorityClass <= .audio, tokens < 0 { return now }
         let need = min(Double(head.bytes), burstBytes)
         if tokens + 1e-3 >= need { return now }
         let deficit = need - tokens
