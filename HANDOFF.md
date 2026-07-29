@@ -134,11 +134,17 @@ the Best floor cq4 (the race's knee: text +3.6…+3.9 dB over cq12 at
 grandfathered peers ride 4:2:0 after a 2 s hold, and every capped
 IDR fits the 223,380 B ceiling (549→194 KB worst text, deltas
 clear, ratchet heals in ≤47 fr). Suites Host **186/186 Mac AND
-pup**. ONE OWNER DECISION SURFACED: the ≥50 dB text bar and ±2
-gratings bar are UNREACHABLE on the 601-limited path at ANY floor
-(caps ~46–47 dB / ±3–4 at transparent coding — the conversion, not
-bits); those two gates stay honest FAILs pending a bar-vs-path
-ruling. V-5 is next (the client's three-tier Chroma control +
+pup**. THE BAR-VS-PATH RULING IS IN (owner, 2026-07-29 ~04:15): the
+≥50 dB text bar and ±2 gratings bar were written for a perfect path
+and are UNREACHABLE on 601-limited at ANY floor (caps ~46–47 dB /
+±3–4 at transparent coding — the conversion, not bits). **Owner ruled
+RECALIBRATE: text-converged ≥45 dB, gratings ≤±4** — consistent with
+decision 2's Option-A posture; the full-range road stays queued if
+the eyeball ever disagrees. The threshold constants + their pin tests
+live in root (`CorpusGates.swift`) which V-5 holds — **apply the
+recalibration as a micro-slice the moment root frees** (rerun the
+harness once; verdict should flip to all-PASS with no golden moves).
+V-5 is IN FLIGHT (the client's three-tier Chroma control +
 auto-re-dial-at-420, root); then J-G4a's live negotiated run.** Also open: (a) the bar's two red rows as Host/ slices — the
 **session-pipeline fps ceiling (~48/s ingest under load)** hunt and
 the **estimator ramp's IDR spend**; (b) the owner's p4 quality eyeball
