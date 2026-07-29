@@ -140,15 +140,16 @@ and are UNREACHABLE on 601-limited at ANY floor (caps ~46–47 dB /
 ±3–4 at transparent coding — the conversion, not bits). **Owner ruled
 RECALIBRATE: text-converged ≥45 dB, gratings ≤±4** — consistent with
 decision 2's Option-A posture; the full-range road stays queued if
-the eyeball ever disagrees. The threshold constants + their pin tests
-live in root (`CorpusGates.swift`) which V-5 holds — **apply the
-recalibration as a micro-slice the moment root frees** (rerun the
-harness once; verdict should flip to all-PASS with no golden moves).
+the eyeball ever disagrees. **RECALIBRATION APPLIED (coordinator
+micro-slice, ~05:15): `fecd646` root (constants + pin tests + the
+trip-point test moves to ±4/±5) + `f783006` Host (the harness banner
+legend stops quoting the old bars). Root 188/188 green; harness 444
+leg rerun at `b07d91f`-era HEAD — VERDICT FLIPS TO 444 PASS, all
+seven rows green, goldens untouched.**
 V-5 LANDED (`a8b9fa4`, root 175 → 188/188 — wave entry below; finished
 by a second worker after the first died to an ~04:26 infra timeout;
 control + persistence + typed fallback + SPS audit in, 444 decode
-proven offline 60/60 hardware). ROOT IS FREE — the recalibration
-micro-slice is unblocked. Two blockers noted in the wave entry: the
+proven offline 60/60 hardware). Two blockers noted in the wave entry: the
 41151 loop now declares [420, 444] (any "it's 4:2:0" note is stale —
 don't connect Best to it), and live wire legs from the agent shell
 wedge on a Keychain SecurityAgent prompt the owner should "Always
