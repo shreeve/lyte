@@ -13,11 +13,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Do-now tier
 
-1. **quality-probe receipts grep rotted** [S] — `Host/Scripts/quality-probe.sh:224`:
-   `grep -o 'delivery [^,]*)'` can't cross the comma the estimator-honesty wave
-   added (`delivery X kbps (burst max Y, belief Z)`), so the `receipts: estimator`
-   line prints empty. One regex; the script's own charter is "cannot rot."
-
 2. **Capture-starvation tripwire** [S] — the direct-scanout freeze class has no
    runtime detector, only a startup warning. All inputs exist on the host tick
    (`lastOnFrameAt`, session state, input recency): one throttled loud book line
@@ -143,7 +138,10 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ## Landed
 
-(none yet)
+1. **quality-probe receipts grep rotted** [S] — PR #1, merged 2026-07-30.
+   Pattern became `delivery [^)]*)` (captures through the belief-bearing close
+   paren) plus a loud `*** GREP ROTTED ***` guard if the shape ever drifts
+   again. Verified against today's real probe logs.
 
 ## Closed
 
