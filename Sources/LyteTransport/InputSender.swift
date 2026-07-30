@@ -80,11 +80,21 @@ public struct LatencyHistogram: Sendable {
     /// The exact q-quantile (0...1) over the retained samples by the
     /// nearest-rank method; nil when nothing was recorded.
     public func percentile(_ q: Double) -> UInt64? {
-        guard !samples.isEmpty else { return nil }
+        percentiles([q])[0]
+    }
+
+    /// Every requested quantile from ONE sort of the retained ring —
+    /// the overlay asks for p50 and p99 together, and each bare
+    /// `percentile` call re-sorted the whole ring (up to 65,536
+    /// elements, twice per overlay tick).
+    public func percentiles(_ qs: [Double]) -> [UInt64?] {
+        guard !samples.isEmpty else { return qs.map { _ in nil } }
         let sorted = samples.sorted()
-        let clamped = Swift.min(Swift.max(q, 0), 1)
-        let rank = Int((clamped * Double(sorted.count)).rounded(.up))
-        return sorted[Swift.max(rank, 1) - 1]
+        return qs.map { q in
+            let clamped = Swift.min(Swift.max(q, 0), 1)
+            let rank = Int((clamped * Double(sorted.count)).rounded(.up))
+            return sorted[Swift.max(rank, 1) - 1]
+        }
     }
 
     public var p50: UInt64? { percentile(0.50) }
@@ -140,7 +150,8 @@ extension InputSenderStats {
         // line (it's a session state, not a metric).
         var line = "user:    \(eventsSent) "
             + (eventsSent == 1 ? "event" : "events") + " sent to host"
-        if let p50 = inputToInject.p50, let p99 = inputToInject.p99 {
+        let pair = inputToInject.percentiles([0.50, 0.99])
+        if let p50 = pair[0], let p99 = pair[1] {
             line += String(
                 format: " · applied on host p50/p99 %.1f/%.1f ms",
                 Double(p50) / 1000, Double(p99) / 1000)
