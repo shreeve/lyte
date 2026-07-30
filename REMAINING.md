@@ -17,11 +17,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Client performance — per-datagram fat on the receive thread
 
-13. **`noteVideoShard` no-input fast path** [S] — `InputSender.swift:271`: TLV
-    decode + lock per video shard to maintain the frame→stamp book that's only
-    consumed while echoes are pending. Relaxed-atomic "input pending recently"
-    check skips ~3k decodes+locks/s in the common no-input stretches.
-
 14. **ARQ PTO timer reschedule skip** [S] — `ReliableCtrlEndpoint.swift:347`
     re-arms the DispatchSourceTimer on every send and every ACK (hundreds/s
     during drags), nearly always to an equivalent deadline. Track last-armed
@@ -151,6 +146,12 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
     100 ms beat feeds the machine the newest stamp at its true arrival time
     (detector/liveness bit-exact); a `machineFrozen` flag keeps the FROZEN
     exit datagram-immediate. Root suite 212/212.
+
+13. **`noteVideoShard` no-input fast path** [S] — PR #13, merged 2026-07-30.
+    Relaxed `hasPendingInput` atomic re-derived at every book mutation;
+    shards skip the TLV decode + lock cold while both books are empty
+    (lossless: a pre-send frame's stamp is always < the new seq). New skip
+    pin + re-armed honesty pin; root suite 213/213.
 
 ## Closed
 
