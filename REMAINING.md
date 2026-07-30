@@ -15,12 +15,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Host performance — the rate-fall moment
 
-6. **Fall-repricing purge** [M] — bytes admitted at 50 Mbps serialize at the
-   crashed rate: 80–895 ms of stale wire measured. Add `Pacer.dropClass` for
-   freshVideo/videoTail, clean up `VideoChannel.pending`/`queuedShardsByFrame`,
-   arm the coalesced keyframe latch so the next frame re-anchors. Session
-   already knows the fall moment (`Session.swift:2179`). The top-value host fix.
-
 7. **VBV exact-tighten** [S] — with rung changes costing zero IDRs (HS-33), the
    √2 posture slack on tighten is pure quantization; tightens can land exactly
    on the ceiling rate. Loosen keeps the measured 10 s sustain lag (load-bearing
@@ -145,6 +139,15 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
    2026-07-30. `ClassQueue.bytesQueued` maintained by push/pop; O(1) reads
    for both hot gates. Pinned by a drain-era ground-truth test; host suite
    225/225 Mac AND pup.
+
+6. **Fall-repricing purge** [M] — PR #6, merged 2026-07-30. `Pacer.dropClass`
+   + `VideoChannel.purgeQueuedVideo` + Session hook: genuine falls (never
+   evidence decay) reprice queued video at the new rate and purge past a
+   50 ms threshold, arming a named `fall-purge` IDR through the coalesced
+   latch; counters + live `rate: fall purge` line. FallPurgeGateTests (4
+   rungs incl. a whole-session 20%-loss leg); suite 229/229 Mac AND pup.
+   NOT yet observed live under a real fall — watch the new line on the next
+   constrained-air session.
 
 ## Closed
 
