@@ -19,15 +19,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
    Repo precedent is extraction (ControlStripPolicy → LyteUI, overlayLine →
    LyteTransport). Extract and pin.
 
-4. **Docs/hygiene batch** [S] — HANDOFF.md sections titled CURRENT are two eras
-   stale (line 406 contradicts the P-2/P-3 DROPPED ruling); H4 plan still carries
-   un-annotated P-2/P-3 ladder rows; ConnectionModel comment quotes the
-   pre-rename overlay string; `Scripts/awdl-quiet.sh`'s "interim until the M6
-   helper" charter expired; TODO.md's `lyte sniff` entry doesn't know HS-5
-   shipped; `.gitignore` ignores tracked Package.resolved files and vanished
-   misc/ checkouts; `Host/spike/uinput_probe.c` is a self-declared throwaway
-   whose question was answered.
-
 ### Host performance — the rate-fall moment
 
 5. **Pacer `queuedBytes` O(n) → running totals** [S] — `Pacer.swift:182` walks
@@ -143,6 +134,15 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
    2 s + no capture frame > 500 ms; cursor is EMBEDDED so input must damage),
    naming the scanout prerequisite; episodes counted in the final stats block.
    Host build on pup clean with the vendored no-reset recipe.
+
+4. **Docs/hygiene batch** [S] — PR #3, merged 2026-07-30. HANDOFF CURRENT
+   sections retitled HISTORICAL with the P-2/P-3 contradiction superseded
+   inline; H4 plan rows struck with the DROPPED ruling; stale ConnectionModel
+   comment fixed; awdl-quiet.sh demoted to manual fallback; TODO's sniff entry
+   narrowed to the decrypt half; vanished misc/ patterns collapsed; spike file
+   deleted. One audit claim corrected in-flight: Package.resolved was ignored
+   AND untracked (not ignored-yet-tracked) — the ignore stays; pin-tracking
+   policy is an owner call.
 
 ## Closed
 
