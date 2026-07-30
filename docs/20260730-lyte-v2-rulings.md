@@ -1,0 +1,71 @@
+# Lyte v2 — early rulings of record (2026-07-30)
+
+*Owner decisions settled in conversation on 2026-07-30, recorded before
+any v2 spec exists. The v2 effort itself: specification first (deep
+multi-agent analysis → normative spec), then convergence by in-place
+migration — no clean-room reimplementation, no second repo. The
+boundary is the `v1-final` tag (`628f3ed`).*
+
+## Repo strategy
+
+- **One repo, forever.** No `lyte-v1`/`lyte` split, no copy-into-fresh
+  repo. v1 is the annotated tag `v1-final`; everything after it
+  converges toward v2 in place, always green, organ-by-organ against
+  the frozen vectors and gate suites. Rationale: the git history is the
+  project's chronicle (ledger commits, PR trail, hash citations in
+  HANDOFF/ANALYSIS); a fork window means every fix lands twice; the
+  copy motion silently drops guards.
+
+## Directory structure (v2 target shape)
+
+```
+Client/      the macOS app + client transport + tooling (today's root package)
+Common/      shared code — three targets, see below
+Host/        the Linux host (+ future macOS host role)
+Scripts/     instruments and ops
+Tests/       cross-end composition gates (both ends in one build graph —
+             closes the "no test drives real client against real host" gap)
+Docs/        specs, decisions, archives
+```
+
+## Common split — settled
+
+Two production targets plus a test kit; directory and module names:
+
+| Directory        | Module        | Charter |
+|------------------|---------------|---------|
+| `Common/Core`    | `LyteCore`    | Sans-IO: wire contracts, codecs, state machines, shared pure logic (one Histogram, one AnnexB, ArqRepack + plaintext budget, audio dialect constants). Injected time/randomness. The no-Foundation lint travels here and keeps running under `swift test`. WASM-buildable — this is what the browser client compiles. Frozen vectors live beside it. |
+| `Common/IO`      | `LyteIO`      | OS adapters BOTH ends share (file store behind `BulkReceiveStore`, socket/DSCP helpers, clock providers, the stdio leaf). **Admission rule: both ends use it, or it goes to Client/ or Host/. Adapters, never policy** — decisions live in Core where virtual time can pin them. Depends on Core; never the reverse. |
+| `Common/TestKit` | `LyteTestKit` | SimNet, vector loaders, harnesses, virtual-time drivers. Test-only — production binaries never link it (also evicts the ~1,100 lines of corpus harness from the shipping app). |
+
+Naming rationale, recorded so it isn't relitigated:
+- **Core over Base**: names what the package *is* (the heart), not just
+  where it sits; the SwiftNIO precedent (`NIOCore`/`NIOPosix`/
+  `NIOEmbedded`) is this exact split with this exact naming, instantly
+  legible to any Swift reader; "Base" carries Util-drawer gravity.
+- **IO over Shell**: blunt truth — an `import LyteIO` in the WASM
+  target is visibly wrong; "Shell" collides with in-tree vocabulary
+  (`BulkReceiveShell`/`BulkSendShell`, the debug shell).
+- **TestKit over Test**: the package is equipment for writing tests,
+  not tests; `LyteTest` sits one character from the `*Tests` bundle
+  convention and misreads at every import site; `LyteWireTestKit` is
+  the in-tree incumbent.
+- **Module names are prefixed** (`LyteCore`, not `Core`): unprefixed
+  imports are collision bait and read badly.
+- The name never guards the door — **the lint and the charter comments
+  do**; both are required at the top of each target.
+
+## Process rulings
+
+- **Spec before code.** The v2 effort starts as a normative *Lyte
+  System Specification* (supersedes the four pillars + scattered
+  decisions; folds in the pre-written wire-v2 batch), built by
+  multi-agent workflow phases: subsystem analysis fan-out → design
+  panels with judges → adversarial spec review → synthesis. The owner
+  reviews between phases.
+- **Fix before spec.** The ANALYSIS.md Tier 1/2 PR train lands first —
+  no spec written on top of known bugs.
+- **Rebuild only earned organs.** Modules re-derived from spec only
+  where the analysis justifies it (ARQ internals' O(n²) poll, the
+  estimator delay baseline are the leading candidates), each replaced
+  against frozen vectors with suites green throughout.

@@ -43,6 +43,9 @@ reference them, don't restate them):
 - [20260728 video supremacy plan](20260728-165538-lyte-video-supremacy-plan.md) —
   the HS-wave strategy source (§R3/§7).
 - [20260729 estimator honesty plan](20260729-121027-lyte-estimator-honesty-plan.md).
+- [20260730 v2 rulings](20260730-lyte-v2-rulings.md) — one repo +
+  `v1-final` tag, the Client/Common/Host target shape,
+  LyteCore/LyteIO/LyteTestKit naming, spec-before-code.
 
 **Feature designs:**
 - [20260720-145840 audio continuity](20260720-145840-audio-continuity.md) —
