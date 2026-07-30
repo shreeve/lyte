@@ -1074,8 +1074,8 @@ final class ConnectionModel {
         let lost = missing > lateFilled ? missing - lateFilled : 0
         let expected = totals.datagrams + lost
         var wire = lost == 0
-            ? "inbound:  lost 0 of \(Self.compactCount(expected)) host packets"
-            : String(format: "inbound:  lost %d of %@ host packets (%.3f%%)",
+            ? "network: lost 0 of \(Self.compactCount(expected)) host packets"
+            : String(format: "network: lost %d of %@ host packets (%.3f%%)",
                      lost, Self.compactCount(expected),
                      100 * Double(lost) / Double(max(1, expected)))
         // roundtrip min + jitter, spelled out — "±" falsely implies a
@@ -1100,7 +1100,7 @@ final class ConnectionModel {
         // lowercase so a HEALTHY overlay contains zero uppercase — the
         // glance-test is "any caps anywhere?". FROZEN and NOT CAPTURED
         // are the only words allowed to shout.
-        var mode = "stream:   \(core.wireMode == .active ? "active" : "idle")"
+        var mode = "session: \(core.wireMode == .active ? "active" : "idle")"
         if core.isFrozen { mode += " — FROZEN" }
         // Chroma lives HERE (owner catch, round three): it is fixed at
         // ANNOUNCE — changing tiers means a reconnect — so it is a
@@ -1149,7 +1149,7 @@ final class ConnectionModel {
             if audio.depacketizer.packetsRebuilt > 0 {
                 parts.append("repaired \(audio.depacketizer.packetsRebuilt)")
             }
-            lines.append("audio:    " + parts.joined(separator: " · "))
+            lines.append("audio:   " + parts.joined(separator: " · "))
         }
 
         // The HS-22 quality line — what the receive side can say about
@@ -1168,7 +1168,7 @@ final class ConnectionModel {
             // glass-side stall, not a network one. Mbps leads and
             // stands bare (self-naming); chroma moved to the stream
             // line (session state, not live metric).
-            var video = String(format: "video:    %.1f Mbps",
+            var video = String(format: "video:   %.1f Mbps",
                                Double(q.bitsPerSecond) / 1e6)
             let inFps = videoInMeter.rate(
                 count: pipelineStats.framesDecoded,

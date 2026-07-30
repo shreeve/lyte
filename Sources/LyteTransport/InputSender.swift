@@ -137,8 +137,8 @@ extension InputSenderStats {
         // "your action took effect on the host", not an OS-injection
         // micro-timing. Capture state moved to the overlay's state
         // line (it's a session state, not a metric).
-        var line = "outbound: \(eventsSent) client "
-            + (eventsSent == 1 ? "event" : "events") + " sent"
+        var line = "user:    \(eventsSent) "
+            + (eventsSent == 1 ? "event" : "events") + " sent to host"
         if let p50 = inputToInject.p50, let p99 = inputToInject.p99 {
             line += String(
                 format: " · applied on host p50/p99 %.1f/%.1f ms",
