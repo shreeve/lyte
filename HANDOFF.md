@@ -1,6 +1,6 @@
 # Lyte — Session Handoff
 
-*Current as of 2026-07-29 ~10:55 MDT. The session ledger — tracked in the
+*Current as of 2026-07-30. The session ledger — tracked in the
 repo since `8da50bf` (the .gitignore entry is vestigial; the file is
 tracked). Update freely; commit updates in the ledger voice.*
 
@@ -244,7 +244,8 @@ project's chat may also be running on this machine — leave it alone.)
 loop `bash ~/lyte-loop.sh` (port 41151) and the owner's client app bundle.
 Do not kill these when stopping workers.
 
-# CURRENT STATE — post-H2
+# HISTORICAL STATE — post-H2 (2026-07-22 era; the resume block above is
+# the living one — suite counts and wave state here are frozen history)
 
 **Where things stand.** H2 FUNCTIONAL PARITY IS CLOSED (joint gate passed
 2026-07-22 ~13:15 MDT, report `docs/20260722-h2-joint-gate.md`) and the H2
@@ -404,7 +405,9 @@ decisions in `docs/20260723-051223-lyte-h3-plan.md` §0 are settled:
 5. **Wire-version 2 batch**: design-discussion doc only in H3, no
    bytes change (per recommendation).
 6/7. **Printing → H5, multi-monitor + dynamic resolution → H4**:
-   confirmed.
+   confirmed. *(SUPERSEDED 2026-07-30: P-2 multi-monitor and P-3 dynamic
+   resolution DROPPED by owner ruling — desktop scaling covers the need;
+   see the resume block.)*
 The H3 ladder is therefore: F-2 bulk channel (IN FLIGHT as of ~21:25)
 → F-3/F-4 file drop (client→host v1) → F-5 roaming → browser-viewer
 slices (post-scoping) + the wire-v2 design doc; J-G3 exit criteria
@@ -496,7 +499,8 @@ SEVEN OWNER DECISIONS (file-transfer consent UX, clipboard v2 scope,
 WASM timing, non-LAN reach, wire-version batch, printing at H5,
 multi-monitor at H4) that gate the H3 feature ladder.
 
-**Queued next (in order):**
+**Queued next (in order) — HISTORICAL; every item below has since
+resolved (see the resume block for what is actually queued):**
 
 1. ~~Tonight's catch-up worker~~ — **IN FLIGHT** (see above).
 2. **UX-complaint fixes** — whatever the investigator's report names
@@ -845,9 +849,10 @@ different measurement and passed huge (armed 10 vs twin 64).
 
 ---
 
-# CURRENT WAVE — H2 close-out + demolition (2026-07-22, full entries)
+# HISTORICAL WAVE — H2 close-out + demolition (2026-07-22, full entries;
+# later waves' blocks follow inside — titles frozen at their era)
 
-*The current wave's full record — do not compress yet. (HS-13/CL-9/HS-15
+*That wave's full record — do not compress yet. (HS-13/CL-9/HS-15
 landed pre-H1-gate and are summarized in the ledger above.) HS-18 appends
 its entry at the marker at the end of this block.*
 

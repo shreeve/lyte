@@ -1,6 +1,8 @@
 #!/bin/sh
-# Hold AWDL down while streaming — interim relief until the M6 privileged
-# helper does this automatically per-stream.
+# Hold AWDL down while streaming — the MANUAL FALLBACK. The shipped path
+# is lyte-helperd (SMAppService privileged daemon) + the app's radio
+# watchdog, which hold awdl0 down per-stream automatically; use this only
+# on a build without the helper, or when its approval is pending.
 #
 # AWDL (Apple Wireless Direct Link, interface awdl0) time-slices the Wi-Fi
 # radio for AirDrop/Handoff/Sidecar/Continuity scanning. Each scan hop takes
