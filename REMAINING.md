@@ -19,14 +19,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Worth doing — bigger or design-flavored
 
-16. **Estimator stretched-train guard** [M] — the honest-vote classifier
-    (`RateEstimator.swift:1115`) admits trains whose arrival span was stretched
-    by a mid-train microstall (8 pkts over ~15 ms reads ~5 Mbps → honest median
-    poisoned → belief demoted on clean 45 Mbps air). The compressed-drain purge
-    encodes the right insight for drains; add the symmetric guard: discard or
-    down-weight trains whose arrival span ≫ send span. Virtual-time pins plus
-    an evening A/B.
-
 17. **Idle-floor retention copy** [M] — `main.swift:742` memcpys the full
     ~14.7 MB capture buffer per damage frame; the encoder's AVFrame already
     holds the last-submitted pixels. A "re-encode retained frame" C entry point
@@ -154,6 +146,16 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
     right-sizing deliberately left as an owner call: the input gauge's
     65,536-sample ring reads near-cumulative — say the word if the user
     line should feel more recent. Root suite 214/214.
+
+16. **Estimator stretched-train guard** [M] — PR #16, merged 2026-07-30.
+    Gap-concentration discriminator (`stretchGapDominanceFraction` 0.5): a
+    would-be-honest train whose max inter-arrival gap dominates its span
+    measured a radio hole and is recused from the honest median (all other
+    roles kept); `hole-recused` count in the estimator stats line. Pinned
+    both edges (hole recused, uniformly-slow keeps its vote); suite 236/236
+    Mac AND pup. LIVE HALF STILL OWED: watch `hole-recused` and the honest
+    medians on the next evening-air session before calling the microstall
+    rung closed.
 
 ## Closed
 
