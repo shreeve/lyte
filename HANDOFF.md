@@ -42,7 +42,17 @@ probes' data on the table):**
    ceiling posture — ceiling-conformed IDRs legal but structurally
    rare (V-1: 20/30 natural text IDRs exceed it; deltas never close).
 4. **J-G4 gate**: 4:4:4 core + P-1 (clipboard v2) only; P-2/P-3 stay
-   pre-declared droppable to H5.
+   pre-declared droppable to H5. **SUPERSEDED 2026-07-30 — OWNER
+   RULING: P-2 and P-3 are DROPPED outright, not deferred.** P-2: the
+   reference host has one screen; selection is connect-time
+   session-parameter work that revives with no wire debt if a
+   multi-monitor host ever exists. P-3: the client scales the desktop
+   it's given; a HOST-side mid-session resolution change joins chroma
+   under the existing law — fixed at ANNOUNCE, change = clean
+   reconnect. Residual belt (named, not blocking): verify a live host
+   geometry change produces a clean typed teardown (not a hang), so
+   the reconnect law actually engages. Deep-floor encoder downscaling
+   (congestion shedding) is unrelated to P-3 and stays available.
 
 **THE BEAUTY BAR'S FIRST ROW IS IN — and its two reds are named
 findings, not noise. ⚠️ BOTH REDS ARE NOW FIXED at the decomposed
