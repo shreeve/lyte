@@ -34,6 +34,7 @@
 
 import Foundation
 import LyteWire
+import Synchronization
 
 /// Exact-percentile latency aggregator — the byte-for-byte shape of
 /// HostCore.Histogram (HS-13's edge instrumentation; the root package
@@ -175,6 +176,17 @@ public final class InputSender: @unchecked Sendable {
     private var frameStamps: [UInt32: UInt32] = [:]
     private var frameStampOrder: [UInt32] = []
     private var stats = InputSenderStats()
+    /// True while either pending book holds an event — the video hot
+    /// path's fast-out. Every video shard used to pay a TLV decode
+    /// plus a lock round-trip (~3k/s) to maintain the frame→stamp
+    /// book, which is only ever CONSUMED while events pend: a stamp
+    /// carried by a pre-send frame is always < the new event's seq
+    /// (the host can only stamp seqs it has injected) and can close
+    /// nothing. Skipping while both books are empty is therefore
+    /// lossless for the latency math; the one honest trade is that
+    /// malformed stamps go uncounted during no-input stretches.
+    /// Updated under `lock`, read relaxed on the receive thread.
+    private let hasPendingInput = Atomic<Bool>(false)
 
     public init(
         clockModel: HostClockModel,
@@ -221,6 +233,7 @@ public final class InputSender: @unchecked Sendable {
         awaitingPhoton[seq] = now.microseconds
         pendingOrder.append(seq)
         evictOverflowLocked()
+        refreshPendingFlagLocked()
         lock.unlock()
         return seq
     }
@@ -235,7 +248,10 @@ public final class InputSender: @unchecked Sendable {
         // window that moves between tuples would smear the math.
         let fit = clockModel.estimate()
         lock.lock()
-        defer { lock.unlock() }
+        defer {
+            refreshPendingFlagLocked()
+            lock.unlock()
+        }
         for tuple in echo.tuples {
             stats.echoTuplesReceived += 1
             stats.hostReceiveToInject.record(
@@ -269,6 +285,9 @@ public final class InputSender: @unchecked Sendable {
     /// survives shard loss). Call from the datagram ingest path with
     /// the envelope's extensions.
     public func noteVideoShard(envelope: Envelope) {
+        // The receive thread's fast-out: no pending event, nothing any
+        // stamp could close — skip the decode and the lock entirely.
+        guard hasPendingInput.load(ordering: .relaxed) else { return }
         let stamp: UInt32?
         do {
             stamp = try LastInputSeqTlv.decode(extensions: envelope.extensions)
@@ -311,6 +330,7 @@ public final class InputSender: @unchecked Sendable {
         for seq in closed {
             awaitingPhoton.removeValue(forKey: seq)
         }
+        refreshPendingFlagLocked()
     }
 
     // MARK: Snapshots
@@ -338,5 +358,14 @@ public final class InputSender: @unchecked Sendable {
             awaitingEcho.removeValue(forKey: seq)
             awaitingPhoton.removeValue(forKey: seq)
         }
+    }
+
+    /// Re-derive the receive thread's fast-out flag after any book
+    /// mutation. Runs under the lock.
+    private func refreshPendingFlagLocked() {
+        hasPendingInput.store(
+            !awaitingEcho.isEmpty || !awaitingPhoton.isEmpty,
+            ordering: .relaxed
+        )
     }
 }

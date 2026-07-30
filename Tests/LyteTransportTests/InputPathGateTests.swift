@@ -260,8 +260,14 @@ final class InputPathGateTests: XCTestCase {
             now: ClientTimestamp(microseconds: 1_300_000))
         XCTAssertEqual(sender.snapshotStats().inputToPhoton.count, 1)
 
-        // Books stay honest: an unmatched echo counts, a duplicate
-        // stamp TLV counts, neither throws.
+        // Books stay honest while the path is live: an unmatched echo
+        // counts, a duplicate stamp TLV counts, neither throws. (A
+        // fresh event re-arms the pending books first — with nothing
+        // pending, noteVideoShard's fast-out skips the decode
+        // entirely; that skip has its own pin below.)
+        _ = try sender.send(
+            .keyKeycode(keycode: 30, pressed: false),
+            now: ClientTimestamp(microseconds: 1_350_000))
         sender.handleEcho(
             InputEcho(tuples: [InputEchoTuple(
                 seq: 77, receivedMicroseconds: 1, injectedMicroseconds: 2)]),
@@ -278,6 +284,51 @@ final class InputPathGateTests: XCTestCase {
         stats = sender.snapshotStats()
         XCTAssertEqual(stats.unmatchedEchoTuples, 1)
         XCTAssertEqual(stats.malformedFrameStamps, 1)
+    }
+
+    func testNoteVideoShardSkipsEntirelyWhileNoInputPends() throws {
+        // The receive thread's fast-out: with both pending books empty
+        // (fresh sender, or every event echoed AND photon-closed), a
+        // video shard's stamp TLV is not even decoded — no book entry,
+        // no malformed count. The moment an event pends, the path is
+        // fully live again (the frame stamp records and closes the
+        // photon loop as ever).
+        let sender = InputSender(clockModel: HostClockModel()) { _, _ in }
+
+        var hostile = Envelope(
+            channel: .videoActive,
+            seq: ChannelSeq(rawValue: 0),
+            frame: FrameNumber(rawValue: 1),
+            timestamp: 0,
+            fec: 0)
+        hostile.extensions.append(LastInputSeqTlv.wireExtension(seq: 1))
+        hostile.extensions.append(LastInputSeqTlv.wireExtension(seq: 2))
+        sender.noteVideoShard(envelope: hostile)
+        XCTAssertEqual(sender.snapshotStats().malformedFrameStamps, 0,
+                       "no pending input — the TLV must not even decode")
+
+        // An event pends: the same hostile shard now counts, and a
+        // well-formed stamp closes the photon loop exactly as before.
+        _ = try sender.send(
+            .keyKeycode(keycode: 30, pressed: true),
+            now: ClientTimestamp(microseconds: 1_000_000))
+        sender.noteVideoShard(envelope: hostile)
+        XCTAssertEqual(sender.snapshotStats().malformedFrameStamps, 1)
+
+        var stamped = Envelope(
+            channel: .videoActive,
+            seq: ChannelSeq(rawValue: 1),
+            frame: FrameNumber(rawValue: 2),
+            timestamp: 0,
+            fec: 0)
+        stamped.extensions.append(LastInputSeqTlv.wireExtension(seq: 0))
+        sender.noteVideoShard(envelope: stamped)
+        sender.noteFrameDelivered(
+            frame: FrameNumber(rawValue: 2),
+            now: ClientTimestamp(microseconds: 1_250_000))
+        let stats = sender.snapshotStats()
+        XCTAssertEqual(stats.inputToPhoton.count, 1)
+        XCTAssertEqual(stats.inputToPhoton.p50, 250_000)
     }
 
     func testInputSenderWithoutClockFitStillRecordsHostEdge() throws {
