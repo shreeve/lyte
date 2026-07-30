@@ -13,12 +13,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Do-now tier
 
-3. **Pin tonight's untested pure logic** [M] — `RateMeter`, `VideoDeliveryBooks`
-   (window-anchor eviction, wrap-safe math, ring percentiles), and the radio
-   watchdog's 3-strike debounce live in the app target no test bundle reaches.
-   Repo precedent is extraction (ControlStripPolicy → LyteUI, overlayLine →
-   LyteTransport). Extract and pin.
-
 ### Host performance — the rate-fall moment
 
 5. **Pacer `queuedBytes` O(n) → running totals** [S] — `Pacer.swift:182` walks
@@ -143,6 +137,14 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
    deleted. One audit claim corrected in-flight: Package.resolved was ignored
    AND untracked (not ignored-yet-tracked) — the ignore stays; pin-tracking
    policy is an owner call.
+
+3. **Pin tonight's untested pure logic** [M] — PR #4, merged 2026-07-30.
+   VideoDeliveryBooks.swift moved verbatim to LyteTransport; the watchdog
+   debounce extracted as pure `RadioHoldPolicy`; 12 pins in
+   OverlayGaugeTests.swift (window law, anchor eviction, hop percentiles,
+   strike ladder). Patient-connect stays app-embedded deliberately — its
+   round policy is a refactor, not a pin; possible follow-up. Full suite
+   222/222 green.
 
 ## Closed
 
