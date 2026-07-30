@@ -1123,6 +1123,10 @@ final class ConnectionModel {
         // so it lives here with its siblings, not on the input line.
         mode += lyteInputCapture != nil
             ? " · keys+mouse captured" : " · keys+mouse NOT CAPTURED"
+        // The radio watchdog's verdict, caps-alarm grammar: appears
+        // ONLY when streams are live, awdl0 stayed up through a
+        // re-engage, and jitter is therefore about to say why.
+        if AgentState.shared.radioAlarm { mode += " · AWDL LOOSE" }
         lines.append(mode)
 
         // Unconditional (CL-16): "outbound: 0 client events sent" is

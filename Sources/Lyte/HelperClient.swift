@@ -17,6 +17,27 @@ final class HelperClient {
 
     var status: SMAppService.Status { service.status }
 
+    /// The ground truth the watchdog trusts: awdl0's own UP flag, read
+    /// directly via getifaddrs (no privileges needed). The XPC call is
+    /// fire-and-forget — a daemon that failed to spawn produces no
+    /// error, only an interface that never went down; asking the
+    /// interface is the only claim that cannot lie.
+    nonisolated static func awdlIsUp() -> Bool {
+        var addrs: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&addrs) == 0 else { return false }
+        defer { freeifaddrs(addrs) }
+        var cursor = addrs
+        while let entry = cursor {
+            if String(cString: entry.pointee.ifa_name) == "awdl0" {
+                return (entry.pointee.ifa_flags & UInt32(IFF_UP)) != 0
+            }
+            cursor = entry.pointee.ifa_next
+        }
+        // No awdl0 at all (some Macs/configs): nothing to hold — treat
+        // as "not up" so the watchdog stays silent.
+        return false
+    }
+
     var statusDescription: String {
         switch service.status {
         case .notRegistered: return "notRegistered — registration didn't stick"
