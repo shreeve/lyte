@@ -1,3 +1,4 @@
+import LyteTransport
 import ServiceManagement
 import SwiftUI
 
@@ -51,10 +52,12 @@ final class AgentState {
     private(set) var helperHint: String?
     /// The watchdog's alarm: streams are active but awdl0 is UP and two
     /// re-engage attempts didn't cure it — the radio hold is NOT
-    /// working. Drives the overlay's caps-alarm token.
+    /// working. Drives the overlay's caps-alarm token. The debounce
+    /// itself is RadioHoldPolicy (LyteTransport), pinned in
+    /// RadioHoldPolicyTests; this is its rendered face.
     private(set) var radioAlarm = false
     private var radioWatchdog: Task<Void, Never>?
-    private var looseChecks = 0
+    private var radioPolicy = RadioHoldPolicy()
 
     func streamBegan() {
         activeStreams += 1
@@ -75,8 +78,8 @@ final class AgentState {
             HelperClient.shared.streamEnded()
             radioWatchdog?.cancel()
             radioWatchdog = nil
+            radioPolicy.reset()
             radioAlarm = false
-            looseChecks = 0
         }
     }
 
@@ -89,19 +92,15 @@ final class AgentState {
     /// the overlay alarm instead of pretending.
     private func startRadioWatchdog() {
         radioWatchdog?.cancel()
-        looseChecks = 0
+        radioPolicy.reset()
         radioWatchdog = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(5))
                 guard let self, self.activeStreams > 0,
                       !Task.isCancelled else { return }
-                guard HelperClient.awdlIsUp() else {
-                    self.looseChecks = 0
-                    self.radioAlarm = false
-                    continue
-                }
-                self.looseChecks += 1
-                if self.looseChecks == 1 {
+                let action = self.radioPolicy.check(
+                    radioUp: HelperClient.awdlIsUp())
+                if action == .reengage {
                     // First loose sighting: re-engage. A crashed daemon's
                     // connection already invalidated (engaged=false), so
                     // this mints a fresh connection and launchd respawns.
@@ -110,7 +109,7 @@ final class AgentState {
                         self.helperHint = HelperClient.shared.streamBegan()
                     }
                 }
-                if self.looseChecks >= 3 { self.radioAlarm = true }
+                self.radioAlarm = self.radioPolicy.alarm
             }
         }
     }
