@@ -20,6 +20,10 @@ struct ConnectView: View {
             case .connecting(let message):
                 Spacer()
                 ProgressView(message)
+                // The respawn-gap hunt can run tens of seconds — the
+                // human always has the exit.
+                Button("Cancel") { model.cancelConnect() }
+                    .padding(.top, 16)
                 Spacer()
             case .failed(let message):
                 failedView(message)

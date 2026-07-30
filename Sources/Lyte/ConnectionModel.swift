@@ -18,6 +18,15 @@ final class ConnectionModel {
     }
 
     var phase: Phase = .pickHost
+
+    /// Fresh-connect patience (the respawn-gap hunt in connectLyte):
+    /// silence keeps re-dialing until this budget runs out. Sized to
+    /// cover a full host restart (portal reopen + self-probes,
+    /// 10–15 s observed) with margin, not to camp forever.
+    static let freshConnectBudgetMicroseconds: UInt64 = 45_000_000
+    /// Invalidates in-flight connect rounds (Cancel, or a newer
+    /// connect superseding an old one mid-dial).
+    private var connectGeneration = 0
     var muted = false {
         didSet { lyteSession?.setAudioMuted(muted) }
     }
@@ -156,17 +165,6 @@ final class ConnectionModel {
             phase = .failed("client identity: \(error)")
             return
         }
-        let crypto: NoiseTransportCrypto
-        do {
-            crypto = try NoiseTransportCrypto(
-                hostAddress: host.address,
-                hostPort: host.port,
-                hostStaticPublicKey: hostStatic,
-                staticKeys: identity)
-        } catch {
-            phase = .failed("host key: \(error)")
-            return
-        }
 
         // CL-13/CL-18: the per-host preference seeds the session-start
         // posture — one 0x18 leaves after the host's first 0x19 when
@@ -191,15 +189,79 @@ final class ConnectionModel {
         sessionConfig.core.capabilities = sessionConfig.core.capabilities
             .declaringChroma(tier: chromaTier)
 
-        let lyte = makeLyteSession(crypto: crypto, config: sessionConfig)
-
-        // start() blocks through bind + the Noise handshake (retry
-        // timer inside) — off the main actor.
-        do {
-            try await Task.detached { try lyte.start() }.value
-        } catch {
-            phase = .failed("Lyte-UDP connect: \(error)")
-            return
+        // The respawn-gap patience: a paired host that answered
+        // discovery moments ago but is SILENT now is almost always
+        // rebooting (the dev loop runs one host process per session;
+        // a production restart looks the same) — its boot takes
+        // 10–15 s of portal/probe setup while a single dial gives up
+        // in ~10. So silence hunts instead of dead-ending: short
+        // dials (the roaming shape, 3 × 700 ms), a 2 s re-browse
+        // between them (the reborn host re-registers — follow its
+        // freshest address), inside one honest budget. Every OTHER
+        // failure — crypto rejection, unpaired, socket errors —
+        // still fails immediately: patience is only for silence.
+        connectGeneration += 1
+        let generation = connectGeneration
+        let deadline = Self.monotonicMicroseconds()
+            + Self.freshConnectBudgetMicroseconds
+        var dialAddress = host.address
+        var dialPort = host.port
+        var round = 0
+        let lyte: LyteUdpSession
+        while true {
+            round += 1
+            let crypto: NoiseTransportCrypto
+            do {
+                crypto = try NoiseTransportCrypto(
+                    hostAddress: dialAddress,
+                    hostPort: dialPort,
+                    hostStaticPublicKey: hostStatic,
+                    staticKeys: identity,
+                    attempts: round == 1 ? 5 : 3,
+                    attemptTimeoutMilliseconds: round == 1 ? 2_000 : 700)
+            } catch {
+                phase = .failed("host key: \(error)")
+                return
+            }
+            let candidate = makeLyteSession(
+                crypto: crypto, config: sessionConfig)
+            // start() blocks through bind + the Noise handshake (retry
+            // timer inside) — off the main actor.
+            do {
+                try await Task.detached { try candidate.start() }.value
+                guard generation == connectGeneration,
+                      case .connecting = phase else {
+                    // The human cancelled mid-dial: this session has
+                    // no owner — close it politely and walk away.
+                    Task.detached { candidate.close(reason: .shuttingDown) }
+                    return
+                }
+                lyte = candidate
+                hostAddress = dialAddress
+                statusLine = crypto.modeDescription
+                break
+            } catch {
+                guard generation == connectGeneration,
+                      case .connecting = phase else { return }
+                guard case TransportCryptoError.handshakeFailed(let why)
+                        = error, why.hasPrefix("no response"),
+                      Self.monotonicMicroseconds() < deadline else {
+                    phase = .failed("Lyte-UDP connect: \(error)")
+                    return
+                }
+                phase = .connecting("\(host.name) isn't answering — "
+                    + "it may be restarting; still trying…")
+                // The quiet re-browse: if the reborn host is already
+                // advertising, dial where it lives NOW.
+                let sighting = await LyteDiscovery.browse(duration: 2.0)
+                    .first { $0.publicKeyHash == host.publicKeyHash }
+                guard generation == connectGeneration,
+                      case .connecting = phase else { return }
+                if let sighting {
+                    dialAddress = sighting.address
+                    dialPort = sighting.port
+                }
+            }
         }
         lyteSession = lyte
         lyteWireMode = .active
@@ -225,8 +287,15 @@ final class ConnectionModel {
                 publicKeyHash: pkh, address: host.address, port: host.port)
         }
         phase = .streaming
-        statusLine = crypto.modeDescription
         AgentState.shared.streamBegan()
+    }
+
+    /// The connecting screen's Cancel: invalidates the in-flight
+    /// connect (any round that completes afterward closes its session
+    /// politely and walks away) and returns to the picker.
+    func cancelConnect() {
+        connectGeneration += 1
+        phase = .pickHost
     }
 
     /// Builds one wire session against this window's display layer,
