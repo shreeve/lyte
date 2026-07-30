@@ -17,12 +17,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Client performance — per-datagram fat on the receive thread
 
-12. **`mediaPathEvidence` off the per-datagram path** [S-M] —
-    `LyteUdpSession.swift:939` takes the core lock and runs machine.apply/poll
-    (two array allocs) per accepted datagram just to record "path alive."
-    Relaxed-atomic last-evidence stamp read by the existing 100 ms machine
-    timer; careful with FROZEN-exit-on-evidence semantics.
-
 13. **`noteVideoShard` no-input fast path** [S] — `InputSender.swift:271`: TLV
     decode + lock per video shard to maintain the frame→stamp book that's only
     consumed while echoes are pending. Relaxed-atomic "input pending recently"
@@ -151,6 +145,12 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
     `TransportCrypto.unseal` seam returns `[UInt8]`: the AEAD's fresh buffer
     rides through the demux whole; insecure mode takes the one unavoidable
     copy. Root suite 212/212.
+
+12. **`mediaPathEvidence` off the per-datagram path** [S-M] — PR #12, merged
+    2026-07-30. Accepted datagrams stamp a relaxed `Atomic<UInt64>`; the
+    100 ms beat feeds the machine the newest stamp at its true arrival time
+    (detector/liveness bit-exact); a `machineFrozen` flag keeps the FROZEN
+    exit datagram-immediate. Root suite 212/212.
 
 ## Closed
 
