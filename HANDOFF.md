@@ -27,10 +27,28 @@ stretched-train guard (#16), idle-floor resend off the encoder's
 retained AVFrame (#17), adaptive audio pump (#18). REMAINING.md served
 as the sweep ledger and was retired after verification; the sweep's
 advisory caveats and owed live watches live in **TODO.md** ("Audit-sweep
-verification caveats"). **Suites at HEAD: Wire 486/486, root 218/218,
-host 236/236 on Mac AND pup.** Tree clean, everything pushed.
+verification caveats"). **The v2 program then opened** (2026-07-30;
+boundary tag `v1-final`, law in `docs/20260730-lyte-v2-rulings.md`,
+working ledger `ANALYSIS.md`, house rules in AGENTS.md's "The v2
+program" section): six read-only deep reviews produced the ANALYSIS
+trio, and **Tier 1 closed the same day — all six findings landed as
+PRs #20–#25** (VBV rising edge, estimator witness baseline, chan-0
+seq/seal critical section, AudioWire join-before-free, capture
+geometry validation, ⌘W teardown seam), each struck through in
+ANALYSIS.md's ledger with a Landed entry. **Suites at HEAD: Wire
+486/486, root 219/219, host 241/241 on Mac AND pup.** Tree clean,
+everything pushed.
 
 **Actionable queue (rough order):**
+0. **The v2 fix train continues**: Tier 2 of ANALYSIS.md (items 7–17;
+   start with 7 unauthenticated peer retarget, 8 NACK-IDR throttle,
+   9 ARQ group reclaim), then the Addendum (18–27). The Phase 1
+   inventory workflow is STOPPED mid-run and resumable from cache —
+   the exact resume command is in the project memory's resume block;
+   its deliverables go to `Docs/spec-drafts/phase1/` plus a decision
+   memo. Two new live watches from the Tier 1 landings are filed in
+   TODO.md: ⌘W a live stream (PR #25) and one deliberate monitor-mode
+   flip mid-session (PR #24 — typed teardown, not a crash).
 1. **Owner eyeballs closing H4** (the only H4 remainder): the
    Wi-Fi-hop leg, the five-minute UI verbs (Chroma tiers, photo
    toggle, banners — `open .build/Lyte.app`, connect to pup 41151, it
@@ -77,9 +95,11 @@ host 236/236 on Mac AND pup.** Tree clean, everything pushed.
 - **P-2 (monitor selection) and P-3 (resolution change): DROPPED
   outright** (2026-07-30). P-2 revives with no wire debt if a
   multi-monitor host ever exists; P-3's law is chroma's law — fixed
-  at ANNOUNCE, change = clean reconnect. Residual belt (named, not
-  blocking): verify a live host geometry change produces a clean
-  typed teardown, not a hang.
+  at ANNOUNCE, change = clean reconnect. The residual belt's code
+  half LANDED (PR #24: a mid-session geometry change now fails the
+  session with a typed teardown instead of reading past the MemFd);
+  the remaining half is the live watch in TODO.md — one deliberate
+  monitor-mode flip to see it with eyeballs.
 - **Split-groups wire contract**: don't re-litigate multi-group
   frames without a wire-v2 discussion first (finding in the archived
   HS-25 wave entry).
@@ -96,8 +116,8 @@ host 236/236 on Mac AND pup.** Tree clean, everything pushed.
   alive; it's the owner's eyeball host. Session log:
   `/tmp/lyte-host-session.log` on pup. It launches
   `~/src/lyte-host/.build/debug/lyte-host` — respawns onto whatever
-  was last built there (the post-sweep build, 236/236, since
-  2026-07-30). The log shows the Rext self-probe passing and chroma
+  was last built there (the Tier-1 build, 241/241, since 2026-07-30 —
+  it carries the geometry validation and AudioWire join). The log shows the Rext self-probe passing and chroma
   **[420, 444]** declared: a Best connect agrees at 444.
 - **The owner's client** is the app bundle at `.build/Lyte.app` —
   launch with `open .build/Lyte.app` (NEVER run the raw binary under
