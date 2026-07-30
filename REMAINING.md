@@ -15,11 +15,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Host performance — the rate-fall moment
 
-8. **Log lines out from under the session lock** [S-M] — `SessionWire.swift`
-   `log()` prints while `lock` is held; a stalled stdout pipe would freeze
-   audio/pacing/capture (priority inversion through console I/O). Buffer under
-   lock, emit after unlock (the `pendingClipboardApplies` pattern).
-
 9. **Host thread priorities** [S] — no `sched_*`/nice anywhere; the 1 ms-quantum
    pacing drain and 5 ms audio cadence ride default CFS against NVENC and the
    compositor. SCHED_RR (graceful EPERM degrade) on drain + audio threads;
@@ -149,6 +144,12 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
    half-rung ladder): tightens land exactly on the ceiling rate and material
    within-band falls retune; loosen/restore untouched (10 s sustain stays).
    5 pins incl. a ladder-mode control; suite 234/234 Mac AND pup.
+
+8. **Log lines out from under the session lock** [S-M] — PR #8, merged
+   2026-07-30. 48 event-log/inject prints buffer into `pendingLogLines`
+   under the lock and flush at the service-tick/drain-loop/awaitClient/
+   shutdown seams; line text byte-identical, only the print moment moves.
+   Suite 234/234 Mac; pup build clean.
 
 ## Closed
 
