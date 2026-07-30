@@ -216,8 +216,8 @@ final class FeedbackPathTests: XCTestCase {
         func unseal(
             wirePayload: ArraySlice<UInt8>, aad: ArraySlice<UInt8>,
             envelope: Envelope
-        ) throws -> ArraySlice<UInt8> {
-            ArraySlice(wirePayload.map { $0 ^ 0x5A })
+        ) throws -> [UInt8] {
+            wirePayload.map { $0 ^ 0x5A }
         }
         func seal(
             plaintext: ArraySlice<UInt8>, aad: ArraySlice<UInt8>,

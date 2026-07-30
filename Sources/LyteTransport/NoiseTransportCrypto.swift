@@ -291,16 +291,17 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         wirePayload: ArraySlice<UInt8>,
         aad: ArraySlice<UInt8>,
         envelope: Envelope
-    ) throws -> ArraySlice<UInt8> {
+    ) throws -> [UInt8] {
         lock.lock()
         defer { lock.unlock() }
         guard transport != nil else {
             throw TransportCryptoError.handshakeFailed("unseal before handshake")
         }
         do {
-            let plaintext = try transport!.unseal(
+            // The AEAD's fresh buffer IS the result — no re-slice, no
+            // second copy at the demux.
+            return try transport!.unseal(
                 wirePayload: wirePayload, aad: aad, envelope: envelope)
-            return plaintext[...]
         } catch {
             throw TransportCryptoError.unsealFailed(String(describing: error))
         }
