@@ -79,18 +79,8 @@ codebase.
    noise. Fix: hold the lock across allocate+seal, or allocate inside
    the crypto lock.
 
-5. **Estimator delay-baseline poisoning** —
-   `Host/Sources/HostWire/RateEstimator.swift:1248-1256` (baseline: raw
-   10 s per-channel min, no outlier rejection, no re-baselining),
-   :1339-1345/:1395-1398 (fall law: with video backlog under the floor,
-   `!selfExplaining` is true and the fall executes on persistence alone).
-   One anomalously-fast receive wake (the code itself measures 7–13 ms
-   jitter on that path, `Session.swift:2399-2401`) pins the baseline;
-   every later report reads inflated; with no honest median the fall is
-   a flat 0.85× per 500 ms beat — ~20 beats over the poison's 10 s life
-   ≈ 4% of the starting rate, on a path with zero loss — then ~40 s to
-   climb back. The most likely explanation yet for unexplained rate sags
-   on clean air.
+5. ~~**Estimator delay-baseline poisoning**~~ — **LANDED, PR #21**
+   (2026-07-30; see Landed section at the end).
 
 6. ~~**`exactTighten` rising-edge ratchet**~~ — **LANDED, PR #20**
    (2026-07-30; see Landed section at the end).
@@ -431,6 +421,16 @@ via lyte-encode-check hashing.
   overflow bound, recusal evaluated before the purge mutates the queue.
 
 ## Landed
+
+- **T1-5 estimator baseline witness** — PR #21, merged 2026-07-30. The
+  per-channel delay floor is the second-smallest report minimum in the
+  10 s window (lowest CORROBORATED delay): a lone freak-fast report is
+  a witness awaiting its partner, so the clean-air poison fall dies at
+  the source; genuine improvements re-base on the second confirming
+  report. Fall-side honesty law untouched. 2 new pins (poison rejected
+  with rate unmoved; two-witness control re-bases and real inflation
+  still fires); suite 241/241 Mac AND pup, all pre-existing
+  overuse/dwell/stall gates unchanged.
 
 - **T1-6 `exactTighten` rising edge** — PR #20, merged 2026-07-30.
   `materialRise` mirrors `materialFall` (rate-judged loosen want past
