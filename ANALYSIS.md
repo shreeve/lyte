@@ -25,15 +25,10 @@ codebase.
 
 ## Tier 1 — real bugs a user can hit (fix-worthy now)
 
-1. **⌘W tears down nothing** — `Sources/Lyte/ConnectionWindow.swift:5`
-   (no `.onDisappear`), `Sources/Lyte/ConnectionModel.swift:451`
-   (`endLyteSession` reachable only from Disconnect / peer teardown /
-   capability failure). Closing a stream window — the most natural macOS
-   verb — leaves the receive thread, 100 ms machine beat, and feedback
-   cadence alive forever: no typed 0x0A leaves, the host keeps encoding
-   full-rate into the void, the menu bar still says "streaming," and
-   awdl0 stays held down (AirDrop/Continuity broken) until app quit.
-   Every other exit path is clean; this one verb has no seam.
+*All six landed 2026-07-30 (PRs #20–#25) — the tier is closed.*
+
+1. ~~**⌘W tears down nothing**~~ — **LANDED, PR #25** (2026-07-30; see
+   Landed section at the end).
 
 2. ~~**Mid-session resolution change reads past the capture buffer**~~
    — **LANDED, PR #24** (2026-07-30; see Landed section at the end).
@@ -386,6 +381,16 @@ via lyte-encode-check hashing.
   overflow bound, recusal evaluated before the purge mutates the queue.
 
 ## Landed
+
+- **T1-1 ⌘W teardown seam** — PR #25, merged 2026-07-30.
+  `.onDisappear { model.disconnect() }` on the window body: one window
+  = one connection (D6), so the window's disappearance IS the
+  disconnect — typed 0x0A with ACK linger off-main, threads stopped,
+  awdl0 released. Phase flips inside the Group never detach the
+  modifier; `endLyteSession`'s guard makes app-quit and already-
+  disconnected paths no-ops. No in-suite pin possible (SwiftUI
+  lifecycle in an executable target); app builds clean, root suite
+  219/219; the live ⌘W eyeball leg is recorded in TODO.md.
 
 - **T1-2 capture geometry validation** — PR #24, merged 2026-07-30.
   Two laws at the top of `Sink.onFrame`: the buffer-bounds law (no

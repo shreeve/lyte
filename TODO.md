@@ -60,7 +60,10 @@ live bugs; each is armed only by a future change to its seam.*
 
 *Still owed live (not code): watch #6's `rate: fall purge` line and #16's
 `hole-recused` count on the next evening-air session; optional rtprio
-grant on the host machine (`Host/README.md` prerequisites item 3).*
+grant on the host machine (`Host/README.md` prerequisites item 3); ⌘W a
+live stream window (PR #25) and watch for the host's peer-goodbye line +
+awdl0 release; a live monitor-mode change mid-session (PR #24) should now
+end in a typed teardown, not a crash — worth one deliberate flip.*
 
 ## Browser client + Caddy bridge (`docs/20260720-184200-browser-client-caddy-bridge.md`)
 
