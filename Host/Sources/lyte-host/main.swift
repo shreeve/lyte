@@ -626,6 +626,37 @@ final class Sink {
                  graphUs: UInt64) {
         if lastError != nil { return }
 
+        // The buffer-bounds law (v1-final analysis, finding 2): the
+        // encode memcpy reads (h-1)*stride + w*4 bytes of this buffer
+        // on trust, so no frame — including frame 0 — reaches an
+        // encode until its own declared extent fits inside its own
+        // declared size. All supported formats are 4 bytes/pixel.
+        if width == 0 || height == 0 || stride <= 0
+            || Int64(size) < (Int64(height) - 1) * Int64(stride)
+                + Int64(width) * 4 {
+            fail("capture frame geometry unsafe — \(width)x\(height), "
+                + "stride \(stride), \(size) bytes: the frame's extent "
+                + "does not fit its buffer; refusing to read past the "
+                + "mapped MemFd")
+            return
+        }
+
+        // The geometry pin (same finding): the encoder is opened once
+        // with frame-0 geometry and never revalidated, while PipeWire's
+        // negotiated range (1×1…8192×8192) explicitly permits mid-
+        // session renegotiation — a monitor-mode change used to send
+        // the new extent through the old encoder's memcpy (SIGSEGV or
+        // silent adjacent-heap encoding). A changed extent now ends
+        // the session cleanly with a typed teardown; the client's
+        // reconnect renegotiates at the new geometry.
+        if let neg = negotiated, width != neg.width || height != neg.height {
+            fail("capture geometry changed mid-session — "
+                + "\(neg.width)x\(neg.height) → \(width)x\(height): the "
+                + "encoder is opened for the original extent; ending "
+                + "the session (reconnect renegotiates)")
+            return
+        }
+
         if encoder == nil {
             guard let name = Sink.pixFmtName(fmt) else {
                 fail("PipeWire negotiated an unsupported pixel format "
