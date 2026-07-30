@@ -696,7 +696,13 @@ clean wire that bulk-tested ~160 Mbps — whether that's real airtime
 under 43 Mbps appetite or the HS-22b self-reference seam is part of
 slice (b)'s brief.
 
-⁷ THE HS-33 ROW (probe at `7a4ee2a`, the vendored no-reset encoder
+⁷ **THE OWNER'S EYEBALL ON THE FULL STACK (2026-07-29 ~21:10, fresh
+app + no-reset host, first session with every fix of the day riding
+at once): "WOW! It looks amazing!"** — the at-the-glass verdict
+joining J-G1's "absolutely beautiful" and J-G4a's "MASSIVELY
+improved" in the record.
+
+THE HS-33 ROW (probe at `7a4ee2a`, the vendored no-reset encoder
 live): five green, static at an all-time 55.02, churn healed — and
 the IDR cell's composition is TRANSFORMED even where it stays red:
 **zero reconfigure-minted IDRs** (13 directives, all applied
