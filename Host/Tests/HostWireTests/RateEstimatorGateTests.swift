@@ -161,6 +161,64 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.stats.dispersionSamplesMatched, 40)
     }
 
+    // MARK: - The stretched-train guard (microstall forensics)
+
+    func testHoleDominatedTrainIsRecusedFromTheHonestVote() {
+        // The evening-air poisoning shape, in virtual time: 12 shards
+        // sent back-to-back at the 20 Mbps pace; the first five arrive
+        // tight (200 µs apart), a 150 ms radio hole opens, the rest
+        // arrive tight behind it. The span reads ~0.7 Mbps — "honest"
+        // by the pace margin — but the span IS the hole (max gap ≈ 99%
+        // of it). Such a reading must keep its delivery-window role
+        // and lose its vote: no honest sample, one recusal.
+        let estimator = makeEstimator()
+        var samples: [FeedbackReport.Dispersion.Sample] = []
+        for i in 0..<12 {
+            let seq = ChannelSeq(rawValue: UInt16(i))
+            estimator.noteSent(
+                channel: .videoActive, seq: seq, bytes: 1_152,
+                now: 10 * Self.ms + UInt64(i) * 500_000
+            )
+            let tight = UInt64(i) * 200
+            let hole: UInt64 = i >= 5 ? 150_000 : 0
+            arrivals.append(
+                Self.clockOffsetMicros + 10_000 + tight + hole)
+            samples.append(FeedbackReport.Dispersion.Sample(
+                channel: .videoActive, seq: seq,
+                arrivalDeltaMicroseconds: 0
+            ))
+        }
+        _ = estimator.ingest(
+            report(samples: samples, clientMicros: 200_000),
+            now: 200 * Self.ms, inRecovery: false
+        )
+        XCTAssertEqual(estimator.stats.stretchedTrainsRecused, 1)
+        XCTAssertEqual(estimator.stats.honestSamples, 0,
+                       "a hole reading must not enter the honest median")
+        XCTAssertEqual(estimator.stats.deliverySamples, 1,
+                       "the sample still feeds the delivery window")
+    }
+
+    func testUniformlySlowTrainStillVotesHonest() {
+        // The guard's other edge: a genuinely slow path stretches every
+        // gap alike (max gap ≈ 1/(n−1) of the span) — that reading is
+        // the truth about the path and MUST keep its vote, or the
+        // guard would blind real squeezes.
+        let estimator = makeEstimator()
+        let samples = train(
+            estimator, seqStart: 0, count: 12,
+            sendStartNS: 10 * Self.ms,
+            bottleneckBitsPerSecond: 5e6
+        )
+        _ = estimator.ingest(
+            report(samples: samples, clientMicros: 50_000),
+            now: 60 * Self.ms, inRecovery: false
+        )
+        XCTAssertEqual(estimator.stats.honestSamples, 1,
+                       "a uniformly stretched train speaks for the path")
+        XCTAssertEqual(estimator.stats.stretchedTrainsRecused, 0)
+    }
+
     func testShortTrainsAreWeightedDown() {
         let estimator = makeEstimator()
         // A 4-packet train (below the 8-packet confidence bar) measures

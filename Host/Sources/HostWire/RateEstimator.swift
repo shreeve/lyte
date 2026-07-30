@@ -254,6 +254,20 @@ public struct RateEstimatorConfig: Sendable {
     /// dispersion noise, tight enough that a genuinely stretched train
     /// (a real bottleneck under the pace) still testifies.
     public var censoredSampleMarginFraction: Double
+    /// The stretched-train guard (the evening-air microstall
+    /// forensics): a genuinely slow path stretches a train UNIFORMLY —
+    /// every inter-arrival ≈ bytes/rate — but a radio hole opens ONE
+    /// gap that dominates the span while the packets behind it arrive
+    /// compressed. A train whose largest inter-arrival exceeds this
+    /// fraction of its whole arrival span measured the hole, not the
+    /// path: it keeps every other role (delivery window, freshness,
+    /// belief-raise cap) but may not vote in the honest median that
+    /// anchors falls and demotes the belief. 0.5 sits far above a
+    /// uniform train's max-gap share (≈1/(n−1) ≈ 14% at 8 packets,
+    /// jitter included) and far below a hole's (a 100–220 ms AWDL-
+    /// class stall against a few ms of real spacing reads >0.9).
+    /// The symmetric twin of the compressed-drain purge.
+    public var stretchGapDominanceFraction: Double
     /// HS-28 (invariant 2): how long overuse pressure must persist
     /// before an uncorroborated fall may execute once the shape-gates
     /// retire — one full 500 ms fall-limiter window into the next, so
@@ -339,6 +353,7 @@ public struct RateEstimatorConfig: Sendable {
         stallBurstRateFactor: Double = 1.25,
         stallEvidenceWindowNS: UInt64 = 500_000_000,
         censoredSampleMarginFraction: Double = 0.2,
+        stretchGapDominanceFraction: Double = 0.5,
         beliefDemotionSustainNS: UInt64 = 500_000_000,
         honestVoteWindowNS: UInt64 = 2_000_000_000,
         lossCleanThreshold: Double = 0.02,
@@ -375,6 +390,7 @@ public struct RateEstimatorConfig: Sendable {
         self.stallBurstRateFactor = stallBurstRateFactor
         self.stallEvidenceWindowNS = stallEvidenceWindowNS
         self.censoredSampleMarginFraction = censoredSampleMarginFraction
+        self.stretchGapDominanceFraction = stretchGapDominanceFraction
         self.beliefDemotionSustainNS = beliefDemotionSustainNS
         self.honestVoteWindowNS = honestVoteWindowNS
         self.lossCleanThreshold = lossCleanThreshold
@@ -472,6 +488,10 @@ public struct RateEstimatorStats: Equatable, Sendable {
     /// HS-28: full-train samples classified HONEST (path-limited) —
     /// the path measurably stretched them; they vote.
     public var honestSamples = 0
+    /// The stretched-train guard: would-be-honest trains whose span
+    /// was one dominating gap (a radio hole, not the path) — recused
+    /// from the honest median before they could poison it.
+    public var stretchedTrainsRecused = 0
     /// HS-28: times any sample raised the capacity belief.
     public var beliefRaises = 0
     /// HS-28 (invariant 2): times an executing fall demoted the belief
@@ -1118,15 +1138,38 @@ public final class RateEstimator {
                 let honest = rate
                     < pace * (1 - config.censoredSampleMarginFraction)
                 if honest {
-                    // The path measurably stretched this train — it
-                    // speaks for the path and may vote in a fall
-                    // anchor (and, at an executing fall, demote the
-                    // belief to what the path really carries).
-                    stats.honestSamples += 1
-                    recentHonestDeliveries.append((at: now, rate: rate))
-                    if recentHonestDeliveries.count
-                        > config.overuseAnchorSampleCount {
-                        recentHonestDeliveries.removeFirst()
+                    // The stretched-train guard (the microstall
+                    // forensics — the config comment holds the full
+                    // account): one dominating inter-arrival gap means
+                    // this train measured a HOLE, not sustained path
+                    // rate — a genuinely slow path stretches every gap
+                    // alike. Such a reading keeps its delivery-window
+                    // and freshness roles below but may not vote in
+                    // the honest median that anchors falls and demotes
+                    // the belief.
+                    let arrivals = train.map(\.arrivalMicros).sorted()
+                    var maxGap: UInt64 = 0
+                    for i in 1..<arrivals.count {
+                        maxGap = Swift.max(
+                            maxGap, arrivals[i] - arrivals[i - 1])
+                    }
+                    let span = arrivals.last! - arrivals.first!
+                    let holeDominated = Double(maxGap)
+                        > config.stretchGapDominanceFraction * Double(span)
+                    if holeDominated {
+                        stats.stretchedTrainsRecused += 1
+                    } else {
+                        // The path measurably stretched this train —
+                        // it speaks for the path and may vote in a
+                        // fall anchor (and, at an executing fall,
+                        // demote the belief to what the path really
+                        // carries).
+                        stats.honestSamples += 1
+                        recentHonestDeliveries.append((at: now, rate: rate))
+                        if recentHonestDeliveries.count
+                            > config.overuseAnchorSampleCount {
+                            recentHonestDeliveries.removeFirst()
+                        }
                     }
                 } else {
                     // Censored (≈ our pace) or compressed (a drain):

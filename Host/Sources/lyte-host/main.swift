@@ -2018,7 +2018,8 @@ func run() throws {
         (\(wire.estimatorStats.dispersionSamplesMatched) matched / \
         \(wire.estimatorStats.dispersionSamplesUnmatched) unmatched; \
         \(wire.estimatorStats.honestSamples) honest / \
-        \(wire.estimatorStats.censoredSamples) censored full trains, \
+        \(wire.estimatorStats.censoredSamples) censored full trains \
+        (\(wire.estimatorStats.stretchedTrainsRecused) hole-recused), \
         \(wire.estimatorStats.beliefRaises) belief raises / \
         \(wire.estimatorStats.beliefDemotions) demotions), \
         \(wire.estimatorStats.downshifts) downshifts \
