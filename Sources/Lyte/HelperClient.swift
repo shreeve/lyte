@@ -27,6 +27,23 @@ final class HelperClient {
         }
     }
 
+    /// App-launch refresh: EVERY rebuild re-signs the helper, and the
+    /// lightweight code requirement (LWCR) BTM stored at registration
+    /// goes stale — launchd then refuses the spawn with EX_CONFIG
+    /// forever ("needs LWCR update" in launchctl print; found live
+    /// 2026-07-30 after 28,916 silent crash-loops). Unregister +
+    /// re-register refreshes the LWCR; BTM keys the user's approval
+    /// by identifier, so the toggle normally survives the cycle.
+    func refreshRegistration() {
+        try? service.unregister()
+        do {
+            try service.register()
+            NSLog("lyte helper: re-registered, status \(service.status.rawValue)")
+        } catch {
+            NSLog("lyte helper: refresh register FAILED — \(error.localizedDescription)")
+        }
+    }
+
     /// Try to register at app launch; no-op when already enabled.
     func registerIfNeeded() {
         switch service.status {

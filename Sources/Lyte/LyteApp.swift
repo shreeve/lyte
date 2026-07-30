@@ -42,7 +42,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Quietly register the AWDL helper; approval happens at first stream
-        HelperClient.shared.registerIfNeeded()
+        // Refresh (not just ensure) the AWDL helper registration: a
+        // rebuilt binary's stale LWCR otherwise EX_CONFIGs every spawn.
+        HelperClient.shared.refreshRegistration()
     }
 }
