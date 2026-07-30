@@ -1125,9 +1125,14 @@ final class ConnectionModel {
             ? " · keys+mouse captured" : " · keys+mouse NOT CAPTURED"
         lines.append(mode)
 
-        // Unconditional (CL-16): "input  sent 0 events" is the datum
-        // that tells a client-capture failure from a host-side one.
+        // Unconditional (CL-16): "outbound: 0 client events sent" is
+        // the datum that tells a client-capture failure from a
+        // host-side one.
         lines.append(core.input.snapshotStats().overlayLine())
+
+        // Owner order: outbound then inbound — the directions read as
+        // a pair — then the inbound media lines they frame.
+        lines.append(wire)
 
         let audio = core.audio.snapshotStats()
         if audio.depacketizer.datagramsIngested > 0 {
@@ -1188,9 +1193,6 @@ final class ConnectionModel {
             }
             lines.append(video)
         }
-
-        // The wire-health footer closes the standing block.
-        lines.append(wire)
 
         let clipboard = core.snapshotCounters()
         let clipboardActivity = clipboard.clipboardSharesSent
