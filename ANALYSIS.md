@@ -8,7 +8,8 @@ was read-verified with a concrete failure scenario; none have been
 adversarially re-verified or reproduced live, so each fix deserves a
 reproducing gate test alongside it (the audit-sweep discipline). The six
 TODO.md "Audit-sweep verification caveats" are excluded here — they
-remain tracked there.*
+remain tracked there. The six agents' complete unabridged reports are
+preserved verbatim in `ANALYSIS-DETAILED.md`.*
 
 ## Overall verdict
 
