@@ -99,6 +99,33 @@
 // be resized but never removed). Since HS-25 the live baselines carry
 // the unprotectable-frame guard's VBV, so the restore returns to the
 // guarded posture and can never re-open the >255-shard hole.
+//
+// THE NO-RESET RETUNE (HS-33). The vendored patched libavcodec
+// (Host/Scripts/vendor-ffmpeg.sh) applies rate/VBV directives WITHOUT
+// resetEncoder/forceIDR — a directive stops costing an IDR and becomes
+// one cheap driver call (validated on hardware: the HS-33a spike,
+// zero reconfigure IDRs across every move shape, reference chain
+// intact, PSNR floors ≥ the reset path). The HS-27 ladder choices
+// existed to ration IDRs; what the books permitted to move:
+//   • `rungsPerOctave` — the ladder's granularity. Halving rungs
+//     (1/octave) bounded the posture/pacer slack at 2× because finer
+//     tracking meant more IDRs; with free moves the shell narrows to
+//     2/octave (slack ≤ √2 ≈ 1.41×), so a tighten lands the posture
+//     closer above the fallen rate and the fall-repricing queue
+//     (squeeze review §5's 80–895 ms finding) shrinks at its source.
+//   • `riseSustainNS` — STAYS at 10 s, deliberately. An eager 2 s
+//     sustain was tried live (2026-07-29 armed A/B) and MEASURED into
+//     a floor limit cycle: the posture chased every climb, frames
+//     sized at/above the still-climbing pacer overstayed their
+//     budget, and queuing-delay overuse fired 10 falls to 500 kbps
+//     with zero loss while the control leg rode clean. The sustain's
+//     climb-lag is load-bearing for the estimator's probe stability,
+//     not an IDR ration — and under no-reset it costs nothing.
+// The LADDER MECHANICS are untouched — tighten-immediate, sustain-
+// gated loosening to the held minimum, restore-to-baseline — and the
+// distro-lib defaults (1/octave) keep every HS-27 pin verbatim: which
+// knobs the shell passes is decided by lyte_hevc_noreset_enable
+// (the linked libavcodec PROVES itself; nothing here is assumed).
 
 /// What the shell pushes into the encoder leaf when the policy says the
 /// rate-control posture must move.
@@ -162,6 +189,14 @@ public struct EncoderVbvConfig: Sendable {
     /// hunt whose falls recur inside this window can never loosen, so
     /// the posture parks and the hunt costs zero encoder resets.
     public var riseSustainNS: UInt64
+    /// HS-33: rungs per halving of the recipe cap. 1 (default) is the
+    /// HS-27 halving ladder — rung_i = cap/2^i, posture/pacer slack
+    /// bounded at 2×. Under the vendored no-reset libavcodec the shell
+    /// passes 2 (rung_i = cap × 2^(−i/2), slack ≤ √2): finer tracking
+    /// is free once a directive stops costing an IDR. Only 1 and 2 are
+    /// defined — these are the only ladders in use, and 2 keeps the
+    /// math deterministic (stdlib square root, no libm).
+    public var rungsPerOctave: Int
 
     public init(
         fps: Int,
@@ -170,10 +205,15 @@ public struct EncoderVbvConfig: Sendable {
         baselineVbvBits: Int? = nil,
         deadbandFraction: Double = 0.10,
         riseHoldNS: UInt64 = 500_000_000,
-        riseSustainNS: UInt64 = 10_000_000_000
+        riseSustainNS: UInt64 = 10_000_000_000,
+        rungsPerOctave: Int = 1
     ) {
         precondition(fps > 0)
         precondition(baselineMaxBitsPerSecond > 0)
+        precondition(
+            rungsPerOctave == 1 || rungsPerOctave == 2,
+            "only the halving (1) and half-rung (2) ladders are defined"
+        )
         self.fps = fps
         self.baselineAverageBitsPerSecond = baselineAverageBitsPerSecond
         self.baselineMaxBitsPerSecond = baselineMaxBitsPerSecond
@@ -181,6 +221,7 @@ public struct EncoderVbvConfig: Sendable {
         self.deadbandFraction = deadbandFraction
         self.riseHoldNS = riseHoldNS
         self.riseSustainNS = riseSustainNS
+        self.rungsPerOctave = rungsPerOctave
     }
 }
 
@@ -236,24 +277,28 @@ public final class EncoderVbvPolicy {
         return 1
     }
 
-    /// The smallest halving rung of the recipe cap that still covers
-    /// `rate` (round UP — the posture never sits below the wire).
+    /// The smallest rung of the recipe cap that still covers `rate`
+    /// (round UP — the posture never sits below the wire).
     public func rungIndex(for rate: Int) -> Int {
         let floor = max(rate, 1)
         var index = 0
-        var rung = config.baselineMaxBitsPerSecond
-        while rung / 2 >= floor && index < 40 {
-            rung /= 2
+        while index < 40 * config.rungsPerOctave
+            && rungRate(atIndex: index + 1) >= floor {
             index += 1
         }
         return index
     }
 
-    /// The rate rung `index` carries, bits/s.
+    /// The rate rung `index` carries, bits/s: cap × 2^(−i/n) with n =
+    /// rungsPerOctave. Whole octaves stay HS-27's exact integer
+    /// halvings (pinned); the n = 2 half-rung is rung/√2 rounded to
+    /// the nearest bit/s (stdlib square root — deterministic, no libm).
     public func rungRate(atIndex index: Int) -> Int {
         var rung = config.baselineMaxBitsPerSecond
-        for _ in 0..<index { rung /= 2 }
-        return max(rung, 1)
+        for _ in 0..<(index / config.rungsPerOctave) { rung /= 2 }
+        if index % config.rungsPerOctave == 0 { return max(rung, 1) }
+        let half = Double(rung) * (0.5 as Double).squareRoot()
+        return max(Int(half.rounded()), 1)
     }
 
     private struct Posture: Equatable {
@@ -440,5 +485,54 @@ public final class EncoderVbvPolicy {
             frameByteCeiling: frameByteCeiling, now: now,
             ceilingMoved: ceilingMoved
         )
+    }
+}
+
+/// HS-33 books: what each APPLIED rate directive actually cost at the
+/// encoder — a forced IDR (distro libavcodec resets on any rc delta:
+/// the HS-22 correction) or an in-place reconfigure (the vendored
+/// no-reset build). The split is decided by OBSERVATION at the shell's
+/// encode seam — did the encode this directive rode into come back a
+/// keyframe? — never assumed from configuration, so the idr-books
+/// cause tags stay truthful under either libavcodec: a vbv move that
+/// mints no IDR lands in `noReset`, not in the IDR cause tally.
+public struct EncoderReconfigureBooks: Equatable, Sendable {
+    /// Directives applied to the encoder leaf (set_rate returned 0).
+    public private(set) var applied = 0
+    /// Applied directives whose encode came back an IDR — the reset
+    /// cost the distro wrapper charges for every rate move.
+    public private(set) var idrMinting: [EncoderRateDirective.Kind: Int] = [:]
+    /// Applied directives whose encode stayed a P-frame — the no-reset
+    /// path riding (or, under distro libav, a reconfigure the wrapper
+    /// deferred — gop=INT_MAX makes that a finding either way).
+    public private(set) var noReset: [EncoderRateDirective.Kind: Int] = [:]
+
+    public init() {}
+
+    public mutating func note(
+        _ kind: EncoderRateDirective.Kind, mintedIdr: Bool
+    ) {
+        applied += 1
+        if mintedIdr {
+            idrMinting[kind, default: 0] += 1
+        } else {
+            noReset[kind, default: 0] += 1
+        }
+    }
+
+    public var idrMintingTotal: Int { idrMinting.values.reduce(0, +) }
+    public var noResetTotal: Int { noReset.values.reduce(0, +) }
+
+    /// One human tally for the stats block: "tighten 2, rung 1" (the
+    /// idr-books vocabulary), "none" when empty.
+    public static func summary(
+        _ tally: [EncoderRateDirective.Kind: Int]
+    ) -> String {
+        let names: [(EncoderRateDirective.Kind, String)] =
+            [(.tighten, "tighten"), (.loosen, "rung"), (.restore, "restore")]
+        let parts = names.compactMap { kind, name in
+            tally[kind].map { "\(name) \($0)" }
+        }
+        return parts.isEmpty ? "none" : parts.joined(separator: ", ")
     }
 }

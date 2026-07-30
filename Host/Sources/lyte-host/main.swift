@@ -553,14 +553,23 @@ final class Sink {
     // every keyframe the encoder emits is attributed to the demand(s)
     // recorded at encode time — opening / the session's typed demands
     // (client-request, wake, recovery, path-promotion, stale-nack,
-    // unprotectable) / a VBV reconfigure (every avcodec rate move is a
-    // hidden NVENC reset + forced IDR — the HS-22 correction, verified
-    // in FFmpeg 8.0's nvenc.c: any bitrate/max/VBV delta sets
-    // resetEncoder=1 + forceIDR=1) / spontaneous (nothing armed —
+    // unprotectable) / a VBV reconfigure (under DISTRO libavcodec every
+    // rate move is a hidden NVENC reset + forced IDR — the HS-22
+    // correction; under the HS-33 vendored no-reset lib a rate move
+    // mints NO IDR and its tag goes to `reconfigureBooks.noReset`
+    // instead, never into this tally) / spontaneous (nothing armed —
     // gop=INT_MAX makes that a finding, not noise). One line per IDR
     // (they are sparse by design), tallied on the final stats block.
     var pendingIdrCauses: [String] = []
     var idrCauseTally: [String: Int] = [:]
+    // HS-33: per-directive cost books — IDR-minting vs no-reset,
+    // decided by observing whether the encode a directive rode into
+    // came back a keyframe (truth by observation, not configuration).
+    var reconfigureBooks = EncoderReconfigureBooks()
+    /// Whether the linked libavcodec applies rate moves without a
+    /// reset (lyte_hevc_noreset_enable at startup: the vendored lib
+    /// PROVES itself via its configuration marker + the env gate).
+    let noResetRateMoves: Bool
 
     // V-4: the negotiated chroma posture (drives the encoder open), the
     // recipe it chose (floor QP included — the ratchet reads it here),
@@ -577,11 +586,13 @@ final class Sink {
     var framesHeldForChroma = 0
     static let chromaHoldSeconds = 2.0
 
-    init(opts: Options, file: UnsafeMutablePointer<FILE>?, wire: SessionWire?) {
+    init(opts: Options, file: UnsafeMutablePointer<FILE>?, wire: SessionWire?,
+         noResetRateMoves: Bool = false) {
         self.opts = opts
         self.file = file
         self.wire = wire
         self.activeRecipe = opts.encoderRecipe
+        self.noResetRateMoves = noResetRateMoves
     }
 
     static func pixFmtName(_ fmt: lyte_pixfmt) -> String? {
@@ -889,6 +900,7 @@ final class Sink {
         // HS-20: the estimator's ceiling into the encoder BEFORE this
         // frame — the wrapper folds the changed rc fields into one
         // NvEncReconfigureEncoder on the send below.
+        var appliedDirectiveKind: EncoderRateDirective.Kind?
         if let directive = wire?.takeEncoderRateDirective() {
             if lyte_hevc_enc_set_rate(
                 encoder,
@@ -898,20 +910,28 @@ final class Sink {
                 &err, err.count
             ) == 0 {
                 encoderReconfigures += 1
+                appliedDirectiveKind = directive.kind
                 // The books' cause tag for the IDR this reconfigure is
-                // about to force (nvenc resets on any rc delta) — the
-                // policy names its own move now (HS-27): tighten /
-                // rung (a sustained loosening step) / restore (the
-                // recipe back).
-                switch directive.kind {
-                case .tighten: pendingIdrCauses.append("vbv-tighten")
-                case .loosen: pendingIdrCauses.append("vbv-rung")
-                case .restore: pendingIdrCauses.append("vbv-restore")
+                // about to force through DISTRO libavcodec (nvenc
+                // resets on any rc delta) — the policy names its own
+                // move (HS-27): tighten / rung (a sustained loosening
+                // step) / restore (the recipe back). Under the HS-33
+                // no-reset lib the move mints NO IDR, so the tag never
+                // arms — it lands in reconfigureBooks.noReset after
+                // the send observes the outcome.
+                if !noResetRateMoves {
+                    switch directive.kind {
+                    case .tighten: pendingIdrCauses.append("vbv-tighten")
+                    case .loosen: pendingIdrCauses.append("vbv-rung")
+                    case .restore: pendingIdrCauses.append("vbv-restore")
+                    }
                 }
                 lastAppliedDirective = directive
                 let avg = directive.averageBitsPerSecond
                     .map { "avg \($0 / 1_000) kbps, " } ?? ""
-                print("encoder: rate reconfigure — \(avg)max "
+                print("encoder: rate reconfigure"
+                    + (noResetRateMoves ? " (no-reset)" : "")
+                    + " — \(avg)max "
                     + "\(directive.maxBitsPerSecond / 1_000) kbps, vbv "
                     + "\(directive.vbvBits / 8) B (frame ceiling "
                     + "\(directive.frameByteCeiling) B)")
@@ -921,6 +941,7 @@ final class Sink {
             }
         }
         sendFrameNanosThisEncode = 0
+        let keyframesBeforeSend = keyframes
         let encodeStart = monotonicNS()
         let rc = lyte_hevc_enc_send(encoder, data, stride, Int64(framesIn),
                                     forceIdr ? 1 : 0,
@@ -935,6 +956,26 @@ final class Sink {
             let total = monotonicNS() - encodeStart
             stageEncodeUs.append(
                 (total - min(sendFrameNanosThisEncode, total)) / 1_000)
+        }
+        // HS-33 books: the directive's observed cost. zerolatency means
+        // this frame's packet emerged inside the send above, so "did
+        // the reconfigure reset the encoder" is answerable RIGHT HERE:
+        // a keyframe = the distro wrapper's forced IDR (attributed via
+        // the cause tag armed above); a P-frame = the no-reset path
+        // rode. A demanded IDR (forceIdr) coinciding with a no-reset
+        // move stays the demand's IDR, not the reconfigure's.
+        if let kind = appliedDirectiveKind {
+            let mintedByReconfigure = noResetRateMoves
+                ? (keyframes > keyframesBeforeSend && !forceIdr)
+                : keyframes > keyframesBeforeSend
+            reconfigureBooks.note(kind, mintedIdr: mintedByReconfigure)
+            if noResetRateMoves && mintedByReconfigure {
+                // Should be structurally impossible (the spike measured
+                // zero across every move shape) — loud if it ever isn't.
+                print("encoder: WARNING — no-reset rate reconfigure "
+                    + "returned an IDR anyway (kind \(kind.rawValue)); "
+                    + "investigate before trusting the idr-books")
+            }
         }
         // Attribution done (zerolatency: the packet emerged inside the
         // send above) — a cause never bleeds onto a later frame.
@@ -1289,6 +1330,22 @@ func run() throws {
     print("lyte-host — \(opts.backend.rawValue) → PipeWire → "
         + "hevc_nvenc → \(destination)")
 
+    // HS-33: which libavcodec did this binary link? The vendored
+    // no-reset build (Scripts/vendor-ffmpeg.sh) signs itself with a
+    // configuration marker; lyte_hevc_noreset_enable reads it and
+    // defaults the env gate ON (explicit LYTE_NVENC_NO_RESET_RATE=0
+    // forces the upstream reset+IDR path — the live A/B control
+    // through the same binary). Everything downstream that branches on
+    // this (the ladder retune, the idr-books tags) keys off THIS
+    // proof, never off an assumption about the build.
+    let noResetRateMoves = lyte_hevc_noreset_enable() != 0
+    print(noResetRateMoves
+        ? "encoder: vendored no-reset libavcodec — rate directives "
+            + "reconfigure in place (zero reset, zero IDR)"
+        : "encoder: no-reset rate moves INACTIVE (distro libavcodec, "
+            + "or the vendored lib with LYTE_NVENC_NO_RESET_RATE=0) — "
+            + "every rate directive resets the encoder and mints an IDR")
+
     // The session comes up BEFORE capture: in Noise mode the host blocks
     // here for the client's handshake (printing the static public key the
     // client must hold), so no frames are encoded for nobody and the
@@ -1505,6 +1562,21 @@ func run() throws {
         // can never re-open the >255-shard hole.
         if opts.vbvReconfigure {
             let guardBits = w.worstCaseProtectableFrameCeiling * 8
+            // HS-33 retune: with the vendored no-reset lib a directive
+            // stops costing an IDR, so the ladder NARROWS to half-rungs
+            // (posture/pacer slack 2× → ≤√2: a tighten lands the
+            // posture closer above the fallen rate, shrinking the
+            // oversized-frame transient the §5 fall-repricing finding
+            // measured). The loosening sustain stays at HS-27's 10 s
+            // DELIBERATELY: an eager (2 s) sustain was measured live
+            // to chase every climb — the posture re-postures at/above
+            // the still-climbing pacer, frames overstay their budget,
+            // and queuing-delay overuse fires a floor limit cycle with
+            // ZERO loss (the 2026-07-29 armed A/B: 10 falls to
+            // 500 kbps vs the control's clean ride). The sustain costs
+            // no IDRs under no-reset — it is pure climb-lag, and the
+            // books keep it honest. Distro lib keeps the HS-27 posture
+            // verbatim — the knobs follow the PROVEN capability above.
             w.armEncoderVbv(EncoderVbvConfig(
                 fps: Int(opts.fps),
                 baselineAverageBitsPerSecond:
@@ -1512,7 +1584,8 @@ func run() throws {
                 baselineMaxBitsPerSecond: Int(opts.bitrate),
                 baselineVbvBits: opts.ratchet
                     ? guardBits
-                    : min(Int(opts.bitrate) / Int(opts.fps), guardBits)
+                    : min(Int(opts.bitrate) / Int(opts.fps), guardBits),
+                rungsPerOctave: noResetRateMoves ? 2 : 1
             ))
         } else {
             print("encoder-vbv: DISABLED (--no-vbv-reconfigure) — the "
@@ -1651,7 +1724,8 @@ func run() throws {
         file = f
     }
 
-    let sink = Sink(opts: opts, file: file, wire: wire)
+    let sink = Sink(opts: opts, file: file, wire: wire,
+                    noResetRateMoves: noResetRateMoves)
     var err = [CChar](repeating: 0, count: 256)
     let user = Unmanaged.passUnretained(sink).toOpaque()
     guard let capture = lyte_pw_capture_new(stream.pipewireFd, stream.nodeId,
@@ -1887,7 +1961,11 @@ func run() throws {
         encoder-vbv: \(wire.vbvDirectivesIssued) directives, \
         \(sink.encoderReconfigures) applied, \
         \(wire.vbvRateMovesAbsorbed) rate moves absorbed \
-        (pacer-only, no encoder reset)\(vbvFinal)
+        (pacer-only, no encoder reset); applied cost — \
+        \(sink.reconfigureBooks.idrMintingTotal) IDR-minting \
+        (\(EncoderReconfigureBooks.summary(sink.reconfigureBooks.idrMinting))), \
+        \(sink.reconfigureBooks.noResetTotal) no-reset \
+        (\(EncoderReconfigureBooks.summary(sink.reconfigureBooks.noReset)))\(vbvFinal)
         repair: \(s.nackEntriesReceived) NACK entries \
         (\(s.nacksHonored) honored → \(s.repairDatagramsEnqueued) repair \
         datagrams, \(s.nacksJudgedStale) stale, \

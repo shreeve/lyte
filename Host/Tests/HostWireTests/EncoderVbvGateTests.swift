@@ -508,6 +508,122 @@ final class EncoderVbvGateTests: XCTestCase {
         XCTAssertEqual(policy.directivesIssued, 2)
     }
 
+    // MARK: - HS-33: the no-reset retune (half-rungs, short sustain)
+    // and the reconfigure-cost books
+
+    func testHalfRungLadderRatesPinned() {
+        // rungsPerOctave = 2 (the shell's posture under the vendored
+        // no-reset libavcodec): whole octaves stay the exact integer
+        // halvings, half-rungs are rung/√2 rounded — posture/pacer
+        // slack drops from 2× to ≤√2. Only 1 and 2 are defined.
+        let policy = EncoderVbvPolicy(config: EncoderVbvConfig(
+            fps: 60,
+            baselineMaxBitsPerSecond: 50_000_000,
+            rungsPerOctave: 2
+        ))
+        XCTAssertEqual(policy.rungRate(atIndex: 0), 50_000_000)
+        XCTAssertEqual(policy.rungRate(atIndex: 1), 35_355_339)
+        XCTAssertEqual(policy.rungRate(atIndex: 2), 25_000_000)
+        XCTAssertEqual(policy.rungRate(atIndex: 3), 17_677_670)
+        XCTAssertEqual(policy.rungRate(atIndex: 4), 12_500_000)
+        // Round UP: the smallest rung that still covers the rate.
+        XCTAssertEqual(policy.rungIndex(for: 40_000_000), 0)
+        XCTAssertEqual(policy.rungIndex(for: 35_355_339), 1)
+        XCTAssertEqual(policy.rungIndex(for: 30_000_000), 1)
+        XCTAssertEqual(policy.rungIndex(for: 25_000_000), 2)
+        XCTAssertEqual(policy.rungIndex(for: 20_000_000), 2)
+        XCTAssertEqual(policy.rungIndex(for: 17_677_670), 3)
+    }
+
+    func testHalfRungTightenLandsOnTheCoveringHalfLadder() {
+        // The 4.18 Mbps fall under a 10 Mbps recipe: the half-rung
+        // ladder's covering rung is index 2 = 5 Mbps (index 3 =
+        // 3,535,534 sits below the wire — never chosen). The mapping
+        // at the rung is unchanged HS-20/HS-22 math.
+        let policy = EncoderVbvPolicy(config: EncoderVbvConfig(
+            fps: 60,
+            baselineMaxBitsPerSecond: 10_000_000,
+            rungsPerOctave: 2
+        ))
+        XCTAssertEqual(policy.rungRate(atIndex: 1), 7_071_068)
+        let directive = policy.note(
+            frameByteCeiling: Self.ceilingAt5M, now: 0
+        )
+        XCTAssertEqual(directive?.kind, .tighten)
+        XCTAssertEqual(directive?.maxBitsPerSecond, 5_000_000)
+        XCTAssertEqual(directive?.vbvBits, 250_000)
+        XCTAssertEqual(policy.appliedRungIndex, 2)
+    }
+
+    func testSustainKnobScalesTheLooseningWait() {
+        // riseSustainNS is config, not law — the mechanics must scale
+        // with it: want from t=1 s, no loosen at 2.9 s, the jump to
+        // the held minimum's rung at 3.2 s under a 2 s sustain. (The
+        // SHELL ships 10 s even under no-reset: a live 2 s sustain
+        // chased every climb into a queuing-delay floor limit cycle —
+        // the HS-33 armed A/B; this pin is the knob's contract, not a
+        // shipped value.)
+        let policy = EncoderVbvPolicy(config: EncoderVbvConfig(
+            fps: 60,
+            baselineMaxBitsPerSecond: 10_000_000,
+            riseSustainNS: 2 * Self.sec
+        ))
+        XCTAssertNotNil(policy.note(frameByteCeiling: 1_152, now: 0))
+        XCTAssertEqual(policy.appliedRungIndex, 4)
+        XCTAssertNil(policy.note(frameByteCeiling: 5_000, now: Self.sec))
+        XCTAssertNil(policy.note(
+            frameByteCeiling: 5_000, now: 2 * Self.sec + 900 * Self.ms
+        ))
+        let rung = policy.note(
+            frameByteCeiling: 5_000, now: 3 * Self.sec + 200 * Self.ms
+        )
+        XCTAssertEqual(rung?.kind, .loosen)
+        XCTAssertEqual(rung?.maxBitsPerSecond, 2_500_000)
+    }
+
+    func testReconfigureBooksSplitIdrMintingFromNoReset() {
+        // THE HS-33 BOOKS PIN. A rate directive that applies with the
+        // reconfigure counted but ZERO IDR minted lands in `noReset`,
+        // never in the IDR-minting tally — the idr-books cause tags
+        // stay truthful under either libavcodec, decided by the
+        // observed outcome of the encode the directive rode into.
+        var books = EncoderReconfigureBooks()
+        books.note(.tighten, mintedIdr: false)
+        XCTAssertEqual(books.applied, 1)
+        XCTAssertEqual(books.noResetTotal, 1)
+        XCTAssertEqual(books.idrMintingTotal, 0,
+            "a no-IDR rate move must never read as an IDR cause")
+
+        // The distro path: the same directive kind, observed to reset.
+        books.note(.tighten, mintedIdr: true)
+        books.note(.loosen, mintedIdr: false)
+        books.note(.restore, mintedIdr: false)
+        XCTAssertEqual(books.applied, 4)
+        XCTAssertEqual(books.idrMintingTotal, 1)
+        XCTAssertEqual(books.noResetTotal, 3)
+        // The stats-line vocabulary matches the idr-books tags.
+        XCTAssertEqual(
+            EncoderReconfigureBooks.summary(books.noReset),
+            "tighten 1, rung 1, restore 1"
+        )
+        XCTAssertEqual(
+            EncoderReconfigureBooks.summary(books.idrMinting),
+            "tighten 1"
+        )
+        XCTAssertEqual(EncoderReconfigureBooks.summary([:]), "none")
+    }
+
+    func testDefaultLadderIsUnchangedByTheRetuneKnob() {
+        // The HS-27 pins ride verbatim under the distro posture: the
+        // default config is rungsPerOctave 1 / sustain 10 s, and the
+        // knob's integer-halving path is byte-for-byte the old math.
+        let policy = cappedCqPolicy()
+        XCTAssertEqual(policy.config.rungsPerOctave, 1)
+        XCTAssertEqual(policy.config.riseSustainNS, 10 * Self.sec)
+        XCTAssertEqual(policy.rungRate(atIndex: 3), 1_250_000)
+        XCTAssertEqual(policy.rungIndex(for: 1_250_000), 3)
+    }
+
     func testACleanBlipInsideTheSustainDoesNotRestore() {
         // One clean report inside a hunt must not pop the recipe back:
         // the restore needs the whole sustain window clean-or-wanting,
