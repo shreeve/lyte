@@ -45,11 +45,19 @@ public struct LatencyHistogram: Sendable {
     public private(set) var count = 0
     public private(set) var minValue: UInt64?
     public private(set) var maxValue: UInt64?
+    /// True once the ring has wrapped: percentiles now describe the
+    /// most RECENT `capacity` samples, not the whole session.
     public private(set) var saturated = false
 
     private var samples: [UInt64] = []
+    private var writeIndex = 0
     private let capacity: Int
 
+    /// A ROLLING window (owner ruling 2026-07-30): the pre-ring shape
+    /// kept the session's FIRST `capacity` samples and froze — an
+    /// overlay gauge that described the opening minute forever. The
+    /// ring keeps the newest; `count`/`minValue`/`maxValue` stay
+    /// session-cumulative (they are odometers, not gauges).
     public init(capacity: Int = 1 << 16) {
         precondition(capacity > 0)
         self.capacity = capacity
@@ -62,8 +70,10 @@ public struct LatencyHistogram: Sendable {
         if samples.count < capacity {
             samples.append(value)
         } else {
+            samples[writeIndex] = value
             saturated = true
         }
+        writeIndex = (writeIndex + 1) % capacity
     }
 
     /// The exact q-quantile (0...1) over the retained samples by the
