@@ -566,6 +566,90 @@ final class NackRepairClientGateTests: XCTestCase {
         XCTAssertEqual(stats.framesEscalatedToIdr, 1)
     }
 
+    /// The whole-loss rule (the HS-33 unmasked gap): a frame that never
+    /// landed a single shard has no book, no ask, and no fecImpossible
+    /// verdict — before this rule, NOTHING reached the IDR requester and
+    /// the broken reference chain stood until an unrelated wake IDR. A
+    /// gone-range of such frames must escalate exactly once (one IDR
+    /// heals everything), and a range already covered by a rule-4
+    /// asked-frame escalation must NOT double-fire.
+    func testWhollyLostFrameEscalatesToIdrOncePerRange() throws {
+        let escalated = LockedPile()
+        let policy = NackPolicy(
+            config: NackPolicyConfig(
+                staleBudgetMicroseconds: 250_000,
+                repairDeadlineMicroseconds: 100_000),
+            rtt: { 5_000 },
+            emit: { _ in },
+            escalate: { frame, _ in
+                escalated.append([UInt8(frame.rawValue)])
+            })
+        let t0 = ClientTimestamp(microseconds: 1_000)
+
+        // A three-frame numbering gap, no shard ever seen for any of
+        // them: ONE escalation, anchored at the range's first frame.
+        policy.handle(.framesGone(
+            from: FrameNumber(rawValue: 20),
+            through: FrameNumber(rawValue: 22)), now: t0)
+        XCTAssertEqual(escalated.count, 1)
+        XCTAssertEqual(escalated.all[0], [20])
+        XCTAssertEqual(policy.snapshotStats().whollyLostEscalations, 1)
+
+        // A range where one frame WAS asked (rule 4's territory): the
+        // asked frame escalates, the whole-loss rule stands down.
+        let asked = FrameNumber(rawValue: 31)
+        policy.handle(.nackCandidates(
+            frame: asked, missingShardIndices: [1, 2, 3],
+            parityShards: 2, frameAgeMicroseconds: 0), now: t0)
+        policy.handle(.framesGone(
+            from: FrameNumber(rawValue: 30),
+            through: FrameNumber(rawValue: 32)), now: t0)
+        XCTAssertEqual(escalated.count, 2)
+        XCTAssertEqual(escalated.all[1], [31])
+        let stats = policy.snapshotStats()
+        XCTAssertEqual(stats.framesEscalatedToIdr, 1)
+        XCTAssertEqual(stats.whollyLostEscalations, 1)
+    }
+
+    /// A gone-range holding only settled books changes nothing: decoded
+    /// frames emitted (no reference break), and an already-escalated
+    /// range never re-fires.
+    func testWholeLossRuleIgnoresSettledBooks() throws {
+        let escalated = LockedPile()
+        let policy = NackPolicy(
+            config: NackPolicyConfig(
+                staleBudgetMicroseconds: 250_000,
+                repairDeadlineMicroseconds: 100_000),
+            rtt: { 5_000 },
+            emit: { _ in },
+            escalate: { frame, _ in
+                escalated.append([UInt8(frame.rawValue)])
+            })
+        let t0 = ClientTimestamp(microseconds: 1_000)
+        let frame = FrameNumber(rawValue: 40)
+
+        // A tracked, below-parity frame (book exists, never asked)
+        // that then DECODES: its later gone-signal must not escalate.
+        policy.handle(.nackCandidates(
+            frame: frame, missingShardIndices: [2],
+            parityShards: 2, frameAgeMicroseconds: 0), now: t0)
+        policy.handle(.frameDecoded(frame: frame), now: t0)
+        policy.handle(.framesGone(from: frame, through: frame), now: t0)
+        XCTAssertEqual(escalated.count, 0)
+
+        // An undecoded gone-range escalates once — and the SAME range
+        // signalled again (books now settled .gone) stays quiet.
+        let lost = FrameNumber(rawValue: 41)
+        policy.handle(.nackCandidates(
+            frame: lost, missingShardIndices: [2],
+            parityShards: 2, frameAgeMicroseconds: 0), now: t0)
+        policy.handle(.framesGone(from: lost, through: lost), now: t0)
+        XCTAssertEqual(escalated.count, 1)
+        policy.handle(.framesGone(from: lost, through: lost), now: t0)
+        XCTAssertEqual(escalated.count, 1)
+        XCTAssertEqual(policy.snapshotStats().whollyLostEscalations, 1)
+    }
+
     func testPolicyStaleRefusalIsPermanentAndCompletionCounts() throws {
         let emitted = LockedPile()
         let escalated = LockedPile()

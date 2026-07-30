@@ -134,6 +134,12 @@ public final class NackPolicy: @unchecked Sendable {
         /// evicted, or rule-4 escalated to IDR) — superseded by newer
         /// frames or the keyframe heal.
         public var repairsSuperseded: UInt64 = 0
+        /// Gone-ranges that held only never-asked, never-decoded frames
+        /// (typically a wholly-lost frame: zero shards arrived, so no
+        /// nackCandidates, no fecImpossible, no ask — nothing else ever
+        /// reaches the IDR path) and were escalated by the whole-loss
+        /// rule. One count per range, not per frame.
+        public var whollyLostEscalations: UInt64 = 0
     }
 
     public let config: NackPolicyConfig
@@ -227,21 +233,45 @@ public final class NackPolicy: @unchecked Sendable {
             lock.unlock()
         case .framesGone(let from, let through):
             var expired: [FrameNumber] = []
+            var brokeUnhealed = false
             lock.lock()
             var frame = from
             while true {
-                if var book = books[frame.rawValue], !book.settled {
-                    if !book.askedIndices.isEmpty {
-                        // Asked, never completed: rule 4, now.
-                        stats.framesEscalatedToIdr += 1
-                        expired.append(frame)
+                if var book = books[frame.rawValue] {
+                    if !book.settled {
+                        if !book.askedIndices.isEmpty {
+                            // Asked, never completed: rule 4, now.
+                            stats.framesEscalatedToIdr += 1
+                            expired.append(frame)
+                        } else {
+                            brokeUnhealed = true
+                        }
+                        book.fate = .gone
+                        book.lastTouched = now
+                        books[frame.rawValue] = book
                     }
-                    book.fate = .gone
-                    book.lastTouched = now
-                    books[frame.rawValue] = book
+                    // Settled books: .decoded emitted (no break);
+                    // .gone already ran its escalation. Neither re-fires.
+                } else {
+                    // No book at all — not one shard, candidate, or
+                    // repair ever arrived for this frame number.
+                    brokeUnhealed = true
                 }
                 if frame == through { break }
                 frame = frame.next
+            }
+            // The whole-loss rule: every gone frame died undecoded — a
+            // broken HEVC reference — but a frame that never landed a
+            // shard has no book, no ask, and no fecImpossible verdict,
+            // so no other path reaches the IDR requester (and since
+            // rate reconfigures stopped minting IDRs, nothing heals it
+            // incidentally either: the glass stays broken until an
+            // unrelated wake). One escalation covers the whole range —
+            // one IDR heals everything — and the asked-frame rule-4
+            // escalations above already cover it when they fired.
+            if brokeUnhealed, expired.isEmpty {
+                stats.whollyLostEscalations += 1
+                expired.append(from)
             }
             lock.unlock()
             for frame in expired { escalate(frame, now) }

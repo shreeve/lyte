@@ -633,7 +633,8 @@ final class WireViewStatsPrinter: Sendable {
         // The CL-12 targeted-repair line, whenever the policy stirred:
         // asks out, repairs back, frames healed, staleness → IDR.
         let nack = core.nackPolicy.snapshotStats()
-        if nack.pastParityFrames + nack.repairShardsReceived > 0 {
+        if nack.pastParityFrames + nack.repairShardsReceived
+            + nack.whollyLostEscalations > 0 {
             var line = "\(prefix)   nack: \(nack.pastParityFrames) past-parity, " +
                        "\(nack.nackEntriesEmitted) asks (\(nack.shardsAsked) shards), " +
                        "\(nack.repairShardsReceived) repairs rx, " +
@@ -643,6 +644,9 @@ final class WireViewStatsPrinter: Sendable {
             }
             if nack.framesEscalatedToIdr > 0 {
                 line += ", \(nack.framesEscalatedToIdr) expired→IDR"
+            }
+            if nack.whollyLostEscalations > 0 {
+                line += ", \(nack.whollyLostEscalations) whole-loss→IDR"
             }
             // HS-32: explicit host refusals — acted asks skip the
             // 250 ms deadline entirely.
