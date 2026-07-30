@@ -48,6 +48,7 @@ import Crypto
 import Dispatch
 import Foundation
 import LyteWire
+import Synchronization
 
 // MARK: - Client-side audio-routing policy
 
@@ -375,6 +376,20 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// The production machine-poll wake; nil until `startTimers()`.
     private var machineTimer: DispatchSourceTimer?
 
+    /// The per-datagram evidence book, off the hot path: every accepted
+    /// datagram stamps this relaxed atomic instead of taking the core
+    /// lock for a machine pass (apply + poll + two action arrays,
+    /// ~3k×/s). The 100 ms beat feeds the machine the newest stamp at
+    /// its TRUE arrival instant, so the blackout detector's and the
+    /// liveness clock's bookkeeping stay exact; only the FROZEN exit
+    /// wants datagram latency, and `machineFrozen` routes those (rare)
+    /// passes through the immediate path.
+    private let lastEvidenceMicros = Atomic<UInt64>(0)
+    private let machineFrozen = Atomic<Bool>(false)
+    /// Beat-context bookkeeping (guarded by `lock`): the stamp last
+    /// fed to the machine.
+    private var lastFedEvidenceMicros: UInt64 = 0
+
     public init(
         demux: ReceiveDemux,
         sender: TransportSender,
@@ -544,7 +559,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                        repeating: .milliseconds(100))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            self.applyMachine(nil, now: self.now())
+            self.machineBeat(now: self.now())
         }
         timer.resume()
         machineTimer = timer
@@ -570,6 +585,23 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         bulkReliable.tick(now: now)
         pipeline.tick(now: now)
         nackPolicy.tick(now: now)
+        machineBeat(now: now)
+    }
+
+    /// The machine's beat (production timer and test tick alike): any
+    /// evidence stamped since the last beat is fed first, at its true
+    /// arrival instant — exact detector/liveness bookkeeping, deferred
+    /// at most one beat — then the pure poll runs at `now`.
+    private func machineBeat(now: ClientTimestamp) {
+        let stamped = lastEvidenceMicros.load(ordering: .relaxed)
+        var feed: ClientTimestamp?
+        lock.lock()
+        if stamped > lastFedEvidenceMicros {
+            lastFedEvidenceMicros = stamped
+            feed = ClientTimestamp(microseconds: stamped)
+        }
+        lock.unlock()
+        if let feed { applyMachine(.mediaPathEvidence, now: feed) }
         applyMachine(nil, now: now)
     }
 
@@ -936,7 +968,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             audio.ingest(envelope: envelope, payload: payload, now: now)
             tightenDetectorIfNeeded(now: now)
         }
-        applyMachine(.mediaPathEvidence, now: now)
+        // Evidence is a timestamp, not work: stamp it and move on. The
+        // beat feeds it to the machine; FROZEN (the one state where a
+        // datagram must act NOW — the pill clears on this evidence)
+        // keeps the immediate pass.
+        lastEvidenceMicros.store(now.microseconds, ordering: .relaxed)
+        if machineFrozen.load(ordering: .relaxed) {
+            applyMachine(.mediaPathEvidence, now: now)
+        }
     }
 
     /// HS-32: the ARQ-exempt CTRL types beyond the beacon. A 0x23
@@ -1084,6 +1123,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         let modeEdge = mode != lastWireMode
         lastState = state
         lastWireMode = mode
+        machineFrozen.store(state == .frozen, ordering: .relaxed)
         lock.unlock()
 
         for action in actions {
