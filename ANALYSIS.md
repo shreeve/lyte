@@ -49,22 +49,8 @@ codebase.
    geometry differs from the opened encoder's; validate
    `size >= (h-1)*stride + w*4` and `stride > 0`.
 
-3. **AudioWire thread-lifetime hazards (two HIGHs)** —
-   `Host/Sources/lyte-host/AudioWire.swift`:
-   (a) *Free without join* (`deinit` :121-125, `stop()` :198-204):
-   `stop()` waits on the loop thread with a 2 s timeout and proceeds
-   regardless; any throw after `audio.start()` (e.g. encoder flush
-   failure at `main.swift:1840`) unwinds `run()` and `deinit` destroys
-   the `pw_main_loop` under the live audio thread — the trampoline's
-   `Unmanaged.passUnretained` then resolves a freed object on the next
-   5 ms callback. Fix: unconditional join in `stop()`; `deinit` refuses
-   to free while the thread lives.
-   (b) *Double free on init throw* (:83, :90, :109, :124): after
-   `encoder = enc` the class is fully initialized, so a later throw runs
-   `deinit` — the explicit `lyte_opus_enc_free` on the error paths is
-   followed by `deinit`'s free of the same pointer. A host with no
-   default sink **aborts** (`free(): double free`) instead of degrading
-   to the intended "audio: unavailable — video-only session".
+3. ~~**AudioWire thread-lifetime hazards (two HIGHs)**~~ — **LANDED,
+   PR #23** (2026-07-30; see Landed section at the end).
 
 4. ~~**Channel-0 seq/seal race**~~ — **LANDED, PR #22** (2026-07-30;
    see Landed section at the end).
@@ -411,6 +397,18 @@ via lyte-encode-check hashing.
   overflow bound, recusal evaluated before the purge mutates the queue.
 
 ## Landed
+
+- **T1-3 AudioWire thread lifetime** — PR #23, merged 2026-07-30.
+  `stop()` joins the audio thread unconditionally (bounded by the C
+  run loop's own `seconds` deadline even if the quit eventfd were
+  lost); `deinit` refuses to free while the thread lives — it quits
+  and joins first when the owner never reached `stop()` (the
+  throw-after-start unwind); both init-throw paths free nothing, so
+  deinit owns capture + encoder cleanup exactly once and the
+  no-default-sink host degrades to video-only instead of aborting in
+  `free()`. No in-suite pin possible (executable target + live
+  PipeWire required) — the gate is structural single-owner cleanup;
+  suites 241/241 Mac AND pup.
 
 - **T1-4 chan-0 seq/seal race** — PR #22, merged 2026-07-30. Seq
   allocation and seal are one critical section in TransportSender
