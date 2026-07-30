@@ -672,6 +672,7 @@ previous one) · **loss** ≤ 1 wire frame per 150 s leg.
 | 2026-07-29 @ be60e92 | 52.03 PASS | 59.73 PASS | 61 PASS⁴ | 6.4 FAIL⁴ | 0 PASS | 0 PASS⁴ |
 | 2026-07-29 @ db84c1b | 53.85 PASS | 59.72 PASS | 61 PASS⁵ | 8.4 FAIL⁵ | 0 PASS | 0 PASS⁵ |
 | 2026-07-29 @ ce952ec | 53.85 PASS | 59.73 PASS | 61 PASS⁶ | 8.4 FAIL⁶ | 1 FAIL⁶ | 0 PASS |
+| 2026-07-29 @ 7a4ee2a | 55.02 PASS | 59.70 PASS | 59 PASS⁷ | 3.2 FAIL⁷ | 0 PASS | 0 PASS |
 
 ² Post-HS-26/IDR-hunt re-measurement (row printed by quality-probe.sh
 at `932a4c3`; logs pup `~/qprobe/`, local `/tmp/qprobe-local`).
@@ -694,6 +695,23 @@ the frequency). Also eye-on: delivered ~20 Mbps on the post-move
 clean wire that bulk-tested ~160 Mbps — whether that's real airtime
 under 43 Mbps appetite or the HS-22b self-reference seam is part of
 slice (b)'s brief.
+
+⁷ THE HS-33 ROW (probe at `7a4ee2a`, the vendored no-reset encoder
+live): five green, static at an all-time 55.02, churn healed — and
+the IDR cell's composition is TRANSFORMED even where it stays red:
+**zero reconfigure-minted IDRs** (13 directives, all applied
+no-reset; the same night's A/B: control 24 = 9.59/min with 14
+reconfigure-minted vs no-reset **1 = 0.40/min, opening only** — the
+bar's ≤2 is GREEN on clean air). The official row's 3.2 = opening +
+client requests across three real evening-air loss episodes —
+repair-lane/weather territory now, not encoder territory. Named at
+the row: wholly-lost frames mint no client IDR demand (pre-existing
+gap, newly unmasked); the evening-air microstall forensics (honest
+medians ~5 M on iperf-clean 45 M air); the probe's rotted `receipts`
+grep. The reconfigure-IDR family of findings — HS-22b's dip cost,
+HS-22c's coalescing, the IDR hunt, HS-27's rungs, HS-30's cadence —
+CLOSES here: every rate move since HS-16 cost a keyframe, and none
+do now.
 
 ⁶ The refined build's official row (probe at `ce952ec`) — and the
 run drew CHOPPY AIR again (101 missing datagrams vs the clean
@@ -4404,6 +4422,157 @@ its entry at the marker at the end of this block.*
   (dadf9a66…37cf / 72860390…cfed / 8dc1f88a…55fd); FFmpeg objects
   cleaned + the 6 GB raw input deleted — `~/hs33a` closes at 548 MB
   (source+patch+libs+bitstreams+books+logs kept).
+
+- **HS-33 — the vendored no-reset encoder lands for real: rate moves
+  stop minting IDRs on the live wire, the idr-books turn observational,
+  and the bar's last red goes green with room to spare** (`0579e2b` the
+  machinery + `7a4ee2a` the retune/books; Host/ only, not pushed).
+  THE MACHINERY (Vendor/ffmpeg/README.md is the spec):
+  Scripts/vendor-ffmpeg.sh IS the artifact — n8.0.1 tarball by pinned
+  sha256 (05ee0b03…5a41), nv-codec-headers n13.0.19.1 by tag AND
+  commit (88fee5c3…), the HS-33a patch (hunks byte-identical to the
+  spike's GO-verdicted diff; headers normalized to a/ b/ for patch
+  -p1; sha 16521707…6316), configure `--disable-everything` + exactly
+  one encoder/zero decoders, all into a gitignored prefix — no .a in
+  git. TWO ENV GATES, one recipe: PKG_CONFIG_PATH (vendored headers
+  via CLibAV) + LYTE_FFMPEG_PREFIX (Package.swift links the archives
+  BY PATH). By-path is measured necessity, not taste: pipewire/dbus
+  distro .pc files inject `-L/usr/lib/<triple>` ahead of any vendored
+  -L, so `-lavcodec` resolved the distro SHARED lib for lyte-host
+  while lyte-encode-check went static — the vendored .pc files
+  therefore carry no -lavcodec, set-but-missing fatals the manifest,
+  and env-unset builds distro exactly as before (Mac/CI untouched;
+  both directions of the toggle verified without cache staleness).
+  The build signs itself: `--extra-version=lyte-noreset` puts a marker
+  in avcodec_configuration(); lyte_hevc_noreset_enable() (CHevcEncode)
+  reads it, defaults the patch's env gate ON, and the running host
+  PRINTS which libavcodec it linked — proof, never assumption
+  (LYTE_NVENC_NO_RESET_RATE=0 is the A/B control through one binary).
+  pup recipe: rsync must exclude Vendor/ffmpeg/{build,prefix}; build =
+  vendor-ffmpeg.sh + the two envs; verify = ldd shows no shared libav
+  (verified on both executables) + the startup line.
+  THE BOOKS (the tags stay truthful in both worlds): the Sink observes
+  whether the encode a directive rode into came back a keyframe;
+  EncoderReconfigureBooks splits applied directives into IDR-minting
+  vs no-reset per kind (stats line: "applied cost — N IDR-minting
+  (…), M no-reset (…)"). Under no-reset the vbv-* tags never enter
+  the idr tally; an impossible minting would WARN loudly and tally
+  spontaneous. Control leg cross-check: 14 directives, 14 counted
+  IDR-minting, idr-books vbv-rung 7 + vbv-tighten 7 — exact.
+  THE RETUNE, BY THE BOOKS: half-rungs land (rungsPerOctave 2 under
+  no-reset — whole octaves stay exact halvings, the half-step is
+  rung/√2 via the stdlib square root; tighten posture sits ≤√2 above
+  the fallen rate, shrinking §5's oversized-frame transient). The 2 s
+  loosening sustain the retune FIRST shipped was convicted live: the
+  posture chased every climb, frames at/above the still-climbing pacer
+  overstayed their budget, and queuing-delay overuse fired a floor
+  limit cycle — 10 falls to 500 kbps, ZERO loss, climb-crash sawtooth
+  (iperf3 proved the air clean at 45 Mbps/0% BOTH directions the same
+  minute) — while the env=0 control leg rode the identical weather
+  without collapsing. riseSustainNS stays 10 s: climb-lag is
+  load-bearing probe stability, not an IDR ration, and under no-reset
+  it costs nothing. The eager-sustain evidence is in the code comment,
+  the ledger, and pinned as the knob's contract (not a shipped value).
+  THE RE-MEASUREMENTS (the consult's list, executed not assumed):
+  (a) UNDER LOSS — live 150 s leg, netem loss 2% scoped to the test
+  port (prio+u32, sport-matched) through t+30…t+90 while 16/16
+  no-reset directives applied: zero decode breaks, no
+  reference-corruption signature (no freeze/IDR-begging loop, no
+  unseal failures), FEC healed the stream, exactly one past-parity
+  frame took the honest expired→IDR path — idr-books 0.80/min
+  (opening + 1 client). (b) CLIENT AUDIT — CLIENT-SAFE on all five
+  fronts, file:line-verified: NackPolicy deadlines are clock-relative
+  (never IDR-anchored); the decoder rebuilds on parameter-set change
+  but nothing consumes rate-move IDRs as an event, and NO HRD/VUI
+  bitrate field is parsed anywhere; no client ratchet arm exists;
+  ChromaStreamAudit is edge-triggered on chroma_format_idc (loses
+  sampling frequency, never coverage); wire-view counts no received
+  IDRs. THE ONE CONTRACT: resolution/DAR changes must keep minting an
+  IDR — the patch's DAR guard preserves exactly that. NAMED FINDING
+  (pre-existing, newly unmasked): a WHOLLY-lost frame (zero shards
+  arrive, no NACK fires) mints no client IDR demand — forced rate-move
+  IDRs used to incidentally scrub that; now it persists until a
+  demanded IDR. Follow-up, not a blocker. (c) PRODUCTION SHAPES —
+  offline A/B through the vendored lib via lyte-encode-check --move
+  (RV ladder, 4 moves, 720 frames 1080p60): capped-CQ cq12 420
+  (sessionDefault), capped-CQ cq4 Rext-444 (best444), and spatial-AQ-8
+  + fullres multipass all read control idr=5 → no-reset **idr=1
+  (opening only)**, segment rates within ~0.5%, max frame clamps to
+  vbv/8 exactly in the 25 M segment, strict decode
+  (`-err_detect …+explode -xerror`) 720/720 0 errors on all eight
+  streams, VideoToolbox HARDWARE 720/720 failed 0/withheld 0 on the
+  no-reset 420, 444, and ratchet streams, and per-frame PSNR floors
+  no-reset BETTER than control in every shape (45.0→49.4, 41.3→45.9,
+  44.4→49.9 dB; means equal) — no mid-stream IDR re-spend. Temporal-AQ
+  probe: accepted by the wrapper, output byte-identical to taq-off
+  (inert on this build), not the loud reject — recorded. (d) RATCHET —
+  static-repeat leg with a mid-walk tighten (25 M) and restore:
+  control pays an IDR per move (50/95 KB re-spends + 4-pass re-walks);
+  no-reset convergence is UNBROKEN — QP12/~620 B byte-stability rides
+  straight through both moves, idr 3→1.
+  THE LIVE A/B (same night, same build, same content, 150 s armed
+  legs, windowed testsrc2, Mac wire-view --audio): control (env=0)
+  **24 IDRs = 9.59/min** — client-request 11, **vbv-rung 7 +
+  vbv-tighten 7**, opening 1; 14 IDR-minting reconfigures. No-reset:
+  **1 IDR = 0.40/min — opening 1**; 16/16 directives applied no-reset
+  (tighten 7, rung 9), 2110 moves absorbed, ZERO client IDR requests,
+  ZERO reconfigure IDRs, leg ended climbing at 20.8 Mbps. The
+  reconfigure-minted IDR class is EXTINCT under the vendored lib.
+  HONESTY LEG (falls still work): 25 Mbit tbf scoped to the port,
+  6 falls each on a ~515 ms streak with honest anchors, glass held
+  60-61 fps at the squeezed rate, 12/12 directives no-reset, qdisc
+  removed (verified noqueue). Note: the evening air showed bursty
+  microstalls in EVERY leg (control included; 129–182 overuse
+  verdicts) — orthogonal to this slice, isolated by the A/B.
+  THE OFFICIAL ROW (quality-probe.sh whole, port 41183): `2026-07-29
+  @ 7a4ee2a | static 55.02 PASS | motion 59.70 PASS | fps 59 PASS |
+  IDR 3.2 FAIL | churn 0 PASS | loss 0 PASS` — FIVE GREEN, and the
+  IDR cell reported straight: the armed leg's 8 IDRs decompose to
+  opening 1 + client-request 6 + stale-nack 3 (overlapping tags;
+  three loss episodes at t+3.5/13.2/116.4 in choppy evening air —
+  102/106,878 datagrams missing, 0 frames lost), while its 13
+  directives minted ZERO IDRs (books: 0 IDR-minting, 13 no-reset —
+  tighten 5, rung 8; the per-IDR trace carries not one vbv-* tag).
+  The reconfigure-minted class this slice was commissioned to kill
+  reads exactly 0 at the official bar; what keeps the cell red is the
+  client-request path under real loss — HS-32/repair-lane territory,
+  not the encoder's. Twin froze again (fps p50 2, 107 IDR = 42.7/min
+  of client begging) — the directives stay load-bearing; the vendored
+  lib changed their COST, never their necessity. (Probe rot noted,
+  pre-existing: the receipts line's delivery grep chokes on the
+  estimator line's HS-30-era "burst max, belief" commas — one-liner
+  for the next probe touch.)
+  Suites: Host 219 → **224/224 Mac AND pup** (new pins: half-rung
+  ladder rates + covering-rung tighten, the sustain knob's contract,
+  the books split IDR-minting/no-reset with truthful tags, distro
+  defaults byte-identical). Instrument fix ridden in: quality-probe's
+  wire leg waits for the host's listening line (the V-4 Rext
+  self-probe runs before the socket opens; the old blind 3 s lost the
+  handshake race — measured twice before diagnosis, plus the Keychain
+  lesson re-learned: wire-view needs the signed CLI and an unsandboxed
+  shell).
+  RAILS: owner's 41151 loop never touched; it self-respawned onto the
+  vendored build mid-session (first at ~20:10 MDT on the intermediate
+  2 s-sustain binary — the never-kill rail held while that stood
+  flagged — then again at 20:50:49 MDT onto the sustain-FIXED build,
+  one second before a comment-only rebuild landed on disk: the
+  standing host now runs the 7a4ee2a-equivalent binary and its
+  session log prints the vendored no-reset line). Secrets sha-identical before/after EVERY live
+  leg (noise 72860390…cfed, paired 8dc1f88a…55fd; portal_token
+  rotates by design). All test hosts/ffplay/iperf3 dead, ports
+  41233–41241 + 41299 freed, qdiscs verified noqueue (wlp0s20f3 AND
+  lo). Logs: pup /tmp/hs33-*, ~/hs33/ (raw input deleted — closes at
+  308 MB: bitstreams+books+psnr), Mac /tmp/hs33-*-client.log,
+  /tmp/hs33-qprobe-run.log + /tmp/qprobe-local/.
+  NAMED NEXT: (i) the wholly-lost-frame client gap (audit finding) —
+  cheap client rule: a frame known missing with zero shards and no
+  repair path arms the IDR request immediately; (ii) the evening-air
+  microstall weather that squeezed every leg tonight deserves one
+  session of estimator forensics on clean daytime air (iperf clean at
+  45 M while honest medians read 5 M — dispersion-scale, not
+  throughput-scale); (iii) rung hysteresis/deadband fine-tuning is now
+  FREE to explore — the ladder is config, the books are truthful, and
+  nothing costs an IDR anymore.
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
