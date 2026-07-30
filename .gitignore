@@ -11,10 +11,3 @@ Package.resolved
 
 # macOS
 .DS_Store
-
-# Reference checkouts parked locally (study summaries live tracked in docs/)
-misc/
-
-# Golden packet captures — large binaries + session key material, kept local.
-# Distilled acceptance vectors get committed under Tests/, not the raw pcaps.
-captures/
