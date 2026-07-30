@@ -531,6 +531,13 @@ final class Sink {
     var stageDrainUs: [UInt64] = []
     var stageWindowStartedAt: Double?
     var lastOnFrameAt: Double?
+    /// Capture-starvation tripwire: the direct-scanout freeze class
+    /// (2026-07-30 verdict) delivers input and capture silence at the
+    /// same time, which the stage books only reveal 5 s later as a
+    /// percentile. These throttle the loud line to one per 5 s and
+    /// count distinct episodes for the final stats block.
+    var starvationWarnedAt: Double?
+    var starvationEpisodes = 0
     /// Nanoseconds onPacket spent inside wire.sendFrame during the
     /// current encode call — the packet callback runs INSIDE
     /// lyte_hevc_enc_send, so the encoder's own share is the
@@ -811,6 +818,7 @@ final class Sink {
 
         let now = monotonicNow()
         quitIfElapsed(now)
+        checkCaptureStarvation(now)
 
         if encodedSinceTick {
             encodedSinceTick = false
@@ -1103,6 +1111,34 @@ final class Sink {
         if let start = firstFrameAt, now - start >= opts.seconds, let capture {
             lyte_pw_capture_quit(capture)
         }
+    }
+
+    /// The runtime tripwire for the direct-scanout freeze class: cursor
+    /// mode is EMBEDDED, so live input MUST produce damage frames — an
+    /// ACTIVE session with input in the last 2 s but no capture frame
+    /// for >500 ms means the compositor is starving the ScreenCast, not
+    /// that the screen is still. The startup environ check catches a
+    /// missing flag at launch; this catches the flag failing at runtime
+    /// (or any future starvation cause) while a user is visibly driving.
+    private func checkCaptureStarvation(_ now: Double) {
+        guard let wire, wire.currentWireMode == .active,
+              let lastFrame = lastOnFrameAt, now - lastFrame > 0.5 else {
+            starvationWarnedAt = nil
+            return
+        }
+        let lastInput = wire.lastInputInjectedAtMicros
+        guard lastInput != 0 else { return }
+        let inputAge = Double(monotonicMicros() &- lastInput) / 1e6
+        guard inputAge < 2.0 else { return }
+        if starvationWarnedAt == nil { starvationEpisodes += 1 }
+        if let warned = starvationWarnedAt, now - warned < 5 { return }
+        starvationWarnedAt = now
+        print(String(
+            format: "capture: STARVED — session ACTIVE, input %.1f s ago, "
+                + "but no capture frame for %.0f ms (episode %d); if this "
+                + "persists check MUTTER_DEBUG_PAINT=disable-direct-scanout "
+                + "(Host/README, machine prerequisites)",
+            inputAge, (now - lastFrame) * 1000, starvationEpisodes))
     }
 
     func onPacket(data: UnsafePointer<UInt8>, size: Int, keyframe: Bool, avgQP: Int) {
@@ -1923,6 +1959,7 @@ func run() throws {
         \(s.videoFramesUnprotectable) dropped unprotectable \
         (ceiling \(wire.protectableFrameCeiling) B), \
         \(sink.throttledFrames) capture frames throttled (backlog gate), \
+        \(sink.starvationEpisodes) capture-starvation episodes, \
         final state \(wire.lifecycleState.map { "\($0)" } ?? "—") \
         (wire mode \(wire.currentWireMode.map { "\($0)" } ?? "—"))
         chroma: agreed \(wire.agreedChromaModes.map { "\($0)" } ?? "— (no declaration)"), \

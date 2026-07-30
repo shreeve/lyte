@@ -167,6 +167,10 @@ final class SessionWire {
     private(set) var inputInjected = 0
     private(set) var inputInjectFailures = 0
     private var inputNoInjectorWarned = false
+    /// Monotonic µs of the most recent successful injection (0 = never).
+    /// Written under `lock` on the service thread; the capture tick's
+    /// starvation tripwire reads it through the locked accessor below.
+    private var lastInputInjectedAt: UInt64 = 0
 
     private(set) var framesSent = 0
     /// Stage books for the fps-ceiling hunt (Q-1's red row): the last
@@ -197,6 +201,13 @@ final class SessionWire {
         lock.lock()
         defer { lock.unlock() }
         return vbvPolicy?.rateMovesAbsorbed ?? 0
+    }
+    /// The starvation tripwire's input-recency witness (0 = no input
+    /// injected yet this session).
+    var lastInputInjectedAtMicros: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastInputInjectedAt
     }
     /// ECONNREFUSED evidence (LYTE_NETIO_PEER_GONE): the client's socket
     /// is closed — session-ending, not an I/O failure (HS-11).
@@ -1387,6 +1398,7 @@ final class SessionWire {
         }
         let injectMicros = monotonicMicros()
         inputInjected += 1
+        lastInputInjectedAt = injectMicros
         inputLatency.record(injectMicros &- rxMicros)
         session.noteInputInjected(
             seq: event.seq,
