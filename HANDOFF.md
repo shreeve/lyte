@@ -181,7 +181,12 @@ of the wave block):
 5. **REMAINING**: the owner's UI eyeball (Chroma tiers, photo
    toggle, banners: `open .build/Lyte.app`, connect to pup 41151 —
    it agrees at 444), then the IDR slice(s) above — the last red
-   between H4 and a clean bar.
+   between H4 and a clean bar. **2026-07-30 UPDATE: the bar is
+   ALL-GREEN (row ⁸ at `f63587c` — IDR 1.6/min on verified-clean
+   air); what remains of H4 is the owner's eyeballs only: the
+   Wi-Fi-hop leg (i), the five-minute UI verbs, and the fresh
+   quit-relaunch-reconnect ride (the respawn-gap patience,
+   `f63587c`). P-2/P-3 dropped by owner ruling 2026-07-30.**
 Named-but-not-blocking: a genuine squeeze still costs 3 IDRs (every
 nvenc rc delta forces one — intra-refresh / non-IDR reconfigure is
 the candidate slice); no [420]-only host exists anywhere for a live
@@ -690,6 +695,7 @@ previous one) · **loss** ≤ 1 wire frame per 150 s leg.
 | 2026-07-29 @ db84c1b | 53.85 PASS | 59.72 PASS | 61 PASS⁵ | 8.4 FAIL⁵ | 0 PASS | 0 PASS⁵ |
 | 2026-07-29 @ ce952ec | 53.85 PASS | 59.73 PASS | 61 PASS⁶ | 8.4 FAIL⁶ | 1 FAIL⁶ | 0 PASS |
 | 2026-07-29 @ 7a4ee2a | 55.02 PASS | 59.70 PASS | 59 PASS⁷ | 3.2 FAIL⁷ | 0 PASS | 0 PASS |
+| 2026-07-30 @ f63587c | 55.43 PASS | 59.71 PASS | 55 PASS⁸ | 1.6 PASS⁸ | 0 PASS | 0 PASS |
 
 ² Post-HS-26/IDR-hunt re-measurement (row printed by quality-probe.sh
 at `932a4c3`; logs pup `~/qprobe/`, local `/tmp/qprobe-local`).
@@ -718,6 +724,24 @@ app + no-reset host, first session with every fix of the day riding
 at once): "WOW! It looks amazing!"** — the at-the-glass verdict
 joining J-G1's "absolutely beautiful" and J-G4a's "MASSIVELY
 improved" in the record.
+
+⁸ **THE FIRST ALL-GREEN ROW (2026-07-30 ~03:30 MDT, probe at
+`f63587c`) — the IDR red, the bar's last standing red, is RETIRED.**
+Conditions verified clean BEFORE the run, not assumed: iperf3 UDP
+45 M pup→Mac 0/38849 lost, 0.33 ms jitter; pup load ~2 with the
+owner's FPGA flow (par/bitgen — the first attempt's preflight
+correctly ABORTED at 39 fps damage supply under that contention) and
+Chrome both quiet; no owner session sharing the box. IDR 4 in 150 s
+= 1.6/min: opening + 3 — with 13 rate directives applied no-reset
+(zero reconfigure-minted, churn 0, loss 0/70170 dgrams). The twin
+control leg restates the law: `--no-vbv-reconfigure` = 119 IDRs =
+47.3/min at fps p50 1. fps p50 55 sits AT the bar (59–61 on earlier
+rows; evening rows ran hotter air — not investigated, not gating).
+The client end carried tonight's whole-loss fix (its counter stayed
+0 — nothing wholly lost on clean air, as expected). The rotted
+`receipts:` estimator grep printed EMPTY again (named debris, still
+owed). The bar bows in six-for-six for the first time in its
+history.
 
 THE HS-33 ROW (probe at `7a4ee2a`, the vendored no-reset encoder
 live): five green, static at an all-time 55.02, churn healed — and
