@@ -159,6 +159,29 @@ case in `FecCoderTests`, the hand-walked datagram in
   `ClipboardImageVectorFileTests` asserts the coverage discipline
   (every decode-reachable error name present, the mime ceiling pinned
   legal, the spine pinned both ways).
+- `repair-refusal-v1.json` — the HS-32 repair-refusal CTRL message
+  0x23 (`type ‖ frame u32 LE ‖ reason u8`, fixed 6 bytes): the HS-17
+  NACK responder's stale verdicts made explicit on the wire so the
+  client never blind-waits its full repair deadline on a repair the
+  host already declined. Host→client, sealed, ARQ-exempt
+  fire-and-forget (the 0x10 discipline): a LOST refusal degrades to
+  the client's own deadline expiry by design — nothing may ever
+  require a refusal to arrive. No capability key gates it: an unknown
+  CTRL type is skipped silently on both carriage modes (bare payloads
+  fall through the type peek unconsumed; ARQ-delivered unknowns are
+  counted and dropped), so a v1 client ignoring 0x23 lands exactly on
+  the lost-refusal behavior. A NEW file for the clipboard-v1 reason:
+  appending is legal, but a new file keeps the frozen ones untouched.
+  Format mirrors the session file (`roundtrip`/`decodeReject` over
+  `messageHex`, `frame`/`reason` typed on roundtrips); anchored
+  against the hand-computed bytes in `RepairRefusalCodecTests`.
+  Inventory (10): roundtrips covering the whole 3-value reason space
+  (stale-budget 0x01, superseded 0x02, unknown-frame 0x03 — the
+  lifecycle discipline) plus the frame 0 and u32-max boundaries;
+  rejects covering truncation, trailing bytes, a foreign type, the
+  zero reason (the zero-fill rule), and an unknown reason.
+  `RepairRefusalVectorFileTests` asserts the coverage discipline
+  (every reason pinned, every decode-reachable error name present).
 
 ## The 24-byte envelope (wire v1)
 

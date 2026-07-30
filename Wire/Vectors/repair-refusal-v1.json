@@ -1,0 +1,82 @@
+{
+  "format" : "lyte-wire-repair-refusal-vectors",
+  "formatVersion" : 1,
+  "vectors" : [
+    {
+      "description" : "6-byte refusal: type 0x23, frame 258 u32 LE, reason 0x01 stale-budget — the hand-computed anchor.",
+      "frame" : 258,
+      "kind" : "roundtrip",
+      "messageHex" : "230201000001",
+      "name" : "refusal-stale-budget",
+      "reason" : 1
+    },
+    {
+      "description" : "Reason 0x02 superseded: the frame is older than the last IDR — the newer IDR is the heal.",
+      "frame" : 77,
+      "kind" : "roundtrip",
+      "messageHex" : "234d00000002",
+      "name" : "refusal-superseded",
+      "reason" : 2
+    },
+    {
+      "description" : "Reason 0x03 unknown-frame: the repair store no longer holds the frame.",
+      "frame" : 3735928559,
+      "kind" : "roundtrip",
+      "messageHex" : "23efbeadde03",
+      "name" : "refusal-unknown-frame",
+      "reason" : 3
+    },
+    {
+      "description" : "Frame 0 is legal — the opening frame is exactly the one the exemption story cares about.",
+      "frame" : 0,
+      "kind" : "roundtrip",
+      "messageHex" : "230000000001",
+      "name" : "refusal-frame-zero",
+      "reason" : 1
+    },
+    {
+      "description" : "Frame u32-max — the numbering boundary.",
+      "frame" : 4294967295,
+      "kind" : "roundtrip",
+      "messageHex" : "23ffffffff02",
+      "name" : "refusal-frame-max",
+      "reason" : 2
+    },
+    {
+      "description" : "5 bytes: the message is exactly its layout.",
+      "error" : "truncatedMessage",
+      "kind" : "decodeReject",
+      "messageHex" : "2302010000",
+      "name" : "refusal-truncated"
+    },
+    {
+      "description" : "7 bytes reject — exactly its fixed size.",
+      "error" : "trailingBytes",
+      "kind" : "decodeReject",
+      "messageHex" : "23020100000100",
+      "name" : "refusal-trailing-byte"
+    },
+    {
+      "description" : "An IDR-request type byte at refusal length rejects with what it found.",
+      "error" : "unexpectedType",
+      "kind" : "decodeReject",
+      "messageHex" : "100201000001",
+      "name" : "refusal-bad-type"
+    },
+    {
+      "description" : "Reason 0x00 rejects — the loud zero-fill bug.",
+      "error" : "unknownReason",
+      "kind" : "decodeReject",
+      "messageHex" : "230201000000",
+      "name" : "refusal-reason-zero"
+    },
+    {
+      "description" : "Reason 0x7f rejects — the reason space is exactly its three values.",
+      "error" : "unknownReason",
+      "kind" : "decodeReject",
+      "messageHex" : "23020100007f",
+      "name" : "refusal-reason-unknown"
+    }
+  ],
+  "wireVersion" : 1
+}

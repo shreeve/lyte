@@ -165,6 +165,13 @@ public enum CtrlMessageType {
     /// dialect; key 11 — the file-drop consent — is deliberately not
     /// in the gate).
     public static let clipboardImageCargo: UInt8 = 0x22
+    /// Host→client repair refusal (RepairRefusal, HS-32): the HS-17
+    /// NACK responder's stale verdicts made explicit so the client
+    /// never blind-waits its full repair deadline on a repair the host
+    /// already declined. Sealed, ARQ-exempt fire-and-forget like 0x10 —
+    /// a lost refusal degrades to the client's own deadline expiry, by
+    /// design; nothing may require a refusal to arrive.
+    public static let repairRefused: UInt8 = 0x23
 
     /// The type byte of a CTRL payload, nil when the payload is empty.
     /// Dispatch on this, then hand the whole payload (type byte included)
