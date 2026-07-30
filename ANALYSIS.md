@@ -66,18 +66,8 @@ codebase.
    default sink **aborts** (`free(): double free`) instead of degrading
    to the intended "audio: unavailable — video-only session".
 
-4. **Channel-0 seq/seal race** —
-   `Sources/LyteTransport/TransportSender.swift:62-87`: the channel seq
-   is allocated under `lock`, unlocked, and only then sealed —
-   `NoiseTransport.seal` requires strict monotonicity. Chan 0 has three
-   senders on three threads (ARQ service, beacon echo on the receive
-   thread, IDR requester on the feedback thread); a lost race throws
-   `sendSequenceNotMonotonic` and `serviceLocked`'s catch abandons every
-   remaining repacked payload in the pass — an input-latency spike (a
-   full PTO) that lands precisely during loss storms, when all three
-   senders collide. Self-healing, hence never seen as anything but
-   noise. Fix: hold the lock across allocate+seal, or allocate inside
-   the crypto lock.
+4. ~~**Channel-0 seq/seal race**~~ — **LANDED, PR #22** (2026-07-30;
+   see Landed section at the end).
 
 5. ~~**Estimator delay-baseline poisoning**~~ — **LANDED, PR #21**
    (2026-07-30; see Landed section at the end).
@@ -421,6 +411,13 @@ via lyte-encode-check hashing.
   overflow bound, recusal evaluated before the purge mutates the queue.
 
 ## Landed
+
+- **T1-4 chan-0 seq/seal race** — PR #22, merged 2026-07-30. Seq
+  allocation and seal are one critical section in TransportSender
+  (allocation order = commit order; transmit stays outside the lock;
+  sender→crypto lock order, no deadlock). New concurrency gate: strict
+  Noise-law crypto, 4 threads × 2,000 sends, zero seal failures, 8,000
+  unique wire seqs. Root suite 219/219 (was 218).
 
 - **T1-5 estimator baseline witness** — PR #21, merged 2026-07-30. The
   per-channel delay floor is the second-smallest report minimum in the
