@@ -1,5 +1,11 @@
 # moonlight-common-c — Protocol & Library Analysis
 
+> **GameStream-era reference (annotated 2026-07-30).** The client
+> lineage this study served was deleted at the H2 exit (2026-07-22);
+> Lyte speaks only Lyte-UDP. The protocol halves here are archaeology —
+> kept for the engineering knowledge (jitter buffering, RTP/FEC
+> handling, control-stream patterns) that informed the Lyte designs.
+
 Deep technical analysis of `moonlight-common-c/`, the shared C streaming core used by Moonlight clients (Qt, Android, iOS/macOS, Chrome). Goal: understand the wire protocol, API surface, and operational quirks well enough to design **better versions**.
 
 **Related:** [`moonlight-macos.md`](moonlight-macos.md) (macOS client)

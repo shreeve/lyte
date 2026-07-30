@@ -1,5 +1,11 @@
 # moonlight-macos — App & Platform Analysis
 
+> **GameStream-era reference (annotated 2026-07-30).** The client
+> lineage this study served was deleted at the H2 exit (2026-07-22);
+> Lyte speaks only Lyte-UDP. Kept for the macOS platform knowledge
+> (VideoToolbox, AppKit shell, display/input tricks) that informed the
+> Lyte client; the protocol-integration halves are archaeology.
+
 Deep technical analysis of `moonlight-macos/`, a native AppKit Moonlight client (fork of moonlight-ios, **not** Mac Catalyst). Goal: understand architecture, moonlight-common integration, and **macOS-specific tricks** well enough to design a **better macOS client**.
 
 **Related:** [`moonlight-common-c.md`](moonlight-common-c.md) (client protocol library)
