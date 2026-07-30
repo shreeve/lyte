@@ -4580,6 +4580,35 @@ its entry at the marker at the end of this block.*
   FREE to explore — the ladder is config, the books are truthful, and
   nothing costs an IDR anymore.
 
+- **2026-07-30 ~00:15 MDT — YouTube-freeze verdict: Mutter direct
+  scanout starves the screencast (playbook rule 4, now user-facing).**
+  Owner report: YouTube in the Lyte client "played but just stopped
+  updating a few seconds in." Books acquitted the protocol: the freeze
+  session shows ZERO loss falls, ZERO NACKs, estimator clean at
+  50 Mbps — the wholly-lost-frame gap is NOT implicated. Conviction:
+  three WAKE IDRs in 35 s (t+209.9/218.3/243.7) while video played +
+  ~1001 ms capture gaps + clock-tick-sized frames in the stage books =
+  Mutter promoted the (fullscreen) video surface to direct scanout,
+  compositing stopped, and the ScreenCast saw a frozen desktop; every
+  mouse wiggle produced one fresh frame, then re-starved. The "few
+  seconds in" delay is the scanout-candidate stabilization window.
+  Mechanism verified current on pup: GNOME Shell 50.1 / libmutter-18;
+  no runtime D-Bus toggle, no gsettings experimental feature; the
+  lever is the paint-debug flag (nick `disable-direct-scanout`,
+  confirmed in libmutter strings) via session env
+  `MUTTER_DEBUG_PAINT=disable-direct-scanout`. FIX (owner-applied, one
+  command on pup, effective next login):
+  `mkdir -p ~/.config/environment.d && printf 'MUTTER_DEBUG_PAINT=disable-direct-scanout\n' > ~/.config/environment.d/90-lyte-screencast.conf`
+  (permission gate correctly stopped the coordinator from writing the
+  owner's session config). Until relogin: exit fullscreen (Esc) —
+  windowed video composites normally and captures at full rate (all of
+  today's windowed ffplay legs prove it). Local cost of the flag:
+  fullscreen content composites instead of scanning out (a few % GPU,
+  ~0 for a remote-host box). NAMED BELT (cheap host rung): capture-
+  starvation detector — session ACTIVE + recent input + capture gap
+  >500 ms ⇒ loud book line naming direct scanout, so this diagnosis is
+  a grep next time, not an hour.
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
