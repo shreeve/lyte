@@ -148,6 +148,12 @@ public final class Pacer {
         var urgentHead = 0
         var normal: [PacerToken] = []
         var normalHead = 0
+        /// Running total of un-popped bytes, kept by push/pop. The two
+        /// hot gates that read it — the per-feedback-report backlog
+        /// input (20–40 Hz) and the per-capture-frame backpressure
+        /// check (60 Hz) — fire fastest exactly when the queue is
+        /// deepest (a rate fall), so the read must not walk the queue.
+        var bytesQueued = 0
 
         var isEmpty: Bool {
             urgentHead >= urgent.count && normalHead >= normal.count
@@ -160,6 +166,7 @@ public final class Pacer {
         }
 
         mutating func push(_ t: PacerToken) {
+            bytesQueued += t.bytes
             if t.urgent { urgent.append(t) } else { normal.append(t) }
         }
 
@@ -168,23 +175,20 @@ public final class Pacer {
                 let t = urgent[urgentHead]
                 urgentHead += 1
                 if urgentHead == urgent.count { urgent = []; urgentHead = 0 }
+                bytesQueued -= t.bytes
                 return t
             }
             if normalHead < normal.count {
                 let t = normal[normalHead]
                 normalHead += 1
                 if normalHead == normal.count { normal = []; normalHead = 0 }
+                bytesQueued -= t.bytes
                 return t
             }
             return nil
         }
 
-        var queuedBytes: Int {
-            var b = 0
-            for i in urgentHead..<urgent.count { b += urgent[i].bytes }
-            for i in normalHead..<normal.count { b += normal[i].bytes }
-            return b
-        }
+        var queuedBytes: Int { bytesQueued }
 
         var queuedCount: Int {
             (urgent.count - urgentHead) + (normal.count - normalHead)
