@@ -4670,6 +4670,28 @@ its entry at the marker at the end of this block.*
   + recent input + capture gap >500 ms ⇒ loud book line naming direct
   scanout, so this diagnosis is a grep next time, not an hour.
 
+- **2026-07-30 ~06:20 MDT — SMOOTHNESS TIER: OWNER-DECIDED, queued as
+  the next session's top slice.** The parked "Fast/Smooth" decision is
+  made — the evidence finally got clean enough to make it fairly:
+  every app-side chop source is dead (AWDL held — helper live after
+  the LWCR fix; delivery hop decoupled, sub-ms at p99; gauges honest)
+  and the residual stutter is AIR-shaped (ambient jitter 40 ms at
+  zero loss on tonight's overlay). Video is the pipeline's only
+  unbuffered leg — audio's adaptive cushion (40–50 ms tonight) is the
+  standing proof of concept. SHAPE (owner requirements baked in):
+  1–2 frame presentation buffer on the CL-12 vsync-scheduled seam;
+  "Fast" (present-ASAP, today's path) stays DEFAULT; "Smooth" opt-in
+  per window on the strip beside Chroma, flippable mid-session (client-
+  local, no reconnect); per-host persisted preference (the Chroma
+  pattern); and a HARD KILL SWITCH forcing Fast + graying the toggle
+  (`defaults write dev.shreeve.lyte disableSmoothTier -bool yes`, plus
+  `--no-smooth` launch arg) for the day the presentation-timing
+  machinery itself misbehaves. ACCEPTANCE: on the overlay, jitter
+  stays (the air is what it is) while felt stutter goes; `in/out`
+  stays matched; Fast-mode latency numbers UNTOUCHED (the tier must
+  cost nothing when off). The session/user/network overlay (2599b4f…
+  683702b arc) is the measuring instrument.
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
