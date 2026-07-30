@@ -121,12 +121,20 @@ extension InputSenderStats {
     /// same reason — a failed install must be distinguishable from a
     /// dead host.
     public func overlayLine(captureActive: Bool) -> String {
-        var line = "input \(eventsSent) sent"
+        // Naming (owner-shaped with two consult passes, 2026-07-30):
+        // "applied on host" not "inject" — the measurement rides host
+        // echoes and INCLUDES the network leg, so the honest claim is
+        // "your action took effect on the host", not an OS-injection
+        // micro-timing; "keys+mouse" not "capture" — kills the
+        // collision with screen capture and with mode ACTIVE.
+        var line = "input sent \(eventsSent)"
         if let p50 = inputToInject.p50, let p99 = inputToInject.p99 {
-            line += String(format: " · inject p50/p99 %.1f/%.1f ms",
-                           Double(p50) / 1000, Double(p99) / 1000)
+            line += String(
+                format: " · applied on host p50/p99 %.1f/%.1f ms",
+                Double(p50) / 1000, Double(p99) / 1000)
         }
-        line += captureActive ? " · capture active" : " · capture INACTIVE"
+        line += captureActive
+            ? " · keys+mouse captured" : " · keys+mouse NOT CAPTURED"
         return line
     }
 }

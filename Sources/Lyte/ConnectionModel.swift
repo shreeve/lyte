@@ -1071,22 +1071,26 @@ final class ConnectionModel {
         let lost = missing > lateFilled ? missing - lateFilled : 0
         let expected = totals.datagrams + lost
         var wire = lost == 0
-            ? "loss 0 of \(Self.compactCount(expected))"
-            : String(format: "loss %d of %@ (%.3f%%)", lost,
+            ? "net   lost 0 of \(Self.compactCount(expected)) pkts"
+            : String(format: "net   lost %d of %@ pkts (%.3f%%)", lost,
                      Self.compactCount(expected),
                      100 * Double(lost) / Double(max(1, expected)))
+        // rtt min + jitter, spelled out — "±" falsely implies a
+        // symmetric spread; the stat is the floor plus upward spread
+        // (p90 − min over the last 30 beacon samples), which is what
+        // "jitter" means to every reader.
         let rtts = core.echoResponder.snapshotClockSamples()
             .suffix(30).map(\.rttMicroseconds).sorted()
         if let minRtt = rtts.first {
             let p90 = rtts[min(rtts.count - 1, (rtts.count * 9) / 10)]
-            wire += String(format: " · rtt %.1f ± %.1f ms",
+            wire += String(format: " · rtt min %.1f ms · jitter %.1f ms",
                            Double(minRtt) / 1000,
                            Double(p90 - minRtt) / 1000)
         }
         if totals.unsealFailures > 0 {
             wire += ", \(totals.unsealFailures) unseal-failed"
         }
-        var mode = "mode \(core.wireMode == .active ? "ACTIVE" : "IDLE")"
+        var mode = "mode  \(core.wireMode == .active ? "ACTIVE" : "IDLE")"
         if core.isFrozen { mode += " — FROZEN" }
         if hostAudioNegotiated {
             switch hostAudioPosture {
@@ -1099,18 +1103,27 @@ final class ConnectionModel {
             mode += clipboardSharing ? " · clipboard on" : " · clipboard off"
         }
         lines.append(mode)
-        lines.append(wire)
+
+        // Unconditional, capture verdict included (CL-16): "input 0
+        // sent · capture INACTIVE" is the line that tells a client
+        // failure from a host one.
+        lines.append(core.input.snapshotStats()
+            .overlayLine(captureActive: lyteInputCapture != nil))
 
         let audio = core.audio.snapshotStats()
         if audio.depacketizer.datagramsIngested > 0 {
             var line = "audio"
+            // Buffer depth in ms, not packets (exact: 5 ms hard-CBR
+            // packets) — "15/40 ms of cushion" needs no decoder ring.
             if let p50 = audio.bufferDepthPackets.p50,
                let p99 = audio.bufferDepthPackets.p99 {
-                line += " depth p50/p99 \(p50)/\(p99) pkts"
+                line += " buffer p50/p99 \(p50 * 5)/\(p99 * 5) ms"
             }
-            line += " · plc \(audio.jitter.plcInvocations)"
+            // Each concealment papered over one missing-audio gap — a
+            // potential tiny audible artifact; the count IS the story.
+            line += " · gaps concealed \(audio.jitter.plcInvocations)"
             if audio.depacketizer.packetsRebuilt > 0 {
-                line += " · fec \(audio.depacketizer.packetsRebuilt)"
+                line += " · repaired \(audio.depacketizer.packetsRebuilt)"
             }
             lines.append(line)
         }
@@ -1122,18 +1135,20 @@ final class ConnectionModel {
         let delivery = videoDeliveryBooks.snapshot(
             nowMicroseconds: DispatchTime.now().uptimeNanoseconds / 1000)
         if let q = core.pipeline.snapshotStats().quality {
-            // rx = frames assembled off the wire; out = frames the
-            // delivery queue handed the renderer — a widening split is
-            // a glass-side stall, not a network one.
-            var video = String(
-                format: "video rx %.0f", q.framesPerSecond)
+            // in = frames fully assembled off the wire (reorder/FEC
+            // healed — "rx" undersold them); out = frames handed to
+            // the renderer. A widening in/out split is a glass-side
+            // stall, not a network one.
+            var video: String
             if let out = delivery.outFps {
-                video += String(format: " · out %.0f fps", out)
+                video = String(format: "video in/out %.0f/%.0f fps",
+                               q.framesPerSecond, out)
             } else {
-                video += " fps"
+                video = String(format: "video in %.0f fps",
+                               q.framesPerSecond)
             }
             video += String(
-                format: " · %.1f Mbps · frame p50/p95 %d/%d B",
+                format: " · rate %.1f Mbps · size p50/p95 %d/%d B",
                 Double(q.bitsPerSecond) / 1e6,
                 q.frameBytesP50, q.frameBytesP95)
             // V-5: what the wire actually carries (SPS-parsed), the
@@ -1150,11 +1165,8 @@ final class ConnectionModel {
             lines.append(video)
         }
 
-        // Unconditional, capture verdict included (CL-16): "input 0
-        // sent · capture INACTIVE" is the line that tells a client
-        // failure from a host one.
-        lines.append(core.input.snapshotStats()
-            .overlayLine(captureActive: lyteInputCapture != nil))
+        // The wire-health footer closes the standing block.
+        lines.append(wire)
 
         let clipboard = core.snapshotCounters()
         let clipboardActivity = clipboard.clipboardSharesSent
