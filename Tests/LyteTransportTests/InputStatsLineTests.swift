@@ -16,12 +16,16 @@ final class InputStatsLineTests: XCTestCase {
         // say zero, and name the capture state — both states.
         let stats = InputSender(clockModel: HostClockModel()) { _, _ in }
             .snapshotStats()
+        // The 2026-07-30 plain-language rename: "applied on host" (the
+        // measurement includes the network leg — "inject" overclaimed),
+        // "keys+mouse" (no collision with screen capture or mode
+        // ACTIVE), name-first counts.
         XCTAssertEqual(
             stats.overlayLine(captureActive: false),
-            "input 0 sent · capture INACTIVE")
+            "input sent 0 · keys+mouse NOT CAPTURED")
         XCTAssertEqual(
             stats.overlayLine(captureActive: true),
-            "input 0 sent · capture active")
+            "input sent 0 · keys+mouse captured")
     }
 
     func testOverlayLineRendersLatencyPercentilesExactly() throws {
@@ -53,6 +57,7 @@ final class InputStatsLineTests: XCTestCase {
 
         XCTAssertEqual(
             sender.snapshotStats().overlayLine(captureActive: true),
-            "input 1 sent · inject p50/p99 101.5/101.5 ms · capture active")
+            "input sent 1 · applied on host p50/p99 101.5/101.5 ms"
+                + " · keys+mouse captured")
     }
 }
