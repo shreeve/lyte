@@ -1236,6 +1236,10 @@ final class SessionWire {
             print("session: CLOSED (\(reason))")
         case .inputReceived(let event, let rxMicros):
             injectInput(event, receivedAtMicroseconds: rxMicros)
+        case .videoBacklogPurged(let datagrams, let bytes, let staleWireMs):
+            print("rate: fall purge — \(datagrams) queued video datagrams "
+                + "(\(bytes) B, ~\(staleWireMs) ms stale at the new rate) "
+                + "dropped, fresh IDR armed")
         case .rateChanged(let bps, let reason):
             // HS-16: downshifts and pacing policies always print (the
             // live gate's evidence); the ≤10%/s evidence climb prints

@@ -2025,7 +2025,9 @@ func run() throws {
         \(wire.estimatorStats.upshifts) upshifts \
         (\(wire.estimatorStats.upshiftsDamped) probe-damped, \
         \(wire.estimatorStats.upshiftsCadenceHeld) cadence-held), \
-        \(s.rateChanges) pacer moves; frameByteCeiling@\(opts.fps)fps \
+        \(s.rateChanges) pacer moves, \
+        \(s.fallPurges) fall purges (\(s.fallPurgedVideoBytes) B dropped \
+        pre-stale); frameByteCeiling@\(opts.fps)fps \
         \(wire.frameByteCeiling(fps: Int(opts.fps))) B
         encoder-vbv: \(wire.vbvDirectivesIssued) directives, \
         \(sink.encoderReconfigures) applied, \

@@ -333,6 +333,26 @@ public final class Pacer {
         return now + UInt64((deficit / bytesPerNS).rounded(.up))
     }
 
+    /// The fall-repricing purge's pacer half: remove every queued token
+    /// of `priorityClass`, returned so the caller can settle its own
+    /// books (datagram store, per-frame censuses). The bucket balance
+    /// is untouched — dropped bytes were never emitted, so nothing is
+    /// owed or refunded; other classes keep their place.
+    public func dropClass(_ priorityClass: PacerClass) -> [PacerToken] {
+        let q = queues[priorityClass.rawValue]
+        guard !q.isEmpty else { return [] }
+        var dropped: [PacerToken] = []
+        dropped.reserveCapacity(q.queuedCount)
+        if q.urgentHead < q.urgent.count {
+            dropped.append(contentsOf: q.urgent[q.urgentHead...])
+        }
+        if q.normalHead < q.normal.count {
+            dropped.append(contentsOf: q.normal[q.normalHead...])
+        }
+        queues[priorityClass.rawValue] = ClassQueue()
+        return dropped
+    }
+
     private func highestHead() -> PacerToken? {
         for q in queues where !q.isEmpty { return q.head }
         return nil

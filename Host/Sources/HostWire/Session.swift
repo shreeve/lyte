@@ -173,6 +173,17 @@ public struct SessionConfig: Sendable {
     /// "≥4 s rings") and byte cap, passed through to VideoChannel.
     public var repairRetentionNS: UInt64
     public var repairStoreByteCap: Int
+    /// The fall-repricing purge's trigger: after a genuine fall
+    /// (overuse / loss / post-FEC loss — never plain evidence decay),
+    /// video already queued in the pacer is repriced at the NEW rate;
+    /// if serializing it would occupy more wire time than this, it is
+    /// stale glass — purged, with a fresh IDR armed through the
+    /// coalesced latch. 50 ms is 2× the resiliency drain bound
+    /// (min(2×frameInterval, 25 ms)): backlog the system's own
+    /// backpressure gate already calls too deep, doubled so a
+    /// borderline fall never purges what one quantum would have
+    /// drained anyway.
+    public var fallPurgeBacklogThresholdNS: UInt64
 
     public init(
         crypto: SessionCryptoMode,
@@ -194,7 +205,8 @@ public struct SessionConfig: Sendable {
         openingRepairMaxAttempts: Int = 4,
         openingRepairMaxBytes: Int = 2 << 20,
         repairRetentionNS: UInt64 = 4_000_000_000,
-        repairStoreByteCap: Int = 16 << 20
+        repairStoreByteCap: Int = 16 << 20,
+        fallPurgeBacklogThresholdNS: UInt64 = 50_000_000
     ) {
         self.crypto = crypto
         self.rateBitsPerSecond = rateBitsPerSecond
@@ -216,6 +228,7 @@ public struct SessionConfig: Sendable {
         self.openingRepairMaxBytes = openingRepairMaxBytes
         self.repairRetentionNS = repairRetentionNS
         self.repairStoreByteCap = repairStoreByteCap
+        self.fallPurgeBacklogThresholdNS = fallPurgeBacklogThresholdNS
     }
 }
 
@@ -238,6 +251,8 @@ public struct FreshKeyframeDemand: OptionSet, Sendable {
     public static let staleNackArm = FreshKeyframeDemand(rawValue: 1 << 4)
     /// HS-25: an unprotectable frame was dropped — re-anchor references.
     public static let unprotectableDrop = FreshKeyframeDemand(rawValue: 1 << 5)
+    /// A rate fall purged queued video mid-flight — re-anchor.
+    public static let fallPurge = FreshKeyframeDemand(rawValue: 1 << 6)
 
     /// The books' short names, in bit order.
     public var names: [String] {
@@ -248,6 +263,7 @@ public struct FreshKeyframeDemand: OptionSet, Sendable {
         if contains(.machineRecovery) { out.append("recovery") }
         if contains(.staleNackArm) { out.append("stale-nack") }
         if contains(.unprotectableDrop) { out.append("unprotectable") }
+        if contains(.fallPurge) { out.append("fall-purge") }
         return out
     }
 }
@@ -334,6 +350,12 @@ public enum SessionEvent: Equatable, Sendable {
     /// a machine-demanded IdrPacing policy). The pacer is already
     /// re-capped when this surfaces; the shell logs it.
     case rateChanged(bitsPerSecond: Int, reason: RateChangeReason)
+    /// The fall-repricing purge fired: a genuine fall left queued
+    /// video that would serialize past the backlog threshold at the
+    /// new rate — dropped from the pacer, fresh IDR armed through the
+    /// coalesced latch. `staleWireMs` is the wire time the purged
+    /// bytes would have occupied at the new rate.
+    case videoBacklogPurged(datagrams: Int, bytes: Int, staleWireMs: Int)
     /// HS-17: a client NACK passed the retransmit gate — `shards`
     /// repair datagrams are enqueued (fresh seqs, videoTail class).
     case repairEnqueued(frame: FrameNumber, shards: Int)
@@ -547,6 +569,11 @@ public struct SessionCounters: Equatable, Sendable {
     public var feedbackReportsMalformed = 0
     /// Estimator-driven pacer rate moves (both directions).
     public var rateChanges = 0
+    /// Fall-repricing purges: falls whose queued video was repriced
+    /// past the backlog threshold and dropped (IDR armed each time).
+    public var fallPurges = 0
+    /// Video bytes those purges dropped before they became stale wire.
+    public var fallPurgedVideoBytes = 0
     /// Message 1s the HandshakeGate refused (HS-9's flood evidence).
     public var handshakesThrottled = 0
     /// RetryChallenges (0x13) the host minted under flood (HS-21) — the
@@ -718,6 +745,10 @@ public final class Session {
     /// IDR books (the estimator-ramp hunt) can name which one minted a
     /// keyframe. Merged into the same poll; behavior unchanged.
     private var staleNackKeyframePending = false
+    /// The fall-repricing purge's arm: queued video was dropped
+    /// mid-flight at a fall, so the next encoder poll owes a fresh
+    /// IDR (merged into `takeFreshKeyframeRequest`).
+    private var fallPurgeKeyframePending = false
     /// HS-32: EWMA (α = 1/8) of feedback-report inter-arrival, each
     /// sample clamped to the wire-pinned 25–50 ms cadence range; nil
     /// before the second parsed report (the derived budget then uses
@@ -1301,10 +1332,12 @@ public final class Session {
         if unprotectableKeyframePending {
             demand.insert(.unprotectableDrop)
         }
+        if fallPurgeKeyframePending { demand.insert(.fallPurge) }
         clientKeyframePending = false
         machineIdrPacing = nil
         staleNackKeyframePending = false
         unprotectableKeyframePending = false
+        fallPurgeKeyframePending = false
         return demand
     }
 
@@ -2187,6 +2220,30 @@ public final class Session {
             case .evidence, nil: reason = .evidence
             }
             events.append(.rateChanged(bitsPerSecond: rate, reason: reason))
+            // The fall-repricing purge: a genuine fall (never plain
+            // evidence decay) reprices bytes already admitted at the
+            // pre-fall rate. Backlog that would now serialize past the
+            // threshold is stale wire — video the glass renders late
+            // or never (80–895 ms measured before this existed). Drop
+            // it and re-anchor through the same coalesced latch every
+            // other mid-flight loss uses; the IDR supersedes whatever
+            // the dropped shards would have completed.
+            if reason != .evidence {
+                let backlog = channel.queuedBytes(.freshVideo)
+                    + channel.queuedBytes(.videoTail)
+                let staleWireNS = UInt64(
+                    Double(backlog) * 8e9 / Double(rate))
+                if staleWireNS > config.fallPurgeBacklogThresholdNS {
+                    let purged = channel.purgeQueuedVideo()
+                    fallPurgeKeyframePending = true
+                    counters.fallPurges += 1
+                    counters.fallPurgedVideoBytes += purged.bytes
+                    events.append(.videoBacklogPurged(
+                        datagrams: purged.datagrams,
+                        bytes: purged.bytes,
+                        staleWireMs: Int(staleWireNS / 1_000_000)))
+                }
+            }
         }
         if let regime = verdict.fecRegime {
             // The estimator's rung-3 step verdict lands on the
