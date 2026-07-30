@@ -4324,6 +4324,87 @@ its entry at the marker at the end of this block.*
   frame when loss hits a whole train) — the repair serialization term
   prices it, but a per-ask shard cap is cheap if it ever matters.
 
+- **HS-33a validation spike — the FFmpeg wall falls on real hardware:
+  a 6-line-patched static hevc_nvenc moves rate AND VBV with ZERO
+  reconfigure IDRs, and every no-reset frame decodes clean on the
+  production hardware path. VERDICT: GO for the full A2 slice.**
+  (NO repo changes — evidence + deliverables live in pup `~/hs33a/`;
+  this entry is the only repo touch, uncommitted by design.)
+  THE PATCH (pup `~/hs33a/hs33a-nvenc-no-reset-rate.patch`, applied to
+  the ffmpeg n8.0.1 release tarball — the exact upstream tag behind
+  pup's distro 7:8.0.1-3ubuntu2): in `reconfig_encoder`'s
+  `if (reconfig_bitrate)` block, gate the unconditional
+  `resetEncoder=1; forceIDR=1` on env `LYTE_NVENC_NO_RESET_RATE=1`
+  (→ both set 0, logged loud) and never on a DAR change — one binary
+  A/Bs both behaviors; default path byte-identical to upstream.
+  THE BUILD (`~/hs33a/vendor-ffmpeg.sh`, the future
+  Host/Scripts/vendor-ffmpeg.sh SHAPE; full configure line + per-flag
+  rationale inside; `build.log`): nv-codec-headers pinned n13.0.19.1
+  (SDK 13.0, min driver 570 — pup runs 595.84; n13.1.x wants 610+,
+  too new; ffmpeg 8.0.1 configure accepts >= 12.1.14.0);
+  `--disable-everything --disable-autodetect` + explicit
+  ffnvcodec/cuda/nvenc + `--enable-encoder=hevc_nvenc` + `--enable-pic`,
+  static only, no x86asm needed → libavcodec.a 4.0 MB + libavutil.a
+  5.2 MB in ~1 min; config_components proves EXACTLY one encoder, zero
+  decoders. Harness: the Host tree COPIED to `~/hs33a/src/` (standing
+  `~/src/lyte-host` untouched), `lyte-encode-check` grew a
+  `--move F:avg:max:vbv` flag driving the PRODUCTION
+  `lyte_hevc_enc_set_rate` mid-run (`hs33a_harness.py` holds the
+  diff); ldd shows NO shared libav — the patched static lib is the
+  one under test. All offline file-mode: no portal, no ports, no
+  sessions.
+  THE A/B TABLE (1080p60 bgr0 CBR-50 open, vbv 833333 = rate/fps,
+  moves every 120 frames, 720 frames/leg; `runs/*.{log,sizes}`):
+  | shape (moves) | control IDRs | no-reset IDRs | decode | rate/vbv applied |
+  | R rate-only 50→38→45→25→50, vbv held | 5 (opening + 1/move) | **1 (opening only)** | 720/720 hw, 0 err | segment kbps tracks ladder, ≤1% vs control |
+  | V vbv-only @50M: 833333→416666→208333→833333 | 4 (opening + 1/move) | **1** | 720/720 hw, 0 err | max frame clamps to vbv/8 exactly (52 KB / 24 KB), 44→24→11.3→44 Mbps |
+  | RV rate+vbv together (HS-27 ladder shape) | 5 | **1** | 720/720 hw, 0 err | both track as in R+V |
+  `nvEncReconfigureEncoder` ACCEPTED `resetEncoder=0/forceIDR=0` on
+  every move of every shape — zero NVENC errors anywhere (a refusal
+  was the refutation condition; none occurred).
+  THE VBV ANSWER, EXPLICIT: (i) **APPLIES** — `rc_buffer_size` changes
+  take effect under `resetEncoder=0`, alone and with rate moves,
+  matching the reset path's behavior within ~1%; not ignored, no
+  error, no corruption. (Control legs also prove today's cost: even a
+  vbv-ONLY move mints an IDR through the unpatched path.)
+  REFERENCE CONTINUITY (the consult's core concern): all six
+  bitstreams decode 720/720 under ffmpeg strict
+  `-err_detect +crccheck+bitstream+buffer+explode -xerror` (0 errors)
+  AND through `lyte-cli decode-probe --require-hardware` (VideoToolbox
+  HARDWARE asserted, failed 0 / withheld 0) — the no-reset streams are
+  1 I + 719 consecutive P across 3–4 in-place moves. Belt: per-frame
+  PSNR vs the raw input — no-reset FLOOR ≥ control floor in every
+  shape (38.06/36.75/38.04 vs 38.04/35.87/37.58 dB, `runs/*.psnr`) —
+  no reference divergence; no-reset is slightly BETTER (no mid-stream
+  IDR re-spend at low rate).
+  SPIKE SCOPE, HONESTLY: clean-channel offline synthetic (testsrc2
+  undershoots the cap at the qp floor — ~43 Mbps at "50"), one recipe
+  (sessionDefault p4/ull/qres, bgr0/420, CBR), no loss, no AQ, no
+  Rext/444, no resolution moves. Per the addendum's A2 correction,
+  DYN_BITRATE_CHANGE + this spike still do not prove every field
+  combo.
+  RE-MEASURE LIST FOR THE FULL A2 SLICE (reconfigure-adjacent truths,
+  per the consult — not assumed): (i) no-reset moves UNDER LOSS —
+  reference continuity when repair/concealment interacts with a
+  mid-move P chain; (ii) client-side implicit reliance on the forced
+  IDR as a sync boundary (NackPolicy supersede logic, estimator books,
+  ratchet arm — a rate move no longer mints the IDR those paths may
+  lean on); (iii) the V-1/HS-24 static-recipe rows re-ROWED against
+  the vendored lib (444/Rext open, ratchet convergence, VUI
+  fingerprint) — expected to ride, must be measured; (iv) field combos
+  beyond the spike: spatial/temporal AQ on, fullres multipass, Rext
+  444, and the DAR guard (any resolution move must keep today's reset
+  path); (v) carry-costs: tarball security tracking + the dual-libav
+  symbol risk when lyte-host links the static avcodec beside distro
+  shared libs pulled by other leaves; (vi) HS-27's rung ladder retuned
+  once moves are free (rungs become tunable, not load-bearing) — plus
+  a quality-probe row at the vendored build.
+  RAILS: owner's 41151 loop untouched and alive throughout (encode
+  work never left file-mode); secrets sha-identical before AND after
+  (dadf9a66…37cf / 72860390…cfed / 8dc1f88a…55fd); FFmpeg objects
+  cleaned + the 6 GB raw input deleted — `~/hs33a` closes at 548 MB
+  (source+patch+libs+bitstreams+books+logs kept).
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
