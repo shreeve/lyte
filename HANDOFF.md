@@ -4204,6 +4204,126 @@ its entry at the marker at the end of this block.*
   (iii) ffplay supply degrades over long runs (2,662 repeated
   frames by leg AFTER-1) — fresh ffplay per leg stays the rule.
 
+- **HS-32 — the dead repair lane revives: the freeze budget derives
+  from the cadence, refusals become wire words, and the 250 ms blind
+  wait dies** (`218c5b7` Wire / `a7fcb5f` Host / `2d805bf` root; not
+  pushed). The squeeze review §2's find, built to the consult's
+  corrected design (repair-when-plausible, fail-explicitly-otherwise —
+  NOT "die faster").
+  ⚠️ WIRE WAS TOUCHED — a frozen-contract APPEND, the P-1 shape: CTRL
+  **0x23 RepairRefusal** (`type ‖ frame u32 LE ‖ reason u8`, fixed
+  6 B; reasons stale-budget 0x01 / superseded 0x02 / unknown-frame
+  0x03), host→client, sealed, ARQ-exempt fire-and-forget like 0x10 —
+  a LOST refusal degrades to the client's own deadline expiry, pinned
+  as contract. NEW frozen file `repair-refusal-v1.json` (10 vectors:
+  whole reason space, frame boundaries, every decode-reachable
+  reject), hand-computed anchors in RepairRefusalCodecTests. NO
+  existing vector file moved — verified by suite AND git status.
+  CAPABILITY GATING — decided NO KEY, evidence pinned: unknown CTRL
+  ids are skipped silently on BOTH carriage modes today (bare
+  ARQ-exempt payloads fall through BeaconEchoResponder's type peek
+  unconsumed — LyteUdpSession.handleDatagram's exempt tail; ARQ
+  unknowns are counted-and-dropped at dispatchReliable's default —
+  "hostile bytes are counted, never fatal"), so a v1 client ignoring
+  0x23 lands exactly on the lost-refusal behavior. The append is free.
+  HOST (the budget was the disease): `repairFreezeBudgetNS = 33 ms`
+  constant vs the 40 ms feedback cadence meant asks were dead on
+  arrival BY CONSTRUCTION (twin-leg books: 82 asks, 1682 shards, 0
+  repaired, 28 expired→IDR). Now **budget = 1.5 × observed report
+  inter-arrival EWMA + 15 ms jitter allowance** (samples clamped to
+  the wire-pinned 25–50 ms cadence range so out-of-cadence NACK
+  flushes/lost reports never masquerade as the cadence; 50 ms
+  documented worst case before evidence → 90 ms pre-evidence, 75 ms
+  at the reference 40 ms cadence — far inside the client's 250 ms
+  assembler horizon, so "honor" still promises a repair the glass can
+  use). `repairFreezeBudgetOverrideNS` replaces the constant (nil =
+  derived). Actionable stale verdicts (budgetExceeded → stale-budget,
+  olderThanIdr → superseded, unavailable → unknown-frame) each send
+  one 0x23; alreadyRepaired stays SILENT (repairs may be in flight —
+  a refusal would double-heal into an IDR) and FROZEN/closed stays
+  silent (path dark; the fallback is the honest answer). OPENING-IDR
+  EXEMPTION (consult's bounded shape): while no feedback report has
+  yet shown the opening IDR's group delivered clean (missing 0,
+  received ≥ its shard count — the conservative host-visible proxy
+  for "anything on glass"; it stays armed under early loss, which the
+  bounds make safe), an ask naming the LAST IDR is honored regardless
+  of budget and even without SRTT — bounded by attempts (4) and bytes
+  (2 MiB), plus the client's own once-ever ≤250 ms ask discipline
+  from the other end. Books: refusals sent, opening-exempt honors,
+  in-force budget on the repair stats line.
+  CLIENT: 0x23 → NackPolicy.handleRefusal — a live ask escalates
+  IMMEDIATELY through the existing rate-windowed IdrRequester (book
+  sealed; in-flight answers land superseded), unknown/duplicate
+  refusals ignored loud on their own counter, the 250 ms deadline
+  kept as the lost-refusal fallback. Books refusals rx/acted/ignored
+  in wire-view's nack line; refusal-acted deliberately does NOT count
+  in expired→IDR (the residual composition stays honest).
+  GATES: Wire 475 → **486/486 Mac AND pup** (codec + vector anchors
+  byte-exact both platforms), Host 211 → **219/219 Mac AND pup**
+  (derivation math; the on-cadence ask that now FLIES at 50 ms where
+  33 ms refused it; every refusal reason decoded off the wire; silent
+  verdicts stay silent; black-glass repair regardless of age + both
+  bounds + glass-evidence kill), root 197 → **198/198** (leg H: a
+  sealed refusal through the REAL receive path → immediate IDR, dupes
+  and unknowns counted).
+  LIVE PROOF (pup, hosts 41231–41243 `--no-advertise --seconds 140`,
+  fresh windowed Wayland testsrc2 per leg, wire-view `--host-key`
+  throwaway identity — the Keychain path was dark-wake-blocked
+  (-25320) with the owner away; the debug-harness posture is exactly
+  for this):
+  - BEFORE (HEAD host from git archive, 4% video-scoped netem 30 s
+    mid-leg): host **7 asks → 0 honored, 7 stale, ALL SILENT** (srtt
+    17.4 ms vs the 33 ms constant); client 0 repaired, **2
+    expired→IDR** (each a full 250 ms freeze), host idr-books 10
+    (client-request 2 + stale-nack 2). Logs
+    /tmp/hs32-before-{host,client}.log.
+  - AFTER (HS-32 both ends): the headline leg (41243, 4% loss
+    t+20…t+55): **1 ask honored → 3 repair datagrams → the frame
+    HEALED BY REPAIR client-side** (repairs rx 1, frames repaired 1,
+    no IDR for it) AND **1 genuinely-superseded ask → refusal →
+    acted→IDR immediately**; **expired→IDR 2 → 0** — no 250 ms burn
+    anywhere; derived budget 74 ms; 61 fps at the glass through the
+    window. Supporting legs: 41233 (netem) 3/3 honored → 10 repair
+    datagrams, 2 repairs rx / 1 repaired, budget 69 ms, ZERO stale;
+    41237 (5%, IDR-churny converged floor) 10 asks all honestly
+    superseded → 10 refusals, **4 acted→IDR, 6 duplicates ignored
+    loud**, 0 expired→IDR. Residual IDR composition after: refusal
+    escalations (immediate, correct — the newer IDR was already the
+    heal) + rate-move IDRs; the deadline path never fired. Logs
+    /tmp/hs32-after{,2,3,4,5,6}-*.log (Mac) + pup /tmp/hs32-*.log.
+  OPS HONESTY: (i) pup-side netem (prio+u32 on wlp0s20f3) WEDGED the
+  Wi-Fi driver's UDP queues bidirectionally on its second install —
+  leg 41233 died at netem-ON (both liveness clocks closed it; ssh TCP
+  flowed throughout); impairment moved to Mac-side dummynet (pfctl
+  anchor com.apple/lyte-hs32 + dnctl plr, pf re-disabled by token
+  after — verified Disabled, dnctl empty) — prefer dummynet for
+  future lossy legs. (ii) A combined pkill+start ssh SELF-MATCHES
+  (`ffplay -f lavfi` sits literally in the shell's own cmdline —
+  bracketing can't save it); kill and start in SEPARATE ssh calls, or
+  video silently never starts and the leg reads "layer idle" (legs
+  41235/41241 burned on this). (iii) ~130–150 unseal-failed appeared
+  only inside dummynet windows (pf-duplicated datagrams rejected by
+  the replay window — harmless, absent on netem legs). (iv) Stale
+  ffplay strikes again: a reused supply degraded to 13 fps/1 KB
+  frames (k=1 — nothing can go past parity); fresh ffplay per leg
+  remains the law. RAILS: owner's 41151 loop untouched (its own
+  respawns now run the HS-32 build — the HS-26/HS-31 precedent);
+  secrets byte-identical at close INCLUDING portal_token
+  (72860390…cfed / 8dc1f88a…55fd / dadf9a66…37cf); wlp0s20f3
+  noqueue verified; no test hosts, no ffplay, dnctl flushed, pf
+  Disabled; lyte-cli rebuilt+signed at HEAD.
+  NAMED FOR THE NEXT RUNG: (i) repair-lane DSCP (the HS-17/CL-12
+  deferred row) — repairs still ride 0xA0 with video, so a video-
+  scoped impairment eats the repairs too; (ii) the opening exemption
+  never fired live (opening IDRs arrived clean every leg) — pinned by
+  the unit gate only; a deliberate opening-loss leg would give it
+  live books; (iii) the estimator's converged-floor IDR churn
+  (vbv-rung/vbv-tighten at low rates) is what made every 41237 ask
+  superseded — the non-IDR-reconfigure slice (§3) will collapse that
+  class; (iv) client asks can be LARGE (17 shards of a 19-shard
+  frame when loss hits a whole train) — the repair serialization term
+  prices it, but a per-ask shard cap is cheap if it ever matters.
+
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
 
