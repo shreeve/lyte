@@ -17,11 +17,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Client performance — per-datagram fat on the receive thread
 
-14. **ARQ PTO timer reschedule skip** [S] — `ReliableCtrlEndpoint.swift:347`
-    re-arms the DispatchSourceTimer on every send and every ACK (hundreds/s
-    during drags), nearly always to an equivalent deadline. Track last-armed
-    deadline; skip when unchanged within 1 ms.
-
 15. **Histogram single-sort percentiles** [S] — `InputSender.swift:81`
     `percentile` re-sorts the whole ring per call; overlay lines call p50 then
     p99 (two sorts of up to 65,536 elements). One sort serving all requested
@@ -152,6 +147,11 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
     shards skip the TLV decode + lock cold while both books are empty
     (lossless: a pre-send frame's stamp is always < the new seq). New skip
     pin + re-armed honesty pin; root suite 213/213.
+
+14. **ARQ PTO timer reschedule skip** [S] — PR #14, merged 2026-07-30.
+    `armedDeadlineMicros` bookkeeping with a ±1 ms skip band; the fired
+    path clears it under the lock before re-arming (no sleep-forever), as
+    does stop(). Root suite 213/213.
 
 ## Closed
 
