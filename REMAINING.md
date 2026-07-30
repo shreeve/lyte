@@ -19,13 +19,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Worth doing — bigger or design-flavored
 
-19. **wire-view dialect contract** [S] — wire-view still speaks the pre-rename
-    stats dialect (`wire:`, `render:`, caps grammar) while the app overlay moved
-    to session/user/network/audio/video. quality-probe.sh PARSES wire-view's
-    lines, so either converge both in one commit or declare wire-view's output
-    the machine-parse contract and document that at both sites. Doing the
-    latter (S) unless a rename day arrives.
-
 ### Ruled out this sweep (recorded so they stay ruled)
 
 - **Deep-floor shedding below ~1.5 Mbps** — real but worst payoff-per-effort on
@@ -166,6 +159,14 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
     flushes it); cancelled-source check makes a racing stop() lock-free.
     Root suite 218/218 (+4 cadence pins incl. the no-sleep-past-urgent
     sweep); jitter/accelerate harnesses (urgent/PLC gates) unchanged.
+
+19. **wire-view dialect contract** [S] — PR #19, merged 2026-07-30. The [S]
+    ruling: wire-view's stats output declared the machine-parse contract
+    rather than converged with the overlay's renamed dialect. Matching
+    annotations on WireViewStatsPrinter and quality-probe.sh's parse_wire,
+    each naming the other, the load-bearing line shapes, and the law that
+    either side changes only with the other in the same commit. Comment-only;
+    `bash -n` clean, client package builds clean.
 
 ## Closed
 
