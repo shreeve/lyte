@@ -461,6 +461,20 @@ struct WireView: AsyncParsableCommand {
 /// return-path stats plus the CL-8 session line (mode, pill, idle
 /// frames, agreed capabilities) — one tick per second with new
 /// arrivals, full summary at exit.
+///
+/// MACHINE-PARSE CONTRACT (item 19, ruled 2026-07-30): this printer
+/// deliberately keeps the pre-rename stats dialect (`wire:`,
+/// `render:`, the `…` per-second tick prefix) while the app overlay
+/// moved to session/user/network/audio/video — because
+/// Host/Scripts/quality-probe.sh's parse_wire GREPS these lines.
+/// The load-bearing shapes are:
+///   `… ` (tick prefix — cadence comes from tick-to-tick deltas),
+///   `wire: <N> dg, … <N> missing` and
+///   `render: <N> decoded, <N> skipped`.
+/// Rename a field, reorder these clauses, or change the tick prefix
+/// ONLY together with parse_wire in the same commit — the probe's
+/// greps rot silently otherwise (the estimator `delivery` grep did
+/// exactly that once).
 final class WireViewStatsPrinter: Sendable {
     private let session: LyteUdpSession
     private let rendererState: @Sendable () -> String
