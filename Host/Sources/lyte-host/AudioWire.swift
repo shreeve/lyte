@@ -177,6 +177,9 @@ final class AudioWire: @unchecked Sendable {
     func start(seconds: Double) {
         guard capture != nil else { return }
         let thread = Thread { [self] in
+            // The 5 ms Opus cadence (± 2 ms bound) owns this thread —
+            // the tightest deadline in the host, hence the top rung.
+            elevateCurrentThread("audio-capture", rtPriority: 12)
             var err = [CChar](repeating: 0, count: 256)
             let rc = lyte_pw_audio_run(self.capture, seconds,
                                        &err, err.count)
