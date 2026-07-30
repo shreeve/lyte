@@ -1,3 +1,4 @@
+import ServiceManagement
 import SwiftUI
 
 /// The agent (A0): Lyte's quiet menu-bar presence — the same binary wearing
@@ -10,6 +11,10 @@ struct AgentMenu: View {
 
     var body: some View {
         Text(agent.statusLine)
+
+        if let hint = agent.helperHint {
+            Button(hint) { SMAppService.openSystemSettingsLoginItems() }
+        }
 
         Button("New Connection…") { openWindow(id: "connection") }
 
@@ -40,8 +45,27 @@ final class AgentState {
     var hostAvailable: Bool { false }
     var hostEnabled = false
 
-    func streamBegan() { activeStreams += 1 }
-    func streamEnded() { activeStreams = max(0, activeStreams - 1) }
+    /// A user-facing nudge when the privileged helper needs its one-time
+    /// System Settings approval (nil once enabled). Shown by the agent
+    /// menu; set on the first stream of a run.
+    private(set) var helperHint: String?
+
+    func streamBegan() {
+        activeStreams += 1
+        // The AWDL hold rides the stream lifecycle: engage on the first
+        // stream, release on the last (HelperClient/lyte-helperd — the
+        // radio's channel-scan stalls are the choppiness signature:
+        // 100–220 ms delay bursts, zero loss. Both ends existed since
+        // M6; THIS call is what makes them meet).
+        if activeStreams == 1 {
+            helperHint = HelperClient.shared.streamBegan()
+            if let helperHint { NSLog("lyte helper: \(helperHint)") }
+        }
+    }
+    func streamEnded() {
+        activeStreams = max(0, activeStreams - 1)
+        if activeStreams == 0 { HelperClient.shared.streamEnded() }
+    }
 
     var statusLine: String {
         switch activeStreams {
