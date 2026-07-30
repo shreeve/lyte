@@ -82,6 +82,20 @@ Host/Scripts/setup-host.sh
    `/etc/udev/rules.d/60-lyte-uinput.rules`. Needs root; the script
    prints the exact `sudo tee` command rather than escalating itself.
 
+3. **(Optional) realtime scheduling for the latency threads.** The
+   pacing drain and the 5 ms audio thread ask for SCHED_RR at startup
+   and degrade gracefully without it (`sched:` lines say which rung
+   they got). To grant it, add an rtprio rlimit for the seat user and
+   re-login:
+
+   ```
+   echo "$USER - rtprio 20" | sudo tee /etc/security/limits.d/90-lyte-rtprio.conf
+   ```
+
+   Unprivileged runs are fully supported — this only buys scheduling
+   tail behavior when the box is loaded (compilers, browsers) while
+   hosting.
+
 ## Build and run on the Linux host (`pup`)
 
 Source lives in this repo; sync it to the host and build there. This package

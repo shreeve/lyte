@@ -72,6 +72,35 @@ func monotonicMicros() -> UInt64 {
     monotonicNS() / 1_000
 }
 
+/// Best-effort realtime elevation for a latency-owning thread. The 1 ms
+/// pacing drain and the 5 ms audio cadence rode default CFS against
+/// NVENC submission and the compositor; SCHED_RR buys their tail
+/// behavior on a LOADED box (the idle reference pair never showed the
+/// cost — `maxQueueDelayNS` books are the evidence surface). Degrades
+/// gracefully in order: SCHED_RR → per-thread nice −10 (Linux tasks
+/// carry their own nice) → accept and say so once. Unprivileged runs
+/// need an rtprio rlimit (see Host/README) — the host must run fine
+/// without one.
+func elevateCurrentThread(_ label: String, rtPriority: Int32) {
+    #if os(Linux)
+    var param = sched_param()
+    param.sched_priority = rtPriority
+    if pthread_setschedparam(pthread_self(), Int32(SCHED_RR), &param) == 0 {
+        print("sched: \(label) thread SCHED_RR \(rtPriority)")
+        return
+    }
+    // On Linux, who == 0 with PRIO_PROCESS is the calling task —
+    // per-thread nice.
+    if setpriority(__priority_which_t(PRIO_PROCESS.rawValue), 0, -10) == 0 {
+        print("sched: \(label) thread nice -10 (no rtprio rlimit — "
+            + "SCHED_RR refused; see Host/README to grant it)")
+        return
+    }
+    print("sched: \(label) thread NOT elevated (unprivileged, no "
+        + "RLIMIT_NICE) — running at default CFS priority")
+    #endif
+}
+
 final class SessionWire {
     private let netio: OpaquePointer
     private var session: Session!
@@ -341,7 +370,12 @@ final class SessionWire {
         // compiler, exactly like the audio thread's Unmanaged
         // trampoline does implicitly.
         nonisolated(unsafe) let shared = self
-        let thread = Thread { shared.drainLoop() }
+        let thread = Thread {
+            // The drain owns 1 ms-quantum pacing precision via usleep;
+            // audio (12) outranks it — its cadence bound is tighter.
+            elevateCurrentThread("wire-drain", rtPriority: 10)
+            shared.drainLoop()
+        }
         thread.name = "lyte-wire-drain"
         thread.start()
 
