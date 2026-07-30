@@ -64,9 +64,12 @@ The client alone, however good, is capped by what Sunshine ships. Concretely:
    actually buys is the feature channel (points 1 and 3) and roadmap
    ownership: chroma fidelity becomes a capability negotiation on our
    schedule rather than a wait on someone's tag — the accelerant, not the
-   reason. (Protocol note: the wire offers exactly two chroma modes —
-   `chromaSamplingType` 0 = 4:2:0, 1 = 4:4:4; there is no 4:2:2 — and it is
-   fixed at ANNOUNCE, so switching means a reconnect, not a midstream
+   reason. (Protocol note, updated 2026-07-30: the wire's capability list
+   carries two chroma modes — `CapabilityChroma` yuv420 = 1, yuv444 = 2,
+   both served live since H4; a 4:2:2 id is addable as a contract-safe
+   append but stays unminted while the reference hardware (Ada NVENC) has
+   no 4:2:2 encode — the UI's "Better" tier is dormant. Chroma is fixed at
+   session start, so switching means a clean reconnect, not a midstream
    change.)
 3. **Every future desktop feature** (file channels, printing, cursor
    metadata, display control, mic forwarding) becomes a message type on a
@@ -128,7 +131,7 @@ convenience. Hit that and there's a clear reason to switch.
 | Language | **Swift, both ends** | Client proven pure-Swift + two vendored C leaf libs (enet, nanors). Host follows the same rule: Swift core, C only at hardware/OS leaves (VAAPI/NVENC/PipeWire bindings). Swift is official on Linux and Windows. |
 | License | **GPLv3, whole repo** | Deliberate (D5): full freedom to study GPL reference code. Relicensing later remains legally ours to decide (single copyright holder) — but GPLv3 is the working assumption, not a placeholder. |
 | Video codecs | **HEVC primary, H.264 fallback; AV1 as a negotiated hook, later** | No MJPEG, no codec zoo. Modern hardware HEVC compresses static desktops to near-nothing and handles motion instantly — it beats VNC at VNC's own game once tuned (4:4:4 + rate control), and does full-motion video for free. |
-| Chroma | **4:4:4 as a first-class negotiated capability** | The desktop-text differentiator. Client decode path already targets it (Local·Work policy, D2). Connect-time only in the Moonlight lineage (fixed at ANNOUNCE; a chroma change = reconnect) — policy must treat it as a session parameter, not a live dial. Full color fidelity also needs the CSC upgrade: the client still requests Rec.601 limited (`encoderCscMode 0`), the likely cause of the "washed out" look — BT.709/full-range is a cheap client-side fix independent of the host work. |
+| Chroma | **4:4:4 as a first-class negotiated capability** | The desktop-text differentiator — **landed and measured** (H4, 2026-07-29: a client asking Best gets an Rext yuv444 session end to end, +22 dB on text at fewer bits vs 4:2:0). Surfaced as the owner's three-tier "Chroma" control (Good = 4:2:0 / Better = 4:2:2, dormant / Best = 4:4:4); a flip is a clean reconnect — a session parameter, not a live dial. Color path: rgb_mode 601-limited ships (glass-correct, quality-equal); the full-range row is named-and-queued, not gating. |
 | Audio | **Opus, 4+2 RS FEC, Lyte-UDP datagrams** | Payload framing carries over from the proven client path; envelope and crypto are Lyte-UDP's (Noise AEAD). Mic-back channel is a future message type, not v1. |
 | Transport | **Lyte-UDP: our own protocol over plain UDP; payload-agnostic** | The only protocol either end speaks (2026-07-20 decision). Codec negotiated at connect; feature channels independent of video. No VNC mode, no RDP mode — policy ("text sharpness vs bandwidth") replaces transport switching. |
 | Encryption | **On by default, everywhere, no cell exceptions** | Locked decision. Noise-based end-to-end per the transport pillar; CryptoKit/swift-crypto family; no OpenSSL anywhere. |
@@ -232,8 +235,9 @@ Privileged bits, if ever needed, follow the client's helper pattern
 *(This ladder was rewritten 2026-07-20 when the GameStream dialect was
 dropped from the host roadmap — decision and rationale in
 [docs/20260720-215100-lyte-udp-decision.md](docs/20260720-215100-lyte-udp-decision.md).
-Status 2026-07-22: **H0a ✓ H0b ✓ H1 ✓ H2 ✓ — demolition included**; gate
-reports in `docs/20260722-h{1,2}-joint-gate.md`. H3 is next.)*
+Status 2026-07-30: **H0a ✓ H0b ✓ H1 ✓ H2 ✓ H3 ✓ H4 ✓, H5 half-landed**
+— gate reports in `docs/20260722-h{1,2}-joint-gate.md` and the H4 wave
+entries; what remains below is printing (H5's second half) and H6.)*
 
 - **H0a ✓ — Spike: first pixels into a file.** Portal/PipeWire capture →
   NVENC HEVC (a libavcodec leaf) → Annex-B file, proven headless on the
@@ -254,19 +258,20 @@ reports in `docs/20260722-h{1,2}-joint-gate.md`. H3 is next.)*
   40 video); the congestion/resiliency machinery (app-level CC, NACK,
   FROZEN/RECOVERY). Exit criteria met 2026-07-22: Sunshine uninstalled
   from the host box, the client's GameStream stack deleted.
-- **H3 — Feature channel + clipboard.** Capability-negotiated feature
+- **H3 ✓ — Feature channel + clipboard.** Capability-negotiated feature
   channel over Lyte-UDP; bidirectional text clipboard with the
-  loop-prevention discipline above. The first thing Sunshine can't do.
-- **H4 — 4:4:4 + policy integration.** 4:4:4 lands NVENC-first — the
-  RGB→YUV444 conversion is the real work item; VAAPI-444 is banked for
-  Intel hosts. Chroma negotiation wired into Local·Work; the full quality
-  ratchet; encoder rate control tuned for static-desktop-with-bursts;
-  host-side telemetry feeding the client's doctor (encoder stalls become a
-  named culprit, like AWDL is today).
-- **H5 — Desktop conveniences.** File transfer channel; printing v1
+  loop-prevention discipline above (CL-15), grown to clipboard images
+  (P-1, key 12, 2026-07-29). The first thing Sunshine can't do — shipped.
+- **H4 ✓ — 4:4:4 + policy integration.** Landed NVENC-first and measured
+  live (V-1…V-5, 2026-07-29): Rext yuv444 end to end, +22 dB on text at
+  fewer bits vs 4:2:0, surfaced as the three-tier Chroma control; the
+  quality ratchet converges static content to ~52 dB then goes silent;
+  rate control rides the delivery-rate estimator with VBV exact-tighten.
+  VAAPI-444 stays banked for Intel hosts.
+- **H5 (half ✓) — Desktop conveniences.** File transfer channel with
+  drag-and-drop: **landed** (bulk channel, `--accept-files`). Printing v1
   (intercept host print jobs → deliver as PDF → print locally on the
-  client). Drag-and-drop rides the file channel when it lands — nice, not
-  critical.
+  client): **open** — the remaining H5 work.
 - **H6 — Single-binary distribution + host toggle UX.** One copyable Linux
   executable; "Be a host" toggle in the macOS app (ScreenCaptureKit +
   VideoToolbox encode — the same H0–H2 ladder, much shorter on home turf).
@@ -389,10 +394,11 @@ Client works (done) → keep Sunshine as the bootstrap crutch while the host
 comes up on Lyte-UDP, our own and only protocol (H0a capture/encode is
 proven; H0b puts first pixels on the new wire; H1 makes the session honest) →
 reach parity, retire Sunshine, delete the client's GameStream scaffolding
-(H2 — **all of this is done as of 2026-07-22**) → open the negotiated
-feature channel and ship clipboard, the first
-impossible-with-Sunshine feature (H3) → land 4:4:4 and the quality ratchet
-(H4) → files and printing (H5) → macOS host + one-binary UX (H6) → remote
+(H2 — **done 2026-07-22**) → open the negotiated feature channel and ship
+clipboard, the first impossible-with-Sunshine feature (H3 — **done, text
+and images**) → land 4:4:4 and the quality ratchet (H4 — **done and
+measured, 2026-07-29**) → files (**done**) and printing (H5, the open
+half) → macOS host + one-binary UX (H6) → remote
 reach via Tailscale/port-forward today, a browser bridge and rendezvous
 later — and somewhere along the way, the product stops being "a Moonlight
 client" and becomes what it was always aimed at: **your other computers, one
