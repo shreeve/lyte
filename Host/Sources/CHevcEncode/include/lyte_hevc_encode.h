@@ -81,6 +81,16 @@ int lyte_hevc_enc_send(lyte_hevc_enc *e, const uint8_t *data, int src_stride,
                        lyte_hevc_packet_cb cb, void *user,
                        char *err, size_t errlen);
 
+/* Re-encodes the last-sent frame without any input copy: after a
+   successful send() the encoder's internal AVFrame still holds those
+   pixels, so the idle floor's repeat path and the ratchet's re-encode
+   need only new pts / IDR metadata. Returns 0 on success, -1 on error
+   with `err` filled, and -2 when nothing has been sent yet (fresh or
+   re-opened encoder) — callers treat -2 as "no frame to repeat". */
+int lyte_hevc_enc_resend(lyte_hevc_enc *e, int64_t pts, int force_idr,
+                         lyte_hevc_packet_cb cb, void *user,
+                         char *err, size_t errlen);
+
 /* Total wall-clock µs spent in the BGRx→gbrp repack across all send()
    calls (0 unless the encoder was opened with "gbrp") — the V-1 probe's
    repack-cost book. */

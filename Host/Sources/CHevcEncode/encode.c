@@ -20,6 +20,7 @@ struct lyte_hevc_enc {
     int height;
     int cbr; /* opened in CBR mode (cq == 0): min-rate tracks the avg */
     uint64_t repack_us_total; /* BGRx→planar repack wall time (gbrp path) */
+    int retained; /* a send completed: e->frame's buffers still hold it */
 };
 
 void lyte_stdout_linebuf(void) { setvbuf(stdout, NULL, _IOLBF, 0); }
@@ -344,6 +345,32 @@ int lyte_hevc_enc_send(lyte_hevc_enc *e, const uint8_t *data, int src_stride,
     rc = avcodec_send_frame(e->ctx, e->frame);
     if (rc < 0) {
         averr(err, errlen, "avcodec_send_frame failed", rc);
+        return -1;
+    }
+    e->retained = 1;
+    return drain(e, cb, user, err, errlen);
+}
+
+/* Re-encode the retained frame: after any successful send, e->frame's
+   buffers still hold the last-submitted pixels — the idle floor's
+   repeat path and the ratchet's re-encode passes need no input copy
+   at all (~14.7 MB/frame at 1440p BGRx that the retention memcpy used
+   to pay on the capture thread). Only pts and the IDR demand move —
+   AVFrame metadata, not the shared buffers, so no make_writable (that
+   call would COPY the buffers back and re-buy exactly the cost this
+   entry deletes). Returns -2 when nothing has been sent yet (a fresh
+   or re-opened encoder retains nothing). */
+int lyte_hevc_enc_resend(lyte_hevc_enc *e, int64_t pts, int force_idr,
+                         lyte_hevc_packet_cb cb, void *user,
+                         char *err, size_t errlen)
+{
+    if (!e->retained)
+        return -2;
+    e->frame->pts = pts;
+    e->frame->pict_type = force_idr ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+    int rc = avcodec_send_frame(e->ctx, e->frame);
+    if (rc < 0) {
+        averr(err, errlen, "avcodec_send_frame (resend) failed", rc);
         return -1;
     }
     return drain(e, cb, user, err, errlen);

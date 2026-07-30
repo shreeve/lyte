@@ -450,11 +450,15 @@ final class Sink {
     var firstPacket: [UInt8] = []
     var negotiated: (width: UInt32, height: UInt32, format: String)?
 
-    // Idle-floor state. The PipeWire buffer is only valid inside the frame
-    // callback, so the most recent frame is retained by copy; on a tick with
-    // no fresh frame since the previous tick, that copy is re-encoded as an
-    // ordinary P-frame. Ticks and frame callbacks share the PipeWire loop
-    // thread, so no locking is needed.
+    // Idle-floor state. On a tick with no fresh frame since the previous
+    // tick, the last frame is re-encoded as an ordinary P-frame — via
+    // lyte_hevc_enc_resend, which reuses the pixels the encoder's own
+    // AVFrame retained from the last send (no per-damage-frame copy of
+    // the ~full capture buffer). lastFrame survives only for LYTE_DUMP_RAW,
+    // which wants the raw pixels at exit. Ticks and frame callbacks share
+    // the PipeWire loop thread, so no locking is needed.
+    let wantsRawDump =
+        ProcessInfo.processInfo.environment["LYTE_DUMP_RAW"] != nil
     var lastFrame: [UInt8] = []
     var lastStride: Int32 = 0
     var encodedSinceTick = false
@@ -747,14 +751,17 @@ final class Sink {
         }
 
         if opts.idleFloor || opts.ratchet {
-            let count = Int(size)
-            if lastFrame.count != count {
-                lastFrame = [UInt8](repeating: 0, count: count)
+            if wantsRawDump {
+                let count = Int(size)
+                if lastFrame.count != count {
+                    lastFrame = [UInt8](repeating: 0, count: count)
+                }
+                lastFrame.withUnsafeMutableBytes { dst in
+                    dst.copyMemory(
+                        from: UnsafeRawBufferPointer(start: data, count: count))
+                }
+                lastStride = stride
             }
-            lastFrame.withUnsafeMutableBytes { dst in
-                dst.copyMemory(from: UnsafeRawBufferPointer(start: data, count: count))
-            }
-            lastStride = stride
             lastFrameGraphUs = graphUs
         }
         pendingCaptureUs = graphUs
@@ -824,7 +831,7 @@ final class Sink {
             encodedSinceTick = false
             return
         }
-        guard !lastFrame.isEmpty else { return } // nothing to repeat yet
+        guard framesIn > 0 else { return } // nothing to repeat yet
 
         if opts.ratchet {
             ratchetTick(now)
@@ -832,10 +839,7 @@ final class Sink {
         }
 
         pendingCaptureUs = lastFrameGraphUs
-        let ok = lastFrame.withUnsafeBufferPointer { buf in
-            encode(data: buf.baseAddress!, stride: lastStride)
-        }
-        if ok { repeatedFrames += 1 }
+        if encode(data: nil, stride: 0) { repeatedFrames += 1 }
     }
 
     /// One ratchet opportunity: after damage has been quiet for the settle
@@ -853,10 +857,7 @@ final class Sink {
 
         if ratchetTriggeredAt == nil { ratchetTriggeredAt = now }
         pendingCaptureUs = lastFrameGraphUs
-        let ok = lastFrame.withUnsafeBufferPointer { buf in
-            encode(data: buf.baseAddress!, stride: lastStride)
-        }
-        guard ok else { return }
+        guard encode(data: nil, stride: 0) else { return }
 
         ratchetStep += 1
         ratchetFrames += 1
@@ -898,7 +899,11 @@ final class Sink {
     /// Frame 0 is a forced IDR, and in session mode so is any frame the
     /// session demands one for (HS-12 path promotion or a client 0x10 —
     /// the takeFreshKeyframeRequest poll, consulted per encode).
-    private func encode(data: UnsafePointer<UInt8>, stride: Int32) -> Bool {
+    /// `data == nil` re-encodes the retained frame inside the C leaf
+    /// (the encoder's AVFrame still holds the last-submitted pixels) —
+    /// the idle-floor repeat and ratchet passes pay no input copy. Callers
+    /// of the nil form must have encoded at least once (framesIn > 0).
+    private func encode(data: UnsafePointer<UInt8>?, stride: Int32) -> Bool {
         var err = [CChar](repeating: 0, count: 256)
         let user = Unmanaged.passUnretained(self).toOpaque()
         let demand = wire?.takeForcedIdrDemand() ?? []
@@ -951,9 +956,17 @@ final class Sink {
         sendFrameNanosThisEncode = 0
         let keyframesBeforeSend = keyframes
         let encodeStart = monotonicNS()
-        let rc = lyte_hevc_enc_send(encoder, data, stride, Int64(framesIn),
+        let rc: Int32
+        if let data {
+            rc = lyte_hevc_enc_send(encoder, data, stride, Int64(framesIn),
                                     forceIdr ? 1 : 0,
                                     packetTrampoline, user, &err, err.count)
+        } else {
+            rc = lyte_hevc_enc_resend(encoder, Int64(framesIn),
+                                      forceIdr ? 1 : 0,
+                                      packetTrampoline, user, &err, err.count)
+        }
+        if rc == -2 { return false } // nothing retained — callers guard framesIn
         if rc != 0 {
             fail("encode failed at frame \(framesIn): \(errString(err))")
             return false
