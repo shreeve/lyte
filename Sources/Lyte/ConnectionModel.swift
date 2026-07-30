@@ -1057,6 +1057,10 @@ final class ConnectionModel {
               let core = session.core else { return [] }
         var lines: [String] = []
 
+        // Row order (owner-shaped, 2026-07-30): mode heads the block,
+        // net under it, then audio and video ADJACENT (the two media
+        // rows read together), input last. Conditional rows follow.
+        //
         // The net line: loss deficit-first (a success-count brags; the
         // deficit is the signal, and a percent must never round a real
         // loss into looking clean), then the clock model's honest RTT.
@@ -1082,8 +1086,6 @@ final class ConnectionModel {
         if totals.unsealFailures > 0 {
             wire += ", \(totals.unsealFailures) unseal-failed"
         }
-        lines.append(wire)
-
         var mode = "mode \(core.wireMode == .active ? "ACTIVE" : "IDLE")"
         if core.isFrozen { mode += " — FROZEN" }
         if hostAudioNegotiated {
@@ -1097,6 +1099,21 @@ final class ConnectionModel {
             mode += clipboardSharing ? " · clipboard on" : " · clipboard off"
         }
         lines.append(mode)
+        lines.append(wire)
+
+        let audio = core.audio.snapshotStats()
+        if audio.depacketizer.datagramsIngested > 0 {
+            var line = "audio"
+            if let p50 = audio.bufferDepthPackets.p50,
+               let p99 = audio.bufferDepthPackets.p99 {
+                line += " depth p50/p99 \(p50)/\(p99) pkts"
+            }
+            line += " · plc \(audio.jitter.plcInvocations)"
+            if audio.depacketizer.packetsRebuilt > 0 {
+                line += " · fec \(audio.depacketizer.packetsRebuilt)"
+            }
+            lines.append(line)
+        }
 
         // The HS-22 quality line — what the receive side can say about
         // incoming video from its own books (frame cadence, bitrate,
@@ -1116,7 +1133,7 @@ final class ConnectionModel {
                 video += " fps"
             }
             video += String(
-                format: " · %.1f Mbps · frame p50 %d B · p95 %d B",
+                format: " · %.1f Mbps · frame p50/p95 %d/%d B",
                 Double(q.bitsPerSecond) / 1e6,
                 q.frameBytesP50, q.frameBytesP95)
             // V-5: what the wire actually carries (SPS-parsed), the
@@ -1138,20 +1155,6 @@ final class ConnectionModel {
         // failure from a host one.
         lines.append(core.input.snapshotStats()
             .overlayLine(captureActive: lyteInputCapture != nil))
-
-        let audio = core.audio.snapshotStats()
-        if audio.depacketizer.datagramsIngested > 0 {
-            var line = "audio"
-            if let p50 = audio.bufferDepthPackets.p50,
-               let p99 = audio.bufferDepthPackets.p99 {
-                line += " depth p50/p99 \(p50)/\(p99) pkts"
-            }
-            line += " · plc \(audio.jitter.plcInvocations)"
-            if audio.depacketizer.packetsRebuilt > 0 {
-                line += " · fec \(audio.depacketizer.packetsRebuilt)"
-            }
-            lines.append(line)
-        }
 
         let clipboard = core.snapshotCounters()
         let clipboardActivity = clipboard.clipboardSharesSent
