@@ -15,11 +15,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Host performance — the rate-fall moment
 
-5. **Pacer `queuedBytes` O(n) → running totals** [S] — `Pacer.swift:182` walks
-   every queued token; called per feedback report (20–40 Hz) and per capture
-   frame (60 Hz), worst exactly when the queue is deepest (the fall). Maintain
-   per-class byte/count totals in push/pop. Prerequisite hygiene for the purge.
-
 6. **Fall-repricing purge** [M] — bytes admitted at 50 Mbps serialize at the
    crashed rate: 80–895 ms of stale wire measured. Add `Pacer.dropClass` for
    freshVideo/videoTail, clean up `VideoChannel.pending`/`queuedShardsByFrame`,
@@ -145,6 +140,11 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
    strike ladder). Patient-connect stays app-embedded deliberately — its
    round policy is a refactor, not a pin; possible follow-up. Full suite
    222/222 green.
+
+5. **Pacer `queuedBytes` O(n) → running total** [S] — PR #5, merged
+   2026-07-30. `ClassQueue.bytesQueued` maintained by push/pop; O(1) reads
+   for both hot gates. Pinned by a drain-era ground-truth test; host suite
+   225/225 Mac AND pup.
 
 ## Closed
 
