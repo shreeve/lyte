@@ -1653,7 +1653,12 @@ func run() throws {
                 baselineVbvBits: opts.ratchet
                     ? guardBits
                     : min(Int(opts.bitrate) / Int(opts.fps), guardBits),
-                rungsPerOctave: noResetRateMoves ? 2 : 1
+                rungsPerOctave: noResetRateMoves ? 2 : 1,
+                // The second free harvest: tightens land exactly on
+                // the ceiling rate (no √2 slack above the fallen
+                // rate) — only under the proven no-reset lib, same
+                // gate as the half-rung ladder.
+                exactTighten: noResetRateMoves
             ))
         } else {
             print("encoder-vbv: DISABLED (--no-vbv-reconfigure) — the "

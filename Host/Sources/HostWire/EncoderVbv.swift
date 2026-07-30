@@ -197,6 +197,20 @@ public struct EncoderVbvConfig: Sendable {
     /// defined — these are the only ladders in use, and 2 keeps the
     /// math deterministic (stdlib square root, no libm).
     public var rungsPerOctave: Int
+    /// HS-33's second harvest: land every TIGHTEN exactly on the
+    /// ceiling-derived rate instead of the rung above it, and retune
+    /// on material within-band falls (the ceiling more than a deadband
+    /// below the applied max) instead of absorbing them — the last of
+    /// the posture/pacer slack on the falling edge goes to zero. Only
+    /// honest when a directive costs no IDR: the shell passes true iff
+    /// the vendored no-reset libavcodec proved itself (the same gate
+    /// as rungsPerOctave = 2); the estimator's 500 ms fall limiter
+    /// bounds the extra directives to ~2/s worst case, each one cheap
+    /// driver call. The rung ladder still names the bands for
+    /// LOOSENING — the sustain-gated climb, the held-minimum target,
+    /// and the restore are untouched (the 10 s climb-lag is
+    /// load-bearing, 2026-07-29 A/B).
+    public var exactTighten: Bool
 
     public init(
         fps: Int,
@@ -206,7 +220,8 @@ public struct EncoderVbvConfig: Sendable {
         deadbandFraction: Double = 0.10,
         riseHoldNS: UInt64 = 500_000_000,
         riseSustainNS: UInt64 = 10_000_000_000,
-        rungsPerOctave: Int = 1
+        rungsPerOctave: Int = 1,
+        exactTighten: Bool = false
     ) {
         precondition(fps > 0)
         precondition(baselineMaxBitsPerSecond > 0)
@@ -222,6 +237,7 @@ public struct EncoderVbvConfig: Sendable {
         self.riseHoldNS = riseHoldNS
         self.riseSustainNS = riseSustainNS
         self.rungsPerOctave = rungsPerOctave
+        self.exactTighten = exactTighten
     }
 }
 
@@ -318,7 +334,12 @@ public final class EncoderVbvPolicy {
     /// The HS-20/HS-22 mapping evaluated at a rung's rate: caps against
     /// the baseline, k-window VBV at the rung's own depth.
     private func posture(atRungIndex index: Int) -> Posture {
-        let rate = rungRate(atIndex: index)
+        posture(atRate: rungRate(atIndex: index))
+    }
+
+    /// The same mapping at an arbitrary rate — the exact-tighten path
+    /// lands here directly, off the ladder.
+    private func posture(atRate rate: Int) -> Posture {
         let budgetNS = RateEstimator.frameBudgetNS(fps: config.fps)
         let rungCeiling = Int(
             UInt64(rate) * budgetNS / (8 * 1_000_000_000)
@@ -417,7 +438,10 @@ public final class EncoderVbvPolicy {
             appliedRungIndex = required
             looserWantedSince = nil
             return emit(
-                posture(atRungIndex: required), kind: .tighten,
+                config.exactTighten
+                    ? posture(atRate: ceilingRate)
+                    : posture(atRungIndex: required),
+                kind: .tighten,
                 frameByteCeiling: frameByteCeiling, now: now,
                 ceilingMoved: ceilingMoved
             )
@@ -431,12 +455,21 @@ public final class EncoderVbvPolicy {
         if !clean {
             let margined = ceilingRate
                 + Int(Double(ceilingRate) * config.deadbandFraction)
-            if rungIndex(for: margined) > appliedIndex {
+            let bandCrossed = rungIndex(for: margined) > appliedIndex
+            // Exact mode also retunes a material WITHIN-band fall (the
+            // ceiling more than a deadband below the applied max) that
+            // the ladder would absorb — a boundary dither still parks.
+            let materialFall = config.exactTighten
+                && margined < appliedMaxBitsPerSecond
+            if bandCrossed || materialFall {
                 let required = rungIndex(for: ceilingRate)
                 appliedRungIndex = required
                 looserWantedSince = nil
                 return emit(
-                    posture(atRungIndex: required), kind: .tighten,
+                    config.exactTighten
+                        ? posture(atRate: ceilingRate)
+                        : posture(atRungIndex: required),
+                    kind: .tighten,
                     frameByteCeiling: frameByteCeiling, now: now,
                     ceilingMoved: ceilingMoved
                 )

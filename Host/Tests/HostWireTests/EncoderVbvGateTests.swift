@@ -639,4 +639,92 @@ final class EncoderVbvGateTests: XCTestCase {
         XCTAssertTrue(policy.squeezeEngaged)
         XCTAssertEqual(policy.directivesIssued, 1)
     }
+
+    // MARK: - HS-33's second harvest: exact tighten (no-reset gate only)
+
+    /// The no-reset shell's full posture: half-rung ladder AND exact
+    /// tightens (both flags follow the same proven-capability gate).
+    private func exactPolicy() -> EncoderVbvPolicy {
+        EncoderVbvPolicy(config: EncoderVbvConfig(
+            fps: 60,
+            baselineAverageBitsPerSecond: 10_000_000,
+            baselineMaxBitsPerSecond: 10_000_000,
+            baselineVbvBits: 10_000_000 / 60,
+            rungsPerOctave: 2,
+            exactTighten: true
+        ))
+    }
+
+    func testExactTightenLandsOnTheCeilingRateNotTheRungAbove() {
+        // 12,500 B at 60 fps ⇒ exactly 4 Mbps. The half-rung ladder
+        // would park the posture at the covering 5 Mbps rung (√2-ish
+        // slack above the wire); exact mode lands on 4 Mbps to the bit.
+        let directive = exactPolicy().note(frameByteCeiling: 12_500, now: 0)
+        XCTAssertEqual(directive?.kind, .tighten)
+        XCTAssertEqual(directive?.maxBitsPerSecond, 4_000_000)
+        XCTAssertEqual(directive?.averageBitsPerSecond, 4_000_000)
+        // The HS-22 window mapping rides the exact rate: 40% squeeze ⇒
+        // 1 budget window of 12,500 B ⇒ 100,000 bits.
+        XCTAssertEqual(directive?.vbvBits, 100_000)
+    }
+
+    func testExactTightenStillParksInsideTheDeadband() {
+        let policy = exactPolicy()
+        _ = policy.note(frameByteCeiling: 12_500, now: 0) // 4.0 Mbps
+        // −4%: margined (×1.1) still clears the applied max — dither
+        // parks exactly as the ladder always did.
+        XCTAssertNil(policy.note(frameByteCeiling: 12_000, now: Self.ms))
+        XCTAssertEqual(policy.directivesIssued, 1)
+    }
+
+    func testExactTightenRetunesTheMaterialWithinBandFall() {
+        let policy = exactPolicy()
+        _ = policy.note(frameByteCeiling: 12_500, now: 0) // 4.0 Mbps
+        // 10,937 B ⇒ 3,499,840 b/s: −12.5%, materially below the
+        // applied max but INSIDE the covering half-rung's band — the
+        // ladder absorbs this shape (control pin below); exact mode
+        // retunes onto the fallen rate.
+        let fall = policy.note(frameByteCeiling: 10_937, now: 2 * Self.ms)
+        XCTAssertEqual(fall?.kind, .tighten)
+        XCTAssertEqual(fall?.maxBitsPerSecond, 3_499_840)
+        XCTAssertEqual(policy.directivesIssued, 2)
+    }
+
+    func testLadderModeStillAbsorbsTheWithinBandFall() {
+        // The control: same fall shape, exactTighten off — the HS-27
+        // parking contract stands verbatim for the distro-lib posture.
+        let policy = EncoderVbvPolicy(config: EncoderVbvConfig(
+            fps: 60,
+            baselineAverageBitsPerSecond: 10_000_000,
+            baselineMaxBitsPerSecond: 10_000_000,
+            baselineVbvBits: 10_000_000 / 60,
+            rungsPerOctave: 2
+        ))
+        _ = policy.note(frameByteCeiling: 12_500, now: 0)
+        XCTAssertNil(policy.note(frameByteCeiling: 10_937, now: 2 * Self.ms),
+                     "the ladder parks within the band")
+        XCTAssertEqual(policy.directivesIssued, 1)
+        XCTAssertEqual(policy.rateMovesAbsorbed, 1)
+    }
+
+    func testExactTightenLeavesTheSustainedRestoreUntouched() {
+        // The loosening half is deliberately NOT exact: sustain-gated,
+        // held-minimum, restore-to-baseline — the 10 s climb-lag is
+        // load-bearing (2026-07-29 A/B). A clean ceiling after an
+        // exact tighten restores the opening recipe bit-for-bit, and
+        // only after the sustain.
+        let policy = exactPolicy()
+        _ = policy.note(frameByteCeiling: 10_937, now: 0)
+        XCTAssertNil(policy.note(frameByteCeiling: 31_250, now: Self.sec),
+                     "clean want must still wait out the sustain")
+        XCTAssertNil(policy.note(frameByteCeiling: 31_250, now: 9 * Self.sec))
+        let restore = policy.note(
+            frameByteCeiling: 31_250, now: 11 * Self.sec
+        )
+        XCTAssertEqual(restore?.kind, .restore)
+        XCTAssertEqual(restore?.maxBitsPerSecond, 10_000_000)
+        XCTAssertEqual(restore?.averageBitsPerSecond, 10_000_000)
+        XCTAssertEqual(restore?.vbvBits, 10_000_000 / 60)
+        XCTAssertFalse(policy.squeezeEngaged)
+    }
 }
