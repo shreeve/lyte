@@ -19,13 +19,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Worth doing — bigger or design-flavored
 
-18. **Adaptive audio pump** [M] — `LyteAudioPlayer.swift:298`: the 2 ms pump
-    wakes 500×/s for the session's life — the client's biggest standing energy
-    cost. When the ring sits at/above target the next interesting instant is
-    computable; adaptive one-shot reschedule (floor 2 ms, ceiling ~10 ms) keeps
-    the dry-ring reflex at ~3–5× fewer steady-state wakeups. Touches pacing
-    doctrine; re-verify urgent/PLC path.
-
 19. **wire-view dialect contract** [S] — wire-view still speaks the pre-rename
     stats dialect (`wire:`, `render:`, caps grammar) while the app overlay moved
     to session/user/network/audio/video. quality-probe.sh PARSES wire-view's
@@ -162,6 +155,17 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
     its last consumer). Suite 236/236 Mac AND pup; live pup probe: 307
     frames, 269 repeated through resend, ffprobe decodes all 307 — nvenc
     accepted the re-sent frame, the flagged risk did not materialize.
+
+18. **Adaptive audio pump** [M] — PR #18, merged 2026-07-30. One-shot
+    reschedule off the ring's drain clock: pure
+    `nextPumpDelayMicros(ringDepthFrames:)` computes the instant the ring
+    could reach the urgent threshold (DAC-rate drain), clamped floor 2 ms
+    (dry-ring reflex intact — shallow rings walk the old cadence) /
+    ceiling 10 ms (healthy ring wakes 100×/s, 5× fewer; wrong guess costs
+    ≤ two packets). Gather excluded from headroom (only a pump pass
+    flushes it); cancelled-source check makes a racing stop() lock-free.
+    Root suite 218/218 (+4 cadence pins incl. the no-sleep-past-urgent
+    sweep); jitter/accelerate harnesses (urgent/PLC gates) unchanged.
 
 ## Closed
 
