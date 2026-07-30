@@ -208,6 +208,18 @@ wire_leg() { # $1=name $2=extra-host-flags → logs at $WORK/wire-$1.log + $LOCA
   ssh "$PUP" "cat $WORK/wire-$1.log" > "$LOCAL/wire-$1-host.log"
 }
 
+# MACHINE-PARSE CONTRACT (item 19, ruled 2026-07-30): the client-side
+# greps below consume wire-view's stats dialect — the `…` tick prefix,
+# `wire: <N> dg, … <N> missing`, `render: <N> decoded, <N> skipped` —
+# produced by WireViewStatsPrinter.printSnapshot
+# (Sources/lyte-cli/WireViewCommand.swift), which carries the matching
+# half of this annotation. wire-view deliberately keeps this dialect
+# though the app overlay renamed its lines; change either side only
+# together with the other in the same commit. The host-side greps
+# (`done:`, `frames →`, `encoder-vbv:`, `rate:`, `encoder: rate
+# reconfigure`, the estimator `delivery … )` shape) bind lyte-host's
+# log lines the same way — the delivery grep already rotted silently
+# once, hence the loud guard below.
 parse_wire() { # $1=name → sets R_* globals from the leg's two logs
   local hlog="$LOCAL/wire-$1-host.log" clog="$LOCAL/wire-$1-client.log"
   R_FRAMES=$(grep -m1 'frames →' "$hlog" | sed 's/session: \([0-9]*\) frames.*/\1/')
