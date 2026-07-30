@@ -93,7 +93,14 @@ fps 47 FAIL | IDR 3.9/min FAIL | churn 0 PASS | loss 0 PASS`.
   crash~~ — FIXED at `e82e88a` and the standing host runs the fixed
   build; (4) NEW (HS-25 live find): **fullscreen `-fs` ffplay starves
   the Mutter screencast** (direct scanout — portal grants the node but
-  PipeWire delivers ZERO frames; portal restarts don't help). Run test
+  PipeWire delivers ZERO frames; portal restarts don't help). This is
+  the same mechanism that froze the owner's fullscreen YouTube
+  (2026-07-30 verdict) — the DURABLE fix is the
+  `MUTTER_DEBUG_PAINT=disable-direct-scanout` login-env flag, now a
+  documented machine prerequisite (`Host/README.md` "Machine
+  prerequisites", provisioned by `Host/Scripts/setup-host.sh`;
+  lyte-host prints a `capture: WARNING` at startup while the running
+  gnome-shell lacks it). Until a box has it: run test
   patterns WINDOWED at full size, Wayland-native
   (`XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0
   SDL_VIDEODRIVER=wayland ffplay -f lavfi -i

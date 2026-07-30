@@ -47,6 +47,41 @@ swift test           # HostCore + HostWire (the executable + C leaves are Linux-
 
 On macOS use `DEVELOPER_DIR=/Applications/Xcode.app swift test` (CLT lacks XCTest).
 
+## Machine prerequisites (one-time, per host box)
+
+A fresh GNOME/Wayland host needs two things beyond the binary. Both are
+applied (or checked, with the exact commands printed) by one idempotent
+script — run it as the seat user, then log out and back in:
+
+```
+Host/Scripts/setup-host.sh
+```
+
+1. **Mutter must keep compositing fullscreen video** —
+   `MUTTER_DEBUG_PAINT=disable-direct-scanout` in
+   `~/.config/environment.d/90-lyte-screencast.conf`. By default Mutter
+   promotes a fullscreen surface (video players, games) to *direct
+   scanout* a few seconds in: the surface bypasses the compositor and
+   goes straight to the display hardware, compositing stops, and the
+   ScreenCast — which watches the compositor's output — delivers
+   nothing. The remote glass freezes while the host idles; every mouse
+   move wakes one frame, then it starves again. (Diagnosed live
+   2026-07-30: wake IDRs + 1 s capture gaps during YouTube playback;
+   see HANDOFF.) There is **no runtime toggle** on stock Mutter — no
+   D-Bus control, no gsettings experimental feature; gnome-shell reads
+   the flag once at login, which is why this is per-machine session
+   config and not something lyte-host can set for itself. The host
+   *does* verify it at every startup: if the running gnome-shell lacks
+   the flag it prints `capture: WARNING — … fullscreen video will
+   freeze the stream` in its opening lines. A silent startup means the
+   box is provisioned. Local cost: fullscreen content composites
+   instead of scanning out — a few % GPU, irrelevant for a host box.
+
+2. **Seat access to `/dev/uinput`** for the `CInputUinput` fallback
+   input backend (HS-13) — the udev rule at
+   `/etc/udev/rules.d/60-lyte-uinput.rules`. Needs root; the script
+   prints the exact `sudo tee` command rather than escalating itself.
+
 ## Build and run on the Linux host (`pup`)
 
 Source lives in this repo; sync it to the host and build there. This package
@@ -55,10 +90,24 @@ must be synced as siblings on the host:
 
 ```
 rsync -a --delete --exclude .build Wire/ pup:src/Wire/
-rsync -a --delete --exclude .build Host/ pup:src/lyte-host/
+rsync -a --delete --exclude .build --exclude Vendor/ffmpeg/build \
+  --exclude Vendor/ffmpeg/prefix Host/ pup:src/lyte-host/
 ssh pup 'cd ~/src/lyte-host && \
-  LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat /usr/local/bin/swift build'
+  VP=$PWD/Vendor/ffmpeg/prefix && \
+  LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat \
+  LYTE_FFMPEG_PREFIX=$VP PKG_CONFIG_PATH=$VP/lib/pkgconfig \
+  swift build'
 ```
+
+⚠️ `LYTE_FFMPEG_PREFIX`/`PKG_CONFIG_PATH` link the vendored no-reset
+FFmpeg (HS-33 — rate reconfigures without an encoder reset or forced
+IDR; `Vendor/ffmpeg/README.md` is the full account, including the
+first-time `Scripts/vendor-ffmpeg.sh` bootstrap). A bare `swift build`
+still succeeds but silently relinks the **distro** libavcodec and every
+rate move goes back to minting IDRs. The running binary proves which
+one it got in its second log line: `encoder: vendored no-reset
+libavcodec …` is the good one; `encoder: no-reset rate moves INACTIVE`
+means rebuild with the envs.
 
 The `LD_LIBRARY_PATH` shim points Swift 6.1.2's build tools at the system
 `libxml2.so.16` (Ubuntu 26.04 does not ship `libxml2.so.2`):
