@@ -89,6 +89,16 @@ final class ConnectionModel {
     /// preference key (CL-13).
     private(set) var hostPublicKeyHash: String?
     let displayLayer = AVSampleBufferDisplayLayer()
+    /// Video samples hop OFF the receive thread before touching the
+    /// renderer: during a live window resize the layer is mid-CA-
+    /// transaction on main and `enqueue` can block against it — and
+    /// the receive thread demuxes AUDIO too, so a resize storm was
+    /// chopping playback (underruns with zero loss, found live
+    /// 2026-07-30). A serial hop keeps frame order; a transient
+    /// enqueue stall now queues video frames here instead of damming
+    /// the socket.
+    private let videoDeliveryQueue = DispatchQueue(
+        label: "lyte.video.delivery", qos: .userInteractive)
 
     // F-5: roaming/reconnect. The policy exists for the whole
     // streaming life of a window (it IS the "can this window
@@ -313,8 +323,10 @@ final class ConnectionModel {
         return LyteUdpSession(
             crypto: crypto,
             config: config,
-            onSample: { [weak self] sample, _ in
-                renderer.enqueue(sample)
+            onSample: { [weak self, videoDeliveryQueue] sample, _ in
+                videoDeliveryQueue.async {
+                    renderer.enqueue(sample)
+                }
                 // Teach the input capture its coordinate space — once
                 // per size, not per sample (dimension changes are a
                 // renegotiation-era event, but wired honestly now).
