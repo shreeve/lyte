@@ -7,7 +7,7 @@ import Foundation
 /// too few for an honest p90; rides 10 s) and input latency (bursty
 /// event stream — a time window empties between keystrokes; rides a
 /// last-events ring).
-let overlayGaugeWindowSeconds = 3.0
+public let overlayGaugeWindowSeconds = 3.0
 
 /// A trailing-window rate from a monotonically growing counter: feed
 /// it the cumulative count each overlay tick and it answers with the
@@ -15,16 +15,16 @@ let overlayGaugeWindowSeconds = 3.0
 /// refreshed every call). Exists so the video line's in-fps and
 /// out-fps ride the SAME window — the slash-pair `in/out 60/60 fps`
 /// must compare like with like.
-final class RateMeter: @unchecked Sendable {
+public final class RateMeter: @unchecked Sendable {
     private let lock = NSLock()
     private var history: [(atMicroseconds: UInt64, count: UInt64)] = []
     private let windowMicroseconds: UInt64
 
-    init(windowSeconds: Double = overlayGaugeWindowSeconds) {
+    public init(windowSeconds: Double = overlayGaugeWindowSeconds) {
         windowMicroseconds = UInt64(windowSeconds * 1_000_000)
     }
 
-    func rate(count: UInt64, nowMicroseconds: UInt64) -> Double? {
+    public func rate(count: UInt64, nowMicroseconds: UInt64) -> Double? {
         lock.lock()
         defer { lock.unlock() }
         history.append((nowMicroseconds, count))
@@ -48,7 +48,7 @@ final class RateMeter: @unchecked Sendable {
 /// dispatch to the renderer enqueue's completion, so it INCLUDES queue
 /// wait — a resize-storm renderer stall shows up here as a p99 spike
 /// (the 2026-07-30 audio-chop finding made this number load-bearing).
-final class VideoDeliveryBooks: @unchecked Sendable {
+public final class VideoDeliveryBooks: @unchecked Sendable {
     private let lock = NSLock()
     private var enqueued: UInt64 = 0
     /// ~3 s of hop durations at 60 fps — the gauge window.
@@ -57,7 +57,7 @@ final class VideoDeliveryBooks: @unchecked Sendable {
     private var ringIndex = 0
     private let outMeter = RateMeter()
 
-    func record(hopMilliseconds: Double) {
+    public func record(hopMilliseconds: Double) {
         lock.lock()
         enqueued += 1
         ring[ringIndex] = hopMilliseconds
@@ -66,8 +66,10 @@ final class VideoDeliveryBooks: @unchecked Sendable {
         lock.unlock()
     }
 
+    public init() {}
+
     /// Out-fps over the gauge window plus hop percentiles.
-    func snapshot(
+    public func snapshot(
         nowMicroseconds: UInt64
     ) -> (outFps: Double?, hopP50: Double?, hopP99: Double?) {
         lock.lock()
