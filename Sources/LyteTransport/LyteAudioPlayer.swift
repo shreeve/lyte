@@ -10,10 +10,17 @@
 // no timer beats against the 5 ms arrivals, and sender/receiver clock
 // skew expresses as slow target drift the jitter buffer absorbs.
 //
-// The 2 ms pump cadence is deliberately faster than the 5 ms packet
-// duration: scheduling jitter on the pump shows up as ring-depth
-// ripple well inside one packet, and the `urgent` flag turns a
-// nearly-dry ring into immediate PLC instead of zeros.
+// The pump cadence is adaptive one-shot (item 18): the render side
+// drains the ring at exactly the DAC rate, so after each pass the
+// next instant the ring could approach the urgent threshold (one
+// packet) is computable — the timer re-arms for that instant, clamped
+// to a 2 ms floor (the dry-ring reflex: scheduling jitter shows up as
+// ring-depth ripple well inside one packet, and the `urgent` flag
+// turns a nearly-dry ring into immediate PLC instead of zeros) and a
+// 10 ms ceiling (bounds the cost of any wrong guess to two packets).
+// A healthy ring rides the ceiling — 100 wakeups/s instead of the old
+// fixed 2 ms cadence's 500 — while a shallow or draining ring walks
+// the floor exactly as before.
 //
 // CL-17 grows the pump two ways. (1) Decoded PCM rides through the
 // WSOLA AudioAccelerator whenever the receiver's pull decision says
@@ -295,13 +302,41 @@ public final class LyteAudioPlayer: @unchecked Sendable {
             self?.handleOutputConfigurationChange()
         }
 
+        // Adaptive one-shot cadence: each pass re-arms the timer for
+        // the next instant the ring could matter (see the header
+        // doctrine). The handler captures the timer weakly and checks
+        // isCancelled before re-arming — a cancelled source never
+        // fires again, so a racing stop() needs no lock here.
         let timer = DispatchSource.makeTimerSource(
             queue: .global(qos: .userInteractive))
         timer.schedule(deadline: .now() + .milliseconds(2),
-                       repeating: .milliseconds(2), leeway: .microseconds(500))
-        timer.setEventHandler { [weak self] in self?.pumpOnce() }
+                       leeway: .microseconds(500))
+        timer.setEventHandler { [weak self, weak timer] in
+            guard let self else { return }
+            self.pumpOnce()
+            guard let timer, !timer.isCancelled else { return }
+            let delay = Self.nextPumpDelayMicros(
+                ringDepthFrames: self.ring.depthFrames)
+            timer.schedule(deadline: .now() + .microseconds(delay),
+                           leeway: .microseconds(500))
+        }
         timer.resume()
         pump = timer
+    }
+
+    /// The adaptive pump schedule (item 18), pure so the gate can pin
+    /// it: microseconds until the ring — draining at exactly the DAC
+    /// rate — could reach the urgent threshold (one packet), clamped
+    /// to [`pumpFloorMicros`, `pumpCeilingMicros`]. Only the ring
+    /// counts as headroom: the accelerator's gather can rescue a dry
+    /// ring, but only a pump pass flushes it, so it must not stretch
+    /// the sleep that would run that pass.
+    static let pumpFloorMicros = 2_000
+    static let pumpCeilingMicros = 10_000
+    static func nextPumpDelayMicros(ringDepthFrames: Int) -> Int {
+        let headroom = ringDepthFrames - AudioWire.samplesPerPacket
+        let drainMicros = headroom * 1_000_000 / AudioWire.sampleRate
+        return min(max(drainMicros, pumpFloorMicros), pumpCeilingMicros)
     }
 
     public func stop() {
