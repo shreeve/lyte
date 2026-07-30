@@ -1071,11 +1071,11 @@ final class ConnectionModel {
         let lost = missing > lateFilled ? missing - lateFilled : 0
         let expected = totals.datagrams + lost
         var wire = lost == 0
-            ? "net   lost 0 of \(Self.compactCount(expected)) pkts"
-            : String(format: "net   lost %d of %@ pkts (%.3f%%)", lost,
-                     Self.compactCount(expected),
+            ? "wire   lost 0 of \(Self.compactCount(expected)) packets"
+            : String(format: "wire   lost %d of %@ packets (%.3f%%)",
+                     lost, Self.compactCount(expected),
                      100 * Double(lost) / Double(max(1, expected)))
-        // rtt min + jitter, spelled out — "±" falsely implies a
+        // roundtrip min + jitter, spelled out — "±" falsely implies a
         // symmetric spread; the stat is the floor plus upward spread
         // (p90 − min over the last 30 beacon samples), which is what
         // "jitter" means to every reader.
@@ -1083,14 +1083,19 @@ final class ConnectionModel {
             .suffix(30).map(\.rttMicroseconds).sorted()
         if let minRtt = rtts.first {
             let p90 = rtts[min(rtts.count - 1, (rtts.count * 9) / 10)]
-            wire += String(format: " · rtt min %.1f ms · jitter %.1f ms",
-                           Double(minRtt) / 1000,
-                           Double(p90 - minRtt) / 1000)
+            wire += String(
+                format: " · roundtrip min %.1f ms · jitter %.1f ms",
+                Double(minRtt) / 1000,
+                Double(p90 - minRtt) / 1000)
         }
         if totals.unsealFailures > 0 {
             wire += ", \(totals.unsealFailures) unseal-failed"
         }
-        var mode = "mode  \(core.wireMode == .active ? "ACTIVE" : "IDLE")"
+        // Caps-as-alarm (owner grammar, 2026-07-30): nominal states are
+        // lowercase so a HEALTHY overlay contains zero uppercase — the
+        // glance-test is "any caps anywhere?". FROZEN and NOT CAPTURED
+        // are the only words allowed to shout.
+        var mode = "stream \(core.wireMode == .active ? "active" : "idle")"
         if core.isFrozen { mode += " — FROZEN" }
         if hostAudioNegotiated {
             switch hostAudioPosture {
@@ -1100,19 +1105,22 @@ final class ConnectionModel {
             }
         }
         if clipboardNegotiated {
-            mode += clipboardSharing ? " · clipboard on" : " · clipboard off"
+            mode += clipboardSharing
+                ? " · clipboard shared" : " · clipboard private"
         }
+        // Capture is a session STATE (who owns the keyboard/mouse now),
+        // so it lives here with its siblings, not on the input line.
+        mode += lyteInputCapture != nil
+            ? " · keys+mouse captured" : " · keys+mouse NOT CAPTURED"
         lines.append(mode)
 
-        // Unconditional, capture verdict included (CL-16): "input 0
-        // sent · capture INACTIVE" is the line that tells a client
-        // failure from a host one.
-        lines.append(core.input.snapshotStats()
-            .overlayLine(captureActive: lyteInputCapture != nil))
+        // Unconditional (CL-16): "input  sent 0 events" is the datum
+        // that tells a client-capture failure from a host-side one.
+        lines.append(core.input.snapshotStats().overlayLine())
 
         let audio = core.audio.snapshotStats()
         if audio.depacketizer.datagramsIngested > 0 {
-            var line = "audio"
+            var line = "audio "
             // Buffer depth in ms, not packets (exact: 5 ms hard-CBR
             // packets) — "15/40 ms of cushion" needs no decoder ring.
             if let p50 = audio.bufferDepthPackets.p50,
@@ -1137,18 +1145,21 @@ final class ConnectionModel {
         if let q = core.pipeline.snapshotStats().quality {
             // in = frames fully assembled off the wire (reorder/FEC
             // healed — "rx" undersold them); out = frames handed to
-            // the renderer. A widening in/out split is a glass-side
-            // stall, not a network one.
+            // the renderer. SEPARATE tokens, not a slash-pair: the two
+            // ride different averaging windows (~5 s vs ~1 s) and can
+            // transiently diverge — a slash would claim one snapshot
+            // of one pipeline. A widening split is a glass-side
+            // stall, not a network one. Mbps stands bare (self-naming).
             var video: String
             if let out = delivery.outFps {
-                video = String(format: "video in/out %.0f/%.0f fps",
+                video = String(format: "video  in %.0f · out %.0f fps",
                                q.framesPerSecond, out)
             } else {
-                video = String(format: "video in %.0f fps",
+                video = String(format: "video  in %.0f fps",
                                q.framesPerSecond)
             }
             video += String(
-                format: " · rate %.1f Mbps · size p50/p95 %d/%d B",
+                format: " · %.1f Mbps · size p50/p95 %d/%d B",
                 Double(q.bitsPerSecond) / 1e6,
                 q.frameBytesP50, q.frameBytesP95)
             // V-5: what the wire actually carries (SPS-parsed), the

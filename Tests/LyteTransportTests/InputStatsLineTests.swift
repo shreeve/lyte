@@ -11,21 +11,14 @@ import LyteWire
 // books; the contract pinned here is the formatter's.
 final class InputStatsLineTests: XCTestCase {
 
-    func testOverlayLineRendersAtZeroEventsWithCaptureVerdict() throws {
-        // A fresh sender that never sent: the line must still exist,
-        // say zero, and name the capture state — both states.
+    func testOverlayLineRendersAtZeroEvents() throws {
+        // A fresh sender that never sent: the line must still exist
+        // and say zero — the datum that discriminates a client-capture
+        // failure from a host-side one. (Capture state itself moved to
+        // the overlay's state line, 2026-07-30 consult round two.)
         let stats = InputSender(clockModel: HostClockModel()) { _, _ in }
             .snapshotStats()
-        // The 2026-07-30 plain-language rename: "applied on host" (the
-        // measurement includes the network leg — "inject" overclaimed),
-        // "keys+mouse" (no collision with screen capture or mode
-        // ACTIVE), name-first counts.
-        XCTAssertEqual(
-            stats.overlayLine(captureActive: false),
-            "input sent 0 · keys+mouse NOT CAPTURED")
-        XCTAssertEqual(
-            stats.overlayLine(captureActive: true),
-            "input sent 0 · keys+mouse captured")
+        XCTAssertEqual(stats.overlayLine(), "input  sent 0 events")
     }
 
     func testOverlayLineRendersLatencyPercentilesExactly() throws {
@@ -56,8 +49,7 @@ final class InputStatsLineTests: XCTestCase {
             now: ClientTimestamp(microseconds: 1_012_000))
 
         XCTAssertEqual(
-            sender.snapshotStats().overlayLine(captureActive: true),
-            "input sent 1 · applied on host p50/p99 101.5/101.5 ms"
-                + " · keys+mouse captured")
+            sender.snapshotStats().overlayLine(),
+            "input  sent 1 events · applied on host p50/p99 101.5/101.5 ms")
     }
 }
