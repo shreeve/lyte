@@ -378,7 +378,12 @@ final class NackRepairGateTests: XCTestCase {
 
     func testNackPastFreezeBudgetArmsTheCoalescedIdrLatch() throws {
         let box = Box()
-        let session = makeSession(box: box)
+        // Pin the HS-17 constant via the HS-32 override: this leg
+        // tests the refusal behavior, not the derivation (which has
+        // its own legs below).
+        let session = makeSession(box: box) {
+            $0.repairFreezeBudgetOverrideNS = 33_333_333
+        }
         var now: UInt64 = 0
         try establishSrtt(session, box: box, now: &now)
 
@@ -391,8 +396,7 @@ final class NackRepairGateTests: XCTestCase {
         )
         drain(session, box: box, until: now + 10 * Self.ms, now: &now)
 
-        // 50 ms later: past the 33.3 ms freeze budget (2 frame
-        // intervals at 60 fps — Work mode has no video jitter buffer).
+        // 50 ms later: past the overridden 33.3 ms freeze budget.
         now = ingestedAt + 50 * Self.ms
         let events = try feed(
             session,
@@ -443,7 +447,7 @@ final class NackRepairGateTests: XCTestCase {
         // Tight retention, roomy budget: isolate the eviction verdict.
         let session = makeSession(box: box) {
             $0.repairRetentionNS = 100 * Self.ms
-            $0.repairFreezeBudgetNS = 10_000 * Self.ms
+            $0.repairFreezeBudgetOverrideNS = 10_000 * Self.ms
         }
         var now: UInt64 = 0
         try establishSrtt(session, box: box, now: &now)
@@ -502,6 +506,361 @@ final class NackRepairGateTests: XCTestCase {
             frame: FrameNumber(rawValue: 0), reason: .sendsSuppressed
         )), "closed sessions retransmit nothing")
         XCTAssertFalse(session.takeFreshKeyframeRequest())
+    }
+
+    // MARK: Leg 2b — HS-32: the derived budget, explicit refusals,
+    // and the opening-IDR exemption
+
+    /// One empty (parseable) report — cadence evidence only.
+    private func feedCadenceReport(
+        _ session: Session, now: UInt64
+    ) throws {
+        _ = try feed(
+            session,
+            report: FeedbackReport(
+                clientTimestamp: ClientTimestamp(
+                    microseconds: now / 1_000
+                ),
+                channels: [], nacks: []
+            ),
+            now: now
+        )
+    }
+
+    /// Every 0x23 refusal on the control class, decoded off the wire.
+    private func refusalsOnWire(_ box: Box) throws -> [RepairRefusal] {
+        var out: [RepairRefusal] = []
+        for (_, datagram) in box.sent
+        where datagram.pacerClass == .control {
+            let (_, payload) = try Envelope.decode(datagram.bytes)
+            if payload.first == CtrlMessageType.repairRefused {
+                out.append(try RepairRefusal.decode(Array(payload)))
+            }
+        }
+        return out
+    }
+
+    func testFreezeBudgetDerivesFromObservedCadence() throws {
+        let box = Box()
+        let session = makeSession(box: box)
+        var now: UInt64 = 0
+        try establishSrtt(session, box: box, now: &now)
+        // Before evidence: the 50 ms documented worst-case cadence.
+        XCTAssertEqual(
+            session.repairFreezeBudgetNS,
+            UInt64(1.5 * 50_000_000) + 15_000_000,
+            "pre-evidence budget = 1.5 × 50 ms worst case + 15 ms"
+        )
+        // Reports on the client's reference 40 ms cadence.
+        for _ in 0..<4 {
+            try feedCadenceReport(session, now: now)
+            now += 40 * Self.ms
+        }
+        XCTAssertEqual(
+            session.repairFreezeBudgetNS,
+            UInt64(1.5 * 40_000_000) + 15_000_000,
+            "budget = 1.5 × observed cadence + 15 ms jitter allowance"
+        )
+    }
+
+    func testAskOnTheCadenceIsNowHonoredAndReAskStaysSilent() throws {
+        // The HS-32 headline: an ask arriving 50 ms after the flight —
+        // dead on arrival under HS-17's 33 ms constant BY CONSTRUCTION
+        // (the ask itself rides the 40 ms feedback cadence) — is
+        // inside the derived budget, and the repair actually flies.
+        let box = Box()
+        let session = makeSession(box: box)
+        var now: UInt64 = 0
+        try establishSrtt(session, box: box, now: &now)
+        for _ in 0..<3 {
+            try feedCadenceReport(session, now: now)
+            now += 40 * Self.ms
+        }
+        box.sendInstant = now
+        let flightAt = now
+        _ = try session.ingestVideoFrame(
+            syntheticFrame(byteCount: 8_000),
+            captureTimestampMicroseconds: now / 1_000,
+            isKeyframe: false, now: now
+        )
+        drain(session, box: box, until: now + 10 * Self.ms, now: &now)
+
+        now = flightAt + 50 * Self.ms
+        let events = try feed(
+            session,
+            report: nackReport(frame: 0, shards: [0, 1],
+                               clientMicros: now / 1_000),
+            now: now
+        )
+        XCTAssertTrue(events.contains(.repairEnqueued(
+            frame: FrameNumber(rawValue: 0), shards: 2
+        )), "the on-cadence ask is honored under the derived budget")
+        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
+        XCTAssertEqual(box.tail().count, 2)
+        XCTAssertEqual(session.counters.repairRefusalsSent, 0)
+        XCTAssertFalse(session.takeFreshKeyframeRequest())
+
+        // A re-ask for the same shards is alreadyRepaired — and stays
+        // SILENT: the repairs may be in flight, and a refusal would
+        // double-heal into an IDR.
+        now += Self.ms
+        let again = try feed(
+            session,
+            report: nackReport(frame: 0, shards: [0, 1],
+                               clientMicros: now / 1_000),
+            now: now
+        )
+        XCTAssertTrue(again.contains(.nackJudgedStale(
+            frame: FrameNumber(rawValue: 0), reason: .alreadyRepaired
+        )))
+        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
+        XCTAssertTrue(try refusalsOnWire(box).isEmpty)
+        XCTAssertEqual(session.counters.repairRefusalsSent, 0)
+    }
+
+    func testBudgetRefusalIsExplicitOnTheWire() throws {
+        let box = Box()
+        let session = makeSession(box: box) {
+            $0.repairFreezeBudgetOverrideNS = 33_333_333
+        }
+        var now: UInt64 = 0
+        try establishSrtt(session, box: box, now: &now)
+        box.sendInstant = now
+        let flightAt = now
+        _ = try session.ingestVideoFrame(
+            syntheticFrame(byteCount: 8_000),
+            captureTimestampMicroseconds: now / 1_000,
+            isKeyframe: false, now: now
+        )
+        drain(session, box: box, until: now + 10 * Self.ms, now: &now)
+
+        now = flightAt + 50 * Self.ms
+        _ = try feed(
+            session,
+            report: nackReport(frame: 0, shards: [0],
+                               clientMicros: now / 1_000),
+            now: now
+        )
+        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
+        XCTAssertEqual(try refusalsOnWire(box), [RepairRefusal(
+            frame: FrameNumber(rawValue: 0), reason: .staleBudget
+        )], "a budget refusal is explicit on the wire — 0x23")
+        XCTAssertEqual(session.counters.repairRefusalsSent, 1)
+        XCTAssertTrue(box.tail().isEmpty)
+    }
+
+    func testOlderThanIdrRefusalRidesSuperseded() throws {
+        let box = Box()
+        let session = makeSession(box: box)
+        var now: UInt64 = 0
+        try establishSrtt(session, box: box, now: &now)
+        box.sendInstant = now
+        _ = try session.ingestVideoFrame(
+            syntheticFrame(byteCount: 8_000),
+            captureTimestampMicroseconds: now / 1_000,
+            isKeyframe: false, now: now
+        )
+        _ = try session.ingestVideoFrame(
+            syntheticFrame(byteCount: 12_000, irap: true),
+            captureTimestampMicroseconds: now / 1_000,
+            isKeyframe: true, now: now
+        )
+        drain(session, box: box, until: now + 15 * Self.ms, now: &now)
+
+        _ = try feed(
+            session,
+            report: nackReport(frame: 0, shards: [0],
+                               clientMicros: now / 1_000),
+            now: now
+        )
+        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
+        XCTAssertEqual(try refusalsOnWire(box), [RepairRefusal(
+            frame: FrameNumber(rawValue: 0), reason: .superseded
+        )], "older-than-IDR refuses dead but tells the client")
+    }
+
+    func testEvictedFrameRefusalRidesUnknownFrame() throws {
+        let box = Box()
+        let session = makeSession(box: box) {
+            $0.repairRetentionNS = 100 * Self.ms
+            $0.repairFreezeBudgetOverrideNS = 10_000 * Self.ms
+        }
+        var now: UInt64 = 0
+        try establishSrtt(session, box: box, now: &now)
+        box.sendInstant = now
+        _ = try session.ingestVideoFrame(
+            syntheticFrame(byteCount: 8_000),
+            captureTimestampMicroseconds: now / 1_000,
+            isKeyframe: false, now: now
+        )
+        drain(session, box: box, until: now + 10 * Self.ms, now: &now)
+        now += 200 * Self.ms
+        box.sendInstant = now
+        _ = try session.ingestVideoFrame(
+            syntheticFrame(byteCount: 8_000),
+            captureTimestampMicroseconds: now / 1_000,
+            isKeyframe: false, now: now
+        )
+        drain(session, box: box, until: now + 10 * Self.ms, now: &now)
+
+        _ = try feed(
+            session,
+            report: nackReport(frame: 0, shards: [0],
+                               clientMicros: now / 1_000),
+            now: now
+        )
+        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
+        XCTAssertEqual(try refusalsOnWire(box), [RepairRefusal(
+            frame: FrameNumber(rawValue: 0), reason: .unknownFrame
+        )])
+    }
+
+    func testOpeningIdrExemptionRepairsBlackGlass() throws {
+        let box = Box()
+        let session = makeSession(box: box)
+        var now: UInt64 = Self.ms
+        // Deliberately NO SRTT: at session open the first beacon echo
+        // may be up to a second away — the exemption must not need it.
+        box.sendInstant = now
+        let flightAt = now
+        _ = try session.ingestVideoFrame(
+            syntheticFrame(byteCount: 12_000, irap: true),
+            captureTimestampMicroseconds: now / 1_000,
+            isKeyframe: true, now: now
+        )
+        drain(session, box: box, until: now + 10 * Self.ms, now: &now)
+
+        // 200 ms later — hopeless under ANY budget. Nothing has ever
+        // reached the glass, so the last IDR is repairable regardless.
+        now = flightAt + 200 * Self.ms
+        let events = try feed(
+            session,
+            report: nackReport(frame: 0, shards: [0],
+                               clientMicros: now / 1_000),
+            now: now
+        )
+        XCTAssertTrue(events.contains(.repairEnqueued(
+            frame: FrameNumber(rawValue: 0), shards: 1
+        )), "black glass: the opening IDR repairs regardless of age")
+        XCTAssertEqual(session.counters.openingExemptRepairsHonored, 1)
+        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
+        XCTAssertEqual(box.tail().count, 1)
+        XCTAssertTrue(box.tail().allSatisfy(\.isKeyframe))
+        XCTAssertTrue(try refusalsOnWire(box).isEmpty)
+    }
+
+    func testOpeningExemptionIsAttemptAndByteBounded() throws {
+        // Attempt bound.
+        let box = Box()
+        let session = makeSession(box: box) {
+            $0.openingRepairMaxAttempts = 1
+        }
+        var now: UInt64 = Self.ms
+        box.sendInstant = now
+        let flightAt = now
+        _ = try session.ingestVideoFrame(
+            syntheticFrame(byteCount: 12_000, irap: true),
+            captureTimestampMicroseconds: now / 1_000,
+            isKeyframe: true, now: now
+        )
+        drain(session, box: box, until: now + 10 * Self.ms, now: &now)
+        now = flightAt + 200 * Self.ms
+        _ = try feed(
+            session,
+            report: nackReport(frame: 0, shards: [0],
+                               clientMicros: now / 1_000),
+            now: now
+        )
+        XCTAssertEqual(session.counters.openingExemptRepairsHonored, 1)
+        now += Self.ms
+        let second = try feed(
+            session,
+            report: nackReport(frame: 0, shards: [1],
+                               clientMicros: now / 1_000),
+            now: now
+        )
+        XCTAssertTrue(second.contains(.nackJudgedStale(
+            frame: FrameNumber(rawValue: 0), reason: .budgetExceeded
+        )), "the attempt bound holds — no congestion amplification")
+        XCTAssertEqual(session.counters.openingExemptRepairsHonored, 1)
+
+        // Byte bound.
+        let box2 = Box()
+        let session2 = makeSession(box: box2) {
+            $0.openingRepairMaxBytes = 1
+        }
+        now = Self.ms
+        box2.sendInstant = now
+        let flightAt2 = now
+        _ = try session2.ingestVideoFrame(
+            syntheticFrame(byteCount: 12_000, irap: true),
+            captureTimestampMicroseconds: now / 1_000,
+            isKeyframe: true, now: now
+        )
+        drain(session2, box: box2, until: now + 10 * Self.ms, now: &now)
+        now = flightAt2 + 200 * Self.ms
+        let asked = try feed(
+            session2,
+            report: nackReport(frame: 0, shards: [0],
+                               clientMicros: now / 1_000),
+            now: now
+        )
+        XCTAssertTrue(asked.contains(.nackJudgedStale(
+            frame: FrameNumber(rawValue: 0), reason: .budgetExceeded
+        )), "the byte bound holds")
+        XCTAssertEqual(session2.counters.openingExemptRepairsHonored, 0)
+    }
+
+    func testGlassEvidenceEndsTheOpeningExemption() throws {
+        let box = Box()
+        let session = makeSession(box: box)
+        var now: UInt64 = Self.ms
+        box.sendInstant = now
+        let flightAt = now
+        let shardCount = try session.ingestVideoFrame(
+            syntheticFrame(byteCount: 12_000, irap: true),
+            captureTimestampMicroseconds: now / 1_000,
+            isKeyframe: true, now: now
+        )
+        drain(session, box: box, until: now + 10 * Self.ms, now: &now)
+
+        // The client reports clean receipt through the opening group:
+        // a frame plausibly completed — the exemption dies for good.
+        _ = try feed(
+            session,
+            report: FeedbackReport(
+                clientTimestamp: ClientTimestamp(
+                    microseconds: now / 1_000
+                ),
+                channels: [FeedbackReport.ChannelStats(
+                    channel: .videoActive,
+                    highestSeq: ChannelSeq(
+                        rawValue: UInt16(shardCount - 1)
+                    ),
+                    received: UInt32(shardCount),
+                    missing: 0,
+                    duplicates: 0
+                )],
+                nacks: []
+            ),
+            now: now
+        )
+
+        now = flightAt + 200 * Self.ms
+        let events = try feed(
+            session,
+            report: nackReport(frame: 0, shards: [0],
+                               clientMicros: now / 1_000),
+            now: now
+        )
+        XCTAssertTrue(events.contains(.nackJudgedStale(
+            frame: FrameNumber(rawValue: 0), reason: .budgetExceeded
+        )), "with glass evidence the normal budget gate governs")
+        XCTAssertEqual(session.counters.openingExemptRepairsHonored, 0)
+        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
+        XCTAssertEqual(try refusalsOnWire(box), [RepairRefusal(
+            frame: FrameNumber(rawValue: 0), reason: .staleBudget
+        )])
     }
 
     // MARK: Leg 3 — the ≥4 s ring's eviction laws (channel level)

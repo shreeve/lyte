@@ -127,14 +127,48 @@ public struct SessionConfig: Sendable {
     /// session rate IS the ceiling (no capability key carries bitrate
     /// in v1) and the floor is resiliency's 500 kbps.
     public var estimator: RateEstimatorConfig?
-    /// HS-17: the retransmit gate's freeze budget (resiliency §1.1
-    /// rule 3, numbers from the overview's ruling: client jitter
-    /// buffer + 2 frame intervals; Work mode has no video jitter
-    /// buffer, so 2 frame intervals — 33 ms at the 60 fps reference).
-    /// A NACK is honored iff SRTT + retransmit serialization still fit
-    /// inside what remains of this budget, measured from the frame's
-    /// packetize instant.
-    public var repairFreezeBudgetNS: UInt64
+    /// HS-17 → HS-32: the retransmit gate's freeze budget. A NACK is
+    /// honored iff SRTT + retransmit serialization still fit inside
+    /// what remains of the budget, measured from the frame's last
+    /// shard release. HS-17 pinned the budget at a constant 2 frame
+    /// intervals (33 ms) — which the squeeze review §2 proved DEAD ON
+    /// ARRIVAL by construction: the ask itself rides the client's
+    /// 25–50 ms feedback cadence, so nearly every honest ask arrived
+    /// already past the budget (twin-leg books: 82 asks, 1682 shards,
+    /// 0 frames repaired). The budget is now DERIVED:
+    ///
+    ///   budget = repairBudgetCadenceMultiplier × observedCadence
+    ///            + repairBudgetJitterAllowanceNS
+    ///
+    /// where observedCadence is an EWMA (α = 1/8) of feedback-report
+    /// inter-arrival CLAMPED to the wire-pinned 25–50 ms cadence
+    /// range (out-of-cadence NACK flushes and lost reports are not
+    /// the cadence), starting from the 50 ms documented worst case
+    /// before evidence exists. Derivation rationale: an ask detected
+    /// geometry-immediately waits at most one cadence for its report
+    /// plus one one-way trip — 1.5× the cadence covers both, and the
+    /// allowance covers both ends' scheduling jitter. At the client's
+    /// reference 40 ms cadence the derived budget is 75 ms, well
+    /// inside the client's 250 ms assembler horizon (the TRUE ceiling
+    /// a repair must beat before the group evicts), so "honor" still
+    /// promises a repair the glass can use. Non-nil here overrides
+    /// the derivation entirely (tests, ops).
+    public var repairFreezeBudgetOverrideNS: UInt64?
+    /// HS-32: the derived budget's cadence multiplier (see above).
+    public var repairBudgetCadenceMultiplier: Double
+    /// HS-32: the derived budget's scheduling-jitter allowance.
+    public var repairBudgetJitterAllowanceNS: UInt64
+    /// HS-32: the opening-IDR exemption's bounds. While NO frame has
+    /// plausibly ever completed at the client (nothing on glass yet),
+    /// the LAST IDR stays repairable regardless of the freeze budget:
+    /// a black glass is the one case where a late repair beats a
+    /// re-minted IDR that starts even later. Bounded by honored asks
+    /// and repair bytes so the exemption can never amplify
+    /// congestion (the consult's caution); the client's own ask
+    /// discipline (once-ever per shard, ≤250 ms old) bounds it again
+    /// from the other end.
+    public var openingRepairMaxAttempts: Int
+    public var openingRepairMaxBytes: Int
     /// HS-17: the repair store's retention window (build plan's
     /// "≥4 s rings") and byte cap, passed through to VideoChannel.
     public var repairRetentionNS: UInt64
@@ -154,7 +188,11 @@ public struct SessionConfig: Sendable {
         lifecycle: SessionMachineConfig = SessionMachineConfig(),
         idleFlipQuietNS: UInt64 = 3_000_000_000,
         estimator: RateEstimatorConfig? = nil,
-        repairFreezeBudgetNS: UInt64 = 33_333_333,
+        repairFreezeBudgetOverrideNS: UInt64? = nil,
+        repairBudgetCadenceMultiplier: Double = 1.5,
+        repairBudgetJitterAllowanceNS: UInt64 = 15_000_000,
+        openingRepairMaxAttempts: Int = 4,
+        openingRepairMaxBytes: Int = 2 << 20,
         repairRetentionNS: UInt64 = 4_000_000_000,
         repairStoreByteCap: Int = 16 << 20
     ) {
@@ -171,7 +209,11 @@ public struct SessionConfig: Sendable {
         self.lifecycle = lifecycle
         self.idleFlipQuietNS = idleFlipQuietNS
         self.estimator = estimator
-        self.repairFreezeBudgetNS = repairFreezeBudgetNS
+        self.repairFreezeBudgetOverrideNS = repairFreezeBudgetOverrideNS
+        self.repairBudgetCadenceMultiplier = repairBudgetCadenceMultiplier
+        self.repairBudgetJitterAllowanceNS = repairBudgetJitterAllowanceNS
+        self.openingRepairMaxAttempts = openingRepairMaxAttempts
+        self.openingRepairMaxBytes = openingRepairMaxBytes
         self.repairRetentionNS = repairRetentionNS
         self.repairStoreByteCap = repairStoreByteCap
     }
@@ -551,6 +593,13 @@ public struct SessionCounters: Equatable, Sendable {
     public var repairDatagramsEnqueued = 0
     /// Stale verdicts that armed the coalesced keyframe latch.
     public var idrArmedOnStaleNack = 0
+    /// HS-32: explicit 0x23 repair refusals sent (stale-budget,
+    /// superseded, unknown-frame — the verdicts the client can act
+    /// on; FROZEN/closed and already-repaired stay silent by design).
+    public var repairRefusalsSent = 0
+    /// HS-32: NACKs honored under the opening-IDR exemption (nothing
+    /// on glass yet — the last IDR repairable regardless of budget).
+    public var openingExemptRepairsHonored = 0
     /// FEC regime steps applied to the packetizing seam.
     public var fecRegimeSteps = 0
     /// HS-18: 0x18 routing requests delivered (past the rule-3 gate).
@@ -669,6 +718,22 @@ public final class Session {
     /// IDR books (the estimator-ramp hunt) can name which one minted a
     /// keyframe. Merged into the same poll; behavior unchanged.
     private var staleNackKeyframePending = false
+    /// HS-32: EWMA (α = 1/8) of feedback-report inter-arrival, each
+    /// sample clamped to the wire-pinned 25–50 ms cadence range; nil
+    /// before the second parsed report (the derived budget then uses
+    /// the 50 ms documented worst case).
+    private var feedbackCadenceEwmaNS: UInt64?
+    private var lastFeedbackParsedAtNS: UInt64?
+    /// HS-32: sticky once a feedback report shows every video datagram
+    /// through the opening IDR's group delivered (missing 0, received
+    /// ≥ its shard count) — the host-visible proxy for "a frame
+    /// plausibly completed at the client". Conservative-armed: any
+    /// early loss keeps the opening exemption alive, which its
+    /// attempt/byte bounds make safe.
+    private var clientGlassEvidence = false
+    private var openingIdrShardTotal: Int?
+    private var openingExemptAttempts = 0
+    private var openingExemptBytes = 0
     /// The converged ratchet frame awaiting its one-shot ride.
     private var convergedFrame:
         (annexB: [UInt8], frame: FrameNumber, captureMicros: UInt64)?
@@ -1125,6 +1190,12 @@ public final class Session {
             lastInputSeq: lastInputSeq,
             now: now
         )
+        // HS-32: the opening exemption's glass proxy needs the first
+        // IDR's group size — "received everything through this group"
+        // is the evidence that something plausibly decoded.
+        if isKeyframe, openingIdrShardTotal == nil {
+            openingIdrShardTotal = shards
+        }
         nextVideoFrameNumber = nextVideoFrameNumber.next
         return shards
     }
@@ -2068,6 +2139,29 @@ public final class Session {
             return [.dropped(.malformedFeedback)]
         }
         counters.feedbackReportsParsed += 1
+        // HS-32: the derived freeze budget's cadence evidence — an
+        // EWMA of report inter-arrival, each sample clamped to the
+        // wire-pinned 25–50 ms cadence range so out-of-cadence NACK
+        // flushes and lost reports never masquerade as the cadence.
+        if let last = lastFeedbackParsedAtNS {
+            let sample = min(max(now &- last, 25_000_000), 50_000_000)
+            feedbackCadenceEwmaNS = feedbackCadenceEwmaNS.map {
+                ($0 * 7 &+ sample) / 8
+            } ?? sample
+        }
+        lastFeedbackParsedAtNS = now
+        // HS-32: the opening exemption's glass proxy — a report
+        // showing every video datagram through the opening IDR's
+        // group delivered means a frame plausibly completed; the
+        // exemption dies for good.
+        if !clientGlassEvidence, let total = openingIdrShardTotal {
+            for block in report.channels
+            where block.channel == .videoActive
+                && block.missing == 0
+                && block.received >= UInt32(total) {
+                clientGlassEvidence = true
+            }
+        }
         // The video-class backlog rides along (HS-22c): while the
         // pacer holds a standing queue, delivery trains measure our
         // own pacing — the estimator's self-reference gate needs to
@@ -2103,7 +2197,9 @@ public final class Session {
             events.append(.fecRegimeChanged(regime))
         }
         for nack in report.nacks {
-            events += respondToNack(nack, now: now)
+            events += respondToNack(
+                nack, now: now, hostMicroseconds: hostMicroseconds
+            )
         }
         for clean in verdict.recoveryWindows {
             events += runMachine(
@@ -2112,6 +2208,21 @@ public final class Session {
             )
         }
         return events
+    }
+
+    /// HS-32: the freeze budget actually in force — the config
+    /// override when set, otherwise the derivation documented on
+    /// `repairFreezeBudgetOverrideNS` (multiplier × observed cadence
+    /// + jitter allowance; 50 ms worst-case cadence before evidence).
+    public var repairFreezeBudgetNS: UInt64 {
+        if let override = config.repairFreezeBudgetOverrideNS {
+            return override
+        }
+        let cadenceNS = feedbackCadenceEwmaNS ?? 50_000_000
+        let scaled = UInt64(
+            config.repairBudgetCadenceMultiplier * Double(cadenceNS)
+        )
+        return scaled &+ config.repairBudgetJitterAllowanceNS
     }
 
     /// The HS-17 NACK responder: resiliency §1.1 rules 3–4 over the
@@ -2125,11 +2236,25 @@ public final class Session {
     ///   keyframe latch client 0x10 requests pull — the next
     ///   `takeFreshKeyframeRequest` poll answers with a fresh IDR.
     ///
+    /// HS-32 grew two things. (1) Refusals the client can act on are
+    /// EXPLICIT: budget-gone, older-than-IDR, and store-gone verdicts
+    /// each send one 0x23 RepairRefusal (sealed, ARQ-exempt,
+    /// fire-and-forget — a lost refusal degrades to the client's own
+    /// deadline), so the client stops blind-waiting 250 ms on repairs
+    /// that were never coming. Already-repaired stays silent (repairs
+    /// may be in flight; a refusal would double-heal into an IDR) and
+    /// FROZEN/closed stays silent (the path is dark). (2) The
+    /// opening-IDR exemption: while nothing has plausibly reached the
+    /// client's glass, an ask naming the LAST IDR is honored
+    /// regardless of the budget — bounded by attempts and bytes.
+    ///
     /// FROZEN suppresses retransmits with the rest of datagram video
     /// (§4's freeze protocol) — RECOVERY's forced IDR is the heal
     /// there, so the latch is deliberately NOT armed.
     private func respondToNack(
-        _ nack: FeedbackReport.NackEntry, now: UInt64
+        _ nack: FeedbackReport.NackEntry,
+        now: UInt64,
+        hostMicroseconds: UInt64
     ) -> [SessionEvent] {
         counters.nackEntriesReceived += 1
 
@@ -2141,7 +2266,32 @@ public final class Session {
                 staleNackKeyframePending = true
                 counters.idrArmedOnStaleNack += 1
             }
-            return [.nackJudgedStale(frame: nack.frame, reason: reason)]
+            var events: [SessionEvent] = [
+                .nackJudgedStale(frame: nack.frame, reason: reason)
+            ]
+            let refusalReason: RepairRefusalReason?
+            switch reason {
+            case .budgetExceeded: refusalReason = .staleBudget
+            case .olderThanIdr: refusalReason = .superseded
+            case .unavailable: refusalReason = .unknownFrame
+            case .alreadyRepaired, .sendsSuppressed: refusalReason = nil
+            }
+            if let refusalReason {
+                do {
+                    try sendCtrl(
+                        body: RepairRefusal(
+                            frame: nack.frame, reason: refusalReason
+                        ).encode(),
+                        sealed: true,
+                        now: now, hostMicroseconds: hostMicroseconds
+                    )
+                    counters.repairRefusalsSent += 1
+                } catch {
+                    events.append(
+                        .sendFailed("repair refusal: \(error)"))
+                }
+            }
+            return events
         }
 
         if videoFrozen || machine?.state == .closed {
@@ -2170,34 +2320,50 @@ public final class Session {
             // (rule 4's client half).
             return stale(.alreadyRepaired, armIdr: false)
         }
-        // Rule 3's gate. The budget clock started when the frame's
-        // flight completed (the client cannot judge it FEC-impossible
-        // earlier); the NACK's propagation up is already inside the
-        // elapsed time. No RTT evidence means no honest promise the
-        // repair lands in budget — stale. The RTT term is SRTT capped
-        // at 2 × min-RTT: the beacon-echo SRTT double-counts both
-        // ends' receive-loop wake latency (measured 7–13 ms on a
-        // 0.3 ms loopback), which a repair datagram — straight onto
-        // the pacer, no beacon service point — never pays; genuine
-        // path queueing moves min-RTT with it and still governs.
-        let elapsedNS = now &- ingestedAt
-        let budgetNS = config.repairFreezeBudgetNS
-        guard elapsedNS < budgetNS,
-              let srttMicros = estimator.srttMicroseconds
-        else {
-            return stale(.budgetExceeded, armIdr: true)
-        }
-        let remainingNS = budgetNS - elapsedNS
-        let rttMicros = min(
-            max(srttMicros, 0),
-            2 * max(estimator.minRttMicroseconds ?? srttMicros, 0)
-        )
-        let rttNS = UInt64(rttMicros) &* 1_000
-        let serializationNS = UInt64(
-            Double(repairBytes) * 8 / Double(channel.rateBitsPerSecond) * 1e9
-        )
-        guard rttNS + serializationNS < remainingNS else {
-            return stale(.budgetExceeded, armIdr: true)
+        // HS-32: the opening-IDR exemption. While nothing has
+        // plausibly reached the client's glass, an ask naming the
+        // LAST IDR skips the budget gate entirely (SRTT may not even
+        // exist yet at session open — the first beacon echo is up to
+        // 1 s away): a black glass is the one case where a late
+        // repair beats a re-minted IDR that starts even later.
+        // Attempt/byte-bounded so it can never amplify congestion.
+        let openingExempt = !clientGlassEvidence
+            && channel.lastKeyframeNumber == nack.frame
+            && openingExemptAttempts < config.openingRepairMaxAttempts
+            && openingExemptBytes + repairBytes
+                <= config.openingRepairMaxBytes
+        if !openingExempt {
+            // Rule 3's gate. The budget clock started when the frame's
+            // flight completed (the client cannot judge it
+            // FEC-impossible earlier); the NACK's propagation up is
+            // already inside the elapsed time. No RTT evidence means
+            // no honest promise the repair lands in budget — stale.
+            // The RTT term is SRTT capped at 2 × min-RTT: the
+            // beacon-echo SRTT double-counts both ends' receive-loop
+            // wake latency (measured 7–13 ms on a 0.3 ms loopback),
+            // which a repair datagram — straight onto the pacer, no
+            // beacon service point — never pays; genuine path queueing
+            // moves min-RTT with it and still governs.
+            let elapsedNS = now &- ingestedAt
+            let budgetNS = repairFreezeBudgetNS
+            guard elapsedNS < budgetNS,
+                  let srttMicros = estimator.srttMicroseconds
+            else {
+                return stale(.budgetExceeded, armIdr: true)
+            }
+            let remainingNS = budgetNS - elapsedNS
+            let rttMicros = min(
+                max(srttMicros, 0),
+                2 * max(estimator.minRttMicroseconds ?? srttMicros, 0)
+            )
+            let rttNS = UInt64(rttMicros) &* 1_000
+            let serializationNS = UInt64(
+                Double(repairBytes) * 8
+                    / Double(channel.rateBitsPerSecond) * 1e9
+            )
+            guard rttNS + serializationNS < remainingNS else {
+                return stale(.budgetExceeded, armIdr: true)
+            }
         }
 
         let enqueued: Int
@@ -2212,6 +2378,11 @@ public final class Session {
         }
         guard enqueued > 0 else {
             return stale(.unavailable, armIdr: true)
+        }
+        if openingExempt {
+            openingExemptAttempts += 1
+            openingExemptBytes += repairBytes
+            counters.openingExemptRepairsHonored += 1
         }
         counters.nacksHonored += 1
         counters.repairDatagramsEnqueued += enqueued

@@ -1891,7 +1891,10 @@ func run() throws {
         repair: \(s.nackEntriesReceived) NACK entries \
         (\(s.nacksHonored) honored → \(s.repairDatagramsEnqueued) repair \
         datagrams, \(s.nacksJudgedStale) stale, \
-        \(s.idrArmedOnStaleNack) IDR-armed), \
+        \(s.repairRefusalsSent) refusals sent, \
+        \(s.openingExemptRepairsHonored) opening-exempt, \
+        \(s.idrArmedOnStaleNack) IDR-armed; \
+        budget \(wire.repairBudgetMS) ms), \
         \(wire.estimatorStats.nackShardsCounted) post-FEC shards counted \
         (\(wire.estimatorStats.nackShardsRecused) recused as self-drain), \
         \(wire.estimatorStats.postFecDownshifts) rung-3 downshifts, \

@@ -272,6 +272,8 @@ final class SessionWire {
     var fecRegime: FecRegime { session.fecRegime }
     var srttMicros: Int64? { session.srttMicroseconds }
     var repairStoreBytes: Int { session.repairStoreBytes }
+    /// HS-32: the derived freeze budget in force (ms), for the books.
+    var repairBudgetMS: UInt64 { session.repairFreezeBudgetNS / 1_000_000 }
 
     /// - Parameters:
     ///   - listenPort: bind here and await a connecting client (nil =
