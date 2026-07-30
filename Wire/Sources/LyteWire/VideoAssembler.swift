@@ -192,8 +192,29 @@ public struct VideoAssembler: Sendable {
         var fecImpossibleReported = false
         /// Seqs already emitted as NACK candidates.
         var nackReported: Set<UInt16> = []
+        /// Leading present slots (indices 0..<contiguousPrefix are all
+        /// filled). Every absent slot therefore sits at or past this
+        /// index — its seq at or past seqBase+prefix — so ONE distance
+        /// check on the prefix seq bounds every absent seq's distance:
+        /// the sweep's clean-path early-out (in-order traffic keeps
+        /// prefix == receivedCount and never walks the slots).
+        var contiguousPrefix = 0
+        /// Latched by the sweep once no future pass can produce an
+        /// event here: every absent seq is NACK-reported and written
+        /// off, and the fec-impossible verdict is final (reported, or
+        /// impossible to reach — arrivals only shrink presumed losses
+        /// and grow best-case parity). Skipped thereafter.
+        var sweepSettled = false
 
         var isDecoded: Bool { decoded != nil }
+
+        /// Advance the prefix after `slots[index]` was just filled.
+        mutating func noteSlotFilled(at index: Int) {
+            guard index == contiguousPrefix else { return }
+            var p = contiguousPrefix + 1
+            while p < slots.count, slots[p] != nil { p += 1 }
+            contiguousPrefix = p
+        }
     }
 
     private var groups: [UInt32: Group] = [:]
@@ -252,6 +273,7 @@ public struct VideoAssembler: Sendable {
         }
 
         var events: [VideoAssemblerEvent] = []
+        var openedGroup = false
         let seqBase = envelope.seq.advanced(by: Int16(-Int(shardIndex)))
 
         // Insert the shard (or report why not). Redundant shards for an
@@ -274,6 +296,7 @@ public struct VideoAssembler: Sendable {
             } else {
                 group.slots[Int(shardIndex)] = Array(payload)
                 group.receivedCount += 1
+                group.noteSlotFilled(at: Int(shardIndex))
                 if isRepair {
                     events.append(.repairShardAccepted(
                         frame, shardIndex: shardIndex
@@ -295,15 +318,29 @@ public struct VideoAssembler: Sendable {
             )
             group.slots[Int(shardIndex)] = Array(payload)
             group.receivedCount = 1
+            group.noteSlotFilled(at: Int(shardIndex))
             attemptDecode(&group, frame: frame)
             groups[frame.rawValue] = group
+            openedGroup = true
         }
 
+        let seqAdvanced: Bool
         if highestSeq == nil || highestSeq! < envelope.seq {
             highestSeq = envelope.seq
+            seqAdvanced = true
+        } else {
+            seqAdvanced = false
         }
 
-        sweepLossPresumption(now: now, into: &events)
+        // The sweep can mint an event only when a distance grew (the
+        // highest seq advanced) or a group appeared whose seqs must be
+        // judged against the standing highest. A slot fill alone can
+        // only shrink candidacy — reported sets and latches never
+        // un-fire — so the common reordered-duplicate pass skips the
+        // whole walk.
+        if seqAdvanced || openedGroup {
+            sweepLossPresumption(now: now, into: &events)
+        }
         evict(now: now, into: &events)
         drain(now: now, into: &events)
         return events
@@ -374,15 +411,46 @@ public struct VideoAssembler: Sendable {
         now: ClientTimestamp, into events: inout [VideoAssemblerEvent]
     ) {
         guard let highest = highestSeq else { return }
-        for key in groups.keys.sorted() {
+        // First pass, unordered and allocation-light: which groups can
+        // possibly mint an event? Decoded/corrupt groups never can;
+        // settled ones latched out; and a group whose contiguous prefix
+        // reaches within the reorder threshold of the highest seq has
+        // no absent seq old enough to presume lost (absent slots all
+        // sit at or past the prefix). Clean in-order traffic — the
+        // ~2–4k datagrams/s common case — exits here without touching
+        // a single slot.
+        var walkKeys: [UInt32] = []
+        for (key, group) in groups {
+            if group.isDecoded || group.corrupt || group.sweepSettled {
+                continue
+            }
+            let prefixSeq = group.seqBase.advanced(
+                by: Int16(group.contiguousPrefix))
+            if Int(prefixSeq.distance(to: highest))
+                < config.reorderThresholdPackets {
+                continue
+            }
+            walkKeys.append(key)
+        }
+        guard !walkKeys.isEmpty else { return }
+
+        // A seq past this distance is both NACK-reported and written
+        // off — once every absent slot clears it (and the fec verdict
+        // is final), the group can never produce another sweep event.
+        let settleDistance = max(
+            config.reorderThresholdPackets,
+            config.fecImpossibleThresholdPackets
+        )
+
+        for key in walkKeys.sorted() {
             var group = groups[key]!
-            guard !group.isDecoded, !group.corrupt else { continue }
 
             let k = group.geometry.dataShards
             var newCandidates: [ChannelSeq] = []
             var missingIndices: [UInt8] = []
             var presumedLostData = 0
             var bestCaseParity = 0
+            var absentAllSettled = true
             for index in 0..<group.geometry.totalShards {
                 let present = group.slots[index] != nil
                 let seq = group.seqBase.advanced(by: Int16(index))
@@ -395,6 +463,9 @@ public struct VideoAssembler: Sendable {
                     if writtenOff { presumedLostData += 1 }
                 } else if !writtenOff {
                     bestCaseParity += 1
+                }
+                if !present, distance < settleDistance {
+                    absentAllSettled = false
                 }
                 if nackWorthy { missingIndices.append(UInt8(index)) }
                 if nackWorthy, !group.nackReported.contains(seq.rawValue) {
@@ -413,29 +484,46 @@ public struct VideoAssembler: Sendable {
                         now.microseconds(since: group.firstArrival)
                 ))
             }
+            var firedFecImpossible = false
             if presumedLostData > bestCaseParity, !group.fecImpossibleReported {
                 group.fecImpossibleReported = true
+                firedFecImpossible = true
                 events.append(.fecImpossible(
                     FrameNumber(rawValue: key),
                     presumedLostDataShards: presumedLostData,
                     bestCaseParityShards: bestCaseParity
                 ))
             }
-            groups[key] = group
+            // Settled: every absent seq reported + written off this
+            // pass, and the fec verdict can never newly fire (arrivals
+            // only shrink presumed losses and grow best-case parity).
+            group.sweepSettled = absentAllSettled
+                && (group.fecImpossibleReported
+                    || presumedLostData <= bestCaseParity)
+            if !newCandidates.isEmpty || firedFecImpossible
+                || group.sweepSettled {
+                groups[key] = group
+            }
         }
     }
 
     private mutating func evict(
         now: ClientTimestamp, into events: inout [VideoAssemblerEvent]
     ) {
-        for key in groups.keys.sorted() {
-            let group = groups[key]!
-            guard !group.isDecoded else { continue }
+        // Unordered staleness scan first — the per-datagram common case
+        // finds nothing and pays no sort allocation; evictions (rare)
+        // still report in ascending frame order.
+        var staleKeys: [UInt32] = []
+        for (key, group) in groups where !group.isDecoded {
             if now.microseconds(since: group.firstArrival)
                 >= config.staleAfterMicroseconds {
-                groups.removeValue(forKey: key)
-                events.append(.evicted(FrameNumber(rawValue: key), reason: .stale))
+                staleKeys.append(key)
             }
+        }
+        guard !staleKeys.isEmpty else { return }
+        for key in staleKeys.sorted() {
+            groups.removeValue(forKey: key)
+            events.append(.evicted(FrameNumber(rawValue: key), reason: .stale))
         }
     }
 
