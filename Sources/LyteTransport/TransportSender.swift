@@ -59,10 +59,22 @@ public final class TransportSender: @unchecked Sendable {
         plaintext: [UInt8],
         extensions: [WireExtension] = []
     ) throws -> Bool {
+        // Allocation and seal are ONE critical section (v1-final
+        // analysis, finding 4): NoiseTransport commits the extended
+        // counter at seal time and demands strict per-channel
+        // monotonicity, and chan 0 has three senders on three threads
+        // (ARQ service, beacon echo, IDR requester). Sealing outside
+        // the lock let a later-allocated seq commit first, so the
+        // earlier one's seal threw sendSequenceNotMonotonic — and the
+        // ARQ pass that lost the race abandoned its whole repacked
+        // batch for a PTO, exactly during the loss storms where all
+        // three collide. Holding the lock across allocate→seal makes
+        // allocation order the commit order by construction; only
+        // transmit (the syscall) stays outside. Lock order is
+        // sender→crypto everywhere, so this cannot deadlock.
         lock.lock()
         let seq = seqByChannel[channel.rawValue] ?? ChannelSeq(rawValue: 0)
         seqByChannel[channel.rawValue] = seq.next
-        lock.unlock()
 
         let envelope = Envelope(
             channel: channel,
@@ -72,20 +84,26 @@ public final class TransportSender: @unchecked Sendable {
             fec: 0,
             extensions: extensions
         )
-        // The header bytes double as the AAD — exactly what the receiver
-        // will slice off ahead of the payload.
-        let header = try envelope.encode(payload: [])
-        let sealed: [UInt8]
+        let datagram: [UInt8]
         do {
-            sealed = try crypto.seal(
-                plaintext: plaintext[...], aad: header[...], envelope: envelope)
+            // The header bytes double as the AAD — exactly what the
+            // receiver will slice off ahead of the payload.
+            let header = try envelope.encode(payload: [])
+            let sealed: [UInt8]
+            do {
+                sealed = try crypto.seal(
+                    plaintext: plaintext[...], aad: header[...],
+                    envelope: envelope)
+            } catch {
+                stats.sealFailures += 1
+                throw error
+            }
+            datagram = try envelope.encode(payload: sealed)
         } catch {
-            lock.lock()
-            stats.sealFailures += 1
             lock.unlock()
             throw error
         }
-        let datagram = try envelope.encode(payload: sealed)
+        lock.unlock()
 
         let sent = transmit(datagram)
         lock.lock()
