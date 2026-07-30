@@ -15,11 +15,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Host performance — the rate-fall moment
 
-7. **VBV exact-tighten** [S] — with rung changes costing zero IDRs (HS-33), the
-   √2 posture slack on tighten is pure quantization; tightens can land exactly
-   on the ceiling rate. Loosen keeps the measured 10 s sustain lag (load-bearing
-   per the 2026-07-29 A/B).
-
 8. **Log lines out from under the session lock** [S-M] — `SessionWire.swift`
    `log()` prints while `lock` is held; a stalled stdout pipe would freeze
    audio/pacing/capture (priority inversion through console I/O). Buffer under
@@ -148,6 +143,12 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
    rungs incl. a whole-session 20%-loss leg); suite 229/229 Mac AND pup.
    NOT yet observed live under a real fall — watch the new line on the next
    constrained-air session.
+
+7. **VBV exact-tighten** [S] — PR #7, merged 2026-07-30. `exactTighten`
+   config flag (shell-gated by the proven no-reset lib, same gate as the
+   half-rung ladder): tightens land exactly on the ceiling rate and material
+   within-band falls retune; loosen/restore untouched (10 s sustain stays).
+   5 pins incl. a ladder-mode control; suite 234/234 Mac AND pup.
 
 ## Closed
 
