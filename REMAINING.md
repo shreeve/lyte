@@ -17,11 +17,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Client performance — per-datagram fat on the receive thread
 
-15. **Histogram single-sort percentiles** [S] — `InputSender.swift:81`
-    `percentile` re-sorts the whole ring per call; overlay lines call p50 then
-    p99 (two sorts of up to 65,536 elements). One sort serving all requested
-    percentiles; right-size gauge capacity to the 3 s window law.
-
 ### Worth doing — bigger or design-flavored
 
 16. **Estimator stretched-train guard** [M] — the honest-vote classifier
@@ -152,6 +147,13 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
     `armedDeadlineMicros` bookkeeping with a ±1 ms skip band; the fired
     path clears it under the lock before re-arming (no sleep-forever), as
     does stop(). Root suite 213/213.
+
+15. **Histogram single-sort percentiles** [S] — PR #15, merged 2026-07-30.
+    `percentiles([q...])` answers every quantile from one sort; both
+    double-sorting overlay sites converted; element-exact pin. Capacity
+    right-sizing deliberately left as an owner call: the input gauge's
+    65,536-sample ring reads near-cumulative — say the word if the user
+    line should feel more recent. Root suite 214/214.
 
 ## Closed
 
