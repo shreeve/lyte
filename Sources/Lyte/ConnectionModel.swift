@@ -100,6 +100,9 @@ final class ConnectionModel {
     private let videoDeliveryQueue = DispatchQueue(
         label: "lyte.video.delivery", qos: .userInteractive)
     private let videoDeliveryBooks = VideoDeliveryBooks()
+    /// in-fps over the same ~1 s window shape as the delivery books'
+    /// out-fps, so the overlay's in/out slash-pair compares honestly.
+    private let videoInMeter = RateMeter()
 
     // F-5: roaming/reconnect. The policy exists for the whole
     // streaming life of a window (it IS the "can this window
@@ -1071,8 +1074,8 @@ final class ConnectionModel {
         let lost = missing > lateFilled ? missing - lateFilled : 0
         let expected = totals.datagrams + lost
         var wire = lost == 0
-            ? "wire   lost 0 of \(Self.compactCount(expected)) packets"
-            : String(format: "wire   lost %d of %@ packets (%.3f%%)",
+            ? "inbound:  lost 0 of \(Self.compactCount(expected)) host packets"
+            : String(format: "inbound:  lost %d of %@ host packets (%.3f%%)",
                      lost, Self.compactCount(expected),
                      100 * Double(lost) / Double(max(1, expected)))
         // roundtrip min + jitter, spelled out — "±" falsely implies a
@@ -1095,8 +1098,14 @@ final class ConnectionModel {
         // lowercase so a HEALTHY overlay contains zero uppercase — the
         // glance-test is "any caps anywhere?". FROZEN and NOT CAPTURED
         // are the only words allowed to shout.
-        var mode = "stream \(core.wireMode == .active ? "active" : "idle")"
+        var mode = "stream:   \(core.wireMode == .active ? "active" : "idle")"
         if core.isFrozen { mode += " — FROZEN" }
+        // Chroma lives HERE (owner catch, round three): it is fixed at
+        // ANNOUNCE — changing tiers means a reconnect — so it is a
+        // session state like the postures beside it, not a live metric.
+        if let chroma = core.streamChromaDescription {
+            mode += " · \(chroma)"
+        }
         if hostAudioNegotiated {
             switch hostAudioPosture {
             case .hostMuted: mode += " · host audio muted"
@@ -1120,7 +1129,7 @@ final class ConnectionModel {
 
         let audio = core.audio.snapshotStats()
         if audio.depacketizer.datagramsIngested > 0 {
-            var line = "audio "
+            var line = "audio:   "
             // Buffer depth in ms, not packets (exact: 5 ms hard-CBR
             // packets) — "15/40 ms of cushion" needs no decoder ring.
             if let p50 = audio.bufferDepthPackets.p50,
@@ -1140,33 +1149,35 @@ final class ConnectionModel {
         // incoming video from its own books (frame cadence, bitrate,
         // frame-size percentiles over ~5 s). Host QP/encoder posture
         // are host-log truth; this is the client-side half.
+        let nowMicroseconds = DispatchTime.now().uptimeNanoseconds / 1000
         let delivery = videoDeliveryBooks.snapshot(
-            nowMicroseconds: DispatchTime.now().uptimeNanoseconds / 1000)
-        if let q = core.pipeline.snapshotStats().quality {
+            nowMicroseconds: nowMicroseconds)
+        let pipelineStats = core.pipeline.snapshotStats()
+        if let q = pipelineStats.quality {
             // in = frames fully assembled off the wire (reorder/FEC
-            // healed — "rx" undersold them); out = frames handed to
-            // the renderer. SEPARATE tokens, not a slash-pair: the two
-            // ride different averaging windows (~5 s vs ~1 s) and can
-            // transiently diverge — a slash would claim one snapshot
-            // of one pipeline. A widening split is a glass-side
-            // stall, not a network one. Mbps stands bare (self-naming).
-            var video: String
-            if let out = delivery.outFps {
-                video = String(format: "video  in %.0f · out %.0f fps",
-                               q.framesPerSecond, out)
-            } else {
-                video = String(format: "video  in %.0f fps",
-                               q.framesPerSecond)
+            // healed); out = frames handed to the renderer. The
+            // slash-pair is honest because BOTH ride the same ~1 s
+            // meter window (RateMeter) — a widening split is a
+            // glass-side stall, not a network one. Mbps leads and
+            // stands bare (self-naming); chroma moved to the stream
+            // line (session state, not live metric).
+            var video = String(format: "video:    %.1f Mbps",
+                               Double(q.bitsPerSecond) / 1e6)
+            let inFps = videoInMeter.rate(
+                count: pipelineStats.framesDecoded,
+                nowMicroseconds: nowMicroseconds)
+            switch (inFps, delivery.outFps) {
+            case (let inRate?, let out?):
+                video += String(format: " · in/out %.0f/%.0f fps",
+                                inRate, out)
+            case (let inRate?, nil):
+                video += String(format: " · in %.0f fps", inRate)
+            default:
+                break
             }
             video += String(
-                format: " · %.1f Mbps · size p50/p95 %d/%d B",
-                Double(q.bitsPerSecond) / 1e6,
+                format: " · size p50/p95 %d/%d B",
                 q.frameBytesP50, q.frameBytesP95)
-            // V-5: what the wire actually carries (SPS-parsed), the
-            // audit's truth — not the ask.
-            if let chroma = core.streamChromaDescription {
-                video += " · \(chroma)"
-            }
             // The delivery hop (dispatch → renderer accepted, queue
             // wait included): the resize-storm stall detector.
             if let p50 = delivery.hopP50, let p99 = delivery.hopP99 {

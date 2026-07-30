@@ -1,5 +1,33 @@
 import Foundation
 
+/// A per-second rate from a monotonically growing counter, sampled at
+/// the overlay's cadence: feed it the cumulative count each snapshot
+/// and it answers with the rate over the last ≥0.5 s window. Exists so
+/// the video line's in-fps and out-fps ride the SAME window shape —
+/// the slash-pair `in/out 39/46 fps` must compare like with like.
+final class RateMeter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastCount: UInt64 = 0
+    private var lastAtMicroseconds: UInt64 = 0
+    private var lastRate: Double?
+
+    func rate(count: UInt64, nowMicroseconds: UInt64) -> Double? {
+        lock.lock()
+        defer { lock.unlock() }
+        let elapsed = nowMicroseconds &- lastAtMicroseconds
+        if lastAtMicroseconds == 0 {
+            lastAtMicroseconds = nowMicroseconds
+            lastCount = count
+        } else if elapsed >= 500_000 {
+            lastRate = Double(count &- lastCount)
+                / (Double(elapsed) / 1_000_000)
+            lastAtMicroseconds = nowMicroseconds
+            lastCount = count
+        }
+        return lastRate
+    }
+}
+
 /// Ringside accounting for the video delivery hop (receive thread →
 /// delivery queue → renderer): the glass-side fps and the hop latency
 /// percentiles. The hop duration is stamped from the receive thread's

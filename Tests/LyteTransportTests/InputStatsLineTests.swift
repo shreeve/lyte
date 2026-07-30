@@ -18,7 +18,7 @@ final class InputStatsLineTests: XCTestCase {
         // the overlay's state line, 2026-07-30 consult round two.)
         let stats = InputSender(clockModel: HostClockModel()) { _, _ in }
             .snapshotStats()
-        XCTAssertEqual(stats.overlayLine(), "input  sent 0 events")
+        XCTAssertEqual(stats.overlayLine(), "outbound: 0 client events sent")
     }
 
     func testOverlayLineRendersLatencyPercentilesExactly() throws {
@@ -50,6 +50,7 @@ final class InputStatsLineTests: XCTestCase {
 
         XCTAssertEqual(
             sender.snapshotStats().overlayLine(),
-            "input  sent 1 events · applied on host p50/p99 101.5/101.5 ms")
+            "outbound: 1 client events sent"
+                + " · applied on host p50/p99 101.5/101.5 ms")
     }
 }
