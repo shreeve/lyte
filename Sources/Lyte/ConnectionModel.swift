@@ -1143,8 +1143,8 @@ final class ConnectionModel {
             var parts: [String] = []
             // Buffer depth in ms, not packets (exact: 5 ms hard-CBR
             // packets) — "15/40 ms of cushion" needs no decoder ring.
-            if let p50 = audio.bufferDepthPackets.p50,
-               let p99 = audio.bufferDepthPackets.p99 {
+            let depth = audio.bufferDepthPackets.percentiles([0.50, 0.99])
+            if let p50 = depth[0], let p99 = depth[1] {
                 parts.append("buffer p50/p99 \(p50 * 5)/\(p99 * 5) ms")
             }
             // Each concealment papered over one missing-audio gap — a
@@ -1167,7 +1167,7 @@ final class ConnectionModel {
         if let q = pipelineStats.quality {
             // in = frames fully assembled off the wire (reorder/FEC
             // healed); out = frames handed to the renderer. The
-            // slash-pair is honest because BOTH ride the same ~1 s
+            // slash-pair is honest because BOTH ride the same 3 s
             // meter window (RateMeter) — a widening split is a
             // glass-side stall, not a network one. Mbps leads and
             // stands bare (self-naming); chroma moved to the stream
