@@ -533,6 +533,105 @@ final class RateEstimatorGateTests: XCTestCase {
             + "measurably delivered)")
     }
 
+    // MARK: The baseline witness rule (v1-final analysis finding 5):
+    // the rolling delay floor is the lowest CORROBORATED report
+    // minimum — one anomalously-fast report is a witness awaiting its
+    // partner, never the baseline itself.
+
+    /// A steady path whose delay floor sits 25 ms above nominal; ONE
+    /// freak report arrives 25 ms fast (the lucky receive wake). The
+    /// old raw-min baseline adopted it and read every later report as
+    /// inflated — ~20 uncorroborated fall beats on a clean path. The
+    /// witness rule shrugs it off: no overuse, rate never moves.
+    func testLoneFastReportDoesNotPoisonTheDelayBaseline() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        func beat(extraDelayMicros: UInt64) -> RateEstimatorVerdict {
+            now += 25 * Self.ms
+            clientMicros += 25_000
+            let samples = train(
+                estimator, seqStart: seq, count: 12,
+                sendStartNS: now - Self.ms,
+                bottleneckBitsPerSecond: 10e6,
+                extraDelayMicros: extraDelayMicros
+            )
+            seq += 12
+            return estimator.ingest(
+                report(samples: samples, clientMicros: clientMicros),
+                now: now, inRecovery: false
+            )
+        }
+
+        for _ in 0..<10 {
+            XCTAssertFalse(beat(extraDelayMicros: 25_000).overuse)
+        }
+        // The freak: a whole report 25 ms faster than the standing
+        // floor. Its own inflation is zero (it IS the new minimum),
+        // and under the witness rule it must not become the baseline.
+        XCTAssertFalse(beat(extraDelayMicros: 0).overuse)
+        // Ten more reports at the standing floor: with a poisoned
+        // baseline every one reads 25 ms inflated and the second
+        // fires; the witness rule keeps them all quiet.
+        for _ in 0..<10 {
+            let verdict = beat(extraDelayMicros: 25_000)
+            XCTAssertFalse(verdict.overuse,
+                           "a lone fast report must not poison the floor")
+            XCTAssertNil(verdict.newRateBitsPerSecond)
+        }
+        XCTAssertLessThanOrEqual(
+            estimator.queuingDelayMicroseconds ?? 0, 1_000
+        )
+
+        print("finding-5 gate (witness): one 25 ms-fast freak report → "
+            + "0 overuse verdicts, rate untouched (the raw-min "
+            + "baseline fell ~20 beats on this shape)")
+    }
+
+    /// The control: TWO fast reports are corroboration — the floor
+    /// re-baselines (one report later than the raw min did), and a
+    /// path that then returns to the old delay genuinely reads
+    /// inflated. Improvements still count; only loners don't.
+    func testCorroboratedFasterFloorRebaselines() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        func beat(extraDelayMicros: UInt64) -> RateEstimatorVerdict {
+            now += 25 * Self.ms
+            clientMicros += 25_000
+            let samples = train(
+                estimator, seqStart: seq, count: 12,
+                sendStartNS: now - Self.ms,
+                bottleneckBitsPerSecond: 10e6,
+                extraDelayMicros: extraDelayMicros
+            )
+            seq += 12
+            return estimator.ingest(
+                report(samples: samples, clientMicros: clientMicros),
+                now: now, inRecovery: false
+            )
+        }
+
+        for _ in 0..<10 {
+            XCTAssertFalse(beat(extraDelayMicros: 25_000).overuse)
+        }
+        // Two witnesses: the improvement is real and the floor adopts it.
+        XCTAssertFalse(beat(extraDelayMicros: 0).overuse)
+        XCTAssertFalse(beat(extraDelayMicros: 0).overuse)
+        // Back at the old delay: against the re-based floor this is
+        // genuine 25 ms inflation — the second consecutive report
+        // fires the overuse verdict exactly as the HS-16 law says.
+        XCTAssertFalse(beat(extraDelayMicros: 25_000).overuse,
+                       "one inflated report must not fire (2 consecutive)")
+        XCTAssertTrue(beat(extraDelayMicros: 25_000).overuse,
+                      "the corroborated floor must make real inflation "
+                      + "visible")
+    }
+
     // MARK: Leg 3b — HS-21: the overuse anchor is robust to one garbage
     // delivery sample (the HS-20 live finding: a lone garbage short-train
     // sample anchored an overuse fall and cratered a clean 20 Mbps path to

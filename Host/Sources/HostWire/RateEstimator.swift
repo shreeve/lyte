@@ -1245,8 +1245,32 @@ public final class RateEstimator {
             }
         }
         for (channel, reportMin) in perChannelMin {
-            let baseline = delayBaselineWindows[channel]?
-                .map(\.minDelayMicros).min()
+            // The baseline is the lowest CORROBORATED delay — the
+            // second-smallest report-minimum in the window, not the
+            // raw min. A single anomalously-fast report (a lucky
+            // receive wake; 7–13 ms of wake jitter is measured on
+            // this path) used to pin the floor for the whole 10 s
+            // window, reading every later report as inflated and
+            // driving an uncorroborated geometric fall on a clean
+            // path (v1-final analysis, finding 5). One freak report
+            // is now a witness awaiting its partner: a genuine path
+            // improvement re-baselines on the second report that
+            // confirms it, one report later than before.
+            let baseline = delayBaselineWindows[channel].flatMap {
+                window -> Int64? in
+                var lowest: Int64?
+                var second: Int64?
+                for sample in window {
+                    let delay = sample.minDelayMicros
+                    if lowest.map({ delay < $0 }) ?? true {
+                        second = lowest
+                        lowest = delay
+                    } else if second.map({ delay < $0 }) ?? true {
+                        second = delay
+                    }
+                }
+                return second ?? lowest
+            }
             delayBaselineWindows[channel, default: []].append(
                 DelaySample(at: now, minDelayMicros: reportMin)
             )
