@@ -35,19 +35,8 @@ codebase.
    awdl0 stays held down (AirDrop/Continuity broken) until app quit.
    Every other exit path is clean; this one verb has no seam.
 
-2. **Mid-session resolution change reads past the capture buffer** —
-   `Host/Sources/lyte-host/main.swift:629` (encoder opened with frame-0
-   geometry, never revalidated), `Host/Sources/CPipeWireCapture/capture.c:160`
-   (size/stride forwarded unchecked), `Host/Sources/CHevcEncode/encode.c:334`
-   (reads `(h-1)*stride + w*4` on trust). PipeWire's negotiated format
-   range (1×1…8192×8192) explicitly permits renegotiation; a monitor-mode
-   change mid-session has the encode memcpy reading megabytes past the
-   mapped MemFd — SIGSEGV/SIGBUS or silent adjacent-heap encoding. This
-   is the concrete mechanism behind the P-3 ruling's "residual belt"
-   (verify a live geometry change produces a clean typed teardown): today
-   it produces a crash, not a teardown. Cheap fix: fail() any frame whose
-   geometry differs from the opened encoder's; validate
-   `size >= (h-1)*stride + w*4` and `stride > 0`.
+2. ~~**Mid-session resolution change reads past the capture buffer**~~
+   — **LANDED, PR #24** (2026-07-30; see Landed section at the end).
 
 3. ~~**AudioWire thread-lifetime hazards (two HIGHs)**~~ — **LANDED,
    PR #23** (2026-07-30; see Landed section at the end).
@@ -397,6 +386,16 @@ via lyte-encode-check hashing.
   overflow bound, recusal evaluated before the purge mutates the queue.
 
 ## Landed
+
+- **T1-2 capture geometry validation** — PR #24, merged 2026-07-30.
+  Two laws at the top of `Sink.onFrame`: the buffer-bounds law (no
+  frame, including frame 0, reaches an encode until `stride > 0`,
+  extents nonzero, and `size >= (h-1)*stride + w*4`; Int64 arithmetic,
+  no unsigned underflow) and the geometry pin (any frame whose extent
+  differs from the opened encoder's fails the session via `fail()` →
+  typed teardown; reconnect renegotiates). No in-suite pin possible
+  (executable target); suites 241/241 Mac AND pup plus a live pup
+  probe — 186 frames at 2048×1280/8192 through the new validation.
 
 - **T1-3 AudioWire thread lifetime** — PR #23, merged 2026-07-30.
   `stop()` joins the audio thread unconditionally (bounded by the C
