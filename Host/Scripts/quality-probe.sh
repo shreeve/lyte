@@ -221,7 +221,11 @@ parse_wire() { # $1=name → sets R_* globals from the leg's two logs
   R_CHURN=$(awk '/^rate: / { m++ }
                  /^encoder: rate reconfigure/ { if (!m) bad++; m = 0 }
                  END { print bad + 0 }' "$hlog")
-  R_DELIVERY=$(grep -o 'delivery [^,]*)' "$hlog" | head -1)
+  # The estimator line reads `delivery X kbps (burst max Y, belief Z)` —
+  # capture through the close paren, and shout if the shape ever drifts
+  # again (this grep rotted silently once, 2026-07-30).
+  R_DELIVERY=$(grep -o 'delivery [^)]*)' "$hlog" | head -1)
+  [ -n "$R_DELIVERY" ] || R_DELIVERY="*** GREP ROTTED — estimator line shape changed, fix parse_wire ***"
   # Client side: decoded/skipped totals + per-second cadence.
   local final
   final=$(grep 'render: ' "$clog" | tail -1)
