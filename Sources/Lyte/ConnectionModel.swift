@@ -99,6 +99,7 @@ final class ConnectionModel {
     /// the socket.
     private let videoDeliveryQueue = DispatchQueue(
         label: "lyte.video.delivery", qos: .userInteractive)
+    private let videoDeliveryBooks = VideoDeliveryBooks()
 
     // F-5: roaming/reconnect. The policy exists for the whole
     // streaming life of a window (it IS the "can this window
@@ -323,14 +324,18 @@ final class ConnectionModel {
         return LyteUdpSession(
             crypto: crypto,
             config: config,
-            onSample: { [weak self, videoDeliveryQueue] sample, _ in
+            onSample: { [weak self, videoDeliveryQueue, videoDeliveryBooks] sample, _ in
                 // True ownership transfer: the receive thread hands the
                 // buffer to the delivery queue and never touches it
                 // again (CMSampleBuffer is CF-immutable here; the
                 // Sendable annotation just can't say so).
                 nonisolated(unsafe) let transferred = sample
+                let dispatched = DispatchTime.now().uptimeNanoseconds
                 videoDeliveryQueue.async {
                     renderer.enqueue(transferred)
+                    videoDeliveryBooks.record(hopMilliseconds:
+                        Double(DispatchTime.now().uptimeNanoseconds
+                            &- dispatched) / 1e6)
                 }
                 // Teach the input capture its coordinate space — once
                 // per size, not per sample (dimension changes are a
@@ -1033,6 +1038,16 @@ final class ConnectionModel {
 
     // MARK: - The stats readout (CL-13)
 
+    /// 1_734_567 → "1.73M"; 41_200 → "41.2k"; small counts stay exact.
+    /// Only ever used for denominators — deficits always print exact.
+    private static func compactCount(_ n: UInt64) -> String {
+        switch n {
+        case ..<10_000: return "\(n)"
+        case ..<1_000_000: return String(format: "%.1fk", Double(n) / 1e3)
+        default: return String(format: "%.2fM", Double(n) / 1e6)
+        }
+    }
+
     /// A compact snapshot of the session's existing books — the same
     /// counters wire-view prints, shaped for the overlay. Re-read on
     /// every call; the overlay's TimelineView drives the cadence.
@@ -1042,8 +1057,28 @@ final class ConnectionModel {
               let core = session.core else { return [] }
         var lines: [String] = []
 
+        // The net line: loss deficit-first (a success-count brags; the
+        // deficit is the signal, and a percent must never round a real
+        // loss into looking clean), then the clock model's honest RTT.
         let totals = endpoint.demux.snapshotTotals()
-        var wire = "\(totals.accepted)/\(totals.datagrams) datagrams ok"
+        let perChannel = endpoint.demux.snapshotChannels()
+        let missing = perChannel.reduce(UInt64(0)) { $0 + $1.stats.seqMissing }
+        let lateFilled = perChannel.reduce(UInt64(0)) { $0 + $1.stats.seqLateFilled }
+        let lost = missing > lateFilled ? missing - lateFilled : 0
+        let expected = totals.datagrams + lost
+        var wire = lost == 0
+            ? "loss 0 of \(Self.compactCount(expected))"
+            : String(format: "loss %d of %@ (%.3f%%)", lost,
+                     Self.compactCount(expected),
+                     100 * Double(lost) / Double(max(1, expected)))
+        let rtts = core.echoResponder.snapshotClockSamples()
+            .suffix(30).map(\.rttMicroseconds).sorted()
+        if let minRtt = rtts.first {
+            let p90 = rtts[min(rtts.count - 1, (rtts.count * 9) / 10)]
+            wire += String(format: " · rtt %.1f ± %.1f ms",
+                           Double(minRtt) / 1000,
+                           Double(p90 - minRtt) / 1000)
+        }
         if totals.unsealFailures > 0 {
             wire += ", \(totals.unsealFailures) unseal-failed"
         }
@@ -1067,15 +1102,33 @@ final class ConnectionModel {
         // incoming video from its own books (frame cadence, bitrate,
         // frame-size percentiles over ~5 s). Host QP/encoder posture
         // are host-log truth; this is the client-side half.
+        let delivery = videoDeliveryBooks.snapshot(
+            nowMicroseconds: DispatchTime.now().uptimeNanoseconds / 1000)
         if let q = core.pipeline.snapshotStats().quality {
+            // rx = frames assembled off the wire; out = frames the
+            // delivery queue handed the renderer — a widening split is
+            // a glass-side stall, not a network one.
             var video = String(
-                format: "video %.0f fps · %.1f Mbps · frame p50 %d B · p95 %d B",
-                q.framesPerSecond, Double(q.bitsPerSecond) / 1e6,
+                format: "video rx %.0f", q.framesPerSecond)
+            if let out = delivery.outFps {
+                video += String(format: " · out %.0f fps", out)
+            } else {
+                video += " fps"
+            }
+            video += String(
+                format: " · %.1f Mbps · frame p50 %d B · p95 %d B",
+                Double(q.bitsPerSecond) / 1e6,
                 q.frameBytesP50, q.frameBytesP95)
             // V-5: what the wire actually carries (SPS-parsed), the
             // audit's truth — not the ask.
             if let chroma = core.streamChromaDescription {
                 video += " · \(chroma)"
+            }
+            // The delivery hop (dispatch → renderer accepted, queue
+            // wait included): the resize-storm stall detector.
+            if let p50 = delivery.hopP50, let p99 = delivery.hopP99 {
+                video += String(
+                    format: " · deliver p50/p99 %.1f/%.1f ms", p50, p99)
             }
             lines.append(video)
         }
