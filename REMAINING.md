@@ -17,13 +17,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Client performance — per-datagram fat on the receive thread
 
-10. **VideoAssembler per-shard sweep** [S-M] — `VideoAssembler.swift:306`: full
-    loss-presumption sweep + eviction scan (two `keys.sorted()` allocations) on
-    every ingested shard, ~2–4k/s, walking all 64 groups even clean — worst
-    during loss bursts. Gate the sweep on highestSeq advance, drop the sorts
-    (eviction is time-based; the 50 ms tick already runs it), and fold in the
-    drain/holdbackExpiry running-count fix. Largest recoverable client CPU.
-
 11. **Unseal double copy** [S] — `ReceiveDemux.swift:139` does `Array(plaintext)`
     on a slice `NoiseTransportCrypto.unseal` just built as a fresh `[UInt8]` and
     downcast. Return `[UInt8]` from the unseal seam; deletes one ~1.1 kB
@@ -103,6 +96,14 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
    naming the scanout prerequisite; episodes counted in the final stats block.
    Host build on pup clean with the vendored no-reset recipe.
 
+3. **Pin tonight's untested pure logic** [M] — PR #4, merged 2026-07-30.
+   VideoDeliveryBooks.swift moved verbatim to LyteTransport; the watchdog
+   debounce extracted as pure `RadioHoldPolicy`; 12 pins in
+   OverlayGaugeTests.swift (window law, anchor eviction, hop percentiles,
+   strike ladder). Patient-connect stays app-embedded deliberately — its
+   round policy is a refactor, not a pin; possible follow-up. Full suite
+   222/222 green.
+
 4. **Docs/hygiene batch** [S] — PR #3, merged 2026-07-30. HANDOFF CURRENT
    sections retitled HISTORICAL with the P-2/P-3 contradiction superseded
    inline; H4 plan rows struck with the DROPPED ruling; stale ConnectionModel
@@ -111,14 +112,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
    deleted. One audit claim corrected in-flight: Package.resolved was ignored
    AND untracked (not ignored-yet-tracked) — the ignore stays; pin-tracking
    policy is an owner call.
-
-3. **Pin tonight's untested pure logic** [M] — PR #4, merged 2026-07-30.
-   VideoDeliveryBooks.swift moved verbatim to LyteTransport; the watchdog
-   debounce extracted as pure `RadioHoldPolicy`; 12 pins in
-   OverlayGaugeTests.swift (window law, anchor eviction, hop percentiles,
-   strike ladder). Patient-connect stays app-embedded deliberately — its
-   round policy is a refactor, not a pin; possible follow-up. Full suite
-   222/222 green.
 
 5. **Pacer `queuedBytes` O(n) → running total** [S] — PR #5, merged
    2026-07-30. `ClassQueue.bytesQueued` maintained by push/pop; O(1) reads
@@ -139,6 +132,12 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
    half-rung ladder): tightens land exactly on the ceiling rate and material
    within-band falls retune; loosen/restore untouched (10 s sustain stays).
    5 pins incl. a ladder-mode control; suite 234/234 Mac AND pup.
+
+10. **VideoAssembler per-shard sweep** [S-M] — PR #10, merged 2026-07-30.
+    Sweep gated on highestSeq-advance/new-group; `contiguousPrefix` early-out
+    (clean in-order shards never touch a slot); `sweepSettled` latch (a fully
+    reported+written-off group is grieved once); sorts only when a walk fires.
+    Wire 486/486, root 212/212, host 234/234.
 
 8. **Log lines out from under the session lock** [S-M] — PR #8, merged
    2026-07-30. 48 event-log/inject prints buffer into `pendingLogLines`
