@@ -15,11 +15,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Host performance — the rate-fall moment
 
-9. **Host thread priorities** [S] — no `sched_*`/nice anywhere; the 1 ms-quantum
-   pacing drain and 5 ms audio cadence ride default CFS against NVENC and the
-   compositor. SCHED_RR (graceful EPERM degrade) on drain + audio threads;
-   verify via `maxQueueDelayNS` books on a loaded box.
-
 ### Client performance — per-datagram fat on the receive thread
 
 10. **VideoAssembler per-shard sweep** [S-M] — `VideoAssembler.swift:306`: full
@@ -150,6 +145,13 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
    under the lock and flush at the service-tick/drain-loop/awaitClient/
    shutdown seams; line text byte-identical, only the print moment moves.
    Suite 234/234 Mac; pup build clean.
+
+9. **Host thread priorities** [S] — PR #9, merged 2026-07-30. `lyte-audio`
+   asks SCHED_RR 12 and `lyte-wire-drain` RR 10 at thread entry, degrading
+   loudly to nice −10 then default; README grew the optional rtprio rlimit
+   grant. pup has no rlimit yet — the `sched:` lines will show the degrade
+   path until it's granted; `maxQueueDelayNS` books are the loaded-box
+   evidence surface.
 
 ## Closed
 
