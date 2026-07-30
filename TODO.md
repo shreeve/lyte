@@ -17,13 +17,13 @@ and the build plan, not here.)*
   (Design consult 2026-07-20; amended per
   `docs/20260720-215100-lyte-udp-decision.md`.)
 
-## `lyte sniff` debug tool (future `Host/` or shared tooling)
+## `lyte sniff` — the key-joined decrypt half (future)
 
-- **Build a small wire dissector for Lyte-UDP, eventually.** Dropping the
-  GameStream dialect means Wireshark understands nothing on our wire (and
-  E2E Noise would blind it anyway). A `lyte sniff` mode that joins a session
-  key and pretty-prints envelopes/channels is the recorded mitigation — not
-  needed for H0b, wanted before the protocol surface grows past H2.
+- **Mostly done.** `lyte-host sniff` (HS-5, `Host/Sources/lyte-host/Sniff.swift`)
+  has pretty-printed envelopes/channels for waves. What remains is the half
+  its header explicitly defers: joining a session key so payloads decrypt —
+  today it dissects headers only, with Noise blinding the cargo. Pick up if
+  a debugging season ever needs plaintext on the wire.
   (`docs/20260720-215100-lyte-udp-decision.md` §7.)
 
 ---

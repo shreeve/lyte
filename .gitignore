@@ -4,19 +4,15 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 
-# SwiftPM
+# SwiftPM (Package.resolved is deliberately TRACKED in all three packages)
 .build/
 .swiftpm/
-Package.resolved
 
 # macOS
 .DS_Store
 
-# Reference checkouts (study summaries live tracked in docs/)
-misc/moonlight-common-c/
-misc/moonlight-macos/
-
-# Session handoff notes — working scratch for AI sessions, not repo history
+# Reference checkouts parked locally (study summaries live tracked in docs/)
+misc/
 
 # Golden packet captures — large binaries + session key material, kept local.
 # Distilled acceptance vectors get committed under Tests/, not the raw pcaps.

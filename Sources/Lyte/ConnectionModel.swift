@@ -1129,7 +1129,7 @@ final class ConnectionModel {
         if AgentState.shared.radioAlarm { mode += " · AWDL LOOSE" }
         lines.append(mode)
 
-        // Unconditional (CL-16): "outbound: 0 client events sent" is
+        // Unconditional (CL-16): "user:    0 events sent to host" is
         // the datum that tells a client-capture failure from a
         // host-side one.
         lines.append(core.input.snapshotStats().overlayLine())
