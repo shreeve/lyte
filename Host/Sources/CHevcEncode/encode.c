@@ -354,6 +354,23 @@ uint64_t lyte_hevc_enc_repack_us_total(const lyte_hevc_enc *e)
     return e->repack_us_total;
 }
 
+int lyte_hevc_noreset_enable(void)
+{
+    /* The vendored build signs itself: --extra-version=lyte-noreset
+       lands in the configuration string. Distro libavcodec never
+       carries it, so the whole feature is provably inert there. */
+    if (!strstr(avcodec_configuration(), "lyte-noreset"))
+        return 0;
+    const char *env = getenv("LYTE_NVENC_NO_RESET_RATE");
+    if (!env) {
+        /* Default ON under the vendored lib; never overwrite an
+           explicit choice (the "0" control leg of every A/B). */
+        setenv("LYTE_NVENC_NO_RESET_RATE", "1", 0);
+        env = getenv("LYTE_NVENC_NO_RESET_RATE");
+    }
+    return env && env[0] == '1';
+}
+
 int lyte_hevc_enc_set_rate(lyte_hevc_enc *e, int64_t avg_bits,
                            int64_t max_bits, int64_t vbv_bits,
                            char *err, size_t errlen)

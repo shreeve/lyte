@@ -53,6 +53,12 @@ struct CheckOptions {
     // opening VBV at this many bytes via the same set_rate call the
     // session Sink makes at encoder open (V-4's ceiling-conformance leg).
     var vbvCapBytes = 0
+    // HS-33: mid-run rate directives — apply lyte_hevc_enc_set_rate
+    // before frame F, the offline stand-in for the session Sink's rate
+    // directives (the A/B seam the no-reset vendored lib is measured
+    // through; env LYTE_NVENC_NO_RESET_RATE picks the behavior there).
+    // Spec: F:avg_bps:max_bps:vbv_bits (avg 0 = leave avg untouched).
+    var moves: [(frame: Int, avg: Int64, max: Int64, vbv: Int64)] = []
 
     static func parse(_ args: [String]) throws -> CheckOptions {
         var o = CheckOptions()
@@ -128,6 +134,17 @@ struct CheckOptions {
                     throw CheckError("--vbv-cap-bytes needs a positive integer")
                 }
                 o.vbvCapBytes = v
+            case "--move":
+                let spec = try value("--move")
+                let parts = spec.split(separator: ":").map(String.init)
+                guard parts.count == 4, let f = Int(parts[0]),
+                      let a = Int64(parts[1]), let m = Int64(parts[2]),
+                      let v = Int64(parts[3]), f > 0, m > 0, v > 0, a >= 0
+                else {
+                    throw CheckError(
+                        "--move needs frame:avg_bps:max_bps:vbv_bits")
+                }
+                o.moves.append((frame: f, avg: a, max: m, vbv: v))
             case "--help", "-h":
                 print("""
                 usage: lyte-encode-check --raw FILE --width W --height H
@@ -139,6 +156,7 @@ struct CheckOptions {
                        [--pix-fmt bgr0|gbrp|yuv444p] [--profile main|rext]
                        [--rgb-mode yuv420|yuv444]
                        [--idr-every N] [--sizes FILE] [--vbv-cap-bytes N]
+                       [--move F:avg_bps:max_bps:vbv_bits]…
                 Encodes rawvideo through CHevcEncode with the given
                 recipe and prints the A/B numbers; Annex-B lands at
                 --out for the PSNR half. Input is packed BGRx (ffmpeg
@@ -152,7 +170,13 @@ struct CheckOptions {
                 "idx key bytes qp" books (H4 V-1). --vbv-cap-bytes N
                 imposes the HS-25 unprotectable-frame guard offline
                 (the session Sink's opening VBV cap, V-4's
-                ceiling-conformance leg).
+                ceiling-conformance leg). --move applies a mid-run rate
+                directive (the session Sink's set_rate) before frame F
+                — repeatable; avg 0 leaves the average untouched. Under
+                the vendored no-reset libavcodec
+                (Scripts/vendor-ffmpeg.sh) moves reconfigure in place;
+                LYTE_NVENC_NO_RESET_RATE=0 forces the upstream
+                reset+IDR path for A/B.
                 """)
                 exit(0)
             default:
@@ -294,6 +318,11 @@ func run() throws {
             + "ceiling)")
     }
 
+    // HS-33: under the vendored no-reset libavcodec this defaults the
+    // env gate ON (explicit LYTE_NVENC_NO_RESET_RATE=0 forces the
+    // upstream reset+IDR path — the A/B control); under distro libav
+    // it reports 0 and the env is inert. Matches lyte-host's posture.
+    let noReset = lyte_hevc_noreset_enable() != 0
     let mode = opts.cq > 0 ? "capped-cq\(opts.cq)" : "cbr"
     print("encode-check: \(opts.width)x\(opts.height) \(opts.pixFmt) "
         + "@\(opts.fps)"
@@ -302,13 +331,15 @@ func run() throws {
         + ", \(total) frames (\(framesInFile) in file"
         + (opts.staticRepeats > 0 ? ", static-repeat mode" : "")
         + "), recipe \(r.summary), \(mode) "
-        + "\(opts.bitrate / 1_000_000) Mbps")
+        + "\(opts.bitrate / 1_000_000) Mbps"
+        + (noReset ? ", no-reset rate moves (vendored libavcodec)" : ""))
 
     let collector = Collector(file: out)
     let user = Unmanaged.passUnretained(collector).toOpaque()
     var frame = [UInt8](repeating: 0, count: frameSize)
     var encodeMicros: [UInt64] = []
     encodeMicros.reserveCapacity(total)
+    var movesApplied = 0
 
     for i in 0..<total {
         if opts.staticRepeats > 0 {
@@ -322,6 +353,20 @@ func run() throws {
             guard fread(&frame, 1, frameSize, raw) == frameSize else {
                 throw CheckError("short read on frame \(i)")
             }
+        }
+        // HS-33: the mid-run rate directives — the wrapper folds the
+        // changed rc fields into one NvEncReconfigureEncoder on the
+        // send below, exactly as the session Sink does per directive.
+        for mv in opts.moves where mv.frame == i {
+            let mrc = lyte_hevc_enc_set_rate(enc, mv.avg, mv.max, mv.vbv,
+                                             &err, err.count)
+            print("MOVE frame=\(i) avg=\(mv.avg) max=\(mv.max) "
+                + "vbv=\(mv.vbv) rc=\(mrc)"
+                + (mrc == 0 ? "" : " error=\"\(errString(err))\""))
+            if mrc != 0 {
+                throw CheckError("set_rate failed at frame \(i)")
+            }
+            movesApplied += 1
         }
         let forceIdr = i == 0
             || (opts.idrEvery > 0 && i % opts.idrEvery == 0)
@@ -394,6 +439,7 @@ func run() throws {
         + "profile=\(opts.profile.isEmpty ? "default" : opts.profile) "
         + "rgbmode=\(opts.rgbMode.isEmpty ? "default" : opts.rgbMode) "
         + "rate_mbps=\(opts.bitrate / 1_000_000) frames=\(total) "
+        + "moves=\(movesApplied) noreset=\(noReset ? 1 : 0) "
         + "bytes=\(collector.bytesOut) "
         + "kbps=\(Int(kbps)) idr=\(collector.keyframes) "
         + "qp_p50=\(percentileInt(qps, 0.50)) "

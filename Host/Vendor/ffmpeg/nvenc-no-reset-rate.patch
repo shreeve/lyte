@@ -1,0 +1,35 @@
+--- a/libavcodec/nvenc.c	2026-07-29 19:00:42.398927738 -0600
++++ b/libavcodec/nvenc.c	2026-07-29 19:01:22.374383254 -0600
+@@ -22,6 +22,8 @@
+ #include "config.h"
+ #include "config_components.h"
+ 
++#include <stdlib.h>
++
+ #include "nvenc.h"
+ #include "hevc/sei.h"
+ #if CONFIG_AV1_NVENC_ENCODER
+@@ -2994,8 +2996,21 @@
+         }
+ 
+         if (reconfig_bitrate) {
+-            params.resetEncoder = 1;
+-            params.forceIDR = 1;
++            /* HS-33a: rate reconfigure without an encoder reset.
++             * NVENC DYN_BITRATE_CHANGE promises in-place rate moves;
++             * upstream unconditionally resets + mints an IDR here.
++             * Gated on LYTE_NVENC_NO_RESET_RATE=1 so one binary can
++             * A/B both behaviors; never engaged on a DAR change. */
++            const char *lyte_nr = getenv("LYTE_NVENC_NO_RESET_RATE");
++            if (lyte_nr && lyte_nr[0] == '1' && !reconfig_dar) {
++                params.resetEncoder = 0;
++                params.forceIDR = 0;
++                av_log(avctx, AV_LOG_INFO,
++                       "nvenc: rate reconfig WITHOUT reset/IDR (HS-33a)\n");
++            } else {
++                params.resetEncoder = 1;
++                params.forceIDR = 1;
++            }
+ 
+             needs_encode_config = 1;
+             needs_reconfig = 1;

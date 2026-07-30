@@ -1,4 +1,5 @@
 // swift-tools-version:6.0
+import Foundation
 import PackageDescription
 
 // HostCore (pure Swift bitstream helpers), HostWire (the wiring layer that
@@ -39,6 +40,42 @@ var targets: [Target] = [
 
 #if os(Linux)
 products.append(.executable(name: "lyte-host", targets: ["lyte-host"]))
+
+// HS-33: the vendored no-reset FFmpeg (Vendor/ffmpeg/README.md — rate
+// reconfigures without resetEncoder/forceIDR). Env-gated: with
+// LYTE_FFMPEG_PREFIX set (the canonical build exports it alongside
+// PKG_CONFIG_PATH — see the README's one recipe), the libav consumers
+// link the static archives BY PATH. `-lavcodec` + a `-L` prepend is
+// not enough here: the distro .pc files of the other leaves (pipewire,
+// dbus) inject `-L/usr/lib/<triple>` ahead of any vendored dir, so
+// search order resolves the shared lib; a direct archive path has no
+// search order to lose. Unset (fresh checkout, CI): distro libav via
+// -l flags, exactly as before. Set-but-missing fails LOUDLY — never a
+// silent fallback to distro.
+let ffmpegVendorPrefix =
+    ProcessInfo.processInfo.environment["LYTE_FFMPEG_PREFIX"]
+let libavLinkerSettings: [LinkerSetting]
+if let prefix = ffmpegVendorPrefix {
+    guard FileManager.default.fileExists(
+        atPath: "\(prefix)/lib/libavcodec.a")
+    else {
+        fatalError("LYTE_FFMPEG_PREFIX=\(prefix) but "
+            + "\(prefix)/lib/libavcodec.a is missing — run "
+            + "Scripts/vendor-ffmpeg.sh (or unset the env)")
+    }
+    libavLinkerSettings = [.unsafeFlags([
+        "\(prefix)/lib/libavcodec.a",
+        "\(prefix)/lib/libavutil.a",
+        // The vendored libavcodec.pc's own Libs tail (the .a carries
+        // no DT_NEEDED): atomics beyond the inlined ones.
+        "-latomic",
+    ])]
+} else {
+    libavLinkerSettings = [
+        .linkedLibrary("avcodec"),
+        .linkedLibrary("avutil"),
+    ]
+}
 
 targets += [
     .systemLibrary(
@@ -124,10 +161,7 @@ targets += [
     .executableTarget(
         name: "lyte-encode-check",
         dependencies: ["HostCore", "CHevcEncode"],
-        linkerSettings: [
-            .linkedLibrary("avcodec"),
-            .linkedLibrary("avutil"),
-        ]
+        linkerSettings: libavLinkerSettings
     ),
     .executableTarget(
         name: "lyte-host",
@@ -149,11 +183,9 @@ targets += [
             // in the graph via Wire — no new external dependency.
             .product(name: "Crypto", package: "swift-crypto"),
         ],
-        linkerSettings: [
+        linkerSettings: libavLinkerSettings + [
             .linkedLibrary("dbus-1"),
             .linkedLibrary("pipewire-0.3"),
-            .linkedLibrary("avcodec"),
-            .linkedLibrary("avutil"),
             .linkedLibrary("opus"),
         ]
     ),

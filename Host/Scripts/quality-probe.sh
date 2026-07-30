@@ -189,7 +189,13 @@ wire_leg() { # $1=name $2=extra-host-flags → logs at $WORK/wire-$1.log + $LOCA
   HOST_PID=$(ssh "$PUP" "$RENV nohup $HOST_BIN --wire-listen $PORT \
     --no-advertise --ratchet --seconds $WIRE_SECS $2 \
     > $WORK/wire-$1.log 2>&1 & echo \$!")
-  sleep 3
+  # The host runs its Rext 4:4:4 self-probe BEFORE it listens (V-4) —
+  # a blind sleep loses the race and wire-view gives up after 5
+  # attempts (measured at HS-33). Wait for the listening line, bounded.
+  for _ in $(seq 1 20); do
+    ssh "$PUP" "grep -q 'awaiting client handshake' $WORK/wire-$1.log 2>/dev/null" && break
+    sleep 1
+  done
   "$CLI" wire-view "$PORT" --host "$PUP_ADDR" --audio \
     --duration $((WIRE_SECS + 45)) > "$LOCAL/wire-$1-client.log" 2>&1
   for _ in $(seq 1 30); do

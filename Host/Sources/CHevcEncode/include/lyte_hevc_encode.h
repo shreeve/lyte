@@ -93,11 +93,29 @@ uint64_t lyte_hevc_enc_repack_us_total(const lyte_hevc_enc *e);
    rc_max_rate and rc_buffer_size. In CBR mode rc_min_rate follows the
    average (min = avg = max is the CBR contract). FFmpeg's nvenc wrapper
    picks the changed fields up on the next avcodec_send_frame and issues
-   one NvEncReconfigureEncoder — no IDR, no encoder reset, for pure
-   rate/VBV moves. Returns 0 on success, -1 with `err` filled. */
+   one NvEncReconfigureEncoder. WHAT THAT COSTS depends on the linked
+   libavcodec (HS-33): upstream/distro sets resetEncoder=1 + forceIDR=1
+   for ANY rate delta (the HS-22 correction — every move is a hidden
+   full IDR); the vendored no-reset build (Scripts/vendor-ffmpeg.sh)
+   reconfigures in place — zero reset, zero IDR — when
+   LYTE_NVENC_NO_RESET_RATE=1 (see lyte_hevc_noreset_enable below).
+   Returns 0 on success, -1 with `err` filled. */
 int lyte_hevc_enc_set_rate(lyte_hevc_enc *e, int64_t avg_bits,
                            int64_t max_bits, int64_t vbv_bits,
                            char *err, size_t errlen);
+
+/* HS-33: detect the vendored no-reset libavcodec and default its env
+   gate ON. The vendored build (Scripts/vendor-ffmpeg.sh) is configured
+   with --extra-version=lyte-noreset, so `avcodec_configuration()`
+   carries the marker — the running process PROVES which libavcodec it
+   linked instead of assuming. When the marker is present and
+   LYTE_NVENC_NO_RESET_RATE is unset, this sets it to "1" (the patched
+   wrapper reads it at reconfigure time); an explicit "0" is respected
+   — the A/B control that forces the upstream reset+IDR path through
+   the same binary. Returns 1 iff no-reset rate moves are ACTIVE
+   (vendored lib AND gate enabled); always 0 under distro libavcodec,
+   where the env is inert. Call once at startup, before any encoding. */
+int lyte_hevc_noreset_enable(void);
 
 /* Drains the encoder. Returns 0 on success, -1 on error. */
 int lyte_hevc_enc_flush(lyte_hevc_enc *e, lyte_hevc_packet_cb cb, void *user,
