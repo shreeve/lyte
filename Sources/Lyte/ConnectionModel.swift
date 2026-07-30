@@ -324,8 +324,13 @@ final class ConnectionModel {
             crypto: crypto,
             config: config,
             onSample: { [weak self, videoDeliveryQueue] sample, _ in
+                // True ownership transfer: the receive thread hands the
+                // buffer to the delivery queue and never touches it
+                // again (CMSampleBuffer is CF-immutable here; the
+                // Sendable annotation just can't say so).
+                nonisolated(unsafe) let transferred = sample
                 videoDeliveryQueue.async {
-                    renderer.enqueue(sample)
+                    renderer.enqueue(transferred)
                 }
                 // Teach the input capture its coordinate space — once
                 // per size, not per sample (dimension changes are a
