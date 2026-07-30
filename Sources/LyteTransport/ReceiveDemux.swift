@@ -113,7 +113,7 @@ public final class ReceiveDemux: @unchecked Sendable {
         // The header rides as AAD: exactly the received bytes ahead of the
         // payload, fixed envelope + TLV block.
         let aad = datagram[datagram.startIndex..<payload.startIndex]
-        let plaintext: ArraySlice<UInt8>
+        let plaintext: [UInt8]
         do {
             plaintext = try crypto.unseal(wirePayload: payload, aad: aad, envelope: envelope)
         } catch {
@@ -136,7 +136,7 @@ public final class ReceiveDemux: @unchecked Sendable {
             // (FeedbackBounds rationale) — drop the newest, count honestly.
             totals.arrivalSamplesDropped += 1
         }
-        return .accepted(envelope: envelope, payload: Array(plaintext))
+        return .accepted(envelope: envelope, payload: plaintext)
     }
 
     /// Removes and returns the arrival samples accumulated since the last

@@ -36,12 +36,14 @@ public protocol TransportCrypto: Sendable {
     /// Unseals one received payload. `aad` is the exact header bytes as
     /// received (fixed envelope + TLV block) — the AEAD associated data.
     /// `envelope` carries the decoded (chan, seq, frame) the nonce derives
-    /// from. Returns the plaintext shard.
+    /// from. Returns the plaintext shard as an owned array — the AEAD
+    /// builds a fresh buffer anyway, and returning it whole spares the
+    /// demux a second full-payload copy per datagram.
     func unseal(
         wirePayload: ArraySlice<UInt8>,
         aad: ArraySlice<UInt8>,
         envelope: Envelope
-    ) throws -> ArraySlice<UInt8>
+    ) throws -> [UInt8]
 
     /// Seals one outbound plaintext shard. `aad` is the exact header bytes
     /// that will precede the payload on the wire (fixed envelope + TLV
@@ -71,8 +73,8 @@ public struct InsecureTransportCrypto: TransportCrypto {
         wirePayload: ArraySlice<UInt8>,
         aad: ArraySlice<UInt8>,
         envelope: Envelope
-    ) throws -> ArraySlice<UInt8> {
-        wirePayload
+    ) throws -> [UInt8] {
+        Array(wirePayload)
     }
 
     public func seal(
