@@ -1269,6 +1269,31 @@ func monotonicNow() -> Double {
     return Double(ts.tv_sec) + Double(ts.tv_nsec) / 1e9
 }
 
+/// Does the seat's gnome-shell carry `disable-direct-scanout` in
+/// MUTTER_DEBUG_PAINT? Without it, Mutter promotes fullscreen video to
+/// direct scanout a few seconds in — compositing stops and the
+/// ScreenCast starves, so the remote glass freezes while the host
+/// idles (2026-07-30 verdict: wake IDRs + 1 s capture gaps). The flag
+/// only lands via gnome-shell's login environment — no runtime toggle
+/// exists on stock Mutter — so the most the host can do is testify at
+/// startup. Returns nil when there is no readable gnome-shell to
+/// inspect (other compositor, headless test rig): nothing to testify.
+func mutterDirectScanoutDisabled() -> Bool? {
+    let fm = FileManager.default
+    guard let entries = try? fm.contentsOfDirectory(atPath: "/proc") else { return nil }
+    for pid in entries where Int(pid) != nil {
+        guard let comm = try? String(contentsOfFile: "/proc/\(pid)/comm", encoding: .utf8),
+              comm.trimmingCharacters(in: .whitespacesAndNewlines) == "gnome-shell",
+              let environ = fm.contents(atPath: "/proc/\(pid)/environ")
+        else { continue }  // other users' environ is unreadable — skip
+        return environ.split(separator: 0).contains { entry in
+            entry.starts(with: Array("MUTTER_DEBUG_PAINT=".utf8))
+                && String(decoding: entry, as: UTF8.self).contains("disable-direct-scanout")
+        }
+    }
+    return nil
+}
+
 private func frameTrampoline(user: UnsafeMutableRawPointer?,
                              data: UnsafePointer<UInt8>?, size: UInt32,
                              stride: Int32, width: UInt32, height: UInt32,
@@ -1345,6 +1370,13 @@ func run() throws {
         : "encoder: no-reset rate moves INACTIVE (distro libavcodec, "
             + "or the vendored lib with LYTE_NVENC_NO_RESET_RATE=0) — "
             + "every rate directive resets the encoder and mints an IDR")
+
+    if mutterDirectScanoutDisabled() == false {
+        print("capture: WARNING — gnome-shell lacks MUTTER_DEBUG_PAINT="
+            + "disable-direct-scanout; fullscreen video will freeze the "
+            + "stream (direct scanout starves the ScreenCast). Run "
+            + "Scripts/setup-host.sh and log in again.")
+    }
 
     // The session comes up BEFORE capture: in Noise mode the host blocks
     // here for the client's handshake (printing the static public key the

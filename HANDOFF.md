@@ -4600,14 +4600,34 @@ its entry at the marker at the end of this block.*
   command on pup, effective next login):
   `mkdir -p ~/.config/environment.d && printf 'MUTTER_DEBUG_PAINT=disable-direct-scanout\n' > ~/.config/environment.d/90-lyte-screencast.conf`
   (permission gate correctly stopped the coordinator from writing the
-  owner's session config). Until relogin: exit fullscreen (Esc) —
-  windowed video composites normally and captures at full rate (all of
-  today's windowed ffplay legs prove it). Local cost of the flag:
-  fullscreen content composites instead of scanning out (a few % GPU,
-  ~0 for a remote-host box). NAMED BELT (cheap host rung): capture-
-  starvation detector — session ACTIVE + recent input + capture gap
-  >500 ms ⇒ loud book line naming direct scanout, so this diagnosis is
-  a grep next time, not an hour.
+  owner's session config; owner applied it himself 2026-07-30). Until
+  relogin: exit fullscreen (Esc) — windowed video composites normally
+  and captures at full rate (all of today's windowed ffplay legs prove
+  it). Local cost of the flag: fullscreen content composites instead
+  of scanning out (a few % GPU, ~0 for a remote-host box).
+  PROVISIONING NOW PROGRAMMATIC (owner asked "needed on every new
+  machine?" — yes, per-seat login env, so the machinery answers):
+  (i) `Host/Scripts/setup-host.sh` — idempotent new-box setup: writes
+  the environment.d flag, reads the RUNNING gnome-shell's /proc
+  environ to say whether relogin is still owed, and prints the uinput
+  udev rule + install command (the other standing manual prereq,
+  HS-13); (ii) lyte-host now TESTIFIES at startup —
+  `mutterDirectScanoutDisabled()` (main.swift) scans /proc for the
+  seat's gnome-shell and prints a capture WARNING when the flag is
+  absent (nil/no-op when no gnome-shell is readable: other compositor,
+  headless rig). Verified live on pup: warning prints on the
+  flag-less running shell; probe is inert otherwise. TRAP LOGGED: a
+  bare `swift build` on pup relinks DISTRO libavcodec — the vendored
+  no-reset lib needs `LYTE_FFMPEG_PREFIX=$HOME/src/lyte-host/Vendor/
+  ffmpeg/prefix` (+ PKG_CONFIG_PATH to its pkgconfig) or the standing
+  loop's next respawn silently loses HS-33 (caught same-minute via the
+  startup marker line; rebuilt correctly, marker re-verified). Runtime
+  toggling is IMPOSSIBLE on stock Mutter 50 (no D-Bus DebugControl, no
+  experimental-feature; flag is login-time only) — detection +
+  one-command setup is the programmatic ceiling. NAMED BELT still
+  open (cheap host rung): capture-starvation detector — session ACTIVE
+  + recent input + capture gap >500 ms ⇒ loud book line naming direct
+  scanout, so this diagnosis is a grep next time, not an hour.
 
 One-liners only — enough to know the finding exists and where its full
 account is. Do not re-derive these; do not restate them here.
