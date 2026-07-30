@@ -17,11 +17,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Client performance — per-datagram fat on the receive thread
 
-11. **Unseal double copy** [S] — `ReceiveDemux.swift:139` does `Array(plaintext)`
-    on a slice `NoiseTransportCrypto.unseal` just built as a fresh `[UInt8]` and
-    downcast. Return `[UInt8]` from the unseal seam; deletes one ~1.1 kB
-    alloc+memcpy per datagram on every channel.
-
 12. **`mediaPathEvidence` off the per-datagram path** [S-M] —
     `LyteUdpSession.swift:939` takes the core lock and runs machine.apply/poll
     (two array allocs) per accepted datagram just to record "path alive."
@@ -133,12 +128,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
    within-band falls retune; loosen/restore untouched (10 s sustain stays).
    5 pins incl. a ladder-mode control; suite 234/234 Mac AND pup.
 
-10. **VideoAssembler per-shard sweep** [S-M] — PR #10, merged 2026-07-30.
-    Sweep gated on highestSeq-advance/new-group; `contiguousPrefix` early-out
-    (clean in-order shards never touch a slot); `sweepSettled` latch (a fully
-    reported+written-off group is grieved once); sorts only when a walk fires.
-    Wire 486/486, root 212/212, host 234/234.
-
 8. **Log lines out from under the session lock** [S-M] — PR #8, merged
    2026-07-30. 48 event-log/inject prints buffer into `pendingLogLines`
    under the lock and flush at the service-tick/drain-loop/awaitClient/
@@ -151,6 +140,17 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
    grant. pup has no rlimit yet — the `sched:` lines will show the degrade
    path until it's granted; `maxQueueDelayNS` books are the loaded-box
    evidence surface.
+
+10. **VideoAssembler per-shard sweep** [S-M] — PR #10, merged 2026-07-30.
+    Sweep gated on highestSeq-advance/new-group; `contiguousPrefix` early-out
+    (clean in-order shards never touch a slot); `sweepSettled` latch (a fully
+    reported+written-off group is grieved once); sorts only when a walk fires.
+    Wire 486/486, root 212/212, host 234/234.
+
+11. **Unseal double copy** [S] — PR #11, merged 2026-07-30. The
+    `TransportCrypto.unseal` seam returns `[UInt8]`: the AEAD's fresh buffer
+    rides through the demux whole; insecure mode takes the one unavoidable
+    copy. Root suite 212/212.
 
 ## Closed
 
