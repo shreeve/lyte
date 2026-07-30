@@ -452,10 +452,12 @@ final class SessionWire {
                 try flushOutbox() // challenges, message 2, session-start beacon
             } catch {
                 lock.unlock()
+                flushLogLines()
                 throw error
             }
             let done = established && session?.phase == .established
             lock.unlock()
+            flushLogLines()
             if done {
                 try drainToIdle()
                 return
@@ -602,6 +604,7 @@ final class SessionWire {
             lock.unlock()
             usleep(2_000)
         }
+        flushLogLines()
         print(session.arqIsQuiescent
             ? "session: teardown acknowledged — clean close"
             : "session: teardown sent, unacknowledged after "
@@ -753,6 +756,7 @@ final class SessionWire {
         let bulk = pendingBulkMessages
         pendingBulkMessages.removeAll()
         lock.unlock()
+        flushLogLines()
         if leftovers { signalDrain() }
 
         // The starting-posture 0x19 (capabilities just agreed) and any
@@ -1029,12 +1033,14 @@ final class SessionWire {
                 try flushOutbox()
             } catch {
                 lock.unlock()
+                flushLogLines()
                 throw error
             }
             let done = peerGone || session.isIdle
             let now = monotonicNS()
             let wake = session.nextWake(now: now)
             lock.unlock()
+            flushLogLines()
             if done { return }
             if let wake, wake > now {
                 usleep(UInt32(min((wake - now) / 1_000 + 1, 2_000)))
@@ -1105,10 +1111,33 @@ final class SessionWire {
         }
     }
 
+    /// Lines the event log formats UNDER `lock`, printed only after it
+    /// releases. stdout is line-buffered to a pipe/tty: a stalled
+    /// reader (a stopped terminal, a wedged ssh) would otherwise block
+    /// the write INSIDE the lock and freeze audio, pacing, and capture
+    /// behind console I/O — priority inversion through the one lock
+    /// everything shares. Guarded by `lock`; drained by
+    /// `flushLogLines()` at the seams that release it (the service
+    /// tick and the drain loop — rare out-of-band events ride until
+    /// the next tick, order preserved).
+    private var pendingLogLines: [String] = []
+
+    private func emit(_ line: String) { pendingLogLines.append(line) }
+
+    /// Print whatever the locked sections accumulated. Callers must
+    /// NOT hold `lock`.
+    private func flushLogLines() {
+        lock.lock()
+        let lines = pendingLogLines
+        pendingLogLines.removeAll(keepingCapacity: true)
+        lock.unlock()
+        for line in lines { print(line) }
+    }
+
     private func log(_ event: SessionEvent) {
         switch event {
         case .handshakeCompleted(let remote):
-            print("noise: handshake complete — client static "
+            emit("noise: handshake complete — client static "
                 + HostStaticKey.hex(remote))
             // HS-9: the pairing run binds to THIS session's transcript
             // and statics; a re-handshake rebinds (and keeps the guess
@@ -1123,7 +1152,7 @@ final class SessionWire {
             break // 1 Hz; the final stats line carries the count
         case .beaconEchoAccepted(let seq, let offset, let rtt):
             if seq % 10 == 0 {
-                print("beacon: echo \(seq) offset \(offset) µs rtt \(rtt) µs")
+                emit("beacon: echo \(seq) offset \(offset) µs rtt \(rtt) µs")
             }
         case .reliableCtrl(let group, let message):
             // The pairing service claims its four CTRL types; nil means
@@ -1140,7 +1169,7 @@ final class SessionWire {
                             hostMicroseconds: monotonicMicros()
                         )
                     } catch {
-                        print("pairing: reply send failed: \(error)")
+                        emit("pairing: reply send failed: \(error)")
                     }
                 }
                 for pairingEvent in output.events {
@@ -1148,32 +1177,32 @@ final class SessionWire {
                 }
                 return
             }
-            print("ctrl-arq: message group \(group.rawValue) "
+            emit("ctrl-arq: message group \(group.rawValue) "
                 + "(\(message.count) B, type "
                 + "0x\(String(message.first ?? 0, radix: 16)))")
         case .reliableOneShotAcknowledged(let group):
-            print("ctrl-arq: one-shot group \(group.rawValue) acknowledged")
+            emit("ctrl-arq: one-shot group \(group.rawValue) acknowledged")
         case .arqIgnored(let reason):
-            print("ctrl-arq: ignored \(reason)")
+            emit("ctrl-arq: ignored \(reason)")
         case .idrRequested(let request):
-            print("ctrl: IDR request seq \(request.requestSeq) "
+            emit("ctrl: IDR request seq \(request.requestSeq) "
                 + "(frame \(request.frame.rawValue), "
                 + "coalesced \(request.coalescedCount))")
         case .path(let pathEvent):
-            print("path: \(pathEvent)")
+            emit("path: \(pathEvent)")
             if case .promoted(let primary, _) = pathEvent {
                 // Execute the rebind: media now targets the new tuple.
                 var err = [CChar](repeating: 0, count: 256)
                 if lyte_netio_set_peer(
                     netio, primary.tuple.remoteAddress,
                     primary.tuple.remotePort, &err, err.count) != 0 {
-                    print("path: rebind connect failed: \(errString(err))")
+                    emit("path: rebind connect failed: \(errString(err))")
                 }
             }
         case .handshakeCookieModeChanged(let requireCookie):
             // HS-21: the observable dial. Loud on purpose — this is the
             // live evidence the flip happened and cleared.
-            print(requireCookie
+            emit(requireCookie
                 ? "handshake: FLOOD — require-cookie mode ENGAGED "
                     + "(msg1 rate crossed the enter threshold; "
                     + "un-cookied msg1s now answered with 0x13, no Noise)"
@@ -1190,11 +1219,11 @@ final class SessionWire {
         case .dropped(.handshakeCookieInvalid):
             break // counted; the final stats line carries the tally
         case .dropped(let reason):
-            print("drop: \(reason)")
+            emit("drop: \(reason)")
         case .sendFailed(let what):
-            print("send-failed: \(what)")
+            emit("send-failed: \(what)")
         case .capabilitiesAgreed(let agreed):
-            print("capabilities: agreed — wire minor \(agreed.wireMinor), "
+            emit("capabilities: agreed — wire minor \(agreed.wireMinor), "
                 + "codecs \(agreed.videoCodecs), chroma \(agreed.chromaModes), "
                 + "idle-silence \(agreed.idleSilence), "
                 + "host-audio-routing \(agreed.hostAudioRouting), "
@@ -1206,38 +1235,38 @@ final class SessionWire {
                 routingAnnounceOwed = true
             }
         case .capabilitiesFailed(let why):
-            print("capabilities: NO WORKABLE INTERSECTION (\(why)) — "
+            emit("capabilities: NO WORKABLE INTERSECTION (\(why)) — "
                 + "typed teardown follows")
         case .capabilityUpdateAcknowledged(let accepted):
-            print("capabilities: update "
+            emit("capabilities: update "
                 + (accepted ? "accepted" : "rejected") + " by the client")
         case .modeTransitionSent(let mode):
-            print("mode: → \(mode == .idle ? "IDLE" : "ACTIVE") "
+            emit("mode: → \(mode == .idle ? "IDLE" : "ACTIVE") "
                 + "(0x09 on the reliable stream)")
         case .finalFrameSent(let group):
-            print("mode: converged frame riding one-shot group "
+            emit("mode: converged frame riding one-shot group "
                 + "\(group.rawValue) — its ack is the idle flip")
         case .teardownSent(let reason):
-            print("session: teardown 0x0A queued (\(reason))")
+            emit("session: teardown 0x0A queued (\(reason))")
         case .lifecycleChanged(let state):
             switch state {
             case .frozen:
-                print("lifecycle: FROZEN — 350 ms of media-path silence; "
+                emit("lifecycle: FROZEN — 350 ms of media-path silence; "
                     + "datagram video suspended, CTRL stays alive")
             case .recovery:
-                print("lifecycle: RECOVERY — evidence returned; fresh IDR "
+                emit("lifecycle: RECOVERY — evidence returned; fresh IDR "
                     + "at the half-stale rate, sends resume")
             case .active, .idle:
-                print("lifecycle: \(state)")
+                emit("lifecycle: \(state)")
             case .closed:
                 break // .sessionClosed carries the reason
             }
         case .sessionClosed(let reason):
-            print("session: CLOSED (\(reason))")
+            emit("session: CLOSED (\(reason))")
         case .inputReceived(let event, let rxMicros):
             injectInput(event, receivedAtMicroseconds: rxMicros)
         case .videoBacklogPurged(let datagrams, let bytes, let staleWireMs):
-            print("rate: fall purge — \(datagrams) queued video datagrams "
+            emit("rate: fall purge — \(datagrams) queued video datagrams "
                 + "(\(bytes) B, ~\(staleWireMs) ms stale at the new rate) "
                 + "dropped, fresh IDR armed")
         case .rateChanged(let bps, let reason):
@@ -1252,7 +1281,7 @@ final class SessionWire {
             case .evidence:
                 guard significant else { break }
                 lastPrintedRate = bps
-                print("rate: ↑ \(bps / 1_000) kbps (evidence climb)")
+                emit("rate: ↑ \(bps / 1_000) kbps (evidence climb)")
             case .overuse:
                 lastPrintedRate = bps
                 // The ramp hunt's forensics: the evidence at fall time,
@@ -1286,35 +1315,35 @@ final class SessionWire {
                         + "/\(String(format: "%.3f", f.postFecLossFraction))"
                         + " post-FEC]"
                 }
-                print("rate: ↓ \(bps / 1_000) kbps (queuing-delay overuse)"
+                emit("rate: ↓ \(bps / 1_000) kbps (queuing-delay overuse)"
                     + forensics)
             case .loss:
                 lastPrintedRate = bps
-                print("rate: ↓ \(bps / 1_000) kbps (loss over threshold)")
+                emit("rate: ↓ \(bps / 1_000) kbps (loss over threshold)")
             case .idrPacing(let pacing):
                 lastPrintedRate = bps
-                print("rate: → \(bps / 1_000) kbps (IDR pacing \(pacing))")
+                emit("rate: → \(bps / 1_000) kbps (IDR pacing \(pacing))")
             case .postFecLoss:
                 lastPrintedRate = bps
-                print("rate: ↓ \(bps / 1_000) kbps (post-FEC loss — "
+                emit("rate: ↓ \(bps / 1_000) kbps (post-FEC loss — "
                     + "rung 3)")
             }
         case .repairEnqueued(let frame, let shards):
-            print("repair: frame \(frame.rawValue) — \(shards) shard(s) "
+            emit("repair: frame \(frame.rawValue) — \(shards) shard(s) "
                 + "retransmitted (fresh seqs, videoTail)")
         case .nackJudgedStale(let frame, let reason):
-            print("repair: NACK frame \(frame.rawValue) judged stale "
+            emit("repair: NACK frame \(frame.rawValue) judged stale "
                 + "(\(reason))")
         case .fecRegimeChanged(let regime):
-            print("fec: regime → \(regime.rawValue) "
+            emit("fec: regime → \(regime.rawValue) "
                 + "(§5.2 \(regime == .lossy ? "lossy" : "clean") column)")
         case .audioRoutingRequested(let mode):
             // Delivered under the lock mid-iteration: buffer only. The
             // flip (a PipeWire connect) runs off-lock in service().
-            print("audio-routing: client requested \(mode) (0x18)")
+            emit("audio-routing: client requested \(mode) (0x18)")
             pendingAudioRouting.append(mode)
         case .audioRoutingStatusSent(let mode):
-            print("audio-routing: status \(mode) sent (0x19)")
+            emit("audio-routing: status \(mode) sent (0x19)")
         case .clipboardSetReceived(let text):
             // CL-15/HS-19: the session's gate + book already ran (the
             // book is pre-armed against this apply's echo). Delivered
@@ -1322,21 +1351,21 @@ final class SessionWire {
             // (a blocking D-Bus SetSelection) runs off-lock in
             // service(). Never logs the payload.
             if clipboardApplyHandler != nil {
-                print("clipboard: 0x1A set received "
+                emit("clipboard: 0x1A set received "
                     + "(\(text.utf8.count) B) — applying to the host "
                     + "clipboard")
                 pendingClipboardApplies.append(text)
             } else {
                 // Defensive: a leafless shell never declares key 10,
                 // so the core's rule-3 gate makes this unreachable.
-                print("clipboard: 0x1A set received "
+                emit("clipboard: 0x1A set received "
                     + "(\(text.utf8.count) B) — no clipboard leaf, "
                     + "ignored")
             }
         case .clipboardAnnounceSent(let byteCount):
-            print("clipboard: announce sent (\(byteCount) B, 0x1B)")
+            emit("clipboard: announce sent (\(byteCount) B, 0x1B)")
         case .clipboardAnnounceSuppressed(let reason):
-            print("clipboard: announce suppressed (\(reason))")
+            emit("clipboard: announce suppressed (\(reason))")
         case .bulkMessageReceived(let message):
             // Buffered for the off-lock shell pass (disk IO must not
             // ride the session lock). Chunks arrive by the hundred —
@@ -1346,33 +1375,33 @@ final class SessionWire {
             // P-1: sha-verified — buffer for the off-lock leaf apply
             // (a blocking D-Bus SetSelection). Never logs the payload.
             if clipboardImageApplyHandler != nil {
-                print("clipboard: image received (\(data.count) B, "
+                emit("clipboard: image received (\(data.count) B, "
                     + "\(mime)) — applying to the host clipboard")
                 pendingClipboardImageApplies.append(data)
             } else {
                 // Defensive: an imageless shell never declares key
                 // 12, so the core's gate makes this unreachable.
-                print("clipboard: image received (\(data.count) B) — "
+                emit("clipboard: image received (\(data.count) B) — "
                     + "no image leaf, ignored")
             }
         case .clipboardImageShareStarted(let byteCount):
-            print("clipboard: image share started (\(byteCount) B "
+            emit("clipboard: image share started (\(byteCount) B "
                 + "as chan-8 cargo)")
         case .clipboardImageShareCompleted(let byteCount):
-            print("clipboard: image share completed (\(byteCount) B, "
+            emit("clipboard: image share completed (\(byteCount) B, "
                 + "sha-verified by the client)")
         case .clipboardImageShareAborted(let reason, let byRemote):
-            print("clipboard: image share aborted (\(reason), "
+            emit("clipboard: image share aborted (\(reason), "
                 + "\(byRemote ? "remote" : "local"))")
         case .clipboardImageReceiveAborted(let reason, let byRemote):
-            print("clipboard: image receive aborted (\(reason), "
+            emit("clipboard: image receive aborted (\(reason), "
                 + "\(byRemote ? "remote" : "local"))")
         case .clipboardImageSuppressed(let reason):
-            print("clipboard: image suppressed (\(reason))")
+            emit("clipboard: image suppressed (\(reason))")
         case .clipboardImageRefused(let reason):
-            print("clipboard: image refused (\(reason))")
+            emit("clipboard: image refused (\(reason))")
         case .clipboardImageViolation(let violation):
-            print("clipboard: image lane protocol violation "
+            emit("clipboard: image lane protocol violation "
                 + "(\(violation)) — aborted")
         }
     }
@@ -1387,7 +1416,7 @@ final class SessionWire {
         guard let injector = inputInjector else {
             if !inputNoInjectorWarned {
                 inputNoInjectorWarned = true
-                print("input: event seq \(event.seq) arrived but no "
+                emit("input: event seq \(event.seq) arrived but no "
                     + "injection backend is active — input is OFF this run")
             }
             inputInjectFailures += 1
@@ -1397,7 +1426,7 @@ final class SessionWire {
             try injector.inject(event)
         } catch {
             inputInjectFailures += 1
-            print("input: inject seq \(event.seq) failed: \(error)")
+            emit("input: inject seq \(event.seq) failed: \(error)")
             return
         }
         let injectMicros = monotonicMicros()
