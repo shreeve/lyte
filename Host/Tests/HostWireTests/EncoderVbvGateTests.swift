@@ -708,11 +708,13 @@ final class EncoderVbvGateTests: XCTestCase {
     }
 
     func testExactTightenLeavesTheSustainedRestoreUntouched() {
-        // The loosening half is deliberately NOT exact: sustain-gated,
-        // held-minimum, restore-to-baseline — the 10 s climb-lag is
-        // load-bearing (2026-07-29 A/B). A clean ceiling after an
-        // exact tighten restores the opening recipe bit-for-bit, and
-        // only after the sustain.
+        // The loosening DISCIPLINE stays: sustain-gated, held-minimum,
+        // restore-to-baseline — the 10 s climb-lag is load-bearing
+        // (2026-07-29 A/B). A clean ceiling after an exact tighten
+        // restores the opening recipe bit-for-bit, and only after the
+        // sustain. (The within-squeeze climb's LANDING is exact in
+        // exact mode — the rising-edge pins below — but the clean
+        // restore is this unchanged contract.)
         let policy = exactPolicy()
         _ = policy.note(frameByteCeiling: 10_937, now: 0)
         XCTAssertNil(policy.note(frameByteCeiling: 31_250, now: Self.sec),
@@ -726,5 +728,58 @@ final class EncoderVbvGateTests: XCTestCase {
         XCTAssertEqual(restore?.averageBitsPerSecond, 10_000_000)
         XCTAssertEqual(restore?.vbvBits, 10_000_000 / 60)
         XCTAssertFalse(policy.squeezeEngaged)
+    }
+
+    // MARK: - The rising edge (v1-final analysis finding 6): exact
+    // mode judges BOTH edges by rate. An exact tighten parks the
+    // applied max mid-band, so a within-band recovery never moves the
+    // rung index — without the materialRise arm the posture is a
+    // ratchet, pinned below the live ceiling until a band boundary.
+
+    func testExactModeMaterialWithinBandRiseClimbsExactlyAfterSustain() {
+        let policy = exactPolicy()
+        _ = policy.note(frameByteCeiling: 12_500, now: 0) // 4.0 Mbps
+        // 14,062 B ⇒ 4,499,840 b/s: +12.5% above the applied max —
+        // past the deadband but INSIDE the covering half-rung's band,
+        // so the index never changes; the rate judgment must arm the
+        // want, and the climb waits out the full sustain as ever.
+        XCTAssertNil(policy.note(frameByteCeiling: 14_062, now: Self.sec),
+                     "the rise arms the want but must wait the sustain")
+        XCTAssertNil(policy.note(frameByteCeiling: 14_062, now: 9 * Self.sec))
+        let climb = policy.note(frameByteCeiling: 14_062, now: 11 * Self.sec)
+        XCTAssertEqual(climb?.kind, .loosen)
+        // The landing is exact — the held-minimum ceiling itself, not
+        // the rung above it — so the deadband parks dither in both
+        // directions around the new applied max.
+        XCTAssertEqual(climb?.maxBitsPerSecond, 4_499_840)
+        XCTAssertEqual(policy.directivesIssued, 2)
+    }
+
+    func testExactModeRiseInsideTheDeadbandStillParks() {
+        let policy = exactPolicy()
+        _ = policy.note(frameByteCeiling: 12_500, now: 0) // 4.0 Mbps
+        // 13,000 B ⇒ 4.16 Mbps: +4%, inside the ×1.1 deadband — the
+        // dither parks and the sustain tracker never even arms.
+        XCTAssertNil(policy.note(frameByteCeiling: 13_000, now: Self.sec))
+        XCTAssertNil(policy.note(frameByteCeiling: 13_000, now: 11 * Self.sec))
+        XCTAssertEqual(policy.directivesIssued, 1)
+    }
+
+    func testLadderModeIsUnmovedByTheWithinBandRise() {
+        // The control: in ladder mode the applied max IS the rung rate
+        // (5 Mbps here), so a 4.5 Mbps ceiling sits under the posture
+        // and correctly wants nothing — the hole only ever existed in
+        // exact mode, and this pin keeps the fix from leaking there.
+        let policy = EncoderVbvPolicy(config: EncoderVbvConfig(
+            fps: 60,
+            baselineAverageBitsPerSecond: 10_000_000,
+            baselineMaxBitsPerSecond: 10_000_000,
+            baselineVbvBits: 10_000_000 / 60,
+            rungsPerOctave: 2
+        ))
+        _ = policy.note(frameByteCeiling: 12_500, now: 0)
+        XCTAssertNil(policy.note(frameByteCeiling: 14_062, now: Self.sec))
+        XCTAssertNil(policy.note(frameByteCeiling: 14_062, now: 11 * Self.sec))
+        XCTAssertEqual(policy.directivesIssued, 1)
     }
 }

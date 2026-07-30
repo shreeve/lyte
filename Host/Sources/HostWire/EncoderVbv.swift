@@ -206,10 +206,18 @@ public struct EncoderVbvConfig: Sendable {
     /// the vendored no-reset libavcodec proved itself (the same gate
     /// as rungsPerOctave = 2); the estimator's 500 ms fall limiter
     /// bounds the extra directives to ~2/s worst case, each one cheap
-    /// driver call. The rung ladder still names the bands for
-    /// LOOSENING — the sustain-gated climb, the held-minimum target,
-    /// and the restore are untouched (the 10 s climb-lag is
-    /// load-bearing, 2026-07-29 A/B).
+    /// driver call. The rung ladder still names the bands, and the
+    /// sustain-gated climb + restore discipline is unchanged (the 10 s
+    /// climb-lag is load-bearing, 2026-07-29 A/B) — but exact mode
+    /// judges BOTH edges by rate, not rung: a material within-band
+    /// RISE (the ceiling more than a deadband above the applied max)
+    /// arms the loosen want just like a band-crossing does, and the
+    /// sustained climb lands exactly on the held-minimum ceiling.
+    /// Without the rising arm, an exact tighten parked mid-band is a
+    /// ratchet — a recovery inside the same rung never changes the
+    /// index, so the encoder stays pinned below the live ceiling
+    /// until a band boundary or a clean restore (the v1-final
+    /// analysis's finding 6).
     public var exactTighten: Bool
 
     public init(
@@ -482,8 +490,19 @@ public final class EncoderVbvPolicy {
         // target is the rung of the window's MINIMUM ceiling — the
         // level the wire actually held. A hunt's recurring falls reset
         // the tracker, so the posture parks and the hunt is absorbed.
+        // Exact mode's mirror of materialFall: an exact tighten lands
+        // the applied max mid-band, so a recovery that stays inside
+        // the applied rung never moves the index — judged by rate,
+        // a ceiling more than a deadband ABOVE the applied max is
+        // headroom the posture is refusing, and it arms the same
+        // sustain-gated want a band-crossing rise does.
+        let materialRise = config.exactTighten
+            && ceilingRate > appliedMaxBitsPerSecond
+                + Int(Double(appliedMaxBitsPerSecond)
+                    * config.deadbandFraction)
         let wantsLooser = clean
             || rungIndex(for: ceilingRate) < appliedIndex
+            || materialRise
         guard wantsLooser else {
             looserWantedSince = nil
             return absorb()
@@ -510,11 +529,17 @@ public final class EncoderVbvPolicy {
                 ceilingMoved: ceilingMoved
             )
         }
-        // Sustained but still squeezed: climb to the held level's rung.
+        // Sustained but still squeezed: climb to the held level — the
+        // rung in ladder mode; exactly the held-minimum ceiling in
+        // exact mode (the climb's mirror of the exact landing, so the
+        // deadband parks dither in both directions around it).
         let target = rungIndex(for: looserMinCeilingRate)
         appliedRungIndex = target
         return emit(
-            posture(atRungIndex: target), kind: .loosen,
+            config.exactTighten
+                ? posture(atRate: looserMinCeilingRate)
+                : posture(atRungIndex: target),
+            kind: .loosen,
             frameByteCeiling: frameByteCeiling, now: now,
             ceilingMoved: ceilingMoved
         )
