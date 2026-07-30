@@ -13,11 +13,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Do-now tier
 
-2. **Capture-starvation tripwire** [S] — the direct-scanout freeze class has no
-   runtime detector, only a startup warning. All inputs exist on the host tick
-   (`lastOnFrameAt`, session state, input recency): one throttled loud book line
-   when ACTIVE + recent input + capture gap > 500 ms.
-
 3. **Pin tonight's untested pure logic** [M] — `RateMeter`, `VideoDeliveryBooks`
    (window-anchor eviction, wrap-safe math, ring percentiles), and the radio
    watchdog's 3-strike debounce live in the app target no test bundle reaches.
@@ -142,6 +137,12 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
    Pattern became `delivery [^)]*)` (captures through the belief-bearing close
    paren) plus a loud `*** GREP ROTTED ***` guard if the shape ever drifts
    again. Verified against today's real probe logs.
+
+2. **Capture-starvation tripwire** [S] — PR #2, merged 2026-07-30. The Sink
+   tick now trips a throttled `capture: STARVED` line (ACTIVE + input within
+   2 s + no capture frame > 500 ms; cursor is EMBEDDED so input must damage),
+   naming the scanout prerequisite; episodes counted in the final stats block.
+   Host build on pup clean with the vendored no-reset recipe.
 
 ## Closed
 
