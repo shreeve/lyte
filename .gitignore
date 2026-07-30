@@ -4,9 +4,10 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 
-# SwiftPM (Package.resolved is deliberately TRACKED in all three packages)
+# SwiftPM
 .build/
 .swiftpm/
+Package.resolved
 
 # macOS
 .DS_Store
