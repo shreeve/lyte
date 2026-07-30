@@ -296,6 +296,98 @@ codebase.
   dispersion report; `VideoAssemblerConfig` validates none of its five
   knobs (`maxTrackedGroups: 0` traps on first shard).
 
+## Addendum — items compressed out of the first cut (same review)
+
+*Restored after a fidelity audit of this file against the six raw agent
+reports; numbering continues from Tier 2.*
+
+18. **MED — `applyIdrPacing` leaves the belief and probe cadence stale
+    across RECOVERY/migration** —
+    `Host/Sources/HostWire/RateEstimator.swift:862-880`: the one place
+    the estimator *knows* its evidence is stale halves only
+    `rateBitsPerSecond`; `beliefBits` (which never ages), the cadence
+    hold, and the band floor all survive the path change. Migrate from
+    90 Mbps Wi-Fi to a 5 Mbps tether and the probe ceiling
+    (`min(cap, belief×1.1)`) is still ~99 Mbps — HS-29's damping is
+    inert on exactly the transition where the wall moved; symmetric: a
+    stale band floor can hold rises on the new path for 10 s.
+
+19. **MED — PipeWire round-trips with no timeout wedge startup and
+    shutdown** — `Host/Sources/CPipeWireCapture/capture.c:261-289`
+    (`resolve_target_serial` runs `pw_main_loop_run` inside
+    `lyte_pw_capture_new` with no timer armed — the safety timeout only
+    exists later, in `_run`) and
+    `Host/Sources/lyte-host/audio.c:117-123` (the shutdown `roundtrip`
+    in `lyte_pw_audio_restore`): a wedged compositor/wireplumber hangs
+    the host before its first frame, or hangs exit with the desktop's
+    default sink still pointed at "Lyte Audio". Both want the bounded
+    timer source `lyte_pw_capture_run` already demonstrates.
+
+20. **MED-LOW — delivery trains are segmented channel-blind while the
+    delay side is deliberately per-channel** —
+    `RateEstimator.swift:1084-1091, 1216-1222` vs :1228-1257: trains
+    mix fast-lane audio (131 B) with video (1152 B) under DSCP, skewing
+    the measured rate that drives the honest/censored trichotomy — and
+    at the 500 kbps floor the rate-scaled gap (~55 ms) chains audio's
+    5 ms cadence into every train, re-opening the door
+    `minTrainPackets` was added to close. Consider single-channel
+    trains or per-channel classification.
+
+21. **Shell — quality-probe's wire leg cannot fail when the host never
+    starts** — `Host/Scripts/quality-probe.sh:187-209`: the readiness
+    loop falls through after 20 s with no verdict (no `-e`, launch
+    unchecked), then runs the full 195 s leg against nothing and prints
+    FAIL rows with blank numbers that read like a measured regression.
+    One `|| exit 1` after the loop closes it.
+
+22. **Shell — the secrets rail false-alarms on a never-paired host** —
+    `Host/Scripts/quality-probe.sh:103-107`: a missing
+    `paired_clients` shifts the `sha256sum` line positions, so the rail
+    compares the portal token (which rotates by design) and prints
+    `*** CHANGED — INVESTIGATE ***` on every clean run. Key the
+    comparison by filename. Neighboring: `corpus-harness.sh:206`
+    interpolates an env-overridable path unquoted into a remote
+    `rm -rf`.
+
+23. **Latent — `SessionWire.init` late throw double-frees and orphans
+    the drain thread** —
+    `Host/Sources/lyte-host/SessionWire.swift:359-388` + `deinit`
+    :403-407: a throw after the allocations and thread start repeats
+    `scratch.deallocate()`/`lyte_netio_free` and leaves the drain
+    thread on a freed object. Unreachable today (the `--insecure`
+    validation happens to run first) — armed by any new throw added to
+    `init`. Move validation above the allocations.
+
+24. **LOW — `lyte_pw_audio_quit` races the loop's exit reason** —
+    `audio.c:495-504`: plain-`int` cross-thread store can overwrite a
+    concurrent stream-error reason, silently suppressing the
+    `run error` line. Make it `_Atomic` (companion:
+    `capture.c:212-217` passes a possibly-NULL `spa_dict_lookup` to
+    `%s`).
+
+25. **LOW/clarity — the arrival-stamp decoy parameter** —
+    `LyteUdpSession.handleDatagram(_:arrivalMicroseconds:)` never reads
+    the parameter (deliberately — the echo responder forbids the
+    wall-clock stamp for t2), but `UdpReceiveEndpoint`'s doc still
+    promises it's "the same arrival stamp the demux got"; a future
+    reader wiring t2 from it corrupts every RTT sample. Drop or
+    annotate it.
+
+26. **LOW/architecture residue** — `Sniff.swift` (and two others)
+    import CHevcEncode solely for `lyte_stdout_linebuf` — process
+    stdio config living in the NVENC leaf; a two-function `CStdio`
+    frees the dissector from libavcodec. `LatencyHistogram` ≡
+    `HostCore.Histogram` and `AnnexBCheck` ≡ `HostCore.AnnexB` are
+    documented-in-code duplications (retiring `HostCore.AnnexB` onto
+    the Wire copy is mechanical today). The host's crypto and ARQ
+    carriage are inlined switches where the client has named seams
+    (`TransportCrypto` protocol, `ReliableCtrlEndpoint`) — the missing
+    host-side seam is why the repack duplication exists.
+
+27. **Test-gap residue** — `HostClockModel.estimate` picks `anchor` by
+    max timestamp but `offset0` by array position; out-of-order
+    `ingest` has no pin.
+
 ## Test-coverage gaps worth closing (hardware-independent)
 
 Client/host composition gate (see above); ARQ receive-group lifecycle
