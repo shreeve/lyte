@@ -209,6 +209,28 @@ final class NackRepairClientGateTests: XCTestCase {
                 plaintext: shards[Int(shardIndex)].payload)
         }
 
+        var nextCtrlSeq = ChannelSeq(rawValue: 0)
+
+        /// HS-32: one sealed 0x23 refusal — the host responder's
+        /// explicit "no", ARQ-exempt on the ctrl channel like 0x10.
+        func refusalDatagram(
+            frame: UInt32, reason: RepairRefusalReason, hostMicros: UInt64
+        ) throws -> [UInt8] {
+            let envelope = Envelope(
+                channel: .ctrl,
+                seq: nextCtrlSeq,
+                frame: FrameNumber(rawValue: 0),
+                timestamp: hostMicros,
+                fec: 0
+            )
+            nextCtrlSeq = nextCtrlSeq.next
+            return try seal(
+                envelope: envelope,
+                plaintext: RepairRefusal(
+                    frame: FrameNumber(rawValue: frame), reason: reason
+                ).encode())
+        }
+
         /// One client datagram: chan-3 reports feed the NACK evidence,
         /// sealed 0x10s count as IDR requests; ARQ/echo noise ignores.
         func absorb(_ bytes: [UInt8]) throws {
@@ -1018,5 +1040,87 @@ final class NackRepairClientGateTests: XCTestCase {
         }
         XCTAssertEqual(askedPairs.count, Set(askedPairs).count,
                        "no (frame, shard) pair was ever re-asked")
+    }
+
+    // MARK: - Leg H (HS-32): an explicit refusal ends the wait NOW
+
+    func testHostRefusalEndsRepairWaitImmediately() throws {
+        let corpus = try loadCorpus(4)
+        let host = RepairHost()
+        let harness = try Harness(host: host)
+
+        var t: UInt64 = 1_000
+        harness.clock.value = t
+        for datagram in try host.videoDatagrams(
+            annexB: corpus[0], frameNumber: 0, hostMicros: t
+        ) {
+            harness.absorb(datagram, tMicros: t)
+        }
+
+        // Frame 1 goes past parity; follow-ons render the verdict and
+        // the ask leaves in an out-of-cadence report (leg A's shape).
+        t += 5_000; harness.clock.value = t
+        let geometry1 = try host.plannedGeometry(annexB: corpus[1])
+        let dropped = Set(0..<(geometry1.parityShards + 2))
+        for datagram in try host.videoDatagrams(
+            annexB: corpus[1], frameNumber: 1, hostMicros: t,
+            dropping: dropped
+        ) {
+            harness.absorb(datagram, tMicros: t)
+        }
+        for number in 2...3 {
+            t += 5_000; harness.clock.value = t
+            for datagram in try host.videoDatagrams(
+                annexB: corpus[number], frameNumber: UInt32(number),
+                hostMicros: t
+            ) {
+                harness.absorb(datagram, tMicros: t)
+            }
+            harness.core.tick(now: ClientTimestamp(microseconds: t))
+        }
+        var forwarded = 0
+        try harness.pumpOutboundToHost(forwarded: &forwarded)
+        XCTAssertFalse(host.nackEntriesSeen.isEmpty,
+                       "the ask must be live before the refusal answers it")
+        XCTAssertEqual(host.idrRequestsSeen, 0)
+
+        // The host REFUSES instead of repairing — 5 ms later, far
+        // inside the 250 ms deadline the client used to burn whole.
+        t += 5_000; harness.clock.value = t
+        harness.absorb(
+            try host.refusalDatagram(
+                frame: 1, reason: .staleBudget, hostMicros: t),
+            tMicros: t)
+        harness.core.feedback.tick(now: ClientTimestamp(microseconds: t))
+        try harness.pumpOutboundToHost(forwarded: &forwarded)
+        XCTAssertGreaterThanOrEqual(
+            host.idrRequestsSeen, 1,
+            "the refusal goes straight to the IDR path — no deadline burned")
+        var stats = harness.core.nackPolicy.snapshotStats()
+        XCTAssertEqual(stats.refusalsReceived, 1)
+        XCTAssertEqual(stats.refusalsActedOn, 1)
+        XCTAssertEqual(stats.refusalsIgnored, 0)
+        XCTAssertEqual(stats.framesEscalatedToIdr, 0,
+                       "refusal-acted is its own book, not a deadline expiry")
+        XCTAssertTrue(harness.notes.contains {
+            $0.contains("repair refused") && $0.contains("staleBudget")
+        }, "the refusal is loud in the protocol notes")
+
+        // A DUPLICATE refusal for the settled ask and an UNKNOWN one
+        // for a frame never asked: ignored loud, nothing escalates.
+        t += 1_000; harness.clock.value = t
+        harness.absorb(
+            try host.refusalDatagram(
+                frame: 1, reason: .staleBudget, hostMicros: t),
+            tMicros: t)
+        harness.absorb(
+            try host.refusalDatagram(
+                frame: 7, reason: .unknownFrame, hostMicros: t),
+            tMicros: t)
+        stats = harness.core.nackPolicy.snapshotStats()
+        XCTAssertEqual(stats.refusalsReceived, 3)
+        XCTAssertEqual(stats.refusalsActedOn, 1,
+                       "an ask acts at most once")
+        XCTAssertEqual(stats.refusalsIgnored, 2)
     }
 }

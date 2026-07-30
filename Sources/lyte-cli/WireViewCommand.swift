@@ -644,6 +644,15 @@ final class WireViewStatsPrinter: Sendable {
             if nack.framesEscalatedToIdr > 0 {
                 line += ", \(nack.framesEscalatedToIdr) expired→IDR"
             }
+            // HS-32: explicit host refusals — acted asks skip the
+            // 250 ms deadline entirely.
+            if nack.refusalsReceived > 0 {
+                line += ", \(nack.refusalsReceived) refusals rx " +
+                        "(\(nack.refusalsActedOn) acted→IDR" +
+                        (nack.refusalsIgnored > 0
+                            ? ", \(nack.refusalsIgnored) ignored)"
+                            : ")")
+            }
             if nack.fecImpossibleDeferred > 0 {
                 line += ", \(nack.fecImpossibleDeferred) idr-deferred"
             }

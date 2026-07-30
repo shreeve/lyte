@@ -486,8 +486,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             emit: { [weak self] entries in
                 guard let self else { return }
                 // Enqueue + an immediate out-of-cadence report: the
-                // host's rule-3 freeze budget (~33 ms) is tighter than
-                // the 25–50 ms cadence.
+                // host's rule-3 freeze budget is derived from the
+                // cadence (HS-32, ~1.5×) — an ask that skips the wait
+                // spends none of it.
                 self.feedback.enqueueNacks(entries)
                 self.feedback.tick(now: self.now())
                 for entry in entries {
@@ -499,8 +500,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             escalate: { [weak self] frame, now in
                 guard let self else { return }
                 self.idrRequester.recordFecImpossible(frame: frame, now: now)
+                // Reason-neutral: this closure exits deadline expiries,
+                // framesGone, AND HS-32 refusals (which already printed
+                // their own reasoned note); the books tell them apart.
                 self.onEvent(.protocolNote(
-                    "nack: frame \(frame.rawValue) repair expired — "
+                    "nack: frame \(frame.rawValue) repair abandoned — "
                     + "IDR instead"))
             })
         self.audio = AudioReceiver(jitterConfig: config.audioJitter)
@@ -901,8 +905,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             if !reliable.handleCtrlDatagram(
                 envelope: envelope, payload: payload, now: now
             ) {
-                echoResponder.handleCtrlPayload(
-                    payload, arrivalMicroseconds: now.microseconds)
+                if !echoResponder.handleCtrlPayload(
+                    payload, arrivalMicroseconds: now.microseconds
+                ) {
+                    handleExemptCtrl(payload, now: now)
+                }
             }
         } else if envelope.channel == pipeline.channel {
             // Any one shard's lastInputSeq TLV (0x03) associates the
@@ -930,6 +937,29 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             tightenDetectorIfNeeded(now: now)
         }
         applyMachine(.mediaPathEvidence, now: now)
+    }
+
+    /// HS-32: the ARQ-exempt CTRL types beyond the beacon. A 0x23
+    /// repair refusal ends the named frame's repair wait immediately —
+    /// the policy escalates it to the existing rate-windowed IDR
+    /// requester. Anything else (unknown types included) is skipped
+    /// silently — the forward-compat contract this very message's
+    /// key-free append relies on. Malformed refusals count and drop;
+    /// hostile bytes never stop the exempt path.
+    private func handleExemptCtrl(
+        _ payload: [UInt8], now: ClientTimestamp
+    ) {
+        guard payload.first == CtrlMessageType.repairRefused else {
+            return
+        }
+        guard let refusal = try? RepairRefusal.decode(payload) else {
+            noteMalformed("repair refusal")
+            return
+        }
+        onEvent(.protocolNote(
+            "nack: frame \(refusal.frame.rawValue) repair refused "
+            + "by host (\(refusal.reason)) — IDR now"))
+        nackPolicy.handleRefusal(frame: refusal.frame, now: now)
     }
 
     /// Rebuilds the receiver machine at the tightened threshold,

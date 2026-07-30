@@ -121,6 +121,15 @@ public final class NackPolicy: @unchecked Sendable {
         /// duplicated answer (network duplication; the host itself
         /// one-attempts).
         public var repairsDuplicate: UInt64 = 0
+        /// HS-32: explicit 0x23 refusals decoded off the wire.
+        public var refusalsReceived: UInt64 = 0
+        /// Refusals that ended a live ask's wait — straight to the
+        /// (rate-windowed) IDR path, no 250 ms deadline burned.
+        public var refusalsActedOn: UInt64 = 0
+        /// Unknown/duplicate refusals, ignored loud (the drop-reason
+        /// counter): no book for the frame, no live ask, or the ask
+        /// had already settled (decoded, expired, or refused twice).
+        public var refusalsIgnored: UInt64 = 0
         /// Answers for frames the client had already abandoned (skipped,
         /// evicted, or rule-4 escalated to IDR) — superseded by newer
         /// frames or the keyframe heal.
@@ -132,7 +141,8 @@ public final class NackPolicy: @unchecked Sendable {
     /// Newest min-RTT estimate in µs, nil before the first beacon echo.
     private let rtt: @Sendable () -> Int64?
     /// Sends freshly-minted entries down the feedback path (enqueue +
-    /// out-of-cadence flush — the host's 33 ms freeze budget is tight).
+    /// out-of-cadence flush — the host's cadence-derived freeze budget
+    /// (HS-32, ~1.5 cadences) rewards asks that travel promptly).
     private let emit: @Sendable ([FeedbackReport.NackEntry]) -> Void
     /// Rule 4's exit: the existing coalesced IDR requester.
     private let escalate: @Sendable (FrameNumber, ClientTimestamp) -> Void
@@ -270,6 +280,37 @@ public final class NackPolicy: @unchecked Sendable {
             }
             lock.unlock()
         }
+    }
+
+    /// HS-32: one decoded 0x23 refusal off the wire. The host judged
+    /// the ask stale (budget gone, superseded by a newer IDR, or
+    /// store-evicted) — the frame's repair wait ends NOW, straight to
+    /// the existing coalesced IDR requester (already rate-windowed)
+    /// instead of burning the rest of the 250 ms deadline. The
+    /// deadline REMAINS as the fallback for lost refusals (the message
+    /// is fire-and-forget by contract). Unknown and duplicate refusals
+    /// are ignored loud (the drop-reason counter): a refusal for a
+    /// frame never asked, or for an ask that already settled, acts on
+    /// nothing. Reasons are not distinguished here — every actionable
+    /// refusal has the same exit, and the reason traveled for the logs.
+    public func handleRefusal(frame: FrameNumber, now: ClientTimestamp) {
+        var act = false
+        lock.lock()
+        stats.refusalsReceived += 1
+        if var book = books[frame.rawValue],
+           !book.settled, !book.askedIndices.isEmpty {
+            stats.refusalsActedOn += 1
+            // The IDR supersedes the repair path (the rule-4 shape):
+            // any answer still in flight lands as superseded.
+            book.fate = .gone
+            book.lastTouched = now
+            books[frame.rawValue] = book
+            act = true
+        } else {
+            stats.refusalsIgnored += 1
+        }
+        lock.unlock()
+        if act { escalate(frame, now) }
     }
 
     /// The core's fec-impossible funnel asks before routing to the IDR
