@@ -542,6 +542,55 @@ final class PacerTests: XCTestCase {
             "video must not borrow the exemption")
     }
 
+    // MARK: - Queued-bytes accounting
+
+    func testQueuedBytesRunningTotalTracksPushAndPop() {
+        // queuedBytes became a push/pop-maintained running total (the
+        // walk was O(queue) and read from two hot gates that fire
+        // fastest exactly when the queue is deepest). The total must
+        // agree with ground truth through mixed urgent/normal traffic,
+        // partial drains, and the emptied-queue array reset.
+        let pacer = Pacer(rateBitsPerSecond: 20_000_000, now: 0)
+        XCTAssertEqual(pacer.queuedBytes(.freshVideo), 0)
+
+        var expected = 0
+        for i in 1...50 {
+            let bytes = 100 + i * 7
+            pacer.enqueue(.freshVideo, bytes: bytes,
+                          urgent: i % 5 == 0, now: 0)
+            expected += bytes
+        }
+        XCTAssertEqual(pacer.queuedBytes(.freshVideo), expected)
+
+        // Drain in paced batches; after every batch the running total
+        // must equal enqueued minus emitted.
+        var now: UInt64 = 0
+        while let batch = nextAvailableBatch(pacer, from: &now) {
+            expected -= batch.tokens
+                .filter { $0.priorityClass == .freshVideo }
+                .reduce(0) { $0 + $1.bytes }
+            XCTAssertEqual(pacer.queuedBytes(.freshVideo), expected)
+        }
+        XCTAssertEqual(pacer.queuedBytes(.freshVideo), 0)
+
+        // A fresh era after the arrays reset must count from zero.
+        pacer.enqueue(.freshVideo, bytes: 999, now: now)
+        XCTAssertEqual(pacer.queuedBytes(.freshVideo), 999)
+        XCTAssertEqual(pacer.queuedBytes(.videoTail), 0,
+                       "totals are per class, never shared")
+    }
+
+    private func nextAvailableBatch(
+        _ pacer: Pacer, from now: inout UInt64
+    ) -> PacerBatch? {
+        for _ in 0..<10_000 {
+            if let batch = pacer.nextBatch(now: now) { return batch }
+            guard let wake = pacer.nextWake(now: now) else { return nil }
+            now = max(wake, now + 1)
+        }
+        return nil
+    }
+
     // MARK: - Wake computation
 
     func testNextWakeIsExactAndMonotonic() {
