@@ -92,17 +92,8 @@ codebase.
    climb back. The most likely explanation yet for unexplained rate sags
    on clean air.
 
-6. **`exactTighten` rising-edge ratchet** (a finding against sweep PR #7)
-   — `Host/Sources/HostWire/EncoderVbv.swift:454-477` (exact tighten
-   lands `appliedMax` mid-band) vs :485-490 (`wantsLooser` judged purely
-   on rung indices). A recovery that stays inside the applied rung's
-   band never arms loosening: worked example (rungsPerOctave 2, baseline
-   10 Mbps) pins the encoder at 2.51 Mbps while the pacer runs 3.5 Mbps
-   — permanent 39% under-fill until a rung boundary or clean restore.
-   Pure-ladder mode cannot have this hole; exact mode introduced it.
-   Fix: judge `wantsLooser` against `appliedMaxBitsPerSecond` (with
-   deadband), not `appliedIndex`. The gate suite pins the falling edge
-   only — no within-band-rise pin exists.
+6. ~~**`exactTighten` rising-edge ratchet**~~ — **LANDED, PR #20**
+   (2026-07-30; see Landed section at the end).
 
 ## Tier 2 — hostile-peer and edge-condition hardening
 
@@ -438,6 +429,20 @@ via lyte-encode-check hashing.
 - Estimator internals verified subtle-and-correct where it counts: the
   send-ledger recycling guard, the HS-30 belief cap as the load-bearing
   overflow bound, recusal evaluated before the purge mutates the queue.
+
+## Landed
+
+- **T1-6 `exactTighten` rising edge** — PR #20, merged 2026-07-30.
+  `materialRise` mirrors `materialFall` (rate-judged loosen want past
+  the deadband above the applied max); exact mode's sustained climb
+  lands exactly on the held-minimum ceiling; ladder mode and the
+  sustain/restore discipline untouched. 3 new pins (exact climb after
+  sustain, deadband-parked rise, ladder control); suite 239/239 Mac AND
+  pup.
+
+## Closed
+
+(none yet)
 
 ## Suggested action shape
 

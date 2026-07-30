@@ -75,11 +75,18 @@ sibling directory:
 
 ```
 rsync -a --delete --exclude .build Wire/ pup:src/Wire/
-rsync -a --delete --exclude .build Host/ pup:src/lyte-host/
-ssh pup 'cd ~/src/lyte-host && LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build'
+rsync -a --delete --exclude .build --exclude Vendor/ffmpeg/build \
+  --exclude Vendor/ffmpeg/prefix Host/ pup:src/lyte-host/
+ssh pup 'cd ~/src/lyte-host && VP=$PWD/Vendor/ffmpeg/prefix && \
+  LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat LYTE_FFMPEG_PREFIX=$VP \
+  PKG_CONFIG_PATH=$VP/lib/pkgconfig swift build'
 ```
 
-The `LD_LIBRARY_PATH` shim is a **local pup-box workaround only**: Swift
+The `LYTE_FFMPEG_PREFIX`/`PKG_CONFIG_PATH` env is REQUIRED (HS-33): it
+links the vendored no-reset libavcodec; without it the build silently
+takes the distro lib and every rate move mints an IDR again. Good-build
+marker in any host run: `encoder: vendored no-reset libavcodec`. The
+`LD_LIBRARY_PATH` shim is a **local pup-box workaround only**: Swift
 6.1.2's build tools want `libxml2.so.2`, which Ubuntu 26.04 doesn't ship
 (it has `.so.16`), so `~/.local/lib/swift-compat/libxml2.so.2` symlinks to
 the system `libxml2.so.16`. Not a universal requirement.
@@ -123,13 +130,19 @@ makes later runs headless.
   - `W5: the wire goes dark — Noise IK lands against the published vectors, and every shard now rides under a 16-byte proof`
   - `HS-4: every datagram carries its own colors — CNetIO drives per-packet DSCP and kernel TX timestamps from Swift`
 - NO AI-attribution trailers or co-author lines, ever.
-- Don't push unless asked (main runs ahead of origin by convention).
-  Avoid `--amend`.
+- Avoid `--amend`. Never force-push main.
+- **The PR train is the working pattern** (established with the
+  2026-07-30 audit sweep, #1–#19): branch → fix → reproducing pin →
+  suites green on Mac AND pup → `gh pr create` → squash-merge with a
+  ledger-voice subject carrying `(#N)` → record the landing → push.
+  Main is pushed as part of the train; land on success, close on
+  failure. This repo squash-merges — PR association lives in the
+  `(#N)` subject suffix, never merge commits.
 
-**HANDOFF.md** is the tracked session ledger (in the repo since `8da50bf`;
-the `.gitignore` entry is vestigial and inert for a tracked file). Read it
-first for current state and the resume point; edit it freely; commit
-updates in the ledger voice.
+**HANDOFF.md** is the tracked session ledger. Read it first for current
+state and the resume point; edit it freely; commit updates in the
+ledger voice. It carries only what is live — frozen history is in
+`docs/20260730-handoff-archive-h2-h4.md`.
 
 **Networking / host safety.**
 - Lyte UDP work uses 41000-range ports by convention. (The old "stay off
@@ -146,9 +159,32 @@ updates in the ledger voice.
 Long-running live tests (soaks, netem runs) can look "stalled" from the
 transcript; don't assume a worker died from idle output alone.
 
+## The v2 program (2026-07-30 →)
+
+v1 closed at the annotated tag **`v1-final`** after a six-agent final
+review. The record: `ANALYSIS.md` (the tiered working ledger — the fix
+train runs from it), `ANALYSIS-DETAILED.md` (the six reviews verbatim),
+`ANALYSIS-FULL.md` (the owner's capture), and TODO.md's audit-caveats
+section. The v2 laws are `docs/20260730-lyte-v2-rulings.md` — **read
+them as constraints, never re-litigate**: one repo forever (no v1/v2
+split, convergence in place, always green); target shape
+Client / Common / Host with Common split as `Common/Core` (`LyteCore`,
+sans-IO, lint-guarded) / `Common/IO` (`LyteIO`, shared OS adapters,
+adapters-never-policy) / `Common/TestKit` (`LyteTestKit`); fix before
+spec; spec before code; rebuild only earned organs against the frozen
+vectors. Phase order: the ANALYSIS Tier 1/2 PR train → multi-agent
+spec phases (inventory → design panels → adversarial review →
+synthesis, artifacts under `Docs/spec-drafts/`) → tree migration →
+organ rebuilds.
+
 ## Doc map — where to look next
 
 - `HANDOFF.md` — current state, what's committed, resume point (start here).
+- `docs/README.md` — the docs card catalog: living vs frozen vs
+  reference studies, one line each.
+- `ANALYSIS.md` — every known defect and debt, tiered; plus the
+  strengths to protect. The v2 effort's bedrock.
+- `docs/20260730-lyte-v2-rulings.md` — settled v2 law.
 - `docs/20260720-222500-lyte-build-plan.md` — master plan: slices, gates,
   waves, checkpoints.
 - `docs/20260720-215100-lyte-udp-decision.md` — why Lyte-UDP only, what
