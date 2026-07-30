@@ -105,6 +105,13 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// The production PTO wake; nil until `start()`. Re-scheduled to the
     /// endpoint's reported deadline after every service pass.
     private var timer: DispatchSourceTimer?
+    /// The absolute deadline (µs) the timer is currently armed at, nil
+    /// when nothing is armed (fresh, fired, or parked). Pointer drags
+    /// run a service pass per event and per host ACK — hundreds/s —
+    /// nearly always re-deriving an unchanged PTO deadline; re-arming
+    /// the kernel timer for a <1 ms move is churn without effect, so
+    /// the reschedule skips inside that band. Guarded by `lock`.
+    private var armedDeadlineMicros: UInt64?
 
     public init(
         sender: TransportSender,
@@ -241,7 +248,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
             queue: .global(qos: .userInitiated))
         source.setEventHandler { [weak self] in
             guard let self else { return }
-            self.tick(now: self.now())
+            self.timerFired()
         }
         source.resume()
         timer = source
@@ -254,8 +261,19 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         lock.lock()
         let source = timer
         timer = nil
+        armedDeadlineMicros = nil
         lock.unlock()
         source?.cancel()
+    }
+
+    /// The wake path: the one-shot fired, so NOTHING is armed anymore —
+    /// the skip bookkeeping must clear before the service pass re-arms,
+    /// or an unchanged deadline would skip the re-arm and sleep forever.
+    private func timerFired() {
+        lock.lock()
+        armedDeadlineMicros = nil
+        serviceLocked(now: now())
+        lock.unlock()
     }
 
     /// One timer beat: fires due PTO retransmits and re-arms. The wake
@@ -343,13 +361,25 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
             }
         }
         // Re-schedule the production wake to the endpoint's reported
-        // deadline (poll already accounts for what this pass sent).
+        // deadline (poll already accounts for what this pass sent) —
+        // unless the armed deadline already sits within 1 ms of it
+        // (PTOs are 100 ms-scale; a ≤1 ms late wake is nothing, the
+        // saved churn at drag rates is hundreds of kernel timer ops/s).
         if let timer {
             if let deadline {
-                let delta = max(deadline.microseconds(since: now), 1_000)
-                timer.schedule(deadline: .now() + .microseconds(Int(delta)))
-            } else {
+                let target = deadline.microseconds
+                let unchanged = armedDeadlineMicros.map {
+                    target >= $0 &- 1_000 && target <= $0 &+ 1_000
+                } ?? false
+                if !unchanged {
+                    let delta = max(deadline.microseconds(since: now), 1_000)
+                    timer.schedule(
+                        deadline: .now() + .microseconds(Int(delta)))
+                    armedDeadlineMicros = target
+                }
+            } else if armedDeadlineMicros != nil {
                 timer.schedule(deadline: .distantFuture)
+                armedDeadlineMicros = nil
             }
         }
     }
