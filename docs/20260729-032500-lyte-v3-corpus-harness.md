@@ -50,7 +50,7 @@ run from the Mac; the R5/Q-1 cannot-rot doctrine):
 - **Goldens**: decoded post-ratchet PNGs of corpus (a), committed at
   `Goldens/corpus/` for BOTH chroma legs (the 444 set is the offline
   rgb_mode path — V-4's Work mode diffs against it). *(Moved to
-  `Tests/goldens/corpus/` 2026-07-30 — owner tidy; the harness's
+  `Tests/Goldens/` 2026-07-30 — owner tidy; the harness's
   `GOLDEN_DIR` moved with it.)*
 
 Modes: the 420 leg runs `--mode baseline` — same math, REF rows, never

@@ -50,7 +50,7 @@
 # session and wait for V-4/J-G4a.
 #
 # Goldens: decoded post-ratchet PNGs of corpus (a) live in
-# Tests/goldens/corpus/ (committed). GOLDEN=check diffs against them
+# Tests/Goldens/ (committed). GOLDEN=check diffs against them
 # (non-empty diff = human looks, reported not failed); GOLDEN=write
 # (re)writes them — do that only when a recipe change is INTENDED to
 # move the pixels, and say so in the commit.
@@ -76,7 +76,7 @@ BIN="${BIN:-\$HOME/src/lyte-host/.build/debug/lyte-encode-check}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CLI="${CLI:-$REPO_ROOT/.build/debug/lyte-cli}"
-GOLDEN_DIR="$REPO_ROOT/Tests/goldens/corpus"
+GOLDEN_DIR="$REPO_ROOT/Tests/Goldens"
 STATIC="${STATIC:-240}"          # 4 s @60 — room to prove the ≤180-frame bar
 # Per-tier ratchet floors, mirroring the shipped recipes: Good rides
 # spec §3's cq12 (EncoderRecipe.sessionDefault), Best rides the V-4
