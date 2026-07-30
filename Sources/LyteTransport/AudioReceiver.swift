@@ -38,7 +38,7 @@ public struct AudioReceiverStats: Sendable {
     /// TOTAL buffered audio at each pull, in packets: jitter-buffer
     /// pending + whatever the caller reports still queued toward the
     /// speaker — the gate's "buffer depth" figure.
-    public var bufferDepthPackets = LatencyHistogram(capacity: 512)
+    public var bufferDepthPackets = LatencyHistogram(capacity: 600)
     /// CL-17: times the depth-vs-target hysteresis flipped accelerate
     /// ON (engage at target + accelerateEngagePackets, release at
     /// target).
@@ -65,7 +65,7 @@ public final class AudioReceiver: @unchecked Sendable {
 
     private var captureToFeed = LatencyHistogram()
     private var captureToRender = LatencyHistogram()
-    private var bufferDepthPackets = LatencyHistogram(capacity: 512)
+    private var bufferDepthPackets = LatencyHistogram(capacity: 600)
     /// The floor: the smallest capture→feed delta seen (signed —
     /// graph-clock and client epochs differ arbitrarily).
     private var minFeedDelta: Int64?

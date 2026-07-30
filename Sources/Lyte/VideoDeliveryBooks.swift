@@ -1,30 +1,44 @@
 import Foundation
 
-/// A per-second rate from a monotonically growing counter, sampled at
-/// the overlay's cadence: feed it the cumulative count each snapshot
-/// and it answers with the rate over the last ≥0.5 s window. Exists so
-/// the video line's in-fps and out-fps ride the SAME window shape —
-/// the slash-pair `in/out 39/46 fps` must compare like with like.
+/// THE GAUGE WINDOW (owner ruling 2026-07-30): every overlay gauge
+/// describes the last ~3 seconds — one mental model, no per-stat
+/// cleverness. Two physics-imposed exceptions, both documented at
+/// their sites: roundtrip/jitter (1 Hz beacons — 3 s holds 3 samples,
+/// too few for an honest p90; rides 10 s) and input latency (bursty
+/// event stream — a time window empties between keystrokes; rides a
+/// last-events ring).
+let overlayGaugeWindowSeconds = 3.0
+
+/// A trailing-window rate from a monotonically growing counter: feed
+/// it the cumulative count each overlay tick and it answers with the
+/// rate over the last ~3 s (anchored at the oldest retained sample,
+/// refreshed every call). Exists so the video line's in-fps and
+/// out-fps ride the SAME window — the slash-pair `in/out 60/60 fps`
+/// must compare like with like.
 final class RateMeter: @unchecked Sendable {
     private let lock = NSLock()
-    private var lastCount: UInt64 = 0
-    private var lastAtMicroseconds: UInt64 = 0
-    private var lastRate: Double?
+    private var history: [(atMicroseconds: UInt64, count: UInt64)] = []
+    private let windowMicroseconds: UInt64
+
+    init(windowSeconds: Double = overlayGaugeWindowSeconds) {
+        windowMicroseconds = UInt64(windowSeconds * 1_000_000)
+    }
 
     func rate(count: UInt64, nowMicroseconds: UInt64) -> Double? {
         lock.lock()
         defer { lock.unlock() }
-        let elapsed = nowMicroseconds &- lastAtMicroseconds
-        if lastAtMicroseconds == 0 {
-            lastAtMicroseconds = nowMicroseconds
-            lastCount = count
-        } else if elapsed >= 500_000 {
-            lastRate = Double(count &- lastCount)
-                / (Double(elapsed) / 1_000_000)
-            lastAtMicroseconds = nowMicroseconds
-            lastCount = count
+        history.append((nowMicroseconds, count))
+        // Evict entries older than the window, but always keep one
+        // anchor at (or just beyond) the window's far edge.
+        while history.count > 1,
+              nowMicroseconds &- history[1].atMicroseconds
+                  >= windowMicroseconds {
+            history.removeFirst()
         }
-        return lastRate
+        let anchor = history[0]
+        let elapsed = nowMicroseconds &- anchor.atMicroseconds
+        guard elapsed >= 500_000 else { return nil }
+        return Double(count &- anchor.count) / (Double(elapsed) / 1e6)
     }
 }
 
@@ -37,13 +51,11 @@ final class RateMeter: @unchecked Sendable {
 final class VideoDeliveryBooks: @unchecked Sendable {
     private let lock = NSLock()
     private var enqueued: UInt64 = 0
-    /// Last ~4 s of hop durations at 60 fps; enough for honest p99.
-    private var ring = [Double](repeating: 0, count: 256)
+    /// ~3 s of hop durations at 60 fps — the gauge window.
+    private var ring = [Double](repeating: 0, count: 180)
     private var ringCount = 0
     private var ringIndex = 0
-    private var lastRateCount: UInt64 = 0
-    private var lastRateAtMicroseconds: UInt64 = 0
-    private var lastFps: Double?
+    private let outMeter = RateMeter()
 
     func record(hopMilliseconds: Double) {
         lock.lock()
@@ -54,27 +66,20 @@ final class VideoDeliveryBooks: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Out-fps since the previous snapshot (≥0.5 s apart to stay
-    /// honest at the overlay's 1 Hz cadence) plus hop percentiles.
+    /// Out-fps over the gauge window plus hop percentiles.
     func snapshot(
         nowMicroseconds: UInt64
     ) -> (outFps: Double?, hopP50: Double?, hopP99: Double?) {
         lock.lock()
-        defer { lock.unlock() }
-        let elapsed = nowMicroseconds &- lastRateAtMicroseconds
-        if lastRateAtMicroseconds == 0 {
-            lastRateAtMicroseconds = nowMicroseconds
-            lastRateCount = enqueued
-        } else if elapsed >= 500_000 {
-            lastFps = Double(enqueued &- lastRateCount)
-                / (Double(elapsed) / 1_000_000)
-            lastRateAtMicroseconds = nowMicroseconds
-            lastRateCount = enqueued
-        }
-        guard ringCount > 0 else { return (lastFps, nil, nil) }
-        let sorted = Array(ring.prefix(ringCount)).sorted()
-        let p50 = sorted[ringCount / 2]
-        let p99 = sorted[min(ringCount - 1, (ringCount * 99) / 100)]
-        return (lastFps, p50, p99)
+        let count = enqueued
+        let retained = Array(ring.prefix(ringCount))
+        lock.unlock()
+        let fps = outMeter.rate(
+            count: count, nowMicroseconds: nowMicroseconds)
+        guard !retained.isEmpty else { return (fps, nil, nil) }
+        let sorted = retained.sorted()
+        let p50 = sorted[sorted.count / 2]
+        let p99 = sorted[min(sorted.count - 1, (sorted.count * 99) / 100)]
+        return (fps, p50, p99)
     }
 }

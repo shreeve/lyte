@@ -101,12 +101,13 @@ public struct AudioJitterStats: Sendable {
     /// waits and blackout silence both land here).
     public var starvedVerdicts: UInt64 = 0
     /// Buffer depth in packets, recorded at every post-prime pull.
-    /// 512 pulls at the 5 ms cadence ≈ a rolling 2.6 s window — the
-    /// overlay gauge describes NOW, not the session's opening minute.
-    public var depthPackets = LatencyHistogram(capacity: 512)
+    /// 600 pulls at the 5 ms cadence = the rolling 3 s gauge window
+    /// (one window for every overlay gauge, owner ruling 2026-07-30) —
+    /// the gauge describes NOW, not the session's opening minute.
+    public var depthPackets = LatencyHistogram(capacity: 600)
     /// |observed − nominal| inter-arrival deviation µs, fresh in-order
     /// arrivals only.
-    public var interArrivalDeviation = LatencyHistogram(capacity: 512)
+    public var interArrivalDeviation = LatencyHistogram(capacity: 600)
     /// Current adaptive target (packets).
     public var targetPackets = 0
     /// Windowed standard deviation of inter-arrival time, µs.
