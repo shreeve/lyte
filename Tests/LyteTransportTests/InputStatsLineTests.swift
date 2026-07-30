@@ -50,7 +50,7 @@ final class InputStatsLineTests: XCTestCase {
 
         XCTAssertEqual(
             sender.snapshotStats().overlayLine(),
-            "outbound: 1 client events sent"
+            "outbound: 1 client event sent"
                 + " · applied on host p50/p99 101.5/101.5 ms")
     }
 }

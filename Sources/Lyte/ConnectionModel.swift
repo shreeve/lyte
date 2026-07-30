@@ -1129,20 +1129,20 @@ final class ConnectionModel {
 
         let audio = core.audio.snapshotStats()
         if audio.depacketizer.datagramsIngested > 0 {
-            var line = "audio:   "
+            var parts: [String] = []
             // Buffer depth in ms, not packets (exact: 5 ms hard-CBR
             // packets) — "15/40 ms of cushion" needs no decoder ring.
             if let p50 = audio.bufferDepthPackets.p50,
                let p99 = audio.bufferDepthPackets.p99 {
-                line += " buffer p50/p99 \(p50 * 5)/\(p99 * 5) ms"
+                parts.append("buffer p50/p99 \(p50 * 5)/\(p99 * 5) ms")
             }
             // Each concealment papered over one missing-audio gap — a
             // potential tiny audible artifact; the count IS the story.
-            line += " · gaps concealed \(audio.jitter.plcInvocations)"
+            parts.append("gaps concealed \(audio.jitter.plcInvocations)")
             if audio.depacketizer.packetsRebuilt > 0 {
-                line += " · repaired \(audio.depacketizer.packetsRebuilt)"
+                parts.append("repaired \(audio.depacketizer.packetsRebuilt)")
             }
-            lines.append(line)
+            lines.append("audio:    " + parts.joined(separator: " · "))
         }
 
         // The HS-22 quality line — what the receive side can say about
