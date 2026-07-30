@@ -1080,10 +1080,12 @@ final class ConnectionModel {
                      100 * Double(lost) / Double(max(1, expected)))
         // roundtrip min + jitter, spelled out — "±" falsely implies a
         // symmetric spread; the stat is the floor plus upward spread
-        // (p90 − min over the last 30 beacon samples), which is what
-        // "jitter" means to every reader.
+        // (p90 − min), which is what "jitter" means to every reader.
+        // Window: last 10 beacons ≈ 10 s — beacons tick at 1 Hz, so
+        // this is as close to the owner's 2–3 s gauge ruling as the
+        // cadence allows without starving the p90 of samples.
         let rtts = core.echoResponder.snapshotClockSamples()
-            .suffix(30).map(\.rttMicroseconds).sorted()
+            .suffix(10).map(\.rttMicroseconds).sorted()
         if let minRtt = rtts.first {
             let p90 = rtts[min(rtts.count - 1, (rtts.count * 9) / 10)]
             wire += String(
