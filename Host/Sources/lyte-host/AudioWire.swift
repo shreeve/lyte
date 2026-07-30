@@ -84,10 +84,15 @@ final class AudioWire: @unchecked Sendable {
         packet = [UInt8](repeating: 0, count: Int(LYTE_OPUS_MAX_PACKET))
         pending.reserveCapacity(8_192)
         let user = Unmanaged.passUnretained(self).toOpaque()
+        // From here on the throw paths free NOTHING: once `encoder` is
+        // assigned every stored property is initialized, so a later
+        // `throw` runs deinit — an explicit free here would be the
+        // first half of a double free (v1-final analysis, finding 3b:
+        // a host with no default sink aborted in free() instead of
+        // degrading to the video-only session). deinit owns cleanup.
         guard let cap = lyte_pw_audio_new(audioWireTrampoline, user,
                                           mode == .hostMuted ? 1 : 0,
                                           &err, err.count) else {
-            lyte_opus_enc_free(enc)
             throw HostError("pipewire audio setup: \(errString(err))")
         }
         capture = cap
@@ -104,9 +109,8 @@ final class AudioWire: @unchecked Sendable {
             } catch {
                 // Refuse the posture rather than run un-restorable: a
                 // crash would strand the user's default sink silently.
-                lyte_pw_audio_free(cap)
-                capture = nil
-                lyte_opus_enc_free(enc)
+                // No frees here — deinit restores the routing and
+                // frees capture + encoder exactly once (finding 3b).
                 throw HostError("cannot persist the original default "
                     + "sink for crash restore (\(error)) — refusing "
                     + "hostMuted")
@@ -119,6 +123,18 @@ final class AudioWire: @unchecked Sendable {
     }
 
     deinit {
+        // Refuse to free while the audio thread lives (v1-final
+        // analysis, finding 3a): if the owner never reached stop() —
+        // e.g. a throw between start() and the teardown unwinding
+        // main's run() — freeing the pw_main_loop here would hand the
+        // trampoline's passUnretained pointer a freed object on the
+        // next 5 ms callback. Join first; the C run loop's own
+        // `seconds` deadline bounds the wait even if the quit eventfd
+        // were lost.
+        if thread != nil, let capture {
+            lyte_pw_audio_quit(capture)
+            finished.wait()
+        }
         restoreRouting()
         if let capture { lyte_pw_audio_free(capture) }
         lyte_opus_enc_free(encoder)
@@ -191,14 +207,19 @@ final class AudioWire: @unchecked Sendable {
         thread.start()
     }
 
-    /// Quits the audio loop and waits for the thread, then restores
-    /// the routing promptly (deinit is the backstop, not the plan).
+    /// Quits the audio loop and JOINS the thread — unconditionally
+    /// (v1-final analysis, finding 3a: the old 2 s timeout proceeded
+    /// regardless, and the eventual free ran under the still-live
+    /// audio thread). The wait is bounded even if the quit signal
+    /// were ever lost: lyte_pw_audio_run's own `seconds` deadline
+    /// exits the loop and signals `finished`. Then restores the
+    /// routing promptly (deinit is the backstop, not the plan).
     /// pw_main_loop_quit signals the loop's eventfd — safe from
     /// another thread.
     func stop() {
         guard thread != nil, let capture else { return }
         lyte_pw_audio_quit(capture)
-        _ = finished.wait(timeout: .now() + 2)
+        finished.wait()
         thread = nil
         restoreRouting()
     }
