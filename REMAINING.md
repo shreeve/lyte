@@ -19,11 +19,6 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
 
 ### Worth doing — bigger or design-flavored
 
-17. **Idle-floor retention copy** [M] — `main.swift:742` memcpys the full
-    ~14.7 MB capture buffer per damage frame; the encoder's AVFrame already
-    holds the last-submitted pixels. A "re-encode retained frame" C entry point
-    (reuse `e->frame`, skip input copy) frees ~6% of the 1440p60 frame budget.
-
 18. **Adaptive audio pump** [M] — `LyteAudioPlayer.swift:298`: the 2 ms pump
     wakes 500×/s for the session's life — the client's biggest standing energy
     cost. When the ring sits at/above target the next interesting instant is
@@ -156,6 +151,17 @@ Effort: S = under an hour, M = a session slice, L = a full slice or more.
     Mac AND pup. LIVE HALF STILL OWED: watch `hole-recused` and the honest
     medians on the next evening-air session before calling the microstall
     rung closed.
+
+17. **Idle-floor retention copy** [M] — PR #17, merged 2026-07-30. New
+    `lyte_hevc_enc_resend` C entry re-encodes the pixels the encoder's own
+    AVFrame retained from the last send (pts/pict_type only — no
+    `av_frame_make_writable`, which would copy the buffers back);
+    `encode(data: nil)` routes the idle-floor repeat and ratchet passes
+    through it with all bookkeeping intact. The ~14.7 MB per-damage-frame
+    retention memcpy now runs only under `LYTE_DUMP_RAW` (the exit dump is
+    its last consumer). Suite 236/236 Mac AND pup; live pup probe: 307
+    frames, 269 repeated through resend, ffprobe decodes all 307 — nvenc
+    accepted the re-sent frame, the flagged risk did not materialize.
 
 ## Closed
 
