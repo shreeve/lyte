@@ -681,6 +681,28 @@ public final class VideoChannel {
         Set(queuedShardsByFrame.keys)
     }
 
+    /// The fall-repricing purge: bytes admitted at the pre-fall rate
+    /// would serialize at the crashed rate as stale glass (80–895 ms
+    /// measured). Drops every queued video-class datagram (freshVideo
+    /// + videoTail) from the shared schedule and settles the per-frame
+    /// census; control, audio, and bulk keep their place. The caller
+    /// owes the client a fresh IDR — frames dropped mid-flight can
+    /// never complete, and whatever referenced them must re-anchor.
+    public func purgeQueuedVideo() -> (datagrams: Int, bytes: Int) {
+        var datagrams = 0
+        var bytes = 0
+        for pacerClass in [PacerClass.freshVideo, .videoTail] {
+            for token in pacer.dropClass(pacerClass) {
+                guard let datagram = pending.removeValue(forKey: token.tag)
+                else { continue }
+                datagrams += 1
+                bytes += datagram.bytes.count
+            }
+        }
+        queuedShardsByFrame.removeAll(keepingCapacity: true)
+        return (datagrams, bytes)
+    }
+
     // MARK: Packetization (W2 semantics, HS-7 headroom)
 
     /// The W2 packetizer's exact behavior — frame-shape and IDR-claim
