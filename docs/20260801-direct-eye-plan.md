@@ -140,6 +140,19 @@ works). Document it; no dialog theater.
   runs E0–E3 gates without hand-tuning.
 - **E5 — demolition**: delete the portal path and its playbooks;
   strike the residues from TODO/ANALYSIS ledgers. Tag the removal.
+- **E6 — encoder independence (owner-approved 2026-08-01)**: retire
+  libavcodec by talking to the encoder APIs directly in Swift.
+  Order matters: (a) **NVENC-native first** — the SDK writes its own
+  SPS/PPS and exposes NvEncReconfigureEncoder directly, so the
+  no-reset patch AND vendor-ffmpeg.sh die at the root (Sunshine's
+  native NVENC backend is the existence proof); (b) **VAAPI-native
+  second** — the real project is the H.265 header serializer
+  (exp-Golomb VPS/SPS/PPS + VUI, ~500 lines; HostCore's bitstream
+  helpers are home turf), validated by byte-diffing against
+  libavcodec's headers on identical frames and by decode-probe.
+  Quirk-armor stance: we shield with the doctor's NAMED hardware
+  list, not ffmpeg's decade of workarounds. libavcodec stays as
+  scaffolding until per-leg parity is proven, then exits entirely.
 - **Then**: AV1 negotiation (the recorded four seams), login-screen
   capture, multi-monitor.
 
