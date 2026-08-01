@@ -10,9 +10,25 @@ swift build -c "$CONFIG" --product lyte-helperd
 
 APP=".build/Lyte.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Library/LaunchDaemons"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" \
+  "$APP/Contents/Library/LaunchDaemons"
 cp ".build/$CONFIG/Lyte" "$APP/Contents/MacOS/Lyte"
 cp ".build/$CONFIG/lyte-helperd" "$APP/Contents/MacOS/lyte-helperd"
+
+# Exact source identity consumed by benchmark-app.sh. A signed bundle without
+# this matching fingerprint is not valid benchmark evidence.
+(
+  git ls-files --cached --others --exclude-standard -- Package.swift Sources \
+    | LC_ALL=C sort \
+    | while IFS= read -r path; do
+        if [ -f "$path" ]; then
+          shasum -a 256 "$path"
+        fi
+      done
+) | shasum -a 256 | awk '{print $1}' \
+  > "$APP/Contents/Resources/client-source.sha256"
+date -u +%Y-%m-%dT%H:%M:%SZ \
+  > "$APP/Contents/Resources/build-utc.txt"
 
 # Privileged helper daemon (SMAppService): holds awdl0 down during streams
 cat > "$APP/Contents/Library/LaunchDaemons/dev.shreeve.lyte.helper.plist" <<'EOF'
