@@ -201,4 +201,83 @@ final class ArqAdversarialTests: XCTestCase {
         }
         XCTAssertTrue(poisoned)
     }
+
+    func testAbandonedOneShotGroupsExpireAndRestoreAdmission() throws {
+        let config = ArqConfig(
+            maxActiveReceiveGroups: 4,
+            receiveGroupLifetimeMicroseconds: 100
+        )
+        var receiver = Endpoint(channel: .ctrl, config: config)
+        for gid: UInt16 in 1...4 {
+            let partial = try ArqSegment(
+                group: ArqGroupId(rawValue: gid),
+                seq: ArqSegmentSeq(rawValue: 0),
+                endOfMessage: false,
+                body: [UInt8(gid)]
+            )
+            _ = receiver.ingest(payload: partial.encode(), now: at(0))
+        }
+
+        let refused = try ArqSegment(
+            group: ArqGroupId(rawValue: 5),
+            seq: ArqSegmentSeq(rawValue: 0),
+            endOfMessage: false,
+            body: [5]
+        )
+        XCTAssertEqual(
+            receiver.ingest(payload: refused.encode(), now: at(99)),
+            [.ignored(.tooManyReceiveGroups(ArqGroupId(rawValue: 5)))]
+        )
+
+        let admitted = receiver.ingest(
+            payload: refused.encode(), now: at(100)
+        )
+        XCTAssertFalse(admitted.contains {
+            if case .ignored(.tooManyReceiveGroups) = $0 { return true }
+            return false
+        })
+        let (acks, _) = receiver.poll(now: at(100))
+        let blocks = try acks
+            .flatMap { try ArqFrame.decodeAll($0) }
+            .flatMap { frame -> [ArqAck.Block] in
+                if case .ack(let ack) = frame { return ack.blocks }
+                return []
+            }
+        XCTAssertEqual(blocks.map(\.group), [ArqGroupId(rawValue: 5)])
+    }
+
+    func testPoisonedOneShotIsReclaimedWithoutWaitingForLifetime() throws {
+        let config = ArqConfig(
+            maxMessageByteCount: 1,
+            maxActiveReceiveGroups: 1,
+            receiveGroupLifetimeMicroseconds: 1_000_000
+        )
+        var receiver = Endpoint(channel: .ctrl, config: config)
+        let poisoned = try ArqSegment(
+            group: ArqGroupId(rawValue: 1),
+            seq: ArqSegmentSeq(rawValue: 0),
+            endOfMessage: false,
+            body: [1, 2]
+        )
+        XCTAssertTrue(
+            receiver.ingest(payload: poisoned.encode(), now: at(0)).contains {
+                if case .ignored(.messageOverBudget) = $0 { return true }
+                return false
+            }
+        )
+        _ = receiver.poll(now: at(0))
+
+        let fresh = try ArqSegment(
+            group: ArqGroupId(rawValue: 2),
+            seq: ArqSegmentSeq(rawValue: 0),
+            endOfMessage: false,
+            body: [3]
+        )
+        XCTAssertFalse(
+            receiver.ingest(payload: fresh.encode(), now: at(1)).contains {
+                if case .ignored(.tooManyReceiveGroups) = $0 { return true }
+                return false
+            }
+        )
+    }
 }
