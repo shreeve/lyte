@@ -15,9 +15,12 @@ public enum FecEncoder {
     /// are balanced slices of the payload (trailing shard unpadded),
     /// parity shards are `shardByteCount` bytes each. `shards[i]` pairs
     /// with the fec field `FecField.reedSolomonShard(i, of: geometry)`.
-    public static func encode(
-        group: ArraySlice<UInt8>, geometry: FecGeometry
-    ) throws -> [[UInt8]] {
+    /// Encodes array slices or a synchronously borrowed contiguous group.
+    /// Every returned shard owns its bytes; no input view is retained.
+    public static func encode<C>(
+        group: C, geometry: FecGeometry
+    ) throws -> [[UInt8]]
+    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         guard group.count == geometry.groupByteCount else {
             throw FecError.groupByteCountMismatch(
                 expected: geometry.groupByteCount, actual: group.count

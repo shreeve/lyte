@@ -1213,6 +1213,39 @@ public final class Session {
         interleave: (() -> Void)? = nil,
         now: UInt64
     ) throws -> Int {
+        try ingestVideoFrameBytes(
+            annexB, captureTimestampMicroseconds: captureTimestampMicroseconds,
+            isKeyframe: isKeyframe, interleave: interleave, now: now,
+            isBorrowed: false
+        )
+    }
+
+    /// Borrowed encoder-buffer ingress. The pointer is consumed
+    /// synchronously and is never retained past this call.
+    @discardableResult
+    public func ingestVideoFrame(
+        _ annexB: UnsafeBufferPointer<UInt8>,
+        captureTimestampMicroseconds: UInt64,
+        isKeyframe: Bool,
+        interleave: (() -> Void)? = nil,
+        now: UInt64
+    ) throws -> Int {
+        try ingestVideoFrameBytes(
+            annexB, captureTimestampMicroseconds: captureTimestampMicroseconds,
+            isKeyframe: isKeyframe, interleave: interleave, now: now,
+            isBorrowed: true
+        )
+    }
+
+    private func ingestVideoFrameBytes<C>(
+        _ annexB: C,
+        captureTimestampMicroseconds: UInt64,
+        isKeyframe: Bool,
+        interleave: (() -> Void)?,
+        now: UInt64,
+        isBorrowed: Bool
+    ) throws -> Int
+    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         guard phase == .established else {
             throw SessionError.notEstablished
         }
@@ -1242,14 +1275,15 @@ public final class Session {
             unprotectableKeyframePending = true
             return 0
         }
-        let shards = try channel.ingest(
+        let shards = try channel.ingestBytes(
             frame: annexB,
             frameNumber: nextVideoFrameNumber,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
             isKeyframe: isKeyframe,
             lastInputSeq: lastInputSeq,
             interleave: interleave,
-            now: now
+            now: now,
+            isBorrowed: isBorrowed
         )
         // HS-32: the opening exemption's glass proxy needs the first
         // IDR's group size — "received everything through this group"

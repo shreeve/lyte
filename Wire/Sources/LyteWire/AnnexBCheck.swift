@@ -109,7 +109,8 @@ public enum AnnexBCheck {
 
     /// The Annex-B start-code length at the blob's first byte: 3, 4, or
     /// nil when the blob does not open on a start code.
-    public static func leadingStartCodeLength(_ data: ArraySlice<UInt8>) -> Int? {
+    public static func leadingStartCodeLength<C>(_ data: C) -> Int?
+    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         let base = data.startIndex
         guard data.count >= 4, data[base] == 0, data[base + 1] == 0 else {
             return nil
@@ -122,9 +123,12 @@ public enum AnnexBCheck {
     /// Validates frame shape and classifies IRAP content in one NAL walk.
     /// `containsIrap` remains independent of frame shape so malformed
     /// prefixed blobs retain the legacy classifier semantics.
-    public static func classifyFrame(
-        _ data: ArraySlice<UInt8>
-    ) -> AnnexBFrameClassification {
+    /// Works directly over array slices and synchronous borrowed buffers;
+    /// no view of `data` escapes the call.
+    public static func classifyFrame<C>(
+        _ data: C
+    ) -> AnnexBFrameClassification
+    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         let opensOnStartCode = leadingStartCodeLength(data) != nil
         var hasVcl = false
         var hasIrap = false
@@ -178,10 +182,10 @@ public enum AnnexBCheck {
     /// Walks NAL units without first materializing a start-offset array.
     /// The pending unit is emitted only when its end is known, preserving
     /// the legacy leading-zero attribution and short-unit rejection.
-    private static func walkNalUnits(
-        in data: ArraySlice<UInt8>,
+    private static func walkNalUnits<C>(
+        in data: C,
         _ visit: (HevcNalUnit) -> Void
-    ) {
+    ) where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         let base = data.startIndex
         var pendingStart: Int?
         var i = base

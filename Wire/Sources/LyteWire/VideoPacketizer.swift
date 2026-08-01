@@ -63,6 +63,41 @@ public struct VideoPacketizer: Sendable {
         isIDR: Bool,
         regime: FecRegime
     ) throws -> [VideoShard] {
+        try packetizeBytes(
+            frame: annexB,
+            frameNumber: frameNumber,
+            captureTimestamp: captureTimestamp,
+            isIDR: isIDR,
+            regime: regime
+        )
+    }
+
+    /// Packetizes a frame borrowed for this call's dynamic extent. The
+    /// returned shards own all payload bytes and retain no view of `annexB`.
+    public mutating func packetize(
+        frame annexB: UnsafeBufferPointer<UInt8>,
+        frameNumber: FrameNumber,
+        captureTimestamp: HostTimestamp,
+        isIDR: Bool,
+        regime: FecRegime
+    ) throws -> [VideoShard] {
+        try packetizeBytes(
+            frame: annexB,
+            frameNumber: frameNumber,
+            captureTimestamp: captureTimestamp,
+            isIDR: isIDR,
+            regime: regime
+        )
+    }
+
+    private mutating func packetizeBytes<C>(
+        frame annexB: C,
+        frameNumber: FrameNumber,
+        captureTimestamp: HostTimestamp,
+        isIDR: Bool,
+        regime: FecRegime
+    ) throws -> [VideoShard]
+    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         let classification = AnnexBCheck.classifyFrame(annexB)
         guard classification.isFrameShaped else {
             throw VideoError.frameNotFrameShaped
