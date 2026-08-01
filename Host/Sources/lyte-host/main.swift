@@ -1760,6 +1760,12 @@ func run() throws {
         if bulkShell != nil {
             declared = declared.declaringBulkTransfer()
         }
+        // E3: key 13 (cursorShape) belongs to the DIRECT eye alone —
+        // the portal-era backends composite the cursor into the video,
+        // so they truthfully have no shape to send.
+        if opts.backend == .direct {
+            declared = declared.declaringCursorShape()
+        }
 
         // V-4: chroma is declared on PROOF, never a hardcoded claim —
         // the Best tier (4:4:4) joins the declaration only when the
@@ -2302,6 +2308,8 @@ func run() throws {
         \(s.clipboardSetsReceived) sets received, \
         \(s.clipboardAnnouncesSent) announces sent, \
         \(s.clipboardAnnouncesSuppressed) suppressed\(clipboardLeafStats)
+        cursor: \(s.cursorShapesSent) shapes sent (0x24), \
+        \(s.cursorShapesSuppressed) suppressed
         clipboard-images: tier \(opts.clipboardImages ? "ON" : "off"), \
         \(wire.clipboardImageCounters.sharesCompleted)/\
         \(wire.clipboardImageCounters.sharesStarted) shares completed, \

@@ -185,6 +185,47 @@ works). Document it; no dialog theater.
   latch and release-all semantics preserved.
 - **E3 — cursor metadata**: cursor plane watcher → wire message →
   client-side cursor. Gate: cursor motion produces zero video frames.
+  **LANDED (2026-08-01)**. Position was never the problem — input is
+  absolute from the Mac, so the client's LOCAL pointer already gives
+  zero-latency positioning; what KMS capture loses is the SHAPE. The
+  build: CTRL type **0x24 (CursorShape)** on the ARQ ordered stream —
+  `type ‖ width ‖ height ‖ hotspotX ‖ hotspotY (u16 LE) ‖ BGRA` —
+  content-cropped, ≤ 65,536 B image (the clipboard ceiling), hidden =
+  all-zero (EMPTY IS A STATE); capability **key 13 (cursorShape)** on
+  the W7 spine (`0D F5`), declared by the direct backend alone and
+  always by the client (dialect, the key-9…12 rule). Host:
+  EyeCursorWatcher polls the cursor plane's FB_ID at doorbell cadence
+  (same 4 µs read), GETFB2 + PRIME + mmap the LINEAR ARGB8888 buffer
+  (unlike the CCS primary, cursor buffers CPU-map), crops to the
+  alpha content box; the **hotspot is derived**, not read — i915
+  exposes no HOTSPOT_X/Y props, so hotspot = last injected absolute
+  pointer − plane CRTC_X/Y (atomic prop read) − crop origin, clamped;
+  mid-motion lag self-corrects at the next change. Session dedupes
+  by last-sent shape, re-offers the standing shape at capability
+  agreement (the routingAnnounceOwed pattern), suppresses
+  contract-breakers as weather. Client: 0x24 → NSCursor (BGRA
+  premultiplied → CGImage byteOrder32Little/premultipliedFirst),
+  scaled through the aspect-fit rect, worn via cursor rects on the
+  stream view; hidden = clear 1×1 (NSCursor.hide is process-global);
+  portal-era hosts never declare, so nil keeps the pre-E3 arrow.
+  Suites: Wire 511 / Host 276 Mac + 277 pup / client 268, all green
+  — cursor-v1.json (19 vectors) appended, frozen bytes untouched.
+  **Live gate (static takeover leg, 20 s, paired app on 41151)**:
+  watcher found cursor plane 144; at agreement the standing state
+  went out first (`shape sent (0x24, hidden)` — the host cursor was
+  idle-hidden), then nine visible shapes followed (2,852/3,844 B
+  content crops — an animated cursor caught mid-cycle); books:
+  **10 shapes sent, 4 suppressed (dedupe), 0 read failures**, eye
+  concurrently 300 frames / 0 missed grabs. "Cursor motion produces
+  zero video frames" was already pinned by the E0 probes (cursor
+  plane flips ≠ primary flips). Two residuals filed: (1) the motion
+  rig's compositor-cadence preflight failed 3× before the static leg
+  (12→43→85 skipped source frames, p50 up to 21 ms) — pup now runs
+  an incus/QEMU win11 VM (owner's, started 2026-08-01 13:20) that
+  injects compositor jitter; the rig needs either a settling retry
+  loop or the refresh-aware rework already filed; (2) the static
+  workload's verdict grades portal-idle machinery the direct leg
+  does not have — direct-leg static grading needs its own gates.
 - **E4 — privilege & packaging**: systemd unit, capability set,
   install story, consent documentation. Gate: fresh-machine install
   runs E0–E3 gates without hand-tuning.

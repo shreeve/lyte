@@ -48,8 +48,19 @@ the full session books. Privileges: setcap cap_sys_admin on pup's
 lyte-host (REDO after every rebuild; rig checks). Residuals FILED,
 host exonerated by books: client-side audio feed (~0.1%
 concealment), transit-gate calibration for real-capture frame sizes,
-idr-books direct counter. NEXT on the butter ladder: E3 cursor
-metadata (user-visible — KMS capture has no cursor), E6a
+idr-books direct counter. **E3 cursor metadata LANDED (2026-08-01)**:
+CTRL 0x24 CursorShape (content-cropped BGRA ≤ 64 KB, hidden =
+all-zero state) + capability key 13 on the W7 spine; host
+EyeCursorWatcher polls the cursor plane FB_ID at doorbell cadence,
+mmaps the LINEAR ARGB8888 buffer, derives the hotspot (injected
+absolute pointer − plane CRTC − crop origin; i915 has no HOTSPOT
+props); client wears it as NSCursor over the stream view (position
+stays local = zero latency). Live gate on the paired app: 10 shapes
+sent / 4 deduped / 0 failures alongside 300 frames / 0 missed
+grabs. Residuals: motion rig's cadence preflight failed 3× (pup now
+runs the owner's incus/QEMU win11 VM — compositor jitter; rig needs
+a settling retry), and static-workload grading assumes portal idle
+machinery the direct leg lacks. NEXT on the butter ladder: E6a
 NVENC-native (kills the vendor patch), E6b VAAPI-native (live rate
 directives), Arc Rext-444 leg, E2 uinput, E4 packaging, E5
 demolition, then AV1.

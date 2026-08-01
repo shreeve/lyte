@@ -125,6 +125,17 @@ public enum CapabilityKey {
     /// key 12 agreed. A text-only HOST truthfully never declares
     /// this key. Accessors in ClipboardImages.swift.
     public static let clipboardImages: UInt64 = 12
+    /// bool — this end speaks the v1 cursor-shape sync (CTRL 0x24 on
+    /// the ordered stream, E3 — the direct eye's cursor-as-metadata
+    /// obligation). Rides the forward-compat spine through
+    /// `unknownEntries` like keys 9–12 (one canonical `0D F5` entry;
+    /// capabilities-v1.json never moves), surviving intersection only
+    /// on mutual byte-equal declaration. Declaration is dialect, not
+    /// posture: a host whose capture organ composites the cursor into
+    /// the video (the portal-era backends) truthfully never declares
+    /// it, and the client falls back to the in-video cursor.
+    /// Accessors in Cursor.swift.
+    public static let cursorShape: UInt64 = 13
 
     /// The renegotiable subset (transport pillar §4: "fixed after
     /// exchange except where a capability itself declares

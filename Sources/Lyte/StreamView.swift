@@ -24,6 +24,9 @@ struct StreamView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> VideoLayerView {
         let view = VideoLayerView(layer: model.displayLayer)
+        // E3: the model dresses this surface with the host's 0x24
+        // cursor shapes (weak — the view's lifetime stays SwiftUI's).
+        model.lyteVideoView = view
         let model = model
         let onMouseActivity = onMouseActivity
         Task { @MainActor in
