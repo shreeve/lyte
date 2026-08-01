@@ -84,3 +84,20 @@ end in a typed teardown, not a crash — worth one deliberate flip.*
   today it dissects headers only, with Noise blinding the cargo. Pick up if
   a debugging season ever needs plaintext on the wire.
   (`docs/20260720-215100-lyte-udp-decision.md` §7.)
+
+## Capture-organ replacement (2026-08-01, owner-initiated)
+
+The compositor capture seam (portal → Mutter ScreenCast → PipeWire) is
+the proven weak organ: damage-driven cadence, 1 fps static keepalives,
+portal wedges (twice at the owner's glass today), and the benchmark rig
+already distrusts it (SyntheticMotionSource exists to bypass it).
+**KMS capture is FEASIBLE on pup**: `ffmpeg -f kmsgrab -device
+/dev/dri/card1` pulled the live scanout at 60 fps, compositor not
+consulted (hybrid laptop: panel scans out on the Intel iGPU = card1;
+nvidia-drm modeset=Y already). The v2 capture design panel should weigh:
+(A) KMS pull-based capture → dmabuf → NVENC (Sunshine's proven Linux
+path; costs: CAP_SYS_ADMIN, own consent model, uinput input, clipboard
+channel), (B) X11+NvFBC, (C) wlroots/KDE screencopy, (D) harden current
+stack only. Near-term regardless: an auto-heal seam — on a capture-
+starvation episode, tear down and recreate the screencast session
+in-place instead of freezing forever.
