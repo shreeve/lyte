@@ -193,6 +193,31 @@ public final class Pacer {
         var queuedCount: Int {
             (urgent.count - urgentHead) + (normal.count - normalHead)
         }
+
+        mutating func dropEnqueued(before cutoff: UInt64) -> [PacerToken] {
+            var dropped: [PacerToken] = []
+            func keepFresh(
+                _ source: [PacerToken], from head: Int
+            ) -> [PacerToken] {
+                guard head < source.count else { return [] }
+                var kept: [PacerToken] = []
+                kept.reserveCapacity(source.count - head)
+                for token in source[head...] {
+                    if token.enqueuedAt < cutoff {
+                        dropped.append(token)
+                        bytesQueued -= token.bytes
+                    } else {
+                        kept.append(token)
+                    }
+                }
+                return kept
+            }
+            urgent = keepFresh(urgent, from: urgentHead)
+            urgentHead = 0
+            normal = keepFresh(normal, from: normalHead)
+            normalHead = 0
+            return dropped
+        }
     }
 
     private var queues = [ClassQueue](
@@ -351,6 +376,15 @@ public final class Pacer {
         }
         queues[priorityClass.rawValue] = ClassQueue()
         return dropped
+    }
+
+    /// Drops queued work that can no longer be useful. This is intended
+    /// for deadline-bearing tail traffic (repairs), not fresh media or
+    /// latency classes. Relative order of every surviving token is kept.
+    public func dropExpired(
+        _ priorityClass: PacerClass, olderThan cutoff: UInt64
+    ) -> [PacerToken] {
+        queues[priorityClass.rawValue].dropEnqueued(before: cutoff)
     }
 
     private func highestHead() -> PacerToken? {

@@ -764,22 +764,14 @@ final class Sink {
                 wire?.pointerMotionWitness.count ?? pointerMotionsAtLastFrame
         }
 
-        // The backpressure gate (the fps-ceiling fix's second half):
-        // with the pacer drain on its own thread, a capture frame that
-        // arrives while more than the resiliency drain bound
-        // (min(2×frameInterval, 25 ms) — §2.4's per-frame promise,
-        // applied to the standing queue) of video wire-time is still
-        // queued would only deepen the queue and stretch the glass —
-        // skip it BEFORE spending an encode. This is the same frame
-        // the old synchronous drain silently starved out of the
-        // PipeWire buffer pool, now counted (the stages line carries
-        // the tally). Post-IDR is the designed case: a ceiling-sized
-        // IDR occupies ~36 ms of wire at 50 Mbps, so the next capture
-        // frame or two yield while it drains.
+        // Hard queue-budget admission: skip BEFORE encode once the live
+        // queue has consumed its clean/impaired latency allowance.
+        // Session owns both numbers and fall purge uses the same budget,
+        // so a capacity cliff cannot leave one policy admitting while
+        // another policy preserves a stale tail.
         if let wire {
-            let boundNS = min(
-                2 * UInt64(1_000_000_000) / UInt64(opts.fps), 25_000_000)
-            if wire.videoBacklogWireTimeNS > boundNS {
+            let posture = wire.videoAdmissionPosture
+            if posture.backlogWireTimeNS >= posture.budgetNS {
                 throttledFrames += 1
                 return
             }
@@ -1213,6 +1205,14 @@ final class Sink {
                 try wire.sendFrame(data: data, size: size,
                                    isKeyframe: keyframe,
                                    captureMicros: pendingCaptureUs)
+                let telemetryCauses = keyframe
+                    ? (pendingIdrCauses.isEmpty
+                        ? ["spontaneous"] : pendingIdrCauses)
+                    : []
+                wire.annotateLastVideoFrame(
+                    averageQP: avgQP >= 0 ? avgQP : nil,
+                    idrCauses: telemetryCauses
+                )
             } catch {
                 fail("session send failed at packet \(packetsOut): \(error)")
                 return

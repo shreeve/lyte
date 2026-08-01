@@ -569,7 +569,7 @@ public final class RateEstimator {
 
     /// The windowed-max delivery-rate estimate (nil before evidence).
     public var deliveryRateBitsPerSecond: Int? {
-        deliveryWindow.map { Int($0.rate) }.max()
+        deliveryWindowMax.map(Int.init)
     }
 
     /// The reporting-grade measured delivery: the median of the last
@@ -640,6 +640,9 @@ public final class RateEstimator {
         var rate: Double
     }
     private var deliveryWindow: [DeliverySample] = []
+    /// Maintained with the rolling window so hot telemetry/control reads
+    /// do not allocate a mapped array and scan it on every access.
+    private var deliveryWindowMax: Double?
     /// The freshest raw (unweighted) delivery measurement — the stale
     /// estimate for RECOVERY's halfStaleEstimate pacing.
     private var lastDeliveryRate: Double?
@@ -907,6 +910,7 @@ public final class RateEstimator {
             // path is not a path discontinuity.
             beliefBits = Double(rate)
             deliveryWindow.removeAll(keepingCapacity: true)
+            deliveryWindowMax = nil
             recentRawDeliveries.removeAll(keepingCapacity: true)
             recentHonestDeliveries.removeAll(keepingCapacity: true)
             lastDeliveryRate = nil
@@ -975,8 +979,18 @@ public final class RateEstimator {
     }
 
     private func expireWindows(now: UInt64) {
+        let oldDeliveryCount = deliveryWindow.count
         deliveryWindow.removeAll {
             now &- $0.at > config.sampleWindowNS
+        }
+        if deliveryWindow.count != oldDeliveryCount {
+            var maximum: Double?
+            for sample in deliveryWindow {
+                if maximum.map({ sample.rate > $0 }) ?? true {
+                    maximum = sample.rate
+                }
+            }
+            deliveryWindowMax = maximum
         }
         for channel in delayBaselineWindows.keys {
             delayBaselineWindows[channel]!.removeAll {
@@ -1142,13 +1156,20 @@ public final class RateEstimator {
             let train = matched[range]
             guard train.first?.deliveryFrame != nil else { return }
             guard train.count >= 3 else { return }
-            let firstArrival = train.map(\.arrivalMicros).min()!
-            let lastArrival = train.map(\.arrivalMicros).max()!
+            var firstArrival = UInt64.max
+            var lastArrival: UInt64 = 0
+            var bytes = 0
+            var paceBits = 0
+            for (offset, sample) in train.enumerated() {
+                firstArrival = min(firstArrival, sample.arrivalMicros)
+                lastArrival = max(lastArrival, sample.arrivalMicros)
+                paceBits = max(paceBits, sample.paceBitsPerSecond)
+                if offset > 0 { bytes += sample.bytes }
+            }
             guard lastArrival > firstArrival else { return }
             // Classic packet-train accounting: the first packet's bytes
             // opened the measurement window, everything behind it was
             // delivered inside it.
-            let bytes = train.dropFirst().reduce(0) { $0 + $1.bytes }
             let spanSeconds = Double(lastArrival - firstArrival) / 1e6
             let rate = Double(bytes) * 8 / spanSeconds
             lastDeliveryRate = rate
@@ -1182,7 +1203,7 @@ public final class RateEstimator {
                 // straddling a rate move is judged against the faster
                 // pace, the conservative side (fewer honest votes).
                 let pace = Double(
-                    train.map(\.paceBitsPerSecond).max() ?? rateBitsPerSecond
+                    paceBits > 0 ? paceBits : rateBitsPerSecond
                 )
                 let honest = rate
                     < pace * (1 - config.censoredSampleMarginFraction)
@@ -1261,6 +1282,9 @@ public final class RateEstimator {
             let weighted = train.count >= config.minTrainPackets
                 ? rate : rate * 0.5
             deliveryWindow.append(DeliverySample(at: now, rate: weighted))
+            if deliveryWindowMax.map({ weighted > $0 }) ?? true {
+                deliveryWindowMax = weighted
+            }
         }
         var channelStart = 0
         while channelStart < matched.count {

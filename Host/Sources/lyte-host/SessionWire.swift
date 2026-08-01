@@ -214,6 +214,9 @@ final class SessionWire {
     /// period went. Written and read on the video loop thread only.
     private(set) var lastFrameIngestNanos: UInt64 = 0
     private(set) var lastFrameDrainNanos: UInt64 = 0
+    /// Most recent successfully admitted frame, for the synchronous
+    /// encoder callback to attach QP/IDR-cause fields to its flight.
+    private var lastFrameForTelemetry: FrameNumber?
     /// HS-15 audio-thread counters (mutated under `lock`).
     private(set) var audioPacketsSent = 0
     private(set) var audioSendFailures = 0
@@ -672,12 +675,14 @@ final class SessionWire {
             throw HostError("sendFrame before the session exists")
         }
         do {
-            try session.ingestVideoFrame(
+            let shards = try session.ingestVideoFrame(
                 frame,
                 captureTimestampMicroseconds: captureMicros,
                 isKeyframe: isKeyframe,
                 now: monotonicNS()
             )
+            lastFrameForTelemetry = shards > 0
+                ? session.lastAdmittedVideoFrameNumber : nil
         } catch {
             lock.unlock()
             throw error
@@ -700,19 +705,31 @@ final class SessionWire {
         signalDrain()
     }
 
-    /// The capture loop's backpressure gate (the fps-ceiling fix):
-    /// video-class bytes still queued in the pacer, as wire time at the
-    /// live pacer rate. Above the resiliency drain bound, encoding
-    /// another capture frame only deepens the queue — the caller skips
-    /// the frame pre-encode instead.
-    var videoBacklogWireTimeNS: UInt64 {
+    func annotateLastVideoFrame(
+        averageQP: Int?, idrCauses: [String]
+    ) {
         lock.lock()
         defer { lock.unlock() }
-        guard let session else { return 0 }
+        guard let frame = lastFrameForTelemetry else { return }
+        session.annotateVideoFrameTelemetry(
+            frame: frame, averageQP: averageQP, idrCauses: idrCauses
+        )
+    }
+
+    /// Atomic pre-encode admission posture. The queue's wire time and
+    /// clean/impaired budget come from the same locked Session snapshot,
+    /// so a regime/rate move cannot mix eras in the admission decision.
+    var videoAdmissionPosture: (
+        backlogWireTimeNS: UInt64, budgetNS: UInt64, regime: FecRegime
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let session else { return (0, 50_000_000, .clean) }
         let bytes = session.queuedVideoBytes
-        guard bytes > 0 else { return 0 }
         let rate = max(session.pacerRateBitsPerSecond, 1)
-        return UInt64(Double(bytes) * 8e9 / Double(rate))
+        let wireTime = bytes > 0
+            ? UInt64(Double(bytes) * 8e9 / Double(rate)) : 0
+        return (wireTime, session.videoQueueBudgetNS, session.fecRegime)
     }
 
     /// HS-15: one encoded 5 ms Opus packet from the AUDIO capture

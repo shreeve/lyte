@@ -18,6 +18,10 @@
 #  2. /dev/uinput seat access for the CInputUinput fallback input
 #     backend (HS-13). Needs root, so this script prints the exact
 #     sudo command instead of escalating itself.
+#
+#  3. An rtprio rlimit lets the latency-owning audio and wire-drain
+#     threads obtain SCHED_RR. Optional: the binary degrades safely,
+#     and this script only checks/prints the prerequisite.
 set -euo pipefail
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
@@ -71,6 +75,16 @@ KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", GROUP="input
 RULE
     sudo udevadm control --reload && sudo udevadm trigger /dev/uinput
 EOF
+fi
+
+# --- 3. Optional SCHED_RR prerequisite -------------------------------
+RTPRIO="$(ulimit -r 2>/dev/null || printf '0')"
+if [ "${RTPRIO:-0}" -ge 20 ] 2>/dev/null; then
+    ok "realtime scheduling allowance is $RTPRIO (need 20)"
+else
+    todo "realtime scheduling allowance is ${RTPRIO:-0}; optional loaded-host latency prerequisite:"
+    printf '    echo "%s - rtprio 20" | sudo tee /etc/security/limits.d/90-lyte-rtprio.conf\n' "$USER"
+    todo "log out and back in after granting it; this script does not mutate limits"
 fi
 
 echo "done."
