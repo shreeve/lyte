@@ -148,3 +148,29 @@ then carries the only residual sweep, and if it still bites, the same
 trace method applies to the extender. Cheap alternative worth one test:
 put the Mac on the gateway's own 5 GHz BSS (`c6:50:9c:a5:fc:6a`) instead
 of the extender, collapsing the path to two radios on one box.
+
+## Addendum 2 (same day, ~14:00 UTC) — 6 GHz radio disabled at the gateway
+
+The owner disabled the private 6 GHz network outright (gateway admin →
+Connection → Wi-Fi → Edit 6 GHz → Disable). The Mac immediately re-roamed
+to ch 157 at −56 dBm / 720 Mbps PHY (macOS's 6 GHz band bias had kept
+dragging it back to the sweeping radio; CoreWLAN steering cannot override
+it — `associate` returns tmpErr for in-ESS moves, twice confirmed). pup
+(pinned profile) reached HE-MCS 7 / 720 Mbps on the same BSS — up five
+MCS steps from the 6 GHz association's MCS 2.
+
+Post-change timeline, pup→gateway 20 Hz probes: the AP's automatic
+optimizer churned for ~15 minutes after the save (dense ~100 ms sweep
+trains; a mid-window probe read p99 105 ms — do not benchmark inside
+that window). After settling: **p50 1.83 / p99 9.3 / max 42.5 ms, three
+sub-45 ms brushes in 45 s** — the best figures ever measured on this
+link, on either band. Mac→pup end-to-end idle: p99 14.8 / max 25 ms.
+
+The final motion-pipeline gate run is owed: it launches the signed
+Lyte.app in the GUI session, and the Keychain identity path fails closed
+without the owner present (`authenticationUI: fail`). Run
+`Scripts/benchmark-app.sh --no-build motion-pipeline` with the session
+unlocked. Ethernet for pup (adapter en route: Realtek RTL8153/8156-class
+USB-C GbE, in-kernel r8152 driver, plug-and-play on the 7.0 kernel)
+remains the terminal move; on arrival, verify NM routes over the wire,
+then optionally disable pup Wi-Fi and re-run the full benchmark suite.
