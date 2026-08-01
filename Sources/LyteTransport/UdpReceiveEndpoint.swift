@@ -43,7 +43,9 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
     /// receive thread, so it is within microseconds of true arrival.
     private let onDatagram: (@Sendable (IngestOutcome, _ arrivalMicroseconds: UInt64) -> Void)?
 
-    private var fd: Int32 = -1
+    /// Internal (not private) so the stop-order pin can observe that
+    /// the fd survives until the receive thread is joined.
+    internal private(set) var fd: Int32 = -1
     private var receiveThread: Thread?
     private let running = TransportAtomicFlag()
     private let receiveExit = NSCondition()
@@ -124,7 +126,8 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         }
         guard rc == 0 else {
             let e = errno
-            close(fd); self.fd = -1
+            close(fd)
+            self.fd = -1
             throw TransportEndpointError.bindFailed(errno: e)
         }
 
@@ -185,16 +188,24 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
 
     public func stop() {
         running.set(false)
+        // Join BEFORE close (analysis finding 12's residue): the receive
+        // thread may be inside recvmsg on this fd, and closing first
+        // frees the fd number while that syscall is in flight — a
+        // roaming re-dial can then bind a fresh socket onto the same
+        // number and the old loop steals its datagrams. The 100 ms
+        // SO_RCVTIMEO bounds the join; the 1 s deadline is the wedge
+        // backstop, after which close() proceeds as the forcing move.
+        if Thread.current !== receiveThread {
+            receiveExit.lock()
+            let deadline = Date(timeIntervalSinceNow: 1)
+            while !receiveExited, receiveExit.wait(until: deadline) {}
+            receiveExit.unlock()
+            receiveThread = nil
+        }
         if fd >= 0 {
             close(fd)
             fd = -1
         }
-        guard Thread.current !== receiveThread else { return }
-        receiveExit.lock()
-        let deadline = Date(timeIntervalSinceNow: 1)
-        while !receiveExited, receiveExit.wait(until: deadline) {}
-        receiveExit.unlock()
-        receiveThread = nil
     }
 
     // MARK: - Receive thread
