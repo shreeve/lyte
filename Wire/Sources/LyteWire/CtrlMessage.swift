@@ -172,6 +172,12 @@ public enum CtrlMessageType {
     /// a lost refusal degrades to the client's own deadline expiry, by
     /// design; nothing may require a refusal to arrive.
     public static let repairRefused: UInt8 = 0x23
+    /// Host→client cursor-shape announcement (CursorShape, E3 — the
+    /// direct eye's cursor-as-metadata obligation, born in the
+    /// registry like CL-15's pair). ARQ ordered stream — a reordered
+    /// shape swap leaves the client wearing a stale cursor — gated on
+    /// capability key 13 surviving intersection.
+    public static let cursorShape: UInt8 = 0x24
 
     /// The type byte of a CTRL payload, nil when the payload is empty.
     /// Dispatch on this, then hand the whole payload (type byte included)

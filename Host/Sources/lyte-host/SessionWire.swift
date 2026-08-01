@@ -221,6 +221,19 @@ final class SessionWire {
     /// liveness witness manufactures false starvation on a static desk.
     private var pointerMotionInjected = 0
     private var lastPointerMotionInjectedAt: UInt64 = 0
+    /// E3: the last absolute pointer position injected (monitor
+    /// device pixels) — the cursor watcher's hotspot anchor (hotspot
+    /// = injected position − cursor plane CRTC position; i915 exposes
+    /// no HOTSPOT_X/Y props to ask directly).
+    private var lastAbsolutePointer: (x: Double, y: Double)?
+    /// E3: the eye's latest cursor shape, standing — re-offered when
+    /// capabilities agree so a client that connects mid-run wears the
+    /// current cursor, not a default.
+    private var standingCursorShape: CursorShape?
+    /// E3: capabilities just agreed with key 13 — the client is owed
+    /// the standing shape. Buffered; the next service pass sends it
+    /// off the agreement stack (the routingAnnounceOwed pattern).
+    private var cursorAnnounceOwed = false
 
     private(set) var framesSent = 0
     /// Stage books for the fps-ceiling hunt (Q-1's red row): the last
@@ -1202,6 +1215,9 @@ final class SessionWire {
         let announce = routingAnnounceOwed
         routingAnnounceOwed = false
         let standing = currentAudioRouting
+        let cursorOwed = cursorAnnounceOwed
+        cursorAnnounceOwed = false
+        let standingCursor = standingCursorShape
         let applies = pendingClipboardApplies
         pendingClipboardApplies.removeAll()
         let imageApplies = pendingClipboardImageApplies
@@ -1217,6 +1233,12 @@ final class SessionWire {
         // it across the PipeWire work.
         if announce {
             noteAudioRoutingApplied(standing)
+        }
+        // E3: the agreed-time re-offer — the client wears the eye's
+        // standing shape from its first frame (re-takes the lock, the
+        // noteAudioRoutingApplied discipline).
+        if cursorOwed, let shape = standingCursor {
+            noteCursorShape(shape)
         }
         for mode in requests {
             applyAudioRouting(mode)
@@ -1294,6 +1316,40 @@ final class SessionWire {
         } catch {
             lastSendError = String(describing: error)
         }
+    }
+
+    /// E3: the eye's report that the hardware cursor plane changed —
+    /// a content-cropped shape or the hidden state. Remembered as the
+    /// standing shape (re-offered when capabilities agree), then the
+    /// 0x24 (or the suppression verdict) happens inside the core; a
+    /// no-key-13 session stays silent (the rule-3 gate).
+    func noteCursorShape(_ shape: CursorShape) {
+        lock.lock()
+        defer { lock.unlock() }
+        standingCursorShape = shape
+        guard let session, session.phase == .established else { return }
+        for event in session.noteCursorShapeChanged(
+            shape, now: monotonicNS(), hostMicroseconds: monotonicMicros()
+        ) {
+            log(event)
+        }
+        do {
+            try serviceOnce()
+            try flushOutbox()
+        } catch {
+            lastSendError = String(describing: error)
+        }
+    }
+
+    /// E3: the last absolute pointer position injected (monitor
+    /// device pixels) and when — the cursor watcher derives the
+    /// hotspot from it once the plane settles under the pointer.
+    func lastAbsolutePointerInjection(
+    ) -> (x: Double, y: Double, atMicros: UInt64)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let p = lastAbsolutePointer else { return nil }
+        return (p.x, p.y, lastPointerMotionInjectedAt)
     }
 
     /// HS-19: the leaf's report that the OS clipboard changed —
@@ -1724,6 +1780,11 @@ final class SessionWire {
             if agreed.hostAudioRouting {
                 routingAnnounceOwed = true
             }
+            // E3: both ends declared key 13 — the client is owed the
+            // eye's standing cursor shape (the same buffered pattern).
+            if agreed.cursorShape {
+                cursorAnnounceOwed = true
+            }
         case .capabilitiesFailed(let why):
             emit("capabilities: NO WORKABLE INTERSECTION (\(why)) — "
                 + "typed teardown follows")
@@ -1857,6 +1918,16 @@ final class SessionWire {
             emit("clipboard: announce sent (\(byteCount) B, 0x1B)")
         case .clipboardAnnounceSuppressed(let reason):
             emit("clipboard: announce suppressed (\(reason))")
+        case .cursorShapeSent(let pixelByteCount, let hidden):
+            emit("cursor: shape sent (0x24, "
+                + (hidden ? "hidden" : "\(pixelByteCount) B") + ")")
+        case .cursorShapeSuppressed(let reason):
+            // Duplicates are the watcher's steady state between real
+            // changes — only budget suppressions are worth a line;
+            // both land in the counters either way.
+            if reason == .overBudget {
+                emit("cursor: shape suppressed (\(reason))")
+            }
         case .bulkMessageReceived(let message):
             // Buffered for the off-lock shell pass (disk IO must not
             // ride the session lock). Chunks arrive by the hundred —
@@ -1939,7 +2010,11 @@ final class SessionWire {
         inputInjected += 1
         lastInputInjectedAt = injectMicros
         switch event.body {
-        case .pointerMotionAbsolute, .pointerMotionRelative:
+        case .pointerMotionAbsolute(let x, let y):
+            pointerMotionInjected += 1
+            lastPointerMotionInjectedAt = injectMicros
+            lastAbsolutePointer = (x, y)
+        case .pointerMotionRelative:
             pointerMotionInjected += 1
             lastPointerMotionInjectedAt = injectMicros
         case .keyKeycode, .pointerButton, .pointerAxis:

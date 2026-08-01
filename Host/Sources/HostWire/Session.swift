@@ -407,6 +407,13 @@ public enum SessionEvent: Equatable, Sendable {
     /// announced — the loop-prevention/dedupe/ceiling discipline
     /// holding (design doc §5).
     case clipboardAnnounceSuppressed(ClipboardSuppressReason)
+    /// E3: the hardware cursor plane's shape left as a 0x24 on the
+    /// reliable stream (pixel byte count only — pixels are never
+    /// logged; a hidden announce carries zero of them).
+    case cursorShapeSent(pixelByteCount: Int, hidden: Bool)
+    /// E3: an eye-reported cursor shape was judged and NOT sent —
+    /// the dedupe/ceiling discipline holding.
+    case cursorShapeSuppressed(CursorSuppressReason)
     /// F-3: one decoded bulk message off chan 8's ARQ ordered stream —
     /// exactly once, in order. Only surfaces when the agreed
     /// capabilities carry bulkTransfer (the W7 rule-3 gate, key 11);
@@ -457,6 +464,16 @@ public enum ClipboardSuppressReason: Equatable, Sendable {
     case duplicate
     /// Past the 65,536-byte v1 ceiling — routine weather (a huge copy
     /// on the host), suppressed rather than erred.
+    case overBudget
+}
+
+/// Why an eye-reported cursor shape was not sent (E3).
+public enum CursorSuppressReason: Equatable, Sendable {
+    /// Identical to the last sent shape — the client already wears it.
+    case duplicate
+    /// The shape breaks the wire contract (an over-ceiling crop, a
+    /// hostile geometry) — suppressed and counted, the client keeps
+    /// the previous shape.
     case overBudget
 }
 
@@ -684,6 +701,10 @@ public struct SessionCounters: Equatable, Sendable {
     public var clipboardAnnouncesSent = 0
     /// CL-15: leaf-reported changes the book/ceiling suppressed.
     public var clipboardAnnouncesSuppressed = 0
+    /// E3: 0x24 cursor shapes sent.
+    public var cursorShapesSent = 0
+    /// E3: eye-reported shapes the dedupe/ceiling suppressed.
+    public var cursorShapesSuppressed = 0
     /// F-3: decoded bulk messages delivered off chan 8's ordered
     /// stream (past the rule-3 gate).
     public var bulkMessagesReceived = 0
@@ -898,6 +919,12 @@ public final class Session {
     public var agreedClipboardImages: Bool {
         negotiator.agreed?.clipboardImagesAgreed == true
     }
+    /// E3: true when cursorShape (key 13) survived the intersection.
+    /// Gates 0x24 emission — only the direct eye declares the key,
+    /// and only a shape-capable client answers it.
+    public var agreedCursorShape: Bool {
+        negotiator.agreed?.cursorShape == true
+    }
 
     /// CL-15: the loop-prevention/dedupe books (design doc §5) — one
     /// per session, shared by the 0x1A consume path (pre-arms echo
@@ -906,6 +933,10 @@ public final class Session {
     /// sha256 — disjoint from any text's UTF-8 by construction), so
     /// cross-modal moves stay honest.
     private var clipboardBook = ClipboardSyncBook()
+    /// E3: the last 0x24 actually sent — the dedupe slot (nil until
+    /// the first send, so a fresh session always passes the eye's
+    /// standing shape through).
+    private var lastSentCursorShape: CursorShape?
 
     /// P-1: the clipboard-image lane — F-2's engines driven with
     /// memory-backed cargo, one per session. Inert unless the image
@@ -1694,6 +1725,46 @@ public final class Session {
         }
     }
 
+    /// E3: the eye's report that the hardware cursor plane changed —
+    /// a content-cropped BGRA shape or the hidden state. Judges the
+    /// agreement, the dedupe slot, and the wire contract before a
+    /// 0x24 leaves. Silently a no-op unless the agreed set carries
+    /// cursorShape (the noteAudioRoutingApplied rule: a legacy or
+    /// portal-era peer neither asked for the key nor knows the
+    /// byte). Pixels never appear in events or logs — counts only.
+    public func noteCursorShapeChanged(
+        _ shape: CursorShape, now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        guard agreedCursorShape else { return [] }
+        guard shape != lastSentCursorShape else {
+            counters.cursorShapesSuppressed += 1
+            return [.cursorShapeSuppressed(.duplicate)]
+        }
+        let message: [UInt8]
+        do {
+            message = try shape.encode()
+        } catch {
+            // An over-ceiling crop or hostile geometry from the eye:
+            // suppressed and counted — the client keeps wearing the
+            // previous shape, never an error.
+            counters.cursorShapesSuppressed += 1
+            return [.cursorShapeSuppressed(.overBudget)]
+        }
+        do {
+            try sendReliable(
+                message, now: now, hostMicroseconds: hostMicroseconds
+            )
+            lastSentCursorShape = shape
+            counters.cursorShapesSent += 1
+            return [.cursorShapeSent(
+                pixelByteCount: shape.pixels.count,
+                hidden: shape.isHidden
+            )]
+        } catch {
+            return [.sendFailed("cursor shape: \(error)")]
+        }
+    }
+
     /// P-1: the shell's report that the OS clipboard now holds an
     /// image — the leaf's PNG read (genuine host copies AND the
     /// echoes of our own applies; the shared book tells them apart,
@@ -2151,10 +2222,11 @@ public final class Session {
         case CtrlMessageType.modeTransition, CtrlMessageType.capabilityUpdate,
              CtrlMessageType.inputEcho,
              CtrlMessageType.audioRoutingStatus,
-             CtrlMessageType.clipboardAnnounce:
+             CtrlMessageType.clipboardAnnounce,
+             CtrlMessageType.cursorShape:
             // Receiver-role messages arriving at the mediaSender /
             // sole proposer / echo emitter / status emitter / announce
-            // emitter: hostile or confused. Dropped loud.
+            // emitter / shape emitter: hostile or confused. Dropped loud.
             counters.dropped += 1
             return [.dropped(.unexpectedCtrlType(message.first!))]
         case CtrlMessageType.bulkOffer, CtrlMessageType.bulkAccept,

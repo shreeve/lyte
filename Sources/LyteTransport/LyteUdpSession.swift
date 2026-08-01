@@ -136,6 +136,14 @@ public enum LyteUdpSessionEvent: Sendable {
     /// the apply's changeCount echo. Never fires while sharing is off:
     /// content must not land on the pasteboard without consent.
     case hostClipboardChanged(String)
+    /// E3: a 0x24 cursor shape arrived past the rule-3 gate (key 13
+    /// agreed) — the direct eye's video carries no cursor, so the
+    /// host streams the hardware cursor plane's image as metadata and
+    /// the glue wears it as the local NSCursor over the video view.
+    /// `.hidden` (zero-sized) means the host cursor is hidden. No
+    /// consent toggle: a cursor shape is presentation state, not
+    /// content — the audio-routing-status posture, not clipboard's.
+    case hostCursorShapeChanged(CursorShape)
     /// P-1 (clipboard v2): a host clipboard IMAGE landed sha-verified
     /// off the chan-8 clipboard lane and passed every gate (keys 10∧12
     /// agreed, sharing on, images tier on) — the glue applies `data`
@@ -214,6 +222,8 @@ public struct LyteUdpSessionCounters: Sendable {
     public var clipboardSharesSent: UInt64 = 0
     /// 0x1B announces consumed and applied (CL-15).
     public var clipboardAnnouncesReceived: UInt64 = 0
+    /// 0x24 cursor shapes consumed and worn (E3).
+    public var cursorShapesReceived: UInt64 = 0
     /// Local changes the sync book suppressed (echo or duplicate).
     public var clipboardLoopSuppressed: UInt64 = 0
     /// Announces that arrived while the session toggle was OFF —
@@ -312,7 +322,13 @@ public struct LyteUdpSessionCoreConfig: Sendable {
             // MOVE is the consent tier at both ends (the host's
             // --clipboard=images flag decides ITS declaration; ours
             // is gated live by shareClipboardImages).
-            .declaringClipboardImages(),
+            .declaringClipboardImages()
+            // E3: key 13 (cursorShape) — dialect, fifth verse: this
+            // client can always wear a 0x24 shape as its local
+            // NSCursor, so it always declares; whether shapes SEND is
+            // the host's capture-organ truth (only the direct eye,
+            // whose video carries no cursor, declares its side).
+            .declaringCursorShape(),
         machineConfig: SessionMachineConfig = SessionMachineConfig(
             blackoutSilenceMicroseconds: 2_500_000
         ),
@@ -1326,6 +1342,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         case CtrlMessageType.clipboardAnnounce:
             receiveClipboardAnnounce(bytes)
 
+        case CtrlMessageType.cursorShape:
+            receiveCursorShape(bytes)
+
         case CtrlMessageType.clipboardSet:
             // Role confusion: 0x1A is client→host only (the host's
             // 0x1B-at-host mirror). Loud, payload never logged.
@@ -1587,6 +1606,24 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         clipboardBook.noteRemoteApplied(announce.text)
         lock.unlock()
         onEvent(.hostClipboardChanged(announce.text))
+    }
+
+    private func receiveCursorShape(_ bytes: [UInt8]) {
+        guard let shape = try? CursorShape.decode(bytes) else {
+            noteMalformed("cursor shape")
+            return
+        }
+        lock.lock()
+        guard agreed?.cursorShape == true else {
+            counters.unknownReliableTypes += 1
+            lock.unlock()
+            onEvent(.protocolNote(
+                "cursor 0x24 without negotiated key 13 — dropped"))
+            return
+        }
+        counters.cursorShapesReceived += 1
+        lock.unlock()
+        onEvent(.hostCursorShapeChanged(shape))
     }
 
     private func noteMalformed(_ what: String) {

@@ -19,6 +19,7 @@ import CDRM
 import Foundation
 import Glibc
 import HostEye
+import LyteWire
 
 final class DirectEyeLeg {
     struct Config {
@@ -40,6 +41,8 @@ final class DirectEyeLeg {
     private(set) var keyframes = 0
     private(set) var missedGrabs = 0
     private(set) var directivesDeferred = 0
+    private(set) var cursorShapesSeen = 0
+    private(set) var cursorReadFailures = 0
     var lastError: String?
 
     init(config: Config, wire: SessionWire?,
@@ -91,6 +94,17 @@ final class DirectEyeLeg {
             + "\(config.device), hevc_vaapi \(rc) "
             + "(live rate directives deferred to E6-VAAPI)")
 
+        // E3: the cursor plane travels as metadata, never as video.
+        // The watcher shares the doorbell fd and cadence; a session-
+        // less (file-mode) leg has no one to tell, so it skips.
+        let cursorWatcher = wire != nil ? EyeCursorWatcher(fd: fd) : nil
+        if wire != nil {
+            print(cursorWatcher != nil
+                ? "direct: cursor watcher on plane "
+                    + "\(cursorWatcher!.planeId) — shapes ride 0x24"
+                : "direct: no cursor plane — shapes OFF this run")
+        }
+
         var targets: [UInt32: NV12Target] = [:]
         var lastFB: UInt32 = 0
         var pendingCauses: [String] = []
@@ -98,6 +112,7 @@ final class DirectEyeLeg {
 
         while nowSeconds() - t0 < config.seconds {
             if wire?.sessionEnded == true { break }
+            pollCursor(cursorWatcher)
 
             // Consume (and defer) rate directives so the queue drains.
             if let directive = wire?.takeEncoderRateDirective() {
@@ -192,7 +207,47 @@ final class DirectEyeLeg {
         }
         print("direct: eye closed — \(frames) frames, \(bytes) bytes, "
             + "\(keyframes) IDRs, missed_grabs=\(missedGrabs), "
-            + "directives_deferred=\(directivesDeferred)")
+            + "directives_deferred=\(directivesDeferred), "
+            + "cursor_shapes=\(cursorShapesSeen)")
+    }
+
+    /// E3: one cursor poll — fb changes become 0x24s. The hotspot is
+    /// recovered as (last injected pointer − plane CRTC − crop
+    /// origin): the compositor places the plane at pointer − hotspot,
+    /// and i915 has no HOTSPOT props to ask instead. Mid-motion the
+    /// plane can lag the newest injection by a frame, so the derived
+    /// point is clamped into the image; the next shape change
+    /// re-derives it at rest.
+    private func pollCursor(_ watcher: EyeCursorWatcher?) {
+        guard let watcher, let wire else { return }
+        switch watcher.poll() {
+        case .unchanged:
+            break
+        case .hidden:
+            cursorShapesSeen += 1
+            wire.noteCursorShape(.hidden)
+        case .shape(let frame):
+            cursorShapesSeen += 1
+            var hx = 0, hy = 0
+            if let pointer = wire.lastAbsolutePointerInjection() {
+                hx = Int(pointer.x.rounded())
+                    - frame.planeCrtcX - frame.cropX
+                hy = Int(pointer.y.rounded())
+                    - frame.planeCrtcY - frame.cropY
+            }
+            hx = min(max(hx, 0), frame.width - 1)
+            hy = min(max(hy, 0), frame.height - 1)
+            wire.noteCursorShape(CursorShape(
+                width: UInt16(frame.width),
+                height: UInt16(frame.height),
+                hotspotX: UInt16(hx), hotspotY: UInt16(hy),
+                pixels: frame.pixels))
+        case .failed(let why):
+            cursorReadFailures += 1
+            if cursorReadFailures == 1 {
+                print("direct: cursor read failed (\(why)) — counting")
+            }
+        }
     }
 
     private func deliver(_ packet: Data, keyframe: Bool,

@@ -258,6 +258,14 @@ struct WireView: AsyncParsableCommand {
                     print("wire-view: host clipboard → pasteboard "
                         + "(\(text.utf8.count) B, 0x1B)")
                     pasteboardBox.value?.apply(text)
+                case .hostCursorShapeChanged(let shape):
+                    // E3: the dev CLI has no cursor to dress — the
+                    // print IS the live-leg evidence.
+                    print("wire-view: host cursor shape "
+                        + (shape.isHidden ? "HIDDEN"
+                            : "\(shape.width)x\(shape.height) hotspot "
+                            + "(\(shape.hotspotX),\(shape.hotspotY))")
+                        + " (0x24)")
                 case .hostClipboardImageChanged(let data, let mime):
                     // P-1: sha-verified image cargo off chan 8. Byte
                     // count only, same rule.

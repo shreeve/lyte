@@ -149,6 +149,9 @@ final class ConnectionModel {
     // space; the capture drops absolute moves until this is known.
     private(set) var lyteVideoSize: CGSize = .zero
     var lyteInputCapture: LyteInputCapture?
+    /// E3: the stream surface, held weakly so the model can dress it
+    /// with the host's announced cursor (StreamView installs it).
+    weak var lyteVideoView: VideoLayerView?
 
     var windowTitle: String {
         switch phase {
@@ -448,6 +451,23 @@ final class ConnectionModel {
         handleLyteEvent(event)
     }
 
+    /// E3: wear the host's announced cursor over the stream. The
+    /// scale maps host device pixels onto the video's current
+    /// on-glass points through the aspect-fit rect, so the worn
+    /// shape matches the video's magnification; before the first
+    /// sample lands (no video size yet) 0.75 approximates the host's
+    /// 1.333 logical scale.
+    private func applyHostCursor(_ shape: CursorShape) {
+        guard let view = lyteVideoView else { return }
+        var scale: CGFloat = 0.75
+        if lyteVideoSize.width > 0, view.bounds.width > 0 {
+            let fit = AVMakeRect(
+                aspectRatio: lyteVideoSize, insideRect: view.bounds)
+            scale = fit.width / lyteVideoSize.width
+        }
+        view.hostCursor = HostCursorImage.cursor(from: shape, scale: scale)
+    }
+
     private func handleLyteEvent(_ event: LyteUdpSessionEvent) {
         switch event {
         case .capabilitiesAgreed(let agreed):
@@ -482,6 +502,8 @@ final class ConnectionModel {
             // Already through the core's gates (negotiated + sharing
             // on, book pre-armed); the glue just applies.
             pasteboardSync?.apply(text)
+        case .hostCursorShapeChanged(let shape):
+            applyHostCursor(shape)
         case .hostClipboardImageChanged(let data, _):
             // P-1: sha-verified PNG through the core's gates (10∧12 +
             // the images tier, book pre-armed); the glue just applies.
@@ -533,6 +555,9 @@ final class ConnectionModel {
         stopRoamingMachinery()
         lyteInputCapture?.stop()
         lyteInputCapture = nil
+        // E3: back to AppKit's own arrow — a dead session must not
+        // leave the host's shape (or its hidden state) stuck on.
+        lyteVideoView?.hostCursor = nil
         if let lyte = lyteSession {
             lyteSession = nil
             sessionEpoch += 1
