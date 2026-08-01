@@ -8,7 +8,33 @@ H4, and the Beauty Bar's full per-row forensics — is frozen verbatim in
 `docs/20260730-handoff-archive-h2-h4.md` (and in git history; the
 pre-overhaul file is commit `a54ab69`).*
 
-# SESSION RESUME — START HERE (2026-07-30)
+# SESSION RESUME — START HERE (2026-08-01: THE DIRECT-EYE EPOCH)
+
+**Read this first:** the project pivoted on 2026-08-01. After the
+network campaign convicted and fixed the real bottleneck (the
+gateway's 6 GHz radio — see docs/20260801-lyte-pup-scan-stall-study.md;
+pup is now WIRED at 10.0.0.232) and the portal/Mutter capture path
+froze three times at the owner's glass in one evening, the owner
+directed a capture rearchitecture: **the direct eye**
+(docs/20260801-direct-eye-plan.md — the governing plan, phases E0–E5).
+Main is tagged **`portal-era-final`** (#44 closed the old era's books:
+probes in Host/Probes/kms-eye/ with measured numbers, owner decisions
+in TODO.md). The chain: FB-ID doorbell → GETFB2/dmabuf → EGL
+modifier-aware import → GPU blit RGB→NV12 → VAAPI (Arc, on pup) /
+NVENC (NVIDIA-panel desktops) → the UNCHANGED existing wire. Swift-
+first via module maps (no .c files). **E0 milestone 1 landed (#45):
+`lyte-eye`, the doorbell in pure Swift (CDRM systemLibrary), C-probe
+parity on pup** (1.00 flips/s idle, 61.00/s motion, ~4 µs/poll,
+unprivileged). NEXT: E0 milestone 2 — EGL import + NV12 blit + VAAPI
+encode in lyte-eye, Annex-B to file, validated by `lyte decode-probe`;
+then E1's CaptureSource seam (portal stays as fallback until E5).
+AV1 is deferred until after the rearchitecture (owner decision; the
+four HEVC-shaped seams are inventoried in TODO.md — owner's Mac is an
+M5, pup has two hw AV1 encoders). Audio STAYS on PipeWire. Consent =
+pairing. Input goes uinput-primary at E2. Everything below this block
+is the pre-pivot ledger, still true of the transport and client.
+
+# PREVIOUS RESUME (2026-07-30, pre-pivot)
 
 **One-paragraph state.** The host ladder stands **H0a ✓ H0b ✓ H1 ✓
 H2 ✓ H3 ✓ H4 ✓, H5 half-landed** (files/drag-and-drop shipped;
