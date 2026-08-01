@@ -174,3 +174,42 @@ unlocked. Ethernet for pup (adapter en route: Realtek RTL8153/8156-class
 USB-C GbE, in-kernel r8152 driver, plug-and-play on the 7.0 kernel)
 remains the terminal move; on arrival, verify NM routes over the wire,
 then optionally disable pup Wi-Fi and re-run the full benchmark suite.
+
+## Addendum 3 (same day, ~14:00–15:00 UTC) — the wire lands, and the tail dies
+
+The owner installed a USB-C GbE adapter on pup (`enxf8e43b7ede7c`,
+cdc_ncm, 1000 Mb/s, new IP 10.0.0.232; NM routes prefer it at metric
+100, Wi-Fi stays up as backup at metric 600). pup→gateway over copper:
+**p50 2.54 / p99 4.85 / max 7.12 ms, zero spikes** — pup's radio is out
+of the path. Benchmarks target the wire via
+`LYTE_BENCHMARK_HOST=10.0.0.232`.
+
+Two contaminated runs first, both instructive: one launched with the
+owner away (Keychain identity fails closed — by design), and one with
+pup accidentally **on battery** after the install (EPP balance_power
+throttled render 4.1→7.3 ms and encode 7.4→9.6 ms, the source slipped
+to ~54 fps against its 60 fps absolute schedule and accumulated 2.2 s
+of lateness — if a source-deadline failure ever appears again, check
+`upower` FIRST).
+
+**The clean AC run (`motion-pipeline-20260801T135540Z-17743`) is the
+best in the project's history:** transit stretch p95/p99 **1.48/2.48 ms**
+(6 GHz era: 4.5/13.4), `motion_transport_burst` GONE, audio
+`bounded_path_tail_concealed` (PASS), decoded 59.95 fps, IDR 1
+(opening), renderer failures 0. The one remaining FAIL,
+`motion_pipeline_source_deadline_failed`, is a **gate-calibration
+artifact**: per-frame trace shows frames 2–56 (the documented
+first-second portal/encoder warm-up) starting ~228 ms behind and
+draining linearly to zero by frame 56; steady-state lateness p50 is
+0.058 ms, and the only other event in 1,851 frames is a 6-frame blip
+peaking at 16 ms. The analyzer's source gate takes whole-run p99 with
+no warm-up split (its audio gate already splits warm-up vs steady
+state); one nudge to exclude the drain window and this run is the first
+all-green motion-pipeline verdict. That analyzer change belongs to the
+in-flight WIP and is left to its owner.
+
+**Final network posture:** pup wired (Wi-Fi backup on ch 157), Mac on
+ch 157 at −56 dBm / 720 Mbps, gateway 6 GHz disabled, extender synced
+to ch 157. The Mac's own leg (p99 ~33 ms brushes) is the only radio
+left in the path, and it sits comfortably inside the adaptive playout's
+15–50 ms envelope.
