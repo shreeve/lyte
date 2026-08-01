@@ -152,15 +152,18 @@ targets += [
         pkgConfig: "libva",
         providers: [.apt(["libva-dev"])]
     ),
-    // E0 milestone 1: the doorbell, ported from the proven C probe
-    // (Host/Probes/kms-eye/fbid-poll.c) with identical semantics and
-    // output format — FB_ID change detection, unprivileged.
-    // E0 milestone 2: the capture loop — doorbell → GETFB2/dmabuf →
-    // EGL import → GL blit RGB→NV12 into exported VAAPI surfaces →
-    // hevc_vaapi (vendored libavcodec) → Annex-B file.
+    // The eye's organs as a LIBRARY (E1): the doorbell/ticket DRM
+    // layer, the EGL/GL import+blit, and the hevc_vaapi encoder wrap —
+    // shared by the standalone lyte-eye and the host's direct backend.
+    .target(
+        name: "HostEye",
+        dependencies: ["CDRM", "CGBM", "CEGL", "CVA", "CLibAV"]
+    ),
+    // E0: the standalone eye — doorbell mode (milestone 1, unprivileged)
+    // and capture mode (milestone 2: full loop → Annex-B file).
     .executableTarget(
         name: "lyte-eye",
-        dependencies: ["CDRM", "CGBM", "CEGL", "CVA", "CLibAV"],
+        dependencies: ["HostEye", "CDRM", "CLibAV"],
         linkerSettings: libavLinkerSettings + [
             .linkedLibrary("va"),
             .linkedLibrary("va-drm"),
@@ -223,6 +226,8 @@ targets += [
             "COpusEncode",
             "CNetIO",
             "CInputUinput",
+            // E1: the direct eye as a capture backend (--backend direct).
+            "HostEye",
             .product(name: "LyteWire", package: "Wire"),
             // HS-10: one SHA-256 for the advertised identity hash
             // (IdentityHash.swift is the confined import site). Already
@@ -233,6 +238,8 @@ targets += [
             .linkedLibrary("dbus-1"),
             .linkedLibrary("pipewire-0.3"),
             .linkedLibrary("opus"),
+            .linkedLibrary("va"),
+            .linkedLibrary("va-drm"),
         ]
     ),
 ]

@@ -37,28 +37,28 @@ private let planeModHiAttrs = [
     EGL_DMA_BUF_PLANE2_MODIFIER_HI_EXT, EGL_DMA_BUF_PLANE3_MODIFIER_HI_EXT,
 ]
 
-struct EyeGLError: Error, CustomStringConvertible {
-    var description: String
+public struct EyeGLError: Error, CustomStringConvertible {
+    public var description: String
     init(_ d: String) { description = d }
 }
 
 /// One imported dmabuf as a bindable GL texture.
-struct ImportedTexture {
-    var image: EGLImage?
-    var texture: GLuint
+public struct ImportedTexture {
+    public var image: EGLImage?
+    public var texture: GLuint
 }
 
 /// One NV12 render target: the two planes as FBO-attached textures.
-struct NV12Target {
-    var y: ImportedTexture
-    var uv: ImportedTexture
-    var fboY: GLuint
-    var fboUV: GLuint
-    var width: Int32
-    var height: Int32
+public struct NV12Target {
+    public var y: ImportedTexture
+    public var uv: ImportedTexture
+    public var fboY: GLuint
+    public var fboUV: GLuint
+    public var width: Int32
+    public var height: Int32
 }
 
-final class EyeGL {
+public final class EyeGL {
     private var nodeFd: Int32 = -1
     private var gbm: OpaquePointer?
     private var display: EGLDisplay?
@@ -69,7 +69,7 @@ final class EyeGL {
     private var srcSizeLocY: GLint = -1
     private var srcSizeLocUV: GLint = -1
 
-    init(renderNode: String) throws {
+    public init(renderNode: String) throws {
         nodeFd = open(renderNode, O_RDWR)
         guard nodeFd >= 0 else {
             throw EyeGLError("open(\(renderNode)) failed: errno \(errno)")
@@ -190,7 +190,7 @@ final class EyeGL {
     // MARK: - dmabuf import
 
     /// Import a dmabuf as an EGLImage-backed 2D texture, modifier-aware.
-    func importTexture(
+    public func importTexture(
         width: Int32, height: Int32, fourcc: UInt32, modifier: UInt64,
         planes: [(fd: Int32, offset: UInt32, pitch: UInt32)]
     ) throws -> ImportedTexture {
@@ -244,7 +244,7 @@ final class EyeGL {
         return ImportedTexture(image: image, texture: tex)
     }
 
-    func destroy(_ imported: inout ImportedTexture) {
+    public func destroy(_ imported: inout ImportedTexture) {
         var tex = imported.texture
         if tex != 0 { glDeleteTextures(1, &tex) }
         if let image = imported.image { eglDestroyImage(display, image) }
@@ -270,7 +270,7 @@ final class EyeGL {
 
     /// Wrap an exported NV12 surface (two separate-layer planes) as
     /// FBO render targets.
-    func makeNV12Target(
+    public func makeNV12Target(
         width: Int32, height: Int32,
         yFourcc: UInt32, yModifier: UInt64,
         yPlane: (fd: Int32, offset: UInt32, pitch: UInt32),
@@ -295,7 +295,7 @@ final class EyeGL {
     /// RGB scanout → NV12 target, two passes, then a full GPU sync so
     /// the encoder never reads a half-written surface (prototype-grade
     /// sync; the production organ graduates to fences).
-    func blit(source: ImportedTexture, srcWidth: Int32, srcHeight: Int32,
+    public func blit(source: ImportedTexture, srcWidth: Int32, srcHeight: Int32,
               into target: NV12Target) {
         glActiveTexture(GLenum(GL_TEXTURE0))
         glBindTexture(GLenum(GL_TEXTURE_2D), source.texture)

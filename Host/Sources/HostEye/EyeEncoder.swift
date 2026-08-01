@@ -12,33 +12,33 @@ import CVA
 import Foundation
 import Glibc
 
-struct EyeEncoderError: Error, CustomStringConvertible {
-    var description: String
+public struct EyeEncoderError: Error, CustomStringConvertible {
+    public var description: String
     init(_ d: String) { description = d }
 }
 
 /// One exported NV12 plane of a VAAPI surface.
-struct ExportedPlane {
-    var fourcc: UInt32
-    var modifier: UInt64
-    var fd: Int32
-    var offset: UInt32
-    var pitch: UInt32
+public struct ExportedPlane {
+    public var fourcc: UInt32
+    public var modifier: UInt64
+    public var fd: Int32
+    public var offset: UInt32
+    public var pitch: UInt32
 }
 
 private let AVERROR_EAGAIN: Int32 = -11  // Linux EAGAIN
 private let AVERROR_EOF_V: Int32 = -541_478_725  // FFERRTAG('E','O','F',' ')
 
-final class EyeEncoder {
+public final class EyeEncoder {
     private var deviceRef: UnsafeMutablePointer<AVBufferRef>?
     private var framesRef: UnsafeMutablePointer<AVBufferRef>?
     private var ctx: UnsafeMutablePointer<AVCodecContext>?
     private var packet: UnsafeMutablePointer<AVPacket>?
     private var vaDisplay: VADisplay?
-    let width: Int32
-    let height: Int32
+    public let width: Int32
+    public let height: Int32
 
-    init(width: Int32, height: Int32, fps: Int32, qp: Int32,
+    public init(width: Int32, height: Int32, fps: Int32, qp: Int32,
          renderNode: String) throws {
         self.width = width
         self.height = height
@@ -106,7 +106,7 @@ final class EyeEncoder {
     }
 
     /// A pooled NV12 VAAPI frame; data[3] carries the VASurfaceID.
-    func nextFrame() throws -> UnsafeMutablePointer<AVFrame> {
+    public func nextFrame() throws -> UnsafeMutablePointer<AVFrame> {
         guard let frame = av_frame_alloc() else {
             throw EyeEncoderError("av_frame_alloc failed")
         }
@@ -117,7 +117,7 @@ final class EyeEncoder {
         return frame
     }
 
-    func surfaceID(of frame: UnsafeMutablePointer<AVFrame>) -> UInt32 {
+    public func surfaceID(of frame: UnsafeMutablePointer<AVFrame>) -> UInt32 {
         UInt32(UInt(bitPattern: frame.pointee.data.3))
     }
 
@@ -135,7 +135,7 @@ final class EyeEncoder {
     ///   num_layers@80
     ///   layers[4]@84, elem 56: {drm_format@0, num_planes@4,
     ///     object_index[4]@8, offset[4]@24, pitch[4]@40}
-    func exportSurface(_ id: UInt32) throws -> (y: ExportedPlane,
+    public func exportSurface(_ id: UInt32) throws -> (y: ExportedPlane,
                                                 uv: ExportedPlane) {
         let raw = UnsafeMutableRawPointer.allocate(
             byteCount: 512, alignment: 8)
@@ -178,29 +178,44 @@ final class EyeEncoder {
         return (y: plane(0), uv: plane(1))
     }
 
-    /// Encode one frame; returns the Annex-B packets it yielded.
-    func encode(_ frame: UnsafeMutablePointer<AVFrame>?,
-                pts: Int64) throws -> [Data] {
-        if let frame { frame.pointee.pts = pts }
+    /// Encode one frame; returns the Annex-B packets it yielded, each
+    /// tagged with the PACKET's own keyframe flag (AV_PKT_FLAG_KEY).
+    /// The wrapper pipelines by a frame, so a send-side forceIDR flag
+    /// does NOT describe the packet this call returns — the wire's
+    /// isKeyframe must come from here, never from the send site.
+    public func encode(_ frame: UnsafeMutablePointer<AVFrame>?,
+                       pts: Int64,
+                       forceIDR: Bool = false) throws
+        -> [(data: Data, keyframe: Bool)] {
+        if let frame {
+            frame.pointee.pts = pts
+            // vaapi_encode honors a forced I picture as an IDR — the
+            // wire's on-demand keyframe lever (0x0302, loss recovery).
+            frame.pointee.pict_type =
+                forceIDR ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE
+        }
         let sendRc = avcodec_send_frame(ctx, frame)
         guard sendRc >= 0 || sendRc == AVERROR_EOF_V else {
             throw EyeEncoderError("send_frame: \(sendRc)")
         }
-        var out: [Data] = []
+        var out: [(data: Data, keyframe: Bool)] = []
         while true {
             let rc = avcodec_receive_packet(ctx, packet)
             if rc == AVERROR_EAGAIN || rc == AVERROR_EOF_V { break }
             guard rc >= 0, let pkt = packet else {
                 throw EyeEncoderError("receive_packet: \(rc)")
             }
-            out.append(Data(bytes: pkt.pointee.data,
-                            count: Int(pkt.pointee.size)))
+            out.append((
+                data: Data(bytes: pkt.pointee.data,
+                           count: Int(pkt.pointee.size)),
+                keyframe: pkt.pointee.flags & Int32(AV_PKT_FLAG_KEY) != 0
+            ))
             av_packet_unref(packet)
         }
         return out
     }
 
-    func release(_ frame: UnsafeMutablePointer<AVFrame>) {
+    public func release(_ frame: UnsafeMutablePointer<AVFrame>) {
         av_frame_free_swift(frame)
     }
 }
