@@ -2049,8 +2049,13 @@ func run() throws {
         \(wire.audioPacketsDroppedPreSession) dropped pre-session; \
         max audio queue delay \(t[.audio].maxQueueDelayNS) ns; \
         mailbox depth max \(wire.audioMailboxMaxDepth), \
-        dwell max \(wire.audioMailboxMaxDwellNS) ns, \
+        dwell p99 \(wire.audioMailboxDwell.p99.map(String.init) ?? "—") ns / \
+        max \(wire.audioMailboxMaxDwellNS) ns, \
         overflows \(wire.audioMailboxOverflows)
+        session-lock: video prepare max \(wire.videoPrepareMaxNS) ns off-lock, \
+        commit wait/hold max \(wire.videoCommitLockWaitMaxNS)/\
+        \(wire.videoCommitLockHoldMaxNS) ns, service/receive max \
+        \(wire.serviceOnceMaxNS)/\(wire.receiveAllMaxNS) ns
         audio-routing: final \(wire.currentAudioRouting), \
         \(s.audioRoutingRequestsReceived) flip requests, \
         \(s.audioRoutingStatusesSent) statuses sent

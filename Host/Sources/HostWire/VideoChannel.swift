@@ -173,6 +173,30 @@ public struct VideoChannelConfig: Sendable {
     }
 }
 
+/// Immutable inputs for the expensive, pure half of video packetization.
+/// The executable snapshots this while it owns Session, then performs
+/// Annex-B validation + RS-FEC after releasing the Session lock.
+public struct VideoFramePreparationConfig: Sendable {
+    fileprivate let regime: FecRegime
+    fileprivate let shardBudgetByteCount: Int
+}
+
+/// RS-FEC output with no sequence numbers, Noise nonces, or pacer state.
+/// Preparing it is safe off the Session lock; committing it remains ordered.
+public struct PreparedVideoFrame: Sendable {
+    fileprivate struct Shard: Sendable {
+        let fec: UInt64
+        let payload: [UInt8]
+    }
+
+    fileprivate let shards: [Shard]
+    fileprivate let encodedByteCount: Int
+    fileprivate let regime: FecRegime
+    let isKeyframe: Bool
+
+    public var shardCount: Int { shards.count }
+}
+
 /// Running totals for the wiring layer itself (the Pacer keeps its own
 /// per-class telemetry; this counts what crossed the seam).
 public struct VideoChannelCounters: Sendable {
@@ -355,6 +379,63 @@ public final class VideoChannel {
             )
     }
 
+    /// Snapshot the geometry inputs for one frame. No sequence or crypto
+    /// state is reserved here; those advance only when the prepared frame
+    /// is committed under the Session owner's lock.
+    public func preparationConfig(
+        hasLastInputSeq: Bool
+    ) -> VideoFramePreparationConfig {
+        VideoFramePreparationConfig(
+            regime: regime,
+            shardBudgetByteCount: config.shardBudgetByteCount(
+                extraTlvByteCount: hasLastInputSeq
+                    ? LastInputSeqTlv.encodedByteCount : 0
+            )
+        )
+    }
+
+    /// Expensive pure half: validate Annex-B shape and build all RS shards.
+    /// This method neither reads nor mutates channel state.
+    public static func prepareFrame<C>(
+        _ annexB: C,
+        isKeyframe: Bool,
+        config: VideoFramePreparationConfig
+    ) throws -> PreparedVideoFrame
+    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
+        let classification = AnnexBCheck.classifyFrame(annexB)
+        guard classification.isFrameShaped else {
+            throw VideoError.frameNotFrameShaped
+        }
+        let derivedIdr = classification.containsIrap
+        guard isKeyframe == derivedIdr else {
+            throw VideoError.idrFlagMismatch(
+                claimed: isKeyframe, derived: derivedIdr
+            )
+        }
+
+        let budget = config.shardBudgetByteCount
+        let k = (annexB.count + budget - 1) / budget
+        let m = try FecGeometryTable.parityShards(
+            forDataShards: k, regime: config.regime
+        )
+        let geometry = try FecGeometry(
+            dataShards: k, parityShards: m, groupByteCount: annexB.count
+        )
+        let payloads = try FecEncoder.encode(group: annexB, geometry: geometry)
+        var shards: [PreparedVideoFrame.Shard] = []
+        shards.reserveCapacity(payloads.count)
+        for (index, payload) in payloads.enumerated() {
+            let field = try FecField.reedSolomonShard(index, of: geometry)
+            shards.append(.init(fec: field.encoded, payload: payload))
+        }
+        return PreparedVideoFrame(
+            shards: shards,
+            encodedByteCount: annexB.count,
+            regime: config.regime,
+            isKeyframe: isKeyframe
+        )
+    }
+
     /// The ceiling's session-static worst case — the lossy column with
     /// the lastInputSeq stamp riding — for postures that must hold no
     /// matter how the regime or the input stream moves mid-session (the
@@ -432,13 +513,84 @@ public final class VideoChannel {
             Double(queuedBytesBeforeAdmission) * 8e9
                 / Double(max(pacer.rateBitsPerSecond, 1))
         )
-        let shards = try packetize(
-            frame: annexB,
+        let prepared = try Self.prepareFrame(
+            annexB,
+            isKeyframe: isKeyframe,
+            config: preparationConfig(hasLastInputSeq: lastInputSeq != nil)
+        )
+        return try ingestPrepared(
+            prepared,
             frameNumber: frameNumber,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe,
-            lastInputSeq: lastInputSeq
+            lastInputSeq: lastInputSeq,
+            interleave: interleave,
+            now: now,
+            isBorrowed: isBorrowed,
+            queuedWireTimeBeforeAdmissionNS: queuedWireTimeBeforeAdmissionNS
         )
+    }
+
+    /// Ordered half: allocate channel seqs, seal, enqueue, and retain.
+    /// Callers serialize this with every other Session mutation.
+    @discardableResult
+    public func ingestPrepared(
+        _ prepared: PreparedVideoFrame,
+        frameNumber: FrameNumber,
+        captureTimestampMicroseconds: UInt64,
+        lastInputSeq: UInt32?,
+        interleave: (() -> Void)? = nil,
+        now: UInt64,
+        isBorrowed: Bool = false
+    ) throws -> Int {
+        let queuedBytesBeforeAdmission =
+            pacer.queuedBytes(.freshVideo) + pacer.queuedBytes(.videoTail)
+        let queuedWireTimeBeforeAdmissionNS = UInt64(
+            Double(queuedBytesBeforeAdmission) * 8e9
+                / Double(max(pacer.rateBitsPerSecond, 1))
+        )
+        return try ingestPrepared(
+            prepared,
+            frameNumber: frameNumber,
+            captureTimestampMicroseconds: captureTimestampMicroseconds,
+            lastInputSeq: lastInputSeq,
+            interleave: interleave,
+            now: now,
+            isBorrowed: isBorrowed,
+            queuedWireTimeBeforeAdmissionNS: queuedWireTimeBeforeAdmissionNS
+        )
+    }
+
+    private func ingestPrepared(
+        _ prepared: PreparedVideoFrame,
+        frameNumber: FrameNumber,
+        captureTimestampMicroseconds: UInt64,
+        lastInputSeq: UInt32?,
+        interleave: (() -> Void)?,
+        now: UInt64,
+        isBorrowed: Bool,
+        queuedWireTimeBeforeAdmissionNS: UInt64
+    ) throws -> Int {
+        var shards: [(envelope: Envelope, payload: [UInt8])] = []
+        shards.reserveCapacity(prepared.shards.count)
+        for shard in prepared.shards {
+            var envelope = Envelope(
+                channel: config.channel,
+                seq: nextSeq,
+                frame: frameNumber,
+                timestamp: captureTimestampMicroseconds,
+                fec: shard.fec
+            )
+            if let connectionId = config.connectionId {
+                envelope.extensions.append(connectionId.wireExtension)
+            }
+            if let lastInputSeq {
+                envelope.extensions.append(
+                    LastInputSeqTlv.wireExtension(seq: lastInputSeq)
+                )
+            }
+            shards.append((envelope, shard.payload))
+            nextSeq = nextSeq.next
+        }
         interleave?()
         for (index, shard) in shards.enumerated() {
             // A large IDR can require hundreds of seals. Give the
@@ -451,16 +603,17 @@ public final class VideoChannel {
                 pacerClass: .freshVideo,
                 frameNumber: frameNumber,
                 seq: envelope.seq,
-                isKeyframe: isKeyframe,
+                isKeyframe: prepared.isKeyframe,
                 destination: nil
             )
-            enqueue(datagram, urgent: isKeyframe,
+            enqueue(datagram, urgent: prepared.isKeyframe,
                     frameID: frameNumber.rawValue, now: now)
         }
         retain(
             shards, frameNumber: frameNumber,
             captureMicros: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe, lastInputSeq: lastInputSeq, now: now
+            isKeyframe: prepared.isKeyframe,
+            lastInputSeq: lastInputSeq, now: now
         )
         activeFrameTelemetry[frameNumber.rawValue] = VideoFrameTransmitTelemetry(
             frameNumber: frameNumber.rawValue,
@@ -468,22 +621,22 @@ public final class VideoChannel {
             admittedAtNS: now,
             firstTransmitAtNS: nil,
             lastTransmitAtNS: nil,
-            encodedBytes: annexB.count,
+            encodedBytes: prepared.encodedByteCount,
             shardCount: shards.count,
-            isKeyframe: isKeyframe,
+            isKeyframe: prepared.isKeyframe,
             averageQP: nil,
             idrCauses: [],
             pacerRateBitsPerSecond: pacer.rateBitsPerSecond,
-            fecRegime: regime,
+            fecRegime: prepared.regime,
             queuedWireTimeBeforeAdmissionNS: queuedWireTimeBeforeAdmissionNS,
             purged: false
         )
-        if isKeyframe { lastKeyframeNumber = frameNumber }
+        if prepared.isKeyframe { lastKeyframeNumber = frameNumber }
         counters.framesIngested += 1
-        if isKeyframe { counters.keyframesIngested += 1 }
+        if prepared.isKeyframe { counters.keyframesIngested += 1 }
         if isBorrowed {
             counters.borrowedFramesIngested += 1
-            counters.borrowedFrameBytesIngested += annexB.count
+            counters.borrowedFrameBytesIngested += prepared.encodedByteCount
         }
         counters.shardsEnqueued += shards.count
         return shards.count
@@ -934,71 +1087,6 @@ public final class VideoChannel {
             completedFrameTelemetry.removeFirst()
         }
         completedFrameTelemetry.append(telemetry)
-    }
-
-    // MARK: Packetization (W2 semantics, HS-7 headroom)
-
-    /// The W2 packetizer's exact behavior — frame-shape and IDR-claim
-    /// cross-checks, the parity ladder, balanced split, FecField
-    /// interior, contiguous seq allocation — over the config's real
-    /// shard budget (header comment). With a bare envelope the geometry
-    /// is bit-identical to `FecGeometryTable.geometry`, which the HS-5
-    /// gate test still asserts against the frozen corpus.
-    private func packetize<C>(
-        frame annexB: C,
-        frameNumber: FrameNumber,
-        captureTimestampMicroseconds: UInt64,
-        isKeyframe: Bool,
-        lastInputSeq: UInt32?
-    ) throws -> [(envelope: Envelope, payload: [UInt8])]
-    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
-        let classification = AnnexBCheck.classifyFrame(annexB)
-        guard classification.isFrameShaped else {
-            throw VideoError.frameNotFrameShaped
-        }
-        let derivedIdr = classification.containsIrap
-        guard isKeyframe == derivedIdr else {
-            throw VideoError.idrFlagMismatch(
-                claimed: isKeyframe, derived: derivedIdr
-            )
-        }
-
-        let budget = config.shardBudgetByteCount(
-            extraTlvByteCount: lastInputSeq == nil
-                ? 0 : LastInputSeqTlv.encodedByteCount
-        )
-        let k = (annexB.count + budget - 1) / budget
-        let m = try FecGeometryTable.parityShards(
-            forDataShards: k, regime: regime
-        )
-        let geometry = try FecGeometry(
-            dataShards: k, parityShards: m, groupByteCount: annexB.count
-        )
-        let payloads = try FecEncoder.encode(group: annexB, geometry: geometry)
-
-        var shards: [(envelope: Envelope, payload: [UInt8])] = []
-        shards.reserveCapacity(payloads.count)
-        for (index, payload) in payloads.enumerated() {
-            let field = try FecField.reedSolomonShard(index, of: geometry)
-            var envelope = Envelope(
-                channel: config.channel,
-                seq: nextSeq,
-                frame: frameNumber,
-                timestamp: captureTimestampMicroseconds,
-                fec: field.encoded
-            )
-            if let connectionId = config.connectionId {
-                envelope.extensions.append(connectionId.wireExtension)
-            }
-            if let lastInputSeq {
-                envelope.extensions.append(
-                    LastInputSeqTlv.wireExtension(seq: lastInputSeq)
-                )
-            }
-            shards.append((envelope, payload))
-            nextSeq = nextSeq.next
-        }
-        return shards
     }
 
     /// Header bytes double as AAD — exactly what the receiver slices off

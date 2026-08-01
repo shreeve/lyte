@@ -238,6 +238,15 @@ final class SessionWire {
     private(set) var audioMailboxMaxDepth = 0
     private(set) var audioMailboxOverflows = 0
     private(set) var audioMailboxMaxDwellNS: UInt64 = 0
+    private(set) var audioMailboxDwell = Histogram()
+    /// Root-cause telemetry for the split video path. Preparation includes
+    /// Annex-B classification + RS-FEC and is now deliberately off-lock;
+    /// commit includes seq allocation, Noise sealing, and pacer insertion.
+    private(set) var videoPrepareMaxNS: UInt64 = 0
+    private(set) var videoCommitLockWaitMaxNS: UInt64 = 0
+    private(set) var videoCommitLockHoldMaxNS: UInt64 = 0
+    private(set) var serviceOnceMaxNS: UInt64 = 0
+    private(set) var receiveAllMaxNS: UInt64 = 0
     /// HS-15 audio-thread counters (mutated under `lock`, except mailbox
     /// publication counters above which use `audioMailboxLock`).
     private(set) var audioPacketsSent = 0
@@ -712,25 +721,68 @@ final class SessionWire {
         let ingestStart = monotonicNS()
         let frame = UnsafeBufferPointer(start: data, count: size)
         borrowedFrameBytesIngested &+= UInt64(size)
+
+        // Snapshot admission under the Session lock, then release it for
+        // Annex-B validation + RS-FEC. That pure work has produced
+        // 90–180 ms scheduling tails under 1080p60 motion; keeping the lock
+        // there prevented the sender from servicing 5 ms audio despite its
+        // dedicated wake and every-four-seal checkpoints.
         lock.lock()
         guard let session else {
             lock.unlock()
             throw HostError("sendFrame before the session exists")
         }
-        // Audio published before this video lock acquisition goes first.
+        drainAudioMailboxLocked()
+        let context: SessionVideoFramePreparationContext?
+        do {
+            context = try session.beginVideoFramePreparation(
+                encodedByteCount: size
+            )
+        } catch {
+            lock.unlock()
+            throw error
+        }
+        lock.unlock()
+
+        let prepared: PreparedVideoFrame?
+        if let context {
+            let prepareStart = monotonicNS()
+            prepared = try Session.prepareVideoFrame(
+                frame, isKeyframe: isKeyframe, context: context
+            )
+            videoPrepareMaxNS = max(
+                videoPrepareMaxNS, monotonicNS() - prepareStart
+            )
+        } else {
+            prepared = nil
+        }
+
+        // Ordered commit: seq allocation, Noise sealing, pacer mutation,
+        // and socket flush remain serialized with audio/control/feedback.
+        let commitWaitStart = monotonicNS()
+        lock.lock()
+        videoCommitLockWaitMaxNS = max(
+            videoCommitLockWaitMaxNS, monotonicNS() - commitWaitStart
+        )
+        let commitHoldStart = monotonicNS()
         drainAudioMailboxLocked()
         do {
-            let shards = try session.ingestVideoFrame(
-                frame,
-                captureTimestampMicroseconds: captureMicros,
-                isKeyframe: isKeyframe,
-                interleave: { [unowned self] in
-                    self.drainAudioMailboxLocked()
-                },
-                now: monotonicNS()
-            )
-            lastFrameForTelemetry = shards > 0
-                ? session.lastAdmittedVideoFrameNumber : nil
+            if let context, let prepared {
+                let shards = try session.commitPreparedVideoFrame(
+                    prepared,
+                    context: context,
+                    captureTimestampMicroseconds: captureMicros,
+                    interleave: { [unowned self] in
+                        self.drainAudioMailboxLocked()
+                    },
+                    now: monotonicNS(),
+                    isBorrowed: true
+                )
+                lastFrameForTelemetry = shards > 0
+                    ? session.lastAdmittedVideoFrameNumber : nil
+            } else {
+                lastFrameForTelemetry = nil
+            }
         } catch {
             lock.unlock()
             throw error
@@ -747,6 +799,9 @@ final class SessionWire {
             lock.unlock()
             throw error
         }
+        videoCommitLockHoldMaxNS = max(
+            videoCommitLockHoldMaxNS, monotonicNS() - commitHoldStart
+        )
         lock.unlock()
         lastFrameIngestNanos = monotonicNS() - ingestStart
         lastFrameDrainNanos = 0 // the capture thread no longer waits
@@ -800,6 +855,27 @@ final class SessionWire {
             audioMailboxOverflows += 1
         }
         audioMailboxLock.unlock()
+
+        // The capture callback is already scheduled at the 5 ms cadence.
+        // Use that wake directly whenever the Session owner is between
+        // bounded critical sections; this avoids making audio depend solely
+        // on a default-CFS sender thread being scheduled after signal().
+        // try() never blocks the capture loop. Sequence allocation, Noise
+        // sealing, pacer insertion, and send still happen under `lock`.
+        if lock.try() {
+            drainAudioMailboxLocked()
+            if let session, session.phase == .established, !peerGone {
+                session.pump(now: monotonicNS())
+                do {
+                    try flushOutbox()
+                } catch {
+                    audioSendFailures += 1
+                    lastSendError = String(describing: error)
+                }
+            }
+            lock.unlock()
+            flushLogLines()
+        }
         signalDrain()
     }
 
@@ -819,9 +895,9 @@ final class SessionWire {
                 continue
             }
             let now = monotonicNS()
-            audioMailboxMaxDwellNS = max(
-                audioMailboxMaxDwellNS, now &- packet.offeredAtNS
-            )
+            let dwell = now &- packet.offeredAtNS
+            audioMailboxMaxDwellNS = max(audioMailboxMaxDwellNS, dwell)
+            audioMailboxDwell.record(dwell)
             do {
                 _ = try session.ingestAudioPacket(
                     packet.bytes,
@@ -856,7 +932,7 @@ final class SessionWire {
         // Anything this pass enqueued but could not emit inside one
         // quantum (repair retransmits from a NACK, a burst of ARQ
         // segments) belongs to the sender thread, not the next tick.
-        let leftovers = !(session?.isIdle ?? true)
+        let leftovers = !(session?.isIdle ?? true) || !outbox.isEmpty
         let requests = pendingAudioRouting
         pendingAudioRouting.removeAll()
         let announce = routingAnnounceOwed
@@ -1149,19 +1225,30 @@ final class SessionWire {
                 flushLogLines()
                 throw error
             }
-            let done = peerGone || session.isIdle
+            let done = peerGone || (session.isIdle && outbox.isEmpty)
             let now = monotonicNS()
             let wake = session.nextWake(now: now)
+            let socketRetry = !outbox.isEmpty
             lock.unlock()
             flushLogLines()
             if done { return }
-            if let wake, wake > now {
+            if socketRetry {
+                // Nonblocking UDP backpressure: retry outside the Session
+                // lock so 5 ms audio can still enter and preempt video.
+                usleep(200)
+            } else if let wake, wake > now {
                 usleep(UInt32(min((wake - now) / 1_000 + 1, 2_000)))
             }
         }
     }
 
     private func serviceOnce() throws {
+        let serviceStart = monotonicNS()
+        defer {
+            serviceOnceMaxNS = max(
+                serviceOnceMaxNS, monotonicNS() - serviceStart
+            )
+        }
         // Always service the scheduling island before lower-frequency
         // receive/timer/stat work under this lock.
         drainAudioMailboxLocked()
@@ -1188,6 +1275,12 @@ final class SessionWire {
     private func receiveAll(
         _ handle: ([UInt8], FourTuple) -> Void
     ) throws {
+        let receiveStart = monotonicNS()
+        defer {
+            receiveAllMaxNS = max(
+                receiveAllMaxNS, monotonicNS() - receiveStart
+            )
+        }
         while true {
             let got = recvSlots.withUnsafeMutableBufferPointer { slots in
                 lyte_netio_recv_batch(netio, slots.baseAddress,
@@ -1219,7 +1312,11 @@ final class SessionWire {
                     remoteAddress: source, remotePort: slot.src_port
                 ))
             }
-            if got < Int32(recvSlots.count) { return }
+            // One recvmmsg batch per critical section. A continuously full
+            // feedback socket must not turn `receiveAll` into an unbounded
+            // broad-lock owner; the sender loop immediately takes another
+            // pass, with an unlock/service opportunity between batches.
+            return
         }
     }
 
@@ -1571,13 +1668,14 @@ final class SessionWire {
             outbox.removeAll(keepingCapacity: true)
             return
         }
-        defer { outbox.removeAll(keepingCapacity: true) }
+        let queued = outbox
+        outbox.removeAll(keepingCapacity: true)
         var err = [CChar](repeating: 0, count: 256)
 
         // Challenges to unvalidated tuples ride sendmsg-with-address on
         // the connected socket (lyte_netio_send_to): the challenge MUST
         // travel on the exact probed tuple — that is what it proves.
-        let deliverable = outbox.filter { datagram in
+        let deliverable = queued.filter { datagram in
             guard let destination = datagram.destination,
                   destination != session.validator.primary.tuple
             else { return true }
@@ -1642,7 +1740,20 @@ final class SessionWire {
                     lastSendError = errString(err)
                     throw HostError("session send failed: \(errString(err))")
                 }
-                if sent == 0 { usleep(200); continue }
+                if sent == 0 {
+                    // Preserve exact datagram order and return immediately.
+                    // The sender loop retries after releasing `lock`; sleeping
+                    // here was the measured 100+ ms audio-mailbox stall.
+                    if sentTotal > 0 {
+                        for d in batch.prefix(sentTotal) {
+                            datagramsSent += 1
+                            bytesSent += d.bytes.count
+                        }
+                    }
+                    let unsent = staged + sentTotal
+                    outbox.append(contentsOf: deliverable[unsent...])
+                    return
+                }
                 sentTotal += Int(sent)
             }
             for d in batch {
