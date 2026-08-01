@@ -29,11 +29,20 @@ motion, ~4 µs/poll, unprivileged); #46 landed the full loop —
 binary, cadence IS content), 0.85 ms blit + 0.47 ms encode per frame,
 and the M5's `lyte decode-probe` hardware-decoded 611/611 access
 units with BT.709 intact. Vendored libavcodec now carries hevc_vaapi
-(encoders=2; no-reset marker verified). NEXT: E1 — the CaptureSource
-seam in lyte-host (DirectEye | PortalEye, env-selected; portal stays
-fallback until E5), full pipeline to the real Mac client, gates =
-motion-pipeline benchmark ≥ current all-green + a 30-min zero-freeze
-soak.
+(encoders=2; no-reset marker verified). **E1 code-half LANDED (#47)**:
+HostEye library + `--backend direct` in lyte-host — DirectEyeLeg feeds
+wire.sendFrame directly; IDR demands honored, rate directives
+consumed-and-deferred (the vaapi wrapper takes rc at open() only —
+per-frame control is E6-VAAPI's charter); keyframe truth rides
+AV_PKT_FLAG_KEY (the wrapper pipelines by one frame); the session-bus
+startup guard is portal-only now. Probe inside the REAL host binary:
+367 frames @ 61 fps, first packet VPS+SPS+PPS+IDR, M5 decode-probe
+367/367 hardware. NEXT (owner-sanctioned window — his glass): the E1
+live half — real-client leg via `--backend direct` session mode
+(needs privileges: `sudo -E` carrying XDG_RUNTIME_DIR, or E4's unit),
+motion-pipeline benchmark ≥ current all-green, 30-min zero-freeze
+soak. Then E2 (uinput primary), E6a (NVENC-native — kills the vendor
+patch), E6b (VAAPI-native — real per-frame rate control).
 AV1 is deferred until after the rearchitecture (owner decision; the
 four HEVC-shaped seams are inventoried in TODO.md — owner's Mac is an
 M5, pup has two hw AV1 encoders). Audio STAYS on PipeWire. Consent =
