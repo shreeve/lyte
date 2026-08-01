@@ -92,12 +92,12 @@ public enum FecDecoder {
             )
         }
 
-        let rows = try NanorsBackend.recoverData(
+        return try NanorsBackend.recoverData(
             presentShards: shards,
             dataShards: geometry.dataShards,
             parityShards: geometry.parityShards,
-            shardByteCount: geometry.shardByteCount
+            shardByteCount: geometry.shardByteCount,
+            recoveredByteCount: geometry.groupByteCount
         )
-        return Array(rows.prefix(geometry.groupByteCount))
     }
 }

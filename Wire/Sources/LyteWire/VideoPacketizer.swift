@@ -63,10 +63,11 @@ public struct VideoPacketizer: Sendable {
         isIDR: Bool,
         regime: FecRegime
     ) throws -> [VideoShard] {
-        guard AnnexBCheck.isFrameShaped(annexB) else {
+        let classification = AnnexBCheck.classifyFrame(annexB)
+        guard classification.isFrameShaped else {
             throw VideoError.frameNotFrameShaped
         }
-        let derivedIdr = AnnexBCheck.containsIrap(annexB)
+        let derivedIdr = classification.containsIrap
         guard isIDR == derivedIdr else {
             throw VideoError.idrFlagMismatch(claimed: isIDR, derived: derivedIdr)
         }

@@ -75,6 +75,18 @@ public struct HevcNalUnit: Hashable, Sendable {
     }
 }
 
+/// The two properties needed at video ingress and egress, derived by one
+/// allocation-free NAL walk.
+public struct AnnexBFrameClassification: Hashable, Sendable {
+    public let isFrameShaped: Bool
+    public let containsIrap: Bool
+
+    public init(isFrameShaped: Bool, containsIrap: Bool) {
+        self.isFrameShaped = isFrameShaped
+        self.containsIrap = containsIrap
+    }
+}
+
 public enum AnnexBCheck {
     /// Splits an Annex-B byte blob on start codes (00 00 01, with or
     /// without a leading zero) and returns the contained NAL units in
@@ -84,36 +96,9 @@ public enum AnnexBCheck {
     /// first start code are not a NAL unit; units shorter than the 2-byte
     /// NAL header are dropped.
     public static func nalUnits(in data: ArraySlice<UInt8>) -> [HevcNalUnit] {
-        let base = data.startIndex
-        var payloadStarts: [Int] = []
-        var i = base
-        while i + 2 < data.endIndex {
-            if data[i + 2] > 1 {
-                i += 3
-            } else if data[i] == 0, data[i + 1] == 0, data[i + 2] == 1 {
-                payloadStarts.append(i + 3)
-                i += 3
-            } else {
-                i += 1
-            }
-        }
-
         var units: [HevcNalUnit] = []
-        units.reserveCapacity(payloadStarts.count)
-        for (n, start) in payloadStarts.enumerated() {
-            var end: Int
-            if n + 1 < payloadStarts.count {
-                end = payloadStarts[n + 1] - 3
-                // A 4-byte start code's leading zero belongs to the next
-                // start code, not this payload.
-                if end > start, data[end - 1] == 0 { end -= 1 }
-            } else {
-                end = data.endIndex
-            }
-            let length = end - start
-            guard length >= 2 else { continue }
-            let type = (data[start] >> 1) & 0x3F
-            units.append(HevcNalUnit(offset: start - base, length: length, type: type))
+        walkNalUnits(in: data) {
+            units.append($0)
         }
         return units
     }
@@ -134,14 +119,36 @@ public enum AnnexBCheck {
         return nil
     }
 
+    /// Validates frame shape and classifies IRAP content in one NAL walk.
+    /// `containsIrap` remains independent of frame shape so malformed
+    /// prefixed blobs retain the legacy classifier semantics.
+    public static func classifyFrame(
+        _ data: ArraySlice<UInt8>
+    ) -> AnnexBFrameClassification {
+        let opensOnStartCode = leadingStartCodeLength(data) != nil
+        var hasVcl = false
+        var hasIrap = false
+        walkNalUnits(in: data) { unit in
+            hasVcl = hasVcl || HevcNalType.isVcl(unit.type)
+            hasIrap = hasIrap || HevcNalType.isIrap(unit.type)
+        }
+        return AnnexBFrameClassification(
+            isFrameShaped: opensOnStartCode && hasVcl,
+            containsIrap: hasIrap
+        )
+    }
+
+    public static func classifyFrame(_ data: [UInt8]) -> AnnexBFrameClassification {
+        classifyFrame(data[...])
+    }
+
     /// The frame-boundary integrity check both video endpoints apply: a
     /// frame's bytes must open on a start code (nothing rides before the
     /// first NAL) and contain at least one VCL NAL unit. The packetizer
     /// refuses input that fails this; the assembler suppresses recovered
     /// output that fails it — correct bytes or nothing, never garbage.
     public static func isFrameShaped(_ data: ArraySlice<UInt8>) -> Bool {
-        guard leadingStartCodeLength(data) != nil else { return false }
-        return nalUnits(in: data).contains { HevcNalType.isVcl($0.type) }
+        classifyFrame(data).isFrameShaped
     }
 
     public static func isFrameShaped(_ data: [UInt8]) -> Bool {
@@ -152,7 +159,7 @@ public enum AnnexBCheck {
     /// derives `DecodeUnit.isIDR` from recovered bytes, and how the
     /// packetizer audits the encoder's claimed flag.
     public static func containsIrap(_ data: ArraySlice<UInt8>) -> Bool {
-        nalUnits(in: data).contains { HevcNalType.isIrap($0.type) }
+        classifyFrame(data).containsIrap
     }
 
     public static func containsIrap(_ data: [UInt8]) -> Bool {
@@ -166,5 +173,53 @@ public enum AnnexBCheck {
 
     public static func summary(of data: [UInt8]) -> String {
         summary(of: data[...])
+    }
+
+    /// Walks NAL units without first materializing a start-offset array.
+    /// The pending unit is emitted only when its end is known, preserving
+    /// the legacy leading-zero attribution and short-unit rejection.
+    private static func walkNalUnits(
+        in data: ArraySlice<UInt8>,
+        _ visit: (HevcNalUnit) -> Void
+    ) {
+        let base = data.startIndex
+        var pendingStart: Int?
+        var i = base
+        while i + 2 < data.endIndex {
+            if data[i + 2] > 1 {
+                i += 3
+            } else if data[i] == 0, data[i + 1] == 0, data[i + 2] == 1 {
+                let nextStart = i + 3
+                if let start = pendingStart {
+                    var end = nextStart - 3
+                    // A 4-byte start code's leading zero belongs to the
+                    // next start code, not this payload.
+                    if end > start, data[end - 1] == 0 { end -= 1 }
+                    let length = end - start
+                    if length >= 2 {
+                        visit(HevcNalUnit(
+                            offset: start - base,
+                            length: length,
+                            type: (data[start] >> 1) & 0x3F
+                        ))
+                    }
+                }
+                pendingStart = nextStart
+                i += 3
+            } else {
+                i += 1
+            }
+        }
+
+        if let start = pendingStart {
+            let length = data.endIndex - start
+            if length >= 2 {
+                visit(HevcNalUnit(
+                    offset: start - base,
+                    length: length,
+                    type: (data[start] >> 1) & 0x3F
+                ))
+            }
+        }
     }
 }
