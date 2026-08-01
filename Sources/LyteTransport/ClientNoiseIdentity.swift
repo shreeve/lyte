@@ -22,7 +22,9 @@
 // into this file's Keychain paths; the live pairing gate (signed
 // lyte-cli against the real host) is where this code is proven.
 
+import Dispatch
 import Foundation
+import LocalAuthentication
 import LyteWire
 import Security
 
@@ -47,8 +49,10 @@ public enum ClientNoiseIdentity {
     /// The persisted identity, or nil when none exists yet (fresh
     /// install / never paired). Throws on Keychain errors other than
     /// not-found and on a corrupt stored key.
-    public static func load() throws -> NoiseKeyPair? {
-        let query: [CFString: Any] = [
+    public static func load(
+        allowAuthenticationUI: Bool = true
+    ) throws -> NoiseKeyPair? {
+        var query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
             kSecAttrAccount: account,
@@ -56,6 +60,11 @@ public enum ClientNoiseIdentity {
             kSecReturnData: true,
             kSecMatchLimit: kSecMatchLimitOne,
         ]
+        if !allowAuthenticationUI {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext] = context
+        }
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
@@ -74,8 +83,12 @@ public enum ClientNoiseIdentity {
     /// private key never leaves this call unpersisted: generate → add →
     /// return, so a Keychain write failure means no identity was
     /// presented anywhere.
-    public static func loadOrCreate() throws -> NoiseKeyPair {
-        if let existing = try load() { return existing }
+    public static func loadOrCreate(
+        allowAuthenticationUI: Bool = true
+    ) throws -> NoiseKeyPair {
+        if let existing = try load(
+            allowAuthenticationUI: allowAuthenticationUI
+        ) { return existing }
         let fresh = NoiseKeyPair.generate()
         let add: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
@@ -94,5 +107,64 @@ public enum ClientNoiseIdentity {
             throw ClientNoiseIdentityError.keychain(status)
         }
         return fresh
+    }
+}
+
+/// One process-wide door to the blocking login-Keychain API. Explicit
+/// Pair/Connect actions may display authorization UI; automatic roaming never
+/// does. Successful identity bytes are cached for the process lifetime, so
+/// concurrent windows and reconnects neither re-query nor multiply prompts.
+public final class ClientNoiseIdentityProvider: @unchecked Sendable {
+    public static let shared = ClientNoiseIdentityProvider()
+
+    public enum AuthenticationUI: Equatable, Sendable {
+        case allow
+        case fail
+    }
+
+    public typealias Loader = @Sendable (AuthenticationUI) throws
+        -> NoiseKeyPair
+
+    private let queue = DispatchQueue(
+        label: "lyte.keychain.identity", qos: .userInitiated)
+    private let cacheLock = NSLock()
+    private var cached: NoiseKeyPair?
+    private let loader: Loader
+
+    public init(loader: @escaping Loader = { policy in
+        try ClientNoiseIdentity.loadOrCreate(
+            allowAuthenticationUI: policy == .allow)
+    }) {
+        self.loader = loader
+    }
+
+    /// Never waits behind an in-flight Keychain call.
+    public var cachedIdentity: NoiseKeyPair? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return cached
+    }
+
+    public func identity(
+        authenticationUI: AuthenticationUI = .allow
+    ) async throws -> NoiseKeyPair {
+        if let cachedIdentity { return cachedIdentity }
+        return try await withCheckedThrowingContinuation { continuation in
+            queue.async { [self] in
+                if let cachedIdentity {
+                    continuation.resume(returning: cachedIdentity)
+                    return
+                }
+                do {
+                    let identity = try loader(authenticationUI)
+                    cacheLock.lock()
+                    cached = identity
+                    cacheLock.unlock()
+                    continuation.resume(returning: identity)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 }

@@ -35,6 +35,8 @@ struct LyteApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var diagnosticWindow: NSWindow?
+
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Unbundled dev builds inherit the launcher's identity otherwise
         ProcessName.set("Lyte")
@@ -44,6 +46,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Refresh (not just ensure) the AWDL helper registration: a
         // rebuilt binary's stale LWCR otherwise EX_CONFIGs every spawn.
-        HelperClient.shared.refreshRegistration()
+        Task.detached(priority: .utility) {
+            HelperClient.refreshRegistration()
+        }
+
+        // A repeatable, opt-in real-app trace path for profiling automation.
+        // NSHostingView runs the production ConnectionWindow unchanged; the
+        // environment variable only bypasses SwiftUI/AppKit restoration,
+        // whose remembered "no windows" state is otherwise nondeterministic.
+        if let requested =
+                ProcessInfo.processInfo.environment["LYTE_AUTOCONNECT"]
+        {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1024, height: 640),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false)
+            window.title = "Lyte"
+            window.contentView = NSHostingView(
+                rootView: ConnectionWindow(autoconnect: requested))
+            window.center()
+            window.makeKeyAndOrderFront(nil)
+            diagnosticWindow = window
+            NSApp.activate()
+        }
     }
 }

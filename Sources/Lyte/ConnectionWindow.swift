@@ -1,9 +1,17 @@
+import Foundation
+import LyteTransport
 import SwiftUI
 
 /// One window = one connection (D6). Starts in the connect state; becomes a
 /// pure stream when a session launches.
 struct ConnectionWindow: View {
+    var autoconnect: String?
     @State private var model = ConnectionModel()
+    @State private var didAutoconnect = false
+
+    init(autoconnect: String? = nil) {
+        self.autoconnect = autoconnect
+    }
 
     var body: some View {
         Group {
@@ -20,6 +28,33 @@ struct ConnectionWindow: View {
         .navigationTitle(model.windowTitle)
         .focusedSceneValue(\.connection, model)
         .frame(minWidth: 480, minHeight: 320)
+        .task {
+            // Repeatable real-app diagnostics without UI scripting. Normal
+            // launches never enter this path; setting LYTE_AUTOCONNECT to a
+            // pinned host's name exercises the exact production window,
+            // renderer, input, helper, and session lifecycle.
+            guard !didAutoconnect, let requested = autoconnect else { return }
+            didAutoconnect = true
+            let store = PinnedHostStore.load()
+            guard let pinned = store.hosts.values.first(where: {
+                $0.name.localizedCaseInsensitiveContains(requested)
+                    || $0.address == requested
+            }), let publicKeyHash = pinned.publicKeyHash else {
+                NSLog(
+                    "lyte diagnostic: no pinned host matches %@ (%d pins)",
+                    requested, store.hosts.count)
+                return
+            }
+            NSLog(
+                "lyte diagnostic: autoconnecting %@:%d",
+                pinned.address, pinned.port)
+            await model.connectLyte(DiscoveredLyteHost(
+                name: pinned.name,
+                address: pinned.address,
+                port: pinned.port,
+                wireVersion: nil,
+                publicKeyHash: publicKeyHash))
+        }
         .onDisappear {
             // The ⌘W seam (v1-final analysis, finding 1): closing the
             // window is the most natural macOS exit, and it was the one

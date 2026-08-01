@@ -55,11 +55,19 @@ final class HelperClient {
     /// 2026-07-30 after 28,916 silent crash-loops). Unregister +
     /// re-register refreshes the LWCR; BTM keys the user's approval
     /// by identifier, so the toggle normally survives the cycle.
-    func refreshRegistration() {
-        try? service.unregister()
+    nonisolated static func refreshRegistration() {
+        // SMAppService performs synchronous BTM/XPC work and emits Apple's
+        // main-thread performance diagnostic when called from app launch.
+        // Registration is process-global; a local service handle keeps this
+        // blocking refresh completely outside the MainActor.
+        let refreshService = SMAppService.daemon(
+            plistName: LyteHelper.plistName)
+        try? refreshService.unregister()
         do {
-            try service.register()
-            NSLog("lyte helper: re-registered, status \(service.status.rawValue)")
+            try refreshService.register()
+            NSLog(
+                "lyte helper: re-registered, status "
+                    + "\(refreshService.status.rawValue)")
         } catch {
             NSLog("lyte helper: refresh register FAILED — \(error.localizedDescription)")
         }
