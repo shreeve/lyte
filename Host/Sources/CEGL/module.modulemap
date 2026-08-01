@@ -1,0 +1,6 @@
+module CEGL {
+    header "shim.h"
+    link "EGL"
+    link "GL"
+    export *
+}

@@ -68,8 +68,11 @@ if let prefix = ffmpegVendorPrefix {
         "\(prefix)/lib/libavcodec.a",
         "\(prefix)/lib/libavutil.a",
         // The vendored libavcodec.pc's own Libs tail (the .a carries
-        // no DT_NEEDED): atomics beyond the inlined ones.
+        // no DT_NEEDED): atomics beyond the inlined ones, and — since
+        // the direct eye enabled hevc_vaapi in the vendor recipe —
+        // libva for the VAAPI hwcontext the archive now references.
         "-latomic",
+        "-lva", "-lva-drm",
     ])]
 } else {
     libavLinkerSettings = [
@@ -131,13 +134,37 @@ targets += [
         pkgConfig: "libdrm",
         providers: [.apt(["libdrm-dev"])]
     ),
+    // Direct-eye E0: GBM (headless GPU device), EGL+GL (the 3D engine
+    // that reads CCS-compressed scanout the media engine's VPP cannot),
+    // and libva (surface export to dmabuf) — all module maps, no .c.
+    .systemLibrary(
+        name: "CGBM",
+        pkgConfig: "gbm",
+        providers: [.apt(["libgbm-dev"])]
+    ),
+    .systemLibrary(
+        name: "CEGL",
+        pkgConfig: "egl",
+        providers: [.apt(["libegl-dev", "libgl-dev"])]
+    ),
+    .systemLibrary(
+        name: "CVA",
+        pkgConfig: "libva",
+        providers: [.apt(["libva-dev"])]
+    ),
     // E0 milestone 1: the doorbell, ported from the proven C probe
     // (Host/Probes/kms-eye/fbid-poll.c) with identical semantics and
-    // output format — FB_ID change detection on the primary/cursor
-    // planes, unprivileged.
+    // output format — FB_ID change detection, unprivileged.
+    // E0 milestone 2: the capture loop — doorbell → GETFB2/dmabuf →
+    // EGL import → GL blit RGB→NV12 into exported VAAPI surfaces →
+    // hevc_vaapi (vendored libavcodec) → Annex-B file.
     .executableTarget(
         name: "lyte-eye",
-        dependencies: ["CDRM"]
+        dependencies: ["CDRM", "CGBM", "CEGL", "CVA", "CLibAV"],
+        linkerSettings: libavLinkerSettings + [
+            .linkedLibrary("va"),
+            .linkedLibrary("va-drm"),
+        ]
     ),
     // C leaf: nonblocking UDP with sendmmsg/recvmmsg, per-packet TOS cmsgs,
     // and SO_TIMESTAMPING TX stamps (CMSG macros are unreachable from Swift;

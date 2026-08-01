@@ -1,0 +1,5 @@
+module CVA {
+    header "shim.h"
+    link "va"
+    export *
+}

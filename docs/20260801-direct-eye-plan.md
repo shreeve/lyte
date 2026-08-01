@@ -112,6 +112,19 @@ works). Document it; no dialog theater.
   to file. Gates: sustained 61 fps under motion with p99 frame time
   under budget; true 0-encode idle; `lyte decode-probe` validates the
   bitstream; runs on pup against the live session.
+  **LANDED 2026-08-01** (m1 doorbell #45; m2 full loop): capture mode
+  measured on pup's live session — motion 611 frames / 61.08 fps /
+  0 missed grabs / blit 0.85 ms + encode 0.47 ms per frame / 24.8
+  KB-frame at qp24; idle 1.37 fps ≈ 82 kbit/s, same binary, no modes
+  (cadence IS content). Bitstream: HEVC Main yuv420p tv/bt709;
+  Mac M5 `lyte decode-probe`: 611/611 access units HARDWARE decoded,
+  0 failed, BT.709 attachments intact. Vendored libavcodec grew
+  hevc_vaapi (still no-reset-patched, encoders=2 proof in
+  vendor-ffmpeg.sh). Swift-only held: libdrm/GBM/EGL/GL/libva/libav
+  all module maps; the two documented unsafeties are the
+  AVVAAPIDeviceContext.display first-field read and the
+  VADRMPRIMESurfaceDescriptor raw-offset parse (its anonymous-struct
+  arrays defeat the Swift importer; the export call takes void*).
 - **E1 — the graft**: a CaptureSource seam in the host (DirectEye |
   PortalEye, env-selected; portal remains fallback). Full pipeline to
   the real Mac client. Gates: motion-pipeline benchmark ≥ current

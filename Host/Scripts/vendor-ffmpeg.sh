@@ -84,7 +84,13 @@ fi
 #                               leak into the archive's link-time needs
 #   --enable-ffnvcodec/cuda/nvenc  autodetect-listed, so with autodetect
 #                               off all three must be explicit
-#   --enable-encoder=hevc_nvenc the ONE component the CHevcEncode leaf uses
+#   --enable-encoder=hevc_nvenc the component the CHevcEncode leaf uses
+#   --enable-vaapi/hevc_vaapi   the direct eye's Arc/iGPU encode leaf
+#                               (docs/20260801-direct-eye-plan.md §3:
+#                               panel-owning-die encode; pup has no MUX).
+#                               vaapi is autodetect-listed, so explicit;
+#                               pulls libva/libva-drm into the link tail
+#                               (Package.swift adds -lva -lva-drm)
 #   --disable-avformat/avfilter/avdevice/swscale/swresample  CLibAV
 #                               consumers touch only avcodec+avutil
 #   --disable-x86asm            hevc_nvenc has no SIMD; no yasm needed
@@ -115,6 +121,8 @@ PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" ./configure \
     --enable-cuda \
     --enable-nvenc \
     --enable-encoder=hevc_nvenc \
+    --enable-vaapi \
+    --enable-encoder=hevc_vaapi \
     > "$BUILD/configure.log" 2>&1 || {
         tail -30 "$BUILD/configure.log" >&2; exit 1; }
 
@@ -134,17 +142,18 @@ sed -i -E 's/^Libs: .*/Libs: -pthread -lm -latomic/' \
     "$PREFIX/lib/pkgconfig/libavutil.pc"
 
 # --- prove the build is what we think it is ----------------------------------
-# Exactly one encoder, zero decoders/parsers/demuxers; the patch and
-# the marker both present.
+# Exactly two encoders (nvenc + the eye's vaapi), zero decoders/
+# parsers/demuxers; the patch and the marker both present.
 ENCODERS="$(grep -c '^#define CONFIG_.*_ENCODER 1$' config_components.h)"
 DECODERS="$(grep -c '^#define CONFIG_.*_DECODER 1$' config_components.h || true)"
 grep -q '^#define CONFIG_HEVC_NVENC_ENCODER 1$' config_components.h
-[ "$ENCODERS" = 1 ] || { echo "expected 1 encoder, got $ENCODERS" >&2; exit 1; }
+grep -q '^#define CONFIG_HEVC_VAAPI_ENCODER 1$' config_components.h
+[ "$ENCODERS" = 2 ] || { echo "expected 2 encoders, got $ENCODERS" >&2; exit 1; }
 [ "$DECODERS" = 0 ] || { echo "expected 0 decoders, got $DECODERS" >&2; exit 1; }
 grep -q LYTE_NVENC_NO_RESET_RATE libavcodec/nvenc.c
 grep -q 'lyte-noreset' config.h
 
 echo "== vendored ffmpeg installed =="
 ls -la "$PREFIX/lib/"*.a
-echo "encoders=1 (hevc_nvenc) decoders=0; marker lyte-noreset present"
+echo "encoders=2 (hevc_nvenc hevc_vaapi) decoders=0; marker lyte-noreset present"
 echo "link with: PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig swift build"
