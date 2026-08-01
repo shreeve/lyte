@@ -2079,7 +2079,10 @@ func run() throws {
         // E1: the direct eye replaces capture AND encode — the Sink's
         // NVENC leaf stays closed; encoded AUs go straight to the wire.
         let leg = DirectEyeLeg(
-            config: .init(seconds: opts.seconds),
+            config: .init(
+                seconds: opts.seconds,
+                bitrateBitsPerSecond: wire != nil
+                    ? Int64(opts.wireRateMbps * 1_000_000) : 0),
             wire: wire, file: file)
         directLeg = leg
         leg.run()
@@ -2171,69 +2174,11 @@ func run() throws {
     if captureResult == -1 {
         throw HostError("capture failed: \(errString(err))")
     }
-    if let leg = directLeg {
-        // The direct leg keeps its own books; the Sink never opened.
-        if leg.frames == 0 {
-            throw HostError("direct eye produced no frames in "
-                + "\(Int(opts.seconds))s")
-        }
-        print("""
-
-        done: \(leg.frames) frames encoded (direct eye), \
-        \(leg.keyframes) IDR, \(leg.bytes) bytes, \
-        missed_grabs \(leg.missedGrabs), \
-        rate directives deferred \(leg.directivesDeferred)
-        """)
-        // The same stream-startability gate the portal leg gets —
-        // hevc_vaapi must open with VPS/SPS/PPS + IRAP or the client
-        // can never join mid-life. (Session books integration rides
-        // with E1's live-validation half.)
-        let directNals = AnnexB.nalUnits(in: leg.firstPacket)
-        print("first packet NALs: \(AnnexB.summary(of: leg.firstPacket))")
-        guard AnnexB.startsWithParameterSetsAndIrap(leg.firstPacket) else {
-            throw HostError("the direct eye's first packet does not begin "
-                + "with VPS/SPS/PPS + an IRAP picture (got: "
-                + "\(directNals.map { HevcNal.name($0.type) }.joined(separator: " ")))")
-        }
-        print("first packet starts with parameter sets + IDR: OK")
-        return
-    }
-    if sink.framesIn == 0 {
-        throw HostError(opts.syntheticMotion == nil
-            ? "no frames arrived from PipeWire within "
-                + "\(Int(opts.seconds + 15))s"
-            : "synthetic source produced no encoded frames")
-    }
-
+    // The session books, shared by every backend tail — the wire
+    // half is backend-agnostic evidence (E1 owed this to the
+    // direct leg).
+    func printSessionBooks() {
     let captured = sink.firstFrameAt.map { monotonicNow() - $0 } ?? 0
-    let n = sink.negotiated!
-    print("""
-
-    done: \(sink.framesIn) frames encoded (\(sink.damageFrames) damage, \
-    \(sink.repeatedFrames) repeated, \(sink.ratchetFrames) ratchet), \
-    \(sink.packetsOut) packets out \
-    (\(sink.keyframes) IDR), \(sink.bytesOut) bytes over \(String(format: "%.1f", captured))s
-    resolution \(n.width)x\(n.height), input format \(n.format)
-    """)
-    if opts.ratchet {
-        print("ratchet total: \(sink.ratchetFrames) passes, "
-            + "\(sink.ratchetBytes) bytes"
-            + (sink.ratchetConverged ? ", converged" : ", NOT converged"))
-    }
-    if captureResult == 1 {
-        print("note: capture ended at the safety timeout — the desktop was mostly "
-            + "static, so frames arrived only on damage")
-    }
-
-    let firstNals = AnnexB.nalUnits(in: sink.firstPacket)
-    print("first packet NALs: \(AnnexB.summary(of: sink.firstPacket))")
-    guard AnnexB.startsWithParameterSetsAndIrap(sink.firstPacket) else {
-        throw HostError("the first encoded packet does not begin with "
-            + "VPS/SPS/PPS + an IRAP picture (got: "
-            + "\(firstNals.map { HevcNal.name($0.type) }.joined(separator: " ")))"
-            + " — the bitstream is not stream-startable")
-    }
-    print("first packet starts with parameter sets + IDR: OK")
     if let wire = sink.wire {
         let t = wire.pacerTelemetry
         let c = wire.counters
@@ -2448,6 +2393,73 @@ func run() throws {
     } else {
         print("output: \(opts.outputPath)")
     }
+    }
+
+    if let leg = directLeg {
+        // The direct leg keeps its own books; the Sink never opened.
+        if leg.frames == 0 {
+            throw HostError("direct eye produced no frames in "
+                + "\(Int(opts.seconds))s")
+        }
+        print("""
+
+        done: \(leg.frames) frames encoded (direct eye), \
+        \(leg.keyframes) IDR, \(leg.bytes) bytes, \
+        missed_grabs \(leg.missedGrabs), \
+        rate directives deferred \(leg.directivesDeferred)
+        """)
+        // The same stream-startability gate the portal leg gets —
+        // hevc_vaapi must open with VPS/SPS/PPS + IRAP or the client
+        // can never join mid-life. (Session books integration rides
+        // with E1's live-validation half.)
+        let directNals = AnnexB.nalUnits(in: leg.firstPacket)
+        print("first packet NALs: \(AnnexB.summary(of: leg.firstPacket))")
+        guard AnnexB.startsWithParameterSetsAndIrap(leg.firstPacket) else {
+            throw HostError("the direct eye's first packet does not begin "
+                + "with VPS/SPS/PPS + an IRAP picture (got: "
+                + "\(directNals.map { HevcNal.name($0.type) }.joined(separator: " ")))")
+        }
+        print("first packet starts with parameter sets + IDR: OK")
+        printSessionBooks()
+        return
+    }
+    if sink.framesIn == 0 {
+        throw HostError(opts.syntheticMotion == nil
+            ? "no frames arrived from PipeWire within "
+                + "\(Int(opts.seconds + 15))s"
+            : "synthetic source produced no encoded frames")
+    }
+
+    let captured = sink.firstFrameAt.map { monotonicNow() - $0 } ?? 0
+    let n = sink.negotiated!
+    print("""
+
+    done: \(sink.framesIn) frames encoded (\(sink.damageFrames) damage, \
+    \(sink.repeatedFrames) repeated, \(sink.ratchetFrames) ratchet), \
+    \(sink.packetsOut) packets out \
+    (\(sink.keyframes) IDR), \(sink.bytesOut) bytes over \(String(format: "%.1f", captured))s
+    resolution \(n.width)x\(n.height), input format \(n.format)
+    """)
+    if opts.ratchet {
+        print("ratchet total: \(sink.ratchetFrames) passes, "
+            + "\(sink.ratchetBytes) bytes"
+            + (sink.ratchetConverged ? ", converged" : ", NOT converged"))
+    }
+    if captureResult == 1 {
+        print("note: capture ended at the safety timeout — the desktop was mostly "
+            + "static, so frames arrived only on damage")
+    }
+
+    let firstNals = AnnexB.nalUnits(in: sink.firstPacket)
+    print("first packet NALs: \(AnnexB.summary(of: sink.firstPacket))")
+    guard AnnexB.startsWithParameterSetsAndIrap(sink.firstPacket) else {
+        throw HostError("the first encoded packet does not begin with "
+            + "VPS/SPS/PPS + an IRAP picture (got: "
+            + "\(firstNals.map { HevcNal.name($0.type) }.joined(separator: " ")))"
+            + " — the bitstream is not stream-startable")
+    }
+    print("first packet starts with parameter sets + IDR: OK")
+    printSessionBooks()
     if let pairing = pairingService {
         if let key = pairing.pairedClientStaticPublicKey {
             print("pairing: result — PAIRED, client "

@@ -38,8 +38,15 @@ public final class EyeEncoder {
     public let width: Int32
     public let height: Int32
 
+    /// bitrateBitsPerSecond > 0 selects a bounded VBR envelope (avg
+    /// 70% of the cap, VBV ≈ 4 frame periods) — the E1 posture: the
+    /// wrapper folds these into VAEncMiscParameterRateControl at
+    /// open(), bounding bursts the way the product's capped recipe
+    /// does. The live legs proved why CQP cannot ride the wire raw:
+    /// uncapped busy-scene frames burst past the pacer and dip the
+    /// client's audio ring. Zero keeps CQP (file probes).
     public init(width: Int32, height: Int32, fps: Int32, qp: Int32,
-         renderNode: String) throws {
+         renderNode: String, bitrateBitsPerSecond: Int64 = 0) throws {
         self.width = width
         self.height = height
 
@@ -92,13 +99,26 @@ public final class EyeEncoder {
         ctx.pointee.framerate = AVRational(num: fps, den: 1)
         ctx.pointee.pix_fmt = AV_PIX_FMT_VAAPI
         ctx.pointee.hw_frames_ctx = av_buffer_ref(frames)
-        ctx.pointee.gop_size = 120
+        // The product's IDR discipline: NO periodic keyframes — the
+        // wire mints IDRs on demand (opening, 0x0302 loss recovery).
+        // The E1 live leg proved why: gop 120 emitted an IDR burst
+        // every 2 s and each one shoved audio behind video in the
+        // pacer — the client's ring underran in matching bursts
+        // (16 IDRs ↔ decaying underrun clusters, 2026-08-01).
+        ctx.pointee.gop_size = Int32.max
         ctx.pointee.max_b_frames = 0
         ctx.pointee.color_range = AVCOL_RANGE_MPEG
         ctx.pointee.colorspace = AVCOL_SPC_BT709
         ctx.pointee.color_primaries = AVCOL_PRI_BT709
         ctx.pointee.color_trc = AVCOL_TRC_BT709
-        av_opt_set_int(ctx.pointee.priv_data, "qp", Int64(qp), 0)
+        if bitrateBitsPerSecond > 0 {
+            ctx.pointee.bit_rate = bitrateBitsPerSecond * 7 / 10
+            ctx.pointee.rc_max_rate = bitrateBitsPerSecond
+            ctx.pointee.rc_buffer_size =
+                Int32(bitrateBitsPerSecond * 4 / Int64(fps))
+        } else {
+            av_opt_set_int(ctx.pointee.priv_data, "qp", Int64(qp), 0)
+        }
         guard avcodec_open2(ctx, codec, nil) >= 0 else {
             throw EyeEncoderError("avcodec_open2(hevc_vaapi) failed")
         }
