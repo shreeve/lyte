@@ -622,6 +622,9 @@ public struct SessionCounters: Equatable, Sendable {
     public var audioDatagramsEnqueued = 0
     /// Completed 4+2 audio FEC groups.
     public var audioGroupsCompleted = 0
+    /// Audio datagrams assembled by extending their pre-sized AAD header
+    /// in place after sealing, avoiding a third header+payload array.
+    public var audioSealedDatagramsAssembledInPlace = 0
     /// Audio packets refused because the session is closed. FROZEN and
     /// IDLE deliberately never count here — audio is the path probe
     /// and keeps flowing through both (W4b).
@@ -1298,12 +1301,10 @@ public final class Session {
             captureTimestampMicroseconds: captureTimestampMicroseconds
         )
         for (envelope, payload) in datagrams {
-            let header = try envelope.encode(payload: [])
-            let sealed = try sealPayload(
-                payload[...], aad: header[...], envelope: envelope
-            )
             channel.enqueueAudio(
-                try envelope.encode(payload: sealed),
+                try encodeSealedAudio(
+                    envelope: envelope, plaintext: payload
+                ),
                 seq: envelope.seq,
                 frame: envelope.frame,
                 now: now
@@ -1313,6 +1314,31 @@ public final class Session {
         counters.audioDatagramsEnqueued += datagrams.count
         counters.audioGroupsCompleted = audio.counters.groupsCompleted
         return datagrams.count
+    }
+
+    /// Header bytes are the AAD and then become the final datagram buffer.
+    /// Noise still owns and advances its sequence exactly once in
+    /// `sealPayload`; only the post-seal assembly changes.
+    private func encodeSealedAudio(
+        envelope: Envelope, plaintext: [UInt8]
+    ) throws -> [UInt8] {
+        var header = try envelope.encode(payload: [])
+        header.reserveCapacity(
+            header.count + plaintext.count + WireBudget.aeadTagByteCount
+        )
+        let sealed = try sealPayload(
+            plaintext[...], aad: header[...], envelope: envelope
+        )
+        guard sealed.count <= WireBudget.maxWirePayloadByteCount else {
+            throw WireError.payloadOverBudget(sealed.count)
+        }
+        let total = header.count + sealed.count
+        guard total <= WireBudget.maxDatagramByteCount else {
+            throw WireError.datagramOverBudget(total)
+        }
+        header.append(contentsOf: sealed)
+        counters.audioSealedDatagramsAssembledInPlace += 1
+        return header
     }
 
     /// Audio datagrams still waiting in the shared pacer — the audio

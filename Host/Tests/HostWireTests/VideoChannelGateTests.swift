@@ -267,6 +267,45 @@ final class VideoChannelGateTests: XCTestCase {
             "every sealed shard must use the two-buffer assembly path")
     }
 
+    func testSinglePassClassificationPreservesLegacyResults() throws {
+        let corpus = try corpusFiles().map(load)
+        let malformedAndIrap: [[UInt8]] = [
+            [],
+            [0, 0, 1],
+            [0, 0, 0, 1, 0x40, 0x01], // VPS only: no VCL
+            [0xAA, 0, 0, 1, 0x26, 0x01], // prefixed IRAP: not frame-shaped
+            [0, 0, 1, 0x26, 0x01], // IDR_W_RADL
+            [0, 0, 0, 1, 0x2A, 0x01], // CRA_NUT
+        ]
+        for (index, bytes) in (corpus + malformedAndIrap).enumerated() {
+            let classification = AnnexBCheck.classifyFrame(bytes)
+            XCTAssertEqual(
+                classification.isFrameShaped,
+                AnnexBCheck.isFrameShaped(bytes),
+                "shape changed for classification case \(index)"
+            )
+            XCTAssertEqual(
+                classification.containsIrap,
+                AnnexBCheck.containsIrap(bytes),
+                "IRAP result changed for classification case \(index)"
+            )
+        }
+
+        let prefixedIrap = malformedAndIrap[3]
+        let prefixed = AnnexBCheck.classifyFrame(prefixedIrap)
+        XCTAssertFalse(prefixed.isFrameShaped)
+        XCTAssertTrue(
+            prefixed.containsIrap,
+            "malformed-prefix IRAP classification is intentionally independent"
+        )
+        XCTAssertEqual(
+            AnnexBCheck.classifyFrame(malformedAndIrap[4]),
+            AnnexBFrameClassification(
+                isFrameShaped: true, containsIrap: true
+            )
+        )
+    }
+
     func testKeyframeShardsJumpTheVideoQueue() throws {
         // A queued P-frame, then an IDR before anything drains: the IDR's
         // shards are urgent-fresh and must leave first — the Pacer's
