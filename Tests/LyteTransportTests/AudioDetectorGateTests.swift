@@ -44,10 +44,24 @@ final class AudioDetectorGateTests: XCTestCase {
         }
     }
 
+    private final class RecoveryLog: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [(VideoRecoveryCause, FrameNumber)] = []
+        func append(_ cause: VideoRecoveryCause, _ frame: FrameNumber) {
+            lock.lock(); stored.append((cause, frame)); lock.unlock()
+        }
+        var all: [(VideoRecoveryCause, FrameNumber)] {
+            lock.lock(); defer { lock.unlock() }; return stored
+        }
+    }
+
     private func makeCore(
         clock: VirtualClock,
         events: EventLog,
-        config: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig()
+        config: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig(),
+        onVideoRecoveryDemand: @escaping @Sendable (
+            VideoRecoveryCause, FrameNumber
+        ) -> Void = { _, _ in }
     ) -> LyteUdpSessionCore {
         let crypto = InsecureTransportCrypto()
         return LyteUdpSessionCore(
@@ -55,6 +69,7 @@ final class AudioDetectorGateTests: XCTestCase {
             sender: TransportSender(crypto: crypto, transmit: { _ in true }),
             config: config,
             now: { clock.now },
+            onVideoRecoveryDemand: onVideoRecoveryDemand,
             onSample: { _, _ in },
             onEvent: { events.append($0) })
     }
@@ -144,14 +159,29 @@ final class AudioDetectorGateTests: XCTestCase {
     }
 
     func testRendererRecoverySeamJoinsOneCoalescedIdrEpisode() {
-        let core = makeCore(clock: VirtualClock(), events: EventLog())
-        core.requestVideoRecovery(after: FrameNumber(rawValue: 40))
-        core.requestVideoRecovery(after: FrameNumber(rawValue: 41))
+        let demands = RecoveryLog()
+        let core = makeCore(
+            clock: VirtualClock(),
+            events: EventLog(),
+            onVideoRecoveryDemand: { cause, frame in
+                demands.append(cause, frame)
+            })
+        core.requestVideoRecovery(
+            after: FrameNumber(rawValue: 40), cause: .rendererFailure)
+        core.requestVideoRecovery(
+            after: FrameNumber(rawValue: 41), cause: .rendererBackpressure)
         let stats = core.idrRequester.snapshotStats()
         XCTAssertEqual(stats.verdicts, 2)
         XCTAssertEqual(stats.episodesStarted, 1)
         XCTAssertEqual(stats.requestsSent, 1)
         XCTAssertTrue(stats.recoveryOutstanding)
+        XCTAssertEqual(
+            demands.all.map(\.0), [.rendererFailure, .rendererBackpressure])
+
+        // Assembly cannot close recovery. Only the handoff's post-enqueue
+        // callback does.
+        core.noteVideoIrapEnqueued()
+        XCTAssertFalse(core.idrRequester.snapshotStats().recoveryOutstanding)
     }
 
     func testTighteningPreservesTheWireMode() throws {

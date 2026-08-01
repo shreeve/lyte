@@ -45,6 +45,22 @@ final class ClientNoiseIdentityProviderTests: XCTestCase {
         }
     }
 
+    func testNoninteractiveLookupForwardsFailPolicyAndCaches() async throws {
+        let state = LoaderState()
+        let expected = NoiseKeyPair.generate()
+        let provider = ClientNoiseIdentityProvider { policy in
+            state.noteCall(policy)
+            XCTAssertEqual(policy, .fail)
+            return expected
+        }
+
+        let identity = try await provider.identity(authenticationUI: .fail)
+
+        XCTAssertEqual(identity.publicKey, expected.publicKey)
+        XCTAssertEqual(state.policies, [.fail])
+        XCTAssertEqual(provider.cachedIdentity?.publicKey, expected.publicKey)
+    }
+
     private final class LoaderState: @unchecked Sendable {
         private let lock = NSLock()
         private var count = 0

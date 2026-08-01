@@ -39,6 +39,23 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         }
     }
 
+    public struct RecoveryLifecycleEvent: Sendable, Equatable, Codable {
+        public var sequence: UInt64
+        public var uptimeMicroseconds: UInt64
+        public var kind: String
+        public var frame: UInt32
+        public var cause: String?
+        public var episode: UInt64?
+        public var isRandomAccess: Bool?
+        public var resetDecoderBeforeDecoding: Bool?
+        public var awaitingRandomAccess: Bool?
+        public var randomAccessPending: Bool?
+        public var pendingCount: Int?
+        public var corruptedFrames: Int?
+        public var corruptedDelta: Int?
+        public var rendererTotalFrames: Int?
+    }
+
     public struct Snapshot: Sendable, Equatable, Codable {
         public var frames: UInt64
         public var freshCaptureFrames: UInt64
@@ -64,6 +81,8 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         public var rendererDrops: UInt64
         public var rendererFailures: UInt64
         public var rendererRecoveries: UInt64
+        public var recoveryCauses: [String: UInt64]
+        public var recoveryLifecycle: [RecoveryLifecycleEvent]
         public var rendererMetrics: RendererMetrics?
 
         public var bottleneck: String {
@@ -127,6 +146,9 @@ public final class VideoFlightRecorder: @unchecked Sendable {
     private var rendererDrops: UInt64 = 0
     private var rendererFailures: UInt64 = 0
     private var rendererRecoveries: UInt64 = 0
+    private var recoveryCauses: [String: UInt64] = [:]
+    private var recoveryLifecycle: [RecoveryLifecycleEvent] = []
+    private var recoveryEventSequence: UInt64 = 0
     private var cadenceStalls: UInt64 = 0
     private var rendererMetrics: RendererMetrics?
     private var freshCaptureFrames: UInt64 = 0
@@ -267,6 +289,84 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func recordRecoveryCause(_ cause: VideoRecoveryCause) {
+        lock.lock()
+        recoveryCauses[cause.rawValue, default: 0] &+= 1
+        lock.unlock()
+    }
+
+    public func recordRecoveryLifecycle(
+        kind: String,
+        frame: UInt32,
+        cause: VideoRecoveryCause? = nil,
+        episode: UInt64? = nil,
+        isRandomAccess: Bool? = nil,
+        resetDecoderBeforeDecoding: Bool? = nil,
+        awaitingRandomAccess: Bool? = nil,
+        randomAccessPending: Bool? = nil,
+        pendingCount: Int? = nil,
+        corruptedFrames: Int? = nil,
+        corruptedDelta: Int? = nil,
+        rendererTotalFrames: Int? = nil
+    ) {
+        lock.lock()
+        recoveryEventSequence &+= 1
+        recoveryLifecycle.append(.init(
+            sequence: recoveryEventSequence,
+            uptimeMicroseconds:
+                DispatchTime.now().uptimeNanoseconds / 1_000,
+            kind: kind,
+            frame: frame,
+            cause: cause?.rawValue,
+            episode: episode,
+            isRandomAccess: isRandomAccess,
+            resetDecoderBeforeDecoding: resetDecoderBeforeDecoding,
+            awaitingRandomAccess: awaitingRandomAccess,
+            randomAccessPending: randomAccessPending,
+            pendingCount: pendingCount,
+            corruptedFrames: corruptedFrames,
+            corruptedDelta: corruptedDelta,
+            rendererTotalFrames: rendererTotalFrames))
+        if recoveryLifecycle.count > 1_024 {
+            recoveryLifecycle.removeFirst(
+                recoveryLifecycle.count - 1_024)
+        }
+        lock.unlock()
+    }
+
+    public func recordRendererMetrics(
+        _ metrics: RendererMetrics,
+        sampledAfterFrame frame: UInt32,
+        sampledAfterIsRandomAccess: Bool
+    ) {
+        lock.lock()
+        let delta = metrics.corruptedFrames
+            - (rendererMetrics?.corruptedFrames ?? 0)
+        rendererMetrics = metrics
+        recoveryEventSequence &+= 1
+        recoveryLifecycle.append(.init(
+            sequence: recoveryEventSequence,
+            uptimeMicroseconds:
+                DispatchTime.now().uptimeNanoseconds / 1_000,
+            kind: "rendererMetrics",
+            frame: frame,
+            cause: nil,
+            episode: nil,
+            isRandomAccess: sampledAfterIsRandomAccess,
+            resetDecoderBeforeDecoding: nil,
+            awaitingRandomAccess: nil,
+            randomAccessPending: nil,
+            pendingCount: nil,
+            corruptedFrames: metrics.corruptedFrames,
+            corruptedDelta: delta,
+            rendererTotalFrames: metrics.totalFrames))
+        if recoveryLifecycle.count > 1_024 {
+            recoveryLifecycle.removeFirst(
+                recoveryLifecycle.count - 1_024)
+        }
+        lock.unlock()
+    }
+
     public func snapshot() -> Snapshot {
         lock.lock()
         defer { lock.unlock() }
@@ -303,6 +403,8 @@ public final class VideoFlightRecorder: @unchecked Sendable {
             rendererDrops: rendererDrops,
             rendererFailures: rendererFailures,
             rendererRecoveries: rendererRecoveries,
+            recoveryCauses: recoveryCauses,
+            recoveryLifecycle: recoveryLifecycle,
             rendererMetrics: rendererMetrics)
     }
 
@@ -330,6 +432,9 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         rendererDrops = 0
         rendererFailures = 0
         rendererRecoveries = 0
+        recoveryCauses.removeAll(keepingCapacity: true)
+        recoveryLifecycle.removeAll(keepingCapacity: true)
+        recoveryEventSequence = 0
         cadenceStalls = 0
         rendererMetrics = nil
         freshCaptureFrames = 0

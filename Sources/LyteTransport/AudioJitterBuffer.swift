@@ -196,10 +196,26 @@ public final class AudioJitterBuffer {
     public func insert(_ packet: AudioPacket, arrivalMicroseconds: UInt64) {
         stats.packetsInserted += 1
 
-        if started,
-           Int32(bitPattern: packet.number &- nextNumber) < 0 {
-            stats.latePacketsDropped += 1
-            return
+        if started {
+            let distance = Int32(bitPattern: packet.number &- nextNumber)
+            if distance < 0 {
+                // A narrowly late packet is direct evidence that the current
+                // cushion was too shallow. Learn from its sequence distance,
+                // not its arrival timestamp (which may include repair time).
+                // Ancient packets remain adaptation-inert replay noise.
+                let behind = distance == .min ? Int.max : Int(-distance)
+                if behind <= config.maxTargetPackets {
+                    targetPackets = min(
+                        config.maxTargetPackets,
+                        targetPackets + behind)
+                    targetCushionEarnedByPath = true
+                    freshSamplesSinceTargetRaise = 0
+                    freshSamplesSinceTargetDecrease = 0
+                    stats.targetPackets = targetPackets
+                }
+                stats.latePacketsDropped += 1
+                return
+            }
         }
         guard pending[packet.number] == nil else {
             stats.duplicatesDropped += 1

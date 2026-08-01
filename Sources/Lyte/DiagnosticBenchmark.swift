@@ -1,8 +1,64 @@
 import AppKit
+@preconcurrency import AVFoundation
+import CoreVideo
 import Foundation
 import LyteTransport
 
 struct DiagnosticBenchmarkSample: Codable {
+    struct MotionSource: Codable {
+        var samples: Int
+        var width: Int
+        var height: Int
+        var logicalScale: Double
+        var allocationWidthPoints: Int
+        var allocationHeightPoints: Int
+        var dimensionsExact: Bool
+        var gapP50Milliseconds: Double
+        var gapP95Milliseconds: Double
+        var gapP99Milliseconds: Double
+        var phaseDriftP99Milliseconds: Double
+        var skippedSourceFrames: Int
+        var pass: Bool
+    }
+
+    struct Quality: Codable {
+        var elapsedSeconds: Double
+        var decodedFrames: UInt64
+        var referenceName: String
+        var sourceWidth: Int
+        var sourceHeight: Int
+        var sourceWitnessSHA256: String?
+        var sourceWitnessRDB: Double?
+        var sourceWitnessGDB: Double?
+        var sourceWitnessBDB: Double?
+        var sourceWitnessMinDB: Double?
+        var sourceWitnessLumaSSIM: Double?
+        var decodedWidth: Int?
+        var decodedHeight: Int?
+        var readbackPixelFormat: String?
+        var readbackBytesPerRow: Int?
+        var readbackYCbCrMatrix: String?
+        var readbackColorPrimaries: String?
+        var readbackTransferFunction: String?
+        var psnrRDB: Double?
+        var psnrGDB: Double?
+        var psnrBDB: Double?
+        var psnrMinDB: Double?
+        var lumaSSIM: Double?
+        var syntheticFrameID: UInt32?
+        var phaseMatched: Bool?
+        var viewportWidthPoints: Double
+        var viewportHeightPoints: Double
+        var viewportWidthPixels: Double
+        var viewportHeightPixels: Double
+        var backingScaleFactor: Double
+        var fittedVideoWidthPoints: Double
+        var fittedVideoHeightPoints: Double
+        var displayScaleX: Double
+        var displayScaleY: Double
+        var error: String?
+    }
+
     struct Video: Codable {
         var framesDecoded: UInt64
         var framesSkipped: UInt64
@@ -48,6 +104,9 @@ struct DiagnosticBenchmarkSample: Codable {
     var frames: [VideoFlightRecorder.FrameObservation]
     var video: Video
     var audio: Audio
+    var quality: Quality? = nil
+    var motionSource: MotionSource? = nil
+    var motionLeg: String? = nil
 }
 
 private struct DiagnosticBenchmarkEnd: Codable {
@@ -65,14 +124,15 @@ private struct DiagnosticBenchmarkEnd: Codable {
 enum DiagnosticBenchmark {
     static func run(model: ConnectionModel) async {
         let environment = ProcessInfo.processInfo.environment
+        let workload = environment["LYTE_BENCHMARK_WORKLOAD"] ?? "unknown"
         guard let outputPath = environment["LYTE_BENCHMARK_JSONL"],
               let durationText = environment["LYTE_BENCHMARK_SECONDS"],
               let duration = Double(durationText),
-              duration >= 5, duration <= 3_600
+              duration >= (workload == "handshake-only" ? 1 : 5),
+              duration <= 3_600
         else { return }
 
         let runID = environment["LYTE_BENCHMARK_RUN_ID"] ?? UUID().uuidString
-        let workload = environment["LYTE_BENCHMARK_WORKLOAD"] ?? "unknown"
         let pidPath = environment["LYTE_BENCHMARK_PIDFILE"]
         FileManager.default.createFile(atPath: outputPath, contents: nil)
         guard let handle = FileHandle(forWritingAtPath: outputPath) else {
@@ -90,6 +150,20 @@ enum DiagnosticBenchmark {
         let started = ContinuousClock.now
         var lastOrdinal: UInt64 = 0
         var everStreaming = false
+        let qualityProbeAllowed =
+            environment["LYTE_BENCHMARK_QUALITY_PROBE"] != "0"
+        let qualityProbe = DiagnosticQualityProbe(
+            environment: environment,
+            enabled: qualityProbeAllowed
+                && (workload == "quality" || workload == "quality-static"
+                    || workload == "motion-pipeline"))
+        let motionSource: DiagnosticBenchmarkSample.MotionSource? = {
+            guard let path = environment["LYTE_BENCHMARK_MOTION_SOURCE_SUMMARY"],
+                  let data = FileManager.default.contents(atPath: path)
+            else { return nil }
+            return try? JSONDecoder().decode(
+                DiagnosticBenchmarkSample.MotionSource.self, from: data)
+        }()
 
         while true {
             do {
@@ -99,11 +173,17 @@ enum DiagnosticBenchmark {
                 return
             }
             let elapsed = started.duration(to: .now).seconds
-            let sample = model.diagnosticBenchmarkSample(
+            var sample = model.diagnosticBenchmarkSample(
                 runID: runID,
                 workload: workload,
                 elapsedSeconds: elapsed,
                 afterOrdinal: lastOrdinal)
+            sample.quality = await qualityProbe.capture(
+                renderer: model.displayLayer.sampleBufferRenderer,
+                elapsedSeconds: elapsed,
+                decodedFrames: sample.video.framesDecoded)
+            sample.motionSource = motionSource
+            sample.motionLeg = environment["LYTE_BENCHMARK_MOTION_LEG"]
             if let newest = sample.frames.last?.ordinal {
                 lastOrdinal = newest
             }
@@ -143,6 +223,279 @@ enum DiagnosticBenchmark {
         try? handle.close()
         model.disconnect()
         NSApp.terminate(nil)
+    }
+}
+
+@MainActor
+private final class DiagnosticQualityProbe {
+    private struct ProcessedFrame: Sendable {
+        var frame: VideoQualityReadback.Frame? = nil
+        var score: VideoQualityReadback.Score? = nil
+        var syntheticFrameID: UInt32? = nil
+        var phaseMatched: Bool? = nil
+        var error: String? = nil
+    }
+
+    private let enabled: Bool
+    private let referenceName: String
+    private let sourceWidth: Int
+    private let sourceHeight: Int
+    private let reference: [UInt8]?
+    private let setupError: String?
+    private let readbackPath: String?
+    private let sourceWitnessSHA256: String?
+    private let sourceWitnessRDB: Double?
+    private let sourceWitnessGDB: Double?
+    private let sourceWitnessBDB: Double?
+    private let sourceWitnessMinDB: Double?
+    private let sourceWitnessLumaSSIM: Double?
+    private let syntheticMotion: Bool
+    private let syntheticReference: SyntheticMotionReference?
+    private var wroteReadback = false
+
+    init(environment: [String: String], enabled: Bool) {
+        self.enabled = enabled
+        referenceName = environment["LYTE_BENCHMARK_REFERENCE_NAME"] ?? "unknown"
+        readbackPath = environment["LYTE_BENCHMARK_READBACK_RAW"]
+        sourceWitnessSHA256 =
+            environment["LYTE_BENCHMARK_SOURCE_WITNESS_SHA256"]
+        sourceWitnessRDB = Double(
+            environment["LYTE_BENCHMARK_SOURCE_WITNESS_R_DB"] ?? "")
+        sourceWitnessGDB = Double(
+            environment["LYTE_BENCHMARK_SOURCE_WITNESS_G_DB"] ?? "")
+        sourceWitnessBDB = Double(
+            environment["LYTE_BENCHMARK_SOURCE_WITNESS_B_DB"] ?? "")
+        sourceWitnessMinDB = Double(
+            environment["LYTE_BENCHMARK_SOURCE_WITNESS_MIN_DB"] ?? "")
+        sourceWitnessLumaSSIM = Double(
+            environment["LYTE_BENCHMARK_SOURCE_WITNESS_SSIM"] ?? "")
+        syntheticMotion =
+            environment["LYTE_BENCHMARK_SYNTHETIC_MOTION"] == "1"
+        sourceWidth = Int(environment["LYTE_BENCHMARK_REFERENCE_WIDTH"] ?? "") ?? 0
+        sourceHeight = Int(environment["LYTE_BENCHMARK_REFERENCE_HEIGHT"] ?? "") ?? 0
+        syntheticReference = syntheticMotion && sourceWidth > 0 && sourceHeight > 0
+            ? SyntheticMotionReference(
+                width: sourceWidth, height: sourceHeight)
+            : nil
+        if !enabled {
+            reference = nil
+            setupError = nil
+        } else if syntheticMotion, sourceWidth > 0, sourceHeight > 0 {
+            reference = nil
+            setupError = nil
+        } else if let path = environment["LYTE_BENCHMARK_REFERENCE_RAW"],
+                  sourceWidth > 0, sourceHeight > 0 {
+            do {
+                let bytes = [UInt8](try Data(contentsOf: URL(fileURLWithPath: path)))
+                let expected = sourceWidth * sourceHeight * 4
+                if bytes.count == expected {
+                    reference = bytes
+                    setupError = nil
+                } else {
+                    reference = nil
+                    setupError = "reference_size_\(bytes.count)_expected_\(expected)"
+                }
+            } catch {
+                reference = nil
+                setupError = "reference_read_failed_\(error)"
+            }
+        } else {
+            reference = nil
+            setupError = "missing_reference_configuration"
+        }
+    }
+
+    func capture(
+        renderer: AVSampleBufferVideoRenderer,
+        elapsedSeconds: Double,
+        decodedFrames: UInt64
+    ) async -> DiagnosticBenchmarkSample.Quality? {
+        guard enabled else { return nil }
+        let geometry = Self.geometry(
+            sourceWidth: sourceWidth,
+            sourceHeight: sourceHeight)
+        guard setupError == nil else {
+            return observation(
+                elapsedSeconds: elapsedSeconds,
+                decodedFrames: decodedFrames,
+                geometry: geometry,
+                error: setupError ?? "reference_unavailable")
+        }
+        guard let pixelBuffer = renderer.displayedPixelBuffer() else {
+            return observation(
+                elapsedSeconds: elapsedSeconds,
+                decodedFrames: decodedFrames,
+                geometry: geometry,
+                error: "no_displayed_pixel_buffer")
+        }
+        let frame: VideoQualityReadback.Frame
+        do {
+            frame = try VideoQualityReadback.read(pixelBuffer)
+        } catch {
+            return observation(
+                elapsedSeconds: elapsedSeconds,
+                decodedFrames: decodedFrames,
+                geometry: geometry,
+                decodedWidth: CVPixelBufferGetWidth(pixelBuffer),
+                decodedHeight: CVPixelBufferGetHeight(pixelBuffer),
+                error: String(describing: error))
+        }
+        let pendingReadbackPath = wroteReadback ? nil : readbackPath
+        if pendingReadbackPath != nil { wroteReadback = true }
+        let syntheticMotion = self.syntheticMotion
+        let syntheticReference = self.syntheticReference
+        let reference = self.reference
+        let sourceWidth = self.sourceWidth
+        let sourceHeight = self.sourceHeight
+        let processed = await Task.detached(priority: .utility) {
+            do {
+                if let pendingReadbackPath {
+                    try Data(frame.bgra).write(
+                        to: URL(fileURLWithPath: pendingReadbackPath),
+                        options: .atomic)
+                }
+                let dynamicReference: [UInt8]
+                let syntheticFrameID: UInt32?
+                if syntheticMotion {
+                    guard let source = syntheticReference else {
+                        return ProcessedFrame(
+                            error: "synthetic_reference_unavailable")
+                    }
+                    guard let marker = source.marker(in: frame.bgra) else {
+                        return ProcessedFrame(
+                            frame: frame,
+                            error: "synthetic_frame_marker_invalid")
+                    }
+                    syntheticFrameID = marker
+                    dynamicReference = source.frame(marker)
+                } else {
+                    guard let reference else {
+                        return ProcessedFrame(
+                            error: "reference_unavailable")
+                    }
+                    syntheticFrameID = nil
+                    dynamicReference = reference
+                }
+                let score = try VideoQualityReadback.score(
+                    referenceBGRX: dynamicReference,
+                    referenceWidth: sourceWidth,
+                    referenceHeight: sourceHeight,
+                    decoded: frame)
+                return ProcessedFrame(
+                    frame: frame,
+                    score: score,
+                    syntheticFrameID: syntheticFrameID,
+                    phaseMatched: syntheticMotion ? true : nil)
+            } catch {
+                return ProcessedFrame(
+                    frame: frame, error: String(describing: error))
+            }
+        }.value
+        return observation(
+            elapsedSeconds: elapsedSeconds,
+            decodedFrames: decodedFrames,
+            geometry: geometry,
+            decodedWidth: processed.frame?.width,
+            decodedHeight: processed.frame?.height,
+            frame: processed.frame,
+            score: processed.score,
+            syntheticFrameID: processed.syntheticFrameID,
+            phaseMatched: processed.phaseMatched,
+            error: processed.error)
+    }
+
+    private struct Geometry {
+        var widthPoints = 0.0
+        var heightPoints = 0.0
+        var widthPixels = 0.0
+        var heightPixels = 0.0
+        var backingScale = 0.0
+        var fittedWidthPoints = 0.0
+        var fittedHeightPoints = 0.0
+    }
+
+    private static func geometry(sourceWidth: Int, sourceHeight: Int) -> Geometry {
+        guard let window = NSApp.mainWindow
+                ?? NSApp.windows.first(where: \.isVisible),
+              let view = window.contentView else {
+            return Geometry()
+        }
+        let bounds = view.bounds
+        let backing = view.convertToBacking(bounds)
+        let scale: Double
+        if sourceWidth > 0, sourceHeight > 0 {
+            scale = min(
+                Double(bounds.width) / Double(sourceWidth),
+                Double(bounds.height) / Double(sourceHeight))
+        } else {
+            scale = 0
+        }
+        return Geometry(
+            widthPoints: Double(bounds.width),
+            heightPoints: Double(bounds.height),
+            widthPixels: Double(backing.width),
+            heightPixels: Double(backing.height),
+            backingScale: Double(window.backingScaleFactor),
+            fittedWidthPoints: Double(sourceWidth) * scale,
+            fittedHeightPoints: Double(sourceHeight) * scale)
+    }
+
+    private func observation(
+        elapsedSeconds: Double,
+        decodedFrames: UInt64,
+        geometry: Geometry,
+        decodedWidth: Int? = nil,
+        decodedHeight: Int? = nil,
+        frame: VideoQualityReadback.Frame? = nil,
+        score: VideoQualityReadback.Score? = nil,
+        syntheticFrameID: UInt32? = nil,
+        phaseMatched: Bool? = nil,
+        error: String? = nil
+    ) -> DiagnosticBenchmarkSample.Quality {
+        DiagnosticBenchmarkSample.Quality(
+            elapsedSeconds: elapsedSeconds,
+            decodedFrames: decodedFrames,
+            referenceName: referenceName,
+            sourceWidth: sourceWidth,
+            sourceHeight: sourceHeight,
+            sourceWitnessSHA256: sourceWitnessSHA256,
+            sourceWitnessRDB: sourceWitnessRDB,
+            sourceWitnessGDB: sourceWitnessGDB,
+            sourceWitnessBDB: sourceWitnessBDB,
+            sourceWitnessMinDB: sourceWitnessMinDB,
+            sourceWitnessLumaSSIM: sourceWitnessLumaSSIM,
+            decodedWidth: decodedWidth,
+            decodedHeight: decodedHeight,
+            readbackPixelFormat: frame?.sourcePixelFormat,
+            readbackBytesPerRow: frame?.sourceBytesPerRow,
+            readbackYCbCrMatrix: frame?.yCbCrMatrix,
+            readbackColorPrimaries: frame?.colorPrimaries,
+            readbackTransferFunction: frame?.transferFunction,
+            psnrRDB: score.map { Self.jsonDB($0.rgbPSNR.r) },
+            psnrGDB: score.map { Self.jsonDB($0.rgbPSNR.g) },
+            psnrBDB: score.map { Self.jsonDB($0.rgbPSNR.b) },
+            psnrMinDB: score.map { Self.jsonDB($0.rgbPSNR.minChannel) },
+            lumaSSIM: score?.lumaSSIM,
+            syntheticFrameID: syntheticFrameID,
+            phaseMatched: phaseMatched,
+            viewportWidthPoints: geometry.widthPoints,
+            viewportHeightPoints: geometry.heightPoints,
+            viewportWidthPixels: geometry.widthPixels,
+            viewportHeightPixels: geometry.heightPixels,
+            backingScaleFactor: geometry.backingScale,
+            fittedVideoWidthPoints: geometry.fittedWidthPoints,
+            fittedVideoHeightPoints: geometry.fittedHeightPoints,
+            displayScaleX: sourceWidth > 0
+                ? geometry.fittedWidthPoints / Double(sourceWidth) : 0,
+            displayScaleY: sourceHeight > 0
+                ? geometry.fittedHeightPoints / Double(sourceHeight) : 0,
+            error: error)
+    }
+
+    /// JSON has no infinity spelling. 999 dB is an explicit exact-channel
+    /// sentinel, far above every pinned pass bar.
+    private static func jsonDB(_ value: Double) -> Double {
+        value.isFinite ? value : 999
     }
 }
 

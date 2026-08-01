@@ -159,6 +159,35 @@ public enum LyteUdpSessionEvent: Sendable {
     case protocolNote(String)
 }
 
+/// The first dependency-breaking fact that opened a video recovery episode.
+/// This is app telemetry/control vocabulary only; it never changes wire bytes.
+public enum VideoRecoveryCause: String, Sendable, Codable, CaseIterable {
+    case fecAssemblerDamage
+    case hostPurgeInferredDamage
+    case freshPresentationDebt
+    case rendererFailure
+    case rendererBackpressure
+}
+
+public struct VideoRecoveryTraceEvent: Sendable {
+    public var kind: String
+    public var frame: FrameNumber
+    public var cause: VideoRecoveryCause?
+    public var isRandomAccess: Bool?
+
+    public init(
+        kind: String,
+        frame: FrameNumber,
+        cause: VideoRecoveryCause? = nil,
+        isRandomAccess: Bool? = nil
+    ) {
+        self.kind = kind
+        self.frame = frame
+        self.cause = cause
+        self.isRandomAccess = isRandomAccess
+    }
+}
+
 /// Session-level counters (the parts keep their own detailed stats;
 /// these are the CL-8 dispatch layer's).
 public struct LyteUdpSessionCounters: Sendable {
@@ -313,6 +342,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     private let now: @Sendable () -> ClientTimestamp
     private let onEvent: @Sendable (LyteUdpSessionEvent) -> Void
+    private let onVideoRecoveryDemand:
+        @Sendable (VideoRecoveryCause, FrameNumber) -> Void
+    private let onVideoRecoveryTrace:
+        @Sendable (VideoRecoveryTraceEvent) -> Void
 
     // The parts. IUO because their callbacks reference self (the
     // PairingGateTests construction order).
@@ -389,6 +422,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// Beat-context bookkeeping (guarded by `lock`): the stamp last
     /// fed to the machine.
     private var lastFedEvidenceMicros: UInt64 = 0
+    /// Upstream half of the renderer recovery gate. Sample construction may
+    /// already be queued when assembler damage is discovered; this fence
+    /// prevents those completed P samples from racing the handoff flush.
+    /// It shares the exact same close seam as IdrRequester and the handoff.
+    private var videoRecoveryOutstanding = false
 
     public init(
         demux: ReceiveDemux,
@@ -400,6 +438,12 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             ClientTimestamp(
                 microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
         },
+        onVideoRecoveryDemand: @escaping @Sendable (
+            VideoRecoveryCause, FrameNumber
+        ) -> Void = { _, _ in },
+        onVideoRecoveryTrace: @escaping @Sendable (
+            VideoRecoveryTraceEvent
+        ) -> Void = { _ in },
         onSample: @escaping @Sendable (CMSampleBuffer, DecodeUnit) -> Void,
         onEvent: @escaping @Sendable (LyteUdpSessionEvent) -> Void
     ) {
@@ -407,6 +451,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         self.clockModel = clockModel
         self.now = now
         self.onEvent = onEvent
+        self.onVideoRecoveryDemand = onVideoRecoveryDemand
+        self.onVideoRecoveryTrace = onVideoRecoveryTrace
         self.clipboardSharingOn = config.shareClipboard
         self.clipboardImagesOn = config.shareClipboardImages
         // The machine begins at establishment (the shell constructs the
@@ -428,6 +474,23 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 // pending event at or below its stamp. Delivery — not
                 // shard arrival — is the honest instant.
                 if let self {
+                    self.lock.lock()
+                    let mayRender =
+                        !self.videoRecoveryOutstanding || unit.isIDR
+                    self.lock.unlock()
+                    guard mayRender else {
+                        self.onVideoRecoveryTrace(.init(
+                            kind: "coreRejectedNonIrap",
+                            frame: unit.frameNumber,
+                            isRandomAccess: false))
+                        return
+                    }
+                    if unit.isIDR {
+                        self.onVideoRecoveryTrace(.init(
+                            kind: "coreForwardedIrap",
+                            frame: unit.frameNumber,
+                            isRandomAccess: true))
+                    }
                     self.input.noteFrameDelivered(
                         frame: unit.frameNumber, now: self.now())
                     // V-5: IDRs carry the parameter sets in-band —
@@ -436,11 +499,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                     // mismatch: a doctor line, never a silent
                     // resample).
                     if unit.isIDR {
-                        // Recovery closes on a usable IRAP reaching the
-                        // render callback — not on a shard, request send,
-                        // refusal, or merely seeing an IRAP header in an
-                        // incomplete frame.
-                        self.idrRequester.noteUsableIrapAccepted()
                         self.auditStreamChroma(annexB: unit.annexB)
                     }
                 }
@@ -456,12 +514,18 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 if !self.nackPolicy.shouldDeferFecImpossible(
                     frame: frame, now: now
                 ) {
-                    self.idrRequester.recordRecoveryDemand(
-                        frame: frame, now: now)
+                    self.beginVideoRecovery(
+                        cause: .fecAssemblerDamage, frame: frame, now: now)
                 }
             },
             onRepairSignal: { [weak self] signal, now in
-                self?.nackPolicy.handle(signal, now: now)
+                guard let self else { return }
+                if case .framesGone(let from, _) = signal {
+                    self.beginVideoRecovery(
+                        cause: .hostPurgeInferredDamage,
+                        frame: from, now: now)
+                }
+                self.nackPolicy.handle(signal, now: now)
             })
         self.reliable = ReliableCtrlEndpoint(
             sender: sender,
@@ -523,7 +587,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             },
             escalate: { [weak self] frame, now in
                 guard let self else { return }
-                self.idrRequester.recordRecoveryDemand(frame: frame, now: now)
+                self.beginVideoRecovery(
+                    cause: .fecAssemblerDamage, frame: frame, now: now)
                 // Reason-neutral: this closure exits deadline expiries,
                 // framesGone, AND HS-32 refusals (which already printed
                 // their own reasoned note); the books tell them apart.
@@ -653,8 +718,44 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     /// App renderer failure/backpressure joins the established IDR recovery
     /// policy instead of inventing an uncoalesced control path.
-    public func requestVideoRecovery(after frame: FrameNumber) {
-        idrRequester.recordRecoveryDemand(frame: frame, now: now())
+    public func requestVideoRecovery(
+        after frame: FrameNumber,
+        cause: VideoRecoveryCause = .rendererFailure
+    ) {
+        beginVideoRecovery(cause: cause, frame: frame, now: now())
+    }
+
+    /// The sole close seam: AVFoundation accepted the IRAP into its queue.
+    public func noteVideoIrapEnqueued(
+        frame: FrameNumber = FrameNumber(rawValue: 0)
+    ) {
+        lock.lock()
+        videoRecoveryOutstanding = false
+        lock.unlock()
+        idrRequester.noteUsableIrapAccepted()
+        onVideoRecoveryTrace(.init(
+            kind: "coreRecoveryClosedAfterIrapEnqueue",
+            frame: frame,
+            isRandomAccess: true))
+    }
+
+    private func beginVideoRecovery(
+        cause: VideoRecoveryCause,
+        frame: FrameNumber,
+        now: ClientTimestamp
+    ) {
+        lock.lock()
+        let overlap = videoRecoveryOutstanding
+        videoRecoveryOutstanding = true
+        lock.unlock()
+        onVideoRecoveryTrace(.init(
+            kind: overlap ? "coreDamageOverlap" : "coreDamageKnown",
+            frame: frame,
+            cause: cause))
+        // Queue the renderer gate before emitting the request. The app's
+        // serial handoff then observes this before any later onSample submit.
+        onVideoRecoveryDemand(cause, frame)
+        idrRequester.recordRecoveryDemand(frame: frame, now: now)
     }
 
     // MARK: Host audio routing (CL-13)
@@ -1530,6 +1631,10 @@ public final class LyteUdpSession: @unchecked Sendable {
 
     private let onSample: @Sendable (CMSampleBuffer, DecodeUnit) -> Void
     private let onEvent: @Sendable (LyteUdpSessionEvent) -> Void
+    private let onVideoRecoveryDemand:
+        @Sendable (VideoRecoveryCause, FrameNumber) -> Void
+    private let onVideoRecoveryTrace:
+        @Sendable (VideoRecoveryTraceEvent) -> Void
     private let coreBox = SessionCoreBox()
     private let closing = SessionFlag()
     public let clockModel: HostClockModel
@@ -1551,12 +1656,20 @@ public final class LyteUdpSession: @unchecked Sendable {
         crypto: any TransportCrypto,
         config: Config = Config(),
         clockModel: HostClockModel = HostClockModel(),
+        onVideoRecoveryDemand: @escaping @Sendable (
+            VideoRecoveryCause, FrameNumber
+        ) -> Void = { _, _ in },
+        onVideoRecoveryTrace: @escaping @Sendable (
+            VideoRecoveryTraceEvent
+        ) -> Void = { _ in },
         onSample: @escaping @Sendable (CMSampleBuffer, DecodeUnit) -> Void,
         onEvent: @escaping @Sendable (LyteUdpSessionEvent) -> Void
     ) {
         self.crypto = crypto
         self.config = config
         self.clockModel = clockModel
+        self.onVideoRecoveryDemand = onVideoRecoveryDemand
+        self.onVideoRecoveryTrace = onVideoRecoveryTrace
         self.onSample = onSample
         self.onEvent = onEvent
     }
@@ -1589,6 +1702,8 @@ public final class LyteUdpSession: @unchecked Sendable {
             config: config.core,
             clockModel: clockModel,
             asynchronousVideoBuild: true,
+            onVideoRecoveryDemand: onVideoRecoveryDemand,
+            onVideoRecoveryTrace: onVideoRecoveryTrace,
             onSample: onSample,
             onEvent: onEvent
         )
@@ -1739,8 +1854,17 @@ public final class LyteUdpSession: @unchecked Sendable {
     /// Renderer-side broken-reference seam. It joins the same coalescing
     /// episode as FEC/repair failures: one immediate 0x10, slow retries,
     /// and no second episode until a usable IRAP reaches the pipeline.
-    public func requestVideoRecovery(after frame: FrameNumber) {
-        core?.requestVideoRecovery(after: frame)
+    public func requestVideoRecovery(
+        after frame: FrameNumber,
+        cause: VideoRecoveryCause = .rendererFailure
+    ) {
+        core?.requestVideoRecovery(after: frame, cause: cause)
+    }
+
+    public func noteVideoIrapEnqueued(
+        frame: FrameNumber = FrameNumber(rawValue: 0)
+    ) {
+        core?.noteVideoIrapEnqueued(frame: frame)
     }
 
     /// Production UI funnel: capture returns immediately; one dedicated

@@ -361,6 +361,13 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         for event in events {
             switch event {
             case .decoded(let unit):
+                PipelineWitness.record("assemblyCompleted", fields: [
+                    "frame": String(unit.frameNumber.rawValue),
+                    "captureMicroseconds": String(
+                        unit.timestamp.microseconds),
+                    "assemblyLockHoldMicroseconds": String(
+                        assemblyLockHoldMicroseconds),
+                ])
                 stats.framesDecoded += 1
                 recordQuality(bytes: unit.annexB.count, now: now)
                 if let newest = newestDeliveredFrame {
@@ -454,6 +461,9 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         assemblyLockHoldMicroseconds: UInt64
     ) {
         let started = DispatchTime.now().uptimeNanoseconds
+        PipelineWitness.record("sampleBuildBegin", fields: [
+            "frame": String(unit.frameNumber.rawValue),
+        ])
         let sample: CMSampleBuffer?
         do {
             sample = try factory.makeSampleBuffer(from: unit)
@@ -470,6 +480,11 @@ public final class LyteVideoPipeline: @unchecked Sendable {
             return
         }
         let elapsed = (DispatchTime.now().uptimeNanoseconds &- started) / 1_000
+        PipelineWitness.record("sampleBuildCompleted", fields: [
+            "frame": String(unit.frameNumber.rawValue),
+            "elapsedMicroseconds": String(elapsed),
+            "success": String(sample != nil),
+        ])
         lock.lock()
         stats.sampleBuildMicroseconds.record(elapsed)
         recordFrameBuildTelemetry(

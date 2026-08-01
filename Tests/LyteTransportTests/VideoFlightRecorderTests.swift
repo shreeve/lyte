@@ -71,6 +71,50 @@ final class VideoFlightRecorderTests: XCTestCase {
             recorder.snapshot().bottleneck, "renderer dropped frames")
     }
 
+    func testRecoveryCausesAreCountedSeparately() {
+        let recorder = VideoFlightRecorder()
+        recorder.recordRecoveryCause(.fecAssemblerDamage)
+        recorder.recordRecoveryCause(.fecAssemblerDamage)
+        recorder.recordRecoveryCause(.hostPurgeInferredDamage)
+        XCTAssertEqual(recorder.snapshot().recoveryCauses, [
+            "fecAssemblerDamage": 2,
+            "hostPurgeInferredDamage": 1,
+        ])
+        recorder.reset()
+        XCTAssertTrue(recorder.snapshot().recoveryCauses.isEmpty)
+    }
+
+    func testRecoveryLifecycleCorrelatesResetAndCorruptionDelta() {
+        let recorder = VideoFlightRecorder()
+        recorder.recordRecoveryLifecycle(
+            kind: "rendererEnqueueIrap",
+            frame: 42,
+            cause: .fecAssemblerDamage,
+            episode: 3,
+            isRandomAccess: true,
+            resetDecoderBeforeDecoding: true,
+            awaitingRandomAccess: true,
+            randomAccessPending: true,
+            pendingCount: 0)
+        recorder.recordRendererMetrics(
+            .init(
+                totalFrames: 100,
+                droppedFrames: 2,
+                corruptedFrames: 7,
+                accumulatedDelayMilliseconds: 0),
+            sampledAfterFrame: 42,
+            sampledAfterIsRandomAccess: true)
+
+        let events = recorder.snapshot().recoveryLifecycle
+        XCTAssertEqual(events.map(\.kind), [
+            "rendererEnqueueIrap", "rendererMetrics",
+        ])
+        XCTAssertEqual(events[0].frame, 42)
+        XCTAssertEqual(events[0].resetDecoderBeforeDecoding, true)
+        XCTAssertEqual(events[1].frame, 42)
+        XCTAssertEqual(events[1].corruptedDelta, 7)
+    }
+
     func testRingIsBoundedAndRendererSamplingCadenceIsPinned() {
         let recorder = VideoFlightRecorder(capacity: 3)
         var sampled: [UInt32] = []

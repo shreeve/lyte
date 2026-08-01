@@ -84,6 +84,7 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         let fd = socket(AF_INET, SOCK_DGRAM, 0)
         guard fd >= 0 else { throw TransportEndpointError.socketFailed(errno: errno) }
         self.fd = fd
+        HandshakeWitness.record("socketCreated", fields: ["fd": String(fd)])
 
         // Bursts must not drop in-kernel: room for ~1800 max-size datagrams.
         var rcvbuf: Int32 = 2 * 1024 * 1024
@@ -136,15 +137,24 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
             }
         }
         boundPort = UInt16(bigEndian: bound.sin_port)
+        HandshakeWitness.record("socketBound", fields: [
+            "bindAddress": bindAddress,
+            "localPort": String(boundPort),
+            "targetHost": handshaking?.hostAddress ?? "",
+            "targetPort": String(handshaking?.hostPort ?? 0),
+            "tos": String(tos),
+        ])
 
         if let handshaking {
             do {
+                HandshakeWitness.record("noiseHandshakeBegin")
                 let io = try SocketHandshakeIO(
                     fd: fd,
                     host: handshaking.hostAddress,
                     port: handshaking.hostPort
                 )
                 try handshaking.performHandshake(io: io)
+                HandshakeWitness.record("noiseHandshakeCompleted")
                 // The host tuple is the peer from the first byte, so the
                 // return leg (feedback ticks before any sealed host
                 // datagram arrives) has somewhere to go.
@@ -152,6 +162,9 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
                 peerAddress = io.hostSockaddr
                 peerLock.unlock()
             } catch {
+                HandshakeWitness.record("noiseHandshakeFailed", fields: [
+                    "error": String(describing: error),
+                ])
                 close(fd)
                 self.fd = -1
                 throw error
@@ -246,8 +259,50 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
             }
 
             let arrivalUs = kernelUs ?? (DispatchTime.now().uptimeNanoseconds / 1000)
+            let receivedAtNS = DispatchTime.now().uptimeNanoseconds
+            let witnessEnvelope = PipelineWitness.isEnabled
+                ? (try? Envelope.decode(buffer[0..<n]).0) : nil
+            if let envelope = witnessEnvelope, envelope.channel.rawValue == 2 {
+                let fec = try? FecField.decode(envelope.fec)
+                let shard: String
+                let dataShards: String
+                let parityShards: String
+                if case .reedSolomon(let index, let geometry) = fec {
+                    shard = String(index)
+                    dataShards = String(geometry.dataShards)
+                    parityShards = String(geometry.parityShards)
+                } else {
+                    shard = ""
+                    dataShards = ""
+                    parityShards = ""
+                }
+                PipelineWitness.record("udpReceive", fields: [
+                    "frame": String(envelope.frame.rawValue),
+                    "seq": String(envelope.seq.rawValue),
+                    "shard": shard,
+                    "dataShards": dataShards,
+                    "parityShards": parityShards,
+                    "kernelArrivalMicroseconds": String(arrivalUs),
+                    "hasKernelTimestamp": String(kernelUs != nil),
+                    "receiveMonotonicNanoseconds": String(receivedAtNS),
+                ])
+            }
             let outcome = demux.ingest(datagram: buffer[0..<n],
                                        arrivalMicroseconds: arrivalUs)
+            if let envelope = witnessEnvelope, envelope.channel.rawValue == 2 {
+                let outcomeName: String
+                switch outcome {
+                case .accepted: outcomeName = "accepted"
+                case .reservedChannel: outcomeName = "reservedChannel"
+                case .malformed: outcomeName = "malformed"
+                case .unsealFailed: outcomeName = "unsealFailed"
+                }
+                PipelineWitness.record("udpIngestCompleted", fields: [
+                    "frame": String(envelope.frame.rawValue),
+                    "seq": String(envelope.seq.rawValue),
+                    "outcome": outcomeName,
+                ])
+            }
             // Roaming retarget is authenticated-only: an arbitrary UDP
             // packet must never redirect our sealed return traffic.
             if sourceCaptured, case .accepted = outcome {
@@ -333,6 +388,7 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
 
     func sendToHost(_ datagram: [UInt8]) throws {
         var peer = hostSockaddr
+        let started = DispatchTime.now().uptimeNanoseconds
         let sent = datagram.withUnsafeBufferPointer { buf -> Int in
             withUnsafePointer(to: &peer) { ptr in
                 ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
@@ -341,6 +397,17 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
                 }
             }
         }
+        let sendErrno = sent == datagram.count ? 0 : errno
+        HandshakeWitness.record("handshakeSend", fields: [
+            "bytes": String(datagram.count),
+            "sent": String(sent),
+            "errno": String(sendErrno),
+            "localPort": String(localPort()),
+            "remoteAddress": String(cString: inet_ntoa(peer.sin_addr)),
+            "remotePort": String(UInt16(bigEndian: peer.sin_port)),
+            "durationNanoseconds": String(
+                DispatchTime.now().uptimeNanoseconds &- started),
+        ])
         guard sent == datagram.count else {
             throw TransportEndpointError.socketFailed(errno: errno)
         }
@@ -350,6 +417,11 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
         var pollfds = [pollfd(fd: fd, events: Int16(POLLIN), revents: 0)]
         let ready = poll(&pollfds, 1, Int32(timeoutMilliseconds))
         guard ready > 0, pollfds[0].revents & Int16(POLLIN) != 0 else {
+            if ready < 0 {
+                HandshakeWitness.record("handshakePollError", fields: [
+                    "errno": String(errno),
+                ])
+            }
             return nil
         }
         var buffer = [UInt8](repeating: 0, count: 4096)
@@ -361,7 +433,22 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
             // transient; timeouts and empties are the caller's retry.
             return nil
         }
+        HandshakeWitness.record("handshakeReceive", fields: [
+            "bytes": String(n),
+            "localPort": String(localPort()),
+        ])
         return Array(buffer[0..<n])
+    }
+
+    private func localPort() -> UInt16 {
+        var local = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let rc = withUnsafeMutablePointer(to: &local) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                getsockname(fd, sa, &length)
+            }
+        }
+        return rc == 0 ? UInt16(bigEndian: local.sin_port) : 0
     }
 }
 
