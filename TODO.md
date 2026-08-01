@@ -101,3 +101,70 @@ channel), (B) X11+NvFBC, (C) wlroots/KDE screencopy, (D) harden current
 stack only. Near-term regardless: an auto-heal seam — on a capture-
 starvation episode, tear down and recreate the screencast session
 in-place instead of freezing forever.
+
+Owner decisions (2026-08-01 session):
+- **Sequencing**: capture-organ replacement FIRST; AV1 only after the
+  new capture path is landed and stable. "Get it all running, then add
+  AV1 — at that point it's easy."
+- **AV1 end-to-end is hardware-viable when we get there**: owner's Mac
+  is an M5 (VideoToolbox AV1 decode); pup has TWO hardware AV1 encoders
+  (Meteor Lake Arc media engine + Ada NVENC). The four HEVC-shaped
+  seams to unwind, inventoried: (1) vendored ffmpeg builds ONLY
+  hevc_nvenc (Host/Scripts/vendor-ffmpeg.sh — one-line-ish, but the
+  no-reset patch needs re-verification against the AV1 wrapper), (2)
+  AnnexB.swift parses NALs — AV1 is OBU framing (keyframe detect,
+  packetizer boundaries need a twin), (3) wire needs a negotiated codec
+  field (host offers, client picks — the "doctor" decides), (4) client
+  pipeline constructs HEVC-style format descriptions. Caveats recorded:
+  hardware AV1 is 4:2:0-only both ends — the 4:4:4 text ambition stays
+  HEVC-rext; AV1's screen-content tools + WAN bitrate savings are the
+  prize.
+- **Encoder/GPU policy by topology** (host auto-detects, "doctor"
+  rules): desktop with panel on NVIDIA → NVENC zero-copy; pup
+  (VERIFIED: IdeaPad Pro 5 16IMH9, NO MUX — Notebookcheck: "Only
+  Optimus 1.0", all connectors incl. HDMI hang off card1/Intel; the
+  card0 eDP-2 is a phantom) → Arc media engine (Meteor Lake QuickSync:
+  first-class HEVC + AV1 encode) on the die that owns the scanout;
+  Intel→NVIDIA→NVENC copy path rejected (keeps dGPU awake, wonky
+  cross-adapter dmabuf, no quality win vs Arc).
+- **Pacing model for KMS capture** (replaces Mutter damage): poll the
+  scanout plane's framebuffer ID at display rate — compositor didn't
+  repaint ⇒ same FB ID ⇒ send NOTHING (idle silence preserved without
+  Mutter's cooperation); ID changed ⇒ grab ticket, encode, send.
+  Change-driven cadence scales 0 fps (blank) → ~1 fps (caret blink
+  repaints) → 60 fps (video) automatically. Encoder skip-frames are the
+  backstop detector; client already proven to tolerate ≤1 fps idle and
+  45 s blackout (2026-07-20 verification). Hardware cursor moves on its
+  own KMS plane — cursor position is metadata, not repaints.
+
+PROTOTYPE RESULTS (2026-08-01, owner said PROCEED; all three links
+proven individually on pup, live GNOME session, unharmed):
+1. **Doorbell** (`fbid-poll.c`, scratchpad → /tmp/fbid-poll on pup):
+   polls primary-plane FB_ID via drmModeGetPlane — UNPRIVILEGED (only
+   pixel access needs privileges). Idle desktop: exactly 1.00 flips/s
+   (gap 998–1002 ms — some 1 Hz repaint); 60 fps ffplay window: 61.00
+   flips/s sustained; cursor plane: 0 flips both legs (hardware cursor
+   confirmed separate). Poll cost 4–32 µs at 1 ms cadence. Damage
+   detection recovered from below, wedge-proof.
+2. **Encoders**: pup's SYSTEM ffmpeg has hevc_vaapi + av1_vaapi; iHD
+   26.1.2 (intel-media-va-driver-non-free) drives the MTL Arc engine.
+   Both emitted real bytes from kmsgrab input.
+3. **The format bridge** — the one real finding: MTL scans out XR30
+   (10-bit RGB) with CCS compression modifier 0x10000000000000f in a
+   3-plane fb (main + aux + clear-color). The media engine's VPP
+   (scale_vaapi) CANNOT ingest it ("Failed to start picture
+   processing"; p010 output fails identically ⇒ modifier, not bit
+   depth ⇒ stock-ffmpeg one-liner is NOT the production path). The 3D
+   engine CAN: `ccs-import-probe.c` (headless EGL via GBM, desktop GL,
+   eglCreateImageKHR with per-plane fd/offset/pitch + modifier lo/hi)
+   imported it in **0.04 ms** and read back genuine desktop pixels
+   (Mesa 26.0.3, "Intel Arc MTL"). Production chain therefore:
+   FB-ID doorbell → GETFB2 + drmPrimeHandleToFD → EGL import → shader
+   blit RGB→NV12 into an uncompressed surface shared with VAAPI →
+   encode → wire. All GPU-side; the probe's 6.8 ms glGetTexImage was
+   CPU-proof only, not part of the pipeline. This is Sunshine's exact
+   Linux architecture (their egl.cpp), independently re-derived and
+   re-verified on Meteor Lake.
+   Remaining unproven link: EGL→VAAPI surface sharing + the blit shader
+   (known tech, next prototype step), then input (uinput), consent,
+   cursor metadata channel, clipboard.

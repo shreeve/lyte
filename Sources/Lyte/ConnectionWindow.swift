@@ -55,21 +55,35 @@ struct ConnectionWindow: View {
             guard !didAutoconnect, let requested = autoconnect else { return }
             didAutoconnect = true
             let store = PinnedHostStore.load()
-            guard let pinned = store.hosts.values.first(where: {
+            var probe = in_addr()
+            let requestedIsAddress =
+                inet_pton(AF_INET, requested, &probe) == 1
+            let matched = store.hosts.values.first(where: {
                 $0.name.localizedCaseInsensitiveContains(requested)
                     || $0.address == requested
-            }), let publicKeyHash = pinned.publicKeyHash else {
+            })
+            // An IP-shaped request whose address no pin remembers is a
+            // transport override — the host moved roads (Wi-Fi→wire)
+            // while the pin kept the old one. With exactly one pin
+            // there is no ambiguity about WHO we mean, and Noise still
+            // enforces the identity at the requested address; only the
+            // route differs.
+            let fallback = (matched == nil && requestedIsAddress
+                && store.hosts.count == 1) ? store.hosts.values.first : nil
+            guard let pinned = matched ?? fallback,
+                  let publicKeyHash = pinned.publicKeyHash else {
                 NSLog(
                     "lyte diagnostic: no pinned host matches %@ (%d pins)",
                     requested, store.hosts.count)
                 return
             }
+            let dialAddress = requestedIsAddress ? requested : pinned.address
             NSLog(
                 "lyte diagnostic: autoconnecting %@:%d",
-                pinned.address, pinned.port)
+                dialAddress, pinned.port)
             await model.connectLyte(DiscoveredLyteHost(
                 name: pinned.name,
-                address: pinned.address,
+                address: dialAddress,
                 port: pinned.port,
                 wireVersion: nil,
                 publicKeyHash: publicKeyHash))
