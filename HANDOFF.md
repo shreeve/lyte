@@ -37,12 +37,22 @@ per-frame control is E6-VAAPI's charter); keyframe truth rides
 AV_PKT_FLAG_KEY (the wrapper pipelines by one frame); the session-bus
 startup guard is portal-only now. Probe inside the REAL host binary:
 367 frames @ 61 fps, first packet VPS+SPS+PPS+IDR, M5 decode-probe
-367/367 hardware. NEXT (owner-sanctioned window — his glass): the E1
-live half — real-client leg via `--backend direct` session mode
-(needs privileges: `sudo -E` carrying XDG_RUNTIME_DIR, or E4's unit),
-motion-pipeline benchmark ≥ current all-green, 30-min zero-freeze
-soak. Then E2 (uinput primary), E6a (NVENC-native — kills the vendor
-patch), E6b (VAAPI-native — real per-frame rate control).
+367/367 hardware. **E1 is ARCHITECTURALLY
+COMPLETE (#48 A/B, #49 soak)**: the live A/B — direct leg 1810
+frames / p99 17.6 ms vs the portal's no_frames on the SAME leg — and
+the soak: **107,212 frames / 30 min / 0 missed grabs / 0 freezes /
+p99 18.0 ms**. The six quality reds were one constant (gop_size=120,
+902 periodic IDR bursts); the eye now runs the product discipline
+(gop=∞, on-demand IDRs, static VBR envelope) and direct legs print
+the full session books. Privileges: setcap cap_sys_admin on pup's
+lyte-host (REDO after every rebuild; rig checks). Residuals FILED,
+host exonerated by books: client-side audio feed (~0.1%
+concealment), transit-gate calibration for real-capture frame sizes,
+idr-books direct counter. NEXT on the butter ladder: E3 cursor
+metadata (user-visible — KMS capture has no cursor), E6a
+NVENC-native (kills the vendor patch), E6b VAAPI-native (live rate
+directives), Arc Rext-444 leg, E2 uinput, E4 packaging, E5
+demolition, then AV1.
 AV1 is deferred until after the rearchitecture (owner decision; the
 four HEVC-shaped seams are inventoried in TODO.md — owner's Mac is an
 M5, pup has two hw AV1 encoders). Audio STAYS on PipeWire. Consent =
