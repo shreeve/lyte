@@ -194,6 +194,47 @@ final class UnprotectableFrameGateTests: XCTestCase {
         }
     }
 
+    func testSessionBorrowedIngressOwnsBytesBeforeReturn() throws {
+        let box = Box()
+        let session = makeSession(box: box)
+        var now: UInt64 = 0
+        _ = session.advance(now: now, hostMicroseconds: 0)
+        session.pump(now: now)
+        box.sent.removeAll()
+
+        let original = syntheticFrame(byteCount: 7_003, irap: true)
+        let pointer = UnsafeMutableBufferPointer<UInt8>.allocate(
+            capacity: original.count
+        )
+        _ = pointer.initialize(from: original)
+        _ = try session.ingestVideoFrame(
+            UnsafeBufferPointer(pointer),
+            captureTimestampMicroseconds: 7_777,
+            isKeyframe: true,
+            now: now
+        )
+        pointer.update(repeating: 0xE1)
+        pointer.deallocate()
+
+        drain(session, until: 100_000_000, now: &now)
+        var assembler = VideoAssembler()
+        var decoded: [DecodeUnit] = []
+        for datagram in box.fresh() {
+            let (envelope, payload) = try Envelope.decode(datagram.bytes)
+            for event in assembler.ingest(
+                envelope: envelope, payload: payload,
+                now: ClientTimestamp(microseconds: now / 1_000)
+            ) {
+                if case .decoded(let unit) = event { decoded.append(unit) }
+            }
+        }
+        XCTAssertEqual(decoded.map(\.annexB), [original])
+        XCTAssertEqual(session.videoCounters.borrowedFramesIngested, 1)
+        XCTAssertEqual(
+            session.videoCounters.borrowedFrameBytesIngested, original.count
+        )
+    }
+
     // MARK: Leg 4 — the channel seam stays loud (the W2 backstop)
 
     func testChannelSeamStillThrowsPastTheCeiling() throws {

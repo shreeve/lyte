@@ -15,18 +15,27 @@ enum NanorsBackend {
     /// laid out as k contiguous rows (the trailing row zero-padded —
     /// which is exactly what copying the group bytes into a zeroed
     /// k·bs region produces, since data shards are contiguous slices).
-    static func encodeParity(
-        group: ArraySlice<UInt8>,
+    static func encodeParity<C>(
+        group: C,
         dataShards: Int,
         parityShards: Int,
         shardByteCount bs: Int
-    ) throws -> [[UInt8]] {
+    ) throws -> [[UInt8]]
+    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         let total = dataShards + parityShards
         let backing = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: total * bs)
         defer { backing.deallocate() }
         backing.initialize(repeating: 0)
-        group.withUnsafeBufferPointer { src in
+        let copiedContiguously = group.withContiguousStorageIfAvailable { src in
             backing.baseAddress!.update(from: src.baseAddress!, count: src.count)
+            return true
+        } ?? false
+        if !copiedContiguously {
+            var destination = 0
+            for byte in group {
+                backing[destination] = byte
+                destination += 1
+            }
         }
 
         try runBlock(

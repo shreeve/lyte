@@ -350,6 +350,9 @@ final class SessionWire {
     var fecRegime: FecRegime { session.fecRegime }
     var srttMicros: Int64? { session.srttMicroseconds }
     var repairStoreBytes: Int { session.repairStoreBytes }
+    /// Exact bytes that entered through the borrowed callback seam. The
+    /// former implementation allocated and copied this many bytes here.
+    private(set) var borrowedFrameBytesIngested: UInt64 = 0
     /// HS-32: the derived freeze budget in force (ms), for the books.
     var repairBudgetMS: UInt64 { session.repairFreezeBudgetNS / 1_000_000 }
 
@@ -707,7 +710,8 @@ final class SessionWire {
         captureMicros: UInt64
     ) throws {
         let ingestStart = monotonicNS()
-        let frame = Array(UnsafeBufferPointer(start: data, count: size))
+        let frame = UnsafeBufferPointer(start: data, count: size)
+        borrowedFrameBytesIngested &+= UInt64(size)
         lock.lock()
         guard let session else {
             lock.unlock()

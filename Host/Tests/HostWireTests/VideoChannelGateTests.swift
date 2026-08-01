@@ -306,6 +306,135 @@ final class VideoChannelGateTests: XCTestCase {
         )
     }
 
+    func testBorrowedCorpusOwnsQueuedSealedAndRepairBytes() throws {
+        final class Box { var datagrams: [VideoChannelDatagram] = [] }
+
+        func sealer(
+            _ plaintext: ArraySlice<UInt8>,
+            _ aad: ArraySlice<UInt8>,
+            _ envelope: Envelope
+        ) -> [UInt8] {
+            let header = Array(aad)
+            let cipher = plaintext.enumerated().map {
+                $0.element ^ header[$0.offset % header.count] ^ 0xA5
+            }
+            return cipher + [UInt8](
+                repeating: UInt8(truncatingIfNeeded: envelope.seq.rawValue),
+                count: WireBudget.aeadTagByteCount
+            )
+        }
+
+        func drain(_ channel: VideoChannel, now: inout UInt64) {
+            channel.pump(now: now)
+            while let wake = channel.nextWake(now: now) {
+                now = max(now &+ 1, wake)
+                channel.pump(now: now)
+            }
+        }
+
+        let frames = try corpusFiles().map(load)
+        for regime in FecRegime.allCases {
+            for (index, original) in frames.enumerated() {
+                let expectedBox = Box()
+                let borrowedBox = Box()
+                let config = VideoChannelConfig(
+                    firstSeq: ChannelSeq(rawValue: 700),
+                    regime: regime,
+                    rateBitsPerSecond: Self.rateBPS,
+                    connectionId: try ConnectionId(
+                        bytes: [8, 7, 6, 5, 4, 3, 2, 1]
+                    )
+                )
+                let expected = VideoChannel(
+                    config: config, now: 0, seal: sealer
+                ) { expectedBox.datagrams.append($0) }
+                let borrowed = VideoChannel(
+                    config: config, now: 0, seal: sealer
+                ) { borrowedBox.datagrams.append($0) }
+                let frameNumber = FrameNumber(rawValue: UInt32(index))
+                let isKeyframe = AnnexBCheck.containsIrap(original)
+
+                _ = try expected.ingest(
+                    frame: original, frameNumber: frameNumber,
+                    captureTimestampMicroseconds: Self.captureMicros(index),
+                    isKeyframe: isKeyframe, lastInputSeq: 0x1020_3040,
+                    now: 0
+                )
+
+                let pointer = UnsafeMutableBufferPointer<UInt8>.allocate(
+                    capacity: original.count
+                )
+                _ = pointer.initialize(from: original)
+                _ = try borrowed.ingest(
+                    frame: UnsafeBufferPointer(pointer),
+                    frameNumber: frameNumber,
+                    captureTimestampMicroseconds: Self.captureMicros(index),
+                    isKeyframe: isKeyframe, lastInputSeq: 0x1020_3040,
+                    now: 0
+                )
+                pointer.update(repeating: 0xDB)
+                pointer.deallocate()
+
+                var expectedNow: UInt64 = 0
+                var borrowedNow: UInt64 = 0
+                drain(expected, now: &expectedNow)
+                drain(borrowed, now: &borrowedNow)
+                XCTAssertEqual(
+                    borrowedBox.datagrams, expectedBox.datagrams,
+                    "\(regime) corpus frame \(index): first flight changed"
+                )
+                XCTAssertEqual(borrowed.repairStoreBytes,
+                               expected.repairStoreBytes)
+                XCTAssertNotNil(borrowed.repairAnchor(for: frameNumber))
+
+                expectedBox.datagrams.removeAll()
+                borrowedBox.datagrams.removeAll()
+                _ = try expected.enqueueRepair(
+                    frame: frameNumber, shardIndices: [0], now: expectedNow
+                )
+                _ = try borrowed.enqueueRepair(
+                    frame: frameNumber, shardIndices: [0], now: borrowedNow
+                )
+                drain(expected, now: &expectedNow)
+                drain(borrowed, now: &borrowedNow)
+                XCTAssertEqual(
+                    borrowedBox.datagrams, expectedBox.datagrams,
+                    "\(regime) corpus frame \(index): repair changed"
+                )
+
+                let purgeFrame = FrameNumber(rawValue: UInt32(1_000 + index))
+                _ = try expected.ingest(
+                    frame: original, frameNumber: purgeFrame,
+                    captureTimestampMicroseconds: 9_000_000,
+                    isKeyframe: isKeyframe, now: expectedNow
+                )
+                let purgePointer = UnsafeMutableBufferPointer<UInt8>.allocate(
+                    capacity: original.count
+                )
+                _ = purgePointer.initialize(from: original)
+                _ = try borrowed.ingest(
+                    frame: UnsafeBufferPointer(purgePointer),
+                    frameNumber: purgeFrame,
+                    captureTimestampMicroseconds: 9_000_000,
+                    isKeyframe: isKeyframe, now: borrowedNow
+                )
+                purgePointer.update(repeating: 0x7E)
+                purgePointer.deallocate()
+                let expectedPurge = expected.purgeQueuedVideo()
+                let borrowedPurge = borrowed.purgeQueuedVideo()
+                XCTAssertEqual(borrowedPurge.datagrams, expectedPurge.datagrams)
+                XCTAssertEqual(borrowedPurge.bytes, expectedPurge.bytes)
+                XCTAssertNil(borrowed.repairAnchor(for: purgeFrame))
+                XCTAssertTrue(borrowed.wasPurged(purgeFrame))
+                XCTAssertEqual(borrowed.counters.borrowedFramesIngested, 2)
+                XCTAssertEqual(
+                    borrowed.counters.borrowedFrameBytesIngested,
+                    original.count * 2
+                )
+            }
+        }
+    }
+
     func testKeyframeShardsJumpTheVideoQueue() throws {
         // A queued P-frame, then an IDR before anything drains: the IDR's
         // shards are urgent-fresh and must leave first — the Pacer's

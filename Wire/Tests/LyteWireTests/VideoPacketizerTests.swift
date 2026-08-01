@@ -180,4 +180,35 @@ final class VideoPacketizerTests: XCTestCase {
             }
         }
     }
+
+    func testBorrowedPacketizerMatchesArrayAndDoesNotRetainInput() throws {
+        let original = idrFrame(totalByteCount: 7_003)
+        var arrayPacketizer = VideoPacketizer(
+            firstSeq: ChannelSeq(rawValue: 900)
+        )
+        let expected = try arrayPacketizer.packetize(
+            frame: original, frameNumber: FrameNumber(rawValue: 44),
+            captureTimestamp: HostTimestamp(microseconds: 123_456),
+            isIDR: true, regime: .lossy
+        )
+
+        let pointer = UnsafeMutableBufferPointer<UInt8>.allocate(
+            capacity: original.count
+        )
+        _ = pointer.initialize(from: original)
+        var borrowedPacketizer = VideoPacketizer(
+            firstSeq: ChannelSeq(rawValue: 900)
+        )
+        let actual = try borrowedPacketizer.packetize(
+            frame: UnsafeBufferPointer(pointer),
+            frameNumber: FrameNumber(rawValue: 44),
+            captureTimestamp: HostTimestamp(microseconds: 123_456),
+            isIDR: true, regime: .lossy
+        )
+        pointer.update(repeating: 0xCC)
+        pointer.deallocate()
+
+        XCTAssertEqual(actual, expected)
+        XCTAssertEqual(borrowedPacketizer.nextSeq, arrayPacketizer.nextSeq)
+    }
 }

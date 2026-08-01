@@ -2099,7 +2099,8 @@ func run() throws {
         \(s.rateChanges) pacer moves, \
         \(s.fallPurges) fall purges (\(s.fallPurgedVideoBytes) B dropped \
         pre-stale); frameByteCeiling@\(opts.fps)fps \
-        \(wire.frameByteCeiling(fps: Int(opts.fps))) B
+        \(wire.frameByteCeiling(fps: Int(opts.fps))) B; borrowed ingress \
+        \(wire.borrowedFrameBytesIngested) B (entry-copy bytes avoided)
         encoder-vbv: \(wire.vbvDirectivesIssued) directives, \
         \(sink.encoderReconfigures) applied, \
         \(wire.vbvRateMovesAbsorbed) rate moves absorbed \

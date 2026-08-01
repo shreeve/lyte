@@ -199,6 +199,10 @@ public struct VideoChannelCounters: Sendable {
     /// buffer in place (one final wire buffer, rather than encoding a
     /// third header+payload array after sealing).
     public var sealedDatagramsAssembledInPlace = 0
+    /// Frames admitted directly from a caller-owned synchronous buffer,
+    /// without first materializing a full-frame Array.
+    public var borrowedFramesIngested = 0
+    public var borrowedFrameBytesIngested = 0
 
     public init() {}
 }
@@ -383,6 +387,45 @@ public final class VideoChannel {
         interleave: (() -> Void)? = nil,
         now: UInt64
     ) throws -> Int {
+        try ingestBytes(
+            frame: annexB, frameNumber: frameNumber,
+            captureTimestampMicroseconds: captureTimestampMicroseconds,
+            isKeyframe: isKeyframe, lastInputSeq: lastInputSeq,
+            interleave: interleave, now: now, isBorrowed: false
+        )
+    }
+
+    /// Synchronous borrowed ingress. Packetization, FEC, sealing, queueing,
+    /// and repair retention finish before return; no input view escapes.
+    @discardableResult
+    public func ingest(
+        frame annexB: UnsafeBufferPointer<UInt8>,
+        frameNumber: FrameNumber,
+        captureTimestampMicroseconds: UInt64,
+        isKeyframe: Bool,
+        lastInputSeq: UInt32? = nil,
+        interleave: (() -> Void)? = nil,
+        now: UInt64
+    ) throws -> Int {
+        try ingestBytes(
+            frame: annexB, frameNumber: frameNumber,
+            captureTimestampMicroseconds: captureTimestampMicroseconds,
+            isKeyframe: isKeyframe, lastInputSeq: lastInputSeq,
+            interleave: interleave, now: now, isBorrowed: true
+        )
+    }
+
+    func ingestBytes<C>(
+        frame annexB: C,
+        frameNumber: FrameNumber,
+        captureTimestampMicroseconds: UInt64,
+        isKeyframe: Bool,
+        lastInputSeq: UInt32?,
+        interleave: (() -> Void)?,
+        now: UInt64,
+        isBorrowed: Bool
+    ) throws -> Int
+    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         let queuedBytesBeforeAdmission =
             pacer.queuedBytes(.freshVideo) + pacer.queuedBytes(.videoTail)
         let queuedWireTimeBeforeAdmissionNS = UInt64(
@@ -438,6 +481,10 @@ public final class VideoChannel {
         if isKeyframe { lastKeyframeNumber = frameNumber }
         counters.framesIngested += 1
         if isKeyframe { counters.keyframesIngested += 1 }
+        if isBorrowed {
+            counters.borrowedFramesIngested += 1
+            counters.borrowedFrameBytesIngested += annexB.count
+        }
         counters.shardsEnqueued += shards.count
         return shards.count
     }
@@ -897,13 +944,14 @@ public final class VideoChannel {
     /// shard budget (header comment). With a bare envelope the geometry
     /// is bit-identical to `FecGeometryTable.geometry`, which the HS-5
     /// gate test still asserts against the frozen corpus.
-    private func packetize(
-        frame annexB: [UInt8],
+    private func packetize<C>(
+        frame annexB: C,
         frameNumber: FrameNumber,
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
         lastInputSeq: UInt32?
-    ) throws -> [(envelope: Envelope, payload: [UInt8])] {
+    ) throws -> [(envelope: Envelope, payload: [UInt8])]
+    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         let classification = AnnexBCheck.classifyFrame(annexB)
         guard classification.isFrameShaped else {
             throw VideoError.frameNotFrameShaped

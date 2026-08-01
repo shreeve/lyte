@@ -236,4 +236,29 @@ final class FecCoderTests: XCTestCase {
         slots = Array(repeating: nil, count: geometry.totalShards)
         XCTAssertEqual(recovered, group)
     }
+
+    func testBorrowedEncodeOwnsEveryReturnedShard() throws {
+        let geometry = try FecGeometry(
+            dataShards: 7, parityShards: 3, groupByteCount: 7_003
+        )
+        let original = counting(from: 0x3C, count: geometry.groupByteCount)
+        let pointer = UnsafeMutableBufferPointer<UInt8>.allocate(
+            capacity: original.count
+        )
+        _ = pointer.initialize(from: original)
+        let encoded = try FecEncoder.encode(
+            group: UnsafeBufferPointer(pointer), geometry: geometry
+        )
+
+        pointer.update(repeating: 0xEE)
+        pointer.deallocate()
+
+        XCTAssertEqual(
+            try FecDecoder.decode(
+                shards: encoded.map(Optional.some), geometry: geometry
+            ),
+            original,
+            "encoded shards must not retain the borrowed group"
+        )
+    }
 }
