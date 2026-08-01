@@ -9,9 +9,9 @@
 # Usage: Scripts/sign-dev.sh <binary-or-.app> [<binary-or-.app> ...]
 #
 # One-time setup lives in Scripts/setup-dev-signing.sh (creates the identity in
-# a dedicated ~/Library/Keychains/lyte-signing keychain). If the identity is
-# missing this script signs ad-hoc and warns, so builds never hard-fail on a
-# fresh machine.
+# a dedicated ~/Library/Keychains/lyte-signing keychain). Identity-bearing
+# binaries fail closed when it is absent: an ad-hoc fallback silently destroys
+# the Keychain ACL invariant and guarantees another authorization prompt.
 set -e
 
 IDENTITY="Lyte Dev"
@@ -21,9 +21,9 @@ IDENT_HASH="$(security find-identity ~/Library/Keychains/lyte-signing.keychain-d
   | awk -v n="$IDENTITY" '$0 ~ n {print $2; exit}')"
 
 if [ -z "$IDENT_HASH" ]; then
-    echo "warning: '$IDENTITY' identity not found — signing ad-hoc." >&2
-    echo "         run Scripts/setup-dev-signing.sh once to stop keychain re-prompts." >&2
-    IDENT_HASH="-"
+    echo "error: '$IDENTITY' identity not found." >&2
+    echo "       run Scripts/setup-dev-signing.sh before building a Keychain client." >&2
+    exit 1
 fi
 
 for target in "$@"; do
@@ -32,4 +32,17 @@ for target in "$@"; do
         *)     ident="dev.shreeve.$(basename "$target")" ;;
     esac
     codesign --force --sign "$IDENT_HASH" --identifier "$ident" --timestamp=none "$target"
+    codesign --verify --strict "$target"
+    actual_ident="$(codesign -d --verbose=4 "$target" 2>&1 \
+        | awk -F= '/^Identifier=/{print $2; exit}')"
+    requirement="$(codesign -d -r- "$target" 2>&1)"
+    if [ "$actual_ident" != "$ident" ] \
+        || ! printf '%s\n' "$requirement" | rg -Fq \
+            "certificate root = H\"$(printf '%s' "$IDENT_HASH" | tr '[:upper:]' '[:lower:]')\""
+    then
+        echo "error: unstable code requirement for $target" >&2
+        echo "       expected identifier $ident under Lyte Dev $IDENT_HASH" >&2
+        echo "       got: $requirement" >&2
+        exit 1
+    fi
 done

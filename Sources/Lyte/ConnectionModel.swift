@@ -100,6 +100,11 @@ final class ConnectionModel {
     private let videoDeliveryQueue = DispatchQueue(
         label: "lyte.video.delivery", qos: .userInteractive)
     private let videoDeliveryBooks = VideoDeliveryBooks()
+    /// Actual-app flight recorder: source cadence, receive cadence,
+    /// delivery queue, renderer enqueue, and Apple's decode/display books.
+    /// Bounded to six seconds at 60 fps and always on — visual failures
+    /// cannot depend on the stats overlay being open.
+    private let videoFlightRecorder = VideoFlightRecorder()
     /// in-fps over the same ~1 s window shape as the delivery books'
     /// out-fps, so the overlay's in/out slash-pair compares honestly.
     private let videoInMeter = RateMeter()
@@ -172,7 +177,11 @@ final class ConnectionModel {
 
         let identity: NoiseKeyPair
         do {
-            identity = try ClientNoiseIdentity.loadOrCreate()
+            // SecItemCopyMatching may synchronously cross securityd and
+            // wait for Keychain authorization. It must never pin the
+            // MainActor: doing so makes the whole stream window vanish
+            // into an unresponsive app before the first handshake byte.
+            identity = try await ClientNoiseIdentityProvider.shared.identity()
         } catch {
             // The Keychain path needs the stable "Lyte Dev" signature —
             // builds via Scripts/make-app.sh (docs/MACOS-SIGNING.md).
@@ -327,18 +336,77 @@ final class ConnectionModel {
         return LyteUdpSession(
             crypto: crypto,
             config: config,
-            onSample: { [weak self, videoDeliveryQueue, videoDeliveryBooks] sample, _ in
+            onSample: {
+                [weak self, videoDeliveryQueue, videoDeliveryBooks,
+                 videoFlightRecorder] sample, unit in
                 // True ownership transfer: the receive thread hands the
                 // buffer to the delivery queue and never touches it
                 // again (CMSampleBuffer is CF-immutable here; the
                 // Sendable annotation just can't say so).
                 nonisolated(unsafe) let transferred = sample
                 let dispatched = DispatchTime.now().uptimeNanoseconds
+                let flightToken = videoFlightRecorder.frameReady(
+                    frame: unit.frameNumber.rawValue,
+                    hostMicroseconds: unit.timestamp.microseconds,
+                    nowNanoseconds: dispatched)
                 videoDeliveryQueue.async {
+                    let enqueueStarted = DispatchTime.now().uptimeNanoseconds
+                    let rendererReady = renderer.isReadyForMoreMediaData
+                    let rendererFailed = renderer.status == .failed
                     renderer.enqueue(transferred)
-                    videoDeliveryBooks.record(hopMilliseconds:
-                        Double(DispatchTime.now().uptimeNanoseconds
-                            &- dispatched) / 1e6)
+                    let enqueueFinished =
+                        DispatchTime.now().uptimeNanoseconds
+                    videoDeliveryBooks.record(
+                        hopMilliseconds:
+                            Double(enqueueFinished &- dispatched) / 1e6)
+                    videoFlightRecorder.frameEnqueued(
+                        flightToken,
+                        enqueueStartedNanoseconds: enqueueStarted,
+                        enqueueFinishedNanoseconds: enqueueFinished,
+                        rendererReady: rendererReady,
+                        rendererFailed: rendererFailed)
+                    if videoFlightRecorder.shouldSampleRenderer(
+                        after: flightToken
+                    ) {
+                        renderer.loadVideoPerformanceMetrics { metrics in
+                            if let metrics {
+                                videoFlightRecorder.recordRendererMetrics(
+                                    .init(
+                                        totalFrames: metrics.totalNumberOfFrames,
+                                        droppedFrames:
+                                            metrics.numberOfDroppedFrames,
+                                        corruptedFrames:
+                                            metrics.numberOfCorruptedFrames,
+                                        accumulatedDelayMilliseconds:
+                                            metrics.totalAccumulatedFrameDelay
+                                                * 1_000))
+                            }
+                            let flight = videoFlightRecorder.snapshot()
+                            let rendererMetrics = flight.rendererMetrics
+                            NSLog(
+                                "lyte video flight: frames=%llu pending=%d "
+                                    + "max-pending=%d source-p99=%.1fms "
+                                    + "ready-p99=%.1fms stretch-p99=%.1fms "
+                                    + "queue-p99=%.1fms enqueue-p99=%.1fms "
+                                    + "not-ready=%llu rendered=%d dropped=%d "
+                                    + "corrupt=%d delay=%.1fms bottleneck=%@",
+                                flight.frames,
+                                flight.pending,
+                                flight.maximumPending,
+                                flight.sourceGapP99Milliseconds ?? -1,
+                                flight.readyGapP99Milliseconds ?? -1,
+                                flight.transitStretchP99Milliseconds ?? -1,
+                                flight.queueWaitP99Milliseconds ?? -1,
+                                flight.enqueueP99Milliseconds ?? -1,
+                                flight.rendererNotReady,
+                                rendererMetrics?.totalFrames ?? -1,
+                                rendererMetrics?.droppedFrames ?? -1,
+                                rendererMetrics?.corruptedFrames ?? -1,
+                                rendererMetrics?
+                                    .accumulatedDelayMilliseconds ?? -1,
+                                flight.bottleneck)
+                        }
+                    }
                 }
                 // Teach the input capture its coordinate space — once
                 // per size, not per sample (dimension changes are a
@@ -722,10 +790,17 @@ final class ConnectionModel {
                 reason: "\(hostName ?? "host") is no longer paired")
             return
         }
-        let identity: NoiseKeyPair
         let crypto: NoiseTransportCrypto
         do {
-            identity = try ClientNoiseIdentity.loadOrCreate()
+            // A roaming dial follows a successfully established session,
+            // so the process cache must already hold the authenticated
+            // identity. Never summon SecurityAgent from an automatic path.
+            guard let identity =
+                    ClientNoiseIdentityProvider.shared.cachedIdentity
+            else {
+                roamingInput { policy, now in policy.dialFailed(now: now) }
+                return
+            }
             crypto = try NoiseTransportCrypto(
                 hostAddress: address,
                 hostPort: port,
@@ -1196,6 +1271,29 @@ final class ConnectionModel {
                     format: " · deliver p50/p99 %.1f/%.1f ms", p50, p99)
             }
             lines.append(video)
+        }
+        let flight = videoFlightRecorder.snapshot()
+        if flight.frames > 0 {
+            var glass = String(
+                format: "glass:   source/ready p99 %.1f/%.1f ms"
+                    + " · transit %.1f ms · sample %.1f ms"
+                    + " · queue/enqueue %.1f/%.1f ms",
+                flight.sourceGapP99Milliseconds ?? 0,
+                flight.readyGapP99Milliseconds ?? 0,
+                flight.transitStretchP99Milliseconds ?? 0,
+                Double(pipelineStats.sampleBuildMicroseconds.p99 ?? 0) / 1_000,
+                flight.queueWaitP99Milliseconds ?? 0,
+                flight.enqueueP99Milliseconds ?? 0)
+            if let renderer = flight.rendererMetrics {
+                glass += " · render \(renderer.totalFrames)"
+                    + " drop \(renderer.droppedFrames)"
+                    + " corrupt \(renderer.corruptedFrames)"
+                glass += String(
+                    format: " delay %.1f ms",
+                    renderer.accumulatedDelayMilliseconds)
+            }
+            glass += " · \(flight.bottleneck)"
+            lines.append(glass)
         }
 
         let clipboard = core.snapshotCounters()

@@ -66,13 +66,14 @@ This will:
    `-legacy` because macOS `security` cannot verify the MAC that OpenSSL 3
    writes by default.
 2. Create the `lyte-signing` keychain, add it to the user search list, and
-   import the identity with an open ACL (`-A`).
+   import the identity trusted only for `/usr/bin/codesign`.
 3. Run `security set-key-partition-list -S apple-tool:,apple:,codesign:` so
    `codesign` may use the private key without an interactive prompt.
 
-Then build, sign, and run the binary against a host **once** and click
-**Always Allow** on the (final) prompt for the *pairing* key. Every rebuild
-after that is silent.
+Then build, sign, and run each distinct executable that accesses the identity
+against a host once. Click **Always Allow** separately for Lyte.app and
+`lyte-cli`; each executable has its own designated requirement. Rebuilds made
+through the scripts are silent thereafter.
 
 ## Everyday use
 
@@ -106,9 +107,11 @@ The bundle identifier is part of the DR, so it must be stable per target:
 - `*.app` → `dev.shreeve.lyte`
 - anything else → `dev.shreeve.<basename>` (e.g. `dev.shreeve.lyte-cli`)
 
-It signs with `--force --timestamp=none` using the identity **by SHA-1 hash**.
-If the identity is missing it signs **ad-hoc** and prints a warning, so a
-checkout without the cert still builds — it just re-prompts until setup is run.
+It signs with `--force --timestamp=none` using the identity **by SHA-1 hash**,
+then verifies the signature, identifier, and certificate-root requirement.
+If the identity is missing it fails closed: silently producing an ad-hoc
+Keychain client would invalidate the ACL invariant and guarantee another
+authorization prompt.
 
 ## Verifying a signature
 
@@ -143,3 +146,7 @@ you'll get one fresh prompt.
   authenticates to Lyte hosts) and the *signing* key (`Lyte Dev`, in the
   lyte-signing keychain, signs our binaries). Signing the binary stably is
   what keeps the pairing key's ACL grant valid.
+- **A later bare `swift build` overwrites the CLI artifact.** SwiftPM emits an
+  ad-hoc-signed executable at `.build/<configuration>/lyte-cli`, replacing the
+  stable signature installed by `Scripts/build-cli.sh`. Run the signing script
+  again immediately before any CLI command that touches the client identity.

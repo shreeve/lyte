@@ -179,61 +179,66 @@ struct LytePairingSheet: View {
 
     private func startPairing() {
         guard let hostKey = effectiveHostKey else { return }
-        let identity: NoiseKeyPair
-        do {
-            identity = try ClientNoiseIdentity.loadOrCreate()
-        } catch {
-            phase = .failed("Keychain refused the client identity (\(error)) "
-                + "— the app must be built via Scripts/make-app.sh so its "
-                + "signature is stable")
-            return
-        }
-        phase = .running("Connecting…")
-        let config = LytePairing.Config(
-            hostAddress: host.address,
-            hostPort: host.port,
-            hostStaticPublicKey: hostKey,
-            pin: pin,
-            clientStaticKeys: identity,
-            onProgress: { line in
-                Task { @MainActor in
-                    if case .running = phase { phase = .running(line) }
-                }
-            })
+        phase = .running("Unlocking client identity…")
         let target = host
-        Task.detached {
-            let outcome = LytePairing.run(config)
-            await MainActor.run {
-                switch outcome {
-                case .paired(let key):
-                    var store = PinnedHostStore.load()
-                    store.pin(
-                        staticPublicKey: key,
-                        name: target.name,
-                        address: target.address,
-                        port: target.port,
-                        pairedAt: ISO8601DateFormatter().string(from: Date()))
-                    do {
-                        try store.save()
-                        paired = true
-                        phase = .paired
-                    } catch {
-                        phase = .failed("Paired, but saving the pin failed: \(error)")
+        Task { @MainActor in
+            let identity: NoiseKeyPair
+            do {
+                identity = try await ClientNoiseIdentityProvider.shared
+                    .identity()
+            } catch {
+                phase = .failed(
+                    "Keychain refused the client identity (\(error)) "
+                        + "— the app must be built via Scripts/make-app.sh "
+                        + "so its signature is stable")
+                return
+            }
+            guard case .running = phase else { return }
+            phase = .running("Connecting…")
+            let config = LytePairing.Config(
+                hostAddress: target.address,
+                hostPort: target.port,
+                hostStaticPublicKey: hostKey,
+                pin: pin,
+                clientStaticKeys: identity,
+                onProgress: { line in
+                    Task { @MainActor in
+                        if case .running = phase { phase = .running(line) }
                     }
-                case .pinMismatch:
-                    phase = .failed("Wrong PIN — the host disagreed with this "
-                        + "entry. Three wrong guesses burn the PIN; restart "
-                        + "pairing on the host for a fresh one.")
-                case .hostRejected(let reason):
-                    phase = .failed("The host rejected the pairing (\(reason)).")
-                case .invalidShare:
-                    phase = .failed("The host's cryptographic share was invalid.")
-                case .timedOut:
-                    phase = .failed("No answer — is the host running with "
-                        + "--pair? (A burned PIN also answers nothing.)")
-                case .failed(let message):
-                    phase = .failed(message)
+                })
+            let outcome = await Task.detached {
+                LytePairing.run(config)
+            }.value
+            switch outcome {
+            case .paired(let key):
+                var store = PinnedHostStore.load()
+                store.pin(
+                    staticPublicKey: key,
+                    name: target.name,
+                    address: target.address,
+                    port: target.port,
+                    pairedAt: ISO8601DateFormatter().string(from: Date()))
+                do {
+                    try store.save()
+                    paired = true
+                    phase = .paired
+                } catch {
+                    phase = .failed(
+                        "Paired, but saving the pin failed: \(error)")
                 }
+            case .pinMismatch:
+                phase = .failed("Wrong PIN — the host disagreed with this "
+                    + "entry. Three wrong guesses burn the PIN; restart "
+                    + "pairing on the host for a fresh one.")
+            case .hostRejected(let reason):
+                phase = .failed("The host rejected the pairing (\(reason)).")
+            case .invalidShare:
+                phase = .failed("The host's cryptographic share was invalid.")
+            case .timedOut:
+                phase = .failed("No answer — is the host running with "
+                    + "--pair? (A burned PIN also answers nothing.)")
+            case .failed(let message):
+                phase = .failed(message)
             }
         }
     }
