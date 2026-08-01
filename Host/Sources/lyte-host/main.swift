@@ -19,6 +19,9 @@ import LyteWire
 enum Backend: String {
     case portal
     case mutter
+    /// E1: the direct eye — KMS doorbell + EGL blit + hevc_vaapi
+    /// (docs/20260801-direct-eye-plan.md). Needs CAP_SYS_ADMIN.
+    case direct
 }
 
 struct Options {
@@ -136,7 +139,7 @@ struct Options {
             case "--backend":
                 i += 1
                 guard i < args.count, let b = Backend(rawValue: args[i]) else {
-                    throw HostError("--backend must be 'portal' or 'mutter'")
+                    throw HostError("--backend must be 'portal', 'mutter', or 'direct'")
                 }
                 opts.backend = b
             case "--synthetic-motion":
@@ -295,6 +298,11 @@ struct Options {
                 PATH (default /tmp/lyte-h0a.hevc).
                   --backend portal  xdg-desktop-portal ScreenCast (primary;
                                     one-time on-screen consent on first run)
+                  --backend direct  the direct eye: KMS doorbell + EGL
+                                    blit + hevc_vaapi on the iGPU — no
+                                    portal, no PipeWire video, no Mutter
+                                    (needs CAP_SYS_ADMIN; E1, rate
+                                    directives deferred until E6)
                   --backend mutter  org.gnome.Mutter.ScreenCast (no dialog;
                                     spike fallback for headless/ssh runs)
                   --synthetic-motion WIDTHxHEIGHT
@@ -1533,13 +1541,19 @@ func run() throws {
         opts.bitrate = Int64(opts.wireRateMbps * 1_000_000)
     }
 
-    guard ProcessInfo.processInfo.environment["DBUS_SESSION_BUS_ADDRESS"] != nil
-        || FileManager.default.fileExists(
-            atPath: "\(ProcessInfo.processInfo.environment["XDG_RUNTIME_DIR"] ?? "/nonexistent")/bus")
-    else {
-        throw HostError("no user session bus reachable (DBUS_SESSION_BUS_ADDRESS unset "
-            + "and $XDG_RUNTIME_DIR/bus missing) — lyte-host must run inside the "
-            + "logged-in user session")
+    // The direct eye needs no session bus for capture (E1) — its video
+    // never touches the portal/PipeWire. Input/clipboard leaves that DO
+    // still want the session are E2/E4's packaging story; file-mode
+    // probes under sudo must not be blocked by a portal-era assumption.
+    if opts.backend != .direct {
+        guard ProcessInfo.processInfo.environment["DBUS_SESSION_BUS_ADDRESS"] != nil
+            || FileManager.default.fileExists(
+                atPath: "\(ProcessInfo.processInfo.environment["XDG_RUNTIME_DIR"] ?? "/nonexistent")/bus")
+        else {
+            throw HostError("no user session bus reachable (DBUS_SESSION_BUS_ADDRESS unset "
+                + "and $XDG_RUNTIME_DIR/bus missing) — lyte-host must run inside the "
+                + "logged-in user session")
+        }
     }
 
     let sessionMode = opts.wireOut != nil || opts.wireListen != nil
@@ -1954,6 +1968,7 @@ func run() throws {
 
     let sink = Sink(opts: opts, file: file, wire: wire,
                     noResetRateMoves: noResetRateMoves)
+    var directLeg: DirectEyeLeg?
     var err = [CChar](repeating: 0, count: 256)
     var captureResult: Int32 = 0
     var mutter: MutterScreenCast?
@@ -2040,6 +2055,17 @@ func run() throws {
             usleep(5_000)
             sink.onTick()
         }
+    } else if opts.backend == .direct {
+        // E1: the direct eye replaces capture AND encode — the Sink's
+        // NVENC leaf stays closed; encoded AUs go straight to the wire.
+        let leg = DirectEyeLeg(
+            config: .init(seconds: opts.seconds),
+            wire: wire, file: file)
+        directLeg = leg
+        leg.run()
+        if let failure = leg.lastError {
+            sink.lastError = failure
+        }
     } else {
         // Both backends must stay alive for the whole capture: dropping them
         // closes their D-Bus connection and destroys the PipeWire node.
@@ -2057,6 +2083,8 @@ func run() throws {
             stream = try m.openMonitorStream(connector: opts.connector)
             print("mutter: ScreenCast started — PipeWire node "
                 + "\(stream.nodeId) on default remote")
+        case .direct:
+            preconditionFailure("direct backend dispatches above")
         }
         let user = Unmanaged.passUnretained(sink).toOpaque()
         guard let capture = lyte_pw_capture_new(
@@ -2122,6 +2150,33 @@ func run() throws {
     }
     if captureResult == -1 {
         throw HostError("capture failed: \(errString(err))")
+    }
+    if let leg = directLeg {
+        // The direct leg keeps its own books; the Sink never opened.
+        if leg.frames == 0 {
+            throw HostError("direct eye produced no frames in "
+                + "\(Int(opts.seconds))s")
+        }
+        print("""
+
+        done: \(leg.frames) frames encoded (direct eye), \
+        \(leg.keyframes) IDR, \(leg.bytes) bytes, \
+        missed_grabs \(leg.missedGrabs), \
+        rate directives deferred \(leg.directivesDeferred)
+        """)
+        // The same stream-startability gate the portal leg gets —
+        // hevc_vaapi must open with VPS/SPS/PPS + IRAP or the client
+        // can never join mid-life. (Session books integration rides
+        // with E1's live-validation half.)
+        let directNals = AnnexB.nalUnits(in: leg.firstPacket)
+        print("first packet NALs: \(AnnexB.summary(of: leg.firstPacket))")
+        guard AnnexB.startsWithParameterSetsAndIrap(leg.firstPacket) else {
+            throw HostError("the direct eye's first packet does not begin "
+                + "with VPS/SPS/PPS + an IRAP picture (got: "
+                + "\(directNals.map { HevcNal.name($0.type) }.joined(separator: " ")))")
+        }
+        print("first packet starts with parameter sets + IDR: OK")
+        return
     }
     if sink.framesIn == 0 {
         throw HostError(opts.syntheticMotion == nil

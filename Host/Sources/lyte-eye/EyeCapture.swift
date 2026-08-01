@@ -9,6 +9,7 @@
 import CDRM
 import Foundation
 import Glibc
+import HostEye
 
 /// Per-surface cached GL state: the exported planes only need EGL
 /// import once per pooled surface, not once per frame.
@@ -116,6 +117,7 @@ func runCapture(_ rawArgs: [String]) -> Never {
             continue
         }
 
+        var ticketReleased = false
         do {
             let tBlit = nowSeconds()
             var source = try gl.importTexture(
@@ -147,6 +149,7 @@ func runCapture(_ rawArgs: [String]) -> Never {
                 into: targetCache[sid]!.target)
             gl.destroy(&source)
             ticket.release()
+            ticketReleased = true
             blitMs += (nowSeconds() - tBlit) * 1e3
 
             let tEnc = nowSeconds()
@@ -154,15 +157,15 @@ func runCapture(_ rawArgs: [String]) -> Never {
             encoder.release(frame)
             encodeMs += (nowSeconds() - tEnc) * 1e3
             for p in packets {
-                file.write(p)
-                bytes += p.count
+                file.write(p.data)
+                bytes += p.data.count
             }
             frames += 1
             framesThisSecond += 1
         } catch {
             FileHandle.standardError.write(
                 Data("frame \(frames): \(error)\n".utf8))
-            ticket.release()
+            if !ticketReleased { ticket.release() }
             exit(1)
         }
 
@@ -177,8 +180,8 @@ func runCapture(_ rawArgs: [String]) -> Never {
     // Drain the encoder.
     if let tail = try? encoder.encode(nil, pts: Int64(frames)) {
         for p in tail {
-            file.write(p)
-            bytes += p.count
+            file.write(p.data)
+            bytes += p.data.count
         }
     }
     try? file.close()

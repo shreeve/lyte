@@ -8,7 +8,7 @@ import CDRM
 import Foundation
 import Glibc
 
-func nowSeconds() -> Double {
+public func nowSeconds() -> Double {
     var ts = timespec()
     clock_gettime(CLOCK_MONOTONIC, &ts)
     return Double(ts.tv_sec) + Double(ts.tv_nsec) / 1e9
@@ -33,13 +33,13 @@ func planeType(fd: Int32, planeId: UInt32) -> UInt64? {
     return nil
 }
 
-struct ActivePlanes {
-    var primary: (id: UInt32, fb: UInt32)
-    var cursor: (id: UInt32, fb: UInt32)?
+public struct ActivePlanes {
+    public var primary: (id: UInt32, fb: UInt32)
+    public var cursor: (id: UInt32, fb: UInt32)?
 }
 
 /// The active primary (and cursor) planes on a live CRTC.
-func findActivePlanes(fd: Int32) -> ActivePlanes? {
+public func findActivePlanes(fd: Int32) -> ActivePlanes? {
     guard let planeRes = drmModeGetPlaneResources(fd) else { return nil }
     defer { drmModeFreePlaneResources(planeRes) }
     var primary: (UInt32, UInt32)?
@@ -63,7 +63,7 @@ func findActivePlanes(fd: Int32) -> ActivePlanes? {
 }
 
 /// Current FB_ID of a plane — the doorbell's one register read.
-func currentFB(fd: Int32, planeId: UInt32) -> UInt32? {
+public func currentFB(fd: Int32, planeId: UInt32) -> UInt32? {
     guard let plane = drmModeGetPlane(fd, planeId) else { return nil }
     defer { drmModeFreePlane(plane) }
     return plane.pointee.fb_id
@@ -72,21 +72,21 @@ func currentFB(fd: Int32, planeId: UInt32) -> UInt32? {
 /// One grabbed scanout frame: geometry plus per-plane dmabufs. The
 /// dmabuf fds hold the buffer alive even if the compositor releases
 /// the fb id mid-frame — close() them via release() after import.
-struct ScanoutTicket {
-    var width: UInt32
-    var height: UInt32
-    var fourcc: UInt32
-    var modifier: UInt64
-    var planes: [(fd: Int32, offset: UInt32, pitch: UInt32)]
+public struct ScanoutTicket {
+    public var width: UInt32
+    public var height: UInt32
+    public var fourcc: UInt32
+    public var modifier: UInt64
+    public var planes: [(fd: Int32, offset: UInt32, pitch: UInt32)]
 
-    func release() {
+    public func release() {
         for p in planes { close(p.fd) }
     }
 }
 
 /// GETFB2 + PRIME export (privileged). nil on a stale fb id — the
 /// compositor flipped and freed between poll and grab; caller skips.
-func grabTicket(fd: Int32, fbId: UInt32) -> ScanoutTicket? {
+public func grabTicket(fd: Int32, fbId: UInt32) -> ScanoutTicket? {
     guard let fb2 = drmModeGetFB2(fd, fbId) else { return nil }
     defer { drmModeFreeFB2(fb2) }
     let fb = fb2.pointee
@@ -108,98 +108,6 @@ func grabTicket(fd: Int32, fbId: UInt32) -> ScanoutTicket? {
     return ScanoutTicket(
         width: fb.width, height: fb.height, fourcc: fb.pixel_format,
         modifier: fb.modifier, planes: planes)
-}
-
-// MARK: - Doorbell mode (milestone 1, output format frozen)
-
-struct Watch {
-    var planeId: UInt32
-    var lastFB: UInt32
-    var changes = 0
-    var lastChangeAt = 0.0
-    var minGap = 1e9
-    var maxGap = 0.0
-
-    mutating func observe(fb: UInt32, at t: Double) -> Bool {
-        guard fb != lastFB else { return false }
-        if lastChangeAt > 0 {
-            let gap = t - lastChangeAt
-            minGap = min(minGap, gap)
-            maxGap = max(maxGap, gap)
-        }
-        lastChangeAt = t
-        lastFB = fb
-        changes += 1
-        return true
-    }
-}
-
-func runDoorbell(
-    device: String, seconds: Double, intervalUs: UInt32
-) -> Never {
-    let fd = open(device, O_RDWR)
-    guard fd >= 0 else {
-        perror(device)
-        exit(1)
-    }
-    drmSetClientCap(fd, UInt64(DRM_CLIENT_CAP_UNIVERSAL_PLANES), 1)
-    guard let planes = findActivePlanes(fd: fd) else {
-        FileHandle.standardError.write(
-            Data("no active primary plane on \(device)\n".utf8))
-        exit(1)
-    }
-    var primary = Watch(planeId: planes.primary.id, lastFB: planes.primary.fb)
-    var cursor = planes.cursor.map { Watch(planeId: $0.id, lastFB: $0.fb) }
-    print("device=\(device) primary_plane=\(primary.planeId) "
-        + "cursor_plane=\(cursor?.planeId ?? 0) "
-        + "poll=\(intervalUs)us run=\(Int(seconds))s [swift]")
-
-    var polls = 0
-    var pollCostNs = 0.0
-    let t0 = nowSeconds()
-    var nextReport = t0 + 1.0
-    var primaryThisSecond = 0
-    var t = t0
-
-    while true {
-        t = nowSeconds()
-        guard t - t0 < seconds else { break }
-        let costStart = nowSeconds()
-        if let fb = currentFB(fd: fd, planeId: primary.planeId),
-           primary.observe(fb: fb, at: t) {
-            primaryThisSecond += 1
-        }
-        if cursor != nil, let fb = currentFB(fd: fd, planeId: cursor!.planeId) {
-            _ = cursor!.observe(fb: fb, at: t)
-        }
-        pollCostNs += (nowSeconds() - costStart) * 1e9
-        polls += 1
-        if t >= nextReport {
-            print("  t=\(String(format: "%2.0f", t - t0))s "
-                + "primary_flips_this_sec=\(primaryThisSecond) "
-                + "total=\(primary.changes)")
-            primaryThisSecond = 0
-            nextReport += 1.0
-        }
-        usleep(intervalUs)
-    }
-
-    let duration = t - t0
-    print(String(
-        format: "RESULT primary: %d flips in %.1fs = %.2f/s  "
-            + "gap_min=%.1fms gap_max=%.1fms",
-        primary.changes, duration,
-        Double(primary.changes) / duration,
-        primary.changes > 1 ? primary.minGap * 1e3 : 0,
-        primary.changes > 1 ? primary.maxGap * 1e3 : 0))
-    if let c = cursor {
-        print(String(format: "RESULT cursor:  %d flips in %.1fs = %.2f/s",
-                     c.changes, duration, Double(c.changes) / duration))
-    }
-    print(String(format: "RESULT poll cost: %.0f ns/poll (%d polls)",
-                 pollCostNs / Double(max(polls, 1)), polls))
-    close(fd)
-    exit(0)
 }
 
 #endif
