@@ -6,8 +6,8 @@ One master clock (the host PipeWire graph clock, already pinned for audio RTP),
 one client-side skew estimator shared by audio and video, damage frames encoded
 the instant they arrive, a strict-priority token-bucket pacer that makes the
 audio-continuity doc's 5 ms ± 2 ms p99 inter-send criterion true by
-construction, present-ASAP video in Work mode / schedule-on-timeline in Play
-mode, audio-master sync only when motion content is actually playing, and an
+construction, host-clock-mapped adaptive video playout in every mode,
+audio-master sync only when motion content is actually playing, and an
 input-echo loop that gives us Reflex-grade input-to-photon numbers without a
 photodiode. Target: **≤ 10 ms p50 added latency** (capture-copy through decode)
 on wired LAN — the pipeline costs less than one 60 Hz frame over running the
@@ -31,7 +31,7 @@ The chain for one damage event at 2048×1280@60 (16.7 ms host frame interval,
 | 6 | Pacer + wire (typical P-frame) | 1.0 | 3.0 | Serialization at negotiated rate; typical damage frame is a few KB. |
 | 6b | Pacer + wire (worst-case IDR) | — | 16.7 | Single-frame VBV caps any frame at `bitrate/fps` bits, so draining at the negotiated rate takes ≤ one frame interval **by construction** (§4). |
 | 7 | Network propagation | 0.3 / 3 / RTT⁄2 | 1 / 10 / — | Wired LAN / good Wi-Fi / remote. |
-| 8 | Video jitter buffer | 0 | 0 | Work mode: none (§5). Play mode: adaptive D, typically 4–12 ms. |
+| 8 | Video playout target | 15 | 50 | Adaptive D, clamped to 15–50 ms (§5); rises quickly under jitter, shrinks slowly. |
 | 9 | VideoToolbox HEVC decode | 3.0 | 5.0 | Hardware decode, `kVTDecompressionPropertyKey_RealTime`, async decompression; a few ms per frame on Apple Silicon ([AVF decode benchmark](https://gist.github.com/vade/f72362c60434e5af2801d01f09bdbf34)). |
 | 10 | Enqueue → vsync (120 Hz) | 4.2 | 8.0 | Present-ASAP waits at most one 8.3 ms ProMotion slot — half the penalty of a 60 Hz client. |
 | 11 | Scanout + panel response | 6.0 | 8.0 | ~half scanout to mid-screen + LCD response. Also paid locally. |
@@ -145,26 +145,14 @@ Design:
 
 ## 5. Client-side presentation
 
-Two policies, selected by the existing Work/Play toggle. Prior art: WebRTC's
-playout-delay extension distinguishes exactly these two receiver behaviors —
-min=max=0 "render as soon as possible" for interactive remoting vs a smoothing
-delay range for continuous media
-([playout-delay](https://webrtc.googlesource.com/src/+/main/docs/native-code/rtp-hdrext/playout-delay/README.md)).
-We make it a client policy rather than a wire extension since we own both ends.
-
-- **Work mode — present ASAP.** A complete, decodable frame goes to
-  `AVSampleBufferDisplayLayer` for the next vsync the moment decode finishes.
-  No video jitter buffer beyond FEC/reassembly. On 120 Hz ProMotion the vsync
-  tax is ≤ 8.3 ms, mean 4.2 — half a 60 Hz client's. Judder on aperiodic
-  typing/scroll damage is imperceptible; latency is everything. If more than
-  one frame is queued (post-stall burst), decode all in order (decode is
-  ~3 ms, cheap; P-frame chains require it) and **display only the newest**.
-- **Play mode — present on schedule.** Each frame presents at
-  `clientTime = HostClockModel.map(captureTs) + D`, quantized to the 120 Hz
-  vsync grid via the display link. D is a percentile-based target covering
-  the recent p99 of (network + decode) jitter — the same controller shape as
-  the M7 audio delay controller, fed by the same kernel-stamped arrival data;
-  typical LAN values 4–12 ms. Scheduling against the *host capture timeline*
+**Accepted posture (2026-07-31): one adaptive policy in every mode.**
+Present-ASAP/`DisplayImmediately` is retired. Each frame presents at
+`clientTime = HostClockModel.map(captureTs) + D` on a CoreMedia timebase
+slaved to the local host clock. D is clamped to **15–50 ms**, grows immediately
+when arrival jitter or lateness consumes its margin, and decays slowly
+(0.1 ms per successfully early frame). The first frame needs no second-frame
+warm-up: before the first clock fit it schedules from its local arrival.
+Scheduling against the *host capture timeline*
   preserves the source's temporal spacing for aperiodic frames — this is what
   makes 60 fps motion smooth on a 120 Hz panel (each content frame owns two
   vsync slots; a miss costs 8.3 ms, not 16.7). A frame arriving later than its
@@ -172,9 +160,16 @@ We make it a client policy rather than a wire extension since we own both ends.
   driven, ProMotion treated as fixed 120 Hz, one pending frame ≈ one frame of
   latency) is the closest prior art
   ([moonlight-qt frame pacing](https://github.com/andygrundman/moonlight-qt/commit/bef8d26a3d0b8a8eeb76365ef1dff2f0dc478aa0));
-  Lyte's difference is scheduling on the mapped host clock instead of queue
+Lyte's difference is scheduling on the mapped host clock instead of queue
   depth, which handles aperiodic damage frames without misreading "queue
   empty" as "behind".
+- Renderer readiness is authoritative: a not-ready renderer does not receive
+  an unconditional enqueue. A serial queue retains the complete compressed
+  dependency chain (four samples / 50 ms maximum). Crossing either bound,
+  renderer failure, or excessive lateness discards and flushes the **whole**
+  decode episode, emits one coalesced IDR recovery demand, and rejects
+  inter-frames until that IDR starts the next episode. An arbitrary P-frame is
+  never dropped by itself.
 - The display link idles when no frames are in flight (damage-driven idle);
   the wake path (§7) must not wait for it — the first frame after idle is
   enqueued for immediate display, not for a display-link callback.
@@ -246,8 +241,7 @@ Someone just typed; the idle→active IDR restart must not add a frame:
 4. **The wake frame races nothing.** It encodes on arrival (§3), pays the IDR
    wire tail (≤ one interval at negotiated rate, §4), and presents via
    Work-mode ASAP with a direct enqueue (§5) — no display-link wait, and the
-   jitter machinery must present frame 1 without waiting for a second frame
-   to estimate anything.
+  adaptive mapper without waiting for a second frame to estimate anything.
 5. **Measured option, default off:** a wake-only 2× token-bucket rate to
    halve the IDR tail, with the ≤ 2 ms quantum (and therefore the audio
    criterion) unchanged. Adopt only if §8 telemetry shows the tail dominating

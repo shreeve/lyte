@@ -93,6 +93,38 @@ final class VideoFlightRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.snapshot().frames, 120)
     }
 
+    func testStructuredFrameTelemetryJSONAndSessionReset() throws {
+        let recorder = VideoFlightRecorder(capacity: 2)
+        let token = recorder.frameReady(
+            frame: 7, hostMicroseconds: 10_000,
+            nowNanoseconds: 20_000_000)
+        recorder.frameEnqueued(
+            token,
+            enqueueStartedNanoseconds: 21_000_000,
+            enqueueFinishedNanoseconds: 21_100_000,
+            rendererReady: false,
+            rendererFailed: false,
+            rendererDropped: true,
+            sampleBuildMicroseconds: 900,
+            assemblyLockHoldMicroseconds: 40,
+            scheduledPresentationMicroseconds: 45_000,
+            targetDelayMicroseconds: 25_000,
+            presentationLatenessMicroseconds: 2_000,
+            rendererRecovery: true)
+
+        let frame = try XCTUnwrap(recorder.recentFrames().first)
+        XCTAssertEqual(frame.frame, 7)
+        XCTAssertEqual(frame.queueDepth, 1)
+        XCTAssertEqual(frame.sampleBuildMilliseconds ?? 0, 0.9)
+        XCTAssertTrue(frame.rendererDropped)
+        XCTAssertTrue(
+            try recorder.summaryJSONLine().contains("\"rendererDrops\":1"))
+
+        recorder.reset()
+        XCTAssertEqual(recorder.snapshot().frames, 0)
+        XCTAssertTrue(recorder.recentFrames().isEmpty)
+    }
+
     private func recordPair(
         _ recorder: VideoFlightRecorder,
         hostGapMS: UInt64,

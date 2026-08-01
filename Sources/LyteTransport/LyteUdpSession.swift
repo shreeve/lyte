@@ -330,7 +330,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// CL-12: the targeted-repair ask policy behind the pipeline's
     /// repair-signal seam.
     public private(set) var nackPolicy: NackPolicy!
-    public let clockModel = HostClockModel()
+    public let clockModel: HostClockModel
 
     // Machine + negotiator + dispatch state, one lock.
     private let lock = NSLock()
@@ -394,6 +394,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         demux: ReceiveDemux,
         sender: TransportSender,
         config: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig(),
+        clockModel: HostClockModel = HostClockModel(),
+        asynchronousVideoBuild: Bool = false,
         now: @escaping @Sendable () -> ClientTimestamp = {
             ClientTimestamp(
                 microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
@@ -402,6 +404,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         onEvent: @escaping @Sendable (LyteUdpSessionEvent) -> Void
     ) {
         self.config = config
+        self.clockModel = clockModel
         self.now = now
         self.onEvent = onEvent
         self.clipboardSharingOn = config.shareClipboard
@@ -418,6 +421,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         )
 
         self.pipeline = LyteVideoPipeline(
+            asynchronousSampleBuild: asynchronousVideoBuild,
             onSample: { [weak self] sample, unit in
                 // The input→photon seam (CL-9): a DELIVERED frame whose
                 // shards carried the lastInputSeq TLV closes every
@@ -645,6 +649,12 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     @discardableResult
     public func sendInput(_ body: InputEvent.Body) throws -> UInt32 {
         try sendInput(body, now: now())
+    }
+
+    /// App renderer failure/backpressure joins the established IDR recovery
+    /// policy instead of inventing an uncoalesced control path.
+    public func requestVideoRecovery(after frame: FrameNumber) {
+        idrRequester.recordRecoveryDemand(frame: frame, now: now())
     }
 
     // MARK: Host audio routing (CL-13)
@@ -1522,6 +1532,7 @@ public final class LyteUdpSession: @unchecked Sendable {
     private let onEvent: @Sendable (LyteUdpSessionEvent) -> Void
     private let coreBox = SessionCoreBox()
     private let closing = SessionFlag()
+    public let clockModel: HostClockModel
     /// CoreAudio engine start/stop runs HERE, never on the caller's
     /// thread: AVAudioEngine.start() can block on HAL/device
     /// arbitration (found live — wire-view's @MainActor run() wedged
@@ -1529,15 +1540,23 @@ public final class LyteUdpSession: @unchecked Sendable {
     /// loop). One serial queue keeps start/stop ordered.
     private let audioQueue = DispatchQueue(
         label: "lyte.audio.engine", qos: .userInitiated)
+    private lazy var orderedInput = OrderedInputSender { [weak self] body, now in
+        guard let self, let core = self.core else {
+            throw TransportEndpointError.notStarted
+        }
+        _ = try core.sendInput(body, now: now)
+    }
 
     public init(
         crypto: any TransportCrypto,
         config: Config = Config(),
+        clockModel: HostClockModel = HostClockModel(),
         onSample: @escaping @Sendable (CMSampleBuffer, DecodeUnit) -> Void,
         onEvent: @escaping @Sendable (LyteUdpSessionEvent) -> Void
     ) {
         self.crypto = crypto
         self.config = config
+        self.clockModel = clockModel
         self.onSample = onSample
         self.onEvent = onEvent
     }
@@ -1568,6 +1587,8 @@ public final class LyteUdpSession: @unchecked Sendable {
             demux: endpoint.demux,
             sender: sender,
             config: config.core,
+            clockModel: clockModel,
+            asynchronousVideoBuild: true,
             onSample: onSample,
             onEvent: onEvent
         )
@@ -1694,6 +1715,7 @@ public final class LyteUdpSession: @unchecked Sendable {
     /// call off the main thread.
     public func close(reason: SessionTeardownReason = .shuttingDown) {
         guard !closing.exchange(true) else { return }
+        orderedInput.finishAndDrain()
         if let core {
             core.beginTeardown(reason: reason)
             let deadline = DispatchTime.now()
@@ -1714,6 +1736,25 @@ public final class LyteUdpSession: @unchecked Sendable {
         return try core.sendInput(body)
     }
 
+    /// Renderer-side broken-reference seam. It joins the same coalescing
+    /// episode as FEC/repair failures: one immediate 0x10, slow retries,
+    /// and no second episode until a usable IRAP reaches the pipeline.
+    public func requestVideoRecovery(after frame: FrameNumber) {
+        core?.requestVideoRecovery(after: frame)
+    }
+
+    /// Production UI funnel: capture returns immediately; one dedicated
+    /// serial sender preserves event order while ARQ, sealing, and sendto
+    /// execute away from MainActor. Jobs observe `closing` before touching
+    /// session state, so teardown cannot resurrect a dead sender.
+    public func enqueueInput(_ body: InputEvent.Body) {
+        orderedInput.enqueue(body)
+    }
+
+    public var inputSendTimingSnapshot: InputSendTiming.Snapshot {
+        orderedInput.snapshot
+    }
+
     /// Hard stop, no wire goodbye — the path after a peer teardown or
     /// liveness close (the machine is already closed; there is nothing
     /// to say and possibly nobody to say it to).
@@ -1723,6 +1764,7 @@ public final class LyteUdpSession: @unchecked Sendable {
     }
 
     private func stopParts() {
+        orderedInput.stop()
         if let player = audioPlayer {
             audioPlayer = nil
             // Serialized behind the async start; never blocks teardown.
@@ -1755,5 +1797,49 @@ final class SessionFlag: @unchecked Sendable {
         let was = raised
         raised = value
         return was
+    }
+
+    var value: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return raised
+    }
+}
+
+public final class InputSendTiming: @unchecked Sendable {
+    public struct Snapshot: Sendable {
+        public var queued: UInt64
+        public var sent: UInt64
+        public var failed: UInt64
+        public var queueWaitMicroseconds: LatencyHistogram
+    }
+
+    private let lock = NSLock()
+    private var queuedCount: UInt64 = 0
+    private var sentCount: UInt64 = 0
+    private var failedCount: UInt64 = 0
+    private var waits = LatencyHistogram(capacity: 360)
+
+    func queued() {
+        lock.lock(); queuedCount += 1; lock.unlock()
+    }
+
+    func sent(queueMicroseconds: UInt64) {
+        lock.lock()
+        sentCount += 1
+        waits.record(queueMicroseconds)
+        lock.unlock()
+    }
+
+    func failed() {
+        lock.lock(); failedCount += 1; lock.unlock()
+    }
+
+    public func snapshot() -> Snapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return Snapshot(
+            queued: queuedCount, sent: sentCount, failed: failedCount,
+            queueWaitMicroseconds: waits)
     }
 }

@@ -46,6 +46,8 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
     private var fd: Int32 = -1
     private var receiveThread: Thread?
     private let running = TransportAtomicFlag()
+    private let receiveExit = NSCondition()
+    private var receiveExited = true
 
     // The last datagram's source address — the peer replies go to.
     private let peerLock = NSLock()
@@ -158,6 +160,9 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         }
 
         running.set(true)
+        receiveExit.lock()
+        receiveExited = false
+        receiveExit.unlock()
         let recv = Thread { [weak self] in self?.receiveLoop() }
         recv.name = "lyte-wire-recv"
         recv.qualityOfService = .userInteractive
@@ -171,11 +176,23 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
             close(fd)
             fd = -1
         }
+        guard Thread.current !== receiveThread else { return }
+        receiveExit.lock()
+        let deadline = Date(timeIntervalSinceNow: 1)
+        while !receiveExited, receiveExit.wait(until: deadline) {}
+        receiveExit.unlock()
+        receiveThread = nil
     }
 
     // MARK: - Receive thread
 
     private func receiveLoop() {
+        defer {
+            receiveExit.lock()
+            receiveExited = true
+            receiveExit.broadcast()
+            receiveExit.unlock()
+        }
         // Datagrams over the 1152 B budget must be *seen* over-budget, not
         // silently truncated to it — read into a larger buffer and let
         // Envelope.decode reject the length.
@@ -224,18 +241,20 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
                 // ICMP port-unreachable bounced off a peer is transient.
                 if errno == ECONNREFUSED { continue }
                 if errno == EAGAIN || errno == EWOULDBLOCK { continue }
+                if errno == EINTR { continue }
                 return   // socket closed by stop()
-            }
-
-            if sourceCaptured {
-                peerLock.lock()
-                peerAddress = source
-                peerLock.unlock()
             }
 
             let arrivalUs = kernelUs ?? (DispatchTime.now().uptimeNanoseconds / 1000)
             let outcome = demux.ingest(datagram: buffer[0..<n],
                                        arrivalMicroseconds: arrivalUs)
+            // Roaming retarget is authenticated-only: an arbitrary UDP
+            // packet must never redirect our sealed return traffic.
+            if sourceCaptured, case .accepted = outcome {
+                peerLock.lock()
+                peerAddress = source
+                peerLock.unlock()
+            }
             onDatagram?(outcome, arrivalUs)
         }
     }

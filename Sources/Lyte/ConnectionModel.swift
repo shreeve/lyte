@@ -108,6 +108,7 @@ final class ConnectionModel {
     /// in-fps over the same ~1 s window shape as the delivery books'
     /// out-fps, so the overlay's in/out slash-pair compares honestly.
     private let videoInMeter = RateMeter()
+    private var videoRendererHandoff: VideoRendererHandoff?
 
     // F-5: roaming/reconnect. The policy exists for the whole
     // streaming life of a window (it IS the "can this window
@@ -287,6 +288,7 @@ final class ConnectionModel {
             }
         }
         lyteSession = lyte
+        lyte.setAudioMuted(muted)
         lyteWireMode = .active
         lyteFrozen = false
         hostAudioNegotiated = false
@@ -327,87 +329,45 @@ final class ConnectionModel {
     private func makeLyteSession(
         crypto: NoiseTransportCrypto, config: LyteUdpSession.Config
     ) -> LyteUdpSession {
+        videoFlightRecorder.reset()
+        videoDeliveryBooks.reset()
+        videoInMeter.reset()
+        videoRendererHandoff?.stop()
+        displayLayer.sampleBufferRenderer.flush()
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = CGColor(gray: 0, alpha: 1)
+        let hostClock = CMClockGetHostTimeClock()
+        var timebase: CMTimebase?
+        if CMTimebaseCreateWithSourceClock(
+            allocator: kCFAllocatorDefault,
+            sourceClock: hostClock,
+            timebaseOut: &timebase) == noErr,
+           let timebase {
+            CMTimebaseSetTime(timebase, time: CMClockGetTime(hostClock))
+            CMTimebaseSetRate(timebase, rate: 1)
+            displayLayer.controlTimebase = timebase
+        }
         let renderer = displayLayer.sampleBufferRenderer
+        let clockModel = HostClockModel()
+        let recoveryRequester = VideoRecoveryRequester()
+        let handoff = VideoRendererHandoff(
+            renderer: renderer,
+            queue: videoDeliveryQueue,
+            clockModel: clockModel,
+            books: videoDeliveryBooks,
+            recorder: videoFlightRecorder,
+            recoveryRequester: recoveryRequester)
+        videoRendererHandoff = handoff
         let lastDims = VideoDimsCell()
         sessionEpoch += 1
         let epoch = sessionEpoch
-        return LyteUdpSession(
+        let session = LyteUdpSession(
             crypto: crypto,
             config: config,
+            clockModel: clockModel,
             onSample: {
-                [weak self, videoDeliveryQueue, videoDeliveryBooks,
-                 videoFlightRecorder] sample, unit in
-                // True ownership transfer: the receive thread hands the
-                // buffer to the delivery queue and never touches it
-                // again (CMSampleBuffer is CF-immutable here; the
-                // Sendable annotation just can't say so).
-                nonisolated(unsafe) let transferred = sample
-                let dispatched = DispatchTime.now().uptimeNanoseconds
-                let flightToken = videoFlightRecorder.frameReady(
-                    frame: unit.frameNumber.rawValue,
-                    hostMicroseconds: unit.timestamp.microseconds,
-                    nowNanoseconds: dispatched)
-                videoDeliveryQueue.async {
-                    let enqueueStarted = DispatchTime.now().uptimeNanoseconds
-                    let rendererReady = renderer.isReadyForMoreMediaData
-                    let rendererFailed = renderer.status == .failed
-                    renderer.enqueue(transferred)
-                    let enqueueFinished =
-                        DispatchTime.now().uptimeNanoseconds
-                    videoDeliveryBooks.record(
-                        hopMilliseconds:
-                            Double(enqueueFinished &- dispatched) / 1e6)
-                    videoFlightRecorder.frameEnqueued(
-                        flightToken,
-                        enqueueStartedNanoseconds: enqueueStarted,
-                        enqueueFinishedNanoseconds: enqueueFinished,
-                        rendererReady: rendererReady,
-                        rendererFailed: rendererFailed)
-                    if videoFlightRecorder.shouldSampleRenderer(
-                        after: flightToken
-                    ) {
-                        renderer.loadVideoPerformanceMetrics { metrics in
-                            if let metrics {
-                                videoFlightRecorder.recordRendererMetrics(
-                                    .init(
-                                        totalFrames: metrics.totalNumberOfFrames,
-                                        droppedFrames:
-                                            metrics.numberOfDroppedFrames,
-                                        corruptedFrames:
-                                            metrics.numberOfCorruptedFrames,
-                                        accumulatedDelayMilliseconds:
-                                            metrics.totalAccumulatedFrameDelay
-                                                * 1_000))
-                            }
-                            let flight = videoFlightRecorder.snapshot()
-                            let rendererMetrics = flight.rendererMetrics
-                            NSLog(
-                                "lyte video flight: frames=%llu pending=%d "
-                                    + "max-pending=%d source-p99=%.1fms "
-                                    + "ready-p99=%.1fms stretch-p99=%.1fms "
-                                    + "queue-p99=%.1fms enqueue-p99=%.1fms "
-                                    + "not-ready=%llu rendered=%d dropped=%d "
-                                    + "corrupt=%d delay=%.1fms bottleneck=%@",
-                                flight.frames,
-                                flight.pending,
-                                flight.maximumPending,
-                                flight.sourceGapP99Milliseconds ?? -1,
-                                flight.readyGapP99Milliseconds ?? -1,
-                                flight.transitStretchP99Milliseconds ?? -1,
-                                flight.queueWaitP99Milliseconds ?? -1,
-                                flight.enqueueP99Milliseconds ?? -1,
-                                flight.rendererNotReady,
-                                rendererMetrics?.totalFrames ?? -1,
-                                rendererMetrics?.droppedFrames ?? -1,
-                                rendererMetrics?.corruptedFrames ?? -1,
-                                rendererMetrics?
-                                    .accumulatedDelayMilliseconds ?? -1,
-                                flight.bottleneck)
-                        }
-                    }
-                }
+                [weak self, handoff] sample, unit in
+                handoff.submit(sample: sample, unit: unit)
                 // Teach the input capture its coordinate space — once
                 // per size, not per sample (dimension changes are a
                 // renegotiation-era event, but wired honestly now).
@@ -427,6 +387,8 @@ final class ConnectionModel {
                     self?.handleLyteEvent(event, epoch: epoch)
                 }
             })
+        recoveryRequester.bind(session)
+        return session
     }
 
     private func handleLyteEvent(_ event: LyteUdpSessionEvent, epoch: Int) {
@@ -519,6 +481,8 @@ final class ConnectionModel {
     private func endLyteSession(reason: String?) {
         guard lyteSession != nil || roaming != nil else { return }
         stopRoamingMachinery()
+        lyteInputCapture?.stop()
+        lyteInputCapture = nil
         if let lyte = lyteSession {
             lyteSession = nil
             sessionEpoch += 1
@@ -546,8 +510,12 @@ final class ConnectionModel {
         chromaNoticeTask?.cancel()
         chromaNotice = nil
         statsVisible = false
-        lyteInputCapture?.stop()
-        lyteInputCapture = nil
+        videoRendererHandoff?.stop()
+        videoRendererHandoff = nil
+        displayLayer.sampleBufferRenderer.flush()
+        videoFlightRecorder.reset()
+        videoDeliveryBooks.reset()
+        videoInMeter.reset()
         lyteVideoSize = .zero
         AgentState.shared.streamEnded()
         if let reason {
@@ -694,6 +662,12 @@ final class ConnectionModel {
         guard let lyte = lyteSession else { return }
         lyteSession = nil
         sessionEpoch += 1
+        videoRendererHandoff?.stop()
+        videoRendererHandoff = nil
+        displayLayer.sampleBufferRenderer.flush()
+        videoFlightRecorder.reset()
+        videoDeliveryBooks.reset()
+        videoInMeter.reset()
         lyteFrozen = false
         hostAudioNegotiated = false
         pasteboardSync?.stop()
@@ -1346,5 +1320,266 @@ private final class VideoDimsCell: @unchecked Sendable {
         self.width = width
         self.height = height
         return true
+    }
+}
+
+/// Serial, bounded ownership of compressed samples between the sample-build
+/// worker and AVFoundation. `isReadyForMoreMediaData == false` queues the
+/// complete dependency chain; pressure discards the whole episode, flushes,
+/// and enters await-IDR instead of dropping an arbitrary P-frame.
+private final class VideoRendererHandoff: @unchecked Sendable {
+    private struct Pending: @unchecked Sendable {
+        var sample: CMSampleBuffer
+        var unit: DecodeUnit
+        var dispatchedNanoseconds: UInt64
+        var token: VideoFlightRecorder.Token
+        var build: VideoFrameBuildTelemetry?
+        var decision: AdaptiveVideoPlayout.Decision
+        var encounteredRendererBackpressure: Bool
+    }
+
+    private let renderer: AVSampleBufferVideoRenderer
+    private let queue: DispatchQueue
+    private let clockModel: HostClockModel
+    private let playout = AdaptiveVideoPlayoutController()
+    private let books: VideoDeliveryBooks
+    private let recorder: VideoFlightRecorder
+    private let recoveryRequester: VideoRecoveryRequester
+    private var policy = BoundedRendererHandoff<Pending>()
+    private var requesting = false
+    private var stopped = false
+
+    init(
+        renderer: AVSampleBufferVideoRenderer,
+        queue: DispatchQueue,
+        clockModel: HostClockModel,
+        books: VideoDeliveryBooks,
+        recorder: VideoFlightRecorder,
+        recoveryRequester: VideoRecoveryRequester
+    ) {
+        self.renderer = renderer
+        self.queue = queue
+        self.clockModel = clockModel
+        self.books = books
+        self.recorder = recorder
+        self.recoveryRequester = recoveryRequester
+    }
+
+    func submit(sample: CMSampleBuffer, unit: DecodeUnit) {
+        nonisolated(unsafe) let transferred = sample
+        let dispatched = DispatchTime.now().uptimeNanoseconds
+        let arrival = dispatched / 1_000
+        let mapped = clockModel.map(unit.timestamp)?.microseconds ?? arrival
+        let decision = playout.schedule(
+            mappedCaptureMicroseconds: mapped,
+            arrivalMicroseconds: arrival,
+            sourceCaptureMicroseconds: unit.timestamp.microseconds)
+        let pending = Pending(
+            sample: transferred,
+            unit: unit,
+            dispatchedNanoseconds: dispatched,
+            token: recorder.frameReady(
+                frame: unit.frameNumber.rawValue,
+                hostMicroseconds: unit.timestamp.microseconds,
+                nowNanoseconds: dispatched),
+            build: VideoSampleTiming.buildTelemetry(from: sample),
+            decision: decision,
+            encounteredRendererBackpressure: false)
+        queue.async { [weak self] in
+            self?.accept(pending)
+        }
+    }
+
+    func stop() {
+        queue.sync {
+            guard !stopped else { return }
+            stopped = true
+            renderer.stopRequestingMediaData()
+            requesting = false
+            let discarded = policy.reset()
+            for entry in discarded {
+                finish(entry.element, dropped: true, recovery: false)
+            }
+        }
+    }
+
+    private func accept(_ incoming: Pending) {
+        var pending = incoming
+        pending.encounteredRendererBackpressure =
+            !renderer.isReadyForMoreMediaData
+        guard !stopped else {
+            finish(pending, dropped: true, recovery: false)
+            return
+        }
+
+        if pending.decision.shouldFlush || renderer.status == .failed {
+            process(
+                policy.failEpisode(),
+                recoveryFrame: pending.unit.frameNumber)
+        }
+
+        let now = DispatchTime.now().uptimeNanoseconds / 1_000
+        let outcome = policy.offer(
+            pending,
+            isRandomAccess: pending.unit.isIDR,
+            nowMicroseconds: now)
+        process(outcome, recoveryFrame: pending.unit.frameNumber)
+        if outcome.accepted {
+            armRenderer()
+            let deadline = policy.config.deadlineMicroseconds
+            queue.asyncAfter(deadline: .now() + .microseconds(Int(deadline))) {
+                [weak self] in
+                self?.expire()
+            }
+        }
+    }
+
+    private func armRenderer() {
+        guard !requesting, policy.count > 0 else { return }
+        requesting = true
+        renderer.requestMediaDataWhenReady(on: queue) { [weak self] in
+            self?.drainReady()
+        }
+    }
+
+    private func drainReady() {
+        guard !stopped else { return }
+        if renderer.status == .failed {
+            process(
+                policy.failEpisode(),
+                recoveryFrame: FrameNumber(rawValue: 0))
+            return
+        }
+        while renderer.isReadyForMoreMediaData,
+              let entry = policy.popReady() {
+            let pending = entry.element
+            let started = DispatchTime.now().uptimeNanoseconds
+            guard let timed = VideoSampleTiming.retimed(
+                pending.sample,
+                presentationMicroseconds:
+                    pending.decision.presentationMicroseconds
+            ) else {
+                var failure = policy.failEpisode()
+                failure.discarded.insert(entry, at: 0)
+                process(
+                    failure,
+                    recoveryFrame: pending.unit.frameNumber)
+                return
+            }
+            renderer.enqueue(timed)
+            finish(
+                pending,
+                enqueueStarted: started,
+                enqueueFinished: DispatchTime.now().uptimeNanoseconds,
+                rendererReady:
+                    !pending.encounteredRendererBackpressure,
+                rendererFailed: false,
+                dropped: false,
+                recovery: false)
+        }
+        if policy.count == 0 {
+            renderer.stopRequestingMediaData()
+            requesting = false
+        }
+    }
+
+    private func expire() {
+        guard !stopped else { return }
+        let outcome = policy.expire(
+            nowMicroseconds: DispatchTime.now().uptimeNanoseconds / 1_000)
+        process(outcome, recoveryFrame: FrameNumber(rawValue: 0))
+    }
+
+    private func process(
+        _ outcome: BoundedRendererHandoff<Pending>.Outcome,
+        recoveryFrame: FrameNumber
+    ) {
+        if outcome.recoveryRequested {
+            renderer.stopRequestingMediaData()
+            requesting = false
+            renderer.flush()
+            recoveryRequester.request(
+                after: outcome.discarded.last?.element.unit.frameNumber
+                    ?? recoveryFrame)
+            if outcome.discarded.isEmpty {
+                recorder.recordRendererRecovery()
+            }
+        }
+        for (index, entry) in outcome.discarded.enumerated() {
+            finish(
+                entry.element,
+                rendererReady: renderer.isReadyForMoreMediaData,
+                rendererFailed: renderer.status == .failed,
+                dropped: true,
+                recovery: outcome.recoveryRequested && index == 0)
+        }
+    }
+
+    private func finish(
+        _ pending: Pending,
+        enqueueStarted: UInt64? = nil,
+        enqueueFinished: UInt64? = nil,
+        rendererReady: Bool = false,
+        rendererFailed: Bool = false,
+        dropped: Bool,
+        recovery: Bool
+    ) {
+        let started = enqueueStarted ?? DispatchTime.now().uptimeNanoseconds
+        let finished = enqueueFinished ?? started
+        books.record(
+            hopMilliseconds:
+                Double(finished &- pending.dispatchedNanoseconds) / 1e6)
+        recorder.frameEnqueued(
+            pending.token,
+            enqueueStartedNanoseconds: started,
+            enqueueFinishedNanoseconds: finished,
+            rendererReady: rendererReady,
+            rendererFailed: rendererFailed,
+            rendererDropped: dropped,
+            sampleBuildMicroseconds:
+                pending.build?.sampleBuildMicroseconds,
+            assemblyLockHoldMicroseconds:
+                pending.build?.assemblyLockHoldMicroseconds,
+            scheduledPresentationMicroseconds:
+                pending.decision.presentationMicroseconds,
+            targetDelayMicroseconds:
+                pending.decision.targetDelayMicroseconds,
+            presentationLatenessMicroseconds:
+                pending.decision.latenessMicroseconds,
+            rendererRecovery: recovery)
+        sampleMetricsIfDue(after: pending.token)
+    }
+
+    private func sampleMetricsIfDue(after token: VideoFlightRecorder.Token) {
+        guard recorder.shouldSampleRenderer(after: token) else { return }
+        renderer.loadVideoPerformanceMetrics { [recorder] metrics in
+            if let metrics {
+                recorder.recordRendererMetrics(.init(
+                    totalFrames: metrics.totalNumberOfFrames,
+                    droppedFrames: metrics.numberOfDroppedFrames,
+                    corruptedFrames: metrics.numberOfCorruptedFrames,
+                    accumulatedDelayMilliseconds:
+                        metrics.totalAccumulatedFrameDelay * 1_000))
+            }
+            if let json = try? recorder.summaryJSONLine() {
+                NSLog("lyte video flight: %@", json)
+            }
+        }
+    }
+}
+
+private final class VideoRecoveryRequester: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var session: LyteUdpSession?
+
+    func bind(_ session: LyteUdpSession) {
+        lock.lock(); self.session = session; lock.unlock()
+    }
+
+    func request(after frame: FrameNumber) {
+        lock.lock()
+        let session = session
+        lock.unlock()
+        session?.requestVideoRecovery(after: frame)
     }
 }

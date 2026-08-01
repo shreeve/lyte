@@ -347,6 +347,66 @@ final class InputPathGateTests: XCTestCase {
         XCTAssertEqual(stats.hostReceiveToInject.p50, 250)
     }
 
+    func testOrderedInputSenderPreservesOrderAndStopsQueuedWork() {
+        let delivered = UInt32Pile()
+        let sender = OrderedInputSender { body, _ in
+            guard case .keyKeycode(let code, _) = body else { return }
+            delivered.append(code)
+        }
+        for code: UInt32 in 0..<100 {
+            sender.enqueue(
+                .keyKeycode(keycode: code, pressed: true),
+                capturedNanoseconds: UInt64(code + 1) * 1_000)
+        }
+        sender.drainForTesting()
+        XCTAssertEqual(delivered.all, Array(0..<100))
+        XCTAssertEqual(sender.snapshot.queued, 100)
+        XCTAssertEqual(sender.snapshot.sent, 100)
+
+        sender.stop()
+        sender.enqueue(
+            .keyKeycode(keycode: 999, pressed: true),
+            capturedNanoseconds: 999_000)
+        sender.drainForTesting()
+        XCTAssertEqual(delivered.all.count, 100)
+    }
+
+    func testOrderedInputAcceptanceRacesFinishWithoutLosingAcceptedWork() {
+        let delivered = UInt32Pile()
+        let accepted = UInt32Pile()
+        let sender = OrderedInputSender { body, _ in
+            guard case .keyKeycode(let code, _) = body else { return }
+            delivered.append(code)
+        }
+        let group = DispatchGroup()
+        let start = DispatchSemaphore(value: 0)
+        for code: UInt32 in 0..<500 {
+            group.enter()
+            DispatchQueue.global().async {
+                start.wait()
+                if sender.enqueue(
+                    .keyKeycode(keycode: code, pressed: true),
+                    capturedNanoseconds: UInt64(code + 1) * 1_000
+                ) {
+                    accepted.append(code)
+                }
+                group.leave()
+            }
+        }
+        for _ in 0..<500 { start.signal() }
+        sender.finishAndDrain()
+        group.wait()
+        sender.drainForTesting()
+
+        XCTAssertEqual(Set(delivered.all), Set(accepted.all))
+        XCTAssertEqual(delivered.all.count, accepted.all.count)
+        XCTAssertEqual(
+            sender.snapshot.sent, UInt64(accepted.all.count),
+            "every event admitted before the finish gate must drain")
+        XCTAssertFalse(sender.enqueue(
+            .keyKeycode(keycode: 999, pressed: true)))
+    }
+
     // MARK: - The host stand-in (HS-13's Session discipline from Wire parts)
 
     /// Noise responder + host-clock ARQ + the HS-13 input arm: consumes
@@ -682,6 +742,17 @@ final class InputPathGateTests: XCTestCase {
         var value: UInt64 {
             get { lock.lock(); defer { lock.unlock() }; return stored }
             set { lock.lock(); stored = newValue; lock.unlock() }
+        }
+    }
+
+    final class UInt32Pile: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [UInt32] = []
+        func append(_ value: UInt32) {
+            lock.lock(); stored.append(value); lock.unlock()
+        }
+        var all: [UInt32] {
+            lock.lock(); defer { lock.unlock() }; return stored
         }
     }
 

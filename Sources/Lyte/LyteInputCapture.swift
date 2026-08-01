@@ -65,6 +65,8 @@ final class LyteInputCapture {
     /// Never fed for keys: typing must not resurface the strip.
     private let onActivity: @MainActor (PointerActivity) -> Void
     private var monitors: [Any] = []
+    private var heldKeys: Set<UInt32> = []
+    private var heldButtons: Set<UInt32> = []
 
     init(
         view: NSView,
@@ -96,6 +98,16 @@ final class LyteInputCapture {
     }
 
     func stop() {
+        // A window/session teardown can swallow AppKit's matching keyUp.
+        // Release every state we told the host was down before detaching.
+        for key in heldKeys {
+            send(.keyKeycode(keycode: key, pressed: false))
+        }
+        for button in heldButtons {
+            send(.pointerButton(button: button, pressed: false))
+        }
+        heldKeys.removeAll()
+        heldButtons.removeAll()
         monitors.forEach { NSEvent.removeMonitor($0) }
         monitors.removeAll()
     }
@@ -174,6 +186,11 @@ final class LyteInputCapture {
                 NSEvent.EventType.leftMouseDown, .rightMouseDown, .otherMouseDown,
             ].contains(event.type)
             send(.pointerButton(button: button, pressed: pressed))
+            if pressed {
+                heldButtons.insert(button)
+            } else {
+                heldButtons.remove(button)
+            }
             return nil
 
         case .scrollWheel:
@@ -216,7 +233,13 @@ final class LyteInputCapture {
             if event.type == .keyDown, event.isARepeat { return nil }
             guard let keycode = MacEvdevKeyMap.evdevKeycode(
                 forMacKeyCode: event.keyCode) else { return event }
-            send(.keyKeycode(keycode: keycode, pressed: event.type == .keyDown))
+            let pressed = event.type == .keyDown
+            send(.keyKeycode(keycode: keycode, pressed: pressed))
+            if pressed {
+                heldKeys.insert(keycode)
+            } else {
+                heldKeys.remove(keycode)
+            }
             return nil
 
         case .flagsChanged:
@@ -224,6 +247,11 @@ final class LyteInputCapture {
                 MacEvdevKeyMap.modifierKeys[event.keyCode] else { return event }
             let pressed = event.modifierFlags.rawValue & UInt(deviceMask) != 0
             send(.keyKeycode(keycode: keycode, pressed: pressed))
+            if pressed {
+                heldKeys.insert(keycode)
+            } else {
+                heldKeys.remove(keycode)
+            }
             return nil
 
         default:

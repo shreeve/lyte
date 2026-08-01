@@ -3,9 +3,8 @@
 // stack's proven construction (LyteKit's VideoSampleFactory, deleted at
 // the H2 demolition; git history keeps the original):
 // the CMBlockBuffer/CMSampleBuffer assembly, the format-description
-// rebuild on IDR parameter sets, the DisplayImmediately attachment
-// (present-ASAP — Work mode's default, no jitter buffer per the timing
-// doc), and the Annex-B → 4-byte length-prefix conversion with the
+// rebuild on IDR parameter sets and the Annex-B → 4-byte length-prefix
+// conversion with the
 // trailing-zero strip (RBSP stop-bit guarantee: a NAL's last real byte
 // is never zero, so trailing zeros are inter-NAL padding).
 //
@@ -17,8 +16,8 @@
 //     over the recovered Annex-B bytes, not typed buffer chains;
 //   - HEVC only — Lyte's wire carries hevc_nvenc output; the H.264 leg
 //     died with the GameStream stack;
-//   - pts is the host capture timestamp (µs, host clock domain) instead
-//     of an RTP tick; with DisplayImmediately it orders, not paces.
+//   - pts begins as the host capture timestamp (µs); the app's adaptive
+//     playout seam re-stamps it into the local CM host-clock domain.
 
 import CoreMedia
 import Foundation
@@ -142,13 +141,6 @@ public final class VideoRenderFactory {
             intermediateBytes: 0,
             payloadCopyPasses: 1)
 
-        // Present-ASAP: display as fast as frames arrive.
-        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) {
-            let dict = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
-            CFDictionarySetValue(dict,
-                                 Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
-                                 Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
-        }
         return sampleBuffer
     }
 

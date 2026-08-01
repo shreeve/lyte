@@ -40,6 +40,10 @@ public final class RateMeter: @unchecked Sendable {
         guard elapsed >= 500_000 else { return nil }
         return Double(count &- anchor.count) / (Double(elapsed) / 1e6)
     }
+
+    public func reset() {
+        lock.lock(); history.removeAll(keepingCapacity: true); lock.unlock()
+    }
 }
 
 /// Ringside accounting for the video delivery hop (receive thread →
@@ -67,6 +71,15 @@ public final class VideoDeliveryBooks: @unchecked Sendable {
     }
 
     public init() {}
+
+    public func reset() {
+        lock.lock()
+        enqueued = 0
+        ringCount = 0
+        ringIndex = 0
+        lock.unlock()
+        outMeter.reset()
+    }
 
     /// Out-fps over the gauge window plus hop percentiles.
     public func snapshot(
