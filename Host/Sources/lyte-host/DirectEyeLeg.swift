@@ -27,6 +27,8 @@ final class DirectEyeLeg {
         var seconds: Double
         var qp: Int32 = 24
         var pollUs: UInt32 = 1000
+        /// Wire rate → the encoder's VBR envelope (0 = CQP).
+        var bitrateBitsPerSecond: Int64 = 0
     }
 
     private let config: Config
@@ -76,14 +78,18 @@ final class DirectEyeLeg {
             gl = try EyeGL(renderNode: config.renderNode)
             encoder = try EyeEncoder(
                 width: width, height: height, fps: 60, qp: config.qp,
-                renderNode: config.renderNode)
+                renderNode: config.renderNode,
+                bitrateBitsPerSecond: config.bitrateBitsPerSecond)
         } catch {
             lastError = "direct: init failed: \(error)"
             return
         }
+        let rc = config.bitrateBitsPerSecond > 0
+            ? "vbr \(config.bitrateBitsPerSecond / 1_000_000) Mbps cap"
+            : "cqp \(config.qp)"
         print("direct: eye open — \(width)x\(height) on "
-            + "\(config.device), hevc_vaapi qp \(config.qp) "
-            + "(rate directives deferred to E6-VAAPI)")
+            + "\(config.device), hevc_vaapi \(rc) "
+            + "(live rate directives deferred to E6-VAAPI)")
 
         var targets: [UInt32: NV12Target] = [:]
         var lastFB: UInt32 = 0

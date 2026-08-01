@@ -149,6 +149,31 @@ works). Document it; no dialog theater.
   4:4:4 text-crispness tier needs an Arc Rext-444 leg; (4) cursor is
   ABSENT from KMS primary-plane capture (hardware cursor plane) — E3
   is now user-visible, not theoretical; (5) 30-min soak still owed.
+  **SOAK RESULT (same day): PASSED ITS PURPOSE — 107,212 frames over
+  30 minutes, 0 missed grabs, presentation-gap p99 18.0 ms across the
+  whole half hour, zero freezes.** The portal path never survived six
+  minutes at the glass. Quality gates on that run all traced to ONE
+  prototype default — gop_size=120 emitted 902 periodic IDR bursts
+  (every 2.0 s) that shoved audio behind video and blew the
+  protectable ceiling. Fixed to the product discipline (gop=∞, IDRs
+  on demand only) + a static VBR envelope at open (avg 70% of wire
+  rate, cap at wire rate, 4-frame VBV — the E1 posture until E6's
+  live directives); renderer/handoff/audio-wire-loss gates went GREEN
+  on the verification leg. Two residuals remain, both precisely
+  diagnosed and NEITHER a direct-eye defect: (a)
+  audio_steady_state_late_or_plc — ~1.5–1.9k underrun SAMPLES
+  (~0.1%); the session books EXONERATE the host (audio blocked 0,
+  behind-video false, pressure calm, outbox max 150 µs) ⇒ client-side
+  playout feed on the Mac, filed as its own investigation; (b)
+  motion_transport_burst — the pcap transit p99>8 ms bound is
+  structurally tight for real-capture frame sizes (~23 KB ⇒ ~3.7 ms
+  serialization at 50 Mbps + queue tail; the synthetic leg measures a
+  narrower flight) ⇒ gate calibration for real-capture legs, not a
+  regression. Book bug noted: idr-books reads sink.keyframes and
+  shows 0 for direct legs — teach it the leg's counter. Direct legs
+  now print the FULL session books (extracted printSessionBooks(),
+  shared by every backend tail). Panel restored to 120 Hz after the
+  legs; the rig's refresh-awareness stays on the follow-up list.
   Environment facts learned: pup's panel is 120 Hz native (benchmark
   corpus + preflight math assume 60 — leg ran with a session-temporary
   60 Hz switch via Mutter DisplayConfig; make the rig refresh-aware);
