@@ -91,6 +91,34 @@ final class HevcParameterSetTests: XCTestCase {
                        "PPS must be byte-identical to libavcodec's")
     }
 
+    /// The slice pens against the same capture: the oracle's IDR
+    /// slice header is exactly 26 01 AF A0 (decoded bit-by-bit:
+    /// I-slice, SAO on, qp_delta 0, loop-filter-across off), and its
+    /// first two TRAIL_R headers are 02 01 E0 02 5F 9D / E0 04 5F 9D
+    /// — GPB B-slices (the iHD p_to_gpb dialect confirmed in
+    /// vaapi_encode_h265.c: slice_type B, collocated_from_l0 1,
+    /// mvd_l1_zero 0, merge cand 5), POC 1 then 2.
+    func testSliceHeadersMatchTheOracleByteExact() {
+        XCTAssertEqual(HevcSliceHeader.idr(qpDelta: 0),
+                       [0x26, 0x01, 0xAF, 0xA0])
+        XCTAssertEqual(HevcSliceHeader.trailGPB(pocLsb: 1, qpDelta: 0),
+                       [0x02, 0x01, 0xE0, 0x02, 0x5F, 0x9D])
+        XCTAssertEqual(HevcSliceHeader.trailGPB(pocLsb: 2, qpDelta: 0),
+                       [0x02, 0x01, 0xE0, 0x04, 0x5F, 0x9D])
+        // The variable fields reach the bytes.
+        XCTAssertNotEqual(HevcSliceHeader.idr(qpDelta: 2),
+                          HevcSliceHeader.idr(qpDelta: 0))
+        XCTAssertNotEqual(
+            HevcSliceHeader.trailGPB(pocLsb: 3, qpDelta: 0),
+            HevcSliceHeader.trailGPB(pocLsb: 2, qpDelta: 0)
+        )
+        // POC wraps at the SPS's 12-bit law.
+        XCTAssertEqual(
+            HevcSliceHeader.trailGPB(pocLsb: 4096 + 2, qpDelta: 0),
+            HevcSliceHeader.trailGPB(pocLsb: 2, qpDelta: 0)
+        )
+    }
+
     /// The recipe's variable fields actually move their bytes — a
     /// serializer that ignores its inputs would still pass the
     /// oracle pin.
