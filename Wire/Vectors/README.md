@@ -18,6 +18,12 @@ bytes in `EnvelopeTests`/`FecFieldTests` (and the k=1,m=1 parity-identity
 case in `FecCoderTests`, the hand-walked datagram in
 `VideoPacketizerTests`) so the codec never grades its own homework.
 
+**Impairment fixtures.** `LyteWireTestKit.SimNet` scenarios are deterministic
+test machinery, not wire contracts: schedules and seeds normally live beside
+their tests. If a reusable impairment trace is promoted into `Vectors/`, it
+inherits the same append-only rule — add a new named case or a new versioned
+file; never rewrite a committed replay.
+
 ## Files
 
 - `envelope-v1.json` — envelope + TLV codec vectors for wire major

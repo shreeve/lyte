@@ -79,6 +79,9 @@ public struct ArqConfig: Hashable, Sendable {
     /// Closed one-shot receive groups remembered for late-retransmit
     /// dedupe and re-ACK.
     public var maxClosedGroupTombstones: Int
+    /// Absolute lifetime for incomplete one-shot receive groups. This keeps
+    /// a retransmitting abandoned sender from pinning the admission table.
+    public var receiveGroupLifetimeMicroseconds: Int64
     /// First segment seq of every group. Wire v1 pins 0; the knob
     /// exists so u16 wrap crossings are simulatable (both ends must
     /// agree, like every config here).
@@ -98,6 +101,7 @@ public struct ArqConfig: Hashable, Sendable {
         maxMessageByteCount: Int = 262_144,
         maxActiveReceiveGroups: Int = 64,
         maxClosedGroupTombstones: Int = 256,
+        receiveGroupLifetimeMicroseconds: Int64 = 30_000_000,
         initialSegmentSeq: UInt16 = 0
     ) {
         self.initialRttMicroseconds = initialRttMicroseconds
@@ -120,6 +124,9 @@ public struct ArqConfig: Hashable, Sendable {
         self.maxMessageByteCount = maxMessageByteCount
         self.maxActiveReceiveGroups = maxActiveReceiveGroups
         self.maxClosedGroupTombstones = maxClosedGroupTombstones
+        self.receiveGroupLifetimeMicroseconds = max(
+            receiveGroupLifetimeMicroseconds, 1
+        )
         self.initialSegmentSeq = initialSegmentSeq
     }
 }
@@ -206,6 +213,8 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         /// fast-retransmit gate.
         var highestAckedEver: UInt16?
         var backoffExponent = 0
+        /// Live segments that have crossed the wire at least once.
+        var sentSegmentCount = 0
         /// Most recent transmission instant in the group (the RFC 9002
         /// PTO base).
         var lastSendAt: Instant?
@@ -227,6 +236,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         /// In-order bytes of the message being reassembled.
         var assembling: [UInt8] = []
         var poisoned = false
+        var openedAt: Instant
     }
 
     private var recvGroups: [UInt16: RecvGroup] = [:]
@@ -328,11 +338,12 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         } catch {
             return [.ignored(.malformedPayload(.truncatedFrame))]
         }
+        reclaimAbandonedReceiveGroups(now: now)
         var events: [ArqEvent] = []
         for frame in frames {
             switch frame {
             case .segment(let segment):
-                ingestSegment(segment, into: &events)
+                ingestSegment(segment, now: now, into: &events)
             case .ack(let ack):
                 ingestAck(ack, now: now, into: &events)
             }
@@ -347,7 +358,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
     }
 
     private mutating func ingestSegment(
-        _ segment: ArqSegment, into events: inout [ArqEvent]
+        _ segment: ArqSegment, now: Instant, into events: inout [ArqEvent]
     ) {
         let gid = segment.group.rawValue
 
@@ -374,7 +385,10 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
                     return
                 }
             }
-            state = RecvGroup(cumulative: config.initialSegmentSeq &- 1)
+            state = RecvGroup(
+                cumulative: config.initialSegmentSeq &- 1,
+                openedAt: now
+            )
         }
         if state.poisoned {
             events.append(.ignored(.messageOverBudget(segment.group)))
@@ -496,6 +510,9 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
                 guard covered else { continue }
                 let out = state.segments.removeValue(forKey: seq)!
                 progressed = true
+                if out.sendCount >= 1 {
+                    state.sentSegmentCount -= 1
+                }
                 if out.sendCount == 1, let sentAt = out.lastSentAt {
                     sampleRtt(now.microseconds(since: sentAt))
                 }
@@ -557,6 +574,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
     public mutating func poll(
         now: Instant
     ) -> (datagrams: [[UInt8]], nextTimerDeadline: Instant?) {
+        reclaimAbandonedReceiveGroups(now: now)
         firePtoTimers(now: now)
 
         var frames: [[UInt8]] = []
@@ -624,9 +642,12 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
                     count: ArqBounds.maxAckBitmapByteCount
                 )
                 var highestBit = -1
-                for offset in 0..<config.receiveWindowSegments {
-                    let seq = cumulative &+ 1 &+ UInt16(offset)
-                    guard state.buffered[seq] != nil else { continue }
+                for seq in state.buffered.keys {
+                    let distance = Int16(bitPattern: seq &- cumulative)
+                    guard distance > 0,
+                          Int(distance) <= config.receiveWindowSegments
+                    else { continue }
+                    let offset = Int(distance) - 1
                     bytes[offset / 8] |= 1 << (offset % 8)
                     highestBit = offset
                 }
@@ -661,9 +682,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
     ) {
         for gid in sendGroups.keys.sorted() {
             var state = sendGroups[gid]!
-            var inFlight = state.order.count { seq in
-                (state.segments[seq]?.sendCount ?? 0) >= 1
-            }
+            var inFlight = state.sentSegmentCount
             var sentAny = false
             for seq in state.order {
                 guard var out = state.segments[seq] else { continue }
@@ -678,7 +697,10 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
                     out.needsSend = false
                     out.fastRetransmitConsumed = false
                     state.segments[seq] = out
-                    if isFresh { inFlight += 1 }
+                    if isFresh {
+                        inFlight += 1
+                        state.sentSegmentCount += 1
+                    }
                     sentAny = true
                 }
             }
@@ -706,15 +728,25 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
 
     private func groupDeadline(_ state: SendGroup) -> Instant? {
         guard let lastSend = state.lastSendAt else { return nil }
-        let hasSentUnacked = state.order.contains { seq in
-            guard let out = state.segments[seq] else { return false }
-            return out.sendCount >= 1 && !out.needsSend
-        }
-        guard hasSentUnacked else { return nil }
+        guard state.sentSegmentCount > 0 else { return nil }
         let interval = min(
             pto() << state.backoffExponent, config.maxPtoMicroseconds
         )
         return lastSend.advanced(byMicroseconds: interval)
+    }
+
+    private mutating func reclaimAbandonedReceiveGroups(now: Instant) {
+        let lifetime = config.receiveGroupLifetimeMicroseconds
+        let abandoned = recvGroups.compactMap { gid, state -> UInt16? in
+            guard gid != ArqGroupId.orderedStream.rawValue else { return nil }
+            return state.poisoned
+                || now.microseconds(since: state.openedAt) >= lifetime
+                ? gid : nil
+        }
+        for gid in abandoned {
+            recvGroups.removeValue(forKey: gid)
+            ackNeeded.remove(gid)
+        }
     }
 
     private func nextDeadline() -> Instant? {
