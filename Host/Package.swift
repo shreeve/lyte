@@ -40,6 +40,7 @@ var targets: [Target] = [
 
 #if os(Linux)
 products.append(.executable(name: "lyte-host", targets: ["lyte-host"]))
+products.append(.executable(name: "lyte-eye", targets: ["lyte-eye"]))
 
 // HS-33: the vendored no-reset FFmpeg (Vendor/ffmpeg/README.md — rate
 // reconfigures without resetEncoder/forceIDR). Env-gated: with
@@ -120,6 +121,23 @@ targets += [
     .target(
         name: "COpusEncode",
         dependencies: ["COpus"]
+    ),
+    // The direct eye (docs/20260801-direct-eye-plan.md, E0): libdrm
+    // imported straight into Swift — a module map, no .c files. The
+    // KMS doorbell/capture organ is Swift-first; CNetIO-style shims
+    // appear only if a macro wall does.
+    .systemLibrary(
+        name: "CDRM",
+        pkgConfig: "libdrm",
+        providers: [.apt(["libdrm-dev"])]
+    ),
+    // E0 milestone 1: the doorbell, ported from the proven C probe
+    // (Host/Probes/kms-eye/fbid-poll.c) with identical semantics and
+    // output format — FB_ID change detection on the primary/cursor
+    // planes, unprivileged.
+    .executableTarget(
+        name: "lyte-eye",
+        dependencies: ["CDRM"]
     ),
     // C leaf: nonblocking UDP with sendmmsg/recvmmsg, per-packet TOS cmsgs,
     // and SO_TIMESTAMPING TX stamps (CMSG macros are unreachable from Swift;
