@@ -542,8 +542,19 @@ public enum SessionDropReason: Equatable, Sendable {
 public enum SessionError: Error, Equatable, Sendable {
     /// Video cannot flow before the transport exists.
     case notEstablished
+    /// A prepared frame was committed out of the video producer's serial
+    /// order. The executable has one video producer, so this is a caller bug.
+    case staleVideoPreparation
     /// Bulk sends are legal only when key 11 survived intersection.
     case bulkNotNegotiated
+}
+
+/// A short-lived snapshot for off-lock RS-FEC preparation. It reserves no
+/// sequence or Noise state; only `commitPreparedVideoFrame` advances either.
+public struct SessionVideoFramePreparationContext: Sendable {
+    fileprivate let frameNumber: FrameNumber
+    fileprivate let lastInputSeq: UInt32?
+    fileprivate let channelConfig: VideoFramePreparationConfig
 }
 
 /// Raw clock-mapping samples from the beacon/echo exchange.
@@ -1216,8 +1227,7 @@ public final class Session {
         try ingestVideoFrameBytes(
             annexB, captureTimestampMicroseconds: captureTimestampMicroseconds,
             isKeyframe: isKeyframe, interleave: interleave, now: now,
-            isBorrowed: false
-        )
+            isBorrowed: false)
     }
 
     /// Borrowed encoder-buffer ingress. The pointer is consumed
@@ -1233,8 +1243,7 @@ public final class Session {
         try ingestVideoFrameBytes(
             annexB, captureTimestampMicroseconds: captureTimestampMicroseconds,
             isKeyframe: isKeyframe, interleave: interleave, now: now,
-            isBorrowed: true
-        )
+            isBorrowed: true)
     }
 
     private func ingestVideoFrameBytes<C>(
@@ -1246,6 +1255,27 @@ public final class Session {
         isBorrowed: Bool
     ) throws -> Int
     where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
+        guard let context = try beginVideoFramePreparation(
+            encodedByteCount: annexB.count
+        ) else { return 0 }
+        let prepared = try Self.prepareVideoFrame(
+            annexB, isKeyframe: isKeyframe, context: context
+        )
+        return try commitPreparedVideoFrame(
+            prepared,
+            context: context,
+            captureTimestampMicroseconds: captureTimestampMicroseconds,
+            interleave: interleave,
+            now: now,
+            isBorrowed: isBorrowed
+        )
+    }
+
+    /// Cheap locked half before RS-FEC. Suppression and the one-group
+    /// ceiling are judged at this admission snapshot; no seq is consumed.
+    public func beginVideoFramePreparation(
+        encodedByteCount: Int
+    ) throws -> SessionVideoFramePreparationContext? {
         guard phase == .established else {
             throw SessionError.notEstablished
         }
@@ -1255,7 +1285,7 @@ public final class Session {
         // because the path did.
         if videoFrozen || machine?.state == .closed {
             counters.videoFramesSuppressed += 1
-            return 0
+            return nil
         }
         // HS-25: a frame beyond what one FEC group can protect is
         // UNSHIPPABLE (the 255-shard GF(2⁸) block; the fec field binds
@@ -1270,17 +1300,60 @@ public final class Session {
         let ceiling = channel.maxProtectableFrameByteCount(
             hasLastInputSeq: lastInputSeq != nil
         )
-        guard annexB.count <= ceiling else {
+        guard encodedByteCount <= ceiling else {
             counters.videoFramesUnprotectable += 1
             unprotectableKeyframePending = true
+            return nil
+        }
+        return SessionVideoFramePreparationContext(
+            frameNumber: nextVideoFrameNumber,
+            lastInputSeq: lastInputSeq,
+            channelConfig: channel.preparationConfig(
+                hasLastInputSeq: lastInputSeq != nil
+            )
+        )
+    }
+
+    /// Expensive pure half. The Linux shell calls this after releasing its
+    /// broad Session lock so audio service remains schedulable during RS-FEC.
+    public static func prepareVideoFrame<C>(
+        _ annexB: C,
+        isKeyframe: Bool,
+        context: SessionVideoFramePreparationContext
+    ) throws -> PreparedVideoFrame
+    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
+        try VideoChannel.prepareFrame(
+            annexB, isKeyframe: isKeyframe, config: context.channelConfig
+        )
+    }
+
+    /// Ordered locked half. Channel seq allocation, Noise sealing, enqueue,
+    /// repair retention, and frame-number advancement remain one critical
+    /// section with every other Session mutation.
+    @discardableResult
+    public func commitPreparedVideoFrame(
+        _ prepared: PreparedVideoFrame,
+        context: SessionVideoFramePreparationContext,
+        captureTimestampMicroseconds: UInt64,
+        interleave: (() -> Void)? = nil,
+        now: UInt64,
+        isBorrowed: Bool = false
+    ) throws -> Int {
+        guard phase == .established else {
+            throw SessionError.notEstablished
+        }
+        if videoFrozen || machine?.state == .closed {
+            counters.videoFramesSuppressed += 1
             return 0
         }
-        let shards = try channel.ingestBytes(
-            frame: annexB,
-            frameNumber: nextVideoFrameNumber,
+        guard context.frameNumber == nextVideoFrameNumber else {
+            throw SessionError.staleVideoPreparation
+        }
+        let shards = try channel.ingestPrepared(
+            prepared,
+            frameNumber: context.frameNumber,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe,
-            lastInputSeq: lastInputSeq,
+            lastInputSeq: context.lastInputSeq,
             interleave: interleave,
             now: now,
             isBorrowed: isBorrowed
@@ -1288,10 +1361,10 @@ public final class Session {
         // HS-32: the opening exemption's glass proxy needs the first
         // IDR's group size — "received everything through this group"
         // is the evidence that something plausibly decoded.
-        if isKeyframe, openingIdrShardTotal == nil {
+        if prepared.isKeyframe, openingIdrShardTotal == nil {
             openingIdrShardTotal = shards
         }
-        lastAdmittedVideoFrameNumber = nextVideoFrameNumber
+        lastAdmittedVideoFrameNumber = context.frameNumber
         nextVideoFrameNumber = nextVideoFrameNumber.next
         return shards
     }

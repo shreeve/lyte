@@ -635,6 +635,65 @@ final class SessionGateTests: XCTestCase {
                        "a drained pacer means no standing backlog")
     }
 
+    /// The Linux lock split's deterministic contract: pure RS-FEC
+    /// preparation reserves no frame/channel/Noise state, so the Session
+    /// owner may service a 5 ms audio packet before committing the frame.
+    /// Commit then advances video exactly once; replaying the context is loud.
+    func testPreparedVideoLeavesSessionServiceableUntilOrderedCommit() throws {
+        var sent: [VideoChannelDatagram] = []
+        let session = Session(
+            config: SessionConfig(
+                crypto: .insecure,
+                rateBitsPerSecond: Self.rateBPS,
+                beaconIntervalNS: 1 << 62
+            ),
+            clientTuple: Self.tupleA,
+            now: 0,
+            rng: SplitMix64(seed: 0xFEC)
+        ) { sent.append($0) }
+        let frame = syntheticFrame(byteCount: 80_000)
+        let context = try XCTUnwrap(
+            session.beginVideoFramePreparation(encodedByteCount: frame.count)
+        )
+
+        let prepared = try Session.prepareVideoFrame(
+            frame, isKeyframe: false, context: context
+        )
+        XCTAssertGreaterThan(prepared.shardCount, 64)
+        XCTAssertEqual(session.videoCounters.framesIngested, 0)
+        XCTAssertEqual(session.queuedVideoBytes, 0)
+
+        _ = try session.ingestAudioPacket(
+            [0xF8, 0xFF, 0xFE],
+            captureTimestampMicroseconds: 5_000,
+            now: 5_000_000
+        )
+        session.pump(now: 5_000_000)
+        XCTAssertEqual(sent.count { $0.pacerClass == .audio }, 1)
+        XCTAssertEqual(sent.count { $0.pacerClass == .freshVideo }, 0)
+
+        let shards = try session.commitPreparedVideoFrame(
+            prepared,
+            context: context,
+            captureTimestampMicroseconds: 1,
+            now: 5_000_001,
+            isBorrowed: true
+        )
+        XCTAssertEqual(shards, prepared.shardCount)
+        XCTAssertEqual(session.videoCounters.framesIngested, 1)
+        XCTAssertEqual(session.videoCounters.borrowedFramesIngested, 1)
+
+        XCTAssertThrowsError(try session.commitPreparedVideoFrame(
+            prepared,
+            context: context,
+            captureTimestampMicroseconds: 1,
+            now: 5_000_002
+        )) {
+            XCTAssertEqual($0 as? SessionError, .staleVideoPreparation)
+        }
+        XCTAssertEqual(session.videoCounters.framesIngested, 1)
+    }
+
     func testShardBudgetLandsExactlyOnTheDatagramCeiling() throws {
         // With the conn-id TLV the plaintext budget is 1101 B: a
         // single-shard frame + a real 16 B tag lands on 1152 exactly.
