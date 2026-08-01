@@ -60,9 +60,24 @@ sent / 4 deduped / 0 failures alongside 300 frames / 0 missed
 grabs. Residuals: motion rig's cadence preflight failed 3× (pup now
 runs the owner's incus/QEMU win11 VM — compositor jitter; rig needs
 a settling retry), and static-workload grading assumes portal idle
-machinery the direct leg lacks. NEXT on the butter ladder: E6a
-NVENC-native (kills the vendor patch), E6b VAAPI-native (live rate
-directives), Arc Rext-444 leg, E2 uinput, E4 packaging, E5
+machinery the direct leg lacks. **Post-E3 landings (2026-08-01)**:
+(#51) the direct leg now drives SessionWire.service() every 10 ms —
+before it, the shell pendings starved (0x19 posture never sent, the
+app's mute never applied so direct legs left pup's speakers LIVE,
+standing cursor shape never flushed); the motion leg's books caught
+it (`cursor: 0 shapes sent` beside a PASS). (#52) **E6a milestone 1**:
+lyte-nvenc, pure Swift against libnvidia-encode (CNvEnc = vendored
+nv-codec-headers 12.2; CCuda = 7 hand-declared driver prototypes, no
+toolkit) — on the 4050: IDRs at [0] only, NvEncReconfigureEncoder
+35→18 Mbps mid-stream with zero reset/zero IDR, decode gate 120/120
+VideoToolbox hardware. With the owner's win11 VM shut down, the
+motion leg posted the direct-eye era's FIRST FULL PASS (1800/1800
+frames, 0 corruption, readyGap p50 16.64 ms, input p99 1.5 ms); the
+VM was the whole preflight story (skips 85→1→0), though the
+zero-skip gate still flakes on single skips. NEXT on the butter
+ladder: E6a productionize (NVENC leg behind the doctor), E6b
+VAAPI-native (live rate directives, frees pup, kills
+vendor-ffmpeg.sh), Arc Rext-444 leg, E2 uinput, E4 packaging, E5
 demolition, then AV1.
 AV1 is deferred until after the rearchitecture (owner decision; the
 four HEVC-shaped seams are inventoried in TODO.md — owner's Mac is an
