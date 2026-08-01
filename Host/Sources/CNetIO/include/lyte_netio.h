@@ -125,6 +125,14 @@ int lyte_netio_poll_txstamps(lyte_netio *n, lyte_netio_txstamp *out, int max,
 
 void lyte_netio_free(lyte_netio *n);
 
+/* Re-arm dumpability after file-capability startup (prctl is variadic
+ * and unreachable from Swift). A cap-tagged binary starts non-dumpable,
+ * which kills coredumps; note /proc/self/exe stays ptrace-guarded
+ * regardless (capability-subset rule) — the benchmark rig reads its
+ * provenance witness via sudo instead.
+ * Owner-machine threat model only; E4's packaging revisits this. */
+int lyte_set_dumpable(void);
+
 #ifdef __cplusplus
 }
 #endif

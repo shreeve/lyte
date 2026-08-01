@@ -382,3 +382,9 @@ void lyte_netio_free(lyte_netio *n)
         close(n->fd);
     free(n);
 }
+
+#include <sys/prctl.h>
+
+int lyte_set_dumpable(void) {
+    return prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
+}

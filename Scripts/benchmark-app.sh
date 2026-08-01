@@ -194,11 +194,17 @@ HOST_PID="$(
   echo "benchmark refused: no standing pup Host on port 41151" >&2
   exit 1
 }
+# A capability-tagged host (the direct eye's cap_sys_admin) is
+# ptrace-guarded: /proc/PID/exe refuses same-uid readers no matter the
+# dumpable flag. sudo -n keeps the witness identical, just readable.
 host_hashes="$(
   ssh -o ConnectTimeout=10 "$PUP" \
-    "sha256sum /proc/$HOST_PID/exe \
-      ~/src/lyte-host/.build/debug/lyte-host | awk '{print \$1}'"
+    "{ sha256sum /proc/$HOST_PID/exe 2>/dev/null \
+       || sudo -n sha256sum /proc/$HOST_PID/exe; } \
+       | head -1; \
+     sha256sum ~/src/lyte-host/.build/debug/lyte-host"
 )"
+host_hashes="$(printf '%s\n' "$host_hashes" | awk '{print $1}')"
 running_host_sha="$(printf '%s\n' "$host_hashes" | awk 'NR == 1 {print}')"
 disk_host_sha="$(printf '%s\n' "$host_hashes" | awk 'NR == 2 {print}')"
 [[ "$running_host_sha" == "$disk_host_sha" ]] || {
@@ -239,7 +245,8 @@ sudo -n nohup tcpdump -i any -nn -U -w '/tmp/$run_id-host.pcap' \
   ssh "$PUP" "date -u +%FT%TZ; \
 p=\$(pgrep -o -f '[l]yte-host.*--wire-listen 41151'); \
 ps -o pid,lstart,args -p \"\$p\"; \
-sha256sum /proc/\$p/exe ~/src/lyte-host/.build/debug/lyte-host; \
+{ sha256sum /proc/\$p/exe 2>/dev/null || sudo -n sha256sum /proc/\$p/exe; }; \
+sha256sum ~/src/lyte-host/.build/debug/lyte-host; \
 ss -u -a -n -p; ip -s link show" \
     > "$OUT_DIR/$run_id-host-before.txt"
 }
@@ -277,7 +284,7 @@ collect_handshake_evidence() {
   ssh "$PUP" "date -u +%FT%TZ; \
 p=\$(pgrep -o -f '[l]yte-host.*--wire-listen 41151' || true); \
 if test -n \"\$p\"; then ps -o pid,lstart,args -p \"\$p\"; \
-sha256sum /proc/\$p/exe; fi; \
+{ sha256sum /proc/\$p/exe 2>/dev/null || sudo -n sha256sum /proc/\$p/exe; }; fi; \
 ss -u -a -n -p; ip -s link show" \
     > "$OUT_DIR/$run_id-host-after.txt" || true
   shasum -a 256 "$OUT_DIR/$run_id"* \

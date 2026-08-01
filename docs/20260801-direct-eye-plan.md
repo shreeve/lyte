@@ -130,6 +130,31 @@ works). Document it; no dialog theater.
   the real Mac client. Gates: motion-pipeline benchmark ≥ current
   all-green verdict; a soak leg (30+ min) with zero freezes — the
   test the portal path kept failing at the glass.
+  **E1 LIVE RESULTS (2026-08-01, owner at the glass, sanctioned):**
+  the takeover leg (Scripts/benchmark-direct.sh — pauses the standing
+  loop, stands a direct host on 41151, restores via EXIT trap) ran the
+  REAL-capture motion benchmark end to end: 1810 frames / 30 s to the
+  owner's M5, presentation-gap p99 **17.6 ms** at the glass, 16
+  on-demand IDRs, 0 missed grabs, clean teardown. **The accidental
+  A/B**: the identical leg against the standing PORTAL host, minutes
+  later, returned `no_frames` — the portal wedged again under
+  controlled conditions while the direct eye streamed butter. Thesis
+  proven. Remaining red before E1 closes (the honest butter ledger):
+  (1) audio gate — 4700 SAMPLES (~98 ms, 0.35%) of declick-protected
+  concealment across the leg; packets arrived clockwork (±0.7 ms,
+  6023/6023), ring depth healthy (~93 ms ≈ 20-packet target), so it's
+  playout-tuning vs the new cadence, not transport — needs the audio
+  pump/jitter interrogation; (2) rate directives deferred (CQP) until
+  E6-VAAPI; (3) chroma: direct leg negotiates 4:2:0 (NV12 blit) — the
+  4:4:4 text-crispness tier needs an Arc Rext-444 leg; (4) cursor is
+  ABSENT from KMS primary-plane capture (hardware cursor plane) — E3
+  is now user-visible, not theoretical; (5) 30-min soak still owed.
+  Environment facts learned: pup's panel is 120 Hz native (benchmark
+  corpus + preflight math assume 60 — leg ran with a session-temporary
+  60 Hz switch via Mutter DisplayConfig; make the rig refresh-aware);
+  a cap_sys_admin binary is ptrace-guarded (provenance witness read
+  via sudo -n in the rig) and non-dumpable (re-armed via prctl leaf
+  for coredumps); Mutter refuses display reconfig with the lid closed.
 - **E2 — input**: uinput primary, RemoteDesktop retired. Gates:
   existing input round-trip tests against the new injector; the ⌘Tab
   latch and release-all semantics preserved.

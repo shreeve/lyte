@@ -8,6 +8,7 @@
 // (echoes, IDR requests, path challenges) on the same loop.
 
 import CHevcEncode
+import CNetIO
 import CPipeWireCapture
 import Foundation
 import HostCore
@@ -1530,6 +1531,16 @@ func run() throws {
     lyte_stdout_linebuf()
 
     var opts = try Options.parse(CommandLine.arguments)
+    // A cap_sys_admin file capability clears the dumpable flag at
+    // exec, killing coredumps. Re-arm it for crash forensics (owner-
+    // machine threat model; E4's packaging owns the real answer).
+    // NOTE it does NOT reopen /proc/self/exe — the kernel ptrace-
+    // guards any process whose caps exceed the reader's, dumpable or
+    // not; the benchmark rig reads its provenance witness via sudo.
+    if opts.backend == .direct, lyte_set_dumpable() != 0 {
+        print("direct: WARNING — could not restore dumpability "
+            + "(coredumps stay disabled)")
+    }
 
     // THE RECIPE PAIRING (HS-23, the supremacy plan's R2): a session's
     // encoder recipe follows the wire rate unless --bitrate-mbps split
@@ -1577,11 +1588,20 @@ func run() throws {
                 ?? "listen :\(opts.wireListen!)")
             + (opts.insecure ? ", INSECURE" : ", noise") + ")"
         : opts.outputPath
-    let captureDescription = opts.syntheticMotion == nil
-        ? "\(opts.backend.rawValue) → PipeWire"
-        : "SYNTHETIC-DEBUG-BGRX (PipeWire/Mutter BYPASSED)"
+    let captureDescription: String
+    let encoderDescription: String
+    if opts.syntheticMotion != nil {
+        captureDescription = "SYNTHETIC-DEBUG-BGRX (PipeWire/Mutter BYPASSED)"
+        encoderDescription = "hevc_nvenc"
+    } else if opts.backend == .direct {
+        captureDescription = "direct eye (KMS doorbell + EGL blit)"
+        encoderDescription = "hevc_vaapi"
+    } else {
+        captureDescription = "\(opts.backend.rawValue) → PipeWire"
+        encoderDescription = "hevc_nvenc"
+    }
     print("lyte-host — \(captureDescription) → "
-        + "hevc_nvenc → \(destination)")
+        + "\(encoderDescription) → \(destination)")
 
     // HS-33: which libavcodec did this binary link? The vendored
     // no-reset build (Scripts/vendor-ffmpeg.sh) signs itself with a
