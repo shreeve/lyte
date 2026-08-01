@@ -38,6 +38,14 @@ struct lyte_pw_capture {
     struct spa_video_info_raw format;
     int have_format;
 
+    /* Monotonic, bounded starvation diagnostics. */
+    uint64_t process_callbacks;
+    uint64_t dequeue_empty;
+    uint64_t buffer_empty;
+    uint64_t frames_delivered;
+    uint64_t last_process_monotonic_ns;
+    int32_t stream_state;
+
     /* 0 = quit requested, 1 = timeout, -1 = error */
     int exit_reason;
     char error[256];
@@ -69,6 +77,7 @@ static void on_stream_state_changed(void *data, enum pw_stream_state old,
 {
     struct lyte_pw_capture *c = data;
     (void)old;
+    c->stream_state = (int32_t)state;
     if (state == PW_STREAM_STATE_ERROR) {
         snprintf(c->error, sizeof(c->error), "pipewire stream error: %s",
                  error ? error : "(unspecified)");
@@ -149,10 +158,18 @@ static uint64_t frame_graph_us(struct lyte_pw_capture *c, struct spa_buffer *buf
 static void on_stream_process(void *data)
 {
     struct lyte_pw_capture *c = data;
+    struct timespec process_ts;
+    clock_gettime(CLOCK_MONOTONIC, &process_ts);
+    c->process_callbacks++;
+    c->last_process_monotonic_ns =
+        (uint64_t)process_ts.tv_sec * SPA_NSEC_PER_SEC +
+        (uint64_t)process_ts.tv_nsec;
 
     struct pw_buffer *b = pw_stream_dequeue_buffer(c->stream);
-    if (b == NULL)
+    if (b == NULL) {
+        c->dequeue_empty++;
         return;
+    }
 
     struct spa_buffer *buf = b->buffer;
     struct spa_data *d = &buf->datas[0];
@@ -167,6 +184,9 @@ static void on_stream_process(void *data)
                     c->format.size.height,
                     fmt,
                     frame_graph_us(c, buf));
+        c->frames_delivered++;
+    } else {
+        c->buffer_empty++;
     }
 
     pw_stream_queue_buffer(c->stream, b);
@@ -443,6 +463,22 @@ int lyte_pw_capture_run(lyte_pw_capture *c, double timeout_sec,
     if (c->exit_reason == -1)
         set_err(err, errlen, "%s", c->error);
     return c->exit_reason;
+}
+
+void lyte_pw_capture_get_stats(const lyte_pw_capture *c,
+                               lyte_pw_capture_stats *out)
+{
+    if (!out)
+        return;
+    memset(out, 0, sizeof(*out));
+    if (!c)
+        return;
+    out->process_callbacks = c->process_callbacks;
+    out->dequeue_empty = c->dequeue_empty;
+    out->buffer_empty = c->buffer_empty;
+    out->frames_delivered = c->frames_delivered;
+    out->last_process_monotonic_ns = c->last_process_monotonic_ns;
+    out->stream_state = c->stream_state;
 }
 
 void lyte_pw_capture_quit(lyte_pw_capture *c)

@@ -169,6 +169,11 @@ public struct SessionConfig: Sendable {
     /// from the other end.
     public var openingRepairMaxAttempts: Int
     public var openingRepairMaxBytes: Int
+    /// Peer-driven unknown-frame NACKs may arm at most one IDR in this
+    /// interval. Other stale-NACK reasons and every host-driven demand
+    /// source are unaffected. This bounds an authenticated peer naming
+    /// a fresh garbage frame on every 25–50 ms feedback report.
+    public var unknownFrameIdrArmIntervalNS: UInt64
     /// HS-17: the repair store's retention window (build plan's
     /// "≥4 s rings") and byte cap, passed through to VideoChannel.
     public var repairRetentionNS: UInt64
@@ -204,6 +209,7 @@ public struct SessionConfig: Sendable {
         repairBudgetJitterAllowanceNS: UInt64 = 15_000_000,
         openingRepairMaxAttempts: Int = 4,
         openingRepairMaxBytes: Int = 2 << 20,
+        unknownFrameIdrArmIntervalNS: UInt64 = 1_000_000_000,
         repairRetentionNS: UInt64 = 4_000_000_000,
         repairStoreByteCap: Int = 16 << 20,
         fallPurgeBacklogThresholdNS: UInt64 = 50_000_000
@@ -226,6 +232,7 @@ public struct SessionConfig: Sendable {
         self.repairBudgetJitterAllowanceNS = repairBudgetJitterAllowanceNS
         self.openingRepairMaxAttempts = openingRepairMaxAttempts
         self.openingRepairMaxBytes = openingRepairMaxBytes
+        self.unknownFrameIdrArmIntervalNS = unknownFrameIdrArmIntervalNS
         self.repairRetentionNS = repairRetentionNS
         self.repairStoreByteCap = repairStoreByteCap
         self.fallPurgeBacklogThresholdNS = fallPurgeBacklogThresholdNS
@@ -620,6 +627,8 @@ public struct SessionCounters: Equatable, Sendable {
     public var repairDatagramsEnqueued = 0
     /// Stale verdicts that armed the coalesced keyframe latch.
     public var idrArmedOnStaleNack = 0
+    /// Unknown-frame NACK arms refused by the peer-driven interval cap.
+    public var unknownFrameIdrArmsThrottled = 0
     /// HS-32: explicit 0x23 repair refusals sent (stale-budget,
     /// superseded, unknown-frame — the verdicts the client can act
     /// on; FROZEN/closed and already-repaired stay silent by design).
@@ -745,6 +754,10 @@ public final class Session {
     /// IDR books (the estimator-ramp hunt) can name which one minted a
     /// keyframe. Merged into the same poll; behavior unchanged.
     private var staleNackKeyframePending = false
+    /// Last peer-driven `.unavailable` arm. Budget-stale NACKs are tied
+    /// to real retained frames and remain unthrottled; only arbitrary
+    /// unknown frame numbers can manufacture this pressure.
+    private var lastUnknownFrameIdrArmAtNS: UInt64?
     /// The fall-repricing purge's arm: queued video was dropped
     /// mid-flight at a fall, so the next encoder poll owes a fresh
     /// IDR (merged into `takeFreshKeyframeRequest`).
@@ -2150,9 +2163,13 @@ public final class Session {
         case .freshVideo, .videoTail, .refinement, .telemetry:
             channel = .videoActive
         }
+        let deliveryFrame: FrameNumber? =
+            datagram.pacerClass == .freshVideo
+                ? datagram.frameNumber : nil
         estimator.noteSent(
             channel: channel, seq: datagram.seq,
-            bytes: datagram.bytes.count, now: pumpNowNS
+            bytes: datagram.bytes.count, now: pumpNowNS,
+            deliveryFrame: deliveryFrame
         )
     }
 
@@ -2320,8 +2337,23 @@ public final class Session {
         ) -> [SessionEvent] {
             counters.nacksJudgedStale += 1
             if armIdr {
-                staleNackKeyframePending = true
-                counters.idrArmedOnStaleNack += 1
+                let mayArm: Bool
+                if reason == .unavailable {
+                    mayArm = lastUnknownFrameIdrArmAtNS.map {
+                        now &- $0 >= config.unknownFrameIdrArmIntervalNS
+                    } ?? true
+                } else {
+                    mayArm = true
+                }
+                if mayArm {
+                    staleNackKeyframePending = true
+                    counters.idrArmedOnStaleNack += 1
+                    if reason == .unavailable {
+                        lastUnknownFrameIdrArmAtNS = now
+                    }
+                } else {
+                    counters.unknownFrameIdrArmsThrottled += 1
+                }
             }
             var events: [SessionEvent] = [
                 .nackJudgedStale(frame: nack.frame, reason: reason)

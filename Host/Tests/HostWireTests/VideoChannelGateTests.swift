@@ -225,6 +225,48 @@ final class VideoChannelGateTests: XCTestCase {
             + "\(telemetry.maxBatchWireTimeNS) ns")
     }
 
+    func testSealedDatagramsAssembleInPlaceByteEquivalent() throws {
+        let frame = try load("frame-001-p.annexb")
+        var emitted: [VideoChannelDatagram] = []
+        var expected: [[UInt8]] = []
+        let channel = VideoChannel(
+            config: VideoChannelConfig(
+                rateBitsPerSecond: Self.rateBPS,
+                connectionId: try ConnectionId(
+                    bytes: [1, 2, 3, 4, 5, 6, 7, 8]
+                )
+            ),
+            now: 0,
+            seal: { plaintext, aad, envelope in
+                XCTAssertEqual(Array(aad), try envelope.encode(payload: []),
+                    "the authenticated header changed")
+                let sealed = plaintext.map { $0 ^ 0xA5 }
+                    + [UInt8](repeating: 0x5A,
+                              count: WireBudget.aeadTagByteCount)
+                expected.append(try envelope.encode(payload: sealed))
+                return sealed
+            }
+        ) { emitted.append($0) }
+
+        let count = try channel.ingest(
+            frame: frame, frameNumber: FrameNumber(rawValue: 77),
+            captureTimestampMicroseconds: 123_456,
+            isKeyframe: false, lastInputSeq: 42, now: 0
+        )
+        var now: UInt64 = 0
+        channel.pump(now: now)
+        while let wake = channel.nextWake(now: now) {
+            now = max(now &+ 1, wake)
+            channel.pump(now: now)
+        }
+        XCTAssertEqual(emitted.map(\.bytes), expected,
+            "pre-sized AAD-buffer assembly must be byte-identical to "
+                + "the canonical envelope encoder")
+        XCTAssertEqual(channel.counters.sealedDatagramsAssembledInPlace,
+                       count,
+            "every sealed shard must use the two-buffer assembly path")
+    }
+
     func testKeyframeShardsJumpTheVideoQueue() throws {
         // A queued P-frame, then an IDR before anything drains: the IDR's
         // shards are urgent-fresh and must leave first — the Pacer's

@@ -535,11 +535,13 @@ final class Sink {
     var stageDrainUs: [UInt64] = []
     var stageWindowStartedAt: Double?
     var lastOnFrameAt: Double?
-    /// Capture-starvation tripwire: the direct-scanout freeze class
-    /// (2026-07-30 verdict) delivers input and capture silence at the
-    /// same time, which the stage books only reveal 5 s later as a
-    /// percentile. These throttle the loud line to one per 5 s and
-    /// count distinct episodes for the final stats block.
+    /// Capture-starvation tripwire. Only pointer motion is a structural
+    /// damage witness with EMBEDDED cursor mode: keys/buttons/scroll may
+    /// legitimately draw nothing. `pointerMotionsAtLastFrame` lets the
+    /// detector require a burst of motion injected since the last
+    /// capture callback instead of mistaking a damage-driven static desk
+    /// (often one compositor frame per second) for starvation.
+    var pointerMotionsAtLastFrame = 0
     var starvationWarnedAt: Double?
     var starvationEpisodes = 0
     /// Nanoseconds onPacket spent inside wire.sendFrame during the
@@ -758,6 +760,8 @@ final class Sink {
                 stageGapUs.append(UInt64(max(now - last, 0) * 1e6))
             }
             lastOnFrameAt = now
+            pointerMotionsAtLastFrame =
+                wire?.pointerMotionWitness.count ?? pointerMotionsAtLastFrame
         }
 
         // The backpressure gate (the fps-ceiling fix's second half):
@@ -1157,32 +1161,46 @@ final class Sink {
         }
     }
 
-    /// The runtime tripwire for the direct-scanout freeze class: cursor
-    /// mode is EMBEDDED, so live input MUST produce damage frames — an
-    /// ACTIVE session with input in the last 2 s but no capture frame
-    /// for >500 ms means the compositor is starving the ScreenCast, not
-    /// that the screen is still. The startup environ check catches a
-    /// missing flag at launch; this catches the flag failing at runtime
-    /// (or any future starvation cause) while a user is visibly driving.
+    /// Runtime capture tripwire. A damage-driven screencast is allowed
+    /// to sit silent indefinitely; generic input is not proof that pixels
+    /// changed. A burst of at least three newly injected pointer motions
+    /// is different: EMBEDDED cursor mode owes visible cursor damage.
+    /// The C-leaf counters distinguish "PipeWire stopped scheduling us"
+    /// from "callbacks arrived but buffers were empty" in one bounded
+    /// line, without restarting capture or manufacturing frames/IDRs.
     private func checkCaptureStarvation(_ now: Double) {
         guard let wire, wire.currentWireMode == .active,
               let lastFrame = lastOnFrameAt, now - lastFrame > 0.5 else {
             starvationWarnedAt = nil
             return
         }
-        let lastInput = wire.lastInputInjectedAtMicros
-        guard lastInput != 0 else { return }
-        let inputAge = Double(monotonicMicros() &- lastInput) / 1e6
-        guard inputAge < 2.0 else { return }
+        let motion = wire.pointerMotionWitness
+        let motionsSinceFrame = motion.count - pointerMotionsAtLastFrame
+        guard motionsSinceFrame >= 3, motion.lastAtMicros != 0 else {
+            starvationWarnedAt = nil
+            return
+        }
+        let motionAge =
+            Double(monotonicMicros() &- motion.lastAtMicros) / 1e6
+        guard motionAge < 0.25 else { return }
         if starvationWarnedAt == nil { starvationEpisodes += 1 }
         if let warned = starvationWarnedAt, now - warned < 5 { return }
         starvationWarnedAt = now
+        var pw = lyte_pw_capture_stats()
+        lyte_pw_capture_get_stats(capture, &pw)
+        let processAgeMS = pw.last_process_monotonic_ns == 0
+            ? -1
+            : Int((monotonicNS() &- pw.last_process_monotonic_ns)
+                / 1_000_000)
         print(String(
-            format: "capture: STARVED — session ACTIVE, input %.1f s ago, "
-                + "but no capture frame for %.0f ms (episode %d); if this "
-                + "persists check MUTTER_DEBUG_PAINT=disable-direct-scanout "
-                + "(Host/README, machine prerequisites)",
-            inputAge, (now - lastFrame) * 1000, starvationEpisodes))
+            format: "capture: STARVED — %d pointer motions since frame "
+                + "(last %.2f s ago), no frame for %.0f ms (episode %d); "
+                + "PipeWire state=%d process=%llu frames=%llu "
+                + "dequeue-empty=%llu buffer-empty=%llu process-age=%d ms",
+            motionsSinceFrame, motionAge, (now - lastFrame) * 1000,
+            starvationEpisodes, pw.stream_state, pw.process_callbacks,
+            pw.frames_delivered, pw.dequeue_empty, pw.buffer_empty,
+            processAgeMS))
     }
 
     func onPacket(data: UnsafePointer<UInt8>, size: Int, keyframe: Bool, avgQP: Int) {

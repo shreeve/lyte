@@ -183,6 +183,10 @@ public struct VideoChannelCounters: Sendable {
     /// HS-17: repair requests refused because the shard already rode a
     /// retransmit (one attempt — no retransmission of retransmissions).
     public var repairShardsAlreadySent = 0
+    /// Sealed datagrams assembled by growing the pre-sized AAD header
+    /// buffer in place (one final wire buffer, rather than encoding a
+    /// third header+payload array after sealing).
+    public var sealedDatagramsAssembledInPlace = 0
 
     public init() {}
 }
@@ -774,8 +778,27 @@ public final class VideoChannel {
         guard let seal else {
             return try envelope.encode(plaintextShard: plaintext)
         }
-        let header = try envelope.encode(payload: [])
+        var header = try envelope.encode(payload: [])
+        // The sealer API necessarily returns ciphertext‖tag as its own
+        // array. Reuse the AAD header as the FINAL datagram buffer:
+        // pre-size it before sealing, authenticate exactly these header
+        // bytes, then append the returned payload in place. This removes
+        // the former third per-shard allocation from
+        // `envelope.encode(payload: sealed)` while preserving AEAD
+        // sequencing and byte identity.
+        header.reserveCapacity(
+            header.count + plaintext.count + WireBudget.aeadTagByteCount
+        )
         let sealed = try seal(plaintext[...], header[...], envelope)
-        return try envelope.encode(payload: sealed)
+        guard sealed.count <= WireBudget.maxWirePayloadByteCount else {
+            throw WireError.payloadOverBudget(sealed.count)
+        }
+        let total = header.count + sealed.count
+        guard total <= WireBudget.maxDatagramByteCount else {
+            throw WireError.datagramOverBudget(total)
+        }
+        header.append(contentsOf: sealed)
+        counters.sealedDatagramsAssembledInPlace += 1
+        return header
     }
 }

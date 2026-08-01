@@ -200,6 +200,12 @@ final class SessionWire {
     /// Written under `lock` on the service thread; the capture tick's
     /// starvation tripwire reads it through the locked accessor below.
     private var lastInputInjectedAt: UInt64 = 0
+    /// Pointer-motion is the only input kind that structurally owes an
+    /// EMBEDDED-cursor damage frame. Keys/buttons/scroll may target a
+    /// surface that draws nothing, so treating any input as a capture
+    /// liveness witness manufactures false starvation on a static desk.
+    private var pointerMotionInjected = 0
+    private var lastPointerMotionInjectedAt: UInt64 = 0
 
     private(set) var framesSent = 0
     /// Stage books for the fps-ceiling hunt (Q-1's red row): the last
@@ -237,6 +243,13 @@ final class SessionWire {
         lock.lock()
         defer { lock.unlock() }
         return lastInputInjectedAt
+    }
+    /// Atomic starvation witness: successful pointer-motion count and
+    /// latest injection time from one lock acquisition.
+    var pointerMotionWitness: (count: Int, lastAtMicros: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (pointerMotionInjected, lastPointerMotionInjectedAt)
     }
     /// ECONNREFUSED evidence (LYTE_NETIO_PEER_GONE): the client's socket
     /// is closed — session-ending, not an I/O failure (HS-11).
@@ -1466,6 +1479,13 @@ final class SessionWire {
         let injectMicros = monotonicMicros()
         inputInjected += 1
         lastInputInjectedAt = injectMicros
+        switch event.body {
+        case .pointerMotionAbsolute, .pointerMotionRelative:
+            pointerMotionInjected += 1
+            lastPointerMotionInjectedAt = injectMicros
+        case .keyKeycode, .pointerButton, .pointerAxis:
+            break
+        }
         inputLatency.record(injectMicros &- rxMicros)
         session.noteInputInjected(
             seq: event.seq,
