@@ -125,6 +125,7 @@ targets += [
     // and SO_TIMESTAMPING TX stamps (CMSG macros are unreachable from Swift;
     // plain Linux syscalls, no system library).
     .target(name: "CNetIO"),
+    .testTarget(name: "CNetIOTests", dependencies: ["CNetIO"]),
     // C leaf (HS-13, fallback only): virtual evdev devices over
     // /dev/uinput — keyboard, relative mouse, absolute tablet. The
     // ioctl surface; policy stays in Swift.

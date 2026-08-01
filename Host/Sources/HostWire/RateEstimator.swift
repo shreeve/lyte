@@ -278,6 +278,11 @@ public struct RateEstimatorConfig: Sendable {
     /// class stall against a few ms of real spacing reads >0.9).
     /// The symmetric twin of the compressed-drain purge.
     public var stretchGapDominanceFraction: Double
+    /// A path-capacity witness must span more than one socket microburst.
+    /// Datagrams accepted by one sendmmsg share one timestamp; receiver-side
+    /// serialization of that burst is frame geometry, not a sustained-rate
+    /// probe. One millisecond requires evidence across pacer quanta.
+    public var honestMinSendSpanNS: UInt64
     /// HS-28 (invariant 2): how long overuse pressure must persist
     /// before an uncorroborated fall may execute once the shape-gates
     /// retire — one full 500 ms fall-limiter window into the next, so
@@ -364,6 +369,7 @@ public struct RateEstimatorConfig: Sendable {
         stallEvidenceWindowNS: UInt64 = 500_000_000,
         censoredSampleMarginFraction: Double = 0.2,
         stretchGapDominanceFraction: Double = 0.5,
+        honestMinSendSpanNS: UInt64 = 1_000_000,
         beliefDemotionSustainNS: UInt64 = 500_000_000,
         honestVoteWindowNS: UInt64 = 2_000_000_000,
         lossCleanThreshold: Double = 0.02,
@@ -401,6 +407,7 @@ public struct RateEstimatorConfig: Sendable {
         self.stallEvidenceWindowNS = stallEvidenceWindowNS
         self.censoredSampleMarginFraction = censoredSampleMarginFraction
         self.stretchGapDominanceFraction = stretchGapDominanceFraction
+        self.honestMinSendSpanNS = honestMinSendSpanNS
         self.beliefDemotionSustainNS = beliefDemotionSustainNS
         self.honestVoteWindowNS = honestVoteWindowNS
         self.lossCleanThreshold = lossCleanThreshold
@@ -502,6 +509,8 @@ public struct RateEstimatorStats: Equatable, Sendable {
     /// was one dominating gap (a radio hole, not the path) — recused
     /// from the honest median before they could poison it.
     public var stretchedTrainsRecused = 0
+    /// Would-be honest trains confined to one socket/pacer microburst.
+    public var burstGeometryTrainsRecused = 0
     /// HS-28: times any sample raised the capacity belief.
     public var beliefRaises = 0
     /// HS-28 (invariant 2): times an executing fall demoted the belief
@@ -777,7 +786,8 @@ public final class RateEstimator {
     /// estimator fixtures source-compatible as one synthetic frame.
     public func noteSent(
         channel: ChannelId, seq: ChannelSeq, bytes: Int, now: UInt64,
-        deliveryFrame: FrameNumber? = FrameNumber(rawValue: 0)
+        deliveryFrame: FrameNumber? = FrameNumber(rawValue: 0),
+        paceBitsPerSecond: Int? = nil
     ) {
         let key = UInt32(channel.rawValue) << 16 | UInt32(seq.rawValue)
         if let evicted = ledger[ledgerHead], ledgerIndex[evicted.key] == ledgerHead {
@@ -786,7 +796,7 @@ public final class RateEstimator {
         ledger[ledgerHead] = SendRecord(
             key: key, sendNS: now, bytes: bytes,
             deliveryFrame: deliveryFrame?.rawValue,
-            paceBitsPerSecond: rateBitsPerSecond
+            paceBitsPerSecond: paceBitsPerSecond ?? rateBitsPerSecond
         )
         ledgerIndex[key] = ledgerHead
         ledgerHead = (ledgerHead + 1) % ledger.count
@@ -1158,11 +1168,15 @@ public final class RateEstimator {
             guard train.count >= 3 else { return }
             var firstArrival = UInt64.max
             var lastArrival: UInt64 = 0
+            var firstSend = UInt64.max
+            var lastSend: UInt64 = 0
             var bytes = 0
             var paceBits = 0
             for (offset, sample) in train.enumerated() {
                 firstArrival = min(firstArrival, sample.arrivalMicros)
                 lastArrival = max(lastArrival, sample.arrivalMicros)
+                firstSend = min(firstSend, sample.sendNS)
+                lastSend = max(lastSend, sample.sendNS)
                 paceBits = max(paceBits, sample.paceBitsPerSecond)
                 if offset > 0 { bytes += sample.bytes }
             }
@@ -1208,6 +1222,7 @@ public final class RateEstimator {
                 let honest = rate
                     < pace * (1 - config.censoredSampleMarginFraction)
                 if honest {
+                    let sendSpan = lastSend - firstSend
                     // The stretched-train guard (the microstall
                     // forensics — the config comment holds the full
                     // account): one dominating inter-arrival gap means
@@ -1226,7 +1241,13 @@ public final class RateEstimator {
                     let span = arrivals.last! - arrivals.first!
                     let holeDominated = Double(maxGap)
                         > config.stretchGapDominanceFraction * Double(span)
-                    if holeDominated {
+                    if sendSpan < config.honestMinSendSpanNS {
+                        // One sendmmsg/pacer microburst says how the
+                        // receiver serialized a frame burst, not what
+                        // sustained capacity the path offers. It cannot
+                        // demote the belief.
+                        stats.burstGeometryTrainsRecused += 1
+                    } else if holeDominated {
                         stats.stretchedTrainsRecused += 1
                     } else {
                         // The path measurably stretched this train —

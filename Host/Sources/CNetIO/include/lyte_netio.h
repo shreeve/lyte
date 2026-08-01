@@ -24,6 +24,9 @@ typedef struct lyte_netio lyte_netio;
    (the client exited), not an I/O failure; the caller closes cleanly
    instead of dying on "recvmmsg failed" (HS-11's graceful-exit rule). */
 #define LYTE_NETIO_PEER_GONE (-2)
+/* Local UDP send-buffer exhaustion (ENOBUFS), retryable like EAGAIN but
+   distinct for telemetry. */
+#define LYTE_NETIO_NO_BUFFER (-3)
 
 /* One datagram to send. `tos` is the raw IPv4 TOS byte (DSCP << 2):
    audio 0xC0 (CS6/DSCP 48), video 0xA0 (CS5/DSCP 40). Every packet in a
@@ -66,6 +69,15 @@ lyte_netio *lyte_netio_new(const char *bind_ip, uint16_t bind_port,
 
 /* The locally bound port, host order — the answer after binding port 0. */
 uint16_t lyte_netio_local_port(const lyte_netio *n);
+
+/* Exact Linux UDP send-queue occupancy (SIOCOUTQ/TIOCOUTQ) and configured
+   SO_SNDBUF. Observation only: neither call resizes or drains the socket.
+   Return -1 on query failure. */
+int lyte_netio_outq_bytes(const lyte_netio *n);
+int lyte_netio_send_buffer_bytes(const lyte_netio *n);
+/* Socket-level skb priority. Separate latency/video socket objects make this
+   class-specific even though SO_PRIORITY itself is per socket. */
+int lyte_netio_set_priority(lyte_netio *n, int priority);
 
 /* connect()s the socket to `ip`:`port`. Required before sending; receiving
    works without it. Returns 0 on success, -1 with `err` filled. */

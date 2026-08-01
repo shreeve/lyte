@@ -635,6 +635,76 @@ final class SessionGateTests: XCTestCase {
                        "a drained pacer means no standing backlog")
     }
 
+    /// EAGAIN is not a send. The Linux shell may retain pacer-released
+    /// datagrams for a later socket retry; until confirmation they must remain
+    /// backlog (for admission and NACK recusal) and must not enter the
+    /// estimator under the earlier pacer timestamp.
+    func testSocketConfirmedSendAccountingKeepsEagainOutboxPending() throws {
+        var outbox: [VideoChannelDatagram] = []
+        let session = Session(
+            config: SessionConfig(
+                crypto: .insecure,
+                rateBitsPerSecond: Self.rateBPS,
+                beaconIntervalNS: 1 << 62
+            ),
+            clientTuple: Self.tupleA,
+            now: 0,
+            rng: SplitMix64(seed: 0xEA61),
+            sendAccounting: .socketConfirmed
+        ) { outbox.append($0) }
+
+        let frame = syntheticFrame(byteCount: 20_000)
+        try session.ingestVideoFrame(
+            frame, captureTimestampMicroseconds: 1,
+            isKeyframe: false, now: 1
+        )
+        _ = drain(session, from: 1, horizon: 900_000_000)
+
+        let pendingBytes = outbox
+            .filter {
+                $0.pacerClass == .freshVideo || $0.pacerClass == .videoTail
+                    || $0.pacerClass == .refinement
+            }
+            .reduce(0) { $0 + $1.bytes.count }
+        XCTAssertGreaterThan(pendingBytes, 0)
+        XCTAssertEqual(session.queuedVideoBytes, pendingBytes,
+            "pacer drain cannot erase an EAGAIN-retained socket outbox")
+        XCTAssertEqual(session.estimatorStats.dispersionSamplesMatched, 0,
+            "unconfirmed datagrams must not exist in the send ledger")
+
+        _ = try session.ingestAudioPacket(
+            [0xF8, 0xFF, 0xFE],
+            captureTimestampMicroseconds: 1_000_000,
+            now: 1_000_000_000
+        )
+        XCTAssertGreaterThan(session.pumpLatency(now: 1_000_000_000), 0,
+            "audio must leave the pacer despite a blocked video outbox")
+        let originalVideoOrder = outbox
+            .filter { $0.pacerClass == .freshVideo }
+            .map(\.seq)
+        let prioritized = Session.prioritizeLatency(outbox)
+        let audioIndex = try XCTUnwrap(
+            prioritized.firstIndex { $0.pacerClass == .audio })
+        let videoIndex = try XCTUnwrap(
+            prioritized.firstIndex { $0.pacerClass == .freshVideo })
+        XCTAssertLessThan(audioIndex, videoIndex,
+            "sealed audio crosses channels ahead of retained video")
+        XCTAssertEqual(
+            prioritized.filter { $0.pacerClass == .freshVideo }.map(\.seq),
+            originalVideoOrder,
+            "latency bypass must not reorder channel-2 datagrams")
+        XCTAssertEqual(
+            prioritized.first { $0.pacerClass == .audio }?.bytes,
+            outbox.first { $0.pacerClass == .audio }?.bytes,
+            "priority partition must preserve authenticated bytes exactly")
+
+        for datagram in prioritized {
+            session.confirmDatagramSent(datagram, now: 1_000_000_000)
+        }
+        XCTAssertEqual(session.queuedVideoBytes, 0,
+            "kernel acceptance completes the send and releases backlog")
+    }
+
     /// The Linux lock split's deterministic contract: pure RS-FEC
     /// preparation reserves no frame/channel/Noise state, so the Session
     /// owner may service a 5 ms audio packet before committing the frame.
@@ -795,5 +865,26 @@ final class SessionGateTests: XCTestCase {
         let passthrough = try emit(seal: { plaintext, _, _ in Array(plaintext) })
         XCTAssertEqual(bare, passthrough)
         XCTAssertFalse(bare.isEmpty)
+    }
+
+    func testKernelPressureFrameShedArmsOneFreshIDR() {
+        let session = Session(
+            config: SessionConfig(
+                crypto: .insecure,
+                rateBitsPerSecond: Self.rateBPS
+            ),
+            clientTuple: Self.tupleA,
+            now: 0,
+            rng: SplitMix64(seed: 0x51ED)
+        ) { _ in }
+        XCTAssertFalse(session.takeFreshKeyframeRequest())
+        session.noteKernelPressureFreshVideoShed(
+            datagrams: 12, bytes: 13_824)
+        XCTAssertEqual(session.counters.kernelPressureShedFrames, 1)
+        XCTAssertEqual(session.counters.kernelPressureShedDatagrams, 12)
+        XCTAssertEqual(session.counters.kernelPressureShedBytes, 13_824)
+        XCTAssertTrue(session.takeFreshKeyframeRequest())
+        XCTAssertFalse(session.takeFreshKeyframeRequest(),
+            "socket shedding shares the coalesced one-shot IDR latch")
     }
 }
