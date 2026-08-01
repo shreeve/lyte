@@ -102,3 +102,49 @@ radios have now each had their own pathology; today's is pup's.
   although client queueWait maxes at 0.46 ms — on this hardware
   `client_presentation` is never the right verdict; the rung order or
   threshold needs one nudge.
+
+## Addendum (same day, ~13:30 UTC) — the smoking gun and the 5 GHz move
+
+Kernel tracepoint capture on pup (trace-cmd, mac80211 + cfg80211 + iwlwifi
+families, 46 s spanning four stall doublets) settled the last question.
+**The AP is the absent party.** Anatomy of one 120 ms stall at full trace
+resolution: pup submitted frames on schedule throughout the window, the
+first frame through needed **4 on-air retries**, pup received *nothing*
+(no MPDUs, no beacons) for ~120 ms, then 10 MPDUs flushed in one burst —
+with **zero** host-side scan/ROC/chanctx/queue-stop events. A frame
+retried on-air proves pup's radio was present and transmitting; unACKed
+retries plus RX silence prove the **gateway's 6 GHz radio went off-air**.
+Verdict: the Xfinity gateway's 6 GHz radio leaves the air ~170 ms every
+~10.0 s (its own channel-monitoring sweep), and pup was its only 6 GHz
+client. Two side-findings from the same trace: the AP's 6 GHz MBSSID
+beacons (3 co-located BSSes) churned BSS updates ~2/s, driving iwlmvm to
+re-send `SCAN_CFG_CMD` every 507 ms — all of it 6 GHz-association noise,
+gone after the move; and iwlmei/CSME is not loaded (ruled out).
+
+**Fix applied:** pup moved to the 5 GHz BSS `c6:50:9c:a5:fc:6a` (ch 157,
+−64 dBm) via a cloned NM profile `Shreeve-5g-test` (band a, BSSID-pinned,
+autoconnect priority 100; old `Shreeve` profile autoconnect off; revert =
+`nmcli con up Shreeve` / re-enable its autoconnect). The switch used a
+systemd-run rollback timer, since cancelled.
+
+**Validation results (5 GHz):**
+- Idle probe: p50 1.95 ms, p99 13.6 ms, max 41.9 ms (was p99 ~105, max
+  123 on 6 GHz). The 84–135 ms doublets are gone; a residual ~40 ms
+  single brush remains at the ~10 s cadence.
+- BSS cache stamp frozen across 24 s (was refreshing every ~10 s) — the
+  scan-config churn died with the 6 GHz association.
+- Benchmark leg (`motion-pipeline-20260801T123654Z-76774`): **the audio
+  gate now passes** (`bounded_path_tail_concealed`, PLC 21→5, underruns
+  5753→1327, all de-click-protected); host egress still clean.
+- **Remaining:** under 50 Mbps load the client ingress still shows ~127 ms
+  stalls at ~10 s cadence (3 in 30 s) — `motion_transport_burst` still
+  FAILs. The periodic sweep is an ecosystem behavior (gateway + extender
+  radios alike); the Mac's leg rides the extender's 5 GHz ch 44. The
+  bounded remainder is now split across the two remaining radio hops.
+
+**Standing recommendation, unchanged and now twice-proven: wire pup with
+Ethernet** (removes pup's radio hop entirely); the Mac-side extender hop
+then carries the only residual sweep, and if it still bites, the same
+trace method applies to the extender. Cheap alternative worth one test:
+put the Mac on the gateway's own 5 GHz BSS (`c6:50:9c:a5:fc:6a`) instead
+of the extender, collapsing the path to two radios on one box.
