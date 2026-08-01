@@ -11,7 +11,10 @@ public struct AdaptiveVideoPlayout: Sendable {
         public var initialDelayMicroseconds: UInt64
         public var excessiveLatenessMicroseconds: UInt64
         public var maximumFreshBurstDebtMicroseconds: UInt64
+        public var freshDebtRearmStableFrames: Int
         public var slowShrinkMicroseconds: UInt64
+        public var shrinkHoldFrames: Int
+        public var shrinkCadenceFrames: Int
 
         public init(
             minimumDelayMicroseconds: UInt64 = 15_000,
@@ -19,7 +22,10 @@ public struct AdaptiveVideoPlayout: Sendable {
             initialDelayMicroseconds: UInt64 = 20_000,
             excessiveLatenessMicroseconds: UInt64 = 50_000,
             maximumFreshBurstDebtMicroseconds: UInt64 = 200_000,
-            slowShrinkMicroseconds: UInt64 = 100
+            freshDebtRearmStableFrames: Int = 30,
+            slowShrinkMicroseconds: UInt64 = 100,
+            shrinkHoldFrames: Int = 600,
+            shrinkCadenceFrames: Int = 60
         ) {
             self.minimumDelayMicroseconds = minimumDelayMicroseconds
             self.maximumDelayMicroseconds = maximumDelayMicroseconds
@@ -27,7 +33,10 @@ public struct AdaptiveVideoPlayout: Sendable {
             self.excessiveLatenessMicroseconds = excessiveLatenessMicroseconds
             self.maximumFreshBurstDebtMicroseconds =
                 maximumFreshBurstDebtMicroseconds
+            self.freshDebtRearmStableFrames = freshDebtRearmStableFrames
             self.slowShrinkMicroseconds = slowShrinkMicroseconds
+            self.shrinkHoldFrames = shrinkHoldFrames
+            self.shrinkCadenceFrames = shrinkCadenceFrames
         }
     }
 
@@ -49,10 +58,15 @@ public struct AdaptiveVideoPlayout: Sendable {
     private var lastFrameWasRetained = false
     private var jitterMicroseconds: Double = 0
     private var debtRecoveryArmed = true
+    private var stableFreshFramesAfterDebtRecovery = 0
+    private var stableFramesSinceLateness = 0
 
     public init(config: Config = Config()) {
         precondition(config.minimumDelayMicroseconds <= config.initialDelayMicroseconds)
         precondition(config.initialDelayMicroseconds <= config.maximumDelayMicroseconds)
+        precondition(config.freshDebtRearmStableFrames > 0)
+        precondition(config.shrinkHoldFrames >= 0)
+        precondition(config.shrinkCadenceFrames > 0)
         self.config = config
         self.targetDelayMicroseconds = config.initialDelayMicroseconds
     }
@@ -68,31 +82,21 @@ public struct AdaptiveVideoPlayout: Sendable {
         lastFrameWasRetained = false
         jitterMicroseconds = 0
         debtRecoveryArmed = true
+        stableFreshFramesAfterDebtRecovery = 0
+        stableFramesSinceLateness = 0
     }
 
     /// Maps one arrival onto the host-clock presentation timeline. Delay
-    /// rises immediately on misses/jitter and decays by only 0.1 ms/frame.
+    /// rises immediately on misses/jitter, then holds long enough to cover
+    /// recurring path tails before decaying in sparse 0.1 ms steps.
     public mutating func schedule(
         mappedCaptureMicroseconds: UInt64,
         arrivalMicroseconds: UInt64,
         sourceCaptureMicroseconds: UInt64? = nil,
         isRandomAccess: Bool = false
     ) -> Decision {
-        // A usable IRAP closes any debt-recovery episode and starts a new
-        // presentation timeline. The renderer flush has discarded the old
-        // decode chain, so carrying its PTS floor forward would recreate the
-        // very latency debt the recovery bounded.
-        if isRandomAccess, !debtRecoveryArmed {
-            lastPathDelayMicroseconds = nil
-            lastSourceCaptureMicroseconds = nil
-            lastPresentationMicroseconds = nil
-            lastFreshSourceMicroseconds = nil
-            lastFreshArrivalMicroseconds = nil
-            freshBurstDebtMicroseconds = 0
-            lastFrameWasRetained = false
-            jitterMicroseconds = 0
-            debtRecoveryArmed = true
-        }
+        // `isRandomAccess` is intentionally not a close signal. The handoff
+        // closes recovery only after AVFoundation actually accepts the IRAP.
         // The host's idle floor and quality ratchet intentionally re-encode
         // retained pixels with their ORIGINAL capture timestamp. Those are
         // dependency-bearing quality refinements, not network-late frames.
@@ -124,13 +128,23 @@ public struct AdaptiveVideoPlayout: Sendable {
                 ? sourceCapture - previousFreshSource : 0
             let arrivalStep = arrivalMicroseconds > previousFreshArrival
                 ? arrivalMicroseconds - previousFreshArrival : 0
-            if sourceStep > arrivalStep {
+            // Debt is a genuinely compressed catch-up train, not every
+            // harmless early-jitter sample. Normal cadence ends the train.
+            if sourceStep > 0, arrivalStep < sourceStep / 2 {
                 freshBurstDebtMicroseconds &+= sourceStep - arrivalStep
+                if !debtRecoveryArmed {
+                    stableFreshFramesAfterDebtRecovery = 0
+                }
             } else {
-                freshBurstDebtMicroseconds = freshBurstDebtMicroseconds
-                    > arrivalStep - sourceStep
-                    ? freshBurstDebtMicroseconds - (arrivalStep - sourceStep)
-                    : 0
+                freshBurstDebtMicroseconds = 0
+                if !debtRecoveryArmed {
+                    stableFreshFramesAfterDebtRecovery += 1
+                    if stableFreshFramesAfterDebtRecovery
+                        >= config.freshDebtRearmStableFrames {
+                        debtRecoveryArmed = true
+                        stableFreshFramesAfterDebtRecovery = 0
+                    }
+                }
             }
         } else {
             freshBurstDebtMicroseconds = 0
@@ -152,13 +166,21 @@ public struct AdaptiveVideoPlayout: Sendable {
         let lateness = arrivalMicroseconds > oldPresentation
             ? arrivalMicroseconds - oldPresentation : 0
         if lateness > 0 {
+            stableFramesSinceLateness = 0
             let growth = max(
                 lateness,
                 UInt64(jitterMicroseconds.rounded(.up)))
             targetDelayMicroseconds = min(
                 config.maximumDelayMicroseconds,
                 targetDelayMicroseconds &+ growth)
-        } else if targetDelayMicroseconds > config.minimumDelayMicroseconds {
+        } else {
+            stableFramesSinceLateness &+= 1
+        }
+        if lateness == 0,
+           stableFramesSinceLateness > config.shrinkHoldFrames,
+           (stableFramesSinceLateness - config.shrinkHoldFrames)
+               % config.shrinkCadenceFrames == 0,
+           targetDelayMicroseconds > config.minimumDelayMicroseconds {
             targetDelayMicroseconds = max(
                 config.minimumDelayMicroseconds,
                 targetDelayMicroseconds - min(
@@ -166,17 +188,15 @@ public struct AdaptiveVideoPlayout: Sendable {
                     targetDelayMicroseconds - config.minimumDelayMicroseconds))
         }
 
-        // A single late fresh frame is a playout-timeline problem: rebase it
-        // from arrival with decode/display cushion. A burst buffered behind a
-        // blackout is different. Preserving source cadence can push its PTS
-        // beyond arrival + maximumDelay while AVFoundation remains "ready"
-        // and absorbs an unbounded internal queue, bypassing our four-sample
-        // handoff bound. That explicit FRESH presentation debt starts one
-        // whole-episode recovery. Retained refinements returned above never
-        // enter this path and therefore never mint recovery.
-        var scheduled = lateness > 0
-            ? arrivalMicroseconds &+ targetDelayMicroseconds
-            : mappedCaptureMicroseconds &+ targetDelayMicroseconds
+        // `targetDelay` already grew by the measured lateness above. Rebasing
+        // a late frame at arrival + that newly enlarged delay counts the same
+        // path excursion twice, turning a bounded Wi-Fi burst into a second
+        // full playout stall. Keep the source timeline and clamp only to
+        // "not before this frame exists". A blackout catch-up train is still
+        // bounded by maximumPresentation and the debt recovery below.
+        var scheduled = max(
+            mappedCaptureMicroseconds &+ targetDelayMicroseconds,
+            arrivalMicroseconds)
         if let previousPresentation = lastPresentationMicroseconds {
             scheduled = max(scheduled, previousPresentation &+ 1)
         }
@@ -202,6 +222,25 @@ public struct AdaptiveVideoPlayout: Sendable {
             targetDelayMicroseconds: targetDelayMicroseconds,
             latenessMicroseconds: lateness,
             shouldFlush: shouldFlush)
+    }
+
+    public mutating func noteRandomAccessEnqueued() {
+        lastPathDelayMicroseconds = nil
+        lastSourceCaptureMicroseconds = nil
+        // A decoder reset starts a new dependency episode, not a new
+        // CoreMedia timebase. Preserve the presentation floor so the IRAP
+        // and its successors can never regress across a renderer flush.
+        lastFreshSourceMicroseconds = nil
+        lastFreshArrivalMicroseconds = nil
+        freshBurstDebtMicroseconds = 0
+        lastFrameWasRetained = false
+        jitterMicroseconds = 0
+        // A debt-triggered episode does not re-arm merely because its IDR
+        // was enqueued while the same compressed blackout burst continues.
+        // Thirty cadence-stable fresh frames prove the collapse has ended.
+        if debtRecoveryArmed {
+            stableFreshFramesAfterDebtRecovery = 0
+        }
     }
 }
 
@@ -230,6 +269,10 @@ public final class AdaptiveVideoPlayoutController: @unchecked Sendable {
 
     public func reset() {
         lock.lock(); policy.reset(); lock.unlock()
+    }
+
+    public func noteRandomAccessEnqueued() {
+        lock.lock(); policy.noteRandomAccessEnqueued(); lock.unlock()
     }
 }
 
@@ -263,6 +306,7 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
 
     public let config: Config
     public private(set) var awaitingRandomAccess = false
+    public private(set) var randomAccessPending = false
     private var entries: [Entry] = []
 
     public init(config: Config = Config()) {
@@ -282,13 +326,19 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
             isRandomAccess: isRandomAccess,
             submittedMicroseconds: nowMicroseconds)
         if awaitingRandomAccess {
+            guard !randomAccessPending else {
+                return Outcome(
+                    accepted: false,
+                    recoveryRequested: false,
+                    discarded: [incoming])
+            }
             guard isRandomAccess else {
                 return Outcome(
                     accepted: false,
                     recoveryRequested: false,
                     discarded: [incoming])
             }
-            awaitingRandomAccess = false
+            randomAccessPending = true
             entries.append(incoming)
             return Outcome(
                 accepted: true, recoveryRequested: false, discarded: [])
@@ -323,12 +373,21 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
         return entries.removeFirst()
     }
 
+    /// Closes await-IDR only after the accepted random-access sample was
+    /// actually handed to AVFoundation. Merely queueing it is not enough.
+    public mutating func noteRandomAccessEnqueued() {
+        guard awaitingRandomAccess, randomAccessPending else { return }
+        awaitingRandomAccess = false
+        randomAccessPending = false
+    }
+
     /// Renderer failure or adaptive excessive-lateness verdict.
     public mutating func failEpisode() -> Outcome {
         let discarded = entries
         entries.removeAll(keepingCapacity: true)
         let startsRecovery = !awaitingRandomAccess
         awaitingRandomAccess = true
+        randomAccessPending = false
         return Outcome(
             accepted: false,
             recoveryRequested: startsRecovery,
@@ -351,8 +410,34 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
         let discarded = entries
         entries.removeAll(keepingCapacity: true)
         awaitingRandomAccess = false
+        randomAccessPending = false
         return discarded
     }
+}
+
+/// Pure state seam for AVSampleBufferVideoRenderer's asynchronous recovery
+/// flush. No compressed sample may dequeue until the completion callback.
+public struct RendererRecoveryFlushBarrier: Sendable, Equatable {
+    public private(set) var isFlushInProgress = false
+
+    public init() {}
+
+    @discardableResult
+    public mutating func begin() -> Bool {
+        guard !isFlushInProgress else { return false }
+        isFlushInProgress = true
+        return true
+    }
+
+    public mutating func complete() {
+        isFlushInProgress = false
+    }
+
+    public mutating func reset() {
+        isFlushInProgress = false
+    }
+
+    public var mayEnqueue: Bool { !isFlushInProgress }
 }
 
 public enum VideoSampleTiming {

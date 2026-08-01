@@ -175,15 +175,35 @@ final class ConnectionModel {
         hostName = host.name
         hostPublicKeyHash = host.publicKeyHash
         phase = .connecting("Connecting to \(host.name) over Lyte-UDP…")
+        HandshakeWitness.record("autoconnectBegin", fields: [
+            "host": host.address,
+            "port": String(host.port),
+        ])
 
+        let environment = ProcessInfo.processInfo.environment
+        // A benchmark autoconnect has no human interaction surface. Never
+        // let Security.framework wait on hidden authorization UI before the
+        // first handshake byte; an ACL problem must fail bounded and loud.
+        let identityAuthenticationUI:
+            ClientNoiseIdentityProvider.AuthenticationUI =
+                environment["LYTE_BENCHMARK_RUN_ID"] == nil ? .allow : .fail
         let identity: NoiseKeyPair
         do {
             // SecItemCopyMatching may synchronously cross securityd and
             // wait for Keychain authorization. It must never pin the
             // MainActor: doing so makes the whole stream window vanish
             // into an unresponsive app before the first handshake byte.
-            identity = try await ClientNoiseIdentityProvider.shared.identity()
+            HandshakeWitness.record("identityLookupBegin", fields: [
+                "authenticationUI":
+                    identityAuthenticationUI == .allow ? "allow" : "fail",
+            ])
+            identity = try await ClientNoiseIdentityProvider.shared.identity(
+                authenticationUI: identityAuthenticationUI)
+            HandshakeWitness.record("identityLookupCompleted")
         } catch {
+            HandshakeWitness.record("identityLookupFailed", fields: [
+                "error": String(describing: error),
+            ])
             // The Keychain path needs the stable "Lyte Dev" signature —
             // builds via Scripts/make-app.sh (docs/MACOS-SIGNING.md).
             phase = .failed("client identity: \(error)")
@@ -209,7 +229,15 @@ final class ConnectionModel {
         // V-5: the per-host Chroma tier seeds the declaration — the
         // chroma singleton IS the choice (the host maps it straight
         // to an encoder posture).
-        chromaTier = pinned.sessionChromaTier
+        let benchmarkChroma = environment["LYTE_BENCHMARK_RUN_ID"] == nil
+            ? nil
+            : environment["LYTE_BENCHMARK_CHROMA_TIER"]
+                .flatMap(ChromaTier.init(rawValue:))
+        if let benchmarkChroma, benchmarkChroma.isSelectable {
+            chromaTier = benchmarkChroma
+        } else {
+            chromaTier = pinned.sessionChromaTier
+        }
         sessionConfig.core.capabilities = sessionConfig.core.capabilities
             .declaringChroma(tier: chromaTier)
 
@@ -252,7 +280,15 @@ final class ConnectionModel {
             // start() blocks through bind + the Noise handshake (retry
             // timer inside) — off the main actor.
             do {
+                HandshakeWitness.record("sessionStartBegin", fields: [
+                    "round": String(round),
+                    "host": dialAddress,
+                    "port": String(dialPort),
+                ])
                 try await Task.detached { try candidate.start() }.value
+                HandshakeWitness.record("sessionStartCompleted", fields: [
+                    "round": String(round),
+                ])
                 guard generation == connectGeneration,
                       case .connecting = phase else {
                     // The human cancelled mid-dial: this session has
@@ -265,6 +301,10 @@ final class ConnectionModel {
                 statusLine = crypto.modeDescription
                 break
             } catch {
+                HandshakeWitness.record("sessionStartFailed", fields: [
+                    "round": String(round),
+                    "error": String(describing: error),
+                ])
                 guard generation == connectGeneration,
                       case .connecting = phase else { return }
                 guard case TransportCryptoError.handshakeFailed(let why)
@@ -365,6 +405,16 @@ final class ConnectionModel {
             crypto: crypto,
             config: config,
             clockModel: clockModel,
+            onVideoRecoveryDemand: { [weak handoff] cause, frame in
+                handoff?.beginRecovery(cause: cause, after: frame)
+            },
+            onVideoRecoveryTrace: { [videoFlightRecorder] event in
+                videoFlightRecorder.recordRecoveryLifecycle(
+                    kind: event.kind,
+                    frame: event.frame.rawValue,
+                    cause: event.cause,
+                    isRandomAccess: event.isRandomAccess)
+            },
             onSample: {
                 [weak self, handoff] sample, unit in
                 handoff.submit(sample: sample, unit: unit)
@@ -1413,6 +1463,10 @@ private final class VideoRendererHandoff: @unchecked Sendable {
     private var policy = BoundedRendererHandoff<Pending>()
     private var requesting = false
     private var stopped = false
+    private var recoveryEpisode: UInt64 = 0
+    private var activeRecoveryEpisode: UInt64?
+    private var forcedMetricsProbes = 0
+    private var flushBarrier = RendererRecoveryFlushBarrier()
 
     init(
         renderer: AVSampleBufferVideoRenderer,
@@ -1440,6 +1494,17 @@ private final class VideoRendererHandoff: @unchecked Sendable {
             arrivalMicroseconds: arrival,
             sourceCaptureMicroseconds: unit.timestamp.microseconds,
             isRandomAccess: unit.isIDR)
+        PipelineWitness.record("frameReady", fields: [
+            "frame": String(unit.frameNumber.rawValue),
+            "captureMicroseconds": String(unit.timestamp.microseconds),
+            "mappedCaptureMicroseconds": String(mapped),
+            "readyMonotonicNanoseconds": String(dispatched),
+            "scheduledPresentationMicroseconds": String(
+                decision.presentationMicroseconds),
+            "targetDelayMicroseconds": String(
+                decision.targetDelayMicroseconds),
+            "latenessMicroseconds": String(decision.latenessMicroseconds),
+        ])
         let pending = Pending(
             sample: transferred,
             unit: unit,
@@ -1456,10 +1521,33 @@ private final class VideoRendererHandoff: @unchecked Sendable {
         }
     }
 
+    func beginRecovery(cause: VideoRecoveryCause, after frame: FrameNumber) {
+        queue.async { [weak self] in
+            guard let self, !self.stopped else { return }
+            let awaiting = self.policy.awaitingRandomAccess
+            let irapPending = self.policy.randomAccessPending
+            self.recorder.recordRecoveryLifecycle(
+                kind: awaiting
+                    ? "handoffDamageOverlap" : "handoffDamageReceived",
+                frame: frame.rawValue,
+                cause: cause,
+                episode: self.activeRecoveryEpisode,
+                awaitingRandomAccess: awaiting,
+                randomAccessPending: irapPending,
+                pendingCount: self.policy.count)
+            self.process(
+                self.policy.failEpisode(),
+                recoveryFrame: frame,
+                cause: cause,
+                requestRecovery: false)
+        }
+    }
+
     func stop() {
         queue.sync {
             guard !stopped else { return }
             stopped = true
+            flushBarrier.reset()
             renderer.stopRequestingMediaData()
             requesting = false
             let discarded = policy.reset()
@@ -1479,9 +1567,21 @@ private final class VideoRendererHandoff: @unchecked Sendable {
         }
 
         if pending.decision.shouldFlush || renderer.status == .failed {
+            let cause: VideoRecoveryCause = pending.decision.shouldFlush
+                ? .freshPresentationDebt : .rendererFailure
+            recorder.recordRecoveryLifecycle(
+                kind: "handoffLocalDamage",
+                frame: pending.unit.frameNumber.rawValue,
+                cause: cause,
+                episode: activeRecoveryEpisode,
+                isRandomAccess: pending.unit.isIDR,
+                awaitingRandomAccess: policy.awaitingRandomAccess,
+                randomAccessPending: policy.randomAccessPending,
+                pendingCount: policy.count)
             process(
                 policy.failEpisode(),
-                recoveryFrame: pending.unit.frameNumber)
+                recoveryFrame: pending.unit.frameNumber,
+                cause: cause)
         }
 
         let now = DispatchTime.now().uptimeNanoseconds / 1_000
@@ -1489,7 +1589,40 @@ private final class VideoRendererHandoff: @unchecked Sendable {
             pending,
             isRandomAccess: pending.unit.isIDR,
             nowMicroseconds: now)
-        process(outcome, recoveryFrame: pending.unit.frameNumber)
+        process(
+            outcome,
+            recoveryFrame: pending.unit.frameNumber,
+            cause: .rendererBackpressure)
+        if pending.unit.isIDR {
+            recorder.recordRecoveryLifecycle(
+                kind: outcome.accepted
+                    ? "handoffIrapAcceptedPendingEnqueue"
+                    : "handoffIrapRejected",
+                frame: pending.unit.frameNumber.rawValue,
+                episode: activeRecoveryEpisode,
+                isRandomAccess: true,
+                awaitingRandomAccess: policy.awaitingRandomAccess,
+                randomAccessPending: policy.randomAccessPending,
+                pendingCount: policy.count)
+        } else if !outcome.accepted, policy.awaitingRandomAccess {
+            recorder.recordRecoveryLifecycle(
+                kind: "handoffRejectedNonIrap",
+                frame: pending.unit.frameNumber.rawValue,
+                episode: activeRecoveryEpisode,
+                isRandomAccess: false,
+                awaitingRandomAccess: true,
+                randomAccessPending: policy.randomAccessPending,
+                pendingCount: policy.count)
+        } else if outcome.accepted, policy.awaitingRandomAccess {
+            recorder.recordRecoveryLifecycle(
+                kind: "invariantViolationNonIrapAcceptedDuringRecovery",
+                frame: pending.unit.frameNumber.rawValue,
+                episode: activeRecoveryEpisode,
+                isRandomAccess: false,
+                awaitingRandomAccess: true,
+                randomAccessPending: policy.randomAccessPending,
+                pendingCount: policy.count)
+        }
         if outcome.accepted {
             armRenderer()
             let deadline = policy.config.deadlineMicroseconds
@@ -1501,7 +1634,9 @@ private final class VideoRendererHandoff: @unchecked Sendable {
     }
 
     private func armRenderer() {
-        guard !requesting, policy.count > 0 else { return }
+        guard flushBarrier.mayEnqueue,
+              !requesting,
+              policy.count > 0 else { return }
         requesting = true
         renderer.requestMediaDataWhenReady(on: queue) { [weak self] in
             self?.drainReady()
@@ -1509,16 +1644,21 @@ private final class VideoRendererHandoff: @unchecked Sendable {
     }
 
     private func drainReady() {
-        guard !stopped else { return }
+        guard !stopped, flushBarrier.mayEnqueue else { return }
         if renderer.status == .failed {
             process(
                 policy.failEpisode(),
-                recoveryFrame: FrameNumber(rawValue: 0))
+                recoveryFrame: FrameNumber(rawValue: 0),
+                cause: .rendererFailure)
             return
         }
         while renderer.isReadyForMoreMediaData,
               let entry = policy.popReady() {
             let pending = entry.element
+            let closesRecovery =
+                policy.awaitingRandomAccess
+                && policy.randomAccessPending
+                && pending.unit.isIDR
             let started = DispatchTime.now().uptimeNanoseconds
             guard let timed = VideoSampleTiming.retimed(
                 pending.sample,
@@ -1529,10 +1669,67 @@ private final class VideoRendererHandoff: @unchecked Sendable {
                 failure.discarded.insert(entry, at: 0)
                 process(
                     failure,
-                    recoveryFrame: pending.unit.frameNumber)
+                    recoveryFrame: pending.unit.frameNumber,
+                    cause: .rendererFailure)
                 return
             }
+            if closesRecovery {
+                // `flush()` discards queued samples, but CoreMedia requires
+                // this attachment to reset the compressed decoder itself.
+                // Without it, live metrics count every frame after a
+                // debt-triggered flush as corrupted until another reset.
+                CMSetAttachment(
+                    timed,
+                    key: kCMSampleBufferAttachmentKey_ResetDecoderBeforeDecoding,
+                    value: kCFBooleanTrue,
+                    attachmentMode: kCMAttachmentMode_ShouldNotPropagate)
+            }
+            let resetAttached = CMGetAttachment(
+                timed,
+                key: kCMSampleBufferAttachmentKey_ResetDecoderBeforeDecoding,
+                attachmentModeOut: nil) != nil
+            if pending.unit.isIDR
+                || activeRecoveryEpisode != nil
+                || forcedMetricsProbes > 0 {
+                recorder.recordRecoveryLifecycle(
+                    kind: pending.unit.isIDR
+                        ? "rendererEnqueueIrap" : "rendererEnqueueNonIrap",
+                    frame: pending.unit.frameNumber.rawValue,
+                    episode: activeRecoveryEpisode,
+                    isRandomAccess: pending.unit.isIDR,
+                    resetDecoderBeforeDecoding: resetAttached,
+                    awaitingRandomAccess: policy.awaitingRandomAccess,
+                    randomAccessPending: policy.randomAccessPending,
+                    pendingCount: policy.count)
+            }
+            PipelineWitness.record("rendererEnqueueBegin", fields: [
+                "frame": String(pending.unit.frameNumber.rawValue),
+                "scheduledPresentationMicroseconds": String(
+                    pending.decision.presentationMicroseconds),
+            ])
             renderer.enqueue(timed)
+            PipelineWitness.record("rendererEnqueueCompleted", fields: [
+                "frame": String(pending.unit.frameNumber.rawValue),
+            ])
+            if pending.unit.isIDR {
+                policy.noteRandomAccessEnqueued()
+                playout.noteRandomAccessEnqueued()
+                recoveryRequester.noteIrapEnqueued(
+                    frame: pending.unit.frameNumber)
+                if closesRecovery {
+                    forcedMetricsProbes = 3
+                    recorder.recordRecoveryLifecycle(
+                        kind: "handoffRecoveryClosed",
+                        frame: pending.unit.frameNumber.rawValue,
+                        episode: activeRecoveryEpisode,
+                        isRandomAccess: true,
+                        resetDecoderBeforeDecoding: resetAttached,
+                        awaitingRandomAccess: policy.awaitingRandomAccess,
+                        randomAccessPending: policy.randomAccessPending,
+                        pendingCount: policy.count)
+                    activeRecoveryEpisode = nil
+                }
+            }
             finish(
                 pending,
                 enqueueStarted: started,
@@ -1553,20 +1750,61 @@ private final class VideoRendererHandoff: @unchecked Sendable {
         guard !stopped else { return }
         let outcome = policy.expire(
             nowMicroseconds: DispatchTime.now().uptimeNanoseconds / 1_000)
-        process(outcome, recoveryFrame: FrameNumber(rawValue: 0))
+        process(
+            outcome,
+            recoveryFrame: FrameNumber(rawValue: 0),
+            cause: .rendererBackpressure)
     }
 
     private func process(
         _ outcome: BoundedRendererHandoff<Pending>.Outcome,
-        recoveryFrame: FrameNumber
+        recoveryFrame: FrameNumber,
+        cause: VideoRecoveryCause,
+        requestRecovery: Bool = true
     ) {
         if outcome.recoveryRequested {
+            recoveryEpisode &+= 1
+            activeRecoveryEpisode = recoveryEpisode
             renderer.stopRequestingMediaData()
             requesting = false
-            renderer.flush()
-            recoveryRequester.request(
-                after: outcome.discarded.last?.element.unit.frameNumber
-                    ?? recoveryFrame)
+            let startedFlush = flushBarrier.begin()
+            recorder.recordRecoveryCause(cause)
+            recorder.recordRecoveryLifecycle(
+                kind: startedFlush
+                    ? "rendererRecoveryFlushStarted"
+                    : "rendererRecoveryFlushAlreadyPending",
+                frame: recoveryFrame.rawValue,
+                cause: cause,
+                episode: activeRecoveryEpisode,
+                awaitingRandomAccess: policy.awaitingRandomAccess,
+                randomAccessPending: policy.randomAccessPending,
+                pendingCount: policy.count)
+            if startedFlush {
+                renderer.flush(removingDisplayedImage: false) {
+                    [weak self] in
+                    self?.queue.async { [weak self] in
+                        guard let self, !self.stopped else { return }
+                        self.flushBarrier.complete()
+                        self.recorder.recordRecoveryLifecycle(
+                            kind: "rendererRecoveryFlushCompleted",
+                            frame: recoveryFrame.rawValue,
+                            cause: cause,
+                            episode: self.activeRecoveryEpisode,
+                            awaitingRandomAccess:
+                                self.policy.awaitingRandomAccess,
+                            randomAccessPending:
+                                self.policy.randomAccessPending,
+                            pendingCount: self.policy.count)
+                        self.armRenderer()
+                    }
+                }
+            }
+            if requestRecovery {
+                recoveryRequester.request(
+                    after: outcome.discarded.last?.element.unit.frameNumber
+                        ?? recoveryFrame,
+                    cause: cause)
+            }
             if outcome.discarded.isEmpty {
                 recorder.recordRendererRecovery()
             }
@@ -1613,11 +1851,22 @@ private final class VideoRendererHandoff: @unchecked Sendable {
             presentationLatenessMicroseconds:
                 pending.decision.latenessMicroseconds,
             rendererRecovery: recovery)
-        sampleMetricsIfDue(after: pending.token)
+        sampleMetricsIfDue(
+            after: pending.token,
+            frame: pending.unit.frameNumber.rawValue,
+            isRandomAccess: pending.unit.isIDR)
     }
 
-    private func sampleMetricsIfDue(after token: VideoFlightRecorder.Token) {
-        guard recorder.shouldSampleRenderer(after: token) else { return }
+    private func sampleMetricsIfDue(
+        after token: VideoFlightRecorder.Token,
+        frame: UInt32,
+        isRandomAccess: Bool
+    ) {
+        let forced = forcedMetricsProbes > 0
+        if forced { forcedMetricsProbes -= 1 }
+        guard forced || recorder.shouldSampleRenderer(after: token) else {
+            return
+        }
         renderer.loadVideoPerformanceMetrics { [recorder] metrics in
             if let metrics {
                 recorder.recordRendererMetrics(.init(
@@ -1625,7 +1874,9 @@ private final class VideoRendererHandoff: @unchecked Sendable {
                     droppedFrames: metrics.numberOfDroppedFrames,
                     corruptedFrames: metrics.numberOfCorruptedFrames,
                     accumulatedDelayMilliseconds:
-                        metrics.totalAccumulatedFrameDelay * 1_000))
+                        metrics.totalAccumulatedFrameDelay * 1_000),
+                    sampledAfterFrame: frame,
+                    sampledAfterIsRandomAccess: isRandomAccess)
             }
             if let json = try? recorder.summaryJSONLine() {
                 NSLog("lyte video flight: %@", json)
@@ -1642,10 +1893,17 @@ private final class VideoRecoveryRequester: @unchecked Sendable {
         lock.lock(); self.session = session; lock.unlock()
     }
 
-    func request(after frame: FrameNumber) {
+    func request(after frame: FrameNumber, cause: VideoRecoveryCause) {
         lock.lock()
         let session = session
         lock.unlock()
-        session?.requestVideoRecovery(after: frame)
+        session?.requestVideoRecovery(after: frame, cause: cause)
+    }
+
+    func noteIrapEnqueued(frame: FrameNumber) {
+        lock.lock()
+        let session = session
+        lock.unlock()
+        session?.noteVideoIrapEnqueued(frame: frame)
     }
 }

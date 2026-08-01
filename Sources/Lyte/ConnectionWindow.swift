@@ -31,6 +31,22 @@ struct ConnectionWindow: View {
         .navigationTitle(model.windowTitle)
         .focusedSceneValue(\.connection, model)
         .frame(minWidth: 480, minHeight: 320)
+        .overlay(alignment: .topLeading) {
+            if let badge = ProcessInfo.processInfo.environment[
+                "LYTE_DIAGNOSTIC_BUILD_BADGE"
+            ] {
+                Text(badge)
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.78), in: RoundedRectangle(
+                        cornerRadius: 4))
+                    .padding(6)
+                    .allowsHitTesting(false)
+            }
+        }
         .task {
             // Repeatable real-app diagnostics without UI scripting. Normal
             // launches never enter this path; setting LYTE_AUTOCONNECT to a

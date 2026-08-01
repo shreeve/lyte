@@ -488,6 +488,9 @@ final class LyteUdpSessionGateTests: XCTestCase {
                 now: { ClientTimestamp(microseconds: clock.value) },
                 onSample: { [weak self] sample, unit in
                     self?.samples.append((sample, unit))
+                    if unit.isIDR {
+                        self?.core.noteVideoIrapEnqueued()
+                    }
                 },
                 onEvent: { [weak self] event in
                     self?.events.append(event)
@@ -795,14 +798,15 @@ final class LyteUdpSessionGateTests: XCTestCase {
                        "wireDefault ∩ wireDefault = wireDefault")
         XCTAssertEqual(harness.core.agreedCapabilities, .wireDefault)
 
-        // ── Datagram video rendered byte-exact (frames 0, 1, 3). ──
+        // ── Datagram video rendered byte-exact until frame 2's dependency
+        // break. Frame 3 is assembled but fenced from the render seam while
+        // recovery awaits an IRAP. ──
         let datagramFrames = harness.samples
             .filter { $0.1.frameNumber.rawValue != 2 }
             .map { $0.1 }
-        XCTAssertEqual(datagramFrames.map(\.frameNumber.rawValue), [0, 1, 3])
+        XCTAssertEqual(datagramFrames.map(\.frameNumber.rawValue), [0, 1])
         XCTAssertEqual(datagramFrames[0].annexB, corpus[0])
         XCTAssertEqual(datagramFrames[1].annexB, corpus[1])
-        XCTAssertEqual(datagramFrames[2].annexB, corpus[3])
 
         // ── Idle cycle 1: the lost converged frame arrived reliably,
         // rendered through the shared factory, byte-exact; the ack
@@ -816,13 +820,14 @@ final class LyteUdpSessionGateTests: XCTestCase {
         XCTAssertEqual(reliableFrame.1.annexB, corpus[2],
                        "the reliable idle frame must render byte-exact")
 
-        // ── Idle cycle 2: the datagram path already delivered frame 3
-        // — the idle frame DEDUPES, yet its ack still flips to IDLE. ──
+        // ── Idle cycle 2: the assembler already completed frame 3, so the
+        // idle copy DEDUPES; neither copy crosses the recovery fence. Its
+        // ack still flips to IDLE. ──
         XCTAssertEqual(outcomes[1].0, 3)
         XCTAssertEqual(outcomes[1].1, .deduplicated)
         XCTAssertEqual(
             harness.samples.filter { $0.1.frameNumber.rawValue == 3 }.count,
-            1, "the deduped idle frame must not render twice")
+            0, "dependent P frames stay fenced until an IRAP is enqueued")
 
         // ── Modes: idle → active (WAKE) → idle → active (RECOVERY's
         // re-signal through 5% loss). ──

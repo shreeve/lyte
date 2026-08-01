@@ -194,6 +194,31 @@ final class AudioJitterGateTests: XCTestCase {
                        beforeLate.skewPartsPerMillion)
     }
 
+    func testNarrowLatePacketEarnsOnePacketOfCushion() {
+        let buffer = AudioJitterBuffer()
+        for n in 0..<5 {
+            buffer.insert(
+                packet(UInt32(n)),
+                arrivalMicroseconds: UInt64(n) * Self.packetMicros)
+        }
+        for _ in 0..<5 {
+            guard case .packet = buffer.pull(
+                nowMicroseconds: 25_000, urgent: true) else {
+                return XCTFail("primed packets must play")
+            }
+        }
+        buffer.insert(packet(6), arrivalMicroseconds: 30_000)
+        guard case .conceal(number: 5) = buffer.pull(
+            nowMicroseconds: 30_000, urgent: true) else {
+            return XCTFail("missing packet 5 must be concealed")
+        }
+
+        let beforeLate = buffer.targetPackets
+        buffer.insert(packet(5), arrivalMicroseconds: 31_000)
+        XCTAssertEqual(buffer.snapshotStats().latePacketsDropped, 1)
+        XCTAssertEqual(buffer.targetPackets, beforeLate + 1)
+    }
+
     // MARK: Leg 2 — bursty ±15 ms delay variance (the dominant
     // impairment per the audio-continuity verdict)
 

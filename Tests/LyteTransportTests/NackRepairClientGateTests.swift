@@ -265,6 +265,8 @@ final class NackRepairClientGateTests: XCTestCase {
         let clock = LockedClock()
         var samples: [DecodeUnit] = []
         var notes: [String] = []
+        var recoveryDemands: [(VideoRecoveryCause, FrameNumber)] = []
+        var recoveryTrace: [VideoRecoveryTraceEvent] = []
 
         init(
             host: RepairHost,
@@ -290,6 +292,12 @@ final class NackRepairClientGateTests: XCTestCase {
                 sender: sender,
                 config: coreConfig,
                 now: { ClientTimestamp(microseconds: clock.value) },
+                onVideoRecoveryDemand: { [weak self] cause, frame in
+                    self?.recoveryDemands.append((cause, frame))
+                },
+                onVideoRecoveryTrace: { [weak self] event in
+                    self?.recoveryTrace.append(event)
+                },
                 onSample: { [weak self] _, unit in
                     self?.samples.append(unit)
                 },
@@ -496,40 +504,76 @@ final class NackRepairClientGateTests: XCTestCase {
         XCTAssertEqual(stats.shardsAsked, 0)
         XCTAssertEqual(stats.fecImpossibleDeferred, 0,
                        "an unasked frame's verdict must not defer")
+        XCTAssertTrue(harness.recoveryDemands.contains {
+            $0.0 == .fecAssemblerDamage
+        })
     }
 
     func testAcceptedIrapClosesOutstandingRecoveryEpisode() throws {
-        let corpus = try loadCorpus(1)
+        let corpus = try loadCorpus(2)
         let host = RepairHost()
         let harness = try Harness(host: host)
         var forwarded = 0
         let base: UInt64 = 1_000
 
+        // Establish the decoder before damage.
+        for datagram in try host.videoDatagrams(
+            annexB: corpus[0], frameNumber: 0, hostMicros: base
+        ) {
+            harness.absorb(datagram, tMicros: base)
+        }
+        XCTAssertEqual(harness.samples.count, 1)
+
         // Multiple independent damage exits converge on one request.
-        harness.core.idrRequester.recordRecoveryDemand(
-            frame: FrameNumber(rawValue: 10),
-            now: ClientTimestamp(microseconds: base))
-        harness.core.idrRequester.recordRecoveryDemand(
-            frame: FrameNumber(rawValue: 11),
-            now: ClientTimestamp(microseconds: base + 100_000))
+        harness.clock.value = base
+        harness.core.requestVideoRecovery(
+            after: FrameNumber(rawValue: 10), cause: .fecAssemblerDamage)
+        harness.clock.value = base + 100_000
+        harness.core.requestVideoRecovery(
+            after: FrameNumber(rawValue: 11), cause: .fecAssemblerDamage)
         try harness.pumpOutboundToHost(forwarded: &forwarded)
         XCTAssertEqual(host.idrRequestsSeen, 1)
         XCTAssertTrue(
             harness.core.idrRequester.snapshotStats().recoveryOutstanding)
 
-        // The actual render pipeline accepts a complete IRAP. This is the
-        // only production callback that closes the episode.
+        // An already-built dependent P frame cannot cross the core's render
+        // seam while that episode is outstanding.
+        let pAt = base + 150_000
+        for datagram in try host.videoDatagrams(
+            annexB: corpus[1], frameNumber: 1, hostMicros: pAt
+        ) {
+            harness.absorb(datagram, tMicros: pAt)
+        }
+        XCTAssertEqual(harness.samples.count, 1)
+        XCTAssertTrue(harness.recoveryTrace.contains {
+            $0.kind == "coreRejectedNonIrap"
+                && $0.frame.rawValue == 1
+        })
+
+        // Assembly alone cannot close the episode.
         let irapAt = base + 200_000
         harness.clock.value = irapAt
         for datagram in try host.videoDatagrams(
-            annexB: corpus[0], frameNumber: 0, hostMicros: irapAt
+            annexB: corpus[0], frameNumber: 2, hostMicros: irapAt
         ) {
             harness.absorb(datagram, tMicros: irapAt)
         }
-        XCTAssertEqual(harness.samples.count, 1)
-        XCTAssertTrue(harness.samples[0].isIDR)
+        XCTAssertEqual(harness.samples.count, 2)
+        XCTAssertTrue(harness.samples[1].isIDR)
+        XCTAssertTrue(harness.recoveryTrace.contains {
+            $0.kind == "coreForwardedIrap"
+                && $0.frame.rawValue == 2
+        })
+        XCTAssertTrue(
+            harness.core.idrRequester.snapshotStats().recoveryOutstanding)
+        harness.core.noteVideoIrapEnqueued(
+            frame: FrameNumber(rawValue: 2))
         XCTAssertFalse(
             harness.core.idrRequester.snapshotStats().recoveryOutstanding)
+        XCTAssertTrue(harness.recoveryTrace.contains {
+            $0.kind == "coreRecoveryClosedAfterIrapEnqueue"
+                && $0.frame.rawValue == 2
+        })
 
         // No retry survives the accepted IRAP. A later fresh break still
         // gets its first request immediately.
@@ -1133,7 +1177,8 @@ final class NackRepairClientGateTests: XCTestCase {
         XCTAssertFalse(host.nackEntriesSeen.isEmpty,
                        "the ask must have left before the skip")
         XCTAssertEqual(harness.samples.map(\.frameNumber.rawValue),
-                       [0, 2, 3, 4], "frame 1 skipped, order held")
+                       [0],
+                       "frame 1 skipped; dependent P frames stay fenced")
         XCTAssertGreaterThanOrEqual(host.idrRequestsSeen, 1,
                                     "the abandoned ask escalates to IDR")
 
@@ -1150,7 +1195,7 @@ final class NackRepairClientGateTests: XCTestCase {
         harness.core.tick(now: ClientTimestamp(microseconds: t))
 
         XCTAssertEqual(harness.samples.map(\.frameNumber.rawValue),
-                       [0, 2, 3, 4],
+                       [0],
                        "an answer for a dead frame must change nothing")
         let stats = harness.core.nackPolicy.snapshotStats()
         XCTAssertEqual(stats.repairsSuperseded,

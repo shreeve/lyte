@@ -37,7 +37,7 @@ struct DecodeProbe: AsyncParsableCommand {
     @Option(name: .long, help: "Decode at most N access units (0 = all)")
     var maxFrames: Int = 0
 
-    @Option(name: .long, help: "Readback pixel format: native (decoder's choice) | bgra (VideoToolbox converts — its own color interpretation under test)")
+    @Option(name: .long, help: "Readback pixel format: native (decoder's choice) | bgra (VideoToolbox converts) | quality-bgra (native decode through VideoQualityReadback)")
     var pixelFormat: String = "native"
 
     @Flag(name: .long, help: "Demand the hardware decoder — session creation fails loudly on a software-only path")
@@ -59,8 +59,9 @@ struct DecodeProbe: AsyncParsableCommand {
     var windowScale: Double = 1.0
 
     func validate() throws {
-        guard ["native", "bgra"].contains(pixelFormat) else {
-            throw ValidationError("--pixel-format wants native|bgra, got '\(pixelFormat)'")
+        guard ["native", "bgra", "quality-bgra"].contains(pixelFormat) else {
+            throw ValidationError(
+                "--pixel-format wants native|bgra|quality-bgra, got '\(pixelFormat)'")
         }
         if let dumpFrames {
             guard dump != nil else {
@@ -150,15 +151,15 @@ struct DecodeProbe: AsyncParsableCommand {
                     let index = decoded - 1
                     if let wantedIndices {
                         if wantedIndices.contains(index) {
-                            try dumpHandle.write(contentsOf: planeData(of: buffer))
+                            try dumpHandle.write(contentsOf: dumpData(of: buffer))
                             dumpedIndices.insert(index)
                         }
                         if wantLast {
-                            lastFrameData = planeData(of: buffer)
+                            lastFrameData = try dumpData(of: buffer)
                             lastFrameIndex = index
                         }
                     } else {
-                        try dumpHandle.write(contentsOf: planeData(of: buffer))
+                        try dumpHandle.write(contentsOf: dumpData(of: buffer))
                     }
                 }
             } catch {
@@ -244,6 +245,13 @@ struct DecodeProbe: AsyncParsableCommand {
     }
 
     // MARK: - Plane dump (row padding stripped, planes in order)
+
+    private func dumpData(of buffer: CVPixelBuffer) throws -> Data {
+        if pixelFormat == "quality-bgra" {
+            return Data(try VideoQualityReadback.read(buffer).bgra)
+        }
+        return planeData(of: buffer)
+    }
 
     private func planeData(of buffer: CVPixelBuffer) -> Data {
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
