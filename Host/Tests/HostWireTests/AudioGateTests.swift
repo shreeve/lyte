@@ -557,6 +557,7 @@ final class AudioGateTests: XCTestCase {
         try settle(session, &client, box, forwarded: &forwarded, t: &t)
 
         // Two full groups of real-shaped packets through the sealed path.
+        let audioStart = forwarded
         let packets = (0..<8).map { opusPacket($0) }
         var captureStamps: [UInt64] = []
         for packet in packets {
@@ -573,7 +574,32 @@ final class AudioGateTests: XCTestCase {
             try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
             forwarded += 1
         }
+        let audioDatagrams = box.datagrams[audioStart...].filter {
+            $0.pacerClass == .audio
+        }
         XCTAssertEqual(client.audio.count, 12, "2 × (4 data + 2 parity)")
+        XCTAssertEqual(audioDatagrams.count, 12)
+        for datagram in audioDatagrams {
+            let (envelope, payload) = try Envelope.decode(datagram.bytes)
+            XCTAssertEqual(
+                datagram.bytes,
+                try envelope.encode(payload: Array(payload)),
+                "in-place AAD-buffer assembly must remain byte-identical "
+                    + "to the canonical envelope encoder"
+            )
+        }
+        XCTAssertEqual(
+            audioDatagrams.map(\.seq.rawValue),
+            Array(0..<UInt16(audioDatagrams.count)),
+            "assembly must not perturb audio sequence allocation"
+        )
+        XCTAssertEqual(session.counters.audioPacketsIngested, packets.count)
+        XCTAssertEqual(session.counters.audioDatagramsEnqueued, 12)
+        XCTAssertEqual(session.counters.audioGroupsCompleted, 2)
+        XCTAssertEqual(
+            session.counters.audioSealedDatagramsAssembledInPlace, 12,
+            "every audio datagram must avoid the final envelope copy"
+        )
 
         // Every unsealed data shard is its packet byte-verbatim, with
         // packet number = frame + shardIndex and its own capture µs.
@@ -877,6 +903,10 @@ final class AudioGateTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             session.pacerTelemetry.maxBatchWireTimeNS, ms
         )
+        XCTAssertEqual(
+            session.counters.audioSealedDatagramsAssembledInPlace,
+            session.counters.audioDatagramsEnqueued
+        )
 
         print("HS-15 gate @20 Mbps, 5 s virtual, IDR every 2 s: "
             + "\(dataSends.count) audio packets; inter-send deviation "
@@ -945,6 +975,11 @@ final class AudioGateTests: XCTestCase {
         }
         XCTAssertLessThanOrEqual(
             session.pacerTelemetry[.audio].maxQueueDelayNS, 2_000_000
+        )
+        XCTAssertEqual(
+            session.counters.audioSealedDatagramsAssembledInPlace,
+            session.counters.audioDatagramsEnqueued,
+            "cooperative IDR service must retain the in-place audio path"
         )
     }
 }

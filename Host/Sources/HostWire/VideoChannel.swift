@@ -904,10 +904,11 @@ public final class VideoChannel {
         isKeyframe: Bool,
         lastInputSeq: UInt32?
     ) throws -> [(envelope: Envelope, payload: [UInt8])] {
-        guard AnnexBCheck.isFrameShaped(annexB) else {
+        let classification = AnnexBCheck.classifyFrame(annexB)
+        guard classification.isFrameShaped else {
             throw VideoError.frameNotFrameShaped
         }
-        let derivedIdr = AnnexBCheck.containsIrap(annexB)
+        let derivedIdr = classification.containsIrap
         guard isKeyframe == derivedIdr else {
             throw VideoError.idrFlagMismatch(
                 claimed: isKeyframe, derived: derivedIdr

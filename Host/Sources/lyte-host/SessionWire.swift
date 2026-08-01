@@ -140,6 +140,11 @@ final class SessionWire {
     /// stride per batch position).
     private let recvScratch: UnsafeMutablePointer<UInt8>
     private static let recvSlotCapacity = 2_048
+    /// Reused by every receive drain. All receive paths hold `lock`, so
+    /// this vector has one owner and its pointers remain fixed on the
+    /// lifetime-stable `recvScratch` allocation across recvmmsg calls.
+    private var recvSlots: [lyte_netio_slot]
+    private var recvError = [CChar](repeating: 0, count: 256)
 
     /// HS-13: the injection sink for client input events. Nil = input
     /// disabled (counted loud, never fatal). Set by main after the
@@ -391,8 +396,20 @@ final class SessionWire {
         }
         scratch = UnsafeMutablePointer<UInt8>.allocate(
             capacity: Self.scratchCapacity)
-        recvScratch = UnsafeMutablePointer<UInt8>.allocate(
-            capacity: Int(LYTE_NETIO_MAX_BATCH) * Self.recvSlotCapacity)
+        let recvBatchSize = Int(LYTE_NETIO_MAX_BATCH)
+        let recvSlotCapacity = Self.recvSlotCapacity
+        let recvBuffer = UnsafeMutablePointer<UInt8>.allocate(
+            capacity: recvBatchSize * recvSlotCapacity)
+        recvScratch = recvBuffer
+        var slots: [lyte_netio_slot] = []
+        slots.reserveCapacity(recvBatchSize)
+        for i in 0..<recvBatchSize {
+            var slot = lyte_netio_slot()
+            slot.data = recvBuffer.advanced(by: i * recvSlotCapacity)
+            slot.cap = recvSlotCapacity
+            slots.append(slot)
+        }
+        recvSlots = slots
 
         // The sender thread comes up parked (no work until the first
         // ingest signals it); it holds `self` for its lifetime, so the
@@ -1167,30 +1184,23 @@ final class SessionWire {
     private func receiveAll(
         _ handle: ([UInt8], FourTuple) -> Void
     ) throws {
-        var err = [CChar](repeating: 0, count: 256)
-        let batchSize = Int(LYTE_NETIO_MAX_BATCH)
         while true {
-            var slots = (0..<batchSize).map { i -> lyte_netio_slot in
-                var slot = lyte_netio_slot()
-                slot.data = recvScratch.advanced(by: i * Self.recvSlotCapacity)
-                slot.cap = Self.recvSlotCapacity
-                return slot
-            }
-            let got = slots.withUnsafeMutableBufferPointer { s in
-                lyte_netio_recv_batch(netio, s.baseAddress, Int32(s.count),
-                                      &err, err.count)
+            let got = recvSlots.withUnsafeMutableBufferPointer { slots in
+                lyte_netio_recv_batch(netio, slots.baseAddress,
+                                      Int32(slots.count),
+                                      &recvError, recvError.count)
             }
             if got == LYTE_NETIO_PEER_GONE {
                 notePeerGone()
                 return
             }
             if got < 0 {
-                throw HostError("recv failed: \(errString(err))")
+                throw HostError("recv failed: \(errString(recvError))")
             }
             if got == 0 { return }
             let localPort = lyte_netio_local_port(netio)
             for i in 0..<Int(got) {
-                let slot = slots[i]
+                let slot = recvSlots[i]
                 let datagram = Array(UnsafeBufferPointer(
                     start: recvScratch.advanced(by: i * Self.recvSlotCapacity),
                     count: slot.len
@@ -1205,7 +1215,7 @@ final class SessionWire {
                     remoteAddress: source, remotePort: slot.src_port
                 ))
             }
-            if got < Int32(batchSize) { return }
+            if got < Int32(recvSlots.count) { return }
         }
     }
 
