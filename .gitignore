@@ -11,3 +11,6 @@ Package.resolved
 
 # macOS
 .DS_Store
+
+# Python bytecode caches (Scripts test tooling)
+__pycache__/

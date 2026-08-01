@@ -8,11 +8,99 @@ import sys
 from pathlib import Path
 
 
+QUALITY_ACTIVE_MIN_DB = 40.0
+QUALITY_CONVERGED_MIN_DB = 45.0
+QUALITY_CONVERGED_MIN_SSIM = 0.995
+
+
 def percentile(values, percent):
     if not values:
         return None
     ordered = sorted(values)
     return ordered[max(0, math.ceil(percent / 100 * len(ordered)) - 1)]
+
+
+def motion_cadence_analysis(source, observations):
+    fresh = [
+        frame for frame in observations
+        if frame.get("provenance") == "freshCapture"
+    ]
+    capture_gaps = [
+        frame["sourceGapMilliseconds"] for frame in fresh
+        if frame.get("sourceGapMilliseconds") is not None
+    ]
+    transit = [
+        frame["transitStretchMilliseconds"] for frame in fresh
+        if frame.get("transitStretchMilliseconds") is not None
+    ]
+    presentation_lateness = [
+        abs(frame["presentationLatenessMilliseconds"]) for frame in fresh
+        if frame.get("presentationLatenessMilliseconds") is not None
+    ]
+    presentations = [
+        frame["scheduledPresentationMicroseconds"] for frame in fresh
+        if frame.get("scheduledPresentationMicroseconds") is not None
+    ]
+    presentation_gaps = [
+        (right - left) / 1_000
+        for left, right in zip(presentations, presentations[1:])
+    ]
+    queue_wait = [
+        frame["queueWaitMilliseconds"] for frame in fresh
+        if frame.get("queueWaitMilliseconds") is not None
+    ]
+    first_boundary = "clean"
+    failure = None
+    if source is None:
+        first_boundary = "source_evidence"
+        failure = "motion_source_evidence_missing"
+    elif (
+        not source.get("pass", False)
+        or not source.get("dimensionsExact", False)
+        or source.get("skippedSourceFrames", 0) > 0
+        or source.get("gapP99Milliseconds", math.inf) > 25
+        or source.get("phaseDriftP99Milliseconds", math.inf) > 8
+    ):
+        if source.get("kind") == "host_absolute_deadline_synthetic":
+            first_boundary = "synthetic_host_source"
+            failure = "motion_pipeline_source_deadline_failed"
+        else:
+            first_boundary = "source_compositor"
+            failure = "motion_source_cadence_failed"
+    elif percentile(capture_gaps, 99) is None \
+            or percentile(capture_gaps, 99) > 25:
+        first_boundary = "pipewire_capture"
+        failure = "motion_capture_cadence_failed"
+    elif (percentile(transit, 99) or 0) > 8:
+        # Endpoint captures localize the recurring live tail after Host
+        # interface capture and before client packet delivery. The flight
+        # metric remains broader in synthetic/unit fixtures, so name the
+        # observed boundary without falsely assigning it to the encoder.
+        first_boundary = "host_to_client_delivery"
+        failure = "motion_transport_burst"
+    elif (
+        (percentile(queue_wait, 99) or 0) > 8
+        or (percentile(presentation_lateness, 99) or 0) > 8
+        or (percentile(presentation_gaps, 99) or 0) > 25
+    ):
+        first_boundary = "client_presentation"
+        failure = "motion_client_presentation_jitter"
+    return {
+        "source": source,
+        "captureGapP50Milliseconds": percentile(capture_gaps, 50),
+        "captureGapP95Milliseconds": percentile(capture_gaps, 95),
+        "captureGapP99Milliseconds": percentile(capture_gaps, 99),
+        "transportStretchP50Milliseconds": percentile(transit, 50),
+        "transportStretchP95Milliseconds": percentile(transit, 95),
+        "transportStretchP99Milliseconds": percentile(transit, 99),
+        "presentationGapP50Milliseconds": percentile(presentation_gaps, 50),
+        "presentationGapP95Milliseconds": percentile(presentation_gaps, 95),
+        "presentationGapP99Milliseconds": percentile(presentation_gaps, 99),
+        "presentationLatenessP99Milliseconds":
+            percentile(presentation_lateness, 99),
+        "firstJaggedBoundary": first_boundary,
+        "failure": failure,
+    }
 
 
 def audio_interval_analysis(samples, warmup_seconds=3.0):
@@ -105,6 +193,150 @@ def audio_interval_analysis(samples, warmup_seconds=3.0):
     }
 
 
+def quality_analysis(samples, elapsed):
+    observations = [
+        sample["quality"] for sample in samples
+        if sample.get("quality") is not None
+    ]
+    valid = [
+        item for item in observations
+        if item.get("error") is None
+        and item.get("psnrMinDB") is not None
+        and item.get("lumaSSIM") is not None
+    ]
+    warmup = [item for item in valid if float(item["elapsedSeconds"]) <= 3.0]
+    steady = [item for item in valid if float(item["elapsedSeconds"]) > 3.0]
+    expected_steady = [
+        sample for sample in samples
+        if float(sample["elapsedSeconds"]) > 3.0
+    ]
+    dimensions_exact = bool(valid) and all(
+        item.get("decodedWidth") == item.get("sourceWidth")
+        and item.get("decodedHeight") == item.get("sourceHeight")
+        for item in valid
+    )
+    stale_intervals = 0
+    decoded_monotonic = True
+    decoded_advanced = False
+    decoded_progress_fps = 0.0
+    if len(valid) >= 2:
+        decoded_monotonic = all(
+            right["decodedFrames"] >= left["decodedFrames"]
+            for left, right in zip(valid, valid[1:])
+        )
+        decoded_advanced = (
+            valid[-1]["decodedFrames"] > valid[0]["decodedFrames"]
+            or valid[0]["decodedFrames"] > 1
+        )
+    if len(steady) >= 2:
+        stale_intervals = sum(
+            right["decodedFrames"] <= left["decodedFrames"]
+            for left, right in zip(steady, steady[1:])
+        )
+        span = float(steady[-1]["elapsedSeconds"]) \
+            - float(steady[0]["elapsedSeconds"])
+        if span > 0:
+            decoded_progress_fps = (
+                steady[-1]["decodedFrames"] - steady[0]["decodedFrames"]
+            ) / span
+    psnrs = [float(item["psnrMinDB"]) for item in valid]
+    ssims = [float(item["lumaSSIM"]) for item in valid]
+    latest = observations[-1] if observations else {}
+    return {
+        "thresholds": {
+            "activeMinRGBPSNRDB": QUALITY_ACTIVE_MIN_DB,
+            "convergedMinRGBPSNRDB": QUALITY_CONVERGED_MIN_DB,
+            "convergedMinLumaSSIM": QUALITY_CONVERGED_MIN_SSIM,
+        },
+        "observations": len(observations),
+        "validObservations": len(valid),
+        "steadyObservations": len(steady),
+        "expectedSteadyObservations": len(expected_steady),
+        "readbackErrors": [
+            {
+                "elapsedSeconds": item["elapsedSeconds"],
+                "error": item["error"],
+            }
+            for item in observations if item.get("error") is not None
+        ],
+        "timeSeries": [
+            {
+                key: item.get(key) for key in (
+                    "elapsedSeconds",
+                    "decodedFrames",
+                    "decodedWidth",
+                    "decodedHeight",
+                    "psnrRDB",
+                    "psnrGDB",
+                    "psnrBDB",
+                    "psnrMinDB",
+                    "lumaSSIM",
+                    "syntheticFrameID",
+                    "phaseMatched",
+                    "error",
+                )
+            }
+            for item in observations
+        ],
+        "dimensionsExact": dimensions_exact,
+        "cadencePolicy": "static_idle_floor_retention",
+        "decodedProgressFPS": decoded_progress_fps,
+        "decodedFramesMonotonic": decoded_monotonic,
+        "decodedFramesAdvancedDuringRun": decoded_advanced,
+        "staleReadbackIntervals": stale_intervals,
+        "minRGBPSNRDB": min(psnrs) if psnrs else None,
+        "p50RGBPSNRDB": percentile(psnrs, 50),
+        "minLumaSSIM": min(ssims) if ssims else None,
+        "p50LumaSSIM": percentile(ssims, 50),
+        "warmupPass": bool(warmup) and all(
+            item["psnrMinDB"] >= QUALITY_ACTIVE_MIN_DB for item in warmup
+        ),
+        "steadyPass": bool(steady) and all(
+            item["psnrMinDB"] >= QUALITY_CONVERGED_MIN_DB
+            and item["lumaSSIM"] >= QUALITY_CONVERGED_MIN_SSIM
+            for item in steady
+        ),
+        "geometry": {
+            key: latest.get(key) for key in (
+                "sourceWidth",
+                "sourceHeight",
+                "decodedWidth",
+                "decodedHeight",
+                "viewportWidthPoints",
+                "viewportHeightPoints",
+                "viewportWidthPixels",
+                "viewportHeightPixels",
+                "backingScaleFactor",
+                "fittedVideoWidthPoints",
+                "fittedVideoHeightPoints",
+                "displayScaleX",
+                "displayScaleY",
+            )
+        },
+        "readbackMetadata": {
+            key: latest.get(key) for key in (
+                "readbackPixelFormat",
+                "readbackBytesPerRow",
+                "readbackYCbCrMatrix",
+                "readbackColorPrimaries",
+                "readbackTransferFunction",
+            )
+        },
+        "referenceName": latest.get("referenceName"),
+        "sourceWitness": {
+            key: latest.get(key) for key in (
+                "sourceWitnessSHA256",
+                "sourceWitnessRDB",
+                "sourceWitnessGDB",
+                "sourceWitnessBDB",
+                "sourceWitnessMinDB",
+                "sourceWitnessLumaSSIM",
+            )
+        },
+        "elapsedSeconds": elapsed,
+    }
+
+
 def analyze(path):
     records = [json.loads(line) for line in Path(path).read_text().splitlines()]
     samples = [record for record in records if record.get("type") == "sample"]
@@ -176,6 +408,31 @@ def analyze(path):
     video = latest["video"]
     audio = latest["audio"]
     audio_intervals = audio_interval_analysis(samples)
+    quality = quality_analysis(samples, elapsed)
+    host_pipeline = latest.get("hostPipeline")
+    synthetic_lateness = (
+        (host_pipeline or {}).get("sourceDeadlineLateness", {})
+        .get("p99Milliseconds")
+    )
+    motion = motion_cadence_analysis(
+        (
+            {
+                "pass": synthetic_lateness is not None
+                    and synthetic_lateness <= 8,
+                "dimensionsExact": True,
+                "skippedSourceFrames": 0,
+                "gapP99Milliseconds": 16.667,
+                "phaseDriftP99Milliseconds":
+                    synthetic_lateness if synthetic_lateness is not None
+                    else math.inf,
+                "kind": "host_absolute_deadline_synthetic",
+                "deadlineLatenessP99Milliseconds": synthetic_lateness,
+            }
+            if workload == "motion-pipeline"
+            and latest.get("motionLeg") == "synthetic-host-pipeline"
+            else latest.get("motionSource")
+        ),
+        observations)
     warmup_audio = audio_intervals["warmup"]
     steady_audio = audio_intervals["steadyState"]
     idr_per_minute = video["idrRequests"] * 60 / elapsed
@@ -226,6 +483,63 @@ def analyze(path):
         hard_failures.append("audio_plc_feed_mismatch")
     if audio["decodeFailures"] or audio["routeChangeFailures"]:
         hard_failures.append("audio_output_failure")
+    if workload in ("quality", "quality-static"):
+        source_witness = quality["sourceWitness"]
+        if (
+            source_witness["sourceWitnessMinDB"] is None
+            or source_witness["sourceWitnessLumaSSIM"] is None
+            or source_witness["sourceWitnessMinDB"] < QUALITY_CONVERGED_MIN_DB
+            or source_witness["sourceWitnessLumaSSIM"]
+                < QUALITY_CONVERGED_MIN_SSIM
+        ):
+            hard_failures.append("quality_source_witness_failed")
+        if quality["referenceName"] != "text-100":
+            hard_failures.append("quality_reference_not_controlled_corpus")
+        if quality["validObservations"] == 0:
+            hard_failures.append("quality_no_native_readback")
+        if quality["steadyObservations"] != quality["expectedSteadyObservations"]:
+            hard_failures.append("quality_readback_gap")
+        if not quality["dimensionsExact"]:
+            hard_failures.append("quality_dimension_or_scaling_mismatch")
+        if not quality["warmupPass"]:
+            hard_failures.append("quality_active_psnr_below_40db")
+        if not quality["steadyPass"]:
+            hard_failures.append("quality_converged_gate_failed")
+        if not quality["decodedFramesMonotonic"] \
+                or not quality["decodedFramesAdvancedDuringRun"]:
+            hard_failures.append("quality_static_retention_failed")
+    if workload == "motion":
+        if latest.get("motionLeg") == "synthetic-host-pipeline":
+            hard_failures.append("motion_compositor_provenance_mixed")
+        if motion["failure"] is not None:
+            hard_failures.append(motion["failure"])
+    if workload == "motion-pipeline":
+        if latest.get("motionLeg") != "synthetic-host-pipeline":
+            hard_failures.append("motion_pipeline_provenance_missing")
+        if latest.get("motionSource") is not None:
+            hard_failures.append("motion_pipeline_compositor_evidence_mixed")
+        if quality["validObservations"] == 0:
+            hard_failures.append("motion_pipeline_no_phase_matched_readback")
+        if not quality["dimensionsExact"]:
+            hard_failures.append("motion_pipeline_dimension_mismatch")
+        if any(
+            item.get("error") is not None
+            or item.get("phaseMatched") is not True
+            or item.get("syntheticFrameID") is None
+            for item in quality["timeSeries"]
+        ):
+            hard_failures.append("motion_pipeline_phase_ambiguous")
+        if (
+            quality["minRGBPSNRDB"] is None
+            or quality["minRGBPSNRDB"] < QUALITY_ACTIVE_MIN_DB
+            or quality["minLumaSSIM"] is None
+            or quality["minLumaSSIM"] < QUALITY_CONVERGED_MIN_SSIM
+        ):
+            hard_failures.append("motion_pipeline_quality_failed")
+        if quality["decodedProgressFPS"] < 55:
+            hard_failures.append("motion_pipeline_fresh_cadence_failed")
+        if motion["failure"] is not None:
+            hard_failures.append(motion["failure"])
 
     metric_keys = (
         "queueWaitMilliseconds",
@@ -241,6 +555,7 @@ def analyze(path):
         ]
         stem = key.removesuffix("Milliseconds")
         timing[f"{stem}P50Milliseconds"] = percentile(values, 50)
+        timing[f"{stem}P95Milliseconds"] = percentile(values, 95)
         timing[f"{stem}P99Milliseconds"] = percentile(values, 99)
 
     result = {
@@ -263,6 +578,8 @@ def analyze(path):
             "appBackpressure": flight["rendererNotReady"],
             "appFailures": flight["rendererFailures"],
             "appRecoveries": flight["rendererRecoveries"],
+            "recoveryCauses": flight.get("recoveryCauses", {}),
+            "recoveryLifecycle": flight.get("recoveryLifecycle", []),
             "appleTotalFrames": renderer.get("totalFrames", 0),
             "appleDisplayDrops": apple_drops,
             "appleCorruptedFrames": corrupted,
@@ -293,6 +610,8 @@ def analyze(path):
             ),
             "intervalAnalysis": audio_intervals,
         },
+        "quality": quality,
+        "motion": motion,
     }
     return result
 
