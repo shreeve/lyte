@@ -14,9 +14,9 @@
 // source and land inside the host's connected-socket filter. Until the
 // first datagram arrives there is no peer and sends report false; every
 // CL-3 message is telemetry-class, superseded by its next cadence, so
-// "no peer yet" is a counted non-event, not an error. IP_TOS is set
-// best-effort (Mac senders benefit little; the Linux host is the end
-// that cares — its own send path handles DSCP).
+// "no peer yet" is a counted non-event, not an error. Client-originated
+// traffic is control/input/feedback, including the Noise handshake, so
+// the socket rides the protected CS6 lane (0xC0) just like host control.
 
 import Foundation
 import LyteWire
@@ -100,9 +100,10 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         var tv = timeval(tv_sec: 0, tv_usec: 100_000)
         _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
-        // Outbound TOS (DSCP CS5-ish), best-effort on Mac — the return
-        // leg's datagrams are small and rare, but marked is still better.
-        var tos: Int32 = 0xA0
+        // The client sends control/input/feedback, never fresh video.
+        // Marking the whole socket as CS5 incorrectly put Noise message 1
+        // in the video queue; use the protocol's protected CS6 lane.
+        var tos: Int32 = 0xC0
         _ = setsockopt(fd, IPPROTO_IP, IP_TOS, &tos, socklen_t(MemoryLayout<Int32>.size))
 
         var addr = sockaddr_in()

@@ -40,6 +40,10 @@ public struct VideoPipelineStats: Sendable {
     public var samplesWithheld: UInt64 = 0
     /// CMSampleBuffer construction failures (CoreMedia refused).
     public var sampleFailures: UInt64 = 0
+    /// CoreMedia sample construction on the receive thread, µs. This is
+    /// the boundary between completed assembly and the app delivery hop;
+    /// without it a factory stall is falsely blamed on network/assembly.
+    public var sampleBuildMicroseconds = LatencyHistogram(capacity: 360)
     /// fecImpossible verdicts (each also fired the seam callback).
     public var fecImpossibleCount: UInt64 = 0
     /// Groups evicted undecoded (stale or capacity).
@@ -217,8 +221,12 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         )
         let outcome: ReliableFrameOutcome
         var sample: CMSampleBuffer?
+        let sampleBuildStarted = DispatchTime.now().uptimeNanoseconds
         do {
             sample = try factory.makeSampleBuffer(from: unit)
+            stats.sampleBuildMicroseconds.record(
+                (DispatchTime.now().uptimeNanoseconds
+                    &- sampleBuildStarted) / 1_000)
             if sample != nil {
                 stats.framesDecoded += 1
                 recordQuality(bytes: annexB.count, now: now)
@@ -231,6 +239,9 @@ public final class LyteVideoPipeline: @unchecked Sendable {
                 outcome = .withheld
             }
         } catch {
+            stats.sampleBuildMicroseconds.record(
+                (DispatchTime.now().uptimeNanoseconds
+                    &- sampleBuildStarted) / 1_000)
             stats.sampleFailures += 1
             outcome = .failed
         }
@@ -326,6 +337,8 @@ public final class LyteVideoPipeline: @unchecked Sendable {
                 } else {
                     newestDeliveredFrame = unit.frameNumber
                 }
+                let sampleBuildStarted =
+                    DispatchTime.now().uptimeNanoseconds
                 do {
                     if let sample = try factory.makeSampleBuffer(from: unit) {
                         stats.samplesDelivered += 1
@@ -339,6 +352,9 @@ public final class LyteVideoPipeline: @unchecked Sendable {
                 } catch {
                     stats.sampleFailures += 1
                 }
+                stats.sampleBuildMicroseconds.record(
+                    (DispatchTime.now().uptimeNanoseconds
+                        &- sampleBuildStarted) / 1_000)
                 actions.append(.repairSignal(
                     .frameDecoded(frame: unit.frameNumber), now))
             case .framesSkipped(let from, let through, _):

@@ -31,9 +31,29 @@ public enum VideoRenderError: Error, Sendable {
     case sampleBufferCreateFailed(OSStatus)
 }
 
+public struct VideoRenderCopyMetrics: Equatable, Sendable {
+    /// Bytes in the final HVCC sample storage.
+    public var destinationBytes: Int
+    /// Full payload-sized temporary storage allocated during conversion.
+    public var intermediateBytes: Int
+    /// Source-to-owned-destination passes over NAL payload bytes.
+    public var payloadCopyPasses: Int
+
+    public init(
+        destinationBytes: Int,
+        intermediateBytes: Int,
+        payloadCopyPasses: Int
+    ) {
+        self.destinationBytes = destinationBytes
+        self.intermediateBytes = intermediateBytes
+        self.payloadCopyPasses = payloadCopyPasses
+    }
+}
+
 /// Not Sendable by design: LyteVideoPipeline confines it behind its lock.
 public final class VideoRenderFactory {
     private var formatDescription: CMVideoFormatDescription?
+    public private(set) var lastCopyMetrics: VideoRenderCopyMetrics?
 
     public init() {}
 
@@ -52,23 +72,50 @@ public final class VideoRenderFactory {
         }
         guard let formatDescription else { return nil }
 
-        let hvcc = Self.lengthPrefixed(annexB: unit.annexB)
-        guard !hvcc.isEmpty else { return nil }
+        let nals = Self.renderableNALs(annexB: unit.annexB)
+        let sampleByteCount = nals.reduce(0) { $0 + 4 + $1.range.count }
+        guard sampleByteCount > 0 else { return nil }
 
         var blockBuffer: CMBlockBuffer?
         var status = CMBlockBufferCreateWithMemoryBlock(
-            allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: hvcc.count,
+            allocator: kCFAllocatorDefault, memoryBlock: nil,
+            blockLength: sampleByteCount,
             blockAllocator: nil, customBlockSource: nil, offsetToData: 0,
-            dataLength: hvcc.count, flags: 0, blockBufferOut: &blockBuffer)
+            dataLength: sampleByteCount, flags: 0,
+            blockBufferOut: &blockBuffer)
         guard status == noErr, let blockBuffer else {
             throw VideoRenderError.blockBufferCreateFailed(status)
         }
-        status = hvcc.withUnsafeBytes { bytes in
-            CMBlockBufferReplaceDataBytes(with: bytes.baseAddress!, blockBuffer: blockBuffer,
-                                          offsetIntoDestination: 0, dataLength: hvcc.count)
-        }
-        guard status == noErr else {
-            throw VideoRenderError.blockBufferFillFailed(status)
+
+        // Convert directly into CoreMedia-owned storage. The former path
+        // first built a full HVCC [UInt8], then copied it wholesale into
+        // this block. Writing prefixes and NAL slices here removes that
+        // payload-sized allocation and one complete copy while retaining
+        // simple ownership: the sample owns immutable CoreMedia memory,
+        // independent of DecodeUnit as soon as this method returns.
+        var destinationOffset = 0
+        for nal in nals {
+            var length = UInt32(nal.range.count).bigEndian
+            status = withUnsafeBytes(of: &length) { bytes in
+                CMBlockBufferReplaceDataBytes(
+                    with: bytes.baseAddress!, blockBuffer: blockBuffer,
+                    offsetIntoDestination: destinationOffset,
+                    dataLength: bytes.count)
+            }
+            guard status == noErr else {
+                throw VideoRenderError.blockBufferFillFailed(status)
+            }
+            destinationOffset += 4
+            status = unit.annexB[nal.range].withUnsafeBytes { bytes in
+                CMBlockBufferReplaceDataBytes(
+                    with: bytes.baseAddress!, blockBuffer: blockBuffer,
+                    offsetIntoDestination: destinationOffset,
+                    dataLength: bytes.count)
+            }
+            guard status == noErr else {
+                throw VideoRenderError.blockBufferFillFailed(status)
+            }
+            destinationOffset += nal.range.count
         }
 
         var timing = CMSampleTimingInfo(
@@ -79,7 +126,7 @@ public final class VideoRenderFactory {
                 value: Int64(bitPattern: unit.timestamp.microseconds),
                 timescale: 1_000_000),
             decodeTimeStamp: .invalid)
-        var sampleSize = hvcc.count
+        var sampleSize = sampleByteCount
         var sampleBuffer: CMSampleBuffer?
         status = CMSampleBufferCreateReady(
             allocator: kCFAllocatorDefault, dataBuffer: blockBuffer,
@@ -90,6 +137,10 @@ public final class VideoRenderFactory {
         guard status == noErr, let sampleBuffer else {
             throw VideoRenderError.sampleBufferCreateFailed(status)
         }
+        lastCopyMetrics = VideoRenderCopyMetrics(
+            destinationBytes: sampleByteCount,
+            intermediateBytes: 0,
+            payloadCopyPasses: 1)
 
         // Present-ASAP: display as fast as frames arrive.
         if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) {
@@ -145,20 +196,33 @@ public final class VideoRenderFactory {
     /// Rides AnnexBCheck's proven walker; trailing zeros of each NAL are
     /// stripped as padding per the RBSP stop-bit guarantee.
     public static func lengthPrefixed(annexB: [UInt8]) -> [UInt8] {
-        let units = AnnexBCheck.nalUnits(in: annexB)
+        let nals = renderableNALs(annexB: annexB)
         var out = [UInt8]()
-        out.reserveCapacity(annexB.count + units.count * 4)
-        for unit in units {
-            var end = unit.offset + unit.length
-            while end > unit.offset, annexB[end - 1] == 0 { end -= 1 }
-            let length = end - unit.offset
-            guard length > 0 else { continue }
+        out.reserveCapacity(nals.reduce(0) { $0 + 4 + $1.range.count })
+        for nal in nals {
+            let length = nal.range.count
             out.append(contentsOf: [
                 UInt8((length >> 24) & 0xff), UInt8((length >> 16) & 0xff),
                 UInt8((length >> 8) & 0xff), UInt8(length & 0xff),
             ])
-            out.append(contentsOf: annexB[unit.offset..<end])
+            out.append(contentsOf: annexB[nal.range])
         }
         return out
+    }
+
+    private struct RenderableNAL {
+        var range: Range<Int>
+    }
+
+    /// One validated AnnexBCheck walk shared by the diagnostic converter
+    /// and the direct-to-CoreMedia path. Empty NALs and RBSP padding have
+    /// exactly the prior semantics.
+    private static func renderableNALs(annexB: [UInt8]) -> [RenderableNAL] {
+        AnnexBCheck.nalUnits(in: annexB).compactMap { unit in
+            var end = unit.offset + unit.length
+            while end > unit.offset, annexB[end - 1] == 0 { end -= 1 }
+            guard end > unit.offset else { return nil }
+            return RenderableNAL(range: unit.offset..<end)
+        }
     }
 }

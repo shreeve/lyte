@@ -498,6 +498,52 @@ final class NackRepairClientGateTests: XCTestCase {
                        "an unasked frame's verdict must not defer")
     }
 
+    func testAcceptedIrapClosesOutstandingRecoveryEpisode() throws {
+        let corpus = try loadCorpus(1)
+        let host = RepairHost()
+        let harness = try Harness(host: host)
+        var forwarded = 0
+        let base: UInt64 = 1_000
+
+        // Multiple independent damage exits converge on one request.
+        harness.core.idrRequester.recordRecoveryDemand(
+            frame: FrameNumber(rawValue: 10),
+            now: ClientTimestamp(microseconds: base))
+        harness.core.idrRequester.recordRecoveryDemand(
+            frame: FrameNumber(rawValue: 11),
+            now: ClientTimestamp(microseconds: base + 100_000))
+        try harness.pumpOutboundToHost(forwarded: &forwarded)
+        XCTAssertEqual(host.idrRequestsSeen, 1)
+        XCTAssertTrue(
+            harness.core.idrRequester.snapshotStats().recoveryOutstanding)
+
+        // The actual render pipeline accepts a complete IRAP. This is the
+        // only production callback that closes the episode.
+        let irapAt = base + 200_000
+        harness.clock.value = irapAt
+        for datagram in try host.videoDatagrams(
+            annexB: corpus[0], frameNumber: 0, hostMicros: irapAt
+        ) {
+            harness.absorb(datagram, tMicros: irapAt)
+        }
+        XCTAssertEqual(harness.samples.count, 1)
+        XCTAssertTrue(harness.samples[0].isIDR)
+        XCTAssertFalse(
+            harness.core.idrRequester.snapshotStats().recoveryOutstanding)
+
+        // No retry survives the accepted IRAP. A later fresh break still
+        // gets its first request immediately.
+        harness.core.feedback.tick(
+            now: ClientTimestamp(microseconds: base + 800_000))
+        try harness.pumpOutboundToHost(forwarded: &forwarded)
+        XCTAssertEqual(host.idrRequestsSeen, 1)
+        harness.core.idrRequester.recordRecoveryDemand(
+            frame: FrameNumber(rawValue: 12),
+            now: ClientTimestamp(microseconds: base + 800_001))
+        try harness.pumpOutboundToHost(forwarded: &forwarded)
+        XCTAssertEqual(host.idrRequestsSeen, 2)
+    }
+
     // MARK: - Leg C: policy discipline (dedupe, deadline, permanence)
 
     func testPolicyAsksOnceEverAndEscalatesOnDeadline() throws {

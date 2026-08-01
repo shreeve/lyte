@@ -296,54 +296,99 @@ final class FeedbackPathTests: XCTestCase {
         XCTAssertEqual(sender.snapshotStats().sealFailures, 1)
     }
 
-    // MARK: - IDR request coalescing
+    // MARK: - IDR recovery episodes
     // (The codec round-trip/reject test moved to Wire's SessionCodecTests
     // with the codec promotion; the policy tests stay here.)
 
-    func testIdrRequestsCoalesceInsideTheRateWindow() {
+    func testIdrRecoveryEpisodeCoversBurstUntilAcceptedIrap() {
         let emitted = LockedRequests()
-        let requester = IdrRequester(minIntervalMilliseconds: 100,
+        let requester = IdrRequester(retryIntervalMilliseconds: 500,
                                      emit: { emitted.append($0) })
         let base: UInt64 = 10_000_000
 
-        // A burst of 10 dead frames inside 50 ms: the first fires
-        // immediately, the other 9 coalesce.
+        // A burst spanning repair refusal, fec-impossible, and whole-loss
+        // timing shapes: the first demand fires immediately; every later
+        // broken frame belongs to the same outstanding recovery episode.
         for i in 0..<10 {
-            requester.recordFecImpossible(
+            requester.recordRecoveryDemand(
                 frame: FrameNumber(rawValue: UInt32(100 + i)),
-                now: ClientTimestamp(microseconds: base + UInt64(i) * 5_000))
+                now: ClientTimestamp(
+                    microseconds: base + UInt64(i) * 45_000))
         }
         XCTAssertEqual(emitted.all.count, 1)
         XCTAssertEqual(emitted.all[0].requestSeq, 0)
         XCTAssertEqual(emitted.all[0].frame.rawValue, 100)
         XCTAssertEqual(emitted.all[0].coalescedCount, 1)
 
-        // Cadence flush inside the window: still nothing new.
-        requester.flushIfDue(now: ClientTimestamp(microseconds: base + 80_000))
+        // Even cadence flushes and fresh damage just before 500 ms cannot
+        // multiply the request.
+        requester.flushIfDue(
+            now: ClientTimestamp(microseconds: base + 499_999))
         XCTAssertEqual(emitted.all.count, 1)
 
-        // Flush past the window: one request covering the 9 coalesced,
-        // naming the newest dead frame.
-        requester.flushIfDue(now: ClientTimestamp(microseconds: base + 101_000))
+        // A usable IRAP accepted by the render path closes the episode.
+        requester.noteUsableIrapAccepted()
+        requester.flushIfDue(
+            now: ClientTimestamp(microseconds: base + 1_000_000))
+        XCTAssertEqual(emitted.all.count, 1)
+
+        // Damage after the heal starts a new episode immediately — the
+        // first legitimate request is never suppressed by old history.
+        requester.recordRecoveryDemand(
+            frame: FrameNumber(rawValue: 500),
+            now: ClientTimestamp(microseconds: base + 1_000_001))
         XCTAssertEqual(emitted.all.count, 2)
         XCTAssertEqual(emitted.all[1].requestSeq, 1)
-        XCTAssertEqual(emitted.all[1].frame.rawValue, 109)
-        XCTAssertEqual(emitted.all[1].coalescedCount, 9)
-
-        // Quiet flushes emit nothing.
-        requester.flushIfDue(now: ClientTimestamp(microseconds: base + 300_000))
-        XCTAssertEqual(emitted.all.count, 2)
-
-        // A verdict past the next window fires immediately again.
-        requester.recordFecImpossible(
-            frame: FrameNumber(rawValue: 500),
-            now: ClientTimestamp(microseconds: base + 400_000))
-        XCTAssertEqual(emitted.all.count, 3)
-        XCTAssertEqual(emitted.all[2].coalescedCount, 1)
+        XCTAssertEqual(emitted.all[1].frame.rawValue, 500)
 
         let stats = requester.snapshotStats()
         XCTAssertEqual(stats.verdicts, 11)
-        XCTAssertEqual(stats.requestsSent, 3)
+        XCTAssertEqual(stats.requestsSent, 2)
+        XCTAssertEqual(stats.episodesStarted, 2)
+        XCTAssertEqual(stats.episodesCompleted, 1)
+        XCTAssertEqual(stats.retryRequests, 0)
+        XCTAssertTrue(stats.recoveryOutstanding)
+    }
+
+    func testIdrRecoveryEpisodeRetriesLostFirstIdrAt500ms() {
+        let emitted = LockedRequests()
+        let requester = IdrRequester(retryIntervalMilliseconds: 500,
+                                     emit: { emitted.append($0) })
+        let base = ClientTimestamp(microseconds: 20_000_000)
+
+        requester.recordRecoveryDemand(
+            frame: FrameNumber(rawValue: 40), now: base)
+        requester.recordRecoveryDemand(
+            frame: FrameNumber(rawValue: 44),
+            now: base.advanced(byMicroseconds: 200_000))
+        requester.flushIfDue(
+            now: base.advanced(byMicroseconds: 499_999))
+        XCTAssertEqual(emitted.all.count, 1)
+
+        // The first request/answer was lost. Exactly at 500 ms the
+        // feedback wake emits one retry naming the newest covered damage.
+        requester.flushIfDue(
+            now: base.advanced(byMicroseconds: 500_000))
+        XCTAssertEqual(emitted.all.count, 2)
+        XCTAssertEqual(emitted.all[1].requestSeq, 1)
+        XCTAssertEqual(emitted.all[1].frame.rawValue, 44)
+        XCTAssertEqual(emitted.all[1].coalescedCount, 2)
+
+        requester.flushIfDue(
+            now: base.advanced(byMicroseconds: 999_999))
+        XCTAssertEqual(emitted.all.count, 2)
+        requester.noteUsableIrapAccepted()
+        requester.flushIfDue(
+            now: base.advanced(byMicroseconds: 1_500_000))
+        XCTAssertEqual(emitted.all.count, 2,
+            "the accepted retry closes the episode; no timer tail")
+
+        let stats = requester.snapshotStats()
+        XCTAssertEqual(stats.requestsSent, 2)
+        XCTAssertEqual(stats.retryRequests, 1)
+        XCTAssertEqual(stats.episodesStarted, 1)
+        XCTAssertEqual(stats.episodesCompleted, 1)
+        XCTAssertFalse(stats.recoveryOutstanding)
     }
 
     private final class LockedRequests: @unchecked Sendable {

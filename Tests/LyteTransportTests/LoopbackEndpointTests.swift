@@ -20,9 +20,11 @@ final class LoopbackEndpointTests: XCTestCase {
         let endpoint = UdpReceiveEndpoint(
             port: 0, bindAddress: "127.0.0.1", crypto: crypto)
         XCTAssertThrowsError(try endpoint.start()) { error in
-            guard case TransportCryptoError.handshakeFailed = error else {
+            guard case TransportCryptoError.handshakeFailed(let message) = error else {
                 return XCTFail("expected handshakeFailed, got \(error)")
             }
+            XCTAssertTrue(message.contains("kernel accepted 2 sends"))
+            XCTAssertTrue(message.contains("received 0 datagrams"))
         }
     }
 

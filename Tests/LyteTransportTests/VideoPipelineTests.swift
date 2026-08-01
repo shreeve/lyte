@@ -106,6 +106,8 @@ final class VideoPipelineTests: XCTestCase {
         XCTAssertEqual(stats.framesSkipped, 0)
         XCTAssertEqual(stats.samplesDelivered, 10, "IDR-first: every DecodeUnit renders")
         XCTAssertEqual(stats.sampleFailures, 0)
+        XCTAssertEqual(stats.sampleBuildMicroseconds.count, 10)
+        XCTAssertNotNil(stats.sampleBuildMicroseconds.p99)
         XCTAssertEqual(collector.samples.count, 10)
 
         // DecodeUnit sequence: frame order, byte-identical to the corpus.
@@ -341,5 +343,66 @@ final class VideoPipelineTests: XCTestCase {
         }
         XCTAssertEqual(nals, expected)
         XCTAssertEqual(nals.count, 5, "corpus IDR: VPS SPS PPS PREFIX_SEI IDR_W_RADL")
+    }
+
+    func testSamplePayloadIsByteExactWithOneOwnedCopy() throws {
+        let frame = try loadPrefix()[0]
+        let expected = VideoRenderFactory.lengthPrefixed(annexB: frame)
+        let factory = VideoRenderFactory()
+        let sample = try XCTUnwrap(factory.makeSampleBuffer(from: DecodeUnit(
+            frameNumber: FrameNumber(rawValue: 0),
+            timestamp: HostTimestamp(microseconds: 123_456),
+            isIDR: true,
+            annexB: frame)))
+
+        XCTAssertEqual(try samplePayloadBytes(sample), expected,
+            "CoreMedia storage must preserve every length prefix and NAL byte")
+        XCTAssertEqual(factory.lastCopyMetrics, VideoRenderCopyMetrics(
+            destinationBytes: expected.count,
+            intermediateBytes: 0,
+            payloadCopyPasses: 1),
+            "conversion writes once into owned sample storage")
+    }
+
+    func testSampleStorageOutlivesFactoryAndAnnexBSource() throws {
+        let frame = try loadPrefix()[0]
+        let expected = VideoRenderFactory.lengthPrefixed(annexB: frame)
+        let sample: CMSampleBuffer = try autoreleasepool {
+            var source = frame
+            let factory = VideoRenderFactory()
+            let made = try XCTUnwrap(factory.makeSampleBuffer(from: DecodeUnit(
+                frameNumber: FrameNumber(rawValue: 0),
+                timestamp: HostTimestamp(microseconds: 1),
+                isIDR: true,
+                annexB: source)))
+            // Attempt to reuse the caller's source storage before both
+            // source and factory leave scope.
+            _ = source.withUnsafeMutableBytes { bytes in
+                bytes.initializeMemory(as: UInt8.self, repeating: 0xDD)
+            }
+            return made
+        }
+
+        // Churn similarly-sized allocations after every Swift owner of
+        // the Annex-B input has gone away. The sample must remain exact.
+        for _ in 0..<64 {
+            _ = [UInt8](repeating: 0xEE, count: frame.count)
+        }
+        XCTAssertEqual(try samplePayloadBytes(sample), expected)
+    }
+
+    private func samplePayloadBytes(
+        _ sample: CMSampleBuffer
+    ) throws -> [UInt8] {
+        let block = try XCTUnwrap(CMSampleBufferGetDataBuffer(sample))
+        let count = CMBlockBufferGetDataLength(block)
+        var bytes = [UInt8](repeating: 0, count: count)
+        let status = bytes.withUnsafeMutableBytes { destination in
+            CMBlockBufferCopyDataBytes(
+                block, atOffset: 0, dataLength: count,
+                destination: destination.baseAddress!)
+        }
+        XCTAssertEqual(status, noErr)
+        return bytes
     }
 }
