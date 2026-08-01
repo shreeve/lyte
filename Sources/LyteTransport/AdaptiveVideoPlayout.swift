@@ -10,6 +10,7 @@ public struct AdaptiveVideoPlayout: Sendable {
         public var maximumDelayMicroseconds: UInt64
         public var initialDelayMicroseconds: UInt64
         public var excessiveLatenessMicroseconds: UInt64
+        public var maximumFreshBurstDebtMicroseconds: UInt64
         public var slowShrinkMicroseconds: UInt64
 
         public init(
@@ -17,12 +18,15 @@ public struct AdaptiveVideoPlayout: Sendable {
             maximumDelayMicroseconds: UInt64 = 50_000,
             initialDelayMicroseconds: UInt64 = 20_000,
             excessiveLatenessMicroseconds: UInt64 = 50_000,
+            maximumFreshBurstDebtMicroseconds: UInt64 = 200_000,
             slowShrinkMicroseconds: UInt64 = 100
         ) {
             self.minimumDelayMicroseconds = minimumDelayMicroseconds
             self.maximumDelayMicroseconds = maximumDelayMicroseconds
             self.initialDelayMicroseconds = initialDelayMicroseconds
             self.excessiveLatenessMicroseconds = excessiveLatenessMicroseconds
+            self.maximumFreshBurstDebtMicroseconds =
+                maximumFreshBurstDebtMicroseconds
             self.slowShrinkMicroseconds = slowShrinkMicroseconds
         }
     }
@@ -38,8 +42,13 @@ public struct AdaptiveVideoPlayout: Sendable {
     public private(set) var targetDelayMicroseconds: UInt64
     private var lastPathDelayMicroseconds: UInt64?
     private var lastSourceCaptureMicroseconds: UInt64?
+    private var lastPresentationMicroseconds: UInt64?
+    private var lastFreshSourceMicroseconds: UInt64?
+    private var lastFreshArrivalMicroseconds: UInt64?
+    private var freshBurstDebtMicroseconds: UInt64 = 0
+    private var lastFrameWasRetained = false
     private var jitterMicroseconds: Double = 0
-    private var recoveryArmed = true
+    private var debtRecoveryArmed = true
 
     public init(config: Config = Config()) {
         precondition(config.minimumDelayMicroseconds <= config.initialDelayMicroseconds)
@@ -52,8 +61,13 @@ public struct AdaptiveVideoPlayout: Sendable {
         targetDelayMicroseconds = config.initialDelayMicroseconds
         lastPathDelayMicroseconds = nil
         lastSourceCaptureMicroseconds = nil
+        lastPresentationMicroseconds = nil
+        lastFreshSourceMicroseconds = nil
+        lastFreshArrivalMicroseconds = nil
+        freshBurstDebtMicroseconds = 0
+        lastFrameWasRetained = false
         jitterMicroseconds = 0
-        recoveryArmed = true
+        debtRecoveryArmed = true
     }
 
     /// Maps one arrival onto the host-clock presentation timeline. Delay
@@ -61,8 +75,24 @@ public struct AdaptiveVideoPlayout: Sendable {
     public mutating func schedule(
         mappedCaptureMicroseconds: UInt64,
         arrivalMicroseconds: UInt64,
-        sourceCaptureMicroseconds: UInt64? = nil
+        sourceCaptureMicroseconds: UInt64? = nil,
+        isRandomAccess: Bool = false
     ) -> Decision {
+        // A usable IRAP closes any debt-recovery episode and starts a new
+        // presentation timeline. The renderer flush has discarded the old
+        // decode chain, so carrying its PTS floor forward would recreate the
+        // very latency debt the recovery bounded.
+        if isRandomAccess, !debtRecoveryArmed {
+            lastPathDelayMicroseconds = nil
+            lastSourceCaptureMicroseconds = nil
+            lastPresentationMicroseconds = nil
+            lastFreshSourceMicroseconds = nil
+            lastFreshArrivalMicroseconds = nil
+            freshBurstDebtMicroseconds = 0
+            lastFrameWasRetained = false
+            jitterMicroseconds = 0
+            debtRecoveryArmed = true
+        }
         // The host's idle floor and quality ratchet intentionally re-encode
         // retained pixels with their ORIGINAL capture timestamp. Those are
         // dependency-bearing quality refinements, not network-late frames.
@@ -72,15 +102,42 @@ public struct AdaptiveVideoPlayout: Sendable {
         // no path-jitter evidence because no new capture occurred.
         let sourceCapture = sourceCaptureMicroseconds
             ?? mappedCaptureMicroseconds
-        if lastSourceCaptureMicroseconds == sourceCapture {
+        let previousSourceCapture = lastSourceCaptureMicroseconds
+        if previousSourceCapture == sourceCapture {
+            lastFrameWasRetained = true
+            let proposed = arrivalMicroseconds &+ targetDelayMicroseconds
+            let presentation = max(
+                proposed, (lastPresentationMicroseconds ?? 0) &+ 1)
+            lastPresentationMicroseconds = presentation
             return Decision(
-                presentationMicroseconds:
-                    arrivalMicroseconds &+ targetDelayMicroseconds,
+                presentationMicroseconds: presentation,
                 targetDelayMicroseconds: targetDelayMicroseconds,
                 latenessMicroseconds: 0,
                 shouldFlush: false)
         }
         lastSourceCaptureMicroseconds = sourceCapture
+
+        if !lastFrameWasRetained,
+           let previousFreshSource = lastFreshSourceMicroseconds,
+           let previousFreshArrival = lastFreshArrivalMicroseconds {
+            let sourceStep = sourceCapture > previousFreshSource
+                ? sourceCapture - previousFreshSource : 0
+            let arrivalStep = arrivalMicroseconds > previousFreshArrival
+                ? arrivalMicroseconds - previousFreshArrival : 0
+            if sourceStep > arrivalStep {
+                freshBurstDebtMicroseconds &+= sourceStep - arrivalStep
+            } else {
+                freshBurstDebtMicroseconds = freshBurstDebtMicroseconds
+                    > arrivalStep - sourceStep
+                    ? freshBurstDebtMicroseconds - (arrivalStep - sourceStep)
+                    : 0
+            }
+        } else {
+            freshBurstDebtMicroseconds = 0
+        }
+        lastFreshSourceMicroseconds = sourceCapture
+        lastFreshArrivalMicroseconds = arrivalMicroseconds
+        lastFrameWasRetained = false
 
         let pathDelay = arrivalMicroseconds >= mappedCaptureMicroseconds
             ? arrivalMicroseconds - mappedCaptureMicroseconds : 0
@@ -109,16 +166,39 @@ public struct AdaptiveVideoPlayout: Sendable {
                     targetDelayMicroseconds - config.minimumDelayMicroseconds))
         }
 
-        let scheduled = mappedCaptureMicroseconds &+ targetDelayMicroseconds
-        let excessive = lateness > config.excessiveLatenessMicroseconds
-        let shouldFlush = excessive && recoveryArmed
-        if shouldFlush {
-            recoveryArmed = false
-        } else if !excessive {
-            recoveryArmed = true
+        // A single late fresh frame is a playout-timeline problem: rebase it
+        // from arrival with decode/display cushion. A burst buffered behind a
+        // blackout is different. Preserving source cadence can push its PTS
+        // beyond arrival + maximumDelay while AVFoundation remains "ready"
+        // and absorbs an unbounded internal queue, bypassing our four-sample
+        // handoff bound. That explicit FRESH presentation debt starts one
+        // whole-episode recovery. Retained refinements returned above never
+        // enter this path and therefore never mint recovery.
+        var scheduled = lateness > 0
+            ? arrivalMicroseconds &+ targetDelayMicroseconds
+            : mappedCaptureMicroseconds &+ targetDelayMicroseconds
+        if let previousPresentation = lastPresentationMicroseconds {
+            scheduled = max(scheduled, previousPresentation &+ 1)
         }
+        let maximumPresentation = arrivalMicroseconds
+            &+ config.maximumDelayMicroseconds
+        let excessiveDebt =
+            freshBurstDebtMicroseconds
+                > config.maximumFreshBurstDebtMicroseconds
+        let shouldFlush = excessiveDebt && debtRecoveryArmed
+        if shouldFlush {
+            debtRecoveryArmed = false
+        }
+        if scheduled > maximumPresentation {
+            // Frames in the debt episode are discarded by await-IDR. Keep
+            // every accepted PTS inside the advertised horizon. Equal PTS
+            // deliberately coalesce an ordinary compressed burst after
+            // decode; only a truly stale 200 ms chain starts recovery.
+            scheduled = maximumPresentation
+        }
+        lastPresentationMicroseconds = scheduled
         return Decision(
-            presentationMicroseconds: max(scheduled, arrivalMicroseconds),
+            presentationMicroseconds: scheduled,
             targetDelayMicroseconds: targetDelayMicroseconds,
             latenessMicroseconds: lateness,
             shouldFlush: shouldFlush)
@@ -136,14 +216,16 @@ public final class AdaptiveVideoPlayoutController: @unchecked Sendable {
     public func schedule(
         mappedCaptureMicroseconds: UInt64,
         arrivalMicroseconds: UInt64,
-        sourceCaptureMicroseconds: UInt64? = nil
+        sourceCaptureMicroseconds: UInt64? = nil,
+        isRandomAccess: Bool = false
     ) -> AdaptiveVideoPlayout.Decision {
         lock.lock()
         defer { lock.unlock() }
         return policy.schedule(
             mappedCaptureMicroseconds: mappedCaptureMicroseconds,
             arrivalMicroseconds: arrivalMicroseconds,
-            sourceCaptureMicroseconds: sourceCaptureMicroseconds)
+            sourceCaptureMicroseconds: sourceCaptureMicroseconds,
+            isRandomAccess: isRandomAccess)
     }
 
     public func reset() {

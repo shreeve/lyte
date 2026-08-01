@@ -29,18 +29,25 @@ final class AdaptiveVideoPlayoutTests: XCTestCase {
         XCTAssertEqual(policy.targetDelayMicroseconds, 15_000)
     }
 
-    func testExcessiveLatenessRequestsBoundedRecovery() {
+    func testExcessiveLatenessRebasesWithCushionWithoutBreakingContinuity() {
         var policy = AdaptiveVideoPlayout()
         let decision = policy.schedule(
             mappedCaptureMicroseconds: 1_000_000,
             arrivalMicroseconds: 1_100_001)
-        XCTAssertTrue(decision.shouldFlush)
+        XCTAssertFalse(decision.shouldFlush)
         XCTAssertEqual(decision.targetDelayMicroseconds, 50_000)
-        XCTAssertEqual(decision.presentationMicroseconds, 1_100_001)
+        XCTAssertEqual(decision.presentationMicroseconds, 1_150_001)
         let sameEpisode = policy.schedule(
             mappedCaptureMicroseconds: 1_016_667,
             arrivalMicroseconds: 1_116_668)
         XCTAssertFalse(sameEpisode.shouldFlush)
+        XCTAssertEqual(sameEpisode.presentationMicroseconds, 1_166_668)
+
+        let clockModelCatchesUp = policy.schedule(
+            mappedCaptureMicroseconds: 1_033_334,
+            arrivalMicroseconds: 1_133_335)
+        XCTAssertFalse(clockModelCatchesUp.shouldFlush)
+        XCTAssertEqual(clockModelCatchesUp.presentationMicroseconds, 1_183_335)
     }
 
     func testResetRestoresFreshSessionState() {
@@ -78,6 +85,68 @@ final class AdaptiveVideoPlayoutTests: XCTestCase {
             arrivalMicroseconds: capture + 1_005_000)
         XCTAssertEqual(fresh.latenessMicroseconds, 0)
         XCTAssertFalse(fresh.shouldFlush)
+    }
+
+    func testFreshBlackoutBurstStartsOneBoundedDebtRecovery() {
+        var policy = AdaptiveVideoPlayout()
+        _ = policy.schedule(
+            mappedCaptureMicroseconds: 1_000_000,
+            arrivalMicroseconds: 1_005_000,
+            sourceCaptureMicroseconds: 1_000_000,
+            isRandomAccess: true)
+
+        let burstArrival: UInt64 = 1_500_000
+        var recoveries = 0
+        for index in 1...20 {
+            let decision = policy.schedule(
+                mappedCaptureMicroseconds:
+                    1_000_000 + UInt64(index) * 16_667,
+                arrivalMicroseconds: burstArrival,
+                sourceCaptureMicroseconds:
+                    1_000_000 + UInt64(index) * 16_667)
+            if decision.shouldFlush { recoveries += 1 }
+            XCTAssertLessThanOrEqual(
+                decision.presentationMicroseconds,
+                burstArrival + policy.config.maximumDelayMicroseconds)
+        }
+        XCTAssertEqual(recoveries, 1)
+
+        let idr = policy.schedule(
+            mappedCaptureMicroseconds: 1_600_000,
+            arrivalMicroseconds: 1_605_000,
+            sourceCaptureMicroseconds: 1_600_000,
+            isRandomAccess: true)
+        XCTAssertFalse(idr.shouldFlush)
+        XCTAssertLessThanOrEqual(
+            idr.presentationMicroseconds,
+            1_605_000 + policy.config.maximumDelayMicroseconds)
+    }
+
+    func testOrdinaryFreshJitterRebasesWithoutDebtRecovery() {
+        var policy = AdaptiveVideoPlayout()
+        var previousPresentation: UInt64 = 0
+        for index in 0..<30 {
+            let capture = 2_000_000 + UInt64(index) * 16_667
+            let jitter: UInt64
+            switch index {
+            case 10: jitter = 35_000
+            case 11: jitter = 20_000
+            case 12: jitter = 8_000
+            default: jitter = 5_000
+            }
+            let arrival = capture + jitter
+            let decision = policy.schedule(
+                mappedCaptureMicroseconds: capture,
+                arrivalMicroseconds: arrival,
+                sourceCaptureMicroseconds: capture,
+                isRandomAccess: index == 0)
+            XCTAssertFalse(decision.shouldFlush)
+            XCTAssertGreaterThan(decision.presentationMicroseconds, previousPresentation)
+            XCTAssertLessThanOrEqual(
+                decision.presentationMicroseconds,
+                arrival + policy.config.maximumDelayMicroseconds)
+            previousPresentation = decision.presentationMicroseconds
+        }
     }
 
     func testNotReadyQueuesWholeDependencyChainInOrder() {

@@ -125,6 +125,34 @@ final class VideoFlightRecorderTests: XCTestCase {
         XCTAssertTrue(recorder.recentFrames().isEmpty)
     }
 
+    func testRepeatedCaptureTimestampIsRetainedProvenanceNotTransitStall() {
+        let recorder = VideoFlightRecorder(capacity: 10)
+        for i: UInt32 in 0..<3 {
+            let ready = UInt64(i) * 16_000_000
+            let token = recorder.frameReady(
+                frame: i,
+                hostMicroseconds: 42_000,
+                nowNanoseconds: ready)
+            recorder.frameEnqueued(
+                token,
+                enqueueStartedNanoseconds: ready + UInt64(i + 1) * 100_000,
+                enqueueFinishedNanoseconds: ready + UInt64(i + 1) * 200_000,
+                rendererReady: true,
+                rendererFailed: false)
+        }
+
+        let observations = recorder.recentFrames()
+        XCTAssertEqual(
+            observations.map(\.provenance),
+            [.freshCapture, .retainedRefinement, .retainedRefinement])
+        XCTAssertNil(observations[1].transitStretchMilliseconds)
+        XCTAssertEqual(recorder.snapshot().freshCaptureFrames, 1)
+        XCTAssertEqual(recorder.snapshot().retainedRefinementFrames, 2)
+        XCTAssertEqual(
+            recorder.snapshot().queueWaitP50Milliseconds ?? 0,
+            0.2, accuracy: 0.001)
+    }
+
     private func recordPair(
         _ recorder: VideoFlightRecorder,
         hostGapMS: UInt64,
