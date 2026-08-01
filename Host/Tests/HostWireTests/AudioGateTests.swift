@@ -885,4 +885,66 @@ final class AudioGateTests: XCTestCase {
             + "max batch wire time "
             + "\(Double(session.pacerTelemetry.maxBatchWireTimeNS) / 1e6) ms")
     }
+
+    /// The executable publishes audio without taking its broad Session
+    /// lock, then uses this interleave seam while a large IDR is being
+    /// sealed. This pure gate forces every checkpoint to represent a
+    /// newly due 5 ms packet: each must emit immediately through the
+    /// video backlog, while the IDR tail remains paced.
+    func testLargeIdrCooperativelyServicesAudioSchedulingIsland() throws {
+        var now: UInt64 = 0
+        var audioSendTimes: [UInt64] = []
+        var videoSends = 0
+        let session = Session(
+            config: SessionConfig(
+                crypto: .insecure, rateBitsPerSecond: Self.rateBPS,
+                beaconIntervalNS: 1 << 62
+            ),
+            clientTuple: Self.tupleA,
+            now: 0,
+            rng: SplitMix64(seed: 0xA11D)
+        ) { datagram in
+            if datagram.pacerClass == .audio {
+                let (envelope, _) = try! Envelope.decode(datagram.bytes)
+                let field = try! FecField.decode(envelope.fec)
+                if case .reedSolomon(let index, _) = field, index < 4 {
+                    audioSendTimes.append(now)
+                }
+            } else if datagram.pacerClass == .freshVideo {
+                videoSends += 1
+            }
+        }
+
+        var checkpoints = 0
+        var packetNumber = 0
+        _ = try session.ingestVideoFrame(
+            syntheticFrame(byteCount: 59_904, irap: true),
+            captureTimestampMicroseconds: 0,
+            isKeyframe: true,
+            interleave: {
+                checkpoints += 1
+                now = UInt64(packetNumber) * 5_000_000
+                _ = try! session.ingestAudioPacket(
+                    self.opusPacket(packetNumber),
+                    captureTimestampMicroseconds: now / 1_000,
+                    now: now
+                )
+                packetNumber += 1
+                session.pump(now: now)
+            },
+            now: 0
+        )
+
+        XCTAssertGreaterThan(checkpoints, 8,
+            "a worst-case IDR must expose repeated audio service points")
+        XCTAssertEqual(audioSendTimes.count, checkpoints,
+            "every due packet must leave during the video ingest")
+        XCTAssertGreaterThan(videoSends, 0)
+        for i in 1..<audioSendTimes.count {
+            XCTAssertEqual(audioSendTimes[i] - audioSendTimes[i - 1], 5_000_000)
+        }
+        XCTAssertLessThanOrEqual(
+            session.pacerTelemetry[.audio].maxQueueDelayNS, 2_000_000
+        )
+    }
 }

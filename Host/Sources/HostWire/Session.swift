@@ -1207,6 +1207,7 @@ public final class Session {
         _ annexB: [UInt8],
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
+        interleave: (() -> Void)? = nil,
         now: UInt64
     ) throws -> Int {
         guard phase == .established else {
@@ -1244,6 +1245,7 @@ public final class Session {
             captureTimestampMicroseconds: captureTimestampMicroseconds,
             isKeyframe: isKeyframe,
             lastInputSeq: lastInputSeq,
+            interleave: interleave,
             now: now
         )
         // HS-32: the opening exemption's glass proxy needs the first

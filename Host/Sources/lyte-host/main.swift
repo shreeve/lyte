@@ -2047,7 +2047,10 @@ func run() throws {
         \(s.audioPacketsSuppressed) suppressed, \
         \(wire.audioSendFailures) send failures, \
         \(wire.audioPacketsDroppedPreSession) dropped pre-session; \
-        max audio queue delay \(t[.audio].maxQueueDelayNS) ns
+        max audio queue delay \(t[.audio].maxQueueDelayNS) ns; \
+        mailbox depth max \(wire.audioMailboxMaxDepth), \
+        dwell max \(wire.audioMailboxMaxDwellNS) ns, \
+        overflows \(wire.audioMailboxOverflows)
         audio-routing: final \(wire.currentAudioRouting), \
         \(s.audioRoutingRequestsReceived) flip requests, \
         \(s.audioRoutingStatusesSent) statuses sent
