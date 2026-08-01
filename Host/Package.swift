@@ -41,6 +41,7 @@ var targets: [Target] = [
 #if os(Linux)
 products.append(.executable(name: "lyte-host", targets: ["lyte-host"]))
 products.append(.executable(name: "lyte-eye", targets: ["lyte-eye"]))
+products.append(.executable(name: "lyte-nvenc", targets: ["lyte-nvenc"]))
 
 // HS-33: the vendored no-reset FFmpeg (Vendor/ffmpeg/README.md — rate
 // reconfigures without resetEncoder/forceIDR). Env-gated: with
@@ -151,6 +152,18 @@ targets += [
         name: "CVA",
         pkgConfig: "libva",
         providers: [.apt(["libva-dev"])]
+    ),
+    // E6a: the NVENC SDK surface (vendored nvEncodeAPI.h — FFmpeg's
+    // nv-codec-headers n12.2, MIT; runtime = the driver's own
+    // libnvidia-encode) and the CUDA-context sliver it needs.
+    .systemLibrary(name: "CNvEnc"),
+    .systemLibrary(name: "CCuda"),
+    // E6a milestone 1: the NVENC-native probe — infinite GOP, one
+    // demanded IDR, mid-stream NvEncReconfigureEncoder with zero
+    // reset — the two levers that retire the vendored no-reset patch.
+    .executableTarget(
+        name: "lyte-nvenc",
+        dependencies: ["CNvEnc", "CCuda"]
     ),
     // The eye's organs as a LIBRARY (E1): the doorbell/ticket DRM
     // layer, the EGL/GL import+blit, and the hevc_vaapi encoder wrap —
