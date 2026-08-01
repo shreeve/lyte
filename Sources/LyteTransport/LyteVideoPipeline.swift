@@ -9,19 +9,18 @@
 // The display layer is deliberately absent: the pipeline emits sample
 // buffers through a callback so the CLI can point it at an
 // AVSampleBufferDisplayLayer's renderer while tests run the identical
-// path headless. Presentation is present-ASAP (Work-mode default, no
-// jitter buffer): every sample carries DisplayImmediately, and frame
-// order is the assembler's ordered-emission guarantee.
+// path headless. Presentation timing is assigned by the app's adaptive
+// playout controller; frame order is the assembler's guarantee.
 //
 // fecImpossible events surface through `onFecImpossible` — the seam
 // CL-3's IDR-request feedback hooks into; nothing is implemented behind
 // it today. Assembler eviction is driven by `start()`'s timer (or by
 // `tick(now:)` directly, which is what tests do).
 //
-// Threading: `ingest` runs on the endpoint's receive thread, the
-// eviction timer on a utility queue; one lock confines the assembler,
-// the factory, and the stats. Callbacks fire inside the lock's thread
-// but outside the lock itself.
+// Threading: assembly is lock-confined, but CoreMedia allocation runs on
+// a dedicated serial queue in production. Tests may choose synchronous
+// construction for deterministic assertions. Callbacks never hold the
+// assembler lock.
 
 import CoreMedia
 import Dispatch
@@ -44,6 +43,9 @@ public struct VideoPipelineStats: Sendable {
     /// the boundary between completed assembly and the app delivery hop;
     /// without it a factory stall is falsely blamed on network/assembly.
     public var sampleBuildMicroseconds = LatencyHistogram(capacity: 360)
+    /// Time spent holding the assembly/state lock for an ingest that
+    /// completed a frame. CoreMedia work is deliberately excluded.
+    public var assemblyLockHoldMicroseconds = LatencyHistogram(capacity: 360)
     /// fecImpossible verdicts (each also fired the seam callback).
     public var fecImpossibleCount: UInt64 = 0
     /// Groups evicted undecoded (stale or capacity).
@@ -67,6 +69,12 @@ public struct VideoPipelineStats: Sendable {
     /// wire vocabulary): frame cadence, video bitrate, frame-size
     /// percentiles. Nil until a frame has decoded inside the window.
     public var quality: VideoQualitySnapshot?
+}
+
+public struct VideoFrameBuildTelemetry: Sendable, Equatable {
+    public var frame: UInt32
+    public var assemblyLockHoldMicroseconds: UInt64
+    public var sampleBuildMicroseconds: UInt64
 }
 
 /// HS-22: what the client can say about incoming video quality from
@@ -105,6 +113,9 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     private let lock = NSLock()
     private var assembler: VideoAssembler
     private let factory = VideoRenderFactory()
+    private let sampleQueue = DispatchQueue(
+        label: "lyte.video.sample-build", qos: .userInteractive)
+    private let asynchronousSampleBuild: Bool
     private var stats = VideoPipelineStats()
     private var firstIngest: ClientTimestamp?
     /// HS-22 quality window: (decode instant, Annex-B byte count) per
@@ -116,6 +127,8 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     /// idle frame's dedupe reference (its `frame` field names the
     /// number the converged frame last rode the datagram path with).
     private var newestDeliveredFrame: FrameNumber?
+    private var frameBuildTelemetry: [UInt32: VideoFrameBuildTelemetry] = [:]
+    private var frameBuildOrder: [UInt32] = []
 
     private let onSample: @Sendable (CMSampleBuffer, DecodeUnit) -> Void
     private let onFecImpossible: (@Sendable (FrameNumber, _ presumedLostDataShards: Int, _ bestCaseParityShards: Int) -> Void)?
@@ -128,7 +141,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     /// - Parameters:
     ///   - onSample: one ready sample per rendered frame, called on the
     ///     ingest thread (enqueue to a display layer's renderer, or
-    ///     collect in tests). DisplayImmediately is already attached.
+    ///     collect in tests). The owner assigns local presentation time.
     ///     @Sendable because ingest threads call it — a MainActor-
     ///     inferred closure here traps at runtime (dispatch_assert_queue).
     ///   - onFecImpossible: the CL-3 seam — fired once per frame the
@@ -137,12 +150,14 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     public init(
         channel: ChannelId = .videoActive,
         config: VideoAssemblerConfig = VideoAssemblerConfig(),
+        asynchronousSampleBuild: Bool = false,
         onSample: @escaping @Sendable (CMSampleBuffer, DecodeUnit) -> Void,
         onFecImpossible: (@Sendable (FrameNumber, _ presumedLostDataShards: Int, _ bestCaseParityShards: Int) -> Void)? = nil,
         onRepairSignal: (@Sendable (VideoRepairSignal, ClientTimestamp) -> Void)? = nil
     ) {
         self.channel = channel
         self.assembler = VideoAssembler(channel: channel, config: config)
+        self.asynchronousSampleBuild = asynchronousSampleBuild
         self.onSample = onSample
         self.onFecImpossible = onFecImpossible
         self.onRepairSignal = onRepairSignal
@@ -182,10 +197,12 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     /// Injected-clock variant (tests drive time explicitly).
     public func ingest(envelope: Envelope, payload: [UInt8], now: ClientTimestamp) {
         guard envelope.channel == channel else { return }
+        let lockStarted = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         if firstIngest == nil { firstIngest = now }
         let events = assembler.ingest(envelope: envelope, payload: payload, now: now)
-        let actions = process(events, now: now)
+        let lockHeld = (DispatchTime.now().uptimeNanoseconds &- lockStarted) / 1_000
+        let actions = process(events, now: now, assemblyLockHoldMicroseconds: lockHeld)
         lock.unlock()
         dispatch(actions)
     }
@@ -220,33 +237,43 @@ public final class LyteVideoPipeline: @unchecked Sendable {
             annexB: annexB
         )
         let outcome: ReliableFrameOutcome
+        lock.unlock()
         var sample: CMSampleBuffer?
-        let sampleBuildStarted = DispatchTime.now().uptimeNanoseconds
-        do {
-            sample = try factory.makeSampleBuffer(from: unit)
-            stats.sampleBuildMicroseconds.record(
-                (DispatchTime.now().uptimeNanoseconds
-                    &- sampleBuildStarted) / 1_000)
+        var buildOutcome: ReliableFrameOutcome = .failed
+        sampleQueue.sync {
+            let started = DispatchTime.now().uptimeNanoseconds
+            do {
+                sample = try factory.makeSampleBuffer(from: unit)
+                buildOutcome = sample == nil ? .withheld : .rendered
+            } catch {
+                buildOutcome = .failed
+            }
+            let elapsed = (DispatchTime.now().uptimeNanoseconds &- started) / 1_000
+            lock.lock()
+            stats.sampleBuildMicroseconds.record(elapsed)
             if sample != nil {
                 stats.framesDecoded += 1
                 recordQuality(bytes: annexB.count, now: now)
                 stats.reliableFramesRendered += 1
                 stats.samplesDelivered += 1
                 newestDeliveredFrame = frame
-                outcome = .rendered
-            } else {
+            } else if buildOutcome == .withheld {
                 stats.samplesWithheld += 1
-                outcome = .withheld
+            } else {
+                stats.sampleFailures += 1
             }
-        } catch {
-            stats.sampleBuildMicroseconds.record(
-                (DispatchTime.now().uptimeNanoseconds
-                    &- sampleBuildStarted) / 1_000)
-            stats.sampleFailures += 1
-            outcome = .failed
+            recordFrameBuildTelemetry(
+                frame: frame.rawValue, lockHold: 0, sampleBuild: elapsed)
+            lock.unlock()
         }
-        lock.unlock()
+        outcome = buildOutcome
         if let sample {
+            let telemetry = frameTelemetry(frame: frame)
+            VideoSampleTiming.attachBuildTelemetry(
+                to: sample,
+                sampleBuildMicroseconds:
+                    telemetry?.sampleBuildMicroseconds ?? 0,
+                assemblyLockHoldMicroseconds: 0)
             onSample(sample, unit)
         }
         return outcome
@@ -257,7 +284,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     public func tick(now: ClientTimestamp) {
         lock.lock()
         let events = assembler.evictStale(now: now)
-        let actions = process(events, now: now)
+        let actions = process(events, now: now, assemblyLockHoldMicroseconds: 0)
         lock.unlock()
         dispatch(actions)
     }
@@ -295,6 +322,12 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         return out
     }
 
+    public func frameTelemetry(frame: FrameNumber) -> VideoFrameBuildTelemetry? {
+        lock.lock()
+        defer { lock.unlock() }
+        return frameBuildTelemetry[frame.rawValue]
+    }
+
     /// Runs under `lock`.
     private func recordQuality(bytes: Int, now: ClientTimestamp) {
         qualityWindow.append((at: now, bytes: bytes))
@@ -313,7 +346,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     // MARK: - Interior
 
     private enum Action {
-        case sample(CMSampleBuffer, DecodeUnit)
+        case buildSample(DecodeUnit, ClientTimestamp, UInt64)
         case fecImpossible(FrameNumber, presumedLostDataShards: Int, bestCaseParityShards: Int)
         case repairSignal(VideoRepairSignal, ClientTimestamp)
     }
@@ -321,7 +354,8 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     /// Turns assembler events into stats and deferred callbacks. Runs
     /// under the lock (factory access); callbacks fire after release.
     private func process(
-        _ events: [VideoAssemblerEvent], now: ClientTimestamp
+        _ events: [VideoAssemblerEvent], now: ClientTimestamp,
+        assemblyLockHoldMicroseconds: UInt64
     ) -> [Action] {
         var actions: [Action] = []
         for event in events {
@@ -337,24 +371,10 @@ public final class LyteVideoPipeline: @unchecked Sendable {
                 } else {
                     newestDeliveredFrame = unit.frameNumber
                 }
-                let sampleBuildStarted =
-                    DispatchTime.now().uptimeNanoseconds
-                do {
-                    if let sample = try factory.makeSampleBuffer(from: unit) {
-                        stats.samplesDelivered += 1
-                        if stats.firstSampleMicroseconds == nil, let firstIngest {
-                            stats.firstSampleMicroseconds = now.microseconds(since: firstIngest)
-                        }
-                        actions.append(.sample(sample, unit))
-                    } else {
-                        stats.samplesWithheld += 1
-                    }
-                } catch {
-                    stats.sampleFailures += 1
-                }
-                stats.sampleBuildMicroseconds.record(
-                    (DispatchTime.now().uptimeNanoseconds
-                        &- sampleBuildStarted) / 1_000)
+                stats.assemblyLockHoldMicroseconds.record(
+                    assemblyLockHoldMicroseconds)
+                actions.append(.buildSample(
+                    unit, now, assemblyLockHoldMicroseconds))
                 actions.append(.repairSignal(
                     .frameDecoded(frame: unit.frameNumber), now))
             case .framesSkipped(let from, let through, _):
@@ -409,14 +429,86 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     private func dispatch(_ actions: [Action]) {
         for action in actions {
             switch action {
-            case .sample(let buffer, let unit):
-                onSample(buffer, unit)
+            case .buildSample(let unit, let now, let lockHold):
+                let work: @Sendable () -> Void = { [self] in
+                    buildAndDeliver(
+                        unit, now: now,
+                        assemblyLockHoldMicroseconds: lockHold)
+                }
+                if asynchronousSampleBuild {
+                    sampleQueue.async(execute: work)
+                } else {
+                    sampleQueue.sync(execute: work)
+                }
             case .fecImpossible(let frame, let lost, let parity):
                 onFecImpossible?(frame, lost, parity)
             case .repairSignal(let signal, let now):
                 onRepairSignal?(signal, now)
             }
         }
+    }
+
+    private func buildAndDeliver(
+        _ unit: DecodeUnit,
+        now: ClientTimestamp,
+        assemblyLockHoldMicroseconds: UInt64
+    ) {
+        let started = DispatchTime.now().uptimeNanoseconds
+        let sample: CMSampleBuffer?
+        do {
+            sample = try factory.makeSampleBuffer(from: unit)
+        } catch {
+            let elapsed = (DispatchTime.now().uptimeNanoseconds &- started) / 1_000
+            lock.lock()
+            stats.sampleBuildMicroseconds.record(elapsed)
+            stats.sampleFailures += 1
+            recordFrameBuildTelemetry(
+                frame: unit.frameNumber.rawValue,
+                lockHold: assemblyLockHoldMicroseconds,
+                sampleBuild: elapsed)
+            lock.unlock()
+            return
+        }
+        let elapsed = (DispatchTime.now().uptimeNanoseconds &- started) / 1_000
+        lock.lock()
+        stats.sampleBuildMicroseconds.record(elapsed)
+        recordFrameBuildTelemetry(
+            frame: unit.frameNumber.rawValue,
+            lockHold: assemblyLockHoldMicroseconds,
+            sampleBuild: elapsed)
+        if sample != nil {
+            stats.samplesDelivered += 1
+            if stats.firstSampleMicroseconds == nil, let firstIngest {
+                stats.firstSampleMicroseconds = now.microseconds(since: firstIngest)
+            }
+        } else {
+            stats.samplesWithheld += 1
+        }
+        lock.unlock()
+        if let sample {
+            VideoSampleTiming.attachBuildTelemetry(
+                to: sample,
+                sampleBuildMicroseconds: elapsed,
+                assemblyLockHoldMicroseconds: assemblyLockHoldMicroseconds)
+            onSample(sample, unit)
+        }
+    }
+
+    /// Runs under `lock`.
+    private func recordFrameBuildTelemetry(
+        frame: UInt32, lockHold: UInt64, sampleBuild: UInt64
+    ) {
+        if frameBuildTelemetry[frame] == nil {
+            frameBuildOrder.append(frame)
+            if frameBuildOrder.count > 512 {
+                frameBuildTelemetry.removeValue(
+                    forKey: frameBuildOrder.removeFirst())
+            }
+        }
+        frameBuildTelemetry[frame] = VideoFrameBuildTelemetry(
+            frame: frame,
+            assemblyLockHoldMicroseconds: lockHold,
+            sampleBuildMicroseconds: sampleBuild)
     }
 
     static func monotonicNow() -> ClientTimestamp {

@@ -68,7 +68,49 @@ final class VideoPipelineTests: XCTestCase {
         }
     }
 
+    private final class AsyncFrames: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [UInt32] = []
+        private var telemetryCount = 0
+        func append(_ frame: UInt32, hasTelemetry: Bool) {
+            lock.lock()
+            stored.append(frame)
+            if hasTelemetry { telemetryCount += 1 }
+            lock.unlock()
+        }
+        var snapshot: ([UInt32], Int) {
+            lock.lock(); defer { lock.unlock() }
+            return (stored, telemetryCount)
+        }
+    }
+
     // MARK: - The corpus renders, byte-exact, headless
+
+    func testProductionSampleWorkerPreservesOrderingAndTelemetry() throws {
+        let frames = try loadPrefix()
+        let groups = try packetizePrefix(Array(frames.prefix(3)))
+        let completed = expectation(description: "three async samples")
+        completed.expectedFulfillmentCount = 3
+        let observed = AsyncFrames()
+        let pipeline = LyteVideoPipeline(
+            asynchronousSampleBuild: true,
+            onSample: { sample, unit in
+                observed.append(
+                    unit.frameNumber.rawValue,
+                    hasTelemetry:
+                        VideoSampleTiming.buildTelemetry(from: sample) != nil)
+                completed.fulfill()
+            })
+        for shard in groups.flatMap({ $0 }) {
+            pipeline.ingest(
+                envelope: shard.envelope, payload: shard.payload,
+                now: ClientTimestamp(microseconds: 1_000))
+        }
+        wait(for: [completed], timeout: 5)
+        XCTAssertEqual(observed.snapshot.0, [0, 1, 2])
+        XCTAssertEqual(observed.snapshot.1, 3)
+        XCTAssertEqual(pipeline.snapshotStats().samplesDelivered, 3)
+    }
 
     func testCorpusShuffledParityBoundedLossRendersByteExact() throws {
         let frames = try loadPrefix()
@@ -223,12 +265,17 @@ final class VideoPipelineTests: XCTestCase {
         XCTAssertEqual(dimensions.width, 2048)
         XCTAssertEqual(dimensions.height, 1280)
 
-        // Present-ASAP: the DisplayImmediately attachment rides every sample.
+        // Adaptive playout owns timing; DisplayImmediately must not bypass it.
         let attachments = try XCTUnwrap(
-            CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false)
+            CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true)
                 as? [[CFString: Any]])
-        XCTAssertEqual(attachments.first?[kCMSampleAttachmentKey_DisplayImmediately] as? Bool,
-                       true)
+        XCTAssertNil(
+            attachments.first?[kCMSampleAttachmentKey_DisplayImmediately])
+        let retimed = try XCTUnwrap(VideoSampleTiming.retimed(
+            sample, presentationMicroseconds: 1_234_567))
+        XCTAssertEqual(
+            CMSampleBufferGetPresentationTimeStamp(retimed),
+            CMTime(value: 1_234_567, timescale: 1_000_000))
 
         // And the P-frame renders now that the description exists.
         let pSecond = try factory.makeSampleBuffer(from: DecodeUnit(

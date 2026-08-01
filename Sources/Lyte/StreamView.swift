@@ -52,7 +52,7 @@ struct StreamView: NSViewRepresentable {
                             // A refused send is a teardown race — the
                             // session is already ending; never crash
                             // the event monitor over it.
-                            _ = try? model.lyteSession?.sendInput(body)
+                            model.lyteSession?.enqueueInput(body)
                         },
                         onActivity: onMouseActivity)
                     capture.start()

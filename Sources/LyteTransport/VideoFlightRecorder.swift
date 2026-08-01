@@ -14,7 +14,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         fileprivate let ordinal: UInt64
     }
 
-    public struct RendererMetrics: Sendable, Equatable {
+    public struct RendererMetrics: Sendable, Equatable, Codable {
         public var totalFrames: Int
         public var droppedFrames: Int
         public var corruptedFrames: Int
@@ -33,7 +33,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         }
     }
 
-    public struct Snapshot: Sendable, Equatable {
+    public struct Snapshot: Sendable, Equatable, Codable {
         public var frames: UInt64
         public var pending: Int
         public var maximumPending: Int
@@ -42,8 +42,15 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         public var transitStretchP99Milliseconds: Double?
         public var queueWaitP99Milliseconds: Double?
         public var enqueueP99Milliseconds: Double?
+        public var sampleBuildP99Milliseconds: Double?
+        public var assemblyLockHoldP99Milliseconds: Double?
+        public var presentationLatenessP99Milliseconds: Double?
+        public var targetDelayMilliseconds: Double?
+        public var cadenceStalls: UInt64
         public var rendererNotReady: UInt64
+        public var rendererDrops: UInt64
         public var rendererFailures: UInt64
+        public var rendererRecoveries: UInt64
         public var rendererMetrics: RendererMetrics?
 
         public var bottleneck: String {
@@ -73,23 +80,39 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         }
     }
 
-    private struct Observation {
-        var sourceGapMilliseconds: Double?
-        var readyGapMilliseconds: Double?
-        var transitStretchMilliseconds: Double?
-        var queueWaitMilliseconds: Double
-        var enqueueMilliseconds: Double
+    public struct FrameObservation: Sendable, Equatable, Codable {
+        public var frame: UInt32
+        public var hostMicroseconds: UInt64
+        public var sourceGapMilliseconds: Double?
+        public var readyGapMilliseconds: Double?
+        public var transitStretchMilliseconds: Double?
+        public var cadenceStall: Bool
+        public var queueDepth: Int
+        public var queueWaitMilliseconds: Double
+        public var sampleBuildMilliseconds: Double?
+        public var assemblyLockHoldMilliseconds: Double?
+        public var rendererReady: Bool
+        public var rendererDropped: Bool
+        public var rendererFailed: Bool
+        public var enqueueMilliseconds: Double
+        public var scheduledPresentationMicroseconds: UInt64?
+        public var targetDelayMilliseconds: Double?
+        public var presentationLatenessMilliseconds: Double?
+        public var rendererRecovery: Bool
     }
 
     private let lock = NSLock()
     private let capacity: Int
-    private var ring: [Observation] = []
+    private var ring: [FrameObservation] = []
     private var ringIndex = 0
     private var ordinal: UInt64 = 0
     private var pending = 0
     private var maximumPending = 0
     private var rendererNotReady: UInt64 = 0
+    private var rendererDrops: UInt64 = 0
     private var rendererFailures: UInt64 = 0
+    private var rendererRecoveries: UInt64 = 0
+    private var cadenceStalls: UInt64 = 0
     private var rendererMetrics: RendererMetrics?
     private var previousHostMicroseconds: UInt64?
     private var previousReadyNanoseconds: UInt64?
@@ -128,7 +151,14 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         enqueueStartedNanoseconds: UInt64,
         enqueueFinishedNanoseconds: UInt64,
         rendererReady: Bool,
-        rendererFailed: Bool
+        rendererFailed: Bool,
+        rendererDropped: Bool = false,
+        sampleBuildMicroseconds: UInt64? = nil,
+        assemblyLockHoldMicroseconds: UInt64? = nil,
+        scheduledPresentationMicroseconds: UInt64? = nil,
+        targetDelayMicroseconds: UInt64? = nil,
+        presentationLatenessMicroseconds: UInt64? = nil,
+        rendererRecovery: Bool = false
     ) {
         lock.lock()
         defer { lock.unlock() }
@@ -148,14 +178,35 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         previousHostMicroseconds = token.hostMicroseconds
         previousReadyNanoseconds = token.readyNanoseconds
 
-        let observation = Observation(
+        let cadenceStall = (sourceGap ?? 0) > 25
+        let observation = FrameObservation(
+            frame: token.frame,
+            hostMicroseconds: token.hostMicroseconds,
             sourceGapMilliseconds: sourceGap,
             readyGapMilliseconds: readyGap,
             transitStretchMilliseconds: stretch,
+            cadenceStall: cadenceStall,
+            queueDepth: pending,
             queueWaitMilliseconds:
                 Double(enqueueStartedNanoseconds &- token.readyNanoseconds) / 1e6,
+            sampleBuildMilliseconds: sampleBuildMicroseconds.map {
+                Double($0) / 1_000
+            },
+            assemblyLockHoldMilliseconds: assemblyLockHoldMicroseconds.map {
+                Double($0) / 1_000
+            },
+            rendererReady: rendererReady,
+            rendererDropped: rendererDropped,
+            rendererFailed: rendererFailed,
             enqueueMilliseconds:
-                Double(enqueueFinishedNanoseconds &- enqueueStartedNanoseconds) / 1e6)
+                Double(enqueueFinishedNanoseconds &- enqueueStartedNanoseconds) / 1e6,
+            scheduledPresentationMicroseconds: scheduledPresentationMicroseconds,
+            targetDelayMilliseconds: targetDelayMicroseconds.map {
+                Double($0) / 1_000
+            },
+            presentationLatenessMilliseconds:
+                presentationLatenessMicroseconds.map { Double($0) / 1_000 },
+            rendererRecovery: rendererRecovery)
         if ring.count < capacity {
             ring.append(observation)
         } else {
@@ -163,13 +214,26 @@ public final class VideoFlightRecorder: @unchecked Sendable {
             ringIndex = (ringIndex + 1) % capacity
         }
         pending = max(0, pending - 1)
+        if cadenceStall { cadenceStalls &+= 1 }
         if !rendererReady { rendererNotReady &+= 1 }
+        if rendererDropped { rendererDrops &+= 1 }
         if rendererFailed { rendererFailures &+= 1 }
+        if rendererRecovery { rendererRecoveries &+= 1 }
     }
 
     public func recordRendererMetrics(_ metrics: RendererMetrics) {
         lock.lock()
         rendererMetrics = metrics
+        lock.unlock()
+    }
+
+    /// Counts a recovery that discarded no already-pending frame. The
+    /// triggering incoming frame is rejected by the subsequent await-IDR
+    /// policy outcome, so there is otherwise no observation on which to
+    /// carry the episode marker.
+    public func recordRendererRecovery() {
+        lock.lock()
+        rendererRecoveries &+= 1
         lock.unlock()
     }
 
@@ -186,19 +250,59 @@ public final class VideoFlightRecorder: @unchecked Sendable {
                 percentile(\.transitStretchMilliseconds),
             queueWaitP99Milliseconds: percentile(\.queueWaitMilliseconds),
             enqueueP99Milliseconds: percentile(\.enqueueMilliseconds),
+            sampleBuildP99Milliseconds: percentile(\.sampleBuildMilliseconds),
+            assemblyLockHoldP99Milliseconds:
+                percentile(\.assemblyLockHoldMilliseconds),
+            presentationLatenessP99Milliseconds:
+                percentile(\.presentationLatenessMilliseconds),
+            targetDelayMilliseconds: ring.last?.targetDelayMilliseconds,
+            cadenceStalls: cadenceStalls,
             rendererNotReady: rendererNotReady,
+            rendererDrops: rendererDrops,
             rendererFailures: rendererFailures,
+            rendererRecoveries: rendererRecoveries,
             rendererMetrics: rendererMetrics)
     }
 
+    public func recentFrames() -> [FrameObservation] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard ring.count == capacity, ringIndex != 0 else { return ring }
+        return Array(ring[ringIndex...]) + Array(ring[..<ringIndex])
+    }
+
+    public func summaryJSONLine() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(snapshot()), as: UTF8.self)
+    }
+
+    public func reset() {
+        lock.lock()
+        ring.removeAll(keepingCapacity: true)
+        ringIndex = 0
+        ordinal = 0
+        pending = 0
+        maximumPending = 0
+        rendererNotReady = 0
+        rendererDrops = 0
+        rendererFailures = 0
+        rendererRecoveries = 0
+        cadenceStalls = 0
+        rendererMetrics = nil
+        previousHostMicroseconds = nil
+        previousReadyNanoseconds = nil
+        lock.unlock()
+    }
+
     private func percentile(
-        _ keyPath: KeyPath<Observation, Double?>
+        _ keyPath: KeyPath<FrameObservation, Double?>
     ) -> Double? {
         percentile(ring.compactMap { $0[keyPath: keyPath] })
     }
 
     private func percentile(
-        _ keyPath: KeyPath<Observation, Double>
+        _ keyPath: KeyPath<FrameObservation, Double>
     ) -> Double? {
         percentile(ring.map { $0[keyPath: keyPath] })
     }

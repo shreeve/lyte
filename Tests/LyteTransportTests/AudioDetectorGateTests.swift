@@ -143,6 +143,17 @@ final class AudioDetectorGateTests: XCTestCase {
         XCTAssertNotEqual(core.state, .frozen)
     }
 
+    func testRendererRecoverySeamJoinsOneCoalescedIdrEpisode() {
+        let core = makeCore(clock: VirtualClock(), events: EventLog())
+        core.requestVideoRecovery(after: FrameNumber(rawValue: 40))
+        core.requestVideoRecovery(after: FrameNumber(rawValue: 41))
+        let stats = core.idrRequester.snapshotStats()
+        XCTAssertEqual(stats.verdicts, 2)
+        XCTAssertEqual(stats.episodesStarted, 1)
+        XCTAssertEqual(stats.requestsSent, 1)
+        XCTAssertTrue(stats.recoveryOutstanding)
+    }
+
     func testTighteningPreservesTheWireMode() throws {
         let clock = VirtualClock()
         let events = EventLog()

@@ -154,6 +154,37 @@ final class LoopbackEndpointTests: XCTestCase {
         XCTAssertEqual(try sender.receive(timeoutSeconds: 5), reply)
     }
 
+    func testUnauthenticatedDatagramCannotRetargetPeer() throws {
+        let endpoint = UdpReceiveEndpoint(
+            port: 0, bindAddress: "127.0.0.1",
+            crypto: RejectingTestCrypto())
+        try endpoint.start()
+        defer { endpoint.stop() }
+
+        let authenticated = try LoopbackSender(port: endpoint.boundPort)
+        defer { authenticated.close() }
+        let attacker = try LoopbackSender(port: endpoint.boundPort)
+        defer { attacker.close() }
+
+        let envelope = Envelope(
+            channel: .ctrl, seq: ChannelSeq(rawValue: 0),
+            frame: FrameNumber(rawValue: 0), timestamp: 0, fec: 0)
+        try authenticated.send(envelope.encode(payload: [0x01]))
+        try waitUntil(timeoutSeconds: 5) { endpoint.hasPeer }
+
+        // This source reaches recvmsg but fails the authentication seam.
+        // It must not replace the established return tuple.
+        try attacker.send(envelope.encode(payload: [0xEE]))
+        try waitUntil(timeoutSeconds: 5) {
+            endpoint.demux.snapshotTotals().unsealFailures == 1
+        }
+
+        let reply: [UInt8] = [9, 8, 7]
+        XCTAssertTrue(endpoint.sendToPeer(reply))
+        XCTAssertEqual(try authenticated.receive(timeoutSeconds: 5), reply)
+        XCTAssertThrowsError(try attacker.receive(timeoutSeconds: 0.05))
+    }
+
     // MARK: Helpers
 
     private func waitUntil(
@@ -167,6 +198,28 @@ final class LoopbackEndpointTests: XCTestCase {
             }
             usleep(20_000)
         }
+    }
+}
+
+private struct RejectingTestCrypto: TransportCrypto {
+    var modeDescription: String { "test authenticated" }
+    func open() throws {}
+    func unseal(
+        wirePayload: ArraySlice<UInt8>,
+        aad: ArraySlice<UInt8>,
+        envelope: Envelope
+    ) throws -> [UInt8] {
+        if wirePayload.first == 0xEE {
+            throw TransportCryptoError.unsealFailed("test rejection")
+        }
+        return Array(wirePayload)
+    }
+    func seal(
+        plaintext: ArraySlice<UInt8>,
+        aad: ArraySlice<UInt8>,
+        envelope: Envelope
+    ) throws -> [UInt8] {
+        Array(plaintext)
     }
 }
 

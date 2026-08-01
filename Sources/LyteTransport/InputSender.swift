@@ -380,3 +380,82 @@ public final class InputSender: @unchecked Sendable {
         )
     }
 }
+
+/// IO-side ordered hop used by the app capture path. The pure InputSender
+/// remains synchronous for virtual-time gates; production enqueues here so
+/// ARQ/seal/socket work never executes on MainActor.
+public final class OrderedInputSender: @unchecked Sendable {
+    private let queue = DispatchQueue(
+        label: "lyte.input.sender", qos: .userInteractive)
+    private let lock = NSLock()
+    private var accepting = true
+    private var cancelled = false
+    private let timing = InputSendTiming()
+    private let send: @Sendable (InputEvent.Body, ClientTimestamp) throws -> Void
+
+    public init(
+        send: @escaping @Sendable (
+            InputEvent.Body, ClientTimestamp
+        ) throws -> Void
+    ) {
+        self.send = send
+    }
+
+    @discardableResult
+    public func enqueue(
+        _ body: InputEvent.Body,
+        capturedNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) -> Bool {
+        lock.lock()
+        guard accepting else {
+            lock.unlock()
+            return false
+        }
+        // Acceptance and queue insertion are one critical section.
+        // finishAndDrain cannot observe an empty queue after saying no
+        // to new work while an already-accepted event is still between
+        // the gate and DispatchQueue.async.
+        timing.queued()
+        queue.async { [self] in
+            lock.lock()
+            let maySend = !cancelled
+            lock.unlock()
+            guard maySend else { return }
+            let started = DispatchTime.now().uptimeNanoseconds
+            do {
+                try send(
+                    body,
+                    ClientTimestamp(
+                        microseconds: capturedNanoseconds / 1_000))
+                timing.sent(
+                    queueMicroseconds: (started &- capturedNanoseconds) / 1_000)
+            } catch {
+                timing.failed()
+            }
+        }
+        lock.unlock()
+        return true
+    }
+
+    public func stop() {
+        lock.lock()
+        accepting = false
+        cancelled = true
+        lock.unlock()
+    }
+
+    /// Orderly close: reject new captures, let everything already accepted
+    /// (including synthesized held-key releases) finish in order, then fence.
+    public func finishAndDrain() {
+        lock.lock(); accepting = false; lock.unlock()
+        queue.sync {}
+        lock.lock(); cancelled = true; lock.unlock()
+    }
+
+    public var snapshot: InputSendTiming.Snapshot { timing.snapshot() }
+
+    /// Deterministic gate seam; production never waits on input work.
+    public func drainForTesting() {
+        queue.sync {}
+    }
+}

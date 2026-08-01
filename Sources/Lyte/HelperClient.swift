@@ -125,6 +125,13 @@ final class HelperClient {
                     self?.engaged = false
                 }
             }
+            c.interruptionHandler = { [weak self, weak c] in
+                c?.invalidate()
+                Task { @MainActor in
+                    self?.connection = nil
+                    self?.engaged = false
+                }
+            }
             c.resume()
             connection = c
         }
