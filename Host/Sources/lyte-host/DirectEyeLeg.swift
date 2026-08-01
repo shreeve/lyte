@@ -109,9 +109,23 @@ final class DirectEyeLeg {
         var lastFB: UInt32 = 0
         var pendingCauses: [String] = []
         let t0 = nowSeconds()
+        var lastServiceAt = 0.0
 
         while nowSeconds() - t0 < config.seconds {
             if wire?.sessionEnded == true { break }
+            // The shell service cadence: the portal path drives
+            // SessionWire.service() from its idle-floor tick, and the
+            // agreed-time pendings (the 0x19 starting posture, the
+            // standing 0x24 cursor shape, clipboard applies) flush
+            // ONLY there — sendFrame's serviceOnce covers protocol
+            // timers, not the shell. Without this, a direct leg whose
+            // cursor never changes sends zero shapes (the E3 motion
+            // leg's 0-sent books caught it).
+            let now = nowSeconds()
+            if now - lastServiceAt >= 0.010 {
+                lastServiceAt = now
+                wire?.service()
+            }
             pollCursor(cursorWatcher)
 
             // Consume (and defer) rate directives so the queue drains.
