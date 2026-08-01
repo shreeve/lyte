@@ -118,6 +118,82 @@ final class AudioJitterGateTests: XCTestCase {
         XCTAssertEqual(stats.recenterEvents, 0)
     }
 
+    func testCadencedRetargetMatchesEagerControllerAtEveryBoundary() {
+        var eagerConfig = AudioJitterConfig()
+        eagerConfig.retargetCadencePackets = 1
+        var cadencedConfig = eagerConfig
+        cadencedConfig.retargetCadencePackets = 5
+        let eager = AudioJitterBuffer(config: eagerConfig)
+        let cadenced = AudioJitterBuffer(config: cadencedConfig)
+
+        // Deterministic virtual arrival time combines bounded jitter,
+        // a queue step, and clock skew. Both controllers ingest every
+        // packet; only their projection cadence differs.
+        for n in 0..<600 {
+            let jitter = Int64((n * 7_919) % 23_001) - 11_500
+            let queueStep: Int64 = n >= 240 && n < 300 ? 18_000 : 0
+            let clockSkew = Int64(n) * 2
+            let at = 100_000 + Int64(n) * 5_000
+                + jitter + queueStep + clockSkew
+            let arrival = UInt64(at)
+            eager.insert(packet(UInt32(n)), arrivalMicroseconds: arrival)
+            cadenced.insert(packet(UInt32(n)), arrivalMicroseconds: arrival)
+
+            if (n + 1).isMultiple(of: 5), n + 1 >= 20 {
+                let eagerStats = eager.snapshotStats()
+                let cadencedStats = cadenced.snapshotStats()
+                XCTAssertEqual(cadenced.targetPackets, eager.targetPackets,
+                    "packet \(n): quantized target must equal eager projection")
+                XCTAssertEqual(
+                    cadencedStats.skewPartsPerMillion,
+                    eagerStats.skewPartsPerMillion,
+                    accuracy: 0.000_001,
+                    "packet \(n): detrend must use the same packet window")
+            }
+        }
+
+        let eagerCount = eager.snapshotStats().retargetComputations
+        let cadencedCount = cadenced.snapshotStats().retargetComputations
+        XCTAssertEqual(eagerCount, 585)
+        XCTAssertEqual(cadencedCount, 117)
+        XCTAssertEqual(eagerCount, cadencedCount * 5,
+            "default cadence removes four of every five full-window sorts")
+    }
+
+    func testDuplicateAndLatePacketsCannotMoveAdaptation() {
+        var config = AudioJitterConfig()
+        config.retargetCadencePackets = 1
+        let buffer = AudioJitterBuffer(config: config)
+        for n in 0..<100 {
+            let jitter = UInt64((n * 997) % 9_000)
+            buffer.insert(
+                packet(UInt32(n)),
+                arrivalMicroseconds: 50_000 + UInt64(n) * Self.packetMicros + jitter)
+        }
+
+        let beforeDuplicate = buffer.snapshotStats()
+        buffer.insert(packet(99), arrivalMicroseconds: 9_000_000)
+        let afterDuplicate = buffer.snapshotStats()
+        XCTAssertEqual(afterDuplicate.duplicatesDropped, 1)
+        XCTAssertEqual(afterDuplicate.retargetComputations,
+                       beforeDuplicate.retargetComputations)
+        XCTAssertEqual(afterDuplicate.targetPackets, beforeDuplicate.targetPackets)
+        XCTAssertEqual(afterDuplicate.skewPartsPerMillion,
+                       beforeDuplicate.skewPartsPerMillion)
+
+        while case .packet = buffer.pull(
+            nowMicroseconds: 9_000_000, urgent: true) {}
+        let beforeLate = buffer.snapshotStats()
+        buffer.insert(packet(0), arrivalMicroseconds: 10_000_000)
+        let afterLate = buffer.snapshotStats()
+        XCTAssertEqual(afterLate.latePacketsDropped, 1)
+        XCTAssertEqual(afterLate.retargetComputations,
+                       beforeLate.retargetComputations)
+        XCTAssertEqual(afterLate.targetPackets, beforeLate.targetPackets)
+        XCTAssertEqual(afterLate.skewPartsPerMillion,
+                       beforeLate.skewPartsPerMillion)
+    }
+
     // MARK: Leg 2 — bursty ±15 ms delay variance (the dominant
     // impairment per the audio-continuity verdict)
 

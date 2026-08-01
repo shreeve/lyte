@@ -58,6 +58,11 @@ public struct AudioJitterConfig: Sendable {
     /// Arrival-skew window (packets) the target is computed over —
     /// 512 ≈ 2.6 s of history at the 5 ms cadence.
     public var deviationWindowPackets = 512
+    /// Recompute the percentile target every five fresh packets (25 ms
+    /// at the wire cadence). Samples still enter the windows packet by
+    /// packet; only the O(window log window) projection is decimated.
+    /// A value of 1 retains the eager controller for equivalence tests.
+    public var retargetCadencePackets = 5
     /// CL-17: packets of depth beyond target before the receiver's
     /// pull decision engages WSOLA accelerate (hysteresis: engage at
     /// target + this, disengage at target).
@@ -117,6 +122,9 @@ public struct AudioJitterStats: Sendable {
     /// depth shrinks; negative = sender fast, depth grows — the drain
     /// the accelerate side absorbs). Clamped, 0 until ≥128 samples.
     public var skewPartsPerMillion: Double = 0
+    /// Number of full percentile/detrend projections performed. This is
+    /// an instrumentation hook for guarding the receive hot path.
+    public var retargetComputations: UInt64 = 0
 
     public init() {}
 }
@@ -159,6 +167,7 @@ public final class AudioJitterBuffer {
     private var lastArrival: (number: UInt32, atMicroseconds: UInt64)?
     private var deviationWindow: [Int64] = []
     private var deviationCursor = 0
+    private var freshSamplesSinceRetarget = 0
 
     public init(config: AudioJitterConfig = AudioJitterConfig()) {
         self.config = config
@@ -171,7 +180,6 @@ public final class AudioJitterBuffer {
 
     public func insert(_ packet: AudioPacket, arrivalMicroseconds: UInt64) {
         stats.packetsInserted += 1
-        noteArrivalForAdaptation(packet, arrivalMicroseconds: arrivalMicroseconds)
 
         if started,
            Int32(bitPattern: packet.number &- nextNumber) < 0 {
@@ -182,6 +190,10 @@ public final class AudioJitterBuffer {
             stats.duplicatesDropped += 1
             return
         }
+        // Only packets admitted to the playout epoch describe the path.
+        // Late/replayed packets carry stale or retransmit timing and must
+        // not perturb target, skew, or diagnostic windows.
+        noteArrivalForAdaptation(packet, arrivalMicroseconds: arrivalMicroseconds)
         pending[packet.number] = (packet, arrivalMicroseconds)
 
         if !started {
@@ -356,6 +368,10 @@ public final class AudioJitterBuffer {
                 for index in skewWindow.indices { skewWindow[index] -= low }
             }
         }
+        freshSamplesSinceRetarget += 1
+        let cadence = max(1, config.retargetCadencePackets)
+        guard freshSamplesSinceRetarget >= cadence else { return }
+        freshSamplesSinceRetarget = 0
         retarget()
     }
 
@@ -371,6 +387,7 @@ public final class AudioJitterBuffer {
     /// the target must cover.
     private func retarget() {
         guard skewWindow.count >= 16 else { return }
+        stats.retargetComputations += 1
         let samples = chronologicalSkewWindow()
 
         var slopePerPacket = 0.0

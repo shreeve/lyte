@@ -432,6 +432,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                     // mismatch: a doctor line, never a silent
                     // resample).
                     if unit.isIDR {
+                        // Recovery closes on a usable IRAP reaching the
+                        // render callback — not on a shard, request send,
+                        // refusal, or merely seeing an IRAP header in an
+                        // incomplete frame.
+                        self.idrRequester.noteUsableIrapAccepted()
                         self.auditStreamChroma(annexB: unit.annexB)
                     }
                 }
@@ -447,7 +452,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 if !self.nackPolicy.shouldDeferFecImpossible(
                     frame: frame, now: now
                 ) {
-                    self.idrRequester.recordFecImpossible(
+                    self.idrRequester.recordRecoveryDemand(
                         frame: frame, now: now)
                 }
             },
@@ -514,7 +519,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             },
             escalate: { [weak self] frame, now in
                 guard let self else { return }
-                self.idrRequester.recordFecImpossible(frame: frame, now: now)
+                self.idrRequester.recordRecoveryDemand(frame: frame, now: now)
                 // Reason-neutral: this closure exits deadline expiries,
                 // framesGone, AND HS-32 refusals (which already printed
                 // their own reasoned note); the books tell them apart.

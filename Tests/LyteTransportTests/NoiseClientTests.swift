@@ -1,6 +1,6 @@
 import XCTest
 import Foundation
-import LyteTransport
+@testable import LyteTransport
 import LyteWire
 
 // The client Noise leg (CL-1 closed): NoiseTransportCrypto as IK
@@ -182,6 +182,159 @@ final class NoiseClientTests: XCTestCase {
         XCTAssertEqual(opened, echoBody)
     }
 
+    // MARK: Directional concurrency
+
+    func testSealAndUnsealCriticalSectionsOverlap() throws {
+        let host = InProcessHost()
+        let probe = NoiseTransportOperationProbe(rendezvousDirections: true)
+        let crypto = try NoiseTransportCrypto(
+            hostAddress: "10.0.0.249", hostPort: 41_000,
+            hostStaticPublicKey: host.hostStatic.publicKey,
+            attempts: 3, attemptTimeoutMilliseconds: 200,
+            operationProbe: probe)
+        try crypto.performHandshake(io: host)
+
+        let inboundDatagram = try hostSeal(
+            host, plaintext: [0xA1, 0xA2],
+            channel: .videoActive, seq: 0)
+        let (inboundEnvelope, inboundPayload) =
+            try Envelope.decode(inboundDatagram[...])
+        let inboundAAD =
+            inboundDatagram[inboundDatagram.startIndex..<inboundPayload.startIndex]
+
+        let outboundEnvelope = Envelope(
+            channel: .ctrl, seq: ChannelSeq(rawValue: 0),
+            frame: FrameNumber(rawValue: 0), timestamp: 99, fec: 0)
+        let outboundAAD = try outboundEnvelope.encode(payload: [])
+        let results = LockedCryptoResults()
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async {
+            defer { group.leave() }
+            do {
+                results.sealed = try crypto.seal(
+                    plaintext: [0xB1, 0xB2][...],
+                    aad: outboundAAD[...], envelope: outboundEnvelope)
+            } catch {
+                results.appendError(error)
+            }
+        }
+        group.enter()
+        DispatchQueue.global().async {
+            defer { group.leave() }
+            do {
+                results.unsealed = try crypto.unseal(
+                    wirePayload: inboundPayload, aad: inboundAAD,
+                    envelope: inboundEnvelope)
+            } catch {
+                results.appendError(error)
+            }
+        }
+
+        XCTAssertEqual(group.wait(timeout: .now() + 2), .success,
+            "opposite directions must not deadlock")
+        XCTAssertTrue(results.errors.isEmpty, "\(results.errors)")
+        XCTAssertEqual(results.unsealed, [0xA1, 0xA2])
+        XCTAssertTrue(probe.snapshot.directionalOverlap,
+            "seal and unseal must occupy disjoint critical sections")
+        let sealed = try XCTUnwrap(results.sealed)
+        XCTAssertEqual(
+            try host.transport!.unseal(
+                wirePayload: sealed[...], aad: outboundAAD[...],
+                envelope: outboundEnvelope),
+            [0xB1, 0xB2])
+    }
+
+    func testSameDirectionOperationsRemainSerialized() throws {
+        let host = InProcessHost()
+        let probe = NoiseTransportOperationProbe(holdMilliseconds: 20)
+        let crypto = try NoiseTransportCrypto(
+            hostAddress: "10.0.0.249", hostPort: 41_000,
+            hostStaticPublicKey: host.hostStatic.publicKey,
+            attempts: 3, attemptTimeoutMilliseconds: 200,
+            operationProbe: probe)
+        try crypto.performHandshake(io: host)
+
+        let envelopes = [
+            Envelope(
+                channel: .ctrl, seq: ChannelSeq(rawValue: 0),
+                frame: FrameNumber(rawValue: 0), timestamp: 1, fec: 0),
+            Envelope(
+                channel: .feedback, seq: ChannelSeq(rawValue: 0),
+                frame: FrameNumber(rawValue: 0), timestamp: 2, fec: 0),
+        ]
+        let headers = try envelopes.map { try $0.encode(payload: []) }
+        let results = LockedCryptoResults()
+        let group = DispatchGroup()
+        for index in envelopes.indices {
+            group.enter()
+            DispatchQueue.global().async {
+                defer { group.leave() }
+                do {
+                    let sealed = try crypto.seal(
+                        plaintext: [UInt8(index)][...],
+                        aad: headers[index][...],
+                        envelope: envelopes[index])
+                    results.appendSealed(sealed, at: index)
+                } catch {
+                    results.appendError(error)
+                }
+            }
+        }
+
+        XCTAssertEqual(group.wait(timeout: .now() + 2), .success,
+            "same-direction serialization must not deadlock")
+        XCTAssertTrue(results.errors.isEmpty, "\(results.errors)")
+        XCTAssertEqual(probe.snapshot.maximumConcurrentSeals, 1,
+            "the send nonce/tracker state must have one mutator")
+        for index in envelopes.indices {
+            let sealed = try XCTUnwrap(results.sealed(at: index))
+            XCTAssertEqual(
+                try host.transport!.unseal(
+                    wirePayload: sealed[...], aad: headers[index][...],
+                    envelope: envelopes[index]),
+                [UInt8(index)])
+        }
+
+        let inboundDatagrams = try [
+            hostSeal(
+                host, plaintext: [0x31],
+                channel: .audio, seq: 0),
+            hostSeal(
+                host, plaintext: [0x32],
+                channel: .videoIdle, seq: 0),
+        ]
+        let inbound = try inboundDatagrams.map { datagram in
+            let (envelope, payload) = try Envelope.decode(datagram[...])
+            return (
+                envelope,
+                Array(payload),
+                Array(datagram[datagram.startIndex..<payload.startIndex]))
+        }
+        for index in inbound.indices {
+            group.enter()
+            DispatchQueue.global().async {
+                defer { group.leave() }
+                do {
+                    let plaintext = try crypto.unseal(
+                        wirePayload: inbound[index].1[...],
+                        aad: inbound[index].2[...],
+                        envelope: inbound[index].0)
+                    results.appendUnsealed(plaintext, at: index)
+                } catch {
+                    results.appendError(error)
+                }
+            }
+        }
+        XCTAssertEqual(group.wait(timeout: .now() + 2), .success,
+            "receive-state serialization must not deadlock")
+        XCTAssertTrue(results.errors.isEmpty, "\(results.errors)")
+        XCTAssertEqual(probe.snapshot.maximumConcurrentUnseals, 1,
+            "the receive replay/tracker state must have one mutator")
+        XCTAssertEqual(results.unsealed(at: 0), [0x31])
+        XCTAssertEqual(results.unsealed(at: 1), [0x32])
+    }
+
     // MARK: Hostile bytes
 
     func testTamperedPayloadAndHeaderReject() throws {
@@ -233,5 +386,52 @@ final class NoiseClientTests: XCTestCase {
         private var stored: [[UInt8]] = []
         func append(_ d: [UInt8]) { lock.lock(); stored.append(d); lock.unlock() }
         var all: [[UInt8]] { lock.lock(); defer { lock.unlock() }; return stored }
+    }
+
+    private final class LockedCryptoResults: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storedSealed: [[UInt8]?] = [nil, nil]
+        private var storedUnsealed: [UInt8]?
+        private var storedUnsealedByIndex: [[UInt8]?] = [nil, nil]
+        private var storedErrors: [String] = []
+
+        var sealed: [UInt8]? {
+            get { lock.lock(); defer { lock.unlock() }; return storedSealed[0] }
+            set { lock.lock(); storedSealed[0] = newValue; lock.unlock() }
+        }
+        func appendSealed(_ value: [UInt8], at index: Int) {
+            lock.lock()
+            storedSealed[index] = value
+            lock.unlock()
+        }
+        func sealed(at index: Int) -> [UInt8]? {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedSealed[index]
+        }
+        var unsealed: [UInt8]? {
+            get { lock.lock(); defer { lock.unlock() }; return storedUnsealed }
+            set { lock.lock(); storedUnsealed = newValue; lock.unlock() }
+        }
+        func appendUnsealed(_ value: [UInt8], at index: Int) {
+            lock.lock()
+            storedUnsealedByIndex[index] = value
+            lock.unlock()
+        }
+        func unsealed(at index: Int) -> [UInt8]? {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedUnsealedByIndex[index]
+        }
+        var errors: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedErrors
+        }
+        func appendError(_ error: Error) {
+            lock.lock()
+            storedErrors.append(String(describing: error))
+            lock.unlock()
+        }
     }
 }
