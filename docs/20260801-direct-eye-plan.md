@@ -244,6 +244,21 @@ works). Document it; no dialog theater.
   Quirk-armor stance: we shield with the doctor's NAMED hardware
   list, not ffmpeg's decade of workarounds. libavcodec stays as
   scaffolding until per-leg parity is proven, then exits entirely.
+  **E6a milestone 1 LANDED (2026-08-01)** — the probe proves both
+  levers on pup's RTX 4050 (driver NVENC API 13.0 against the
+  vendored 12.2 header): `lyte-nvenc` is pure Swift against
+  libnvidia-encode (CNvEnc = vendored nv-codec-headers n12.2
+  nvEncodeAPI.h, MIT; CCuda = seven hand-declared driver-API
+  prototypes for the context NVENC requires — the CUDA toolkit is
+  NOT a dependency; frames ride NVENC's own system-memory NV12
+  input buffers). 120 frames 1080p60 HEVC, P1/ultra-low-latency,
+  infinite GOP: **IDRs at [0] only, zero spontaneous intras,
+  NvEncReconfigureEncoder 35→18 Mbps at frame 60 with
+  resetEncoder=0/forceIDR=0 succeeded and minted nothing** — the
+  vendored patch's whole job, done by the front door. Decode gate:
+  120/120 access units on VideoToolbox HARDWARE, BT.709 attachments
+  intact. Next: productionize behind the doctor (desktop-with-
+  NVIDIA-panel topology), then E6b VAAPI-native frees pup.
 - **Then**: AV1 negotiation (the recorded four seams), login-screen
   capture, multi-monitor.
 

@@ -1,0 +1,5 @@
+module CCuda {
+    header "shim.h"
+    link "cuda"
+    export *
+}
