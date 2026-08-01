@@ -380,6 +380,7 @@ public final class VideoChannel {
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
         lastInputSeq: UInt32? = nil,
+        interleave: (() -> Void)? = nil,
         now: UInt64
     ) throws -> Int {
         let queuedBytesBeforeAdmission =
@@ -395,7 +396,13 @@ public final class VideoChannel {
             isKeyframe: isKeyframe,
             lastInputSeq: lastInputSeq
         )
-        for (envelope, payload) in shards {
+        interleave?()
+        for (index, shard) in shards.enumerated() {
+            // A large IDR can require hundreds of seals. Give the
+            // executable's audio mailbox a deterministic service point
+            // between small groups without weakening frame/seq ordering.
+            if index > 0, index.isMultiple(of: 4) { interleave?() }
+            let (envelope, payload) = shard
             let datagram = VideoChannelDatagram(
                 bytes: try encodeSealed(envelope: envelope, plaintext: payload),
                 pacerClass: .freshVideo,

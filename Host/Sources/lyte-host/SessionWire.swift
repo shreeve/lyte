@@ -24,11 +24,13 @@
 // pw_main_loop) at the 5 ms cadence — a cadence the ~16.7 ms video tick
 // could never honor, which is exactly why audio cannot funnel through
 // the video thread. One NSLock therefore guards the (single-threaded by
-// design) Session and the outbox: every service pass holds it, every
-// sleep releases it. The hold times are tens of µs (one pacer batch +
-// one sendmmsg), so the audio thread's 5 ms cadence never waits
-// meaningfully — the in-tree virtual-time gate bounds the pacer's share
-// and the live tcpdump gate bounds the whole.
+// design) Session and the outbox. Audio capture never waits for that
+// broad lock: it publishes each 5 ms packet into a narrow FIFO mailbox
+// and wakes the elevated sender. Sequence allocation, Noise sealing,
+// pacer insertion, and socket flush still happen under the Session lock,
+// preserving one mutation order. Large video ingests cooperatively drain
+// the mailbox between small shard groups, so packetize/FEC/seal cannot
+// monopolize the lock across an audio deadline.
 //
 // THE FPS-CEILING FIX (Q-1's red row, hunted 2026-07-29): sendFrame
 // used to drain the pacer to empty before returning — the capture
@@ -217,7 +219,22 @@ final class SessionWire {
     /// Most recent successfully admitted frame, for the synchronous
     /// encoder callback to attach QP/IDR-cause fields to its flight.
     private var lastFrameForTelemetry: FrameNumber?
-    /// HS-15 audio-thread counters (mutated under `lock`).
+    private struct PendingAudioPacket {
+        var bytes: [UInt8]
+        var captureMicros: UInt64
+        var offeredAtNS: UInt64
+    }
+    /// The audio capture thread owns only this narrow publication lock.
+    /// The Session owner swaps the whole FIFO out before doing any
+    /// framing/sealing work, so capture never waits for video.
+    private let audioMailboxLock = NSLock()
+    private var audioMailbox: [PendingAudioPacket] = []
+    private static let audioMailboxCapacity = 64
+    private(set) var audioMailboxMaxDepth = 0
+    private(set) var audioMailboxOverflows = 0
+    private(set) var audioMailboxMaxDwellNS: UInt64 = 0
+    /// HS-15 audio-thread counters (mutated under `lock`, except mailbox
+    /// publication counters above which use `audioMailboxLock`).
     private(set) var audioPacketsSent = 0
     private(set) var audioSendFailures = 0
     private(set) var audioPacketsDroppedPreSession = 0
@@ -619,6 +636,11 @@ final class SessionWire {
     /// the ECONNREFUSED fix: the client learns the session ended instead
     /// of inferring it from silence).
     func shutdown(reason: SessionTeardownReason, lingerSeconds: Double = 0.5) {
+        // main stops the audio source before teardown; flush its final
+        // published quantum while the established session still exists.
+        lock.lock()
+        drainAudioMailboxLocked()
+        lock.unlock()
         // The sender thread goes first: teardown owns the send path
         // from here (and the thread holds `self` — this is also its
         // lifetime end).
@@ -674,11 +696,16 @@ final class SessionWire {
             lock.unlock()
             throw HostError("sendFrame before the session exists")
         }
+        // Audio published before this video lock acquisition goes first.
+        drainAudioMailboxLocked()
         do {
             let shards = try session.ingestVideoFrame(
                 frame,
                 captureTimestampMicroseconds: captureMicros,
                 isKeyframe: isKeyframe,
+                interleave: { [unowned self] in
+                    self.drainAudioMailboxLocked()
+                },
                 now: monotonicNS()
             )
             lastFrameForTelemetry = shards > 0
@@ -733,60 +760,61 @@ final class SessionWire {
     }
 
     /// HS-15: one encoded 5 ms Opus packet from the AUDIO capture
-    /// thread → the sealed chan-1 shards → the shared pacer → the
-    /// wire, now. Never throws and never kills anything — a dead
-    /// session just drops packets quietly (counted): the audio loop
-    /// outliving the session by a beat is normal shutdown order.
+    /// thread. Publication uses only the narrow mailbox lock; it never
+    /// waits behind video packetize/FEC/seal or broad session service.
+    /// The elevated sender (or a cooperative video-ingest checkpoint)
+    /// performs ordered framing, Noise sealing, pacing, and send.
     /// Audio deliberately flows in IDLE and FROZEN (the 5 ms path
     /// probe — Session's ruling; only `closed` suppresses).
     func sendAudioPacket(_ packet: [UInt8], captureMicros: UInt64) {
-        lock.lock()
-        guard let session, session.phase == .established, !peerGone else {
-            audioPacketsDroppedPreSession += 1
-            lock.unlock()
-            return
+        let pending = PendingAudioPacket(
+            bytes: packet, captureMicros: captureMicros,
+            offeredAtNS: monotonicNS()
+        )
+        audioMailboxLock.lock()
+        if audioMailbox.count < Self.audioMailboxCapacity {
+            audioMailbox.append(pending)
+            audioMailboxMaxDepth = max(audioMailboxMaxDepth, audioMailbox.count)
+        } else {
+            audioMailboxOverflows += 1
         }
-        do {
-            _ = try session.ingestAudioPacket(
-                packet,
-                captureTimestampMicroseconds: captureMicros,
-                now: monotonicNS()
-            )
-            session.pump(now: monotonicNS())
-            try flushOutbox()
-            audioPacketsSent += 1
-        } catch {
-            audioSendFailures += 1
-            lastSendError = String(describing: error)
-            let leftover = session.queuedAudioDatagramCount > 0 && !peerGone
-            lock.unlock()
-            if leftover { signalDrain() }
-            return
-        }
-        // A concurrent video drain can hold the bucket in deficit for
-        // ≤ one 1 ms quantum; if nothing else is pumping (true idle),
-        // bounded second passes make sure the shard leaves anyway.
-        var passes = 0
-        while session.queuedAudioDatagramCount > 0, !peerGone, passes < 4 {
-            let now = monotonicNS()
-            let wake = session.nextWake(now: now)
-            lock.unlock()
-            if let wake, wake > now {
-                usleep(UInt32(min((wake - now) / 1_000 + 1, 1_000)))
+        audioMailboxLock.unlock()
+        signalDrain()
+    }
+
+    /// Requires the broad Session lock. The mailbox lock is held only
+    /// long enough to swap the FIFO; framing/sealing/syscalls happen
+    /// after audio capture is free to publish its next quantum.
+    private func drainAudioMailboxLocked() {
+        audioMailboxLock.lock()
+        var pending: [PendingAudioPacket] = []
+        swap(&pending, &audioMailbox)
+        audioMailboxLock.unlock()
+        guard !pending.isEmpty else { return }
+
+        for packet in pending {
+            guard let session, session.phase == .established, !peerGone else {
+                audioPacketsDroppedPreSession += 1
+                continue
             }
-            lock.lock()
-            session.pump(now: monotonicNS())
-            try? flushOutbox()
-            passes += 1
+            let now = monotonicNS()
+            audioMailboxMaxDwellNS = max(
+                audioMailboxMaxDwellNS, now &- packet.offeredAtNS
+            )
+            do {
+                _ = try session.ingestAudioPacket(
+                    packet.bytes,
+                    captureTimestampMicroseconds: packet.captureMicros,
+                    now: now
+                )
+                session.pump(now: monotonicNS())
+                try flushOutbox()
+                audioPacketsSent += 1
+            } catch {
+                audioSendFailures += 1
+                lastSendError = String(describing: error)
+            }
         }
-        // HS-31 fix 2: the retry loop is bounded — if the datagram
-        // outlived it (a deficit deeper than ~4 ms, a busy wire), the
-        // SENDER THREAD owns it. It used to stay parked until the next
-        // video ingest's signalDrain: up to +16 ms of hold for a shard
-        // whose whole budget is 5 ms.
-        let leftover = session.queuedAudioDatagramCount > 0 && !peerGone
-        lock.unlock()
-        if leftover { signalDrain() }
     }
 
     /// The between-frames service hook (idle-floor tick cadence):
@@ -1113,6 +1141,9 @@ final class SessionWire {
     }
 
     private func serviceOnce() throws {
+        // Always service the scheduling island before lower-frequency
+        // receive/timer/stat work under this lock.
+        drainAudioMailboxLocked()
         try receiveAll { [weak self] datagram, tuple in
             guard let self, let session = self.session else { return }
             for event in session.receive(
@@ -1121,6 +1152,9 @@ final class SessionWire {
             ) {
                 self.log(event)
             }
+            // A recvmmsg burst can contain many feedback/control packets.
+            // Do not let parsing the whole burst consume an audio period.
+            self.drainAudioMailboxLocked()
         }
         for event in session.advance(
             now: monotonicNS(), hostMicroseconds: monotonicMicros()
