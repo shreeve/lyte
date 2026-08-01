@@ -921,9 +921,23 @@ public final class VideoChannel {
     /// datagram to the sink in pacer order. Returns the datagram count.
     @discardableResult
     public func pump(now: UInt64) -> Int {
+        pump(now: now, upThrough: .bulk)
+    }
+
+    /// Drains only control/audio. The executable uses this while a prior
+    /// video socket write is blocked: latency traffic may cross channels
+    /// ahead of sealed video, while no additional video enters the outbox.
+    @discardableResult
+    public func pumpLatency(now: UInt64) -> Int {
+        pump(now: now, upThrough: .audio)
+    }
+
+    private func pump(now: UInt64, upThrough highestClass: PacerClass) -> Int {
         expireQueuedRepairs(now: now)
         var sent = 0
-        while let batch = pacer.nextBatch(now: now) {
+        while let batch = pacer.nextBatch(
+            now: now, upThrough: highestClass
+        ) {
             for token in batch.tokens {
                 guard let datagram = pending.removeValue(forKey: token.tag)
                 else { continue } // unreachable while the pacer is owned

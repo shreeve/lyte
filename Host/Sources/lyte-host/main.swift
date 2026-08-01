@@ -31,6 +31,9 @@ struct Options {
     var bitrateExplicit = false
     var fps: Int32 = 60
     var backend: Backend = .portal
+    /// Debug-only capture replacement. It bypasses PipeWire/Mutter only;
+    /// encoder, session, packetizer, crypto, sockets, and client stay real.
+    var syntheticMotion: (width: UInt32, height: UInt32)?
     var connector = ""
     var idleFloor = true
     var ratchet = false
@@ -136,6 +139,21 @@ struct Options {
                     throw HostError("--backend must be 'portal' or 'mutter'")
                 }
                 opts.backend = b
+            case "--synthetic-motion":
+                i += 1
+                guard i < args.count else {
+                    throw HostError("--synthetic-motion needs WIDTHxHEIGHT")
+                }
+                let dimensions = args[i].split(separator: "x")
+                guard dimensions.count == 2,
+                      let width = UInt32(dimensions[0]),
+                      let height = UInt32(dimensions[1]),
+                      width >= 640, height >= 360
+                else {
+                    throw HostError(
+                        "--synthetic-motion needs WIDTHxHEIGHT (minimum 640x360)")
+                }
+                opts.syntheticMotion = (width, height)
             case "--connector":
                 i += 1
                 guard i < args.count else { throw HostError("--connector needs a name") }
@@ -270,6 +288,7 @@ struct Options {
                 print("""
                 usage: lyte-host [--out PATH] [--seconds N] [--bitrate-mbps N]
                                  [--backend portal|mutter] [--connector NAME]
+                                 [--synthetic-motion WIDTHxHEIGHT]
                                  [--no-idle-floor] [--ratchet]
                                  [--wire-out HOST:PORT] [--wire-rate-mbps N]
                 Captures the desktop and writes Annex-B HEVC (hevc_nvenc) to
@@ -278,6 +297,10 @@ struct Options {
                                     one-time on-screen consent on first run)
                   --backend mutter  org.gnome.Mutter.ScreenCast (no dialog;
                                     spike fallback for headless/ssh runs)
+                  --synthetic-motion WIDTHxHEIGHT
+                                    DEBUG ONLY: deterministic 60 Hz BGRX at
+                                    the capture/encoder seam; requires
+                                    LYTE_ALLOW_SYNTHETIC_CAPTURE=1
                   --connector NAME  monitor connector for the mutter backend
                                     (e.g. DP-1); empty records the primary
                   --no-idle-floor   disable the steady-rate supply (encode
@@ -438,6 +461,19 @@ final class Sink {
     /// (H0a spike) or the Lyte-UDP session leg (HS-7 `--wire-out`).
     var file: UnsafeMutablePointer<FILE>?
     var wire: SessionWire?
+    private let syntheticTrace: FileHandle? = {
+        guard let path = ProcessInfo.processInfo.environment[
+            "LYTE_SYNTHETIC_TRACE_JSONL"] else { return nil }
+        _ = FileManager.default.createFile(atPath: path, contents: nil)
+        return FileHandle(forWritingAtPath: path)
+    }()
+    private let markerWitness: FileHandle? = {
+        guard let path = ProcessInfo.processInfo.environment[
+            "LYTE_MARKER_WITNESS_JSONL"] else { return nil }
+        _ = FileManager.default.createFile(atPath: path, contents: nil)
+        return FileHandle(forWritingAtPath: path)
+    }()
+    private var markerWitnessFrames = 0
 
     var framesIn = 0
     var damageFrames = 0
@@ -483,19 +519,25 @@ final class Sink {
         // Good tier ships 12 — spec §3's visually-lossless target —
         // and the Best tier carries its own); the Sink reads it off
         // the recipe the negotiated posture chose.
-        static let settle = 0.25      // damage-quiet time before ratcheting
-        static let paceDivisor = 4    // passes run at fps/paceDivisor
-        static let skipBytes = 2048   // pass this small is ~all-skip: done
-        static let stableRatio = 0.01 // <1% byte delta counts as stable
-        static let stablePasses = 3   // stable passes at the floor: done
+        // A fresh callback already suppresses the tick that shares its loop
+        // turn (`encodedSinceTick`). Start refinement on the next idle tick:
+        // another damage callback resets the episode before it can continue,
+        // while a genuine one-frame wake gets the full 60-pass first second.
+        static let settle = 0.0
+        // Refinements run at every ratchet timer tick. The matched 2048x1280
+        // Best walk needs ~50 passes / ~3 MB. The ratchet timer is armed at
+        // 2× capture cadence below: one five-run repeatability leg proved a
+        // nominal 60 Hz timer could leave only 23 passes decoded at the first
+        // observation after portal startup. Encoder capacity and the fixed
+        // total wire spend both remain inside the measured posture.
+        static let paceDivisor = 1
     }
     var lastDamageAt: Double?
     var ratchetTriggeredAt: Double?
     var ratchetConverged = false
     var ratchetTickCount = 0
     var ratchetStep = 0
-    var ratchetStableCount = 0
-    var ratchetPrevBytes = 0
+    var ratchetConvergence: QualityRatchetConvergence
     var ratchetEpisodeBytes = 0
     var ratchetFrames = 0
     var ratchetBytes = 0
@@ -605,6 +647,8 @@ final class Sink {
         self.file = file
         self.wire = wire
         self.activeRecipe = opts.encoderRecipe
+        self.ratchetConvergence = QualityRatchetConvergence(
+            floorQP: opts.encoderRecipe.ratchetFloorQP)
         self.noResetRateMoves = noResetRateMoves
     }
 
@@ -621,6 +665,39 @@ final class Sink {
     func fail(_ message: String) {
         lastError = message
         if let capture { lyte_pw_capture_quit(capture) }
+    }
+
+    func traceSynthetic(_ record: String) {
+        guard let data = (record + "\n").data(using: .utf8) else { return }
+        syntheticTrace?.write(data)
+    }
+
+    private func witnessMarker(
+        data: UnsafePointer<UInt8>, stride: Int32,
+        width: UInt32, height: UInt32, graphUs: UInt64
+    ) {
+        guard let markerWitness, markerWitnessFrames < 300,
+              width >= 624, height >= 24, stride >= Int32(width * 4)
+        else { return }
+        let block = 24
+        func bright(_ blockIndex: Int) -> Bool {
+            let offset = (block / 2) * Int(stride)
+                + (blockIndex * block + block / 2) * 4
+            return Int(data[offset]) + Int(data[offset + 1])
+                + Int(data[offset + 2]) >= 384
+        }
+        var marker: UInt32 = 0
+        for bit in 0..<24 where bright(bit + 1) {
+            marker |= UInt32(1) << UInt32(bit)
+        }
+        let validSentinels = bright(0) && bright(25)
+        let line = "{\"frameID\":\(marker),\"graphMicroseconds\":"
+            + "\(graphUs),\"callbackNS\":\(monotonicNS()),"
+            + "\"sentinelsValid\":\(validSentinels),\"width\":\(width),"
+            + "\"height\":\(height),\"stride\":\(stride)}\n"
+        markerWitness.write(line.data(using: .utf8)!)
+        try? markerWitness.synchronize()
+        markerWitnessFrames += 1
     }
 
     func onFrame(data: UnsafePointer<UInt8>, size: UInt32, stride: Int32,
@@ -642,6 +719,9 @@ final class Sink {
                 + "mapped MemFd")
             return
         }
+        witnessMarker(
+            data: data, stride: stride, width: width,
+            height: height, graphUs: graphUs)
 
         // The geometry pin (same finding): the encoder is opened once
         // with frame-0 geometry and never revalidated, while PipeWire's
@@ -692,6 +772,8 @@ final class Sink {
                 recipe = recipe.chroma444()
             }
             activeRecipe = recipe
+            ratchetConvergence = QualityRatchetConvergence(
+                floorQP: recipe.ratchetFloorQP)
             var err = [CChar](repeating: 0, count: 256)
             let cq: Int32 = opts.ratchet ? Int32(recipe.ratchetFloorQP) : 0
             guard let enc = lyte_hevc_enc_new(Int32(width), Int32(height), name,
@@ -799,8 +881,7 @@ final class Sink {
         ratchetTriggeredAt = nil
         ratchetConverged = false
         ratchetStep = 0
-        ratchetStableCount = 0
-        ratchetPrevBytes = 0
+        ratchetConvergence.reset()
         ratchetEpisodeBytes = 0
 
         // HS-11: fresh damage into the lifecycle machine BEFORE the
@@ -839,6 +920,22 @@ final class Sink {
         }
 
         wire?.service()
+        if syntheticTrace != nil, let wire {
+            for flight in wire.takeFrameTransmitTelemetry() {
+                traceSynthetic(
+                    "{\"type\":\"wire\",\"frameNumber\":"
+                    + "\(flight.frameNumber),\"captureMicroseconds\":"
+                    + "\(flight.captureTimestampMicroseconds),\"admittedNS\":"
+                    + "\(flight.admittedAtNS),\"firstTransmitNS\":"
+                    + "\(flight.firstTransmitAtNS ?? 0),\"lastTransmitNS\":"
+                    + "\(flight.lastTransmitAtNS ?? 0),\"encodedBytes\":"
+                    + "\(flight.encodedBytes),\"averageQP\":"
+                    + "\(flight.averageQP ?? -1),\"keyframe\":"
+                    + "\(flight.isKeyframe),\"queuedWireTimeNS\":"
+                    + "\(flight.queuedWireTimeBeforeAdmissionNS),\"purged\":"
+                    + "\(flight.purged)}")
+            }
+        }
         flushFrameWindow(monotonicNow())
         flushQualityWindow(monotonicNow())
         flushStageWindow(monotonicNow())
@@ -894,17 +991,9 @@ final class Sink {
         print(String(format: "ratchet: step %2d  qp=%2d  bytes=%7d  t+%.0f ms",
                      ratchetStep, lastPacketQP, lastPacketBytes, sinceTrigger))
 
-        if lastPacketBytes <= Ratchet.skipBytes {
-            ratchetConverged = true
-        } else if lastPacketQP <= activeRecipe.ratchetFloorQP, ratchetPrevBytes > 0,
-                  abs(lastPacketBytes - ratchetPrevBytes)
-                      <= Int(Double(ratchetPrevBytes) * Ratchet.stableRatio) {
-            ratchetStableCount += 1
-            ratchetConverged = ratchetStableCount >= Ratchet.stablePasses
-        } else {
-            ratchetStableCount = 0
-        }
-        ratchetPrevBytes = lastPacketBytes
+        ratchetConverged = ratchetConvergence.note(
+            bytes: lastPacketBytes,
+            averageQP: lastPacketQP)
 
         if ratchetConverged {
             print(String(format: "ratchet: converged after %d passes, "
@@ -1004,6 +1093,16 @@ final class Sink {
             let total = monotonicNS() - encodeStart
             stageEncodeUs.append(
                 (total - min(sendFrameNanosThisEncode, total)) / 1_000)
+        }
+        if syntheticTrace != nil {
+            traceSynthetic(
+                "{\"type\":\"encode\",\"frameNumber\":\(framesIn),"
+                + "\"captureMicroseconds\":\(pendingCaptureUs),"
+                + "\"encodeStartNS\":\(encodeStart),"
+                + "\"encodeFinishedNS\":\(monotonicNS()),"
+                + "\"bytes\":\(lastPacketBytes),\"averageQP\":"
+                + "\(lastPacketQP),\"keyframe\":"
+                + "\(keyframes > keyframesBeforeSend)}")
         }
         // HS-33 books: the directive's observed cost. zerolatency means
         // this frame's packet emerged inside the send above, so "did
@@ -1444,13 +1543,30 @@ func run() throws {
     }
 
     let sessionMode = opts.wireOut != nil || opts.wireListen != nil
+    if opts.syntheticMotion != nil {
+        guard ProcessInfo.processInfo.environment[
+            "LYTE_ALLOW_SYNTHETIC_CAPTURE"] == "1" else {
+            throw HostError("--synthetic-motion is debug-only and requires "
+                + "LYTE_ALLOW_SYNTHETIC_CAPTURE=1")
+        }
+        guard sessionMode else {
+            throw HostError("--synthetic-motion exists to test the complete "
+                + "session pipeline; give --wire-listen or --wire-out")
+        }
+        guard opts.fps == 60 else {
+            throw HostError("--synthetic-motion is pinned to 60 Hz")
+        }
+    }
     let destination = sessionMode
         ? "lyte-udp session ("
             + (opts.wireOut.map { "\($0.host):\($0.port)" }
                 ?? "listen :\(opts.wireListen!)")
             + (opts.insecure ? ", INSECURE" : ", noise") + ")"
         : opts.outputPath
-    print("lyte-host — \(opts.backend.rawValue) → PipeWire → "
+    let captureDescription = opts.syntheticMotion == nil
+        ? "\(opts.backend.rawValue) → PipeWire"
+        : "SYNTHETIC-DEBUG-BGRX (PipeWire/Mutter BYPASSED)"
+    print("lyte-host — \(captureDescription) → "
         + "hevc_nvenc → \(destination)")
 
     // HS-33: which libavcodec did this binary link? The vendored
@@ -1828,29 +1944,6 @@ func run() throws {
         }
     }
 
-    // Both backends must stay alive for the whole capture: dropping them
-    // closes their D-Bus connection, which closes the portal/Mutter session
-    // and destroys the PipeWire node mid-stream.
-    let stream: ScreenCastStream
-    var portal: PortalScreenCast?
-    var mutter: MutterScreenCast?
-    switch opts.backend {
-    case .portal:
-        let p = try PortalScreenCast()
-        portal = p
-        stream = try p.openDesktopStream()
-        print("portal: ScreenCast granted — PipeWire node \(stream.nodeId), fd \(stream.pipewireFd)")
-    case .mutter:
-        let m = try MutterScreenCast()
-        mutter = m
-        stream = try m.openMonitorStream(connector: opts.connector)
-        print("mutter: ScreenCast started — PipeWire node \(stream.nodeId) on default remote")
-    }
-    defer {
-        mutter?.stop()
-        _ = portal // retained until capture completes
-    }
-
     var file: UnsafeMutablePointer<FILE>?
     if !sessionMode {
         guard let f = fopen(opts.outputPath, "wb") else {
@@ -1862,29 +1955,131 @@ func run() throws {
     let sink = Sink(opts: opts, file: file, wire: wire,
                     noResetRateMoves: noResetRateMoves)
     var err = [CChar](repeating: 0, count: 256)
-    let user = Unmanaged.passUnretained(sink).toOpaque()
-    guard let capture = lyte_pw_capture_new(stream.pipewireFd, stream.nodeId,
-                                            frameTrampoline, user,
-                                            &err, err.count) else {
-        if let file { fclose(file) }
-        throw HostError("pipewire capture setup failed: \(errString(err))")
+    var captureResult: Int32 = 0
+    var mutter: MutterScreenCast?
+    var portal: PortalScreenCast?
+    defer {
+        mutter?.stop()
+        _ = portal
     }
-    sink.capture = capture
-
-    // Steady-rate supply: a repeating tick on the capture loop thread at the
-    // fps interval; the Sink re-encodes the last frame when no fresh one
-    // arrived, so output flows at ~fps regardless of desktop activity.
-    if opts.idleFloor {
-        let interval = UInt64(1_000_000_000) / UInt64(opts.fps)
-        guard lyte_pw_capture_set_tick(capture, interval, tickTrampoline, user) == 0 else {
-            if let file { fclose(file) }
-            throw HostError("failed to arm the idle-floor tick timer")
+    if let synthetic = opts.syntheticMotion {
+        let source = SyntheticMotionSource(
+            width: Int(synthetic.width), height: Int(synthetic.height))
+        var pixels: [UInt8] = []
+        let frameCount = Int((opts.seconds * 60).rounded(.up))
+        print("synthetic-capture: DEBUG ONLY — \(synthetic.width)x"
+            + "\(synthetic.height) BGRX, \(frameCount) frames at absolute "
+            + "60 Hz deadlines; compositor and PipeWire are bypassed")
+        // Capability agreement and encoder open are bounded startup, not a
+        // 60 Hz source beat. Service the declaration, then send one loudly
+        // traced primer IDR before the measured absolute-deadline sequence.
+        for _ in 0..<20 {
+            usleep(5_000)
+            sink.onTick()
         }
-    }
+        source.render(frameID: 0, into: &pixels)
+        let primerSubmitted = monotonicNS()
+        sink.traceSynthetic(
+            "{\"type\":\"primer\",\"frameID\":0,\"submittedNS\":"
+            + "\(primerSubmitted)}")
+        pixels.withUnsafeBufferPointer { buffer in
+            sink.onFrame(
+                data: buffer.baseAddress!,
+                size: UInt32(buffer.count),
+                stride: Int32(synthetic.width * 4),
+                width: synthetic.width,
+                height: synthetic.height,
+                fmt: LYTE_PIXFMT_BGRX,
+                graphUs: primerSubmitted / 1_000)
+        }
+        sink.encodedSinceTick = true
+        sink.onTick()
+        usleep(100_000)
 
-    // Grace beyond the capture window covers stream negotiation and a
-    // sparse damage-driven frame supply.
-    let rc = lyte_pw_capture_run(capture, opts.seconds + 15.0, &err, err.count)
+        let schedule = SyntheticMotionSchedule(
+            startNanoseconds: monotonicNS() + 100_000_000, fps: 60)
+        for index in 0..<frameCount {
+            let frameID = UInt32(index + 1)
+            let renderStart = monotonicNS()
+            source.render(frameID: frameID, into: &pixels)
+            let renderFinished = monotonicNS()
+            let deadline = schedule.deadline(frameID: UInt32(index))
+            var target = timespec(
+                tv_sec: Int(deadline / 1_000_000_000),
+                tv_nsec: Int(deadline % 1_000_000_000))
+            while clock_nanosleep(
+                CLOCK_MONOTONIC, TIMER_ABSTIME, &target, nil) == EINTR {}
+            let submitted = monotonicNS()
+            sink.traceSynthetic(
+                "{\"type\":\"source\",\"frameID\":\(frameID),"
+                + "\"deadlineNS\":\(deadline),\"submittedNS\":\(submitted),"
+                + "\"latenessNS\":\(submitted >= deadline ? submitted - deadline : 0),"
+                + "\"renderStartNS\":\(renderStart),\"renderFinishedNS\":"
+                + "\(renderFinished)}")
+            pixels.withUnsafeBufferPointer { buffer in
+                sink.onFrame(
+                    data: buffer.baseAddress!,
+                    size: UInt32(buffer.count),
+                    stride: Int32(synthetic.width * 4),
+                    width: synthetic.width,
+                    height: synthetic.height,
+                    fmt: LYTE_PIXFMT_BGRX,
+                    graphUs: deadline / 1_000)
+            }
+            // This is a fresh-source clock beat even if queue admission
+            // rejected its encode. Do not let the ratchet timer manufacture a
+            // retained repeat and confuse the dynamic source identity.
+            sink.encodedSinceTick = true
+            sink.onTick()
+            if sink.lastError != nil || sink.wire?.sessionEnded == true {
+                break
+            }
+        }
+        // Let the production sender drain and publish final kernel telemetry.
+        for _ in 0..<20 {
+            usleep(5_000)
+            sink.onTick()
+        }
+    } else {
+        // Both backends must stay alive for the whole capture: dropping them
+        // closes their D-Bus connection and destroys the PipeWire node.
+        let stream: ScreenCastStream
+        switch opts.backend {
+        case .portal:
+            let p = try PortalScreenCast()
+            portal = p
+            stream = try p.openDesktopStream()
+            print("portal: ScreenCast granted — PipeWire node "
+                + "\(stream.nodeId), fd \(stream.pipewireFd)")
+        case .mutter:
+            let m = try MutterScreenCast()
+            mutter = m
+            stream = try m.openMonitorStream(connector: opts.connector)
+            print("mutter: ScreenCast started — PipeWire node "
+                + "\(stream.nodeId) on default remote")
+        }
+        let user = Unmanaged.passUnretained(sink).toOpaque()
+        guard let capture = lyte_pw_capture_new(
+            stream.pipewireFd, stream.nodeId, frameTrampoline, user,
+            &err, err.count) else {
+            if let file { fclose(file) }
+            throw HostError("pipewire capture setup failed: \(errString(err))")
+        }
+        sink.capture = capture
+
+        if opts.idleFloor {
+            let tickRate =
+                opts.ratchet ? UInt64(opts.fps) * 2 : UInt64(opts.fps)
+            let interval = UInt64(1_000_000_000) / tickRate
+            guard lyte_pw_capture_set_tick(
+                capture, interval, tickTrampoline, user) == 0 else {
+                if let file { fclose(file) }
+                throw HostError("failed to arm the idle-floor tick timer")
+            }
+        }
+        captureResult = lyte_pw_capture_run(
+            capture, opts.seconds + 15.0, &err, err.count)
+    }
 
     try sink.flushEncoder()
     if let file { fclose(file) }
@@ -1916,8 +2111,8 @@ func run() throws {
     // against ground truth. Env-gated; not a product surface.
     if let rawPath = ProcessInfo.processInfo.environment["LYTE_DUMP_RAW"],
        !sink.lastFrame.isEmpty {
-        FileManager.default.createFile(atPath: rawPath,
-                                       contents: Data(sink.lastFrame))
+        _ = FileManager.default.createFile(
+            atPath: rawPath, contents: Data(sink.lastFrame))
         print("raw reference dumped: \(rawPath) "
             + "(\(sink.lastFrame.count) bytes, stride \(sink.lastStride))")
     }
@@ -1925,14 +2120,14 @@ func run() throws {
     if let failure = sink.lastError {
         throw HostError(failure)
     }
-    if rc == -1 {
+    if captureResult == -1 {
         throw HostError("capture failed: \(errString(err))")
     }
     if sink.framesIn == 0 {
-        throw HostError("no frames arrived from PipeWire within \(Int(opts.seconds + 15))s. "
-            + "The portal granted the stream, so likely causes: the consent dialog "
-            + "on the host's physical screen is still pending, or the compositor is not "
-            + "producing frames. Nothing was written.")
+        throw HostError(opts.syntheticMotion == nil
+            ? "no frames arrived from PipeWire within "
+                + "\(Int(opts.seconds + 15))s"
+            : "synthetic source produced no encoded frames")
     }
 
     let captured = sink.firstFrameAt.map { monotonicNow() - $0 } ?? 0
@@ -1950,7 +2145,7 @@ func run() throws {
             + "\(sink.ratchetBytes) bytes"
             + (sink.ratchetConverged ? ", converged" : ", NOT converged"))
     }
-    if rc == 1 {
+    if captureResult == 1 {
         print("note: capture ended at the safety timeout — the desktop was mostly "
             + "static, so frames arrived only on damage")
     }
@@ -2011,6 +2206,30 @@ func run() throws {
         \(t.batches) paced batches; max batch wire time \
         \(t.maxBatchWireTimeNS) ns (quantum 1000000); freshVideo max queue \
         delay \(t[.freshVideo].maxQueueDelayNS) ns
+        socket: \(wire.socketWouldBlockCount) would-block retries, pending max \
+        \(wire.socketPendingMaxDatagrams) datagrams / \
+        \(wire.socketPendingMaxBytes) B; audio blocked \
+        \(wire.audioSocketWouldBlockCount) times, outbox max \
+        \(wire.audioSocketOutboxMaxNS) ns at seq \
+        \(wire.audioSocketWorstSeq.map(String.init) ?? "—") \
+        (enqueued/accepted \
+        \(wire.audioSocketWorstEnqueuedAtNS.map(String.init) ?? "—")/\
+        \(wire.audioSocketWorstAcceptedAtNS.map(String.init) ?? "—"), \
+        behind video \(wire.audioSocketWorstBlockedByVideo)); kernel sndbuf \
+        \(wire.socketSendBufferBytes) B, outq max \
+        \(wire.socketOutqMaxBytes) B; latency lane sndbuf \
+        \(wire.latencySocketSendBufferBytes) B, outq max \
+        \(wire.latencySocketOutqMaxBytes) B; ENOBUFS \
+        \(wire.socketENOBUFSCount), outq query failures \
+        \(wire.socketOutqQueryFailures); pressure \
+        \(wire.kernelPressureState), video debt \
+        \(wire.kernelVideoServiceDebtNS) ns, EAGAIN video/latency \
+        \(wire.videoSocketWouldBlockCount)/\
+        \(wire.latencySocketWouldBlockCount), ENOBUFS video/latency \
+        \(wire.videoSocketENOBUFSCount)/\
+        \(wire.latencySocketENOBUFSCount), stale fresh shed \
+        \(wire.socketFreshVideoShedDatagrams) datagrams / \
+        \(wire.socketFreshVideoShedBytes) B
         session: \(s.beaconsSent) beacons, \(s.beaconEchoes) echoes \
         (last offset \(wire.clock.lastOffsetMicroseconds.map(String.init) ?? "—") µs, \
         min rtt \(wire.clock.minRttMicroseconds.map(String.init) ?? "—") µs), \
@@ -2089,7 +2308,8 @@ func run() throws {
         \(wire.estimatorStats.dispersionSamplesUnmatched) unmatched; \
         \(wire.estimatorStats.honestSamples) honest / \
         \(wire.estimatorStats.censoredSamples) censored full trains \
-        (\(wire.estimatorStats.stretchedTrainsRecused) hole-recused), \
+        (\(wire.estimatorStats.stretchedTrainsRecused) hole-recused, \
+        \(wire.estimatorStats.burstGeometryTrainsRecused) burst-recused), \
         \(wire.estimatorStats.beliefRaises) belief raises / \
         \(wire.estimatorStats.beliefDemotions) demotions), \
         \(wire.estimatorStats.downshifts) downshifts \

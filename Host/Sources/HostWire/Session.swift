@@ -549,6 +549,14 @@ public enum SessionError: Error, Equatable, Sendable {
     case bulkNotNegotiated
 }
 
+/// Where the estimator's send ledger takes its timestamp. Sans-IO tests and
+/// callers with an immediate sink keep the historical pacer-release seam;
+/// the Linux UDP shell confirms only after the kernel accepts the datagram.
+public enum SessionSendAccounting: Equatable, Sendable {
+    case pacerRelease
+    case socketConfirmed
+}
+
 /// A short-lived snapshot for off-lock RS-FEC preparation. It reserves no
 /// sequence or Noise state; only `commitPreparedVideoFrame` advances either.
 public struct SessionVideoFramePreparationContext: Sendable {
@@ -601,6 +609,11 @@ public struct SessionCounters: Equatable, Sendable {
     public var fallPurges = 0
     /// Video bytes those purges dropped before they became stale wire.
     public var fallPurgedVideoBytes = 0
+    /// Entire, not-yet-started fresh frames shed at the socket seam under
+    /// sustained kernel pressure.
+    public var kernelPressureShedFrames = 0
+    public var kernelPressureShedDatagrams = 0
+    public var kernelPressureShedBytes = 0
     /// Message 1s the HandshakeGate refused (HS-9's flood evidence).
     public var handshakesThrottled = 0
     /// RetryChallenges (0x13) the host minted under flood (HS-21) — the
@@ -830,6 +843,13 @@ public final class Session {
     /// has no clock of its own; sans-IO means the caller's `now` is
     /// the only truth).
     private var pumpNowNS: UInt64
+    private let sendAccounting: SessionSendAccounting
+    /// Datagrams released by the pacer but not yet accepted by the socket.
+    /// Their release pace is retained for honest train classification;
+    /// video frames remain backlog/NACK-recused until confirmation.
+    private var socketPendingPaces: [UInt32: Int] = [:]
+    private var socketPendingVideo:
+        [UInt32: (datagrams: Int, bytes: Int)] = [:]
 
     // MARK: HS-13 input state
 
@@ -913,6 +933,7 @@ public final class Session {
         clientTuple: FourTuple,
         now: UInt64,
         rng: some RandomNumberGenerator = SystemRandomNumberGenerator(),
+        sendAccounting: SessionSendAccounting = .pacerRelease,
         send: @escaping (VideoChannelDatagram) -> Void
     ) {
         var rng = rng
@@ -954,6 +975,7 @@ public final class Session {
             now: now
         )
         self.pumpNowNS = now
+        self.sendAccounting = sendAccounting
         self.handshakeGate = HandshakeGate(config: config.handshakeGate)
         self.negotiator = CapabilityNegotiator(
             role: .host, local: config.capabilities
@@ -1000,7 +1022,12 @@ public final class Session {
             // can be matched back to their trains (HS-16). The send
             // instant is the pump pass's `now` — the sink has no clock.
             send: { [unowned self] datagram in
-                self.noteSent(datagram)
+                switch self.sendAccounting {
+                case .pacerRelease:
+                    self.noteSent(datagram, now: self.pumpNowNS)
+                case .socketConfirmed:
+                    self.noteSocketPending(datagram)
+                }
                 send(datagram)
             }
         )
@@ -1463,6 +1490,7 @@ public final class Session {
     /// loop thread sat inside a synchronous drain).
     public var queuedVideoBytes: Int {
         channel.queuedBytes(.freshVideo) + channel.queuedBytes(.videoTail)
+            + socketPendingVideo.values.reduce(0) { $0 + $1.bytes }
     }
 
     public func annotateVideoFrameTelemetry(
@@ -2318,7 +2346,101 @@ public final class Session {
     /// dispersion samples will name. Off-primary challenges are
     /// excluded (they travel an unvalidated tuple; their arrivals
     /// measure a different path).
-    private func noteSent(_ datagram: VideoChannelDatagram) {
+    private func datagramKey(_ datagram: VideoChannelDatagram) -> UInt32 {
+        let channel: ChannelId
+        switch datagram.pacerClass {
+        case .control: channel = .ctrl
+        case .audio: channel = .audio
+        case .bulk: channel = .bulkTransfer
+        case .freshVideo, .videoTail, .refinement, .telemetry:
+            channel = .videoActive
+        }
+        return UInt32(channel.rawValue) << 16 | UInt32(datagram.seq.rawValue)
+    }
+
+    private func noteSocketPending(_ datagram: VideoChannelDatagram) {
+        guard datagram.destination == nil else { return }
+        socketPendingPaces[datagramKey(datagram)] =
+            estimator.rateBitsPerSecond
+        guard datagram.pacerClass == .freshVideo
+                || datagram.pacerClass == .videoTail
+                || datagram.pacerClass == .refinement
+        else { return }
+        let key = datagram.frameNumber.rawValue
+        var pending = socketPendingVideo[key] ?? (0, 0)
+        pending.datagrams += 1
+        pending.bytes += datagram.bytes.count
+        socketPendingVideo[key] = pending
+    }
+
+    /// Confirms that a pacer-released datagram was accepted by the kernel.
+    /// Production calls this once, and only once, for each successful
+    /// `sendmmsg` element. EAGAIN leaves it pending and therefore invisible
+    /// to path feedback until a later successful retry.
+    public func confirmDatagramSent(
+        _ datagram: VideoChannelDatagram, now: UInt64
+    ) {
+        guard sendAccounting == .socketConfirmed,
+              datagram.destination == nil else { return }
+        let key = datagramKey(datagram)
+        let pace = socketPendingPaces.removeValue(forKey: key)
+        noteSent(datagram, now: now, paceBitsPerSecond: pace)
+        guard datagram.pacerClass == .freshVideo
+                || datagram.pacerClass == .videoTail
+                || datagram.pacerClass == .refinement
+        else { return }
+        guard var pending =
+                socketPendingVideo[datagram.frameNumber.rawValue]
+        else { return }
+        pending.datagrams -= 1
+        pending.bytes -= datagram.bytes.count
+        if pending.datagrams <= 0 {
+            socketPendingVideo.removeValue(
+                forKey: datagram.frameNumber.rawValue)
+        } else {
+            socketPendingVideo[datagram.frameNumber.rawValue] = pending
+        }
+    }
+
+    /// Removes one socket-pending datagram without presenting it as path
+    /// evidence. Used when fall repricing purges the executable's unsent
+    /// EAGAIN outbox alongside the core pacer queue.
+    public func discardPendingDatagram(_ datagram: VideoChannelDatagram) {
+        guard sendAccounting == .socketConfirmed,
+              datagram.destination == nil else { return }
+        socketPendingPaces.removeValue(forKey: datagramKey(datagram))
+        guard datagram.pacerClass == .freshVideo
+                || datagram.pacerClass == .videoTail
+                || datagram.pacerClass == .refinement
+        else { return }
+        guard var pending =
+                socketPendingVideo[datagram.frameNumber.rawValue]
+        else { return }
+        pending.datagrams -= 1
+        pending.bytes -= datagram.bytes.count
+        if pending.datagrams <= 0 {
+            socketPendingVideo.removeValue(
+                forKey: datagram.frameNumber.rawValue)
+        } else {
+            socketPendingVideo[datagram.frameNumber.rawValue] = pending
+        }
+    }
+
+    public func noteKernelPressureFreshVideoShed(
+        datagrams: Int, bytes: Int
+    ) {
+        guard datagrams > 0 else { return }
+        counters.kernelPressureShedFrames += 1
+        counters.kernelPressureShedDatagrams += datagrams
+        counters.kernelPressureShedBytes += bytes
+        fallPurgeKeyframePending = true
+    }
+
+    private func noteSent(
+        _ datagram: VideoChannelDatagram,
+        now: UInt64,
+        paceBitsPerSecond: Int? = nil
+    ) {
         guard datagram.destination == nil else { return }
         let channel: ChannelId
         switch datagram.pacerClass {
@@ -2333,8 +2455,9 @@ public final class Session {
                 ? datagram.frameNumber : nil
         estimator.noteSent(
             channel: channel, seq: datagram.seq,
-            bytes: datagram.bytes.count, now: pumpNowNS,
-            deliveryFrame: deliveryFrame
+            bytes: datagram.bytes.count, now: now,
+            deliveryFrame: deliveryFrame,
+            paceBitsPerSecond: paceBitsPerSecond
         )
     }
 
@@ -2383,12 +2506,12 @@ public final class Session {
         // know when that is the case.
         let verdict = estimator.ingest(
             report, now: now, inRecovery: machine?.state == .recovery,
-            pacerBacklogBytes: channel.queuedBytes(.freshVideo)
-                + channel.queuedBytes(.videoTail),
+            pacerBacklogBytes: queuedVideoBytes,
             // HS-28: NACKs against frames we have not finished sending
             // are the client's completion presumption expiring
             // mid-drain — self-inflicted, recused from path evidence.
             recusedNackFrames: channel.framesWithQueuedShards()
+                .union(socketPendingVideo.keys)
         )
         var events: [SessionEvent] = []
         if let rate = verdict.newRateBitsPerSecond {
@@ -2411,18 +2534,23 @@ public final class Session {
             // other mid-flight loss uses; the IDR supersedes whatever
             // the dropped shards would have completed.
             if reason != .evidence {
-                let backlog = channel.queuedBytes(.freshVideo)
-                    + channel.queuedBytes(.videoTail)
+                let backlog = queuedVideoBytes
                 let staleWireNS = UInt64(
                     Double(backlog) * 8e9 / Double(rate))
                 if staleWireNS > videoQueueBudgetNS {
                     let purged = channel.purgeQueuedVideo()
+                    let socketDatagrams = socketPendingVideo.values.reduce(0) {
+                        $0 + $1.datagrams
+                    }
+                    let socketBytes = socketPendingVideo.values.reduce(0) {
+                        $0 + $1.bytes
+                    }
                     fallPurgeKeyframePending = true
                     counters.fallPurges += 1
-                    counters.fallPurgedVideoBytes += purged.bytes
+                    counters.fallPurgedVideoBytes += purged.bytes + socketBytes
                     events.append(.videoBacklogPurged(
-                        datagrams: purged.datagrams,
-                        bytes: purged.bytes,
+                        datagrams: purged.datagrams + socketDatagrams,
+                        bytes: purged.bytes + socketBytes,
                         staleWireMs: Int(staleWireNS / 1_000_000)))
                 }
             }
@@ -2774,6 +2902,38 @@ public final class Session {
     public func pump(now: UInt64) -> Int {
         pumpNowNS = now
         return channel.pump(now: now)
+    }
+
+    /// Releases only control/audio pacer work. Used when the executable
+    /// already has sealed video waiting on a blocked socket.
+    @discardableResult
+    public func pumpLatency(now: UInt64) -> Int {
+        pumpNowNS = now
+        return channel.pumpLatency(now: now)
+    }
+
+    /// Stable cross-channel priority for an unsent socket outbox. Noise
+    /// replay/nonce state is per channel, so control/audio may move ahead of
+    /// video byte-identically. Relative order within every channel remains
+    /// unchanged; video classes are deliberately not reordered among
+    /// themselves because they share channel 2.
+    public static func prioritizeLatency(
+        _ datagrams: [VideoChannelDatagram]
+    ) -> [VideoChannelDatagram] {
+        var control: [VideoChannelDatagram] = []
+        var audio: [VideoChannelDatagram] = []
+        var remaining: [VideoChannelDatagram] = []
+        control.reserveCapacity(datagrams.count)
+        audio.reserveCapacity(datagrams.count)
+        remaining.reserveCapacity(datagrams.count)
+        for datagram in datagrams {
+            switch datagram.pacerClass {
+            case .control: control.append(datagram)
+            case .audio: audio.append(datagram)
+            default: remaining.append(datagram)
+            }
+        }
+        return control + audio + remaining
     }
 
     /// The earliest instant anything here has work: the pacer's wake,

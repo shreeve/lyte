@@ -223,6 +223,36 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.stats.stretchedTrainsRecused, 0)
     }
 
+    func testSingleSocketBurstCannotDemoteCapacityBelief() {
+        let estimator = makeEstimator()
+        let seed = train(
+            estimator, seqStart: 0, count: 12,
+            sendStartNS: 10 * Self.ms,
+            bottleneckBitsPerSecond: 20e6
+        )
+        _ = estimator.ingest(
+            report(samples: seed, clientMicros: 30_000),
+            now: 30 * Self.ms, inRecovery: false
+        )
+        // One sendmmsg acceptance gives every datagram the same actual-send
+        // timestamp. Arrival serialization at 7 Mbps is a microburst service
+        // reading, not proof that sustained capacity fell from 20 Mbps.
+        let samples = train(
+            estimator, seqStart: 20, count: 12,
+            sendStartNS: 40 * Self.ms, sendSpacingNS: 0,
+            bottleneckBitsPerSecond: 7e6
+        )
+        _ = estimator.ingest(
+            report(samples: samples, clientMicros: 50_000),
+            now: 60 * Self.ms, inRecovery: false
+        )
+        XCTAssertEqual(estimator.stats.honestSamples, 0)
+        XCTAssertEqual(estimator.stats.burstGeometryTrainsRecused, 1,
+            "one socket batch must not become a sustained-capacity witness")
+        XCTAssertEqual(estimator.capacityBeliefBitsPerSecond, 20_000_000,
+            "burst geometry may not demote the capacity belief")
+    }
+
     func testShortTrainsAreWeightedDown() {
         let estimator = makeEstimator()
         // A 4-packet train (below the 8-packet confidence bar) measures

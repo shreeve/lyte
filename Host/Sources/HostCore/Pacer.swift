@@ -284,12 +284,15 @@ public final class Pacer {
     /// class; the batch closes when the current head no longer fits the
     /// remaining bucket — never by skipping ahead to a smaller
     /// lower-class token, which would invert priority.
-    public func nextBatch(now: UInt64) -> PacerBatch? {
+    public func nextBatch(
+        now: UInt64, upThrough highestAllowedClass: PacerClass = .bulk
+    ) -> PacerBatch? {
         refill(now: now)
         var out: [PacerToken] = []
         var outBytes = 0
 
-        while let head = highestHead() {
+        while let head = highestHead(),
+              head.priorityClass <= highestAllowedClass {
             let need = Double(outBytes + head.bytes)
             if need <= tokens + 1e-3 {
                 let t = queues[head.priorityClass.rawValue].pop()!

@@ -105,6 +105,14 @@ func elevateCurrentThread(_ label: String, rtPriority: Int32) {
 
 final class SessionWire {
     private let netio: OpaquePointer
+    private var latencyNetio: OpaquePointer?
+    private let handshakeWitness: FileHandle? = {
+        guard let path = ProcessInfo.processInfo.environment[
+            "LYTE_HANDSHAKE_WITNESS_JSONL"] else { return nil }
+        _ = FileManager.default.createFile(atPath: path, contents: nil)
+        return FileHandle(forWritingAtPath: path)
+    }()
+    private var awaitPrimaryDatagrams = 0
     private var session: Session!
     /// HS-15: serializes Session/outbox access between the video
     /// capture loop thread and the audio capture loop thread (see the
@@ -254,6 +262,38 @@ final class SessionWire {
     private(set) var audioPacketsDroppedPreSession = 0
     private(set) var datagramsSent = 0
     private(set) var bytesSent = 0
+    private(set) var socketWouldBlockCount = 0
+    private(set) var socketPendingMaxDatagrams = 0
+    private(set) var socketPendingMaxBytes = 0
+    private(set) var audioSocketWouldBlockCount = 0
+    private(set) var audioSocketOutboxMaxNS: UInt64 = 0
+    private(set) var audioSocketWorstSeq: UInt16?
+    private(set) var audioSocketWorstEnqueuedAtNS: UInt64?
+    private(set) var audioSocketWorstAcceptedAtNS: UInt64?
+    private(set) var audioSocketWorstBlockedByVideo = false
+    private(set) var socketSendBufferBytes = 0
+    private(set) var latencySocketSendBufferBytes = 0
+    private(set) var latencySocketOutqMaxBytes = 0
+    private(set) var socketOutqMaxBytes = 0
+    private(set) var socketOutqQueryFailures = 0
+    private(set) var socketENOBUFSCount = 0
+    private(set) var videoSocketWouldBlockCount = 0
+    private(set) var latencySocketWouldBlockCount = 0
+    private(set) var videoSocketENOBUFSCount = 0
+    private(set) var latencySocketENOBUFSCount = 0
+    private(set) var socketFreshVideoShedDatagrams = 0
+    private(set) var socketFreshVideoShedBytes = 0
+    private var currentVideoSocketOutqBytes = 0
+    private var currentLatencySocketOutqBytes = 0
+    private var kernelPressureGovernor = KernelPressureGovernor()
+    private var kernelPressureDecision: KernelPressureDecision?
+    private struct AudioOutboxTrace {
+        var enqueuedAtNS: UInt64
+        var blockedByVideo: Bool
+    }
+    private var audioOutboxTrace: [UInt16: AudioOutboxTrace] = [:]
+    private var freshVideoReleasedAtNS: [UInt64: UInt64] = [:]
+    private var freshVideoFramesPartiallyAccepted: Set<UInt32> = []
     private(set) var challengesSentOffPrimary = 0
     private(set) var lastSendError: String?
     /// HS-16 log throttle: the last rate a `rate:` line reported.
@@ -342,6 +382,12 @@ final class SessionWire {
     var measuredDeliveryRate: Int? { session.measuredDeliveryRateBitsPerSecond }
     var capacityBelief: Int? { session.capacityBeliefBitsPerSecond }
     var queuingDelayMicros: Int64? { session.queuingDelayMicroseconds }
+    var kernelPressureState: KernelPressureState {
+        kernelPressureDecision?.state ?? .calm
+    }
+    var kernelVideoServiceDebtNS: UInt64 {
+        kernelPressureDecision?.totalVideoServiceDebtNS ?? 0
+    }
     func frameByteCeiling(fps: Int) -> Int { session.frameByteCeiling(fps: fps) }
     // HS-25 unprotectable-frame guard surfaces: the live drop count
     // (the Sink logs increments) and the worst-case ceiling the shell
@@ -398,6 +444,12 @@ final class SessionWire {
             throw HostError("session socket open failed: \(errString(err))")
         }
         netio = n
+        guard lyte_netio_set_priority(n, 4) == 0 else {
+            lyte_netio_free(n)
+            throw HostError("video socket SO_PRIORITY failed")
+        }
+        socketSendBufferBytes = max(
+            Int(lyte_netio_send_buffer_bytes(n)), 0)
         if let peer {
             guard lyte_netio_set_peer(n, peer.host, peer.port,
                                       &err, err.count) == 0 else {
@@ -422,6 +474,9 @@ final class SessionWire {
             slots.append(slot)
         }
         recvSlots = slots
+        if let peer {
+            try openLatencyLane(peerHost: peer.host, peerPort: peer.port)
+        }
 
         // The sender thread comes up parked (no work until the first
         // ingest signals it); it holds `self` for its lifetime, so the
@@ -465,7 +520,50 @@ final class SessionWire {
     deinit {
         scratch.deallocate()
         recvScratch.deallocate()
+        if let latencyNetio {
+            lyte_netio_free(latencyNetio)
+        }
         lyte_netio_free(netio)
+    }
+
+    private func traceHandshake(
+        _ event: String, fields: [String: String] = [:]
+    ) {
+        guard let handshakeWitness else { return }
+        var object = fields
+        object["event"] = event
+        object["monotonicNanoseconds"] = String(monotonicNS())
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: object, options: [.sortedKeys])
+        else { return }
+        handshakeWitness.write(data)
+        handshakeWitness.write(Data([0x0A]))
+    }
+
+    private func openLatencyLane(
+        peerHost: String, peerPort: UInt16
+    ) throws {
+        guard latencyNetio == nil else { return }
+        var err = [CChar](repeating: 0, count: 256)
+        let localPort = lyte_netio_local_port(netio)
+        guard let lane = lyte_netio_new(
+            "0.0.0.0", localPort, &err, err.count
+        ) else {
+            throw HostError("latency socket open failed: \(errString(err))")
+        }
+        guard lyte_netio_set_peer(
+            lane, peerHost, peerPort, &err, err.count
+        ) == 0 else {
+            lyte_netio_free(lane)
+            throw HostError("latency socket connect failed: \(errString(err))")
+        }
+        guard lyte_netio_set_priority(lane, 6) == 0 else {
+            lyte_netio_free(lane)
+            throw HostError("latency socket SO_PRIORITY failed")
+        }
+        latencyNetio = lane
+        latencySocketSendBufferBytes = max(
+            Int(lyte_netio_send_buffer_bytes(lane)), 0)
     }
 
     private func makeSession(crypto: SessionCryptoMode, clientTuple: FourTuple) {
@@ -478,9 +576,127 @@ final class SessionWire {
                 capabilities: capabilities
             ),
             clientTuple: clientTuple,
-            now: monotonicNS()
+            now: monotonicNS(),
+            sendAccounting: .socketConfirmed
         ) { [weak self] datagram in
-            self?.outbox.append(datagram)
+            self?.appendOutbox(datagram)
+        }
+    }
+
+    private func appendOutbox(_ datagram: VideoChannelDatagram) {
+        if datagram.pacerClass == .audio {
+            let blockedByVideo = outbox.contains {
+                $0.pacerClass == .freshVideo
+                    || $0.pacerClass == .videoTail
+                    || $0.pacerClass == .refinement
+            }
+            audioOutboxTrace[datagram.seq.rawValue] = AudioOutboxTrace(
+                enqueuedAtNS: monotonicNS(), blockedByVideo: blockedByVideo)
+        }
+        if datagram.pacerClass == .freshVideo {
+            freshVideoReleasedAtNS[datagramTraceKey(datagram)] = monotonicNS()
+        }
+        outbox.append(datagram)
+    }
+
+    private func datagramTraceKey(_ datagram: VideoChannelDatagram) -> UInt64 {
+        UInt64(datagram.frameNumber.rawValue) << 16
+            | UInt64(datagram.seq.rawValue)
+    }
+
+    @discardableResult
+    private func observeKernelPressure(
+        _ session: Session, now: UInt64
+    ) -> KernelPressureDecision {
+        let videoOutq = Int(lyte_netio_outq_bytes(netio))
+        if videoOutq >= 0 {
+            currentVideoSocketOutqBytes = videoOutq
+            socketOutqMaxBytes = max(socketOutqMaxBytes, videoOutq)
+        } else {
+            socketOutqQueryFailures += 1
+        }
+        if let latencyNetio {
+            let latencyOutq = Int(lyte_netio_outq_bytes(latencyNetio))
+            if latencyOutq >= 0 {
+                currentLatencySocketOutqBytes = latencyOutq
+                latencySocketOutqMaxBytes = max(
+                    latencySocketOutqMaxBytes, latencyOutq)
+            } else {
+                socketOutqQueryFailures += 1
+            }
+        }
+        let decision = kernelPressureGovernor.observe(
+            KernelPressureSample(
+                nowNS: now,
+                userspaceVideoBytes: session.queuedVideoBytes,
+                videoKernelBytes: currentVideoSocketOutqBytes,
+                latencyKernelBytes: currentLatencySocketOutqBytes,
+                videoSendBufferBytes: socketSendBufferBytes,
+                latencySendBufferBytes: latencySocketSendBufferBytes,
+                videoWouldBlockCount: videoSocketWouldBlockCount,
+                latencyWouldBlockCount: latencySocketWouldBlockCount,
+                videoENOBUFSCount: videoSocketENOBUFSCount,
+                latencyENOBUFSCount: latencySocketENOBUFSCount,
+                pacerRateBitsPerSecond: session.pacerRateBitsPerSecond,
+                videoQueueBudgetNS: session.videoQueueBudgetNS,
+                frameBudgetBytes: session.frameByteCeiling(fps: 60)))
+        kernelPressureDecision = decision
+        return decision
+    }
+
+    private func shedOldestStaleFreshVideo(
+        now: UInt64, budgetNS: UInt64
+    ) {
+        guard let session else { return }
+        var oldest: (frame: UInt32, releasedAt: UInt64)?
+        for datagram in outbox
+        where datagram.pacerClass == .freshVideo {
+            let frame = datagram.frameNumber.rawValue
+            guard !freshVideoFramesPartiallyAccepted.contains(frame)
+            else { continue }
+            guard let releasedAt = freshVideoReleasedAtNS[
+                datagramTraceKey(datagram)],
+                KernelPressureGovernor.shouldShedAtSocket(
+                    priorityClass: datagram.pacerClass,
+                    releasedAtNS: releasedAt,
+                    nowNS: now,
+                    videoQueueBudgetNS: budgetNS)
+            else { continue }
+            if oldest == nil || releasedAt < oldest!.releasedAt {
+                oldest = (frame, releasedAt)
+            }
+        }
+        guard let oldest else { return }
+        var droppedDatagrams = 0
+        var droppedBytes = 0
+        outbox.removeAll { datagram in
+            guard datagram.pacerClass == .freshVideo,
+                  datagram.frameNumber.rawValue == oldest.frame
+            else { return false }
+            freshVideoReleasedAtNS.removeValue(
+                forKey: datagramTraceKey(datagram))
+            session.discardPendingDatagram(datagram)
+            droppedDatagrams += 1
+            droppedBytes += datagram.bytes.count
+            return true
+        }
+        session.noteKernelPressureFreshVideoShed(
+            datagrams: droppedDatagrams, bytes: droppedBytes)
+        socketFreshVideoShedDatagrams += droppedDatagrams
+        socketFreshVideoShedBytes += droppedBytes
+    }
+
+    private func pumpForSocketState(_ session: Session) {
+        let now = monotonicNS()
+        let pressure = observeKernelPressure(session, now: now)
+        if pressure.state == .latencyOnly {
+            shedOldestStaleFreshVideo(
+                now: now, budgetNS: session.videoQueueBudgetNS)
+        }
+        if outbox.isEmpty, pressure.allowVideoPump {
+            session.pump(now: now)
+        } else {
+            session.pumpLatency(now: now)
         }
     }
 
@@ -493,15 +709,21 @@ final class SessionWire {
             + HostStaticKey.hex(hostStatic.publicKey))
         print("noise: awaiting client handshake on port "
             + "\(lyte_netio_local_port(netio)) …")
+        traceHandshake("awaitClientBegin", fields: [
+            "pid": String(getpid()),
+            "primaryLocalPort": String(lyte_netio_local_port(netio)),
+            "latencySocketExists": String(latencyNetio != nil),
+        ])
 
         let deadline = monotonicNS() + UInt64(timeoutSeconds * 1e9)
         while monotonicNS() < deadline {
             var established = false
             lock.lock()
             do {
-                try receiveAll { [weak self] datagram, tuple in
+                try receiveAll(from: netio) { [weak self] datagram, tuple in
                     guard let self else { return }
                     if self.session == nil {
+                        self.awaitPrimaryDatagrams += 1
                         // Only a plausible handshake initiation may pick
                         // the tuple the socket and session pin to. A host
                         // relaunched under a live client (the F-5 restart
@@ -512,8 +734,21 @@ final class SessionWire {
                         // handshake, and the kernel then filters the real
                         // re-dial (fresh ephemeral port) forever. Shape
                         // check, not trust: the gate still authenticates.
-                        guard Self.looksLikeHandshakeInitiation(datagram)
-                        else { return }
+                        let plausible =
+                            Self.looksLikeHandshakeInitiation(datagram)
+                        let payloadType: UInt8? = (try? Envelope.decode(
+                            datagram[...]))?.1.first
+                        self.traceHandshake("primaryDatagram", fields: [
+                            "ordinal": String(self.awaitPrimaryDatagrams),
+                            "bytes": String(datagram.count),
+                            "remoteAddress": tuple.remoteAddress,
+                            "remotePort": String(tuple.remotePort),
+                            "shapeAccepted": String(plausible),
+                            "payloadType": payloadType.map(String.init) ?? "",
+                            "latencySocketExists":
+                                String(self.latencyNetio != nil),
+                        ])
+                        guard plausible else { return }
                         // Its source is the session's initial tuple;
                         // connect() so the send path has a peer.
                         var err = [CChar](repeating: 0, count: 256)
@@ -522,6 +757,19 @@ final class SessionWire {
                             &err, err.count) == 0 else {
                             print("session: connect to \(tuple.remoteAddress):"
                                 + "\(tuple.remotePort) failed: \(errString(err))")
+                            return
+                        }
+                        do {
+                            try self.openLatencyLane(
+                                peerHost: tuple.remoteAddress,
+                                peerPort: tuple.remotePort)
+                            self.traceHandshake(
+                                "latencySocketOpened", fields: [
+                                    "remoteAddress": tuple.remoteAddress,
+                                    "remotePort": String(tuple.remotePort),
+                                ])
+                        } catch {
+                            print("session: \(error)")
                             return
                         }
                         self.makeSession(
@@ -544,7 +792,9 @@ final class SessionWire {
                 // msg 2 escapes later via the streaming service loop's
                 // pump, but a challenge answers a flood that never
                 // establishes, so awaitClient must drain the pacer here.
-                if session != nil { session.pump(now: monotonicNS()) }
+                if let session {
+                    pumpForSocketState(session)
+                }
                 try flushOutbox() // challenges, message 2, session-start beacon
             } catch {
                 lock.unlock()
@@ -792,7 +1042,7 @@ final class SessionWire {
         // while idle, so this is one batch + one sendmmsg, tens of µs);
         // the sender thread paces out the rest while the capture loop
         // returns to the compositor.
-        session.pump(now: monotonicNS())
+        pumpForSocketState(session)
         do {
             try flushOutbox()
         } catch {
@@ -806,6 +1056,15 @@ final class SessionWire {
         lastFrameIngestNanos = monotonicNS() - ingestStart
         lastFrameDrainNanos = 0 // the capture thread no longer waits
         signalDrain()
+    }
+
+    /// Debug/evidence drain for the synthetic motion leg. The underlying
+    /// telemetry is populated by the unchanged production admission and
+    /// sender paths.
+    func takeFrameTransmitTelemetry() -> [VideoFrameTransmitTelemetry] {
+        lock.lock()
+        defer { lock.unlock() }
+        return session.takeFrameTransmitTelemetry()
     }
 
     func annotateLastVideoFrame(
@@ -823,16 +1082,21 @@ final class SessionWire {
     /// clean/impaired budget come from the same locked Session snapshot,
     /// so a regime/rate move cannot mix eras in the admission decision.
     var videoAdmissionPosture: (
-        backlogWireTimeNS: UInt64, budgetNS: UInt64, regime: FecRegime
+        backlogWireTimeNS: UInt64, budgetNS: UInt64, regime: FecRegime,
+        kernelState: KernelPressureState
     ) {
         lock.lock()
         defer { lock.unlock() }
-        guard let session else { return (0, 50_000_000, .clean) }
-        let bytes = session.queuedVideoBytes
-        let rate = max(session.pacerRateBitsPerSecond, 1)
-        let wireTime = bytes > 0
-            ? UInt64(Double(bytes) * 8e9 / Double(rate)) : 0
-        return (wireTime, session.videoQueueBudgetNS, session.fecRegime)
+        guard let session else {
+            return (0, 50_000_000, .clean, .calm)
+        }
+        let pressure = observeKernelPressure(
+            session, now: monotonicNS())
+        return (
+            pressure.totalVideoServiceDebtNS,
+            pressure.admissionBudgetNS,
+            session.fecRegime,
+            pressure.state)
     }
 
     /// HS-15: one encoded 5 ms Opus packet from the AUDIO capture
@@ -865,7 +1129,7 @@ final class SessionWire {
         if lock.try() {
             drainAudioMailboxLocked()
             if let session, session.phase == .established, !peerGone {
-                session.pump(now: monotonicNS())
+                pumpForSocketState(session)
                 do {
                     try flushOutbox()
                 } catch {
@@ -904,7 +1168,7 @@ final class SessionWire {
                     captureTimestampMicroseconds: packet.captureMicros,
                     now: now
                 )
-                session.pump(now: monotonicNS())
+                pumpForSocketState(session)
                 try flushOutbox()
                 audioPacketsSent += 1
             } catch {
@@ -1252,7 +1516,8 @@ final class SessionWire {
         // Always service the scheduling island before lower-frequency
         // receive/timer/stat work under this lock.
         drainAudioMailboxLocked()
-        try receiveAll { [weak self] datagram, tuple in
+        let receive: ([UInt8], FourTuple) -> Void = { [weak self]
+            datagram, tuple in
             guard let self, let session = self.session else { return }
             for event in session.receive(
                 datagram, from: tuple,
@@ -1264,15 +1529,25 @@ final class SessionWire {
             // Do not let parsing the whole burst consume an audio period.
             self.drainAudioMailboxLocked()
         }
+        try receiveAll(from: netio, receive)
+        if let latencyNetio {
+            try receiveAll(from: latencyNetio, receive)
+        }
         for event in session.advance(
             now: monotonicNS(), hostMicroseconds: monotonicMicros()
         ) {
             log(event)
         }
-        session.pump(now: monotonicNS())
+        // A nonempty outbox means the previous socket write hit EAGAIN.
+        // Releasing another VIDEO quantum before retrying would turn kernel
+        // backpressure into an unbounded userspace queue. The helper admits
+        // only latency classes while blocked so audio can cross channels
+        // ahead of the sealed video without adding more video pressure.
+        pumpForSocketState(session)
     }
 
     private func receiveAll(
+        from socket: OpaquePointer,
         _ handle: ([UInt8], FourTuple) -> Void
     ) throws {
         let receiveStart = monotonicNS()
@@ -1283,7 +1558,7 @@ final class SessionWire {
         }
         while true {
             let got = recvSlots.withUnsafeMutableBufferPointer { slots in
-                lyte_netio_recv_batch(netio, slots.baseAddress,
+                lyte_netio_recv_batch(socket, slots.baseAddress,
                                       Int32(slots.count),
                                       &recvError, recvError.count)
             }
@@ -1295,7 +1570,7 @@ final class SessionWire {
                 throw HostError("recv failed: \(errString(recvError))")
             }
             if got == 0 { return }
-            let localPort = lyte_netio_local_port(netio)
+            let localPort = lyte_netio_local_port(socket)
             for i in 0..<Int(got) {
                 let slot = recvSlots[i]
                 let datagram = Array(UnsafeBufferPointer(
@@ -1407,6 +1682,12 @@ final class SessionWire {
                     primary.tuple.remotePort, &err, err.count) != 0 {
                     emit("path: rebind connect failed: \(errString(err))")
                 }
+                if let latencyNetio,
+                   lyte_netio_set_peer(
+                    latencyNetio, primary.tuple.remoteAddress,
+                    primary.tuple.remotePort, &err, err.count) != 0 {
+                    emit("path: latency rebind failed: \(errString(err))")
+                }
             }
         case .handshakeCookieModeChanged(let requireCookie):
             // HS-21: the observable dial. Loud on purpose — this is the
@@ -1475,6 +1756,7 @@ final class SessionWire {
         case .inputReceived(let event, let rxMicros):
             injectInput(event, receivedAtMicroseconds: rxMicros)
         case .videoBacklogPurged(let datagrams, let bytes, let staleWireMs):
+            purgeSocketPendingVideo()
             emit("rate: fall purge — \(datagrams) queued video datagrams "
                 + "(\(bytes) B, ~\(staleWireMs) ms stale at the new rate) "
                 + "dropped, fresh IDR armed")
@@ -1615,6 +1897,21 @@ final class SessionWire {
         }
     }
 
+    private func purgeSocketPendingVideo() {
+        guard let session else { return }
+        outbox.removeAll { datagram in
+            let isVideo = datagram.pacerClass == .freshVideo
+                || datagram.pacerClass == .videoTail
+                || datagram.pacerClass == .refinement
+            if isVideo {
+                session.discardPendingDatagram(datagram)
+                freshVideoReleasedAtNS.removeValue(
+                    forKey: datagramTraceKey(datagram))
+            }
+            return isVideo
+        }
+    }
+
     /// One delivered input event → the injector → the session's echo
     /// buffer (flushed as 0x17 on the next service pass). Failures are
     /// counted and loud, never fatal — a stuck injector must not kill
@@ -1666,6 +1963,8 @@ final class SessionWire {
         guard !outbox.isEmpty else { return }
         if peerGone {
             outbox.removeAll(keepingCapacity: true)
+            audioOutboxTrace.removeAll(keepingCapacity: true)
+            freshVideoReleasedAtNS.removeAll(keepingCapacity: true)
             return
         }
         let queued = outbox
@@ -1675,7 +1974,7 @@ final class SessionWire {
         // Challenges to unvalidated tuples ride sendmsg-with-address on
         // the connected socket (lyte_netio_send_to): the challenge MUST
         // travel on the exact probed tuple — that is what it proves.
-        let deliverable = queued.filter { datagram in
+        let filtered = queued.filter { datagram in
             guard let destination = datagram.destination,
                   destination != session.validator.primary.tuple
             else { return true }
@@ -1703,11 +2002,30 @@ final class SessionWire {
             }
             return false
         }
+        // Noise transport state is per channel. Move control/audio ahead
+        // of video byte-identically, preserving FIFO within every channel.
+        let deliverable = Session.prioritizeLatency(filtered)
 
         var staged = 0
         while staged < deliverable.count {
-            let batch = deliverable[staged..<min(
-                staged + Int(LYTE_NETIO_MAX_BATCH), deliverable.count)]
+            let firstClass = deliverable[staged].pacerClass
+            let socketLane = SocketLane.forClass(firstClass)
+            let sendSocket = socketLane == .latency
+                ? (latencyNetio ?? netio) : netio
+            let batchEnd: Int
+            if socketLane == .latency {
+                var end = staged
+                while end < deliverable.count,
+                      end - staged < Int(LYTE_NETIO_MAX_BATCH),
+                      deliverable[end].pacerClass <= .audio {
+                    end += 1
+                }
+                batchEnd = end
+            } else {
+                batchEnd = min(
+                    staged + Int(LYTE_NETIO_MAX_BATCH), deliverable.count)
+            }
+            let batch = deliverable[staged..<batchEnd]
             var pkts: [lyte_netio_pkt] = []
             pkts.reserveCapacity(batch.count)
             var offset = 0
@@ -1728,12 +2046,27 @@ final class SessionWire {
             var sentTotal = 0
             while sentTotal < pkts.count {
                 let sent = pkts[sentTotal...].withUnsafeBufferPointer { buf in
-                    lyte_netio_send_batch(netio, buf.baseAddress,
-                                          Int32(buf.count), nil,
-                                          &err, err.count)
+                    lyte_netio_send_batch(
+                        sendSocket, buf.baseAddress, Int32(buf.count), nil,
+                        &err, err.count)
                 }
                 if sent == LYTE_NETIO_PEER_GONE {
                     notePeerGone()
+                    return
+                }
+                if sent == LYTE_NETIO_NO_BUFFER {
+                    socketENOBUFSCount += 1
+                    if socketLane == .latency {
+                        latencySocketENOBUFSCount += 1
+                    } else {
+                        videoSocketENOBUFSCount += 1
+                    }
+                    let unsent = staged + sentTotal
+                    outbox.append(contentsOf: deliverable[unsent...])
+                    let now = monotonicNS()
+                    _ = observeKernelPressure(session, now: now)
+                    shedOldestStaleFreshVideo(
+                        now: now, budgetNS: session.videoQueueBudgetNS)
                     return
                 }
                 if sent < 0 {
@@ -1744,21 +2077,62 @@ final class SessionWire {
                     // Preserve exact datagram order and return immediately.
                     // The sender loop retries after releasing `lock`; sleeping
                     // here was the measured 100+ ms audio-mailbox stall.
-                    if sentTotal > 0 {
-                        for d in batch.prefix(sentTotal) {
-                            datagramsSent += 1
-                            bytesSent += d.bytes.count
-                        }
-                    }
                     let unsent = staged + sentTotal
                     outbox.append(contentsOf: deliverable[unsent...])
+                    socketWouldBlockCount += 1
+                    if socketLane == .latency {
+                        latencySocketWouldBlockCount += 1
+                    } else {
+                        videoSocketWouldBlockCount += 1
+                    }
+                    let blockedOutq = max(
+                        Int(lyte_netio_outq_bytes(sendSocket)), 0)
+                    if socketLane == .latency {
+                        latencySocketOutqMaxBytes = max(
+                            latencySocketOutqMaxBytes, blockedOutq)
+                    } else {
+                        socketOutqMaxBytes = max(
+                            socketOutqMaxBytes, blockedOutq)
+                    }
+                    if deliverable[unsent...].contains(where: {
+                        $0.pacerClass == .audio
+                    }) {
+                        audioSocketWouldBlockCount += 1
+                    }
+                    socketPendingMaxDatagrams = max(
+                        socketPendingMaxDatagrams, outbox.count)
+                    socketPendingMaxBytes = max(
+                        socketPendingMaxBytes,
+                        outbox.reduce(0) { $0 + $1.bytes.count })
                     return
                 }
+                let accepted = batch.dropFirst(sentTotal).prefix(Int(sent))
+                let acceptedAt = monotonicNS()
+                for d in accepted {
+                    if d.pacerClass == .freshVideo {
+                        freshVideoFramesPartiallyAccepted.insert(
+                            d.frameNumber.rawValue)
+                        freshVideoReleasedAtNS.removeValue(
+                            forKey: datagramTraceKey(d))
+                    }
+                    if d.pacerClass == .audio,
+                       let trace = audioOutboxTrace.removeValue(
+                            forKey: d.seq.rawValue) {
+                        let delay = acceptedAt &- trace.enqueuedAtNS
+                        if delay > audioSocketOutboxMaxNS {
+                            audioSocketOutboxMaxNS = delay
+                            audioSocketWorstSeq = d.seq.rawValue
+                            audioSocketWorstEnqueuedAtNS = trace.enqueuedAtNS
+                            audioSocketWorstAcceptedAtNS = acceptedAt
+                            audioSocketWorstBlockedByVideo =
+                                trace.blockedByVideo
+                        }
+                    }
+                    session.confirmDatagramSent(d, now: acceptedAt)
+                    datagramsSent += 1
+                    bytesSent += d.bytes.count
+                }
                 sentTotal += Int(sent)
-            }
-            for d in batch {
-                datagramsSent += 1
-                bytesSent += d.bytes.count
             }
             staged += batch.count
         }

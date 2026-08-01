@@ -7,7 +7,9 @@
 #include <errno.h>
 #include <linux/errqueue.h>
 #include <linux/net_tstamp.h>
+#include <linux/sockios.h>
 #include <netinet/in.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 
 #include <stdarg.h>
@@ -75,6 +77,13 @@ lyte_netio *lyte_netio_new(const char *bind_ip, uint16_t bind_port,
 
     /* Received TOS arrives as an IP_TOS control message on each datagram. */
     int one = 1;
+    /* A session may open a second socket object on this exact local port.
+       Both connect to the same peer, preserving the wire 4-tuple while
+       Linux accounts their send buffers independently. */
+    if (setsockopt(n->fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) < 0) {
+        sys_err(err, errlen, "setsockopt(SO_REUSEPORT) failed");
+        goto fail;
+    }
     if (setsockopt(n->fd, IPPROTO_IP, IP_RECVTOS, &one, sizeof(one)) < 0) {
         sys_err(err, errlen, "setsockopt(IP_RECVTOS) failed");
         goto fail;
@@ -103,6 +112,29 @@ fail:
 uint16_t lyte_netio_local_port(const lyte_netio *n)
 {
     return n->local_port;
+}
+
+int lyte_netio_outq_bytes(const lyte_netio *n)
+{
+    int value = 0;
+    if (ioctl(n->fd, SIOCOUTQ, &value) < 0)
+        return -1;
+    return value;
+}
+
+int lyte_netio_send_buffer_bytes(const lyte_netio *n)
+{
+    int value = 0;
+    socklen_t length = sizeof(value);
+    if (getsockopt(n->fd, SOL_SOCKET, SO_SNDBUF, &value, &length) < 0)
+        return -1;
+    return value;
+}
+
+int lyte_netio_set_priority(lyte_netio *n, int priority)
+{
+    return setsockopt(n->fd, SOL_SOCKET, SO_PRIORITY,
+                      &priority, sizeof(priority));
 }
 
 int lyte_netio_set_peer(lyte_netio *n, const char *ip, uint16_t port,
@@ -176,6 +208,8 @@ int lyte_netio_send_batch(lyte_netio *n, const lyte_netio_pkt *pkts, int count,
     if (sent < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK)
             return 0;
+        if (errno == ENOBUFS)
+            return LYTE_NETIO_NO_BUFFER;
         if (errno == ECONNREFUSED)
             return LYTE_NETIO_PEER_GONE;
         sys_err(err, errlen, "sendmmsg failed");
