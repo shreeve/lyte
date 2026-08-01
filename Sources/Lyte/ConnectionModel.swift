@@ -1303,6 +1303,71 @@ final class ConnectionModel {
         }
         return lines
     }
+
+    func diagnosticBenchmarkSample(
+        runID: String,
+        workload: String,
+        elapsedSeconds: Double,
+        afterOrdinal: UInt64
+    ) -> DiagnosticBenchmarkSample {
+        let session = lyteSession
+        let core = session?.core
+        let pipeline = core?.pipeline.snapshotStats()
+        let idr = core?.idrRequester.snapshotStats()
+        let receiver = core?.audio.snapshotStats()
+        let player = session?.audioPlayer?.snapshotStats()
+        let counters = core?.snapshotCounters()
+        let phaseName: String
+        switch phase {
+        case .pickHost: phaseName = "pickHost"
+        case .connecting: phaseName = "connecting"
+        case .streaming: phaseName = "streaming"
+        case .failed: phaseName = "failed"
+        }
+        return DiagnosticBenchmarkSample(
+            runID: runID,
+            workload: workload,
+            elapsedSeconds: elapsedSeconds,
+            phase: phaseName,
+            flight: videoFlightRecorder.snapshot(),
+            frames: videoFlightRecorder.recentFrames().filter {
+                $0.ordinal > afterOrdinal
+            },
+            video: .init(
+                framesDecoded: pipeline?.framesDecoded ?? 0,
+                framesSkipped: pipeline?.framesSkipped ?? 0,
+                samplesDelivered: pipeline?.samplesDelivered ?? 0,
+                samplesWithheld: pipeline?.samplesWithheld ?? 0,
+                sampleFailures: pipeline?.sampleFailures ?? 0,
+                idrVerdicts: idr?.verdicts ?? 0,
+                idrRequests: idr?.requestsSent ?? 0,
+                idrRetries: idr?.retryRequests ?? 0),
+            audio: .init(
+                datagramsReceived: counters?.audioDatagramsReceived ?? 0,
+                packetsEmitted: receiver?.depacketizer.packetsEmitted ?? 0,
+                packetsRebuilt: receiver?.depacketizer.packetsRebuilt ?? 0,
+                packetsUnrecoverable:
+                    receiver?.depacketizer.packetsUnrecoverable ?? 0,
+                packetsPlayed: receiver?.jitter.packetsPlayed ?? 0,
+                plcInvocations: receiver?.jitter.plcInvocations ?? 0,
+                latePacketsDropped: receiver?.jitter.latePacketsDropped ?? 0,
+                recenterEvents: receiver?.jitter.recenterEvents ?? 0,
+                packetsDroppedInRecenter:
+                    receiver?.jitter.packetsDroppedInRecenter ?? 0,
+                starvedVerdicts: receiver?.jitter.starvedVerdicts ?? 0,
+                targetPackets: receiver?.jitter.targetPackets ?? 0,
+                interArrivalStdDevMicroseconds:
+                    receiver?.jitter.interArrivalStdDevMicroseconds ?? 0,
+                playerAvailable: player != nil,
+                packetsFed: player?.packetsFed ?? 0,
+                plcPacketsFed: player?.plcPacketsFed ?? 0,
+                ringDepthFrames: player?.ringDepthFrames ?? 0,
+                underrunFrames: player?.underrunFrames ?? 0,
+                declickProtectedUnderrunFrames:
+                    player?.underrunFrames ?? 0,
+                decodeFailures: player?.decodeFailures ?? 0,
+                routeChangeFailures: player?.routeChangeFailures ?? 0))
+    }
 }
 
 /// Latched (width, height) so the sample callback hops to the main
@@ -1373,7 +1438,8 @@ private final class VideoRendererHandoff: @unchecked Sendable {
         let decision = playout.schedule(
             mappedCaptureMicroseconds: mapped,
             arrivalMicroseconds: arrival,
-            sourceCaptureMicroseconds: unit.timestamp.microseconds)
+            sourceCaptureMicroseconds: unit.timestamp.microseconds,
+            isRandomAccess: unit.isIDR)
         let pending = Pending(
             sample: transferred,
             unit: unit,

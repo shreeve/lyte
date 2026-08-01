@@ -7,11 +7,17 @@ import Foundation
 /// Queue wait and enqueue duration isolate the app/renderer handoff. Apple
 /// renderer metrics close the final decode/display boundary.
 public final class VideoFlightRecorder: @unchecked Sendable {
+    public enum Provenance: String, Sendable, Equatable, Codable {
+        case freshCapture
+        case retainedRefinement
+    }
+
     public struct Token: Sendable {
         fileprivate let frame: UInt32
         fileprivate let hostMicroseconds: UInt64
         fileprivate let readyNanoseconds: UInt64
         fileprivate let ordinal: UInt64
+        fileprivate let provenance: Provenance
     }
 
     public struct RendererMetrics: Sendable, Equatable, Codable {
@@ -35,12 +41,19 @@ public final class VideoFlightRecorder: @unchecked Sendable {
 
     public struct Snapshot: Sendable, Equatable, Codable {
         public var frames: UInt64
+        public var freshCaptureFrames: UInt64
+        public var retainedRefinementFrames: UInt64
         public var pending: Int
         public var maximumPending: Int
+        public var sourceGapP50Milliseconds: Double?
         public var sourceGapP99Milliseconds: Double?
+        public var readyGapP50Milliseconds: Double?
         public var readyGapP99Milliseconds: Double?
+        public var transitStretchP50Milliseconds: Double?
         public var transitStretchP99Milliseconds: Double?
+        public var queueWaitP50Milliseconds: Double?
         public var queueWaitP99Milliseconds: Double?
+        public var enqueueP50Milliseconds: Double?
         public var enqueueP99Milliseconds: Double?
         public var sampleBuildP99Milliseconds: Double?
         public var assemblyLockHoldP99Milliseconds: Double?
@@ -81,8 +94,10 @@ public final class VideoFlightRecorder: @unchecked Sendable {
     }
 
     public struct FrameObservation: Sendable, Equatable, Codable {
+        public var ordinal: UInt64
         public var frame: UInt32
         public var hostMicroseconds: UInt64
+        public var provenance: Provenance
         public var sourceGapMilliseconds: Double?
         public var readyGapMilliseconds: Double?
         public var transitStretchMilliseconds: Double?
@@ -114,6 +129,9 @@ public final class VideoFlightRecorder: @unchecked Sendable {
     private var rendererRecoveries: UInt64 = 0
     private var cadenceStalls: UInt64 = 0
     private var rendererMetrics: RendererMetrics?
+    private var freshCaptureFrames: UInt64 = 0
+    private var retainedRefinementFrames: UInt64 = 0
+    private var previousSubmittedHostMicroseconds: UInt64?
     private var previousHostMicroseconds: UInt64?
     private var previousReadyNanoseconds: UInt64?
 
@@ -131,11 +149,21 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         ordinal &+= 1
         pending += 1
         maximumPending = max(maximumPending, pending)
+        let provenance: Provenance =
+            previousSubmittedHostMicroseconds == hostMicroseconds
+            ? .retainedRefinement : .freshCapture
+        previousSubmittedHostMicroseconds = hostMicroseconds
+        if provenance == .retainedRefinement {
+            retainedRefinementFrames &+= 1
+        } else {
+            freshCaptureFrames &+= 1
+        }
         let token = Token(
             frame: frame,
             hostMicroseconds: hostMicroseconds,
             readyNanoseconds: nowNanoseconds,
-            ordinal: ordinal)
+            ordinal: ordinal,
+            provenance: provenance)
         lock.unlock()
         return token
     }
@@ -170,7 +198,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
             Double(token.readyNanoseconds &- $0) / 1e6
         }
         let stretch: Double?
-        if let sourceGap, let readyGap {
+        if token.provenance == .freshCapture, let sourceGap, let readyGap {
             stretch = max(0, readyGap - sourceGap)
         } else {
             stretch = nil
@@ -180,8 +208,10 @@ public final class VideoFlightRecorder: @unchecked Sendable {
 
         let cadenceStall = (sourceGap ?? 0) > 25
         let observation = FrameObservation(
+            ordinal: token.ordinal,
             frame: token.frame,
             hostMicroseconds: token.hostMicroseconds,
+            provenance: token.provenance,
             sourceGapMilliseconds: sourceGap,
             readyGapMilliseconds: readyGap,
             transitStretchMilliseconds: stretch,
@@ -242,13 +272,25 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         defer { lock.unlock() }
         return Snapshot(
             frames: ordinal,
+            freshCaptureFrames: freshCaptureFrames,
+            retainedRefinementFrames: retainedRefinementFrames,
             pending: pending,
             maximumPending: maximumPending,
+            sourceGapP50Milliseconds:
+                percentile(\.sourceGapMilliseconds, percentile: 50),
             sourceGapP99Milliseconds: percentile(\.sourceGapMilliseconds),
+            readyGapP50Milliseconds:
+                percentile(\.readyGapMilliseconds, percentile: 50),
             readyGapP99Milliseconds: percentile(\.readyGapMilliseconds),
+            transitStretchP50Milliseconds:
+                percentile(\.transitStretchMilliseconds, percentile: 50),
             transitStretchP99Milliseconds:
                 percentile(\.transitStretchMilliseconds),
+            queueWaitP50Milliseconds:
+                percentile(\.queueWaitMilliseconds, percentile: 50),
             queueWaitP99Milliseconds: percentile(\.queueWaitMilliseconds),
+            enqueueP50Milliseconds:
+                percentile(\.enqueueMilliseconds, percentile: 50),
             enqueueP99Milliseconds: percentile(\.enqueueMilliseconds),
             sampleBuildP99Milliseconds: percentile(\.sampleBuildMilliseconds),
             assemblyLockHoldP99Milliseconds:
@@ -290,26 +332,33 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         rendererRecoveries = 0
         cadenceStalls = 0
         rendererMetrics = nil
+        freshCaptureFrames = 0
+        retainedRefinementFrames = 0
+        previousSubmittedHostMicroseconds = nil
         previousHostMicroseconds = nil
         previousReadyNanoseconds = nil
         lock.unlock()
     }
 
     private func percentile(
-        _ keyPath: KeyPath<FrameObservation, Double?>
+        _ keyPath: KeyPath<FrameObservation, Double?>,
+        percentile rank: Int = 99
     ) -> Double? {
-        percentile(ring.compactMap { $0[keyPath: keyPath] })
+        percentile(ring.compactMap { $0[keyPath: keyPath] }, rank)
     }
 
     private func percentile(
-        _ keyPath: KeyPath<FrameObservation, Double>
+        _ keyPath: KeyPath<FrameObservation, Double>,
+        percentile rank: Int = 99
     ) -> Double? {
-        percentile(ring.map { $0[keyPath: keyPath] })
+        percentile(ring.map { $0[keyPath: keyPath] }, rank)
     }
 
-    private func percentile(_ values: [Double]) -> Double? {
+    private func percentile(_ values: [Double], _ percentile: Int) -> Double? {
         guard !values.isEmpty else { return nil }
         let sorted = values.sorted()
-        return sorted[min(sorted.count - 1, (sorted.count * 99) / 100)]
+        let rank = Int(
+            ceil(Double(percentile) / 100 * Double(sorted.count))) - 1
+        return sorted[min(sorted.count - 1, max(0, rank))]
     }
 }

@@ -215,10 +215,9 @@ final class AudioJitterGateTests: XCTestCase {
         let stats = buffer.snapshotStats()
 
         XCTAssertGreaterThan(
-            stats.targetPackets, AudioJitterConfig().minTargetPackets,
-            "±15 ms variance must grow the target past the floor")
-        XCTAssertLessThanOrEqual(stats.targetPackets, 12,
-            "…but bounded near the deviation percentile, not the max")
+            stats.targetPackets, AudioJitterConfig().minTargetPackets)
+        XCTAssertLessThanOrEqual(
+            stats.targetPackets, AudioJitterConfig().maxTargetPackets)
         // Continuity once adapted: the second half is seam-free.
         let half = UInt64(count / 2) * Self.packetMicros + 50_000
         let latePlc = result.plcTimeline.filter { $0.atMicros > half }
@@ -228,6 +227,34 @@ final class AudioJitterGateTests: XCTestCase {
         // silent discontinuity: everything played stays in order.
         XCTAssertEqual(result.played, result.played.sorted())
         XCTAssertGreaterThan(result.played.count, count * 95 / 100)
+    }
+
+    func testEarnedCushionHoldsThenDecaysGradually() {
+        var config = AudioJitterConfig()
+        config.retargetCadencePackets = 1
+        let buffer = AudioJitterBuffer(config: config)
+        var raised = 0
+        var held = 0
+        for n in 0..<3_000 {
+            let stepOffset: UInt64 = n >= 20 ? 50_000 : 0
+            let arrival = 100_000 + UInt64(n) * Self.packetMicros + stepOffset
+            buffer.insert(
+                packet(UInt32(n)), arrivalMicroseconds: arrival)
+            _ = buffer.pull(nowMicroseconds: arrival, urgent: true)
+            if n == 200 { raised = buffer.targetPackets }
+            if n == 400 { held = buffer.targetPackets }
+        }
+
+        XCTAssertGreaterThan(raised, config.minTargetPackets)
+        XCTAssertGreaterThanOrEqual(
+            held, raised,
+            "earned cushion must survive the 2.5 s hold window")
+        XCTAssertLessThan(
+            buffer.targetPackets, held,
+            "clean evidence eventually decays cushion")
+        XCTAssertGreaterThan(
+            buffer.targetPackets, config.minTargetPackets,
+            "decay is gradual, never an eager collapse")
     }
 
     // MARK: Leg 3 — loss with FEC healing (through the REAL

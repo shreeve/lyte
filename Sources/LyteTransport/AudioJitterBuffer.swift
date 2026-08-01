@@ -63,6 +63,16 @@ public struct AudioJitterConfig: Sendable {
     /// packet; only the O(window log window) projection is decimated.
     /// A value of 1 retains the eager controller for equivalence tests.
     public var retargetCadencePackets = 5
+    /// A newly earned cushion survives roughly one adaptation window before
+    /// it may shrink. Live glass traces showed the eager downward projection
+    /// collapsing 20 → 5 packets in under three seconds, followed by the same
+    /// tail burst raising it again only after PLC/underrun. Rise remains
+    /// immediate; decay starts after this many fresh packets.
+    public var targetDecayHoldPackets = 500
+    /// Once the hold expires, remove at most one packet per ten seconds of
+    /// clean evidence. A 20-packet emergency target therefore cannot collapse
+    /// back to the 5-packet floor between recurring tail events.
+    public var targetDecayStepPackets = 2_000
     /// CL-17: packets of depth beyond target before the receiver's
     /// pull decision engages WSOLA accelerate (hysteresis: engage at
     /// target + this, disengage at target).
@@ -144,7 +154,7 @@ public final class AudioJitterBuffer {
     // §5.3 at packet granularity): each fresh arrival's SKEW off the
     // 5 ms arrival lattice — skew_n = (arrival_n − anchorArrival) −
     // (n − anchorNumber) × 5 ms — windowed; the target covers the
-    // window's (p99 − min) SPREAD. Spread is the statistic that sees
+    // window's (max − min) SPREAD. Spread is the statistic that sees
     // a burst for what it is: a 75 ms outage whose clump arrives at
     // once leaves EVERY clumped packet 5–75 ms late on the lattice,
     // where per-pair inter-arrival deviations hide it in one sample
@@ -168,6 +178,11 @@ public final class AudioJitterBuffer {
     private var deviationWindow: [Int64] = []
     private var deviationCursor = 0
     private var freshSamplesSinceRetarget = 0
+    private var freshSamplesSinceTargetRaise = 0
+    private var freshSamplesSinceTargetDecrease = 0
+    /// A configured opening is deliberately drainable at once; only cushion
+    /// raised by measured path tails earns the long hold.
+    private var targetCushionEarnedByPath = false
 
     public init(config: AudioJitterConfig = AudioJitterConfig()) {
         self.config = config
@@ -369,15 +384,21 @@ public final class AudioJitterBuffer {
             }
         }
         freshSamplesSinceRetarget += 1
+        freshSamplesSinceTargetRaise += 1
+        freshSamplesSinceTargetDecrease += 1
         let cadence = max(1, config.retargetCadencePackets)
         guard freshSamplesSinceRetarget >= cadence else { return }
         freshSamplesSinceRetarget = 0
         retarget()
     }
 
-    /// The percentile controller (audio-continuity §5.3 at packet
-    /// granularity): the target covers the skew window's p99 − min
-    /// spread plus one packet of headroom, clamped to config bounds.
+    /// The continuity controller (audio-continuity §5.3 at packet
+    /// granularity): the target covers the observed skew-window spread plus
+    /// one packet of headroom, clamped to config bounds. The former p99
+    /// discarded about five samples in a 512-packet window; live interval
+    /// traces showed those sparse tails were exactly the late/PLC events.
+    /// Audio's no-crack contract makes the bounded window maximum the honest
+    /// statistic (the hard 100 ms cap still prevents unbounded latency).
     /// Only ever applied via natural drain/growth — no queue jumps.
     /// CL-17 adds the M7 §5.5 skew term: the window's least-squares
     /// trend is clock DRIFT, not jitter — it is estimated (clamped to
@@ -418,8 +439,8 @@ public final class AudioJitterBuffer {
             residuals[index] = Double(value) - slopePerPacket * Double(index)
         }
         residuals.sort()
-        let p99 = residuals[Int(Double(residuals.count - 1) * 0.99)]
-        let spread = Int64((p99 - residuals[0]).rounded(.up))
+        let spread = Int64((residuals[residuals.count - 1]
+            - residuals[0]).rounded(.up))
         let needed = 1 + Int((spread
             + config.packetDurationMicroseconds - 1)
             / config.packetDurationMicroseconds)
@@ -428,9 +449,27 @@ public final class AudioJitterBuffer {
         // start must actually open that deep; the controller then
         // earns its way down and accelerate drains the surplus).
         guard started else { return }
-        targetPackets = min(
+        let desired = min(
             max(needed, config.minTargetPackets),
             config.maxTargetPackets)
+        if desired > targetPackets {
+            targetPackets = desired
+            targetCushionEarnedByPath = true
+            freshSamplesSinceTargetRaise = 0
+            freshSamplesSinceTargetDecrease = 0
+        } else if desired < targetPackets, !targetCushionEarnedByPath {
+            targetPackets = desired
+        } else if desired < targetPackets,
+                  freshSamplesSinceTargetRaise
+                    >= max(1, config.targetDecayHoldPackets),
+                  freshSamplesSinceTargetDecrease
+                    >= max(1, config.targetDecayStepPackets) {
+            targetPackets -= 1
+            freshSamplesSinceTargetDecrease = 0
+            if targetPackets == config.minTargetPackets {
+                targetCushionEarnedByPath = false
+            }
+        }
         stats.targetPackets = targetPackets
     }
 

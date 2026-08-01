@@ -23,6 +23,9 @@ struct ConnectionWindow: View {
                 // readout, the auto-hiding control strip) live in
                 // StreamContainer.
                 StreamContainer(model: model)
+                    .task {
+                        await DiagnosticBenchmark.run(model: model)
+                    }
             }
         }
         .navigationTitle(model.windowTitle)
