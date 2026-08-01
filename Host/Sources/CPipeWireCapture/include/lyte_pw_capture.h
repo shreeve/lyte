@@ -34,6 +34,19 @@ typedef void (*lyte_pw_tick_cb)(void *user);
 
 typedef struct lyte_pw_capture lyte_pw_capture;
 
+/* Bounded liveness evidence for the policy layer's starvation diagnostic.
+   Counters are monotonic for one capture object and read on the same
+   PipeWire loop thread as callbacks. `stream_state` is pw_stream_state's
+   integer value; keeping the C ABI free of PipeWire headers is deliberate. */
+typedef struct {
+    uint64_t process_callbacks;
+    uint64_t dequeue_empty;
+    uint64_t buffer_empty;
+    uint64_t frames_delivered;
+    uint64_t last_process_monotonic_ns;
+    int32_t stream_state;
+} lyte_pw_capture_stats;
+
 /* Connects to the PipeWire remote on `pipewire_fd` (from the portal's
    OpenPipeWireRemote) and prepares an input stream targeting `node_id`.
    Returns NULL with `err` filled on failure. */
@@ -54,6 +67,10 @@ int lyte_pw_capture_set_tick(lyte_pw_capture *c, uint64_t interval_ns,
           -1 on stream error (err filled). */
 int lyte_pw_capture_run(lyte_pw_capture *c, double timeout_sec,
                         char *err, size_t errlen);
+
+/* Takes a non-mutating snapshot for bounded diagnostics. */
+void lyte_pw_capture_get_stats(const lyte_pw_capture *c,
+                               lyte_pw_capture_stats *out);
 
 /* Requests loop exit; callable from within the frame callback. */
 void lyte_pw_capture_quit(lyte_pw_capture *c);

@@ -482,6 +482,52 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertTrue(session.takeFreshKeyframeRequest())
     }
 
+    func testGarbageUnknownFrameNacksArmAtMostOncePerInterval() throws {
+        let box = Box()
+        let session = makeSession(box: box) {
+            $0.unknownFrameIdrArmIntervalNS = 1_000 * Self.ms
+        }
+        var now: UInt64 = 10 * Self.ms
+        var armed = 0
+
+        // An authenticated peer names a different impossible frame on
+        // every 25 ms feedback beat. Verdicts/refusals still surface,
+        // but only the first may pressure the encoder into an IDR.
+        for i in 0..<40 {
+            let events = try feed(
+                session,
+                report: nackReport(
+                    frame: UInt32(0x8000_0000 + i), shards: [0],
+                    clientMicros: now / 1_000
+                ),
+                now: now
+            )
+            XCTAssertTrue(events.contains(.nackJudgedStale(
+                frame: FrameNumber(rawValue: UInt32(0x8000_0000 + i)),
+                reason: .unavailable
+            )))
+            if session.takeFreshKeyframeRequest() { armed += 1 }
+            now += 25 * Self.ms
+        }
+        XCTAssertEqual(armed, 1,
+            "wire-cadence garbage NACKs forced repeated IDRs")
+        XCTAssertEqual(session.counters.idrArmedOnStaleNack, 1)
+        XCTAssertEqual(session.counters.unknownFrameIdrArmsThrottled, 39)
+
+        // A legitimate later unknown-frame demand gets a fresh interval
+        // and must still re-anchor the client.
+        now = 1_011 * Self.ms
+        _ = try feed(
+            session,
+            report: nackReport(
+                frame: 7, shards: [0], clientMicros: now / 1_000
+            ),
+            now: now
+        )
+        XCTAssertTrue(session.takeFreshKeyframeRequest())
+        XCTAssertEqual(session.counters.idrArmedOnStaleNack, 2)
+    }
+
     func testNackAfterCloseIsSuppressed() throws {
         let box = Box()
         let session = makeSession(box: box)

@@ -8,13 +8,23 @@
 // actually carries today (CL-3/CL-8's FeedbackSender every 25–50 ms):
 //
 //   • SEND LEDGER — the session records every outbound datagram's
-//     (channel, seq) → (send instant, wire bytes) at pump time. This is
+//     (channel, seq) → (send instant, wire bytes, delivery-frame) at
+//     pump time. This is
 //     the sender half of the packet-train measurement: dispersion
 //     samples name (channel, seq), the ledger supplies when it left and
 //     how big it was.
-//   • DELIVERY RATE — matched dispersion samples are segmented into
-//     trains by SEND spacing (a paced frame drains as back-to-back ≤1 ms
-//     batches, so a ≤2 ms send gap keeps one frame's shards together);
+//   • DELIVERY RATE — matched dispersion samples are segmented per
+//     CHANNEL, then into trains by SEND spacing (a paced frame drains as
+//     back-to-back ≤1 ms batches, so a ≤2 ms send gap keeps one frame's
+//     shards together). Channel isolation is mandatory: audio's 5 ms
+//     cadence and small packets must never bridge sparse video shards
+//     into a synthetic low-capacity train. Video frame identity is an
+//     equally hard boundary: the rate-scaled low-floor gap may keep
+//     same-frame shards together, but can never chain distinct 60 fps
+//     frame flights. Only fresh-video frame trains vote on path
+//     capacity: fixed-cadence audio and sparse repairs are
+//     application-limited by construction, while all matched channels
+//     still feed per-channel delay;
 //     each train ≥3 packets yields one delivery-rate sample:
 //     (bytes behind the first arrival) / (arrival span). Samples ride a
 //     10 s windowed-MAX filter (BBR's shape) → btlRate. Trains shorter
@@ -607,6 +617,10 @@ public final class RateEstimator {
         var key: UInt32
         var sendNS: UInt64
         var bytes: Int
+        /// Fresh-video frame flight this datagram belongs to. Nil means
+        /// it remains delay evidence but is not a delivery-rate probe
+        /// (audio/control/repair traffic is application-limited).
+        var deliveryFrame: UInt32?
         /// HS-28 (invariant 1): the pacer's standing rate the instant
         /// this datagram was RELEASED — the mark that lets sample
         /// production decide, mechanically, whether a train measured
@@ -755,8 +769,12 @@ public final class RateEstimator {
     /// it. `channel` is the envelope channel the client's dispersion
     /// samples will name; `bytes` is the wire size (delivery rate is
     /// measured in wire bytes, the unit the bottleneck queues in).
+    /// `deliveryFrame` is non-nil only for a fresh-video flight; frame
+    /// identity is a hard train boundary. The default keeps direct
+    /// estimator fixtures source-compatible as one synthetic frame.
     public func noteSent(
-        channel: ChannelId, seq: ChannelSeq, bytes: Int, now: UInt64
+        channel: ChannelId, seq: ChannelSeq, bytes: Int, now: UInt64,
+        deliveryFrame: FrameNumber? = FrameNumber(rawValue: 0)
     ) {
         let key = UInt32(channel.rawValue) << 16 | UInt32(seq.rawValue)
         if let evicted = ledger[ledgerHead], ledgerIndex[evicted.key] == ledgerHead {
@@ -764,6 +782,7 @@ public final class RateEstimator {
         }
         ledger[ledgerHead] = SendRecord(
             key: key, sendNS: now, bytes: bytes,
+            deliveryFrame: deliveryFrame?.rawValue,
             paceBitsPerSecond: rateBitsPerSecond
         )
         ledgerIndex[key] = ledgerHead
@@ -873,6 +892,29 @@ public final class RateEstimator {
                 ?? lastDeliveryRate.map(Int.init)
                 ?? rateBitsPerSecond
             rate = clamp(stale / 2)
+            // RECOVERY/migration is the estimator's explicit
+            // discontinuity. The half-stale pace is the sole surviving
+            // capacity anchor: old-path samples may choose that safe
+            // starting point, but may not keep controlling the new path.
+            //
+            // Exact invariant:
+            //   belief = applied half-stale rate;
+            //   no pre-transition delivery/honest vote remains fresh;
+            //   no pre-transition failed-probe cadence/band can hold or
+            //   widen a probe on the new path.
+            //
+            // WAKE deliberately does none of this: waking a healthy idle
+            // path is not a path discontinuity.
+            beliefBits = Double(rate)
+            deliveryWindow.removeAll(keepingCapacity: true)
+            recentRawDeliveries.removeAll(keepingCapacity: true)
+            recentHonestDeliveries.removeAll(keepingCapacity: true)
+            lastDeliveryRate = nil
+            lastDeliveryAt = nil
+            lastFullTrainRate = nil
+            lastFullTrainAt = nil
+            cadenceHoldUntilNS = 0
+            cadenceBandFloorBits = .infinity
         }
         rateBitsPerSecond = rate
         lastAdjustAt = now
@@ -1044,6 +1086,7 @@ public final class RateEstimator {
         var sendNS: UInt64
         var bytes: Int
         var arrivalMicros: UInt64
+        var deliveryFrame: UInt32?
         /// The pacer rate recorded at this datagram's release (HS-28).
         var paceBitsPerSecond: Int
     }
@@ -1069,18 +1112,24 @@ public final class RateEstimator {
                 bytes: record.bytes,
                 arrivalMicros: dispersion.base.microseconds
                     &+ UInt64(sample.arrivalDeltaMicroseconds),
+                deliveryFrame: record.deliveryFrame,
                 paceBitsPerSecond: record.paceBitsPerSecond
             ))
         }
-        matched.sort { $0.sendNS < $1.sendNS }
+        matched.sort {
+            $0.channel == $1.channel
+                ? $0.sendNS < $1.sendNS
+                : $0.channel < $1.channel
+        }
         return matched
     }
 
-    /// Segments matched samples into trains by send spacing and feeds
-    /// each train's delivery-rate sample into the max window. The gap
-    /// scales with the standing rate (see the config comment): a
-    /// paced-at-R sender spaces datagrams ≈ their wire time at R, so
-    /// consecutive sends must still read as one train at any rate.
+    /// Segments matched samples by channel and fresh-video FRAME first,
+    /// then into trains by send spacing. Frame identity is the hard
+    /// flight boundary; the gap only answers whether shards WITHIN that
+    /// flight stayed contiguous enough. This preserves same-frame
+    /// trains at the floor without chaining 60 fps source cadence into
+    /// a fake low-capacity sample. All matched samples still feed delay.
     private func absorbDeliveryTrains(
         _ matched: [MatchedSample], now: UInt64
     ) {
@@ -1089,9 +1138,9 @@ public final class RateEstimator {
             Double(1_152 * 8) / Double(rateBitsPerSecond) * 1e9
         )
         let gapNS = max(config.trainGapNS, 3 * wirePerDatagramNS)
-        var trainStart = 0
         func closeTrain(_ range: Range<Int>) {
             let train = matched[range]
+            guard train.first?.deliveryFrame != nil else { return }
             guard train.count >= 3 else { return }
             let firstArrival = train.map(\.arrivalMicros).min()!
             let lastArrival = train.map(\.arrivalMicros).max()!
@@ -1213,13 +1262,35 @@ public final class RateEstimator {
                 ? rate : rate * 0.5
             deliveryWindow.append(DeliverySample(at: now, rate: weighted))
         }
-        for i in 1..<matched.count {
-            if matched[i].sendNS &- matched[i - 1].sendNS > gapNS {
-                closeTrain(trainStart..<i)
-                trainStart = i
+        var channelStart = 0
+        while channelStart < matched.count {
+            let channel = matched[channelStart].channel
+            var channelEnd = channelStart + 1
+            while channelEnd < matched.count,
+                  matched[channelEnd].channel == channel {
+                channelEnd += 1
             }
+            // Audio's cadence and video repairs are not capacity probes.
+            // Keep them in the per-channel delay sensor, but only
+            // fresh-video samples carry a delivery-frame identity.
+            guard channel == ChannelId.videoActive.rawValue else {
+                channelStart = channelEnd
+                continue
+            }
+            var trainStart = channelStart
+            if channelEnd - channelStart >= 2 {
+                for i in (channelStart + 1)..<channelEnd {
+                    if matched[i].deliveryFrame
+                            != matched[i - 1].deliveryFrame
+                        || matched[i].sendNS &- matched[i - 1].sendNS > gapNS {
+                        closeTrain(trainStart..<i)
+                        trainStart = i
+                    }
+                }
+                closeTrain(trainStart..<channelEnd)
+            }
+            channelStart = channelEnd
         }
-        closeTrain(trainStart..<matched.count)
     }
 
     /// Returns true when some channel's minimum one-way delay proxy

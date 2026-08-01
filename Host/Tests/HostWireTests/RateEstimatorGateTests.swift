@@ -63,6 +63,8 @@ final class RateEstimatorGateTests: XCTestCase {
         seqStart: Int,
         count: Int,
         bytes: Int = 1_152,
+        channel: ChannelId = .videoActive,
+        frameNumber: UInt32 = 0,
         sendStartNS: UInt64,
         sendSpacingNS: UInt64 = 500_000,
         bottleneckBitsPerSecond: Double,
@@ -74,14 +76,16 @@ final class RateEstimatorGateTests: XCTestCase {
             let sendNS = sendStartNS + UInt64(i) * sendSpacingNS
             let seq = ChannelSeq(rawValue: UInt16(truncatingIfNeeded: seqStart + i))
             estimator.noteSent(
-                channel: .videoActive, seq: seq, bytes: bytes, now: sendNS
+                channel: channel, seq: seq, bytes: bytes, now: sendNS,
+                deliveryFrame: channel == .videoActive
+                    ? FrameNumber(rawValue: frameNumber) : nil
             )
             let arrival = Self.clockOffsetMicros
                 + sendStartNS / 1_000
                 + UInt64(Double(i) * arrivalSpacing)
                 + extraDelayMicros
             samples.append(FeedbackReport.Dispersion.Sample(
-                channel: .videoActive, seq: seq,
+                channel: channel, seq: seq,
                 arrivalDeltaMicroseconds: 0 // fixed up by report(at:)
             ))
             arrivals.append(arrival)
@@ -236,6 +240,147 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertNotNil(measured)
         XCTAssertEqual(Double(measured!), 4e6, accuracy: 0.4e6,
                        "short-train dispersion noise must not win the max")
+    }
+
+    func testMixedAudioCadenceCannotManufactureVideoCapacity() {
+        let estimator = makeEstimator {
+            $0.initialRateBitsPerSecond = 500_000
+        }
+        // Sparse video contributes only two packets: no capacity train.
+        // Twelve 131-byte audio packets at their fixed 5 ms source
+        // cadence interleave across the same 55 ms. The old channel-
+        // blind segmentation chained all fourteen into one "full" train
+        // and manufactured a sub-floor path estimate; even merely
+        // splitting channels would still mistake audio's application
+        // cadence (~210 kbps) for path capacity.
+        let video = train(
+            estimator, seqStart: 0, count: 2,
+            sendStartNS: 10 * Self.ms, sendSpacingNS: 55 * Self.ms,
+            bottleneckBitsPerSecond: 100e6
+        )
+        let audio = train(
+            estimator, seqStart: 100, count: 12, bytes: 131,
+            channel: .audio, sendStartNS: 10 * Self.ms,
+            sendSpacingNS: 5 * Self.ms,
+            bottleneckBitsPerSecond: 100e6
+        )
+        _ = estimator.ingest(
+            report(samples: video + audio, clientMicros: 100_000),
+            now: 100 * Self.ms, inRecovery: false
+        )
+        XCTAssertNil(estimator.deliveryRateBitsPerSecond,
+            "fixed-cadence audio and sparse video are not a capacity probe")
+        XCTAssertNil(estimator.capacityBeliefBitsPerSecond)
+        XCTAssertEqual(estimator.stats.deliverySamples, 0)
+        XCTAssertEqual(estimator.stats.dispersionSamplesMatched, 14,
+            "audio remains matched for per-channel delay evidence")
+    }
+
+    func testSeparateSixtyFpsVideoFramesNeverChainAtTheFloor() {
+        let estimator = makeEstimator {
+            $0.initialRateBitsPerSecond = 500_000
+        }
+        var samples: [FeedbackReport.Dispersion.Sample] = []
+        // Six sparse two-shard frame flights, one every 16.7 ms. The
+        // floor's rate-scaled gap is ~55 ms, so spacing alone chained
+        // all twelve into a "full" train. Frame identity must close each
+        // two-packet flight before minTrainPackets can be manufactured.
+        for frame in 0..<6 {
+            samples += train(
+                estimator, seqStart: frame * 10, count: 2,
+                frameNumber: UInt32(frame),
+                sendStartNS: 10 * Self.ms
+                    + UInt64(frame) * 16_666_667,
+                bottleneckBitsPerSecond: 100e6
+            )
+        }
+        _ = estimator.ingest(
+            report(samples: samples, clientMicros: 120_000),
+            now: 120 * Self.ms, inRecovery: false
+        )
+        XCTAssertNil(estimator.deliveryRateBitsPerSecond)
+        XCTAssertNil(estimator.capacityBeliefBitsPerSecond)
+        XCTAssertEqual(estimator.stats.deliverySamples, 0)
+    }
+
+    func testSameFrameLowRateShardsRemainOneTrain() {
+        let estimator = makeEstimator {
+            $0.initialRateBitsPerSecond = 500_000
+        }
+        let samples = train(
+            estimator, seqStart: 0, count: 4, frameNumber: 77,
+            sendStartNS: 10 * Self.ms, sendSpacingNS: 18_400_000,
+            bottleneckBitsPerSecond: 500e3
+        )
+        _ = estimator.ingest(
+            report(samples: samples, clientMicros: 100_000),
+            now: 100 * Self.ms, inRecovery: false
+        )
+        XCTAssertEqual(estimator.stats.deliverySamples, 1)
+        XCTAssertEqual(
+            Double(estimator.deliveryRateBitsPerSecond ?? 0),
+            250e3, accuracy: 30e3,
+            "the four-packet same-frame train stays intact and keeps "
+                + "the existing short-train ×0.5 weighting"
+        )
+    }
+
+    func testCrossFrameBacklogCannotTriggerFalseFallOrChurn() {
+        let estimator = makeEstimator()
+        var now = 20 * Self.ms
+        var seq = 0
+
+        // Establish a healthy 20 Mbps belief from one real frame flight.
+        let seed = train(
+            estimator, seqStart: seq, count: 12, frameNumber: 1,
+            sendStartNS: 10 * Self.ms,
+            bottleneckBitsPerSecond: 20e6
+        )
+        seq += 12
+        _ = estimator.ingest(
+            report(samples: seed, clientMicros: 20_000),
+            now: now, inRecovery: false
+        )
+        let downshiftsBefore = estimator.stats.downshifts
+
+        func multiFrameBeat(extraDelayMicros: UInt64) -> RateEstimatorVerdict {
+            var samples: [FeedbackReport.Dispersion.Sample] = []
+            // Standing backlog drains continuously, but packet pairs
+            // still belong to six distinct source frames. Without the
+            // identity boundary this becomes one 12-packet ~14 Mbps
+            // honest vote under a 20 Mbps pace.
+            let sendBase = now - 10 * Self.ms
+            for frame in 0..<6 {
+                samples += train(
+                    estimator, seqStart: seq, count: 2,
+                    frameNumber: UInt32(100 + frame),
+                    sendStartNS: sendBase + UInt64(frame) * 1_200_000,
+                    bottleneckBitsPerSecond: 5e6,
+                    extraDelayMicros: extraDelayMicros
+                )
+                seq += 2
+            }
+            let verdict = estimator.ingest(
+                report(samples: samples, clientMicros: now / 1_000),
+                now: now, inRecovery: false,
+                pacerBacklogBytes: 100_000
+            )
+            now += 300 * Self.ms
+            return verdict
+        }
+
+        _ = multiFrameBeat(extraDelayMicros: 0)
+        _ = multiFrameBeat(extraDelayMicros: 0)
+        for _ in 0..<5 {
+            let verdict = multiFrameBeat(extraDelayMicros: 40_000)
+            XCTAssertNil(verdict.newRateBitsPerSecond,
+                "cross-frame source cadence supplied a false honest fall")
+        }
+        XCTAssertEqual(estimator.rateBitsPerSecond, Self.ceiling)
+        XCTAssertEqual(estimator.stats.downshifts, downshiftsBefore)
+        XCTAssertGreaterThanOrEqual(estimator.stats.selfReferenceHolds, 1,
+            "persisted delay with backlog and no frame-local witness "
+                + "must hold as self-explaining, not churn")
     }
 
     /// Q-1, the receipts fix: a receiver radio that drains a queued
@@ -1589,11 +1734,12 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(estimator.stats.censoredSamples, 5)
         XCTAssertEqual(estimator.stats.honestSamples, 0)
 
-        // The pacer is forced down to 10 Mbps (an IDR-pacing move) and
-        // a full second of CENSORED trickle at the new pace follows —
-        // samples at half the belief, with backlog and standing
-        // inflation. Invariant 1: the belief must not move a bit, and
-        // no fall may anchor to the trickle.
+        // RECOVERY forces the pacer down to 10 Mbps and explicitly
+        // re-anchors stale path belief there. A full second of
+        // CENSORED trickle at the new pace follows —
+        // with backlog and standing inflation. Invariant 1: after the
+        // discontinuity re-anchor, censored samples must not move belief
+        // again and no fall may anchor to the trickle.
         _ = estimator.applyIdrPacing(.halfStaleEstimate, now: now)
         XCTAssertEqual(Double(estimator.rateBitsPerSecond), 10e6,
                        accuracy: 0.2e6)
@@ -1612,9 +1758,9 @@ final class RateEstimatorGateTests: XCTestCase {
             "the rate rode the trickle without falling")
         XCTAssertEqual(
             Double(estimator.capacityBeliefBitsPerSecond ?? 0),
-            20e6, accuracy: 2e6,
-            "censored samples may raise the belief, never lower it — "
-            + "one second of half-belief trickle left it standing"
+            10e6, accuracy: 1e6,
+            "RECOVERY re-anchors belief; censored trickle then leaves "
+                + "that new-path anchor standing"
         )
         XCTAssertEqual(estimator.stats.beliefDemotions, 0)
 
@@ -1647,8 +1793,8 @@ final class RateEstimatorGateTests: XCTestCase {
             "the belief follows the path down on honest evidence"
         )
 
-        print("HS-28 gate (belief): 1 s of censored 10 Mbps trickle "
-            + "left the 20 Mbps belief standing; honest 4 Mbps "
+        print("HS-28 gate (belief): RECOVERY re-anchored at 10 Mbps; "
+            + "1 s of censored trickle left it standing; honest 4 Mbps "
             + "evidence demoted it to "
             + "\((estimator.capacityBeliefBitsPerSecond ?? 0) / 1_000) kbps "
             + "and the fall landed at "
@@ -2099,6 +2245,69 @@ final class RateEstimatorGateTests: XCTestCase {
             estimator.applyIdrPacing(.halfStaleEstimate, now: 400 * Self.ms),
             4_000_000, accuracy: 200_000
         )
+    }
+
+    func testRecoveryReanchorsNinetyMegabitBeliefBeforeFiveMegabitPath() {
+        var config = RateEstimatorConfig(
+            ceilingBitsPerSecond: 100_000_000,
+            initialRateBitsPerSecond: 90_000_000
+        )
+        config.overuseConsecutiveReports = 2
+        let estimator = RateEstimator(config: config, now: 0)
+
+        let oldPath = train(
+            estimator, seqStart: 0, count: 16,
+            sendStartNS: 10 * Self.ms,
+            bottleneckBitsPerSecond: 90e6
+        )
+        _ = estimator.ingest(
+            report(samples: oldPath, clientMicros: 20_000),
+            now: 20 * Self.ms, inRecovery: false
+        )
+        XCTAssertEqual(
+            Double(estimator.capacityBeliefBitsPerSecond ?? 0),
+            90e6, accuracy: 3e6
+        )
+
+        let recoveryRate = estimator.applyIdrPacing(
+            .halfStaleEstimate, now: 30 * Self.ms
+        )
+        XCTAssertEqual(Double(recoveryRate), 45e6, accuracy: 2e6)
+        XCTAssertEqual(estimator.capacityBeliefBitsPerSecond, recoveryRate,
+            "the half-stale pace is the new path's sole starting belief")
+        XCTAssertNil(estimator.deliveryRateBitsPerSecond,
+            "old-path delivery samples must not survive migration")
+
+        var now = 50 * Self.ms
+        var seq = 100
+        func beat(_ extraDelay: UInt64) -> RateEstimatorVerdict {
+            let samples = train(
+                estimator, seqStart: seq, count: 16,
+                sendStartNS: now - Self.ms,
+                bottleneckBitsPerSecond: 5e6,
+                extraDelayMicros: extraDelay
+            )
+            seq += 16
+            let verdict = estimator.ingest(
+                report(samples: samples, clientMicros: now / 1_000),
+                now: now, inRecovery: false
+            )
+            now += 300 * Self.ms
+            return verdict
+        }
+        _ = beat(0)
+        _ = beat(0)
+        _ = beat(30_000)
+        _ = beat(30_000)
+        let fall = beat(30_000)
+        XCTAssertEqual(fall.change, .overuse)
+        XCTAssertEqual(
+            Double(estimator.capacityBeliefBitsPerSecond ?? 0),
+            5e6, accuracy: 0.7e6,
+            "fresh uniformly-stretched evidence demotes the re-anchored "
+                + "belief on the 5 Mbps tether"
+        )
+        XCTAssertLessThan(estimator.rateBitsPerSecond, 6_000_000)
     }
 
     func testFrameByteCeilingTracksTheLiveEstimate() {
@@ -2647,6 +2856,58 @@ final class RateEstimatorGateTests: XCTestCase {
             + "below \(Int(bandFloor) / 1_000) kbps for the cadence "
             + "(\(estimator.stats.upshiftsCadenceHeld) held rises), "
             + "then re-probed to \(estimator.rateBitsPerSecond / 1_000) kbps")
+    }
+
+    func testRecoveryClearsFailedProbeBandFromTheOldPath() {
+        let estimator = makeEstimator {
+            $0.ceilingBitsPerSecond = 50_000_000
+            $0.initialRateBitsPerSecond = 20_000_000
+            $0.probeCadenceNS = 10_000_000_000
+        }
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        // Establish the 20 Mbps belief, then drive into its headroom
+        // band and make that probe fail so the old path owns a live
+        // cadence hold and finite band floor.
+        for _ in 0..<12 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        for _ in 0..<80 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 20, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        var delay: UInt64 = 20_000
+        var fell = false
+        for _ in 0..<40 where !fell {
+            let verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: 12, extraDelayMicros: delay,
+                backlogBytes: 60_000
+            )
+            delay += 8_000
+            fell = verdict.change == .overuse
+        }
+        XCTAssertTrue(fell)
+
+        _ = estimator.applyIdrPacing(.halfStaleEstimate, now: now)
+        let heldBefore = estimator.stats.upshiftsCadenceHeld
+        let rateBefore = estimator.rateBitsPerSecond
+        // Fresh new-path evidence may climb immediately once the normal
+        // one-second queue-drain hold passes; the old failed-probe band
+        // must not impose the remaining ten-second cadence.
+        for _ in 0..<60 {
+            _ = selfRefBeat(&now, &clientMicros, &seq, on: estimator,
+                            bottleneckMbps: 30, extraDelayMicros: 0,
+                            backlogBytes: 0)
+        }
+        XCTAssertGreaterThan(estimator.rateBitsPerSecond, rateBefore)
+        XCTAssertEqual(estimator.stats.upshiftsCadenceHeld, heldBefore,
+            "RECOVERY carried an old-path cadence band into the new path")
     }
 
     /// The headroom knob is honored: factor 1.5 parks the climb at

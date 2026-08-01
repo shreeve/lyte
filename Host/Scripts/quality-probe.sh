@@ -49,7 +49,8 @@
 #
 # env overrides: PUP (ssh alias), PUP_ADDR, HOST_BIN (remote path),
 # CLI (local lyte-cli), PORT, CAP_MBPS, STATIC_SECS, MOTION_RUNS,
-# MOTION_SECS, WIRE_SECS, KEEP (=1 keeps raw/hevc artifacts on pup).
+# MOTION_SECS, WIRE_SECS, WIRE_GRACE_SECS, KEEP (=1 keeps raw/hevc
+# artifacts on pup).
 
 set -uo pipefail
 
@@ -74,6 +75,7 @@ STATIC_SECS="${STATIC_SECS:-60}"
 MOTION_RUNS="${MOTION_RUNS:-12}"
 MOTION_SECS="${MOTION_SECS:-6}"
 WIRE_SECS="${WIRE_SECS:-150}"
+WIRE_GRACE_SECS="${WIRE_GRACE_SECS:-45}"
 KEEP="${KEEP:-0}"
 W=1600 H=1000 FPS=60
 
@@ -192,12 +194,36 @@ wire_leg() { # $1=name $2=extra-host-flags → logs at $WORK/wire-$1.log + $LOCA
   # The host runs its Rext 4:4:4 self-probe BEFORE it listens (V-4) —
   # a blind sleep loses the race and wire-view gives up after 5
   # attempts (measured at HS-33). Wait for the listening line, bounded.
+  local ready=0
   for _ in $(seq 1 20); do
-    ssh "$PUP" "grep -q 'awaiting client handshake' $WORK/wire-$1.log 2>/dev/null" && break
+    if ssh "$PUP" "grep -q 'awaiting client handshake' $WORK/wire-$1.log 2>/dev/null"; then
+      ready=1
+      break
+    fi
     sleep 1
   done
+  if [ "$ready" -ne 1 ]; then
+    ssh "$PUP" "cat $WORK/wire-$1.log" > "$LOCAL/wire-$1-host.log"
+    ssh "$PUP" "kill $HOST_PID 2>/dev/null" || true
+    HOST_PID=""
+    stop_ffplay
+    echo "wire $1: host never reached handshake readiness; see $LOCAL/wire-$1-host.log" >&2
+    return 1
+  fi
   "$CLI" wire-view "$PORT" --host "$PUP_ADDR" --audio \
-    --duration $((WIRE_SECS + 45)) > "$LOCAL/wire-$1-client.log" 2>&1
+    --duration $((WIRE_SECS + WIRE_GRACE_SECS)) \
+    > "$LOCAL/wire-$1-client.log" 2>&1
+  local client_status=$?
+  if [ "$client_status" -ne 0 ]; then
+    route -n get "$PUP_ADDR" > "$LOCAL/wire-$1-route.log" 2>&1 || true
+    ssh "$PUP" "ss -uapn 2>&1; cat $WORK/wire-$1.log" \
+      > "$LOCAL/wire-$1-host.log"
+    ssh "$PUP" "kill $HOST_PID 2>/dev/null" || true
+    HOST_PID=""
+    stop_ffplay
+    echo "wire $1: client failed ($client_status); see $LOCAL/wire-$1-{client,host,route}.log" >&2
+    return "$client_status"
+  fi
   for _ in $(seq 1 30); do
     ssh "$PUP" "kill -0 $HOST_PID 2>/dev/null" || break
     sleep 1
@@ -257,7 +283,7 @@ parse_wire() { # $1=name → sets R_* globals from the leg's two logs
 }
 
 echo "== wire leg A (policy armed, ${WIRE_SECS}s heavy motion, port $PORT)"
-wire_leg armed ""
+wire_leg armed "" || exit $?
 parse_wire armed
 A_FRAMES=$R_FRAMES A_IDR=$R_IDR A_IDR_MIN=$R_IDR_MIN A_DIRECTIVES=$R_DIRECTIVES
 A_CHURN=$R_CHURN A_LOSS=$R_LOSS A_FPS=$R_FPS_P50 A_MISSING=$R_MISSING
@@ -265,7 +291,7 @@ A_DGRAMS=$R_DGRAMS A_DELIVERY=$R_DELIVERY A_SECS=$R_SECS
 echo "   fps p50 $A_FPS, IDR $A_IDR ($A_IDR_MIN/min), directives $A_DIRECTIVES (churn $A_CHURN), loss $A_LOSS"
 
 echo "== wire leg B (twin --no-vbv-reconfigure, ${WIRE_SECS}s, same content)"
-wire_leg twin "--no-vbv-reconfigure"
+wire_leg twin "--no-vbv-reconfigure" || exit $?
 parse_wire twin
 T_IDR=$R_IDR T_IDR_MIN=$R_IDR_MIN T_FPS=$R_FPS_P50
 echo "   fps p50 $T_FPS, IDR $T_IDR ($T_IDR_MIN/min)"
