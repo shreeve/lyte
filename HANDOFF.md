@@ -22,12 +22,18 @@ probes in Host/Probes/kms-eye/ with measured numbers, owner decisions
 in TODO.md). The chain: FB-ID doorbell → GETFB2/dmabuf → EGL
 modifier-aware import → GPU blit RGB→NV12 → VAAPI (Arc, on pup) /
 NVENC (NVIDIA-panel desktops) → the UNCHANGED existing wire. Swift-
-first via module maps (no .c files). **E0 milestone 1 landed (#45):
-`lyte-eye`, the doorbell in pure Swift (CDRM systemLibrary), C-probe
-parity on pup** (1.00 flips/s idle, 61.00/s motion, ~4 µs/poll,
-unprivileged). NEXT: E0 milestone 2 — EGL import + NV12 blit + VAAPI
-encode in lyte-eye, Annex-B to file, validated by `lyte decode-probe`;
-then E1's CaptureSource seam (portal stays as fallback until E5).
+first via module maps (no .c files). **E0 is COMPLETE**: #45 landed
+the doorbell (pure Swift, C-probe parity: 1.00 flips/s idle, 61.00/s
+motion, ~4 µs/poll, unprivileged); #46 landed the full loop —
+`lyte-eye capture` measured 61.08 fps motion / 1.37 fps idle (same
+binary, cadence IS content), 0.85 ms blit + 0.47 ms encode per frame,
+and the M5's `lyte decode-probe` hardware-decoded 611/611 access
+units with BT.709 intact. Vendored libavcodec now carries hevc_vaapi
+(encoders=2; no-reset marker verified). NEXT: E1 — the CaptureSource
+seam in lyte-host (DirectEye | PortalEye, env-selected; portal stays
+fallback until E5), full pipeline to the real Mac client, gates =
+motion-pipeline benchmark ≥ current all-green + a 30-min zero-freeze
+soak.
 AV1 is deferred until after the rearchitecture (owner decision; the
 four HEVC-shaped seams are inventoried in TODO.md — owner's Mac is an
 M5, pup has two hw AV1 encoders). Audio STAYS on PipeWire. Consent =
