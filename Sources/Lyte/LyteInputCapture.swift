@@ -67,6 +67,7 @@ final class LyteInputCapture {
     private var monitors: [Any] = []
     private var heldKeys: Set<UInt32> = []
     private var heldButtons: Set<UInt32> = []
+    private var resignObserver: NSObjectProtocol?
 
     init(
         view: NSView,
@@ -95,11 +96,20 @@ final class LyteInputCapture {
         monitors.append(NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
             self?.handleKey(event) ?? event
         } as Any)
+        // ⌘Tab away mid-stream swallows the matching keyUps exactly the
+        // way teardown does (analysis finding 16): whatever we told the
+        // host was down stays down and auto-repeats. Focus loss releases
+        // everything; keys still physically held re-press on return.
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: window,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.releaseAllHeld() }
+        }
     }
 
-    func stop() {
-        // A window/session teardown can swallow AppKit's matching keyUp.
-        // Release every state we told the host was down before detaching.
+    /// Sends up-events for every key/button the host believes is down.
+    private func releaseAllHeld() {
         for key in heldKeys {
             send(.keyKeycode(keycode: key, pressed: false))
         }
@@ -108,6 +118,16 @@ final class LyteInputCapture {
         }
         heldKeys.removeAll()
         heldButtons.removeAll()
+    }
+
+    func stop() {
+        // A window/session teardown can swallow AppKit's matching keyUp.
+        // Release every state we told the host was down before detaching.
+        releaseAllHeld()
+        if let resignObserver {
+            NotificationCenter.default.removeObserver(resignObserver)
+        }
+        resignObserver = nil
         monitors.forEach { NSEvent.removeMonitor($0) }
         monitors.removeAll()
     }
