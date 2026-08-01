@@ -215,4 +215,25 @@ final class FecCoderTests: XCTestCase {
             try decodeErasing([2, 3], from: shards, geometry: geometry), group
         )
     }
+
+    func testRecoveredOutputIsExactAndIndependentOfShardStorage() throws {
+        let geometry = try FecGeometry(
+            dataShards: 7, parityShards: 3, groupByteCount: 7_003
+        )
+        let group = counting(from: 0xA5, count: geometry.groupByteCount)
+        let encoded = try FecEncoder.encode(group: group, geometry: geometry)
+        var slots: [[UInt8]?] = encoded
+        slots[0] = nil
+        slots[3] = nil
+        slots[6] = nil
+
+        let recovered = try FecDecoder.decode(shards: slots, geometry: geometry)
+        XCTAssertEqual(recovered.count, geometry.groupByteCount)
+        XCTAssertEqual(recovered, group)
+
+        // The result owns its logical payload; neither the RS block's
+        // padding nor the caller's shard arrays are retained as a slice.
+        slots = Array(repeating: nil, count: geometry.totalShards)
+        XCTAssertEqual(recovered, group)
+    }
 }

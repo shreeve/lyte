@@ -390,14 +390,15 @@ public struct VideoAssembler: Sendable {
             shards: group.slots, geometry: group.geometry
         ) else { return }
 
-        guard AnnexBCheck.isFrameShaped(bytes) else {
+        let classification = AnnexBCheck.classifyFrame(bytes)
+        guard classification.isFrameShaped else {
             group.corrupt = true
             return
         }
         group.decoded = DecodeUnit(
             frameNumber: frame,
             timestamp: HostTimestamp(microseconds: group.timestampMicroseconds),
-            isIDR: AnnexBCheck.containsIrap(bytes),
+            isIDR: classification.containsIrap,
             annexB: bytes
         )
         // Recovery math is done; the shard bytes are dead weight now.

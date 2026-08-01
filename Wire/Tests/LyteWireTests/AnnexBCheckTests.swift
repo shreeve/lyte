@@ -8,6 +8,41 @@ import LyteWireTestKit
 
 final class AnnexBCheckTests: XCTestCase {
 
+    private func legacyNalUnits(in data: ArraySlice<UInt8>) -> [HevcNalUnit] {
+        let base = data.startIndex
+        var payloadStarts: [Int] = []
+        var i = base
+        while i + 2 < data.endIndex {
+            if data[i + 2] > 1 {
+                i += 3
+            } else if data[i] == 0, data[i + 1] == 0, data[i + 2] == 1 {
+                payloadStarts.append(i + 3)
+                i += 3
+            } else {
+                i += 1
+            }
+        }
+
+        var units: [HevcNalUnit] = []
+        for (n, start) in payloadStarts.enumerated() {
+            var end = n + 1 < payloadStarts.count
+                ? payloadStarts[n + 1] - 3
+                : data.endIndex
+            if n + 1 < payloadStarts.count, end > start, data[end - 1] == 0 {
+                end -= 1
+            }
+            let length = end - start
+            if length >= 2 {
+                units.append(HevcNalUnit(
+                    offset: start - base,
+                    length: length,
+                    type: (data[start] >> 1) & 0x3F
+                ))
+            }
+        }
+        return units
+    }
+
     // MARK: - NAL walking
 
     func testWalksThreeAndFourByteStartCodes() {
@@ -75,6 +110,60 @@ final class AnnexBCheckTests: XCTestCase {
         XCTAssertTrue(HevcNalType.isIdr(20))
         XCTAssertFalse(HevcNalType.isIdr(21))
         XCTAssertTrue(HevcNalType.isIrap(21))
+    }
+
+    func testCombinedClassificationPreservesMalformedAndIrapSemantics() {
+        let trail: [UInt8] = [0, 0, 1, 0x02, 0x01, 0x10]
+        let cra: [UInt8] = [0, 0, 0, 1, 0x2A, 0x01, 0x10]
+        let prefixedIrap = [UInt8(0xFF)] + cra
+        let shortIrap: [UInt8] = [0, 0, 1, 0x26]
+        let parameterSet: [UInt8] = [0, 0, 0, 1, 0x40, 0x01, 0x0C]
+        let shortThenTrail = shortIrap + trail
+
+        let cases: [([UInt8], Bool, Bool, String)] = [
+            ([], false, false, "empty"),
+            (trail, true, false, "non-IRAP VCL"),
+            (cra, true, true, "IRAP VCL"),
+            (prefixedIrap, false, true, "prefix disqualifies shape only"),
+            (shortIrap, false, false, "short NAL is ignored"),
+            (parameterSet, false, false, "non-VCL only"),
+            (shortThenTrail, true, false, "short NAL before valid VCL"),
+        ]
+
+        for (bytes, expectedShape, expectedIrap, name) in cases {
+            let classification = AnnexBCheck.classifyFrame(bytes)
+            XCTAssertEqual(classification.isFrameShaped, expectedShape, name)
+            XCTAssertEqual(classification.containsIrap, expectedIrap, name)
+            XCTAssertEqual(AnnexBCheck.isFrameShaped(bytes), expectedShape, name)
+            XCTAssertEqual(AnnexBCheck.containsIrap(bytes), expectedIrap, name)
+        }
+    }
+
+    func testAllocationFreeWalkerMatchesLegacyOnSeededMalformedCorpus() {
+        var rng = SplitMix64(seed: 0xA66E_0B01)
+        for trial in 0..<500 {
+            let count = Int.random(in: 0...256, using: &rng)
+            let body = (0..<count).map { _ in
+                UInt8.random(in: 0...7, using: &rng)
+            }
+            let padded = [UInt8(0xAA), 0xBB] + body + [0xCC]
+            let slice = padded[2..<(2 + count)]
+            let legacy = legacyNalUnits(in: slice)
+            let classification = AnnexBCheck.classifyFrame(slice)
+
+            XCTAssertEqual(AnnexBCheck.nalUnits(in: slice), legacy, "trial \(trial)")
+            XCTAssertEqual(
+                classification.isFrameShaped,
+                AnnexBCheck.leadingStartCodeLength(slice) != nil
+                    && legacy.contains { HevcNalType.isVcl($0.type) },
+                "shape trial \(trial)"
+            )
+            XCTAssertEqual(
+                classification.containsIrap,
+                legacy.contains { HevcNalType.isIrap($0.type) },
+                "IRAP trial \(trial)"
+            )
+        }
     }
 
     func testSummaryNamesTheCorpusShape() {

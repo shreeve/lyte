@@ -41,13 +41,15 @@ enum NanorsBackend {
 
     /// Reconstructs the k data rows from any ≥ k surviving shards.
     /// `presentShards[i]` is shard i's wire bytes (shorter rows are
-    /// zero-padded into the block) or nil where lost. Returns the k·bs
-    /// data bytes; the caller trims to the group length.
+    /// zero-padded into the block) or nil where lost. Copies exactly
+    /// `recoveredByteCount` reconstructed data bytes into the returned
+    /// array; no view of the larger RS backing escapes this call.
     static func recoverData(
         presentShards: [[UInt8]?],
         dataShards: Int,
         parityShards: Int,
-        shardByteCount bs: Int
+        shardByteCount bs: Int,
+        recoveredByteCount: Int
     ) throws -> [UInt8] {
         let total = dataShards + parityShards
         let backing = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: total * bs)
@@ -68,7 +70,7 @@ enum NanorsBackend {
         )
         return Array(
             UnsafeBufferPointer(
-                start: backing.baseAddress!, count: dataShards * bs
+                start: backing.baseAddress!, count: recoveredByteCount
             )
         )
     }
