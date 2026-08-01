@@ -259,6 +259,19 @@ works). Document it; no dialog theater.
   120/120 access units on VideoToolbox HARDWARE, BT.709 attachments
   intact. Next: productionize behind the doctor (desktop-with-
   NVIDIA-panel topology), then E6b VAAPI-native frees pup.
+  **E6b milestone 1 LANDED (2026-08-01)** — the header pen:
+  HostCore's HevcBitWriter (u(n)/ue(v)/se(v), rbsp_trailing_bits,
+  NAL wrap with emulation prevention) and HevcParameterSets
+  (VPS/SPS/PPS from a HevcHeaderRecipe — width/height/fps/QP/level
+  vary, the Arc dialect fixed field-by-field with the spec's own
+  names). The oracle: a real lyte-eye capture's headers (hevc_vaapi,
+  iHD, 2048×1280@60 QP 24), decoded field-by-field with a scratch
+  bit-reader, mirrored name-by-name — the byte-diff test passed on
+  the FIRST run, emulation-prevention sequences included. Remaining
+  for E6b: the native VAAPI encode context (vaCreateConfig/Context,
+  per-frame seq/pic/slice parameter buffers, packed headers from
+  this pen), live VAEncMiscParameterRateControl (un-defers
+  directives_deferred), parity legs, then the vendored ffmpeg exits.
 - **Then**: AV1 negotiation (the recorded four seams), login-screen
   capture, multi-monitor.
 
