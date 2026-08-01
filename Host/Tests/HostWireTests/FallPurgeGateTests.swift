@@ -74,6 +74,10 @@ final class FallPurgeGateTests: XCTestCase {
         XCTAssertGreaterThan(queuedBefore, 40_000,
                              "the frame is queued, not sent")
         XCTAssertEqual(channel.framesWithQueuedShards(), [7])
+        channel.annotateFrameTelemetry(
+            frame: FrameNumber(rawValue: 7), averageQP: 24,
+            idrCauses: []
+        )
 
         let purged = channel.purgeQueuedVideo()
         XCTAssertGreaterThan(purged.datagrams, 30)
@@ -83,6 +87,25 @@ final class FallPurgeGateTests: XCTestCase {
         XCTAssertEqual(channel.queuedBytes(.videoTail), 0)
         XCTAssertTrue(channel.framesWithQueuedShards().isEmpty,
                       "the census settles with the drop")
+        XCTAssertNil(channel.repairAnchor(for: FrameNumber(rawValue: 7)),
+                     "purge must invalidate the matching repair-store frame")
+        XCTAssertTrue(channel.wasPurged(FrameNumber(rawValue: 7)))
+        XCTAssertEqual(try channel.enqueueRepair(
+            frame: FrameNumber(rawValue: 7), shardIndices: [0], now: 1
+        ), 0, "a NACK cannot resurrect a purged frame as videoTail")
+        let telemetryBatch = channel.takeFrameTransmitTelemetry()
+        XCTAssertEqual(telemetryBatch.count, 1)
+        let telemetry = try XCTUnwrap(telemetryBatch.first)
+        XCTAssertEqual(telemetry.frameNumber, 7)
+        XCTAssertEqual(telemetry.captureTimestampMicroseconds, 1_000)
+        XCTAssertEqual(telemetry.admittedAtNS, 0)
+        XCTAssertNil(telemetry.firstTransmitAtNS)
+        XCTAssertNil(telemetry.lastTransmitAtNS)
+        XCTAssertEqual(telemetry.averageQP, 24)
+        XCTAssertEqual(telemetry.pacerRateBitsPerSecond, 2_000_000)
+        XCTAssertEqual(telemetry.fecRegime, .clean)
+        XCTAssertEqual(telemetry.queuedWireTimeBeforeAdmissionNS, 0)
+        XCTAssertTrue(telemetry.purged)
         XCTAssertEqual(sent, 0)
 
         // Nothing ghost-drains afterwards.
@@ -191,8 +214,122 @@ final class FallPurgeGateTests: XCTestCase {
         XCTAssertTrue(demand.contains(.fallPurge))
         XCTAssertTrue(demand.names.contains("fall-purge"))
 
-        // And the arm is one-shot: consumed, it stays consumed.
+        // A later NACK for the purged frame is superseded. It neither
+        // re-enqueues repair bytes nor arms another IDR after the one
+        // replacement demand above was consumed.
+        let nacked = try FeedbackReport.NackEntry(
+            frame: FrameNumber(rawValue: 0), missingShards: [0]
+        )
+        received += 1
+        let body = try FeedbackReport(
+            clientTimestamp: ClientTimestamp(microseconds: t + 1),
+            channels: [FeedbackReport.ChannelStats(
+                channel: .videoActive,
+                highestSeq: ChannelSeq(rawValue: 0),
+                received: received, missing: missing, duplicates: 0
+            )],
+            nacks: [nacked]
+        ).encode()
+        let nackEvents = session.receive(
+            try Envelope(
+                channel: .feedback, seq: ChannelSeq(rawValue: 60_000),
+                frame: FrameNumber(rawValue: 0), timestamp: t + 1, fec: 0
+            ).encode(payload: body),
+            from: FourTuple(
+                localAddress: "10.0.0.1", localPort: 41000,
+                remoteAddress: "10.0.0.2", remotePort: 42000
+            ),
+            now: (t + 1) * 1_000, hostMicroseconds: t + 1
+        )
+        XCTAssertTrue(nackEvents.contains(.nackJudgedStale(
+            frame: FrameNumber(rawValue: 0), reason: .olderThanIdr
+        )))
         XCTAssertFalse(session.takeFreshKeyframeRequest())
+    }
+
+    func testQueueBudgetDefaultsAndImpairedClamp() {
+        let defaults = SessionConfig(
+            crypto: .insecure, rateBitsPerSecond: 20_000_000
+        )
+        XCTAssertEqual(defaults.cleanVideoQueueBudgetNS, 50_000_000)
+        XCTAssertEqual(defaults.impairedVideoQueueBudgetNS, 100_000_000)
+
+        let clamped = SessionConfig(
+            crypto: .insecure,
+            rateBitsPerSecond: 20_000_000,
+            cleanVideoQueueBudgetNS: 40_000_000,
+            impairedVideoQueueBudgetNS: 500_000_000
+        )
+        XCTAssertEqual(clamped.impairedVideoQueueBudgetNS, 100_000_000,
+                       "impaired mode must remain hard-bounded")
+    }
+
+    func testFrameFlightTelemetryJoinsStagesWithinCleanBudget() throws {
+        let channel = VideoChannel(
+            config: VideoChannelConfig(rateBitsPerSecond: 20_000_000),
+            now: 0
+        ) { _ in }
+        var annexB: [UInt8] = [0, 0, 0, 1, 0x02, 0x01]
+        annexB += [UInt8](repeating: 0x42, count: 8_000)
+        try channel.ingest(
+            frame: annexB, frameNumber: FrameNumber(rawValue: 11),
+            captureTimestampMicroseconds: 777, isKeyframe: false, now: 0
+        )
+        channel.annotateFrameTelemetry(
+            frame: FrameNumber(rawValue: 11), averageQP: 23,
+            idrCauses: []
+        )
+        var now: UInt64 = 0
+        while !channel.isIdle {
+            channel.pump(now: now)
+            guard let wake = channel.nextWake(now: now) else { break }
+            now = max(now + 1, wake)
+        }
+        let telemetry = try XCTUnwrap(
+            channel.takeFrameTransmitTelemetry().first
+        )
+        let first = try XCTUnwrap(telemetry.firstTransmitAtNS)
+        let last = try XCTUnwrap(telemetry.lastTransmitAtNS)
+        XCTAssertEqual(telemetry.captureTimestampMicroseconds, 777)
+        XCTAssertEqual(telemetry.averageQP, 23)
+        XCTAssertEqual(telemetry.pacerRateBitsPerSecond, 20_000_000)
+        XCTAssertLessThanOrEqual(last - telemetry.admittedAtNS, 50_000_000)
+        XCTAssertLessThanOrEqual(first, last)
+        XCTAssertFalse(telemetry.purged)
+    }
+
+    func testQueuedRepairExpiresBeforeItCanBecomeStaleTail() throws {
+        var sent: [VideoChannelDatagram] = []
+        let channel = VideoChannel(
+            config: VideoChannelConfig(
+                rateBitsPerSecond: 20_000_000,
+                repairQueueUsefulnessNS: 50_000_000
+            ),
+            now: 0
+        ) { sent.append($0) }
+        var annexB: [UInt8] = [0, 0, 0, 1, 0x02, 0x01]
+        annexB += [UInt8](repeating: 0x42, count: 8_000)
+        try channel.ingest(
+            frame: annexB, frameNumber: FrameNumber(rawValue: 9),
+            captureTimestampMicroseconds: 0, isKeyframe: false, now: 0
+        )
+        var now: UInt64 = 0
+        while !channel.isIdle {
+            channel.pump(now: now)
+            guard let wake = channel.nextWake(now: now) else { break }
+            now = max(now + 1, wake)
+        }
+        let freshCount = sent.count
+        XCTAssertEqual(try channel.enqueueRepair(
+            frame: FrameNumber(rawValue: 9), shardIndices: [0],
+            now: now
+        ), 1)
+
+        channel.pump(now: now + 50_000_001)
+        XCTAssertEqual(sent.count, freshCount,
+                       "expired repair must not consume tail capacity")
+        XCTAssertEqual(channel.counters.repairShardsExpiredQueued, 1)
+        XCTAssertNil(channel.repairAnchor(for: FrameNumber(rawValue: 9)))
     }
 
     func testEvidenceDecayNeverPurges() throws {

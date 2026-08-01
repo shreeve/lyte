@@ -178,17 +178,16 @@ public struct SessionConfig: Sendable {
     /// "≥4 s rings") and byte cap, passed through to VideoChannel.
     public var repairRetentionNS: UInt64
     public var repairStoreByteCap: Int
-    /// The fall-repricing purge's trigger: after a genuine fall
-    /// (overuse / loss / post-FEC loss — never plain evidence decay),
-    /// video already queued in the pacer is repriced at the NEW rate;
-    /// if serializing it would occupy more wire time than this, it is
-    /// stale glass — purged, with a fresh IDR armed through the
-    /// coalesced latch. 50 ms is 2× the resiliency drain bound
-    /// (min(2×frameInterval, 25 ms)): backlog the system's own
-    /// backpressure gate already calls too deep, doubled so a
-    /// borderline fall never purges what one quantum would have
-    /// drained anyway.
-    public var fallPurgeBacklogThresholdNS: UInt64
+    /// Hard fresh-video queue budgets. Admission checks these before
+    /// encode and a rate fall re-prices the existing queue against the
+    /// same budget. Clean defaults to 50 ms. Lossy/impaired mode may
+    /// spend more time on FEC/repair, but is clamped to 100 ms so it can
+    /// never turn a capacity cliff into a stale tail.
+    public var cleanVideoQueueBudgetNS: UInt64
+    public var impairedVideoQueueBudgetNS: UInt64
+    /// A repair still queued after this interval is no longer useful to
+    /// the bounded client assembler and expires before transmit.
+    public var repairQueueUsefulnessNS: UInt64
 
     public init(
         crypto: SessionCryptoMode,
@@ -212,7 +211,9 @@ public struct SessionConfig: Sendable {
         unknownFrameIdrArmIntervalNS: UInt64 = 1_000_000_000,
         repairRetentionNS: UInt64 = 4_000_000_000,
         repairStoreByteCap: Int = 16 << 20,
-        fallPurgeBacklogThresholdNS: UInt64 = 50_000_000
+        cleanVideoQueueBudgetNS: UInt64 = 50_000_000,
+        impairedVideoQueueBudgetNS: UInt64 = 100_000_000,
+        repairQueueUsefulnessNS: UInt64 = 100_000_000
     ) {
         self.crypto = crypto
         self.rateBitsPerSecond = rateBitsPerSecond
@@ -235,7 +236,15 @@ public struct SessionConfig: Sendable {
         self.unknownFrameIdrArmIntervalNS = unknownFrameIdrArmIntervalNS
         self.repairRetentionNS = repairRetentionNS
         self.repairStoreByteCap = repairStoreByteCap
-        self.fallPurgeBacklogThresholdNS = fallPurgeBacklogThresholdNS
+        let boundedCleanBudget = min(
+            max(cleanVideoQueueBudgetNS, 1_000_000), 100_000_000
+        )
+        self.cleanVideoQueueBudgetNS = boundedCleanBudget
+        self.impairedVideoQueueBudgetNS = min(
+            max(impairedVideoQueueBudgetNS, boundedCleanBudget),
+            100_000_000
+        )
+        self.repairQueueUsefulnessNS = repairQueueUsefulnessNS
     }
 }
 
@@ -689,6 +698,8 @@ public final class Session {
 
     private var ctrlSeq = ChannelSeq(rawValue: 0)
     private var nextVideoFrameNumber = FrameNumber(rawValue: 0)
+    /// Last frame admitted to packetization (nil before the first).
+    public private(set) var lastAdmittedVideoFrameNumber: FrameNumber?
 
     /// The reliable CTRL sublayer (HS-8). Host clock domain: the
     /// endpoint's instants derive from the loop's monotonic `now`
@@ -962,7 +973,8 @@ public final class Session {
                 pacerQuantumNS: config.pacerQuantumNS,
                 connectionId: connectionId,
                 repairRetentionNS: config.repairRetentionNS,
-                repairStoreByteCap: config.repairStoreByteCap
+                repairStoreByteCap: config.repairStoreByteCap,
+                repairQueueUsefulnessNS: config.repairQueueUsefulnessNS
             ),
             now: now,
             seal: { [unowned self] plaintext, aad, envelope in
@@ -1240,6 +1252,7 @@ public final class Session {
         if isKeyframe, openingIdrShardTotal == nil {
             openingIdrShardTotal = shards
         }
+        lastAdmittedVideoFrameNumber = nextVideoFrameNumber
         nextVideoFrameNumber = nextVideoFrameNumber.next
         return shards
     }
@@ -1315,6 +1328,23 @@ public final class Session {
     /// loop thread sat inside a synchronous drain).
     public var queuedVideoBytes: Int {
         channel.queuedBytes(.freshVideo) + channel.queuedBytes(.videoTail)
+    }
+
+    public func annotateVideoFrameTelemetry(
+        frame: FrameNumber, averageQP: Int?, idrCauses: [String]
+    ) {
+        channel.annotateFrameTelemetry(
+            frame: frame, averageQP: averageQP, idrCauses: idrCauses
+        )
+    }
+
+    /// Queue latency budget currently in force. The FEC regime is the
+    /// existing clean/impaired posture, so admission and fall purge use
+    /// one coherent mode switch.
+    public var videoQueueBudgetNS: UInt64 {
+        channel.regime == .lossy
+            ? config.impairedVideoQueueBudgetNS
+            : config.cleanVideoQueueBudgetNS
     }
 
     /// The encoder-loop poll (one per tick, before encoding): true when
@@ -2250,7 +2280,7 @@ public final class Session {
                     + channel.queuedBytes(.videoTail)
                 let staleWireNS = UInt64(
                     Double(backlog) * 8e9 / Double(rate))
-                if staleWireNS > config.fallPurgeBacklogThresholdNS {
+                if staleWireNS > videoQueueBudgetNS {
                     let purged = channel.purgeQueuedVideo()
                     fallPurgeKeyframePending = true
                     counters.fallPurges += 1
@@ -2393,6 +2423,13 @@ public final class Session {
         // No IDR arm on refusal: the newer IDR IS the heal, in flight
         // or delivered (and if IT died, the client names it too).
         if let lastIdr = channel.lastKeyframeNumber, nack.frame < lastIdr {
+            return stale(.olderThanIdr, armIdr: false)
+        }
+        // A fall purge already armed the one replacement IDR. Treat
+        // later NACKs for any purged frame as superseded: resurrecting
+        // its stored shards would rebuild the stale tail, while arming
+        // another IDR would turn one capacity cliff into an avalanche.
+        if channel.wasPurged(nack.frame) {
             return stale(.olderThanIdr, armIdr: false)
         }
         guard let ingestedAt = channel.repairAnchor(for: nack.frame) else {
@@ -2709,6 +2746,10 @@ public final class Session {
 
     /// Bytes retained for repair (the ≥4 s ring's live size).
     public var repairStoreBytes: Int { channel.repairStoreBytes }
+
+    public func takeFrameTransmitTelemetry() -> [VideoFrameTransmitTelemetry] {
+        channel.takeFrameTransmitTelemetry()
+    }
 
     // MARK: Handshake (responder)
 

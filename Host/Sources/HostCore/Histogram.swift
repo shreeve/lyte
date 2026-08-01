@@ -42,10 +42,34 @@ public struct Histogram: Sendable {
     /// nearest-rank method; nil when nothing was recorded.
     public func percentile(_ q: Double) -> UInt64? {
         guard !samples.isEmpty else { return nil }
-        let sorted = samples.sorted()
         let clamped = Swift.min(Swift.max(q, 0), 1)
-        let rank = Int((clamped * Double(sorted.count)).rounded(.up))
-        return sorted[Swift.max(rank, 1) - 1]
+        let rank = Int((clamped * Double(samples.count)).rounded(.up))
+        let target = Swift.max(rank, 1) - 1
+        var work = samples
+        var low = 0
+        var high = work.count - 1
+        while low < high {
+            let pivot = work[(low + high) / 2]
+            var i = low
+            var j = high
+            while i <= j {
+                while work[i] < pivot { i += 1 }
+                while work[j] > pivot { j -= 1 }
+                if i <= j {
+                    work.swapAt(i, j)
+                    i += 1
+                    j -= 1
+                }
+            }
+            if target <= j {
+                high = j
+            } else if target >= i {
+                low = i
+            } else {
+                break
+            }
+        }
+        return work[target]
     }
 
     public var p50: UInt64? { percentile(0.50) }
