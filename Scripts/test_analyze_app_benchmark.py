@@ -259,6 +259,75 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(
             result["motion"]["firstJaggedBoundary"], "synthetic_host_source")
 
+    def analyze_with_host_trace(self, fixture, trace_records):
+        end = {
+            "type": "end",
+            "elapsedSeconds": 30.0,
+            "everStreaming": True,
+        }
+        with tempfile.TemporaryDirectory() as workdir:
+            run_id = fixture["runID"]
+            trace_path = Path(workdir) / f"{run_id}-host-trace.jsonl"
+            with open(trace_path, "w") as stream:
+                for record in trace_records:
+                    stream.write(json.dumps(record) + "\n")
+            jsonl_path = Path(workdir) / f"{run_id}.jsonl"
+            with open(jsonl_path, "w") as stream:
+                stream.write(json.dumps(fixture) + "\n")
+                stream.write(json.dumps(end) + "\n")
+            return ANALYZER.analyze(str(jsonl_path))
+
+    @staticmethod
+    def source_trace(latenesses_ms, cadence_ns=16_666_667):
+        t0 = 1_000_000_000
+        return [
+            {
+                "type": "source",
+                "frameID": index + 1,
+                "deadlineNS": t0 + index * cadence_ns,
+                "latenessNS": int(late * 1e6),
+            }
+            for index, late in enumerate(latenesses_ms)
+        ]
+
+    def test_warmup_drain_does_not_fail_the_source_gate(self):
+        # Frames 1–56 replay the documented first-second warm-up
+        # (starting ~228 ms behind, draining to zero); steady state is
+        # clean. Whole-run p99 says 178 ms; the gate must judge steady
+        # state and pass.
+        fixture = pipeline_sample(30.0, 1800)
+        fixture["hostPipeline"]["sourceDeadlineLateness"][
+            "p99Milliseconds"] = 178.0
+        drain = [max(0.0, 228.0 - 4.2 * n) for n in range(56)]
+        steady = [0.06] * 1200
+        result = self.analyze_with_host_trace(
+            fixture, self.source_trace(drain + steady))
+        self.assertNotIn(
+            "motion_pipeline_source_deadline_failed", result["failures"])
+        source = result["motion"]["source"]
+        self.assertTrue(source["pass"])
+        self.assertEqual(
+            source["deadlineLatenessP99Milliseconds"], 178.0)
+        self.assertLessEqual(
+            source["steadyStateDeadlineLateness"]
+            ["steadyStateP99Milliseconds"], 8)
+
+    def test_steady_state_lateness_still_fails_the_source_gate(self):
+        # A source that is late in steady state — not just during
+        # warm-up — must keep failing exactly as before.
+        fixture = pipeline_sample(30.0, 1800)
+        fixture["hostPipeline"]["sourceDeadlineLateness"][
+            "p99Milliseconds"] = 178.0
+        steady = [0.06] * 1000
+        steady[::50] = [40.0] * len(steady[::50])
+        result = self.analyze_with_host_trace(
+            fixture, self.source_trace([228.0] * 30 + steady))
+        self.assertIn(
+            "motion_pipeline_source_deadline_failed", result["failures"])
+        self.assertEqual(
+            result["motion"]["firstJaggedBoundary"],
+            "synthetic_host_source")
+
     def test_pts_regression_with_apple_drops_fails(self):
         fixture = sample("motion", 1, ["freshCapture", "freshCapture"])
         fixture["frames"][1]["scheduledPresentationMicroseconds"] = 1
