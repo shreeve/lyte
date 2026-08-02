@@ -55,7 +55,6 @@ struct StreamContainer: View {
         let stage: String
         switch health.dominantStage {
         case "network": stage = "Network stalls"
-        case "host": stage = "Host capture stalls"
         case "renderer": stage = "Render stalls"
         default: stage = "Delivery stalls"
         }

@@ -15,8 +15,15 @@ public struct LinkHealthAssessment: Equatable, Sendable {
         case good, degraded, poor
     }
     /// Which stage the recent stalls blame — "network" (transit
-    /// stretch: host stamp → client-ready), "host" (capture/encode
-    /// cadence), "renderer" (queue/enqueue).
+    /// stretch: host stamp → client-ready), "renderer" (queue/
+    /// enqueue). Source-capture gaps are deliberately NOT evidence:
+    /// portal capture is damage-driven, so an idle desktop whose only
+    /// motion is a seconds clock delivers one frame per second and
+    /// 1000 ms gaps BY DESIGN (the 2026-08-01 false alarm: "Host
+    /// capture stalls — worst 1,002 ms" on a perfectly healthy idle
+    /// stream). A real capture stall is indistinguishable from quiet
+    /// content client-side; naming the host needs a host-side signal
+    /// (damage-pending-but-undelivered), which is filed, not faked.
     public var level: Level
     /// Rate and level grade the rolling window — the pill relaxes
     /// when the link recovers. Total and worst are SESSION books —
@@ -54,10 +61,10 @@ public final class LinkHealthMeter {
 
     /// A frame is an event when its stage exceeds these (ms). The
     /// transit bar is set above dispatch jitter but below anything an
-    /// eye can see; host cadence above the idle-floor's own gaps;
-    /// renderer far above its measured µs baseline.
+    /// eye can see (and transit stretch is already source-gap
+    /// normalized, so idle cadence cannot inflate it); renderer far
+    /// above its measured µs baseline.
     public static let transitStallMilliseconds = 25.0
-    public static let hostStallMilliseconds = 45.0
     public static let rendererStallMilliseconds = 8.0
     /// Events closer than this are the same episode.
     public static let coalesceSeconds = 0.5
@@ -94,7 +101,6 @@ public final class LinkHealthMeter {
     public func observe(
         ordinal: UInt64,
         transitStretchMilliseconds: Double?,
-        sourceGapMilliseconds: Double?,
         queueWaitMilliseconds: Double,
         enqueueMilliseconds: Double,
         frameSeconds: TimeInterval
@@ -134,11 +140,6 @@ public final class LinkHealthMeter {
            transit >= Self.transitStallMilliseconds, transit > worst {
             worst = transit
             stage = "network"
-        }
-        if let source = sourceGapMilliseconds,
-           source >= Self.hostStallMilliseconds, source > worst {
-            worst = source
-            stage = "host"
         }
         let renderer = queueWaitMilliseconds + enqueueMilliseconds
         if renderer >= Self.rendererStallMilliseconds, renderer > worst {
