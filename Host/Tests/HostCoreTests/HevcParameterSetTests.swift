@@ -91,6 +91,19 @@ final class HevcParameterSetTests: XCTestCase {
                        "PPS must be byte-identical to libavcodec's")
     }
 
+    /// The brc-mode PPS, pinned against a fresh hevc_vaapi VBR capture
+    /// (vis-libav-vbr, 2026-08-01): baseline QP 30 and cu_qp_delta at
+    /// depth 3 — the driver writes per-CU deltas into brc slice data,
+    /// and a PPS that doesn't declare them corrupts every decode
+    /// (sharp text, yellow-washed flats; the eyeball bug of 2026-08-01).
+    func testBrcPpsMatchesTheOracleByteExact() {
+        let recipe = HevcHeaderRecipe(
+            width: 2048, height: 1280, initialQP: 30, cuQpDeltaDepth: 3)
+        XCTAssertEqual(HevcParameterSets.pps(recipe),
+                       Self.hex("4401c06219302240"),
+                       "brc PPS must be byte-identical to libavcodec's")
+    }
+
     /// The slice pens against the same capture: the oracle's IDR
     /// slice header is exactly 26 01 AF A0 (decoded bit-by-bit:
     /// I-slice, SAO on, qp_delta 0, loop-filter-across off), and its
