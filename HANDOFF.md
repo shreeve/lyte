@@ -54,8 +54,13 @@ key 15 + CTRL 0x25 track-state, HostCore AudioTripwire (5 s hold /
 100 ms trip / 200 ms ring / 5 s check-ins), client relaxes the 350 ms
 detector on announced quiet and re-tightens on wake evidence; live
 smoke 3572 encoded / 999 sent / 2573 gated. Deferred by design:
-Settings dials, DTX warm rung, DSP fades. NEXT = the REWIND (opt-in
-host-MEMORY ring, never disk — owner: "this is huge"). After audio:
+Settings dials, DTX warm rung, DSP fades. The REWIND was RE-SIZED by
+the owner (2026-08-02): "more like 2–5 seconds" — an instant-replay
+button, not a DVR; the tripwire's ring already banks the mechanism
+(deepen to ~5 s ≈ 80 KB when demand shows up), so it's PARKED behind
+demand, not next. NEXT = video quiet posture + posture announcements
+(the doc's table: keepalive backs off 1→2→4→…→30 s after ~30 s no
+damage, each step announced; damage or client input IS the wake). After audio:
 video quiet posture + posture announcement messages, direct-leg
 quality refinement (ratchet's successor — owns A-20), the native-seat
 benchmark quality witness, E6a NVENC productionize (lyte-nvenc probe
