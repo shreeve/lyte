@@ -408,7 +408,8 @@ final class ConnectionModel {
             clockModel: clockModel,
             books: videoDeliveryBooks,
             recorder: videoFlightRecorder,
-            recoveryRequester: recoveryRequester)
+            recoveryRequester: recoveryRequester,
+            playoutConfig: Self.playoutConfigFromSettings())
         videoRendererHandoff = handoff
         let lastDims = VideoDimsCell()
         sessionEpoch += 1
@@ -616,6 +617,30 @@ final class ConnectionModel {
 
     func endSession(reason: String?) {
         endLyteSession(reason: reason)
+    }
+
+    /// The stall-cushion setting (Settings → Video): the playout's
+    /// delay CEILING. The adaptive machinery still starts at ~20 ms
+    /// and only grows on measured lateness, decaying slowly after —
+    /// this knob decides how much it is ALLOWED to grow. 50 ms
+    /// absorbs ordinary jitter; ~120 swallows a full Wi-Fi roam-scan
+    /// deaf-window (the measured 75–115 ms class) at the cost of that
+    /// much video delay while the link misbehaves. Read at session
+    /// start; new connections pick up changes.
+    static let playoutCushionKey = "playoutCushionMilliseconds"
+    static let playoutCushionDefault = 50
+    static let playoutCushionRange = 20...150
+
+    private static func playoutConfigFromSettings()
+        -> AdaptiveVideoPlayout.Config
+    {
+        let stored = UserDefaults.standard
+            .integer(forKey: playoutCushionKey)
+        let ms = stored == 0
+            ? playoutCushionDefault
+            : min(max(stored, playoutCushionRange.lowerBound),
+                  playoutCushionRange.upperBound)
+        return .init(maximumDelayMicroseconds: UInt64(ms) * 1_000)
     }
 
     /// The 1 Hz link-health tick (driven by the stream container's
@@ -1511,7 +1536,7 @@ private final class VideoRendererHandoff: @unchecked Sendable {
     private let renderer: AVSampleBufferVideoRenderer
     private let queue: DispatchQueue
     private let clockModel: HostClockModel
-    private let playout = AdaptiveVideoPlayoutController()
+    private let playout: AdaptiveVideoPlayoutController
     private let books: VideoDeliveryBooks
     private let recorder: VideoFlightRecorder
     private let recoveryRequester: VideoRecoveryRequester
@@ -1529,7 +1554,8 @@ private final class VideoRendererHandoff: @unchecked Sendable {
         clockModel: HostClockModel,
         books: VideoDeliveryBooks,
         recorder: VideoFlightRecorder,
-        recoveryRequester: VideoRecoveryRequester
+        recoveryRequester: VideoRecoveryRequester,
+        playoutConfig: AdaptiveVideoPlayout.Config = .init()
     ) {
         self.renderer = renderer
         self.queue = queue
@@ -1537,6 +1563,8 @@ private final class VideoRendererHandoff: @unchecked Sendable {
         self.books = books
         self.recorder = recorder
         self.recoveryRequester = recoveryRequester
+        self.playout = AdaptiveVideoPlayoutController(
+            config: playoutConfig)
     }
 
     func submit(sample: CMSampleBuffer, unit: DecodeUnit) {

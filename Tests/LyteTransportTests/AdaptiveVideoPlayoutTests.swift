@@ -31,6 +31,39 @@ final class AdaptiveVideoPlayoutTests: XCTestCase {
         XCTAssertEqual(policy.targetDelayMicroseconds, 15_000)
     }
 
+    func testCushionCeilingDecidesWhichStallsAreAbsorbed() {
+        // The owner's Settings knob is the delay CEILING. A 115 ms
+        // radio deaf-window (the measured 2026-08-01 class) breaks
+        // through the default 50 ms cap forever; with the cap raised
+        // to 120 ms the SECOND such stall arrives inside the grown
+        // cushion and presents on time.
+        func run(capMicroseconds: UInt64) -> UInt64 {
+            var policy = AdaptiveVideoPlayout(config: .init(
+                maximumDelayMicroseconds: capMicroseconds))
+            // A settled cadence, then one 115 ms stall to teach it.
+            for i in 0..<10 {
+                _ = policy.schedule(
+                    mappedCaptureMicroseconds: 1_000_000
+                        + UInt64(i) * 16_667,
+                    arrivalMicroseconds: 1_002_000 + UInt64(i) * 16_667)
+            }
+            _ = policy.schedule(
+                mappedCaptureMicroseconds: 1_166_670,
+                arrivalMicroseconds: 1_166_670 + 117_000)
+            // The next stall of the same size: absorbed or not?
+            let second = policy.schedule(
+                mappedCaptureMicroseconds: 1_500_000,
+                arrivalMicroseconds: 1_500_000 + 117_000)
+            return second.latenessMicroseconds
+        }
+        XCTAssertGreaterThan(
+            run(capMicroseconds: 50_000), 0,
+            "a 117 ms stall must break through the default 50 ms cap")
+        XCTAssertEqual(
+            run(capMicroseconds: 120_000), 0,
+            "a 120 ms cushion must absorb the second 117 ms stall")
+    }
+
     func testExcessiveLatenessRebasesWithCushionWithoutBreakingContinuity() {
         var policy = AdaptiveVideoPlayout()
         let decision = policy.schedule(
