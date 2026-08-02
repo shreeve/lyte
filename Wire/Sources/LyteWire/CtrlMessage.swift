@@ -179,6 +179,14 @@ public enum CtrlMessageType {
     /// capability key 13 surviving intersection.
     public static let cursorShape: UInt8 = 0x24
 
+    /// Host→client audio track-state announcement (AudioTrackState,
+    /// the postures design's tripwire — silence with a signed IOU):
+    /// quiet = transmission gated while capture continues, repeated
+    /// as the ~5 s still-quiet check-in; active = transmitting. ARQ
+    /// ordered stream, gated on capability key 15 surviving
+    /// intersection.
+    public static let audioTrackState: UInt8 = 0x25
+
     /// The type byte of a CTRL payload, nil when the payload is empty.
     /// Dispatch on this, then hand the whole payload (type byte included)
     /// to the named codec's `decode`.

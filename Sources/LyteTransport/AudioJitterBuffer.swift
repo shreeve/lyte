@@ -191,6 +191,22 @@ public final class AudioJitterBuffer {
         self.deviationWindow.reserveCapacity(config.deviationWindowPackets)
     }
 
+    /// Tripwire: an ANNOUNCED audio-quiet gap is contract, not path
+    /// evidence. Reset the arrival lattice and its windows so the
+    /// wake burst's first packet re-bases the epoch instead of
+    /// landing seconds off the old anchor and slamming the spread
+    /// target to max for a window's length. The TARGET itself
+    /// survives — cushion earned from the path is not forfeited by
+    /// silence. Idempotent across repeated check-ins.
+    public func noteIntentionalGap() {
+        skewAnchor = nil
+        lastArrival = nil
+        skewWindow.removeAll(keepingCapacity: true)
+        skewCursor = 0
+        deviationWindow.removeAll(keepingCapacity: true)
+        deviationCursor = 0
+    }
+
     // MARK: - Insert
 
     public func insert(_ packet: AudioPacket, arrivalMicroseconds: UInt64) {

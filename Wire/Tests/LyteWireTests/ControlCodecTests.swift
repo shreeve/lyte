@@ -311,6 +311,54 @@ final class ControlCodecTests: XCTestCase {
         )
     }
 
+    // MARK: Capability key 15 + the 0x25 track-state codec (tripwire)
+
+    func testAudioQuietPostureRidesTheSpineLikeKeyNine() throws {
+        // Key 15 (the tripwire's gate): the key-9 laws, fifteenth
+        // verse — one appended canonical entry, v1-decoder readback,
+        // intersection only on mutual declaration.
+        let declared = Capabilities.wireDefault.declaringAudioQuietPosture()
+        XCTAssertTrue(declared.audioQuietPosture)
+        XCTAssertFalse(Capabilities.wireDefault.audioQuietPosture)
+        XCTAssertEqual(declared.declaringAudioQuietPosture(), declared)
+
+        let decoded = try Capabilities.decodeCbor(declared.encodeCbor())
+        XCTAssertTrue(decoded.audioQuietPosture)
+        XCTAssertEqual(decoded, declared)
+
+        XCTAssertTrue(declared.intersecting(declared).audioQuietPosture)
+        XCTAssertFalse(declared.intersecting(.wireDefault).audioQuietPosture)
+        XCTAssertFalse(
+            Capabilities.wireDefault.intersecting(declared).audioQuietPosture
+        )
+    }
+
+    func testAudioTrackStateCodecPinsBytesAndRejectsHostiles() throws {
+        // The pinned images.
+        XCTAssertEqual(
+            AudioTrackState(state: .active).encode(), [0x25, 0x01]
+        )
+        XCTAssertEqual(
+            AudioTrackState(state: .quiet).encode(), [0x25, 0x02]
+        )
+        for state in AudioTrackState.State.allCases {
+            XCTAssertEqual(
+                try AudioTrackState.decode(
+                    AudioTrackState(state: state).encode()
+                ).state, state
+            )
+        }
+        // Truncation, foreign types, unknown states, trailing bytes.
+        XCTAssertThrowsError(try AudioTrackState.decode([]))
+        XCTAssertThrowsError(try AudioTrackState.decode([0x25]))
+        XCTAssertThrowsError(try AudioTrackState.decode([0x24, 0x01]))
+        XCTAssertThrowsError(try AudioTrackState.decode([0x7F, 0x01]))
+        for state: UInt8 in [0x00, 0x03, 0xFF] {
+            XCTAssertThrowsError(try AudioTrackState.decode([0x25, state]))
+        }
+        XCTAssertThrowsError(try AudioTrackState.decode([0x25, 0x01, 0]))
+    }
+
     // MARK: The registry itself
 
     func testPromotedRegistryNumbersAreThePinnedOnes() {
@@ -323,5 +371,7 @@ final class ControlCodecTests: XCTestCase {
         XCTAssertEqual(CtrlMessageType.audioRoutingStatus, 0x19)
         XCTAssertEqual(WireExtension.ReservedType.lastInputSeq, 0x03)
         XCTAssertEqual(CapabilityKey.hostAudioRouting, 9)
+        XCTAssertEqual(CtrlMessageType.audioTrackState, 0x25)
+        XCTAssertEqual(CapabilityKey.audioQuietPosture, 15)
     }
 }
