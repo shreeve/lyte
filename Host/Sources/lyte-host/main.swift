@@ -1564,14 +1564,25 @@ func run() throws {
     lyte_stdout_linebuf()
 
     var opts = try Options.parse(CommandLine.arguments)
-    // A cap_sys_admin file capability clears the dumpable flag at
-    // exec, killing coredumps. Re-arm it for crash forensics (owner-
-    // machine threat model; E4's packaging owns the real answer).
-    // NOTE it does NOT reopen /proc/self/exe — the kernel ptrace-
-    // guards any process whose caps exceed the reader's, dumpable or
-    // not; the benchmark rig reads its provenance witness via sudo.
-    if opts.backend == .direct, lyte_set_dumpable() != 0 {
-        print("direct: WARNING — could not restore dumpability "
+    // A cap_sys_admin file capability (the direct backend's DRM
+    // ticket) seals /proc/<pid> two ways: it clears the dumpable
+    // flag at exec, and the runtime caps put every uncapped same-uid
+    // peer on the losing side of the kernel's capability-subset
+    // ptrace rule. The PORTAL backend survives neither — xdg-desktop-
+    // portal vets its caller by opening /proc/<pid>/root and answers
+    // AccessDenied when refused (CreateSession dies mid-session-up).
+    // Portal needs no privilege, so it sheds ALL caps, then re-arms
+    // dumpability; direct keeps its cap and re-arms dumpability for
+    // crash forensics only (owner-machine threat model; E4's
+    // packaging owns the real answer). NOTE the direct path's
+    // /proc/self/exe stays ptrace-guarded regardless — the benchmark
+    // rig reads its provenance witness via sudo.
+    if opts.backend == .portal, lyte_drop_all_caps() != 0 {
+        print("portal: WARNING — could not drop capabilities "
+            + "(a cap-tagged binary will fail portal caller vetting)")
+    }
+    if lyte_set_dumpable() != 0 {
+        print("host: WARNING — could not restore dumpability "
             + "(coredumps stay disabled)")
     }
 
