@@ -22,13 +22,6 @@ live bugs; each is armed only by a future change to its seam.*
   Also: PR #10 shipped source-only — `sweepSettled`, `contiguousPrefix`,
   and the `seqAdvanced || openedGroup` gate have no dedicated pins.
 
-- **encode() `-2` resend path** (`Host/Sources/lyte-host/main.swift`) —
-  `encode(data: nil)` consumes the forced-IDR demand *before* the send, so
-  a `-2` (nothing retained) return would silently drop it. Unreachable
-  today (one encoder per Sink lifetime ⇒ `framesIn > 0` implies retained);
-  becomes a real trap if encoder re-open / resolution renegotiation is ever
-  added. Fix shape: take the demand after the `-2` check, or re-arm on `-2`.
-
 - **ARQ PTO sleep-forever guard has no pin**
   (`Sources/LyteTransport/ReliableCtrlEndpoint.swift`, `timerFired()`
   clearing `armedDeadlineMicros` before service) — the only sweep change
@@ -49,14 +42,9 @@ live bugs; each is armed only by a future change to its seam.*
   lossless — the atomic stamp retains it). Bounded and by design, but
   "datagram-immediate FROZEN exit" carries that one caveat.
 
-- **quality-probe unwritten grep dependencies** (`Host/Scripts/quality-probe.sh`
-  ↔ `WireViewCommand.swift`) — beyond the documented item-19 contract,
-  `parse_wire` also relies on the final summary block being the *last*
-  `render:`/`wire:` lines in the client log, and on `head -1` winning a
-  same-line second `delivery …` match in the host log. Inserting a clause
-  after `missing` or adding a later `render:` line rots the greps without
-  violating the written contract; fold these into the annotations on the
-  next probe touch.
+*(Two caveats from this pass retired 2026-08-02 with the E5 demolition:
+the Sink's encode() `-2` resend trap died with the Sink, and
+quality-probe.sh's grep contract died with the script.)*
 
 *Still owed live (not code): watch #6's `rate: fall purge` line and #16's
 `hole-recused` count on the next evening-air session; optional rtprio
@@ -64,6 +52,139 @@ grant on the host machine (`Host/README.md` prerequisites item 3); ⌘W a
 live stream window (PR #25) and watch for the host's peer-goodbye line +
 awdl0 release; a live monitor-mode change mid-session (PR #24) should now
 end in a typed teardown, not a crash — worth one deliberate flip.*
+
+## ANALYSIS ledger — the live remainder (moved 2026-08-02)
+
+*The 2026-07-30 six-territory review's ledger (ANALYSIS.md, with
+ANALYSIS-DETAILED.md and ANALYSIS-FULL.md as raw material) was retired
+per owner directive after the E5 demolition; the full record — Tier 1's
+landed entries, the Tier 3 performance ranking, the architecture/clarity
+essay, and the strengths inventory — lives in git history (last at
+`860369a`, `git show 860369a:ANALYSIS.md`). Below are the still-open
+numbered items, re-verified against the post-E5 tree. Retired as moot:
+#11 (`--no-idle-floor` signal swallow — flag and Sink deleted; the
+direct leg polls the termination flag itself since #72), #17 (mute on
+fresh connect — since fixed; `setAudioMuted` now rides both connect and
+roam paths), #21/#22 (quality-probe.sh / corpus-harness.sh deleted),
+#19's capture half and #26's linebuf residue (demolished / fixed
+in #72).*
+
+- **T2-7 Unauthenticated peer retarget** (client) —
+  `Sources/LyteTransport/UdpReceiveEndpoint.swift`: any datagram whose
+  source parses as AF_INET overwrites `peerAddress` *before* the AEAD
+  sees the bytes; an off-path trickle at ~50 Hz steals the return leg
+  (ACKs, input, feedback). The host has PathValidator for the mirror
+  case; the client has nothing. Fix: adopt the source only on
+  `.accepted` — strictly better for roaming too.
+
+- **T2-8 NACK-driven IDR arming has no throttle** (host) —
+  `Host/Sources/HostWire/Session.swift` arms the coalesced keyframe
+  latch on every unknown-frame NACK, unbounded. An authenticated client
+  naming one garbage frame per 25–50 ms report forces continuous IDR
+  re-encodes. The other demand sources are host-armed and self-limiting;
+  only this one is peer-driven at wire cadence. Fix: per-interval cap on
+  `.unavailable` arms.
+
+- **T2-9 ARQ receive groups never reclaimed** (Wire) —
+  `Wire/Sources/LyteWire/ArqEndpoint.swift`: removal happens only on
+  complete one-shot delivery; abandoned/poisoned groups live forever. 63
+  never-completed one-shot groups pin the 64-group table; thereafter
+  every new one-shot is refused *without an ACK* — and since idle-frame
+  acknowledgment drives ACTIVE→IDLE, the session can permanently lose
+  its idle flip while accumulating retransmitting send-groups.
+
+- **T2-10 Audio retention horizon read off the wire** (Wire) —
+  `Wire/Sources/LyteWire/AudioDepacketizer.swift`: staleness gate and
+  eviction derive `k` from the *arriving shard's* declared FEC geometry,
+  not the stream's. One legal `k=1` shard shrinks the horizon ~4× and
+  flushes groups still awaiting parity; a `k=255` shard widens admission
+  ~1000×. The horizon is local policy — pin it in the depacketizer's
+  config.
+
+- **T2-12 Receive-loop `EINTR` deafness + unsynchronized fd close**
+  (client) — `Sources/LyteTransport/UdpReceiveEndpoint.swift`: one
+  `SIGPROF`-class signal permanently deafens the session (treated as
+  "closed by stop()"); `stop()` closes the fd without joining while a
+  roaming re-dial can reuse the fd number within the race window.
+
+- **T2-13 Post-handshake config published unlocked to the drain thread**
+  (host) — `Host/Sources/lyte-host/main.swift` writes
+  `inputInjector`/clipboard closures/`bulkShell` while the drain thread
+  may already read them; `noteMonitorExtent` mutates the injector from
+  the video thread unlocked (now called from DirectEyeLeg since #72).
+  All cold paths — route through `lock`.
+
+- **T2-14 Unbounded send retry under the session lock** (host) —
+  `Host/Sources/lyte-host/SessionWire.swift`: `sent == 0` →
+  `usleep(200); continue` with no bound, holding the lock everything
+  needs — a wedged interface hangs the process silently. Cap and throw
+  into the existing `drainFailed` path.
+
+- **T2-15 Helper XPC: interruption unhandled** (app) —
+  `Sources/Lyte/HelperClient.swift` installs only `invalidationHandler`;
+  a *crashed* daemon produces an interruption, `engaged` stays true, and
+  AgentMenu's documented re-engage never fires — awdl0 comes back up and
+  stays LOOSE for the session.
+
+- **T2-16 Held keys never flushed** (app) —
+  `Sources/Lyte/LyteInputCapture.swift`: no all-keys-up on
+  resign-key/stop/teardown anywhere in client or host. ⌘Tab away with a
+  modifier down leaves the host with Super/Alt latched; a held key
+  across app-switch → host-side auto-repeat storm.
+
+- **A-18 `applyIdrPacing` leaves belief and probe cadence stale across
+  RECOVERY/migration** — `Host/Sources/HostWire/RateEstimator.swift`:
+  the one place the estimator *knows* its evidence is stale halves only
+  `rateBitsPerSecond`; `beliefBits` (which never ages), the cadence
+  hold, and the band floor all survive the path change. Migrate from
+  90 Mbps Wi-Fi to a 5 Mbps tether and the probe ceiling is still
+  ~99 Mbps; symmetric: a stale band floor can hold rises for 10 s.
+
+- **A-19 (audio half) shutdown `roundtrip` with no timeout** —
+  `Host/Sources/lyte-host/audio.c` (`lyte_pw_audio_restore`): a wedged
+  wireplumber hangs exit with the desktop's default sink still pointed
+  at "Lyte Audio". Wants the bounded timer source the old capture leaf
+  demonstrated. (The capture half of this finding died with
+  CPipeWireCapture.)
+
+- **A-20 Delivery trains are segmented channel-blind** —
+  `Host/Sources/HostWire/RateEstimator.swift`: trains mix fast-lane
+  audio (131 B) with video (1152 B) under DSCP, skewing the measured
+  rate that drives the honest/censored trichotomy — and at the 500 kbps
+  floor the rate-scaled gap (~55 ms) chains audio's 5 ms cadence into
+  every train. Consider single-channel trains or per-channel
+  classification.
+
+- **A-23 `SessionWire.init` late throw double-frees and orphans the
+  drain thread** — `Host/Sources/lyte-host/SessionWire.swift` init +
+  deinit: a throw after the allocations and thread start repeats
+  `scratch.deallocate()`/`lyte_netio_free` and leaves the drain thread
+  on a freed object. Unreachable today (the `--insecure` validation runs
+  first) — armed by any new throw added to `init`. Move validation above
+  the allocations.
+
+- **A-24 `lyte_pw_audio_quit` races the loop's exit reason** —
+  `Host/Sources/lyte-host/audio.c`: plain-`int` cross-thread store can
+  overwrite a concurrent stream-error reason, silently suppressing the
+  `run error` line. Make it `_Atomic` (companion: a possibly-NULL
+  `spa_dict_lookup` passed to `%s`).
+
+- **A-25 The arrival-stamp decoy parameter** —
+  `LyteUdpSession.handleDatagram(_:arrivalMicroseconds:)` never reads
+  the parameter (deliberately), but `UdpReceiveEndpoint`'s doc still
+  promises it's "the same arrival stamp the demux got"; a future reader
+  wiring t2 from it corrupts every RTT sample. Drop or annotate it.
+
+- **A-26 (residue) duplications + missing host-side seams** —
+  `LatencyHistogram` ≡ `HostCore.Histogram` and `AnnexBCheck` ≡
+  `HostCore.AnnexB` are documented-in-code duplications; the host's
+  crypto and ARQ carriage are inlined switches where the client has
+  named seams (`TransportCrypto`, `ReliableCtrlEndpoint`) — the missing
+  host-side seam is why the ARQ repack duplication exists.
+
+- **A-27 (test gap) `HostClockModel.estimate`** picks `anchor` by max
+  timestamp but `offset0` by array position; out-of-order `ingest` has
+  no pin.
 
 ## Browser client + Caddy bridge (`docs/20260720-184200-browser-client-caddy-bridge.md`)
 

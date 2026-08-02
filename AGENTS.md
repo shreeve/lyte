@@ -162,10 +162,11 @@ transcript; don't assume a worker died from idle output alone.
 ## The v2 program (2026-07-30 →)
 
 v1 closed at the annotated tag **`v1-final`** after a six-agent final
-review. The record: `ANALYSIS.md` (the tiered working ledger — the fix
-train runs from it), `ANALYSIS-DETAILED.md` (the six reviews verbatim),
-`ANALYSIS-FULL.md` (the owner's capture), and TODO.md's audit-caveats
-section. The v2 laws are `docs/20260730-lyte-v2-rulings.md` — **read
+review. The record: the ANALYSIS trio was retired 2026-08-02 after the
+E5 demolition (full text in git history at `860369a` —
+`git show 860369a:ANALYSIS.md`); the still-open findings live in
+TODO.md's "ANALYSIS ledger — the live remainder" section, beside the
+audit-caveats section. The v2 laws are `docs/20260730-lyte-v2-rulings.md` — **read
 them as constraints, never re-litigate**: one repo forever (no v1/v2
 split, convergence in place, always green); target shape
 Client / Common / Host with Common split as `Common/Core` (`LyteCore`,
@@ -182,8 +183,9 @@ organ rebuilds.
 - `HANDOFF.md` — current state, what's committed, resume point (start here).
 - `docs/README.md` — the docs card catalog: living vs frozen vs
   reference studies, one line each.
-- `ANALYSIS.md` — every known defect and debt, tiered; plus the
-  strengths to protect. The v2 effort's bedrock.
+- TODO.md's "ANALYSIS ledger — the live remainder" — every still-open
+  defect from the v1-final review (the retired ANALYSIS trio's full
+  text: `git show 860369a:ANALYSIS.md`).
 - `docs/20260730-lyte-v2-rulings.md` — settled v2 law.
 - `docs/20260720-222500-lyte-build-plan.md` — master plan: slices, gates,
   waves, checkpoints.

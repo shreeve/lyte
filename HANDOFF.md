@@ -106,20 +106,22 @@ as the sweep ledger and was retired after verification; the sweep's
 advisory caveats and owed live watches live in **TODO.md** ("Audit-sweep
 verification caveats"). **The v2 program then opened** (2026-07-30;
 boundary tag `v1-final`, law in `docs/20260730-lyte-v2-rulings.md`,
-working ledger `ANALYSIS.md`, house rules in AGENTS.md's "The v2
+house rules in AGENTS.md's "The v2
 program" section): six read-only deep reviews produced the ANALYSIS
 trio, and **Tier 1 closed the same day — all six findings landed as
 PRs #20–#25** (VBV rising edge, estimator witness baseline, chan-0
 seq/seal critical section, AudioWire join-before-free, capture
-geometry validation, ⌘W teardown seam), each struck through in
-ANALYSIS.md's ledger with a Landed entry. **Suites at HEAD: Wire
+geometry validation, ⌘W teardown seam). The ANALYSIS trio was retired
+2026-08-02 post-E5 (full text: `git show 860369a:ANALYSIS.md`); the
+open remainder moved to TODO.md's "ANALYSIS ledger — the live
+remainder". **Suites at HEAD: Wire
 486/486, root 219/219, host 241/241 on Mac AND pup.** Tree clean,
 everything pushed.
 
 **Actionable queue (rough order):**
-0. **The v2 fix train continues**: Tier 2 of ANALYSIS.md (items 7–17;
-   start with 7 unauthenticated peer retarget, 8 NACK-IDR throttle,
-   9 ARQ group reclaim), then the Addendum (18–27). The Phase 1
+0. **The v2 fix train continues**: TODO.md's "ANALYSIS ledger — the
+   live remainder" (start with T2-7 unauthenticated peer retarget,
+   T2-8 NACK-IDR throttle, T2-9 ARQ group reclaim). The Phase 1
    inventory workflow is STOPPED mid-run and resumable from cache —
    the exact resume command is in the project memory's resume block;
    its deliverables go to `Docs/spec-drafts/phase1/` plus a decision
