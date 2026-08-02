@@ -1,12 +1,13 @@
 # LYTE-PLAN — The Overall Strategy
 
 *The one linear plan: what Lyte is becoming, why we're building both ends in
-Swift, and the order we get there. This is the strategy document; the living
-build plan is [docs/20260720-222500-lyte-build-plan.md](docs/20260720-222500-lyte-build-plan.md)
-(with its client/host companions) and product decisions live in
-[docs/DESIGN.md](docs/DESIGN.md). The GameStream-era client blueprint this
-header once pointed at is archived as
-[docs/20260722-134521-gamestream-client-plan-historical.md](docs/20260722-134521-gamestream-client-plan-historical.md).*
+Swift, and the order we get there. This is the strategy document; product
+decisions live in [docs/DESIGN.md](docs/DESIGN.md). The H-era build plans
+(master + core/host/client companions) and the GameStream-era client
+blueprint completed their programs and are retired to git history
+(`git show 4bb3e11:docs/…`); the active plans are the v2 rulings, the
+direct-eye plan (E5 complete), and the postures design — see
+[docs/README.md](docs/README.md).*
 
 ---
 
@@ -202,11 +203,13 @@ Linux is the first host target because that's the machine on the other end
 today (the reference host), and because it's the platform where owning the
 host pays off immediately (Wayland clipboard, 4:4:4 via NVENC).
 
-Implementation detail and evidence for these choices:
-[docs/HOST-PLAN.md](docs/HOST-PLAN.md) (recommendation + adopted review
-amendments; its Sunshine-dialect wire mandate is superseded by
-[docs/20260720-215100-lyte-udp-decision.md](docs/20260720-215100-lyte-udp-decision.md) —
-the capture/encode/input recommendations stand).
+Implementation detail and evidence for these choices lived in
+docs/HOST-PLAN.md, retired 2026-08-02 to git history
+(`git show 4bb3e11:docs/HOST-PLAN.md`) — superseded twice over: its wire
+mandate by
+[docs/20260720-215100-lyte-udp-decision.md](docs/20260720-215100-lyte-udp-decision.md)
+and its capture/encode strategy by
+[docs/20260801-105800-direct-eye-plan.md](docs/20260801-105800-direct-eye-plan.md).
 
 ### Architecture
 

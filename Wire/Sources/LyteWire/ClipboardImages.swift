@@ -1,6 +1,6 @@
 // Clipboard image sync (P-1, clipboard v2 — the H3 F-6 sketch
-// inherited whole by the H4 plan, docs/20260728-194226-lyte-h4-plan.md
-// wave 2): image blobs ride as BULK-CHANNEL CARGO — F-2's engines,
+// inherited whole by the H4 plan's wave 2; plan retired to git
+// history): image blobs ride as BULK-CHANNEL CARGO — F-2's engines,
 // verbatim — marked by one small message so the two kinds of cargo
 // (file drops, clipboard images) never confuse each other.
 //

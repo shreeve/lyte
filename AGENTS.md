@@ -15,9 +15,9 @@ repair) closed 2026-07-22 with the H2 joint gate. The GameStream/Sunshine
 dialect never existed on the host; the client's old GameStream stack and
 the Sunshine install on the reference host were demolished at the H2 exit
 (2026-07-22) — Lyte↔Lyte is the only path. Depth:
-`docs/20260720-215100-lyte-udp-decision.md` (the decision record) and
-`docs/20260720-222500-lyte-build-plan.md` (the master plan — slice ladder,
-gates, the H0a/H0b/H1/H2/H3+ milestones).
+`docs/20260720-215100-lyte-udp-decision.md` (the decision record); the
+H-era build plans completed their ladder and are retired to git history
+(`git show 4bb3e11:docs/20260720-222500-lyte-build-plan.md`).
 
 ## Repo structure — three SwiftPM packages (all swift-tools-version 6.0)
 
@@ -47,8 +47,8 @@ gates, the H0a/H0b/H1/H2/H3+ milestones).
  icon); `lyte-helperd` + `LyteHelperProtocol` are the SMAppService AWDL
  helper pair; `COpus` is the one C leaf (libopus decode/PLC). The
  GameStream stack (`LyteKit`/`CEnet`/`CNanors`) was deleted at the H2
- exit per the demolition checklist in
- `docs/20260720-221103-build-plan-client.md`.
+ exit per the demolition checklist in the client build plan (retired
+ to git history).
 
 ## Build & test
 
@@ -148,7 +148,7 @@ when present.
 **HANDOFF.md** is the tracked session ledger. Read it first for current
 state and the resume point; edit it freely; commit updates in the
 ledger voice. It carries only what is live — frozen history is in
-`docs/20260730-103326-handoff-archive-h2-h4.md`.
+git history (`git show 4bb3e11:docs/20260730-103326-handoff-archive-h2-h4.md`).
 
 **Networking / host safety.**
 - Lyte UDP work uses 41000-range ports by convention. (The old "stay off
@@ -193,15 +193,15 @@ organ rebuilds.
   defect from the v1-final review (the retired ANALYSIS trio's full
   text: `git show 860369a:ANALYSIS.md`).
 - `docs/20260730-115707-lyte-v2-rulings.md` — settled v2 law.
-- `docs/20260720-222500-lyte-build-plan.md` — master plan: slices, gates,
-  waves, checkpoints.
+- `docs/20260801-105800-direct-eye-plan.md` — the direct-eye epoch,
+  E0–E5 (complete; `self-hosted`) ·
+  `docs/20260802-013946-postures-design.md` — the active postures track.
 - `docs/20260720-215100-lyte-udp-decision.md` — why Lyte-UDP only, what
   was dropped, what survives.
 - `LYTE-PLAN.md` — overall strategy; §4 technology commitments, §6 host
   ladder.
 - Pillars + overview (`docs/20260720-1917*`, `docs/20260720-193000`) — the
   protocol spec.
-- `docs/HOST-PLAN.md` — capture/encode/input detail (its wire mandate is
-  superseded; see its banner). `Host/README.md` — host build/run specifics.
+- `Host/README.md` — host build/run specifics.
 - `Wire/Vectors/README.md` — the wire formats as frozen data, plus the
   freeze policy.

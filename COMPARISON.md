@@ -3,8 +3,8 @@
 *Where Lyte-UDP desktop streaming stands against conferencing screen share,
 traditional remote desktop, and its own game-streaming lineage. Measured
 figures are from the J-G1 gate runs of 2026-07-21, the H1/H2 joint gates
-of 2026-07-22 (`docs/20260722-084428-h1-joint-gate.md`,
-`docs/20260722-132317-h2-joint-gate.md`), and the standing Beauty Bar rows of
+of 2026-07-22 (gate reports retired to git history:
+`git show 4bb3e11:docs/20260722-132317-h2-joint-gate.md`), and the standing Beauty Bar rows of
 2026-07-29 (HANDOFF.md, `quality-probe.sh`) — 2048×1280@60 real desktop,
 the reference host → Mac client over LAN Wi-Fi, Noise encryption end to
 end; competitor figures are typical published/observed ranges, not

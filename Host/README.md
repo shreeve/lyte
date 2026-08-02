@@ -1,10 +1,11 @@
 # Lyte Host (Linux)
 
-The Swift Linux host (LYTE-PLAN §6, `docs/HOST-PLAN.md`): a full Lyte-UDP
-session host — portal desktop capture → NVENC HEVC video, 5 ms Opus audio,
-Mutter/uinput input injection, Noise-sealed datagrams, congestion control
-and targeted repair, Avahi discovery. H2 parity closed 2026-07-22
-(`docs/20260722-132317-h2-joint-gate.md`).
+The Swift Linux host (LYTE-PLAN §6): a full Lyte-UDP session host — the
+direct eye's KMS capture → native VAAPI HEVC (our own bitstream pens),
+5 ms Opus audio, Mutter/uinput input injection, Noise-sealed datagrams,
+congestion control and targeted repair, Avahi discovery. H2 parity
+closed 2026-07-22 (gate report in git history); the portal era ended
+2026-08-02 at the `self-hosted` tag.
 
 ## Layout
 

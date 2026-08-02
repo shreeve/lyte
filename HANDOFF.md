@@ -4,9 +4,9 @@
 ledger — update freely; commit updates in the ledger voice. This file
 carries ONLY what is live and actionable. Everything historical — the
 post-H2 state block, every wave entry from the H2 demolition through
-H4, and the Beauty Bar's full per-row forensics — is frozen verbatim in
-`docs/20260730-103326-handoff-archive-h2-h4.md` (and in git history; the
-pre-overhaul file is commit `a54ab69`).*
+H4, and the Beauty Bar's full per-row forensics — is frozen in git
+history (`git show 4bb3e11:docs/20260730-103326-handoff-archive-h2-h4.md`;
+the pre-overhaul file is commit `a54ab69`).*
 
 # SESSION RESUME — START HERE (2026-08-01: THE DIRECT-EYE EPOCH)
 
@@ -314,8 +314,8 @@ previous one) · **loss** ≤ 1 wire frame per 150 s leg.
 | 2026-07-29 @ 7a4ee2a | 55.02 PASS | 59.70 PASS | 59 PASS⁷ | 3.2 FAIL⁷ | 0 PASS | 0 PASS |
 | 2026-07-30 @ f63587c | 55.43 PASS | 59.71 PASS | 55 PASS⁸ | 1.6 PASS⁸ | 0 PASS | 0 PASS |
 
-*Condensed footnotes — the full per-row forensics are frozen in
-`docs/20260730-103326-handoff-archive-h2-h4.md`:*
+*Condensed footnotes — the full per-row forensics are frozen in git
+history (`git show 4bb3e11:docs/20260730-103326-handoff-archive-h2-h4.md`):*
 ¹ The bar's first row; both reds later fixed (fps: HS-26's sender
 thread; IDR: the hunt + HS-33). ² fps red retired at the glass; the
 freed appetite made the IDR hunt louder — spawned HS-27/28/30.
