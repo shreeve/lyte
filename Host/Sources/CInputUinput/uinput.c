@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <linux/input.h>
 #include <linux/uinput.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,8 +19,13 @@ struct lyte_uinput {
     int kbd;
     int mouse;
     int tablet;
-    uint32_t width;
-    uint32_t height;
+    /* Written by set_extent on the capture thread, read by absolute
+       moves on the wire-drain thread — atomics, not plain ints. A
+       mid-change mismatched pair scales one event against the old
+       axis; a mid-session geometry change tears the session down
+       anyway (the P-3 law). */
+    _Atomic uint32_t width;
+    _Atomic uint32_t height;
     /* v120 remainders below one detent, per axis. */
     int32_t wheel_rem_x;
     int32_t wheel_rem_y;

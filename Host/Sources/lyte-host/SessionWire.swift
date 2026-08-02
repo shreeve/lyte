@@ -154,10 +154,27 @@ final class SessionWire {
     private var recvSlots: [lyte_netio_slot]
     private var recvError = [CChar](repeating: 0, count: 256)
 
+    /// T2-13: the six surfaces below are published by main AFTER the
+    /// drain thread is live (injector and shells exist only once the
+    /// backend/consent policy has run). Every access snapshots under
+    /// this dedicated lock — never the session `lock`, so the callers'
+    /// off-lock discipline is preserved, and the lock is never held
+    /// across a callback (the accessor releases before returning).
+    private let configLock = NSLock()
+    private func withConfigLock<T>(_ body: () -> T) -> T {
+        configLock.lock()
+        defer { configLock.unlock() }
+        return body()
+    }
+
     /// HS-13: the injection sink for client input events. Nil = input
     /// disabled (counted loud, never fatal). Set by main after the
     /// backend policy runs.
-    var inputInjector: InputInjector?
+    private var _inputInjector: InputInjector?
+    var inputInjector: InputInjector? {
+        get { withConfigLock { _inputInjector } }
+        set { withConfigLock { _inputInjector = newValue } }
+    }
 
     /// HS-18: the shell's audio-leaf flipper — stop the leaf, bring it
     /// back in the requested routing, return whether it stuck. Nil =
@@ -165,21 +182,37 @@ final class SessionWire {
     /// posture). Set by main once audio is up. Called OFF the session
     /// lock: a flip is a PipeWire connect (milliseconds, and it must
     /// not stall the 5 ms audio thread against the lock).
-    var audioRoutingHandler: ((HostAudioRoutingMode) -> Bool)?
+    private var _audioRoutingHandler: ((HostAudioRoutingMode) -> Bool)?
+    var audioRoutingHandler: ((HostAudioRoutingMode) -> Bool)? {
+        get { withConfigLock { _audioRoutingHandler } }
+        set { withConfigLock { _audioRoutingHandler = newValue } }
+    }
 
     /// HS-19: the shell's clipboard-apply sink (the leaf's
     /// SetSelection). Nil = no leaf this run — the session core never
     /// surfaces 0x1A then anyway (key 10 undeclared), so the arm is
     /// defensive. Called OFF the session lock: SetSelection is a
     /// blocking D-Bus round-trip.
-    var clipboardApplyHandler: ((String) -> Void)?
+    private var _clipboardApplyHandler: ((String) -> Void)?
+    var clipboardApplyHandler: ((String) -> Void)? {
+        get { withConfigLock { _clipboardApplyHandler } }
+        set { withConfigLock { _clipboardApplyHandler = newValue } }
+    }
     /// P-1: the image half of the same sink (the leaf's SetSelection
     /// with the PNG flavor). Same off-lock discipline.
-    var clipboardImageApplyHandler: (([UInt8]) -> Void)?
+    private var _clipboardImageApplyHandler: (([UInt8]) -> Void)?
+    var clipboardImageApplyHandler: (([UInt8]) -> Void)? {
+        get { withConfigLock { _clipboardImageApplyHandler } }
+        set { withConfigLock { _clipboardImageApplyHandler = newValue } }
+    }
     /// HS-19: the leaf's off-lock service pass (D-Bus signal drain +
     /// fd transfer pumps), run once per `service()` like the routing
     /// work — never under the lock, never on the audio thread.
-    var clipboardServiceHook: (() -> Void)?
+    private var _clipboardServiceHook: (() -> Void)?
+    var clipboardServiceHook: (() -> Void)? {
+        get { withConfigLock { _clipboardServiceHook } }
+        set { withConfigLock { _clipboardServiceHook = newValue } }
+    }
     /// 0x1A texts delivered by the session (under the lock), awaiting
     /// the shell's apply outside it (drained by `service()`).
     private var pendingClipboardApplies: [String] = []
@@ -192,7 +225,11 @@ final class SessionWire {
     /// then anyway (key 11 undeclared, chan 8 drops loud), so the arm
     /// is defensive. Driven OFF the session lock: every store action
     /// is a pwrite + fsync and the verify is a whole-file hash.
-    var bulkShell: BulkReceiveShell?
+    private var _bulkShell: BulkReceiveShell?
+    var bulkShell: BulkReceiveShell? {
+        get { withConfigLock { _bulkShell } }
+        set { withConfigLock { _bulkShell = newValue } }
+    }
     /// Chan-8 messages delivered by the session (under the lock),
     /// awaiting the shell's disk work outside it (drained by
     /// `service()`).
