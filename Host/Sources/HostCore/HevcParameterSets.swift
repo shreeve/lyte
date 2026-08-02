@@ -26,11 +26,20 @@ public struct HevcHeaderRecipe: Hashable, Sendable {
     /// general_level_idc (30 × the level number): 150 = L5.0, which
     /// covers 2048×1280@60 with margin.
     public var levelIdc: UInt32
+    /// PPS cu_qp_delta: nil = disabled (CQP — the slice data carries
+    /// no per-CU QP syntax). Under brc rate control the driver WRITES
+    /// per-CU deltas into the slice data, so the PPS must declare them
+    /// or the decoder misparses every coefficient after the first
+    /// delta (sharp-text-yellow-wash corruption, caught by eyeball).
+    /// The value is diff_cu_qp_delta_depth; the driver dialect uses
+    /// log2_diff_max_min_luma_coding_block_size (= 3, 8x8 granularity).
+    public var cuQpDeltaDepth: UInt32?
 
     public init(
         width: UInt32, height: UInt32,
         fpsNumerator: UInt32 = 60, fpsDenominator: UInt32 = 1,
-        initialQP: Int32 = 24, levelIdc: UInt32 = 150
+        initialQP: Int32 = 24, levelIdc: UInt32 = 150,
+        cuQpDeltaDepth: UInt32? = nil
     ) {
         self.width = width
         self.height = height
@@ -38,6 +47,7 @@ public struct HevcHeaderRecipe: Hashable, Sendable {
         self.fpsDenominator = fpsDenominator
         self.initialQP = initialQP
         self.levelIdc = levelIdc
+        self.cuQpDeltaDepth = cuQpDeltaDepth
     }
 }
 
@@ -183,7 +193,12 @@ public enum HevcParameterSets {
         w.se(recipe.initialQP - 26) // init_qp_minus26
         w.u(0, 1)      // constrained_intra_pred_flag
         w.u(1, 1)      // transform_skip_enabled_flag
-        w.u(0, 1)      // cu_qp_delta_enabled_flag
+        if let depth = recipe.cuQpDeltaDepth {
+            w.u(1, 1)  // cu_qp_delta_enabled_flag
+            w.ue(depth) // diff_cu_qp_delta_depth
+        } else {
+            w.u(0, 1)  // cu_qp_delta_enabled_flag
+        }
         w.se(0)        // pps_cb_qp_offset
         w.se(0)        // pps_cr_qp_offset
         w.u(0, 1)      // pps_slice_chroma_qp_offsets_present_flag

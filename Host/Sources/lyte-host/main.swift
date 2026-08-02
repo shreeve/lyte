@@ -2442,7 +2442,8 @@ func run() throws {
         done: \(leg.frames) frames encoded (direct eye), \
         \(leg.keyframes) IDR, \(leg.bytes) bytes, \
         missed_grabs \(leg.missedGrabs), \
-        rate directives deferred \(leg.directivesDeferred)
+        rate directives applied \(leg.directivesApplied), \
+        deferred \(leg.directivesDeferred)
         """)
         // The same stream-startability gate the portal leg gets —
         // hevc_vaapi must open with VPS/SPS/PPS + IRAP or the client

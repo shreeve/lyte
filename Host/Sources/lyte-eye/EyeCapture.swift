@@ -81,7 +81,8 @@ func runCapture(_ rawArgs: [String]) -> Never {
         gl = try EyeGL(renderNode: render)
         encoder = try EyeEncoder(
             width: width, height: height, fps: 60, qp: qp,
-            renderNode: render)
+            renderNode: render,
+            bitrateBitsPerSecond: bitrateMbps * 1_000_000)
     } catch {
         FileHandle.standardError.write(Data("init: \(error)\n".utf8))
         exit(1)
