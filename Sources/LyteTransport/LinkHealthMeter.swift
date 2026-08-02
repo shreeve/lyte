@@ -63,10 +63,16 @@ public final class LinkHealthMeter {
     public static let coalesceSeconds = 0.5
     /// The grading window; episodes age out past it.
     public static let windowSeconds = 60.0
+    /// Connect-ramp grace: the first seconds of every connection
+    /// epoch (fresh connect AND roam re-dial) always spike while the
+    /// pipeline fills — measured at session starts, not link news.
+    /// Nothing in this span mints an episode or touches the books.
+    public static let warmupSeconds = 10.0
 
     private var episodes: [Episode] = []
     private var highWaterOrdinal: UInt64 = 0
     private var highWaterFrameSeconds: TimeInterval = 0
+    private var epochFirstFrameSeconds: TimeInterval?
     private var sessionStallCount = 0
     private var sessionWorstMilliseconds = 0.0
     /// LYTE_LINK_HEALTH_DEBUG=1: every episode append and every book
@@ -111,11 +117,16 @@ public final class LinkHealthMeter {
             }
             episodes.removeAll()
             highWaterFrameSeconds = 0
+            epochFirstFrameSeconds = nil
         } else if ordinal == highWaterOrdinal {
             return // already folded
         }
         highWaterOrdinal = ordinal
         highWaterFrameSeconds = max(highWaterFrameSeconds, frameSeconds)
+        let epochStart = epochFirstFrameSeconds ?? frameSeconds
+        epochFirstFrameSeconds = epochStart
+        // Connect-ramp grace — see warmupSeconds.
+        if frameSeconds - epochStart < Self.warmupSeconds { return }
 
         var worst = 0.0
         var stage = ""
@@ -170,6 +181,7 @@ public final class LinkHealthMeter {
         episodes.removeAll()
         highWaterOrdinal = 0
         highWaterFrameSeconds = 0
+        epochFirstFrameSeconds = nil
         sessionStallCount = 0
         sessionWorstMilliseconds = 0
     }
