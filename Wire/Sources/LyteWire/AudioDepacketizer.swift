@@ -92,6 +92,12 @@ public final class AudioDepacketizer {
     /// Groups kept in flight behind the newest — 8 groups of 4 packets
     /// = 160 ms, comfortably past any jitter the buffer would absorb.
     public let horizonGroups: Int
+    /// The retention horizon in packet numbers — LOCAL POLICY, pinned
+    /// at init from the wire's nominal group size. It must never follow
+    /// an arriving shard's declared geometry: one legal k=1 shard would
+    /// shrink retention 4× (flushing groups still awaiting parity) and
+    /// a k=254 shard would widen admission ~64× (T2-10).
+    private let horizonPackets: Int32
 
     public private(set) var stats = AudioDepacketizerStats()
 
@@ -117,8 +123,10 @@ public final class AudioDepacketizer {
     private var groups: [UInt32: Group] = [:]
     private var newestGroupId: UInt32?
 
-    public init(horizonGroups: Int = 8) {
+    public init(horizonGroups: Int = 8, nominalDataShards: Int = 4) {
         self.horizonGroups = max(horizonGroups, 2)
+        self.horizonPackets = Int32(
+            self.horizonGroups * max(nominalDataShards, 1))
     }
 
     /// Feeds one accepted chan-1 datagram. Returns the packets it made
@@ -143,13 +151,13 @@ public final class AudioDepacketizer {
         let groupId = envelope.frame.rawValue
         if let newest = newestGroupId {
             let age = Int32(bitPattern: newest &- groupId)
-            if age > Int32(horizonGroups * geometry.dataShards) {
+            if age > horizonPackets {
                 stats.staleShards += 1
                 return []
             }
             if Int32(bitPattern: groupId &- newest) > 0 {
                 newestGroupId = groupId
-                evictBeyondHorizon(dataShards: geometry.dataShards)
+                evictBeyondHorizon()
             }
         } else {
             newestGroupId = groupId
@@ -249,11 +257,10 @@ public final class AudioDepacketizer {
 
     /// Drops groups older than the horizon behind the newest, counting
     /// the honest losses (missing data the wire never yielded).
-    private func evictBeyondHorizon(dataShards: Int) {
+    private func evictBeyondHorizon() {
         guard let newest = newestGroupId else { return }
-        let horizon = Int32(horizonGroups * dataShards)
         for (id, group) in groups {
-            guard Int32(bitPattern: newest &- id) > horizon else { continue }
+            guard Int32(bitPattern: newest &- id) > horizonPackets else { continue }
             let missing = group.missingDataIndices.count
             if missing > 0 {
                 stats.groupsUnrecoverable += 1

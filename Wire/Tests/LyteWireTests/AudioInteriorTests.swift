@@ -209,4 +209,90 @@ final class AudioInteriorTests: XCTestCase {
         ).isEmpty)
         XCTAssertEqual(depacketizer.stats.malformedDatagrams, 3)
     }
+
+    // MARK: Leg 4 — the retention horizon is local policy (T2-10)
+
+    /// A shard's DECLARED geometry must not move the horizon: before the
+    /// pin, one legal k=1 shard shrank retention to 8 packets (flushing
+    /// groups still awaiting parity) and a k=254 shard widened admission
+    /// to ~2000 packets. Both now bounce off the pinned 32-packet
+    /// (160 ms) policy while honest 4+2 traffic is untouched.
+    func testDeclaredGeometryCannotMoveTheRetentionHorizon() throws {
+        // Group 0 via the real framer: 3 of 4 data shards arrive, so the
+        // group waits on parity for its recovery.
+        let packets = (0..<4).map { opusPacket($0) }
+        let framer = AudioFramer(config: AudioFramerConfig())
+        var datagrams: [(envelope: Envelope, payload: [UInt8])] = []
+        for (n, packet) in packets.enumerated() {
+            datagrams += try framer.ingest(
+                packet: packet, captureTimestampMicroseconds: UInt64(n) * 5_000
+            )
+        }
+        let depacketizer = AudioDepacketizer()
+        for i in [0, 1, 2] {
+            _ = depacketizer.ingest(
+                envelope: datagrams[i].envelope, payload: datagrams[i].payload
+            )
+        }
+
+        let nominal = try FecGeometry(
+            dataShards: 4, parityShards: 2, groupByteCount: 320
+        )
+        func shard(
+            group: UInt32, index: Int, of geometry: FecGeometry
+        ) throws -> Envelope {
+            let field = try FecField.reedSolomonShard(index, of: geometry)
+            return Envelope(
+                channel: .audio, seq: ChannelSeq(rawValue: 0),
+                frame: FrameNumber(rawValue: group),
+                timestamp: UInt64(group) * 5_000, fec: field.encoded
+            )
+        }
+
+        // Benign traffic advances the newest group to 24 — group 0 sits
+        // 24 packets back, inside the 32-packet horizon.
+        _ = depacketizer.ingest(
+            envelope: try shard(group: 24, index: 0, of: nominal),
+            payload: opusPacket(24)
+        )
+
+        // The shrink attack: a legal k=1 shard at a fresher id. Its
+        // declared geometry must not flush group 0 (age 28 > 8·1).
+        let tiny = try FecGeometry(
+            dataShards: 1, parityShards: 1, groupByteCount: 80
+        )
+        _ = depacketizer.ingest(
+            envelope: try shard(group: 28, index: 0, of: tiny),
+            payload: opusPacket(28)
+        )
+        XCTAssertEqual(depacketizer.stats.groupsUnrecoverable, 0,
+                       "a declared k=1 must not flush groups awaiting parity")
+
+        // Group 0's parity arrives late (age 28, inside policy) and the
+        // missing packet still heals byte-exact.
+        let healed = depacketizer.ingest(
+            envelope: datagrams[4].envelope, payload: datagrams[4].payload
+        )
+        XCTAssertEqual(healed.map(\.number), [3],
+                       "the waiting group must still recover")
+        XCTAssertEqual(healed[0].bytes, packets[3])
+        XCTAssertTrue(healed[0].recovered)
+
+        // The widen attack: advance to 48, then replay a 40-packet-stale
+        // id under a declared k=254. Admission must follow the pinned
+        // policy (40 > 32 → stale), not the declared 8·254.
+        _ = depacketizer.ingest(
+            envelope: try shard(group: 48, index: 0, of: nominal),
+            payload: opusPacket(48)
+        )
+        let wide = try FecGeometry(
+            dataShards: 254, parityShards: 1, groupByteCount: 254 * 80
+        )
+        XCTAssertTrue(depacketizer.ingest(
+            envelope: try shard(group: 8, index: 0, of: wide),
+            payload: opusPacket(8)
+        ).isEmpty)
+        XCTAssertEqual(depacketizer.stats.staleShards, 1,
+                       "a declared k=254 must not widen admission")
+    }
 }
