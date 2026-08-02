@@ -4,7 +4,7 @@ The Swift Linux host (LYTE-PLAN §6, `docs/HOST-PLAN.md`): a full Lyte-UDP
 session host — portal desktop capture → NVENC HEVC video, 5 ms Opus audio,
 Mutter/uinput input injection, Noise-sealed datagrams, congestion control
 and targeted repair, Avahi discovery. H2 parity closed 2026-07-22
-(`docs/20260722-h2-joint-gate.md`).
+(`docs/20260722-132317-h2-joint-gate.md`).
 
 ## Layout
 

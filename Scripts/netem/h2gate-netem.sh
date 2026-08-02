@@ -1,5 +1,5 @@
 #!/bin/sh
-# H2 joint gate netem helper (as run on pup for docs/20260722-h2-joint-gate.md):
+# H2 joint gate netem helper (as run on pup for docs/20260722-132317-h2-joint-gate.md):
 # the lo-netem.sh prio+u32 pattern on the LAN interface, scoped STRICTLY to
 # udp dport 41091 (the gate port); "apply video ..." further scopes to
 # dsfield 0xa0 so audio/CTRL ride untouched. blackout-in adds/removes an

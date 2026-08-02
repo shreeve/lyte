@@ -32,10 +32,14 @@ gates, the H0a/H0b/H1/H2/H3+ milestones).
 - **`Host/`** — package `LyteHost`: the Linux host. Depends on
   `.package(path: "../Wire")`. `HostCore` (pure Swift bitstream helpers) and
   `HostWire` (packetizer/FEC/pacer wiring onto LyteWire) build and test
-  everywhere, macOS included. The `lyte-host` executable and the C leaves
-  (`CPipeWireCapture`, `CHevcEncode`, `CPipeWireAudio`, `COpusEncode`,
-  `CNetIO`, `CInputUinput`, plus the `CDBus`/`CPipeWire`/`CLibAV`/`COpus`
-  system-library modules) exist only under `#if os(Linux)` in the manifest.
+  everywhere, macOS included. The `lyte-host`/`lyte-eye`/`lyte-nvenc`
+  executables, `HostEye` (the direct eye: KMS doorbell + EGL blit +
+  native VAAPI pens), and the C leaves (`CPipeWireAudio`, `COpusEncode`,
+  `CNetIO`, `CInputUinput`, plus the `CDBus`/`CPipeWire`/`COpus`/
+  `CDRM`/`CGBM`/`CEGL`/`CVA`/`CNvEnc`/`CCuda` system-library modules)
+  exist only under `#if os(Linux)` in the manifest. The portal-era
+  leaves (`CPipeWireCapture`, `CHevcEncode`, `CLibAV`, the vendored
+  ffmpeg) were demolished in E5 (2026-08-02, tag `self-hosted`).
 - **Root** — package `Lyte`: the macOS client (macOS-only; SwiftUI app
  `Lyte`, `lyte-cli`). `LyteTransport` is the whole client protocol stack
  (imports LyteWire): socket + demux, video/audio pipelines, discovery,
@@ -68,40 +72,42 @@ authorization (`docs/MACOS-SIGNING.md`).
 
 ### Reference host (pup) — facts specific to THIS box, not repo-wide rules
 
-`pup` = the Linux host at 10.0.0.249 (`ssh pup`): Ubuntu 26.04, GNOME/Mutter
-Wayland, RTX 4050, PipeWire, Swift 6.1.2 at `/usr/local/bin/swift`,
-passwordless sudo. Source syncs there; `Host/Package.swift` needs Wire as a
-sibling directory:
+`pup` = the Linux host, WIRED at 10.0.0.232 (`ssh pup`; Wi-Fi backup at
+.249): Ubuntu 26.04, GNOME/Mutter Wayland, Intel Meteor Lake Arc iGPU
+(owns the panel; the direct eye encodes on it) + RTX 4050, PipeWire,
+Swift 6.1.2 at `/usr/local/bin/swift`, passwordless sudo. Source syncs
+there; `Host/Package.swift` needs Wire as a sibling directory:
 
 ```
 rsync -a --delete --exclude .build Wire/ pup:src/Wire/
-rsync -a --delete --exclude .build --exclude Vendor/ffmpeg/build \
-  --exclude Vendor/ffmpeg/prefix Host/ pup:src/lyte-host/
-ssh pup 'cd ~/src/lyte-host && VP=$PWD/Vendor/ffmpeg/prefix && \
-  LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat LYTE_FFMPEG_PREFIX=$VP \
-  PKG_CONFIG_PATH=$VP/lib/pkgconfig swift build'
+rsync -a --delete --exclude .build Host/ pup:src/lyte-host/
+ssh pup 'cd ~/src/lyte-host && \
+  LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build'
 ```
 
-The `LYTE_FFMPEG_PREFIX`/`PKG_CONFIG_PATH` env is REQUIRED (HS-33): it
-links the vendored no-reset libavcodec; without it the build silently
-takes the distro lib and every rate move mints an IDR again. Good-build
-marker in any host run: `encoder: vendored no-reset libavcodec`. The
-`LD_LIBRARY_PATH` shim is a **local pup-box workaround only**: Swift
-6.1.2's build tools want `libxml2.so.2`, which Ubuntu 26.04 doesn't ship
-(it has `.so.16`), so `~/.local/lib/swift-compat/libxml2.so.2` symlinks to
-the system `libxml2.so.16`. Not a universal requirement.
+No ffmpeg env exists anymore (E5 demolished the vendored lib; a plain
+build is itself a gate). After EVERY rebuild, re-arm the DRM ticket:
+`sudo -n setcap cap_sys_admin+ep .build/debug/lyte-host` (and
+`lyte-eye` when used) — the owner's standing loop respawns onto the
+new binary. The `LD_LIBRARY_PATH` shim is a **local pup-box workaround
+only**: Swift 6.1.2's build tools want `libxml2.so.2`, which Ubuntu
+26.04 doesn't ship (it has `.so.16`), so
+`~/.local/lib/swift-compat/libxml2.so.2` symlinks to the system
+`libxml2.so.16`. Not a universal requirement.
 
-`lyte-host` must run inside the logged-in, unlocked graphical session
-(portal capture is inhibited otherwise). First portal run shows a one-time
-consent dialog on the host's physical screen; the persisted restore token
-makes later runs headless.
+Capture needs no session and no consent dialog (the direct eye reads
+the scanout with CAP_SYS_ADMIN; pairing is the consent model). The
+input/clipboard leaves still use the Mutter RemoteDesktop session bus
+when present.
 
 ## Architecture doctrine (LYTE-PLAN §4 + the decision record)
 
 - **Pure Swift, both ends. C only at hardware/OS leaves** — on the host:
-  PipeWire, NVENC/libavcodec, D-Bus, libopus, the UDP socket (CNetIO's
-  cmsg/sendmmsg syscalls), uinput (CInputUinput, the input fallback); in
-  Wire: nanors. Everything above a leaf is Swift.
+  PipeWire audio, libva/DRM/EGL module maps (the direct eye), D-Bus,
+  libopus, the UDP socket (CNetIO's cmsg/sendmmsg syscalls), uinput
+  (CInputUinput, the input fallback); in Wire: nanors. Everything above
+  a leaf is Swift — since E5, including the HEVC bitstream itself
+  (HostCore's pens).
 - **LyteWire is sans-IO**: no Foundation, no sockets, no threads; clocks
   and randomness are injected. It must stay WASM-compilable — the future
   browser client imports the same core. The rule is lint-enforced, not
@@ -142,7 +148,7 @@ makes later runs headless.
 **HANDOFF.md** is the tracked session ledger. Read it first for current
 state and the resume point; edit it freely; commit updates in the
 ledger voice. It carries only what is live — frozen history is in
-`docs/20260730-handoff-archive-h2-h4.md`.
+`docs/20260730-103326-handoff-archive-h2-h4.md`.
 
 **Networking / host safety.**
 - Lyte UDP work uses 41000-range ports by convention. (The old "stay off
@@ -166,7 +172,7 @@ review. The record: the ANALYSIS trio was retired 2026-08-02 after the
 E5 demolition (full text in git history at `860369a` —
 `git show 860369a:ANALYSIS.md`); the still-open findings live in
 TODO.md's "ANALYSIS ledger — the live remainder" section, beside the
-audit-caveats section. The v2 laws are `docs/20260730-lyte-v2-rulings.md` — **read
+audit-caveats section. The v2 laws are `docs/20260730-115707-lyte-v2-rulings.md` — **read
 them as constraints, never re-litigate**: one repo forever (no v1/v2
 split, convergence in place, always green); target shape
 Client / Common / Host with Common split as `Common/Core` (`LyteCore`,
@@ -186,7 +192,7 @@ organ rebuilds.
 - TODO.md's "ANALYSIS ledger — the live remainder" — every still-open
   defect from the v1-final review (the retired ANALYSIS trio's full
   text: `git show 860369a:ANALYSIS.md`).
-- `docs/20260730-lyte-v2-rulings.md` — settled v2 law.
+- `docs/20260730-115707-lyte-v2-rulings.md` — settled v2 law.
 - `docs/20260720-222500-lyte-build-plan.md` — master plan: slices, gates,
   waves, checkpoints.
 - `docs/20260720-215100-lyte-udp-decision.md` — why Lyte-UDP only, what

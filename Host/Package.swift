@@ -75,7 +75,7 @@ targets += [
         name: "COpusEncode",
         dependencies: ["COpus"]
     ),
-    // The direct eye (docs/20260801-direct-eye-plan.md, E0): libdrm
+    // The direct eye (docs/20260801-105800-direct-eye-plan.md, E0): libdrm
     // imported straight into Swift — a module map, no .c files. The
     // KMS doorbell/capture organ is Swift-first; CNetIO-style shims
     // appear only if a macro wall does.

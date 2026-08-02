@@ -2,7 +2,7 @@ import XCTest
 import LyteWire
 
 // The E3 cursor-shape vocabulary's anchors (direct-eye plan §5,
-// docs/20260801-direct-eye-plan.md): hand-computed bytes for 0x24
+// docs/20260801-105800-direct-eye-plan.md): hand-computed bytes for 0x24
 // (the vector file never grades its own homework), the key-13
 // capability spine, the registry numbers, and the validation laws —
 // including the one clipboard doesn't have: EMPTY IS A STATE.

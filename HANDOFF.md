@@ -5,18 +5,18 @@ ledger — update freely; commit updates in the ledger voice. This file
 carries ONLY what is live and actionable. Everything historical — the
 post-H2 state block, every wave entry from the H2 demolition through
 H4, and the Beauty Bar's full per-row forensics — is frozen verbatim in
-`docs/20260730-handoff-archive-h2-h4.md` (and in git history; the
+`docs/20260730-103326-handoff-archive-h2-h4.md` (and in git history; the
 pre-overhaul file is commit `a54ab69`).*
 
 # SESSION RESUME — START HERE (2026-08-01: THE DIRECT-EYE EPOCH)
 
 **Read this first:** the project pivoted on 2026-08-01. After the
 network campaign convicted and fixed the real bottleneck (the
-gateway's 6 GHz radio — see docs/20260801-lyte-pup-scan-stall-study.md;
+gateway's 6 GHz radio — see docs/20260801-075746-lyte-pup-scan-stall-study.md;
 pup is now WIRED at 10.0.0.232) and the portal/Mutter capture path
 froze three times at the owner's glass in one evening, the owner
 directed a capture rearchitecture: **the direct eye**
-(docs/20260801-direct-eye-plan.md — the governing plan, phases E0–E5).
+(docs/20260801-105800-direct-eye-plan.md — the governing plan, phases E0–E5).
 Main is tagged **`portal-era-final`** (#44 closed the old era's books:
 probes in Host/Probes/kms-eye/ with measured numbers, owner decisions
 in TODO.md). The chain: FB-ID doorbell → GETFB2/dmabuf → EGL
@@ -105,7 +105,7 @@ retained AVFrame (#17), adaptive audio pump (#18). REMAINING.md served
 as the sweep ledger and was retired after verification; the sweep's
 advisory caveats and owed live watches live in **TODO.md** ("Audit-sweep
 verification caveats"). **The v2 program then opened** (2026-07-30;
-boundary tag `v1-final`, law in `docs/20260730-lyte-v2-rulings.md`,
+boundary tag `v1-final`, law in `docs/20260730-115707-lyte-v2-rulings.md`,
 house rules in AGENTS.md's "The v2
 program" section): six read-only deep reviews produced the ANALYSIS
 trio, and **Tier 1 closed the same day — all six findings landed as
@@ -315,7 +315,7 @@ previous one) · **loss** ≤ 1 wire frame per 150 s leg.
 | 2026-07-30 @ f63587c | 55.43 PASS | 59.71 PASS | 55 PASS⁸ | 1.6 PASS⁸ | 0 PASS | 0 PASS |
 
 *Condensed footnotes — the full per-row forensics are frozen in
-`docs/20260730-handoff-archive-h2-h4.md`:*
+`docs/20260730-103326-handoff-archive-h2-h4.md`:*
 ¹ The bar's first row; both reds later fixed (fps: HS-26's sender
 thread; IDR: the hunt + HS-33). ² fps red retired at the glass; the
 freed appetite made the IDR hunt louder — spawned HS-27/28/30.

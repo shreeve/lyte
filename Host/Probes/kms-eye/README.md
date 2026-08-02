@@ -4,7 +4,7 @@ Two standalone C probes that established, on the reference laptop host
 ("pup", IdeaPad Pro 5 16IMH9, Meteor Lake Arc iGPU + RTX 4050, GNOME
 Wayland live session), that Lyte can capture the screen WITHOUT the
 compositor's cooperation — the feasibility basis for the direct-eye
-rearchitecture (see docs/20260801-direct-eye-plan.md).
+rearchitecture (see docs/20260801-105800-direct-eye-plan.md).
 
 These are proof artifacts, kept verbatim. The production organ is
 Swift (module-map C interop, no .c files); these compile standalone:

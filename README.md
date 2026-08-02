@@ -74,7 +74,7 @@ whether pixels moved or not.
 
 H2 functional parity: video, 5 ms audio, input injection, congestion
 control, loss repair, and blackout recovery all live end-to-end
-(`docs/20260722-h2-joint-gate.md`). The client's original GameStream stack
+(`docs/20260722-132317-h2-joint-gate.md`). The client's original GameStream stack
 — its bootstrap scaffolding against Sunshine hosts — was deleted at the H2
 exit, as designed. See [LYTE-PLAN.md](LYTE-PLAN.md) for strategy and
 `docs/20260720-222500-lyte-build-plan.md` for the slice ladder.

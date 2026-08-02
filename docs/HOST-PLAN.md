@@ -14,7 +14,7 @@
 > depacketization layout, RS-FEC math, Opus framing) and what the frozen
 > client scaffolding spoke until its deletion at the H2 exit (2026-07-22 —
 > H2 parity closed, Sunshine uninstalled, the GameStream stack deleted;
-> `docs/20260722-h2-joint-gate.md`).
+> `docs/20260722-132317-h2-joint-gate.md`).
 
 ## TL;DR
 

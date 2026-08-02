@@ -1,4 +1,4 @@
-// lyte-eye — the direct eye (docs/20260801-direct-eye-plan.md, E0).
+// lyte-eye — the direct eye (docs/20260801-105800-direct-eye-plan.md, E0).
 //
 // Two modes:
 //   lyte-eye [device] [seconds] [poll_us]           — the doorbell

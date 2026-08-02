@@ -1,5 +1,5 @@
 // Cursor-shape sync (E3, the direct-eye plan §5 obligation —
-// docs/20260801-direct-eye-plan.md): without Mutter's screen-cast
+// docs/20260801-105800-direct-eye-plan.md): without Mutter's screen-cast
 // stream there is no composited cursor in the video, and that is a
 // FEATURE — the client's local cursor gives zero-latency positioning
 // (input is absolute from the Mac). What the direct eye loses is the

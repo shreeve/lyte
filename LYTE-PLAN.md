@@ -6,7 +6,7 @@ build plan is [docs/20260720-222500-lyte-build-plan.md](docs/20260720-222500-lyt
 (with its client/host companions) and product decisions live in
 [docs/DESIGN.md](docs/DESIGN.md). The GameStream-era client blueprint this
 header once pointed at is archived as
-[docs/20260722-gamestream-client-plan-historical.md](docs/20260722-gamestream-client-plan-historical.md).*
+[docs/20260722-134521-gamestream-client-plan-historical.md](docs/20260722-134521-gamestream-client-plan-historical.md).*
 
 ---
 

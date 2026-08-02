@@ -43,7 +43,7 @@ reference them, don't restate them):
 - [20260728 video supremacy plan](20260728-165538-lyte-video-supremacy-plan.md) —
   the HS-wave strategy source (§R3/§7).
 - [20260729 estimator honesty plan](20260729-121027-lyte-estimator-honesty-plan.md).
-- [20260730 v2 rulings](20260730-lyte-v2-rulings.md) — one repo +
+- [20260730 v2 rulings](20260730-115707-lyte-v2-rulings.md) — one repo +
   `v1-final` tag, the Client/Common/Host target shape,
   LyteCore/LyteIO/LyteTestKit naming, spec-before-code.
 
@@ -72,15 +72,15 @@ reference them, don't restate them):
   [20260729-160421 squeeze review](20260729-160421-lyte-squeeze-review.md).
 
 **Gate reports and run records:**
-- [20260722 H1 joint gate](20260722-h1-joint-gate.md) ·
-  [20260722 H2 joint gate](20260722-h2-joint-gate.md).
+- [20260722 H1 joint gate](20260722-084428-h1-joint-gate.md) ·
+  [20260722 H2 joint gate](20260722-132317-h2-joint-gate.md).
 - [20260727-015500 pup catch-up](20260727-015500-pup-catchup.md) —
   a catch-up worker's run report.
 
 **Archives:**
-- [20260722 GameStream client plan](20260722-gamestream-client-plan-historical.md) —
+- [20260722 GameStream client plan](20260722-134521-gamestream-client-plan-historical.md) —
   the pre-Lyte-UDP client blueprint, retired.
-- [20260730 HANDOFF archive H2→H4](20260730-handoff-archive-h2-h4.md) —
+- [20260730 HANDOFF archive H2→H4](20260730-103326-handoff-archive-h2-h4.md) —
   every wave entry and the Beauty Bar's full per-row forensics, frozen
   at the HANDOFF overhaul.
 
