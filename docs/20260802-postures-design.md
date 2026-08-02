@@ -32,7 +32,7 @@ fluidity — each posture announced, never inferred.*
 | Track | Behavior |
 |---|---|
 | **on** | today: continuous 5 ms Opus CBR + RS FEC, silence included |
-| **auto-quiet** | silence-detected fade (the audio detector exists): stream stops after N s of digital silence, restarts on sound; concealment covers the ramp |
+| **auto-quiet** | the TRIPWIRE (owner-specified): capture never stops — only transmission gates. Silence → fade out, announced "still quiet" check-ins every ~5 s. Sound → transmission fires INSTANTLY (detection is continuous; the check-in cadence bounds staleness, not latency). A ~200 ms PRE-ROLL ring ships first so the onset arrives intact (no lost half-second), masked by a fast fade-in. Knobs, cushion-style (defaults + Settings dials): trigger (~100 ms above floor), hold (~5 s of silence before fade-out; hysteresis against sentence-gap flapping), fade length. Asymmetry law: tripwire up, leak down. Optional middle rung "warm" = Opus DTX comfort-noise (~2 pkt/s): 99% of the win, zero restart seam, clock stays fed — build off/on first, add warm only if the seam annoys |
 | **mute** | USER-chosen (client UI + negotiated like the 0x18 routing flip — "routing: none"): the host never captures/encodes; the whole track is zero bytes. Mute at the SOURCE, never decode-and-discard |
 
 ## The dethroned metronome
