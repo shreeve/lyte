@@ -105,6 +105,15 @@ final class ConnectionModel {
     /// Bounded to six seconds at 60 fps and always on — visual failures
     /// cannot depend on the stats overlay being open.
     private let videoFlightRecorder = VideoFlightRecorder()
+    /// The link-health fold over the recorder's ring (already-measured
+    /// per-frame stage timings → one user-facing verdict). Ticked at
+    /// 1 Hz from the stream container; the meter's ordinal high-water
+    /// mark makes overlapping scans idempotent, and a recorder reset
+    /// (ordinals restart) clears it implicitly.
+    private let linkHealthMeter = LinkHealthMeter()
+    /// nil until streaming produces a verdict; .good renders nothing —
+    /// a clean link needs no announcement.
+    private(set) var linkHealth: LinkHealthAssessment?
     /// in-fps over the same ~1 s window shape as the delivery books'
     /// out-fps, so the overlay's in/out slash-pair compares honestly.
     private let videoInMeter = RateMeter()
@@ -584,6 +593,7 @@ final class ConnectionModel {
         bulkNegotiated = false
         chromaNoticeTask?.cancel()
         chromaNotice = nil
+        linkHealth = nil
         statsVisible = false
         videoRendererHandoff?.stop()
         videoRendererHandoff = nil
@@ -602,6 +612,23 @@ final class ConnectionModel {
 
     func endSession(reason: String?) {
         endLyteSession(reason: reason)
+    }
+
+    /// The 1 Hz link-health tick (driven by the stream container's
+    /// task loop): fold the recorder's ring — the meter's high-water
+    /// mark skips frames already folded — and publish the verdict.
+    func tickLinkHealth() {
+        let now = ProcessInfo.processInfo.systemUptime
+        for f in videoFlightRecorder.recentFrames() {
+            linkHealthMeter.observe(
+                ordinal: f.ordinal,
+                transitStretchMilliseconds: f.transitStretchMilliseconds,
+                sourceGapMilliseconds: f.sourceGapMilliseconds,
+                queueWaitMilliseconds: f.queueWaitMilliseconds,
+                enqueueMilliseconds: f.enqueueMilliseconds,
+                now: now)
+        }
+        linkHealth = linkHealthMeter.assessment(now: now)
     }
 
     func disconnect() {
