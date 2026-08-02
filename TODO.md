@@ -69,29 +69,22 @@ roam paths), #21/#22 (quality-probe.sh / corpus-harness.sh deleted),
 #19's capture half and #26's linebuf residue (demolished / fixed
 in #72).*
 
-- **T2-7 Unauthenticated peer retarget** (client) —
-  `Sources/LyteTransport/UdpReceiveEndpoint.swift`: any datagram whose
-  source parses as AF_INET overwrites `peerAddress` *before* the AEAD
-  sees the bytes; an off-path trickle at ~50 Hz steals the return leg
-  (ACKs, input, feedback). The host has PathValidator for the mirror
-  case; the client has nothing. Fix: adopt the source only on
-  `.accepted` — strictly better for roaming too.
-
-- **T2-8 NACK-driven IDR arming has no throttle** (host) —
-  `Host/Sources/HostWire/Session.swift` arms the coalesced keyframe
-  latch on every unknown-frame NACK, unbounded. An authenticated client
-  naming one garbage frame per 25–50 ms report forces continuous IDR
-  re-encodes. The other demand sources are host-armed and self-limiting;
-  only this one is peer-driven at wire cadence. Fix: per-interval cap on
-  `.unavailable` arms.
-
-- **T2-9 ARQ receive groups never reclaimed** (Wire) —
-  `Wire/Sources/LyteWire/ArqEndpoint.swift`: removal happens only on
-  complete one-shot delivery; abandoned/poisoned groups live forever. 63
-  never-completed one-shot groups pin the 64-group table; thereafter
-  every new one-shot is refused *without an ACK* — and since idle-frame
-  acknowledgment drives ACTIVE→IDLE, the session can permanently lose
-  its idle flip while accumulating retransmitting send-groups.
+*Second re-verification (2026-08-02, code-level): SEVEN more turned out
+to have landed during the hardening/quality waves and are retired with
+their pins — **T2-7** peer retarget (#33: adoption gated on `.accepted`,
+pin `testUnauthenticatedDatagramCannotRetargetPeer`), **T2-8** NACK-IDR
+throttle (#27: `unknownFrameIdrArmIntervalNS` + throttled counter, pin
+in NackRepairGateTests), **T2-9** ARQ group reclaim (#30:
+`reclaimAbandonedReceiveGroups` — poisoned + past-lifetime one-shots
+evicted, pins in ArqAdversarialTests), **T2-12** EINTR deafness + stop
+join (#33: `EINTR → continue`, UdpReceiveEndpointStopTests), **T2-14**
+bounded send retry (#38: `sent == 0` re-queues to the outbox and the
+retry sleeps OUTSIDE the session lock), **T2-15** helper interruption
+handler (#33: `interruptionHandler` installed beside invalidation),
+**A-18** stale belief across RECOVERY (#27: `applyIdrPacing`'s
+half-stale arm resets belief, delivery windows, cadence hold, and band
+floor — the exact invariant is documented at the site). The nine below
+are confirmed OPEN at HEAD `b0d9e2e`.*
 
 - **T2-10 Audio retention horizon read off the wire** (Wire) —
   `Wire/Sources/LyteWire/AudioDepacketizer.swift`: staleness gate and
@@ -101,12 +94,6 @@ in #72).*
   ~1000×. The horizon is local policy — pin it in the depacketizer's
   config.
 
-- **T2-12 Receive-loop `EINTR` deafness + unsynchronized fd close**
-  (client) — `Sources/LyteTransport/UdpReceiveEndpoint.swift`: one
-  `SIGPROF`-class signal permanently deafens the session (treated as
-  "closed by stop()"); `stop()` closes the fd without joining while a
-  roaming re-dial can reuse the fd number within the race window.
-
 - **T2-13 Post-handshake config published unlocked to the drain thread**
   (host) — `Host/Sources/lyte-host/main.swift` writes
   `inputInjector`/clipboard closures/`bulkShell` while the drain thread
@@ -114,34 +101,14 @@ in #72).*
   the video thread unlocked (now called from DirectEyeLeg since #72).
   All cold paths — route through `lock`.
 
-- **T2-14 Unbounded send retry under the session lock** (host) —
-  `Host/Sources/lyte-host/SessionWire.swift`: `sent == 0` →
-  `usleep(200); continue` with no bound, holding the lock everything
-  needs — a wedged interface hangs the process silently. Cap and throw
-  into the existing `drainFailed` path.
-
-- **T2-15 Helper XPC: interruption unhandled** (app) —
-  `Sources/Lyte/HelperClient.swift` installs only `invalidationHandler`;
-  a *crashed* daemon produces an interruption, `engaged` stays true, and
-  AgentMenu's documented re-engage never fires — awdl0 comes back up and
-  stays LOOSE for the session.
-
 - **T2-16 Held keys never flushed** (app) —
   `Sources/Lyte/LyteInputCapture.swift`: no all-keys-up on
   resign-key/stop/teardown anywhere in client or host. ⌘Tab away with a
   modifier down leaves the host with Super/Alt latched; a held key
   across app-switch → host-side auto-repeat storm.
 
-- **A-18 `applyIdrPacing` leaves belief and probe cadence stale across
-  RECOVERY/migration** — `Host/Sources/HostWire/RateEstimator.swift`:
-  the one place the estimator *knows* its evidence is stale halves only
-  `rateBitsPerSecond`; `beliefBits` (which never ages), the cadence
-  hold, and the band floor all survive the path change. Migrate from
-  90 Mbps Wi-Fi to a 5 Mbps tether and the probe ceiling is still
-  ~99 Mbps; symmetric: a stale band floor can hold rises for 10 s.
-
 - **A-19 (audio half) shutdown `roundtrip` with no timeout** —
-  `Host/Sources/lyte-host/audio.c` (`lyte_pw_audio_restore`): a wedged
+  `Host/Sources/CPipeWireAudio/audio.c` (`lyte_pw_audio_restore`): a wedged
   wireplumber hangs exit with the desktop's default sink still pointed
   at "Lyte Audio". Wants the bounded timer source the old capture leaf
   demonstrated. (The capture half of this finding died with
@@ -164,7 +131,7 @@ in #72).*
   the allocations.
 
 - **A-24 `lyte_pw_audio_quit` races the loop's exit reason** —
-  `Host/Sources/lyte-host/audio.c`: plain-`int` cross-thread store can
+  `Host/Sources/CPipeWireAudio/audio.c`: plain-`int` cross-thread store can
   overwrite a concurrent stream-error reason, silently suppressing the
   `run error` line. Make it `_Atomic` (companion: a possibly-NULL
   `spa_dict_lookup` passed to `%s`).

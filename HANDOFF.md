@@ -33,9 +33,12 @@ next respawn execs the new binary). Never kill the owner's 41151 loop;
 test hosts use fresh 41xxx ports with `--no-advertise`.
 
 **Where the work lives now:** TODO.md carries the ANALYSIS live
-remainder (the v2 fix train: start T2-7 peer retarget / T2-8 NACK-IDR
-throttle / T2-9 ARQ group reclaim), the audit caveats, and the banked
-AV1 decision record. docs/README.md is the doc catalog (twenty
+remainder — re-verified at code level 2026-08-02: seven items had
+already landed in the hardening waves (#27/#30/#33/#38) and are
+retired with their pins; NINE remain, fronted by T2-10 audio horizon
+off the wire / T2-13 unlocked post-handshake config / T2-16 held keys
+never flushed — plus the audit caveats and the banked AV1 decision
+record. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
 
