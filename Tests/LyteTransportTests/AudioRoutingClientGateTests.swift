@@ -983,4 +983,71 @@ final class AudioRoutingClientGateTests: XCTestCase {
             return false
         }, "the drop must be loud")
     }
+
+    // MARK: Leg 9 — the video posture's 0x26 (key 16), in vivo
+    // (shares this file's scripted-host harness with the audio track;
+    // the posture announcements are one family).
+
+    func testGateVideoPostureAnnouncementsLandAndUnnegotiatedDrops() throws {
+        let host = RoutingHostStandIn(
+            localCapabilities: .wireDefault.declaringHostAudioRouting()
+                .declaringVideoQuietPosture())
+        var config = LyteUdpSessionCoreConfig()
+        config.desiredHostAudioRouting = nil
+        let harness = try Harness(host: host, coreConfig: config)
+        var t: UInt64 = 1_000
+        harness.clock.value = t
+        try harness.core.open(now: ClientTimestamp(microseconds: t))
+        try harness.settle(t: &t)
+        XCTAssertEqual(
+            harness.core.agreedCapabilities?.videoQuietPosture, true)
+        XCTAssertNil(harness.core.announcedVideoPosture,
+                     "no announcement yet — the always-on contract")
+
+        // A ladder step lands: quiet at 30 s.
+        try host.injectReliable(
+            VideoPostureState(posture: .quiet, keepaliveSeconds: 30).encode(),
+            nowMicros: t)
+        try harness.settle(t: &t)
+        XCTAssertEqual(
+            harness.core.snapshotCounters().videoPostureStatesReceived, 1)
+        XCTAssertEqual(
+            harness.core.announcedVideoPosture,
+            VideoPostureState(posture: .quiet, keepaliveSeconds: 30))
+
+        // The wake back to active.
+        try host.injectReliable(
+            VideoPostureState(posture: .active, keepaliveSeconds: 1).encode(),
+            nowMicros: t)
+        try harness.settle(t: &t)
+        XCTAssertEqual(
+            harness.core.snapshotCounters().videoPostureStatesReceived, 2)
+        XCTAssertEqual(harness.core.announcedVideoPosture?.posture, .active)
+        XCTAssertEqual(
+            harness.core.snapshotCounters().malformedReliableMessages, 0)
+
+        // The rule-3 gate: a key-9-only host injecting 0x26 anyway.
+        let legacyHost = RoutingHostStandIn(
+            localCapabilities: .wireDefault.declaringHostAudioRouting())
+        let legacy = try Harness(host: legacyHost, coreConfig: config)
+        var t2: UInt64 = 1_000
+        legacy.clock.value = t2
+        try legacy.core.open(now: ClientTimestamp(microseconds: t2))
+        try legacy.settle(t: &t2)
+        try legacyHost.injectReliable(
+            VideoPostureState(posture: .quiet, keepaliveSeconds: 30).encode(),
+            nowMicros: t2)
+        try legacy.settle(t: &t2)
+        XCTAssertEqual(
+            legacy.core.snapshotCounters().videoPostureStatesReceived, 0)
+        XCTAssertNil(legacy.core.announcedVideoPosture)
+        XCTAssertTrue(legacy.events.contains {
+            if case .protocolNote(let note) = $0 {
+                return note.contains("0x26 without negotiated key 16")
+            }
+            return false
+        }, "the drop must be loud")
+        print("video-posture gate (in vivo): steps land, wake lands, "
+            + "unnegotiated drops loud")
+    }
 }
