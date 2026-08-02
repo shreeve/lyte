@@ -23,6 +23,7 @@ func runCapture(_ rawArgs: [String]) -> Never {
     var seconds = 10.0
     var output = "/tmp/lyte-eye.hevc"
     var qp: Int32 = 24
+    var native = false
     var it = rawArgs.makeIterator()
     while let arg = it.next() {
         switch arg {
@@ -31,11 +32,17 @@ func runCapture(_ rawArgs: [String]) -> Never {
         case "--seconds": seconds = Double(it.next() ?? "") ?? seconds
         case "--out": output = it.next() ?? output
         case "--qp": qp = Int32(it.next() ?? "") ?? qp
+        case "--native": native = true
         default:
             FileHandle.standardError.write(
                 Data("unknown arg \(arg)\n".utf8))
             exit(2)
         }
+    }
+    if native {
+        runNativeCapture(
+            device: device, render: render, seconds: seconds,
+            output: output, qp: qp)
     }
 
     let fd = open(device, O_RDWR)
@@ -193,6 +200,168 @@ func runCapture(_ rawArgs: [String]) -> Never {
         frames, duration, Double(frames) / duration, bytes,
         frames > 0 ? Double(bytes) / Double(frames) / 1024 : 0,
         missedGrabs))
+    if frames > 0 {
+        print(String(
+            format: "RESULT timing: blit %.2f ms/frame, "
+                + "encode %.2f ms/frame",
+            blitMs / Double(frames), encodeMs / Double(frames)))
+    }
+    close(fd)
+    exit(0)
+}
+
+// MARK: - E6b: the native leg — same eye, libva spoken directly
+
+/// The capture loop with EyeVaapiEncoder in the encoder seat: zero
+/// libavcodec. Everything else — doorbell, GETFB2, EGL import, the
+/// NV12 blit into exported surfaces — is E1's machinery verbatim.
+/// Gates: the file decode-probes on the Mac; the books print the
+/// same shape as the libav leg for A/B reading.
+func runNativeCapture(
+    device: String, render: String, seconds: Double,
+    output: String, qp: Int32
+) -> Never {
+    let fd = open(device, O_RDWR)
+    guard fd >= 0 else { perror(device); exit(1) }
+    drmSetClientCap(fd, UInt64(DRM_CLIENT_CAP_UNIVERSAL_PLANES), 1)
+    guard let planes = findActivePlanes(fd: fd) else {
+        FileHandle.standardError.write(
+            Data("no active primary plane on \(device)\n".utf8))
+        exit(1)
+    }
+    guard let probe = grabTicket(fd: fd, fbId: planes.primary.fb) else {
+        FileHandle.standardError.write(Data(
+            "GETFB2 failed — capture mode needs privileges\n".utf8))
+        exit(1)
+    }
+    let width = Int32(probe.width)
+    let height = Int32(probe.height)
+    probe.release()
+    print("capture: \(device) \(width)x\(height) → \(output) "
+        + "(qp \(qp), \(Int(seconds))s) [NATIVE — no libavcodec]")
+
+    let gl: EyeGL
+    let encoder: EyeVaapiEncoder
+    do {
+        gl = try EyeGL(renderNode: render)
+        encoder = try EyeVaapiEncoder(
+            width: width, height: height, fps: 60, qp: qp,
+            renderNode: render)
+    } catch {
+        FileHandle.standardError.write(Data("init: \(error)\n".utf8))
+        exit(1)
+    }
+
+    FileManager.default.createFile(atPath: output, contents: nil)
+    guard let file = FileHandle(forWritingAtPath: output) else {
+        FileHandle.standardError.write(
+            Data("cannot open \(output)\n".utf8))
+        exit(1)
+    }
+
+    var targets: [UInt32: NV12Target] = [:]
+    var lastFB: UInt32 = 0
+    var frames = 0
+    var bytes = 0
+    var keyframes = 0
+    var missedGrabs = 0
+    var blitMs = 0.0
+    var encodeMs = 0.0
+    let t0 = nowSeconds()
+    var nextReport = t0 + 1.0
+    var framesThisSecond = 0
+
+    while true {
+        let t = nowSeconds()
+        guard t - t0 < seconds else { break }
+        guard let fb = currentFB(fd: fd, planeId: planes.primary.id),
+              fb != lastFB else {
+            usleep(1000)
+            if t >= nextReport {
+                print("  t=\(String(format: "%2.0f", t - t0))s "
+                    + "frames_this_sec=\(framesThisSecond) total=\(frames)")
+                framesThisSecond = 0
+                nextReport += 1.0
+            }
+            continue
+        }
+        lastFB = fb
+        guard let ticket = grabTicket(fd: fd, fbId: fb) else {
+            missedGrabs += 1
+            continue
+        }
+
+        var ticketReleased = false
+        do {
+            let tBlit = nowSeconds()
+            var source = try gl.importTexture(
+                width: Int32(ticket.width),
+                height: Int32(ticket.height),
+                fourcc: ticket.fourcc, modifier: ticket.modifier,
+                planes: ticket.planes)
+            let surface = encoder.inputSurfaces[
+                frames % encoder.inputSurfaces.count]
+            if targets[surface] == nil {
+                let exported = try encoder.exportSurface(surface)
+                let target = try gl.makeNV12Target(
+                    width: width, height: height,
+                    yFourcc: exported.y.fourcc,
+                    yModifier: exported.y.modifier,
+                    yPlane: (exported.y.fd, exported.y.offset,
+                             exported.y.pitch),
+                    uvFourcc: exported.uv.fourcc,
+                    uvModifier: exported.uv.modifier,
+                    uvPlane: (exported.uv.fd, exported.uv.offset,
+                              exported.uv.pitch))
+                close(exported.y.fd)
+                if exported.uv.fd != exported.y.fd {
+                    close(exported.uv.fd)
+                }
+                targets[surface] = target
+            }
+            gl.blit(
+                source: source,
+                srcWidth: Int32(ticket.width),
+                srcHeight: Int32(ticket.height),
+                into: targets[surface]!)
+            gl.destroy(&source)
+            ticket.release()
+            ticketReleased = true
+            blitMs += (nowSeconds() - tBlit) * 1e3
+
+            let tEnc = nowSeconds()
+            let (data, keyframe) = try encoder.encode(
+                surface: surface, forceIDR: false)
+            encodeMs += (nowSeconds() - tEnc) * 1e3
+            file.write(Data(data))
+            bytes += data.count
+            if keyframe { keyframes += 1 }
+            frames += 1
+            framesThisSecond += 1
+        } catch {
+            FileHandle.standardError.write(
+                Data("frame \(frames): \(error)\n".utf8))
+            if !ticketReleased { ticket.release() }
+            exit(1)
+        }
+
+        if t >= nextReport {
+            print("  t=\(String(format: "%2.0f", t - t0))s "
+                + "frames_this_sec=\(framesThisSecond) total=\(frames)")
+            framesThisSecond = 0
+            nextReport += 1.0
+        }
+    }
+    try? file.close()
+
+    let duration = nowSeconds() - t0
+    print(String(
+        format: "RESULT capture: %d frames in %.1fs = %.2f fps, "
+            + "%d bytes (%.1f KB/frame), %d IDRs, missed_grabs=%d "
+            + "[NATIVE]",
+        frames, duration, Double(frames) / duration, bytes,
+        frames > 0 ? Double(bytes) / Double(frames) / 1024 : 0,
+        keyframes, missedGrabs))
     if frames > 0 {
         print(String(
             format: "RESULT timing: blit %.2f ms/frame, "

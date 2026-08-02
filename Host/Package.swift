@@ -170,7 +170,12 @@ targets += [
     // shared by the standalone lyte-eye and the host's direct backend.
     .target(
         name: "HostEye",
-        dependencies: ["CDRM", "CGBM", "CEGL", "CVA", "CLibAV"]
+        dependencies: [
+            "CDRM", "CGBM", "CEGL", "CVA", "CLibAV",
+            // E6b: the native encoder feeds HostCore's pens
+            // (HevcParameterSets, HevcSliceHeader) to the driver.
+            "HostCore",
+        ]
     ),
     // E0: the standalone eye — doorbell mode (milestone 1, unprivileged)
     // and capture mode (milestone 2: full loop → Annex-B file).

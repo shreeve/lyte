@@ -1,7 +1,11 @@
-// CVA: libva surface export — vaExportSurfaceHandle turns a VAAPI
-// surface into per-plane dmabufs (VADRMPRIMESurfaceDescriptor) that
-// EGL imports as render targets for the direct eye's NV12 blit.
+// CVA: the libva surface for the direct eye — surface export (the
+// E1 blit's dmabuf bridge: vaExportSurfaceHandle →
+// VADRMPRIMESurfaceDescriptor) and, since E6b, the NATIVE encode
+// entrypoints: DRM display open (va_drm.h), config/context/buffer
+// calls, and the HEVC encode parameter structs (va_enc_hevc.h).
 // DELIBERATELY includes ONLY VA headers: overlapping libavutil types
 // here would mint duplicate Swift types against CLibAV's.
 #include <va/va.h>
+#include <va/va_drm.h>
 #include <va/va_drmcommon.h>
+#include <va/va_enc_hevc.h>
