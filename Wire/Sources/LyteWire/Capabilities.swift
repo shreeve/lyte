@@ -153,6 +153,15 @@ public enum CapabilityKey {
     /// always-on contract, silence included. Accessors in
     /// AudioTrackState.swift.
     public static let audioQuietPosture: UInt64 = 15
+    /// bool — this end speaks the video posture announcement (CTRL
+    /// 0x26: after ~30 s without damage the host's retained keepalive
+    /// backs off exponentially toward 30 s, each step announced so
+    /// the client's freshness contracts follow; damage or client
+    /// input is the wake). Rides the spine through `unknownEntries`
+    /// (one canonical `10 F5` entry), surviving intersection only on
+    /// mutual declaration; a host never backs off against a set
+    /// without it. Accessors in VideoPosture.swift.
+    public static let videoQuietPosture: UInt64 = 16
 
     /// The renegotiable subset (transport pillar §4: "fixed after
     /// exchange except where a capability itself declares
