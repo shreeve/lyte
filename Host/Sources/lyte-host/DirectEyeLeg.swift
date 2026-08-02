@@ -47,6 +47,17 @@ final class DirectEyeLeg {
     private(set) var directivesApplied = 0
     private(set) var cursorShapesSeen = 0
     private(set) var cursorReadFailures = 0
+    private(set) var cursorHotspotCorrections = 0
+    /// E3 hotspot self-heal: the derivation at shape-change time uses
+    /// the newest injected pointer against a cursor plane that can lag
+    /// it by a frame mid-motion, so the derived hotspot can be off by
+    /// the lag (the owner's "clicks land beside the arrow"). Once the
+    /// pointer RESTS the compositor has settled the plane exactly at
+    /// pointer − hotspot, so a re-read of the plane position gives the
+    /// exact answer. One armed recheck per shape.
+    private var lastCursorFrame: CursorFrame?
+    private var sentHotspot: (x: Int, y: Int)?
+    private var hotspotRecheckArmed = false
     var lastError: String?
 
     init(config: Config, wire: SessionWire?,
@@ -303,9 +314,11 @@ final class DirectEyeLeg {
         guard let watcher, let wire else { return }
         switch watcher.poll() {
         case .unchanged:
-            break
+            recheckHotspotAtRest(watcher, wire)
         case .hidden:
             cursorShapesSeen += 1
+            lastCursorFrame = nil
+            hotspotRecheckArmed = false
             wire.noteCursorShape(.hidden)
         case .shape(let frame):
             cursorShapesSeen += 1
@@ -318,6 +331,9 @@ final class DirectEyeLeg {
             }
             hx = min(max(hx, 0), frame.width - 1)
             hy = min(max(hy, 0), frame.height - 1)
+            lastCursorFrame = frame
+            sentHotspot = (hx, hy)
+            hotspotRecheckArmed = true
             wire.noteCursorShape(CursorShape(
                 width: UInt16(frame.width),
                 height: UInt16(frame.height),
@@ -329,6 +345,39 @@ final class DirectEyeLeg {
                 print("direct: cursor read failed (\(why)) — counting")
             }
         }
+    }
+
+    /// The at-rest half of the hotspot derivation: 150 ms after the
+    /// last pointer injection, plane position = pointer − hotspot
+    /// EXACTLY, so recompute and re-send only if the mid-motion guess
+    /// was wrong. The client wears the corrected shape; the session's
+    /// dedupe passes it because the hotspot differs.
+    private func recheckHotspotAtRest(
+        _ watcher: EyeCursorWatcher, _ wire: SessionWire
+    ) {
+        guard hotspotRecheckArmed, let frame = lastCursorFrame,
+              let sent = sentHotspot,
+              let pointer = wire.lastAbsolutePointerInjection()
+        else { return }
+        let nowMicros = UInt64(nowSeconds() * 1_000_000)
+        guard nowMicros &- pointer.atMicros > 150_000 else { return }
+        guard let plane = watcher.planeCrtcPosition() else {
+            hotspotRecheckArmed = false
+            return
+        }
+        var hx = Int(pointer.x.rounded()) - plane.x - frame.cropX
+        var hy = Int(pointer.y.rounded()) - plane.y - frame.cropY
+        hx = min(max(hx, 0), frame.width - 1)
+        hy = min(max(hy, 0), frame.height - 1)
+        hotspotRecheckArmed = false
+        guard hx != sent.x || hy != sent.y else { return }
+        cursorHotspotCorrections += 1
+        sentHotspot = (hx, hy)
+        wire.noteCursorShape(CursorShape(
+            width: UInt16(frame.width),
+            height: UInt16(frame.height),
+            hotspotX: UInt16(hx), hotspotY: UInt16(hy),
+            pixels: frame.pixels))
     }
 
     private func deliver(_ packet: Data, keyframe: Bool,
