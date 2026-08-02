@@ -49,14 +49,18 @@ finished records retired to git history 2026-08-02;
 **The active track is the postures design**
 (docs/20260802-013946-postures-design.md): audio first —
 mute-at-source LANDED (#71, key 14, `streamOff` 0x04, WIRE strip
-button); NEXT = tripwire + pre-roll (capture never stops, transmission
-gates, ~200 ms pre-roll ring saves onsets), then the REWIND (opt-in
-host-MEMORY ring, never disk). After audio: video quiet posture +
-posture announcement messages, direct-leg quality refinement
-(ratchet's successor), the native-seat benchmark quality witness, E6a
-NVENC productionize (lyte-nvenc probe banked), Rext 4:4:4 in the
-native pens (returns the Best tier), E2 uinput-primary, E4 packaging
-aimed at Lyte OS.
+button); **tripwire + pre-roll LANDED (#80, 2026-08-02)**: capability
+key 15 + CTRL 0x25 track-state, HostCore AudioTripwire (5 s hold /
+100 ms trip / 200 ms ring / 5 s check-ins), client relaxes the 350 ms
+detector on announced quiet and re-tightens on wake evidence; live
+smoke 3572 encoded / 999 sent / 2573 gated. Deferred by design:
+Settings dials, DTX warm rung, DSP fades. NEXT = the REWIND (opt-in
+host-MEMORY ring, never disk — owner: "this is huge"). After audio:
+video quiet posture + posture announcement messages, direct-leg
+quality refinement (ratchet's successor — owns A-20), the native-seat
+benchmark quality witness, E6a NVENC productionize (lyte-nvenc probe
+banked), Rext 4:4:4 in the native pens (returns the Best tier), E2
+uinput-primary, E4 packaging aimed at Lyte OS.
 
 **Suites at HEAD:** Wire 513, root client 284, host 281 on pup / 280
 Mac — all green (counts grew with the fix train's pins).
