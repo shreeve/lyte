@@ -61,7 +61,9 @@ struct LyteSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 420)
+        // Grouped forms are list-backed and claim all the height they
+        // are offered; hug the single section instead.
+        .frame(width: 420, height: 240)
         .navigationTitle("Lyte Settings")
     }
 }
