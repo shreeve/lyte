@@ -8,6 +8,11 @@ CONFIG="${1:-release}"
 swift build -c "$CONFIG" --product Lyte
 swift build -c "$CONFIG" --product lyte-helperd
 
+# The About box answers "which build am I running?": CFBundleVersion is
+# the git short hash, with "+" when the tree had uncommitted changes.
+BUILD_ID="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+[ -n "$(git status --porcelain 2>/dev/null)" ] && BUILD_ID="${BUILD_ID}+"
+
 APP=".build/Lyte.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" \
@@ -53,7 +58,7 @@ cat > "$APP/Contents/Library/LaunchDaemons/dev.shreeve.lyte.helper.plist" <<'EOF
 </plist>
 EOF
 
-cat > "$APP/Contents/Info.plist" <<'EOF'
+cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -64,7 +69,7 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>CFBundleDisplayName</key>      <string>Lyte</string>
     <key>CFBundlePackageType</key>      <string>APPL</string>
     <key>CFBundleShortVersionString</key> <string>0.5</string>
-    <key>CFBundleVersion</key>          <string>5</string>
+    <key>CFBundleVersion</key>          <string>${BUILD_ID}</string>
     <key>LSMinimumSystemVersion</key>   <string>15.0</string>
     <key>NSHighResolutionCapable</key>  <true/>
     <key>LSApplicationCategoryType</key> <string>public.app-category.games</string>
