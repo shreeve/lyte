@@ -53,6 +53,11 @@ public final class FeedbackSender: @unchecked Sendable {
     private let lock = NSLock()
     private var stats = Stats()
     private var timer: DispatchSourceTimer?
+    /// The cadence beats on a private serial queue so `stop()` can drain
+    /// an in-flight beat with a sync barrier — cancel alone returns while
+    /// a tick may still be between its transmit and its counter update.
+    private let timerQueue = DispatchQueue(
+        label: "lyte.feedback-cadence", qos: .userInitiated)
     /// NACK entries awaiting the next report (CL-12). Bounded: the
     /// policy's dedupe keeps volume low; past the cap the OLDEST drop —
     /// their frames are closest to stale and rule 4 backstops them.
@@ -85,7 +90,7 @@ public final class FeedbackSender: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard timer == nil else { return }
-        let source = DispatchSource.makeTimerSource(queue: .global(qos: .userInitiated))
+        let source = DispatchSource.makeTimerSource(queue: timerQueue)
         source.schedule(
             deadline: .now() + .milliseconds(intervalMilliseconds),
             repeating: .milliseconds(intervalMilliseconds))
@@ -102,7 +107,14 @@ public final class FeedbackSender: @unchecked Sendable {
         let source = timer
         timer = nil
         lock.unlock()
-        source?.cancel()
+        guard let source else { return }
+        source.cancel()
+        // Teardown is a join: drain the serial queue so a beat that has
+        // already transmitted also lands its counters before stop()
+        // returns — callers may reconcile stats against sent datagrams.
+        // Safe: nothing on the tick path (onTick → IdrRequester flush,
+        // NackPolicy tick) ever calls stop().
+        timerQueue.sync {}
     }
 
     /// Queues NACK entries for the next report. The caller (NackPolicy's
