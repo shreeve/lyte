@@ -33,6 +33,10 @@ struct LyteApp: App {
         MenuBarExtra("Lyte", systemImage: "bolt.fill") {
             AgentMenu()
         }
+
+        Settings {
+            LyteSettingsView()
+        }
     }
 }
 
