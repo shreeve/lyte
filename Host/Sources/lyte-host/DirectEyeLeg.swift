@@ -29,10 +29,6 @@ final class DirectEyeLeg {
         var pollUs: UInt32 = 1000
         /// Wire rate → the encoder's VBR envelope (0 = CQP).
         var bitrateBitsPerSecond: Int64 = 0
-        /// E6b: EyeVaapiEncoder in the encoder seat — zero
-        /// libavcodec, and rate directives APPLY live instead of
-        /// deferring (the RC misc buffer rides the next frame).
-        var nativeEncoder = false
     }
 
     private let config: Config
@@ -43,7 +39,6 @@ final class DirectEyeLeg {
     private(set) var bytes = 0
     private(set) var keyframes = 0
     private(set) var missedGrabs = 0
-    private(set) var directivesDeferred = 0
     private(set) var directivesApplied = 0
     private(set) var cursorShapesSeen = 0
     private(set) var cursorReadFailures = 0
@@ -90,28 +85,17 @@ final class DirectEyeLeg {
         let height = Int32(probe.height)
         probe.release()
 
-        // The encoder seat: the native pens (E6b) or the libav
-        // scaffolding (E1). One enum, so every use site states which
-        // truths differ — surface acquisition, rate directives, drain.
-        enum Seat {
-            case libav(EyeEncoder)
-            case native(EyeVaapiEncoder)
-        }
+        // The encoder seat (E6b, sole occupant since the demolition):
+        // the native VAAPI pens — zero libavcodec, rate directives
+        // apply live (the RC misc buffer rides the next frame).
         let gl: EyeGL
-        let seat: Seat
+        let encoder: EyeVaapiEncoder
         do {
             gl = try EyeGL(renderNode: config.renderNode)
-            if config.nativeEncoder {
-                seat = .native(try EyeVaapiEncoder(
-                    width: width, height: height, fps: 60, qp: config.qp,
-                    renderNode: config.renderNode,
-                    bitrateBitsPerSecond: config.bitrateBitsPerSecond))
-            } else {
-                seat = .libav(try EyeEncoder(
-                    width: width, height: height, fps: 60, qp: config.qp,
-                    renderNode: config.renderNode,
-                    bitrateBitsPerSecond: config.bitrateBitsPerSecond))
-            }
+            encoder = try EyeVaapiEncoder(
+                width: width, height: height, fps: 60, qp: config.qp,
+                renderNode: config.renderNode,
+                bitrateBitsPerSecond: config.bitrateBitsPerSecond)
         } catch {
             lastError = "direct: init failed: \(error)"
             return
@@ -119,16 +103,9 @@ final class DirectEyeLeg {
         let rc = config.bitrateBitsPerSecond > 0
             ? "vbr \(config.bitrateBitsPerSecond / 1_000_000) Mbps cap"
             : "cqp \(config.qp)"
-        switch seat {
-        case .native:
-            print("direct: eye open — \(width)x\(height) on "
-                + "\(config.device), native VAAPI \(rc) "
-                + "(rate directives apply live)")
-        case .libav:
-            print("direct: eye open — \(width)x\(height) on "
-                + "\(config.device), hevc_vaapi \(rc) "
-                + "(live rate directives deferred — retiring seat)")
-        }
+        print("direct: eye open — \(width)x\(height) on "
+            + "\(config.device), native VAAPI \(rc) "
+            + "(rate directives apply live)")
 
         // E3: the cursor plane travels as metadata, never as video.
         // The watcher shares the doorbell fd and cadence; a session-
@@ -164,29 +141,17 @@ final class DirectEyeLeg {
             }
             pollCursor(cursorWatcher)
 
-            // Rate directives: the native seat APPLIES them — the cap
-            // becomes the VBR envelope on the next frame's RC misc
-            // buffer. The libav seat consumes-and-counts so the queue
-            // still drains.
+            // Rate directives apply live: the cap becomes the VBR
+            // envelope on the next frame's RC misc buffer.
             if let directive = wire?.takeEncoderRateDirective() {
-                switch seat {
-                case .native(let encoder):
-                    encoder.setRateBitsPerSecond(
-                        Int64(directive.maxBitsPerSecond))
-                    directivesApplied += 1
-                    if directivesApplied == 1 {
-                        print("direct: rate directive "
-                            + "(\(directive.kind.rawValue)) applied — "
-                            + "\(directive.maxBitsPerSecond / 1_000_000)"
-                            + " Mbps cap")
-                    }
-                case .libav:
-                    directivesDeferred += 1
-                    if directivesDeferred == 1 {
-                        print("direct: rate directive "
-                            + "(\(directive.kind.rawValue)) deferred — "
-                            + "libav seat is CQP-only; counting")
-                    }
+                encoder.setRateBitsPerSecond(
+                    Int64(directive.maxBitsPerSecond))
+                directivesApplied += 1
+                if directivesApplied == 1 {
+                    print("direct: rate directive "
+                        + "(\(directive.kind.rawValue)) applied — "
+                        + "\(directive.maxBitsPerSecond / 1_000_000)"
+                        + " Mbps cap")
                 }
             }
 
@@ -247,36 +212,20 @@ final class DirectEyeLeg {
                     ticketReleased = true
                 }
 
-                let packets: [(data: Data, keyframe: Bool)]
-                switch seat {
-                case .native(let encoder):
-                    // Synchronous seat: vaSyncSurface inside encode
-                    // means the round-robin input is free by return —
-                    // no in-flight aliasing.
-                    let sid = encoder.inputSurfaces[
-                        frames % encoder.inputSurfaces.count]
-                    try blitInto(sid) { try encoder.exportSurface(sid) }
-                    let one = try encoder.encode(
-                        surface: sid, forceIDR: forceIdr)
-                    packets = [(Data(one.data), one.keyframe)]
-                case .libav(let encoder):
-                    let frame = try encoder.nextFrame()
-                    let sid = encoder.surfaceID(of: frame)
-                    try blitInto(sid) { try encoder.exportSurface(sid) }
-                    packets = try encoder.encode(
-                        frame, pts: Int64(frames), forceIDR: forceIdr)
-                    encoder.release(frame)
-                }
-                for packet in packets {
-                    // The libav wrapper pipelines by a frame: keyframe
-                    // truth rides ON THE PACKET, and the armed causes
-                    // attach to the IDR whenever it actually emerges.
-                    // (The native seat is 1-in-1-out, same contract.)
-                    let causes = packet.keyframe ? pendingCauses : []
-                    if packet.keyframe { pendingCauses.removeAll() }
-                    deliver(packet.data, keyframe: packet.keyframe,
-                            causes: causes, captureUs: captureUs)
-                }
+                // Synchronous seat: vaSyncSurface inside encode
+                // means the round-robin input is free by return —
+                // no in-flight aliasing. 1-in-1-out: keyframe truth
+                // rides ON THE PACKET, and the armed causes attach
+                // to the IDR when it emerges.
+                let sid = encoder.inputSurfaces[
+                    frames % encoder.inputSurfaces.count]
+                try blitInto(sid) { try encoder.exportSurface(sid) }
+                let packet = try encoder.encode(
+                    surface: sid, forceIDR: forceIdr)
+                let causes = packet.keyframe ? pendingCauses : []
+                if packet.keyframe { pendingCauses.removeAll() }
+                deliver(Data(packet.data), keyframe: packet.keyframe,
+                        causes: causes, captureUs: captureUs)
                 frames += 1
             } catch {
                 if !ticketReleased { ticket.release() }
@@ -285,21 +234,11 @@ final class DirectEyeLeg {
             }
         }
 
-        // Drain: only the pipelined libav seat holds a frame back.
-        if case .libav(let encoder) = seat,
-           let tail = try? encoder.encode(nil, pts: Int64(frames)) {
-            for packet in tail {
-                let causes = packet.keyframe ? pendingCauses : []
-                if packet.keyframe { pendingCauses.removeAll() }
-                deliver(packet.data, keyframe: packet.keyframe,
-                        causes: causes,
-                        captureUs: UInt64(nowSeconds() * 1_000_000))
-            }
-        }
+        // No drain: the native seat is 1-in-1-out; nothing is held
+        // back at close.
         print("direct: eye closed — \(frames) frames, \(bytes) bytes, "
             + "\(keyframes) IDRs, missed_grabs=\(missedGrabs), "
             + "directives_applied=\(directivesApplied), "
-            + "directives_deferred=\(directivesDeferred), "
             + "cursor_shapes=\(cursorShapesSeen), "
             + "hotspot_corrections=\(cursorHotspotCorrections)")
     }

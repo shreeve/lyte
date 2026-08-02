@@ -300,6 +300,17 @@ works). Document it; no dialog theater.
   (vendor-ffmpeg.sh, the no-reset patch, EyeEncoder, CLibAV out of
   the eye targets) once the owner has streamed a real session on
   the native seat.
+- **E6b demolition (2026-08-02, post first-light)**: EyeEncoder is
+  DELETED — ExportedPlane extracted to its own file (the blit
+  contract outlived its parent), EyeCapture and DirectEyeLeg are
+  native-only (the Seat enum collapsed; `--encoder native` survives
+  as an accepted no-op, `--encoder libav` fails loudly), and
+  CLibAV is out of the HostEye and lyte-eye targets — `ldd
+  lyte-eye` shows ZERO libav. Gates: pup suite 283 green; live
+  capture 556 frames @ 92.7 fps, 1 IDR, 0 missed grabs; Mac
+  hardware decode 556/556. vendor-ffmpeg.sh + the no-reset patch
+  deliberately SURVIVE — they serve lyte-host's portal hevc_nvenc
+  until E5 burns the portal path (and mints the 'self-hosted' tag).
 - **Then**: AV1 negotiation (the recorded four seams), login-screen
   capture, multi-monitor.
 
