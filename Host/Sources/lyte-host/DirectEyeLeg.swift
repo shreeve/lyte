@@ -54,6 +54,10 @@ final class DirectEyeLeg {
     static let keepaliveSeconds = 1.0
     private var lastDeliveryWallSeconds = 0.0
     private(set) var keepalivesSent = 0
+    /// E5 audit item 4: set when the leg ended because the display's
+    /// geometry changed under it — a clean, deliberate exit, not an
+    /// error.
+    private(set) var modeChangeEnded = false
     private(set) var cursorShapesSeen = 0
     private(set) var cursorReadFailures = 0
     private(set) var cursorHotspotCorrections = 0
@@ -240,6 +244,23 @@ final class DirectEyeLeg {
             guard let ticket = grabTicket(fd: fd, fbId: fb) else {
                 missedGrabs += 1
                 continue
+            }
+            // E5 audit item 4 (minimal form): a display mode change
+            // mid-session arrives as tickets whose geometry no longer
+            // matches the encoder's. Scaling them into the old-size
+            // target would silently distort the picture; ending the
+            // leg cleanly is the honest minimum — the session tears
+            // down typed, the supervisor respawns the host, and the
+            // client's existing auto-re-dial reads fresh geometry.
+            // (In-place encoder re-open is the deluxe follow-up.)
+            if Int32(ticket.width) != width
+                || Int32(ticket.height) != height {
+                ticket.release()
+                print("direct: display mode changed \(width)x\(height)"
+                    + " → \(ticket.width)x\(ticket.height) — ending "
+                    + "session; the re-dial reads fresh geometry")
+                modeChangeEnded = true
+                return
             }
             let captureUs = UInt64(nowSeconds() * 1_000_000)
 

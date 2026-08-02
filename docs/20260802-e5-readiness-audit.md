@@ -32,7 +32,11 @@ recovery-on-quiet-desktop to show a nonzero count. Item 3 landed in
 its minimal form the same day: a 1 Hz retained-surface keepalive,
 wire-sessions only (file-mode captures stay damage-driven), original
 capture stamps, `keepalives` in the books — ratchet-style refinement
-is filed as post-E5 work.*
+is filed as post-E5 work. Item 4 landed in its minimal form with a
+LIVE gate: a real mid-capture resolution switch (2048x1280 →
+1152x864 via ApplyMonitorsConfig) produced the clean typed exit and
+the panel restored — in-place encoder re-open stays the deluxe
+follow-up. Remaining before the flip: the owner soak (item 5).*
 
 1. **Serve forced-IDR demands on a static screen** — move the
    `takeForcedIdrDemand()` check out of the fb-changed branch; on
