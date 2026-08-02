@@ -64,6 +64,46 @@ final class AdaptiveVideoPlayoutTests: XCTestCase {
             "a 120 ms cushion must absorb the second 117 ms stall")
     }
 
+    func testLiveCeilingUpdateMovesTheCushionMidFlight() {
+        // The Settings slider is live. Raising the ceiling mid-stream
+        // grants headroom without adding latency (delay still grows
+        // only on measured lateness); the next same-size stall is
+        // then absorbed. Lowering to 0 clamps the learned delay
+        // immediately — the very next frame presents at arrival.
+        var policy = AdaptiveVideoPlayout()
+        for i in 0..<10 {
+            _ = policy.schedule(
+                mappedCaptureMicroseconds: 1_000_000
+                    + UInt64(i) * 16_667,
+                arrivalMicroseconds: 1_002_000 + UInt64(i) * 16_667)
+        }
+        _ = policy.schedule(
+            mappedCaptureMicroseconds: 1_166_670,
+            arrivalMicroseconds: 1_166_670 + 117_000)
+        XCTAssertEqual(policy.targetDelayMicroseconds, 50_000)
+
+        policy.updateDelayCeiling(maximumDelayMicroseconds: 120_000)
+        XCTAssertEqual(
+            policy.targetDelayMicroseconds, 50_000,
+            "raising the ceiling must not add latency by itself")
+        _ = policy.schedule(
+            mappedCaptureMicroseconds: 1_500_000,
+            arrivalMicroseconds: 1_500_000 + 117_000)
+        let absorbed = policy.schedule(
+            mappedCaptureMicroseconds: 1_800_000,
+            arrivalMicroseconds: 1_800_000 + 117_000)
+        XCTAssertEqual(
+            absorbed.latenessMicroseconds, 0,
+            "with the raised ceiling the recurring stall is absorbed")
+
+        policy.updateDelayCeiling(maximumDelayMicroseconds: 0)
+        XCTAssertEqual(policy.targetDelayMicroseconds, 0)
+        let raw = policy.schedule(
+            mappedCaptureMicroseconds: 2_500_000,
+            arrivalMicroseconds: 2_520_000)
+        XCTAssertEqual(raw.presentationMicroseconds, 2_520_000)
+    }
+
     func testZeroCeilingTurnsTheCushionOffEntirely() {
         // Slider at 0: floor/initial/ceiling all collapse to zero and
         // every frame — punctual or late — presents the instant it

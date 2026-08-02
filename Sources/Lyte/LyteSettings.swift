@@ -53,7 +53,7 @@ struct LyteSettingsView: View {
                     + "out ordinary jitter; ~120 ms swallows a full "
                     + "Wi-Fi scan blackout; 0 turns the cushion off "
                     + "and frames show the instant they arrive. "
-                    + "Applies to new connections.")
+                    + "Changes apply live, even mid-stream.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {

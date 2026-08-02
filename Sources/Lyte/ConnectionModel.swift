@@ -111,6 +111,10 @@ final class ConnectionModel {
     /// mark makes overlapping scans idempotent, and a recorder reset
     /// (ordinals restart) clears it implicitly.
     private let linkHealthMeter = LinkHealthMeter()
+    /// Last cushion ceiling pushed into the live playout — the 1 Hz
+    /// tick compares the slider against this to apply changes
+    /// mid-stream.
+    private var appliedCushionMicroseconds: UInt64 = 0
     /// nil until streaming produces a verdict; .good renders nothing —
     /// a clean link needs no announcement.
     private(set) var linkHealth: LinkHealthAssessment?
@@ -410,6 +414,7 @@ final class ConnectionModel {
             recorder: videoFlightRecorder,
             recoveryRequester: recoveryRequester,
             playoutConfig: Self.playoutConfigFromSettings())
+        appliedCushionMicroseconds = Self.cushionMicrosecondsFromSettings()
         videoRendererHandoff = handoff
         let lastDims = VideoDimsCell()
         sessionEpoch += 1
@@ -633,9 +638,7 @@ final class ConnectionModel {
     static let playoutCushionDefault = 50
     static let playoutCushionRange = 0...150
 
-    private static func playoutConfigFromSettings()
-        -> AdaptiveVideoPlayout.Config
-    {
+    private static func cushionMicrosecondsFromSettings() -> UInt64 {
         // 0 is a legal setting now, so "never set" must be the absent
         // key, not the integer default.
         let defaults = UserDefaults.standard
@@ -644,7 +647,13 @@ final class ConnectionModel {
             : min(max(defaults.integer(forKey: playoutCushionKey),
                       playoutCushionRange.lowerBound),
                   playoutCushionRange.upperBound)
-        let cap = UInt64(ms) * 1_000
+        return UInt64(ms) * 1_000
+    }
+
+    private static func playoutConfigFromSettings()
+        -> AdaptiveVideoPlayout.Config
+    {
+        let cap = cushionMicrosecondsFromSettings()
         var config = AdaptiveVideoPlayout.Config(
             maximumDelayMicroseconds: cap)
         // The playout requires minimum ≤ initial ≤ maximum; a ceiling
@@ -660,6 +669,14 @@ final class ConnectionModel {
     /// task loop): fold the recorder's ring — the meter's high-water
     /// mark skips frames already folded — and publish the verdict.
     func tickLinkHealth() {
+        // The cushion slider is live: the same 1 Hz heartbeat that
+        // folds link health pushes ceiling changes into the playout.
+        let cushion = Self.cushionMicrosecondsFromSettings()
+        if cushion != appliedCushionMicroseconds {
+            videoRendererHandoff?.updateCushionCeiling(
+                microseconds: cushion)
+            appliedCushionMicroseconds = cushion
+        }
         for f in videoFlightRecorder.recentFrames() {
             linkHealthMeter.observe(
                 ordinal: f.ordinal,
@@ -1578,6 +1595,13 @@ private final class VideoRendererHandoff: @unchecked Sendable {
         self.recoveryRequester = recoveryRequester
         self.playout = AdaptiveVideoPlayoutController(
             config: playoutConfig)
+    }
+
+    /// The Settings slider is live — the model's 1 Hz tick pushes
+    /// ceiling changes here mid-stream.
+    func updateCushionCeiling(microseconds: UInt64) {
+        playout.updateDelayCeiling(
+            maximumDelayMicroseconds: microseconds)
     }
 
     func submit(sample: CMSampleBuffer, unit: DecodeUnit) {
