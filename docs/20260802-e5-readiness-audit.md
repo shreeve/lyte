@@ -25,6 +25,11 @@ that deletes the portal path, burns `vendor-ffmpeg.sh`, and mints the
 
 ## The punch list (ranked)
 
+*Items 1 and 2 landed same-day (the static-IDR re-encode + the
+truthful [420] declaration on direct); `static_idrs` joined the
+direct books. The live static-IDR path awaits its first real
+recovery-on-quiet-desktop to show a nonzero count.*
+
 1. **Serve forced-IDR demands on a static screen** — move the
    `takeForcedIdrDemand()` check out of the fb-changed branch; on
    demand with no new damage, re-encode the last blitted surface as
