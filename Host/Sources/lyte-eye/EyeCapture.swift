@@ -24,6 +24,7 @@ func runCapture(_ rawArgs: [String]) -> Never {
     var output = "/tmp/lyte-eye.hevc"
     var qp: Int32 = 24
     var native = false
+    var bitrateMbps: Int64 = 0
     var it = rawArgs.makeIterator()
     while let arg = it.next() {
         switch arg {
@@ -33,6 +34,10 @@ func runCapture(_ rawArgs: [String]) -> Never {
         case "--out": output = it.next() ?? output
         case "--qp": qp = Int32(it.next() ?? "") ?? qp
         case "--native": native = true
+        // E6b live-rate probe: VBR at this cap, then HALVED at the
+        // midpoint via setRateBitsPerSecond — the gate is 1 IDR.
+        case "--bitrate-mbps":
+            bitrateMbps = Int64(it.next() ?? "") ?? bitrateMbps
         default:
             FileHandle.standardError.write(
                 Data("unknown arg \(arg)\n".utf8))
@@ -42,7 +47,8 @@ func runCapture(_ rawArgs: [String]) -> Never {
     if native {
         runNativeCapture(
             device: device, render: render, seconds: seconds,
-            output: output, qp: qp)
+            output: output, qp: qp,
+            bitrateBitsPerSecond: bitrateMbps * 1_000_000)
     }
 
     let fd = open(device, O_RDWR)
@@ -75,7 +81,8 @@ func runCapture(_ rawArgs: [String]) -> Never {
         gl = try EyeGL(renderNode: render)
         encoder = try EyeEncoder(
             width: width, height: height, fps: 60, qp: qp,
-            renderNode: render)
+            renderNode: render,
+            bitrateBitsPerSecond: bitrateMbps * 1_000_000)
     } catch {
         FileHandle.standardError.write(Data("init: \(error)\n".utf8))
         exit(1)
@@ -219,7 +226,7 @@ func runCapture(_ rawArgs: [String]) -> Never {
 /// same shape as the libav leg for A/B reading.
 func runNativeCapture(
     device: String, render: String, seconds: Double,
-    output: String, qp: Int32
+    output: String, qp: Int32, bitrateBitsPerSecond: Int64 = 0
 ) -> Never {
     let fd = open(device, O_RDWR)
     guard fd >= 0 else { perror(device); exit(1) }
@@ -246,7 +253,8 @@ func runNativeCapture(
         gl = try EyeGL(renderNode: render)
         encoder = try EyeVaapiEncoder(
             width: width, height: height, fps: 60, qp: qp,
-            renderNode: render)
+            renderNode: render,
+            bitrateBitsPerSecond: bitrateBitsPerSecond)
     } catch {
         FileHandle.standardError.write(Data("init: \(error)\n".utf8))
         exit(1)
@@ -271,9 +279,22 @@ func runNativeCapture(
     var nextReport = t0 + 1.0
     var framesThisSecond = 0
 
+    // The live-rate probe: halve the envelope at the midpoint, no
+    // reset, no IDR — the gate that retires the vendor patch's job
+    // on the VAAPI side too.
+    var rateMoved = false
+
     while true {
         let t = nowSeconds()
         guard t - t0 < seconds else { break }
+        if bitrateBitsPerSecond > 0, !rateMoved,
+           t - t0 > seconds / 2 {
+            rateMoved = true
+            encoder.setRateBitsPerSecond(bitrateBitsPerSecond / 2)
+            print("  live-rate: \(bitrateBitsPerSecond / 1_000_000) → "
+                + "\(bitrateBitsPerSecond / 2_000_000) Mbps at midpoint "
+                + "(no reset, no IDR expected)")
+        }
         guard let fb = currentFB(fd: fd, planeId: planes.primary.id),
               fb != lastFB else {
             usleep(1000)

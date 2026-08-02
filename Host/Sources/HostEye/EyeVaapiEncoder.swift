@@ -59,6 +59,9 @@ public final class EyeVaapiEncoder {
     private let recipe: HevcHeaderRecipe
     private let bitrateBitsPerSecond: Int64
     private var pendingRate: Int64?
+    /// The rate the driver currently holds — a directive's move must
+    /// survive later IDR re-sends (which rebuild the RC/HRD buffers).
+    private var currentRate: Int64 = 0
     private var frameIndex: Int64 = 0
     private var poc: UInt32 = 0
     private var previousRecon = VASurfaceID(VA_INVALID_ID)
@@ -81,10 +84,19 @@ public final class EyeVaapiEncoder {
         self.fps = fps
         self.qp = qp
         self.bitrateBitsPerSecond = bitrateBitsPerSecond
+        self.currentRate = bitrateBitsPerSecond
+        // The BRC dialect (pinned to ffmpeg's on this driver): under
+        // rate control the PPS baseline is QP 30 and per-CU QP deltas
+        // are declared at 8x8 granularity (depth = the SPS's
+        // log2_diff_max_min_luma_coding_block_size, 3) — the driver
+        // writes deltas into the slice data whether or not the PPS
+        // admits it, so the PPS MUST admit it. CQP keeps the caller's
+        // qp and no delta syntax.
         self.recipe = HevcHeaderRecipe(
             width: UInt32(width), height: UInt32(height),
             fpsNumerator: UInt32(fps), fpsDenominator: 1,
-            initialQP: qp
+            initialQP: bitrateBitsPerSecond > 0 ? 30 : qp,
+            cuQpDeltaDepth: bitrateBitsPerSecond > 0 ? 3 : nil
         )
 
         drmFd = open(renderNode, O_RDWR)
@@ -302,12 +314,16 @@ public final class EyeVaapiEncoder {
             buffers.append(try makePackedData(try packedParameterSets()))
             if bitrateBitsPerSecond > 0 {
                 buffers.append(try makeRateControlBuffer(
-                    capBitsPerSecond: bitrateBitsPerSecond))
+                    capBitsPerSecond: currentRate))
+                buffers.append(try makeHRDBuffer(
+                    capBitsPerSecond: currentRate))
                 buffers.append(try makeFrameRateBuffer())
             }
         } else if let rate = pendingRate, bitrateBitsPerSecond > 0 {
+            currentRate = rate
             buffers.append(try makeRateControlBuffer(
                 capBitsPerSecond: rate))
+            buffers.append(try makeHRDBuffer(capBitsPerSecond: rate))
             pendingRate = nil
         }
 
@@ -424,6 +440,10 @@ public final class EyeVaapiEncoder {
         pic.collocated_ref_pic_index = 0 // tmvp on
         pic.last_picture = 0
         pic.pic_init_qp = UInt8(recipe.initialQP)
+        if let depth = recipe.cuQpDeltaDepth {
+            pic.diff_cu_qp_delta_depth = UInt8(depth)
+            pic.pic_fields.bits.cu_qp_delta_enabled_flag = 1
+        }
         pic.log2_parallel_merge_level_minus2 = 0
         pic.nal_unit_type = idr ? 19 : 1 // IDR_W_RADL / TRAIL_R
         pic.pic_fields.bits.idr_pic_flag = idr ? 1 : 0
@@ -509,15 +529,40 @@ public final class EyeVaapiEncoder {
     /// The RC misc buffer: header + VAEncMiscParameterRateControl,
     /// assembled as raw bytes (the C flexible-array tail does not
     /// import). 70%-of-cap target — the E1 envelope.
+    /// The VBV the libav seat proved out (E1's envelope, byte-for-
+    /// byte): target 70% of cap, buffer FOUR FRAMES of cap — a ~66 ms
+    /// window at 60 fps. Without the matching HRD buffer the iHD
+    /// driver's VBR math degenerates and inter-frame quality collapses
+    /// (the yellow-smear artifact — caught by eyeball, not by decode).
+    private func vbvBufferBits(capBitsPerSecond: Int64) -> Int64 {
+        capBitsPerSecond * 4 / Int64(fps)
+    }
+
     private func makeRateControlBuffer(
         capBitsPerSecond: Int64
     ) throws -> VABufferID {
         var rc = VAEncMiscParameterRateControl()
         rc.bits_per_second = UInt32(capBitsPerSecond)
         rc.target_percentage = 70
-        rc.window_size = 1000
+        rc.window_size = UInt32(
+            vbvBufferBits(capBitsPerSecond: capBitsPerSecond) * 1000
+                / capBitsPerSecond)
+        // 2 = macroblock-level RC explicitly OFF — ffmpeg sends this
+        // whenever blbrc is not requested; 0 leaves it driver-chosen.
+        rc.rc_flags.bits.mb_rate_control = 2
         return try makeMiscBuffer(
             VAEncMiscParameterTypeRateControl, &rc, "rc misc")
+    }
+
+    private func makeHRDBuffer(
+        capBitsPerSecond: Int64
+    ) throws -> VABufferID {
+        let buffer = vbvBufferBits(capBitsPerSecond: capBitsPerSecond)
+        var hrd = VAEncMiscParameterHRD()
+        hrd.buffer_size = UInt32(buffer)
+        hrd.initial_buffer_fullness = UInt32(buffer * 3 / 4)
+        return try makeMiscBuffer(
+            VAEncMiscParameterTypeHRD, &hrd, "hrd misc")
     }
 
     private func makeFrameRateBuffer() throws -> VABufferID {

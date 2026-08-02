@@ -272,6 +272,34 @@ works). Document it; no dialog theater.
   per-frame seq/pic/slice parameter buffers, packed headers from
   this pen), live VAEncMiscParameterRateControl (un-defers
   directives_deferred), parity legs, then the vendored ffmpeg exits.
+  **E6b milestones 2–4 LANDED (2026-08-01)** — the whole native
+  seat, gated four ways. (2) The slice pen (IDR + TRAIL-GPB, the
+  p_to_gpb dialect read from the driver and ffmpeg sources) and
+  EyeVaapiEncoder: vaCreateConfig/Context on the std EncSlice
+  entrypoint, packed SEQUENCE/SLICE headers from our pens, per-frame
+  seq/RC/framerate/HRD misc + pic/slice buffers, coded-buffer
+  readback. Probes: parity vs libav 0.16% byte-delta at equal
+  frames, live VBR retarget mid-stream (35→17 Mbps, zero IDR), all
+  hardware-decoded clean. (3) The leg seat: DirectEyeLeg grew a
+  Seat enum (libav scaffolding vs native pens), lyte-host grew
+  `--encoder libav|native`, and the native seat CONSUMES
+  EncoderRateDirective — setRateBitsPerSecond rides the next
+  frame's RC misc buffer; the directive queue applies instead of
+  deferring. Wire leg PASS (static workload, zero corruption,
+  cursor riding 0x24). (4) The eyeball bug: under brc the driver
+  writes per-CU QP deltas into slice data regardless of the PPS;
+  our CQP-pinned PPS didn't declare them, and every decode washed
+  yellow with blocky flats while text stayed sharp — quality
+  collapse the decode gates could NOT see (VT decoded every frame
+  "cleanly"). The libav VBR capture provided the missing oracle
+  (baseline QP 30, cu_qp_delta_enabled, depth 3 —
+  4401c06219302240, pinned as a HostCore test); the pic params
+  mirror the PPS; the owner's eyes confirmed CLEAN on the live
+  wire. Lesson recorded: bitstream changes gate on decoded PIXELS,
+  not on decoder acceptance. Remaining for E6b: the demolition PR
+  (vendor-ffmpeg.sh, the no-reset patch, EyeEncoder, CLibAV out of
+  the eye targets) once the owner has streamed a real session on
+  the native seat.
 - **Then**: AV1 negotiation (the recorded four seams), login-screen
   capture, multi-monitor.
 
