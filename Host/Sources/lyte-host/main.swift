@@ -35,6 +35,10 @@ struct Options {
     var bitrateExplicit = false
     var fps: Int32 = 60
     var backend: Backend = .portal
+    /// E6b: the direct backend's encoder seat — false = libav
+    /// hevc_vaapi scaffolding (CQP, directives deferred), true = the
+    /// native VAAPI encoder (our pens; directives apply live).
+    var nativeEncoder = false
     /// Debug-only capture replacement. It bypasses PipeWire/Mutter only;
     /// encoder, session, packetizer, crypto, sockets, and client stay real.
     var syntheticMotion: (width: UInt32, height: UInt32)?
@@ -143,6 +147,13 @@ struct Options {
                     throw HostError("--backend must be 'portal', 'mutter', or 'direct'")
                 }
                 opts.backend = b
+            case "--encoder":
+                i += 1
+                guard i < args.count,
+                      ["libav", "native"].contains(args[i]) else {
+                    throw HostError("--encoder must be 'libav' or 'native'")
+                }
+                opts.nativeEncoder = args[i] == "native"
             case "--synthetic-motion":
                 i += 1
                 guard i < args.count else {
@@ -300,10 +311,14 @@ struct Options {
                   --backend portal  xdg-desktop-portal ScreenCast (primary;
                                     one-time on-screen consent on first run)
                   --backend direct  the direct eye: KMS doorbell + EGL
-                                    blit + hevc_vaapi on the iGPU — no
+                                    blit + VAAPI encode on the iGPU — no
                                     portal, no PipeWire video, no Mutter
-                                    (needs CAP_SYS_ADMIN; E1, rate
-                                    directives deferred until E6)
+                                    (needs CAP_SYS_ADMIN)
+                  --encoder SEAT    direct-eye encoder seat: 'libav'
+                                    (hevc_vaapi scaffolding — CQP, rate
+                                    directives deferred) or 'native'
+                                    (E6b pens — rate directives apply
+                                    live). Default libav.
                   --backend mutter  org.gnome.Mutter.ScreenCast (no dialog;
                                     spike fallback for headless/ssh runs)
                   --synthetic-motion WIDTHxHEIGHT
@@ -455,6 +470,10 @@ struct Options {
             case .ratchetFloorQP(let v):
                 throw HostError("recipe ratchet floor must be 1…51 (got \(v))")
             }
+        }
+        if opts.nativeEncoder, opts.backend != .direct {
+            throw HostError("--encoder native is a direct-eye seat "
+                + "(add --backend direct)")
         }
         return opts
     }
@@ -1595,7 +1614,8 @@ func run() throws {
         encoderDescription = "hevc_nvenc"
     } else if opts.backend == .direct {
         captureDescription = "direct eye (KMS doorbell + EGL blit)"
-        encoderDescription = "hevc_vaapi"
+        encoderDescription = opts.nativeEncoder
+            ? "native VAAPI (our pens)" : "hevc_vaapi"
     } else {
         captureDescription = "\(opts.backend.rawValue) → PipeWire"
         encoderDescription = "hevc_nvenc"
@@ -1612,12 +1632,19 @@ func run() throws {
     // this (the ladder retune, the idr-books tags) keys off THIS
     // proof, never off an assumption about the build.
     let noResetRateMoves = lyte_hevc_noreset_enable() != 0
-    print(noResetRateMoves
-        ? "encoder: vendored no-reset libavcodec — rate directives "
-            + "reconfigure in place (zero reset, zero IDR)"
-        : "encoder: no-reset rate moves INACTIVE (distro libavcodec, "
-            + "or the vendored lib with LYTE_NVENC_NO_RESET_RATE=0) — "
-            + "every rate directive resets the encoder and mints an IDR")
+    if opts.nativeEncoder {
+        // E6b: libavcodec is out of the video path entirely — rate
+        // moves are RC misc buffers on the next frame, by construction.
+        print("encoder: native VAAPI seat — rate directives ride the "
+            + "next frame's RC buffer (no libavcodec in the video path)")
+    } else {
+        print(noResetRateMoves
+            ? "encoder: vendored no-reset libavcodec — rate directives "
+                + "reconfigure in place (zero reset, zero IDR)"
+            : "encoder: no-reset rate moves INACTIVE (distro libavcodec, "
+                + "or the vendored lib with LYTE_NVENC_NO_RESET_RATE=0) — "
+                + "every rate directive resets the encoder and mints an IDR")
+    }
 
     if mutterDirectScanoutDisabled() == false {
         print("capture: WARNING — gnome-shell lacks MUTTER_DEBUG_PAINT="
@@ -2088,7 +2115,8 @@ func run() throws {
             config: .init(
                 seconds: opts.seconds,
                 bitrateBitsPerSecond: wire != nil
-                    ? Int64(opts.wireRateMbps * 1_000_000) : 0),
+                    ? Int64(opts.wireRateMbps * 1_000_000) : 0,
+                nativeEncoder: opts.nativeEncoder),
             wire: wire, file: file)
         directLeg = leg
         leg.run()
