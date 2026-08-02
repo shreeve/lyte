@@ -28,7 +28,11 @@ that deletes the portal path, burns `vendor-ffmpeg.sh`, and mints the
 *Items 1 and 2 landed same-day (the static-IDR re-encode + the
 truthful [420] declaration on direct); `static_idrs` joined the
 direct books. The live static-IDR path awaits its first real
-recovery-on-quiet-desktop to show a nonzero count.*
+recovery-on-quiet-desktop to show a nonzero count. Item 3 landed in
+its minimal form the same day: a 1 Hz retained-surface keepalive,
+wire-sessions only (file-mode captures stay damage-driven), original
+capture stamps, `keepalives` in the books — ratchet-style refinement
+is filed as post-E5 work.*
 
 1. **Serve forced-IDR demands on a static screen** — move the
    `takeForcedIdrDemand()` check out of the fb-changed branch; on

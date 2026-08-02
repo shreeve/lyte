@@ -47,6 +47,13 @@ final class DirectEyeLeg {
     private var lastEncodedSurface: UInt32?
     private var lastEncodedCaptureUs: UInt64 = 0
     private(set) var staticIdrsServed = 0
+    /// E5 audit item 3: the quiet-desktop heartbeat cadence. One
+    /// retained re-encode per second is enough to keep the clock
+    /// model fed and the wire warm; the full-rate idle floor (and
+    /// ratchet refinement) remain the portal's until post-E5 work.
+    static let keepaliveSeconds = 1.0
+    private var lastDeliveryWallSeconds = 0.0
+    private(set) var keepalivesSent = 0
     private(set) var cursorShapesSeen = 0
     private(set) var cursorReadFailures = 0
     private(set) var cursorHotspotCorrections = 0
@@ -190,10 +197,38 @@ final class DirectEyeLeg {
                                 captureUs: lastEncodedCaptureUs)
                         staticIdrWanted = false
                         staticIdrsServed += 1
+                        lastDeliveryWallSeconds = nowSeconds()
                         print("direct: static-screen IDR served "
                             + "(re-encoded retained surface \(sid))")
                     } catch {
                         lastError = "direct: static IDR: \(error)"
+                        return
+                    }
+                    continue
+                }
+                // E5 audit item 3 (minimal form): the idle keepalive.
+                // A quiet desktop still supplies the wire one retained
+                // re-encode per second — the clock model stays fed,
+                // transit stays measurable across roams, and the
+                // client's freshness logic sees a live host instead of
+                // silence. ORIGINAL capture stamp (retained-frame
+                // law), never an IDR, wire sessions only — file-mode
+                // captures stay damage-driven so their books grade
+                // the screen, not the heartbeat.
+                if wire != nil, let sid = lastEncodedSurface,
+                   nowSeconds() - lastDeliveryWallSeconds
+                       >= Self.keepaliveSeconds {
+                    do {
+                        let packet = try encoder.encode(
+                            surface: sid, forceIDR: false)
+                        deliver(Data(packet.data),
+                                keyframe: packet.keyframe,
+                                causes: [],
+                                captureUs: lastEncodedCaptureUs)
+                        keepalivesSent += 1
+                        lastDeliveryWallSeconds = nowSeconds()
+                    } catch {
+                        lastError = "direct: keepalive: \(error)"
                         return
                     }
                     continue
@@ -269,6 +304,7 @@ final class DirectEyeLeg {
                 deliver(Data(packet.data), keyframe: packet.keyframe,
                         causes: causes, captureUs: captureUs)
                 frames += 1
+                lastDeliveryWallSeconds = nowSeconds()
             } catch {
                 if !ticketReleased { ticket.release() }
                 lastError = "direct: frame \(frames): \(error)"
@@ -282,6 +318,7 @@ final class DirectEyeLeg {
             + "\(keyframes) IDRs, missed_grabs=\(missedGrabs), "
             + "directives_applied=\(directivesApplied), "
             + "static_idrs=\(staticIdrsServed), "
+            + "keepalives=\(keepalivesSent), "
             + "cursor_shapes=\(cursorShapesSeen), "
             + "hotspot_corrections=\(cursorHotspotCorrections)")
     }
