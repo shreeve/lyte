@@ -90,14 +90,18 @@ look; the first sweep grepped the wrong symbol names). The last two
 T2 items closed 2026-08-02: **T2-10** → #75 (horizon pinned as local
 policy, adversarial pin in AudioInteriorTests) and **T2-13** → #76
 (configLock publication + `_Atomic` uinput extent). **Every T2 item is
-now closed**; the seven below — all A-class — are confirmed OPEN.*
-
-- **A-19 (audio half) shutdown `roundtrip` with no timeout** —
-  `Host/Sources/CPipeWireAudio/audio.c` (`lyte_pw_audio_restore`): a wedged
-  wireplumber hangs exit with the desktop's default sink still pointed
-  at "Lyte Audio". Wants the bounded timer source the old capture leaf
-  demonstrated. (The capture half of this finding died with
-  CPipeWireCapture.)
+now closed.* *The A-train batch landed 2026-08-02: **A-19** → #77
+(2 s guard timer bounds every roundtrip — a wedged wireplumber turns
+into a loud restore failure, the next-start sweep backstops),
+**A-24** → #77 (`exit_reason` `_Atomic`; quit's CAS yields to an
+error verdict; the NULL-`spa_dict_lookup` companion verified already
+guarded — moot), **A-23** → #78 (validation above allocations;
+nothing may throw past thread.start(), stated at the site),
+**A-25** → #79 (compiler-enforced discard binding + the mixed-clock
+warning at both ends), **A-27** → #79 (anchor and centering offset
+from the same sample; order-invariance pinned through a coprime
+scramble). The TWO below remain — both design/migration-shaped,
+deliberately not batch work.*
 
 - **A-20 Delivery trains are segmented channel-blind** —
   `Host/Sources/HostWire/RateEstimator.swift`: trains mix fast-lane
@@ -105,38 +109,16 @@ now closed**; the seven below — all A-class — are confirmed OPEN.*
   rate that drives the honest/censored trichotomy — and at the 500 kbps
   floor the rate-scaled gap (~55 ms) chains audio's 5 ms cadence into
   every train. Consider single-channel trains or per-channel
-  classification.
-
-- **A-23 `SessionWire.init` late throw double-frees and orphans the
-  drain thread** — `Host/Sources/lyte-host/SessionWire.swift` init +
-  deinit: a throw after the allocations and thread start repeats
-  `scratch.deallocate()`/`lyte_netio_free` and leaves the drain thread
-  on a freed object. Unreachable today (the `--insecure` validation runs
-  first) — armed by any new throw added to `init`. Move validation above
-  the allocations.
-
-- **A-24 `lyte_pw_audio_quit` races the loop's exit reason** —
-  `Host/Sources/CPipeWireAudio/audio.c`: plain-`int` cross-thread store can
-  overwrite a concurrent stream-error reason, silently suppressing the
-  `run error` line. Make it `_Atomic` (companion: a possibly-NULL
-  `spa_dict_lookup` passed to `%s`).
-
-- **A-25 The arrival-stamp decoy parameter** —
-  `LyteUdpSession.handleDatagram(_:arrivalMicroseconds:)` never reads
-  the parameter (deliberately), but `UdpReceiveEndpoint`'s doc still
-  promises it's "the same arrival stamp the demux got"; a future reader
-  wiring t2 from it corrupts every RTT sample. Drop or annotate it.
+  classification. (Estimator design work — belongs with the direct-leg
+  quality refinement on the postures queue.)
 
 - **A-26 (residue) duplications + missing host-side seams** —
   `LatencyHistogram` ≡ `HostCore.Histogram` and `AnnexBCheck` ≡
   `HostCore.AnnexB` are documented-in-code duplications; the host's
   crypto and ARQ carriage are inlined switches where the client has
   named seams (`TransportCrypto`, `ReliableCtrlEndpoint`) — the missing
-  host-side seam is why the ARQ repack duplication exists.
-
-- **A-27 (test gap) `HostClockModel.estimate`** picks `anchor` by max
-  timestamp but `offset0` by array position; out-of-order `ingest` has
-  no pin.
+  host-side seam is why the ARQ repack duplication exists. (The
+  evidence FOR the v2 Common/IO split — resolve there, not piecemeal.)
 
 ## Browser client + Caddy bridge (`docs/20260720-184200-browser-client-caddy-bridge.md`)
 

@@ -32,14 +32,17 @@ wired at 10.0.0.232. After EVERY rebuild:
 next respawn execs the new binary). Never kill the owner's 41151 loop;
 test hosts use fresh 41xxx ports with `--no-advertise`.
 
-**Where the work lives now:** TODO.md carries the ANALYSIS live
-remainder — re-verified at code level 2026-08-02, and **every Tier-2
-item is now CLOSED**: eight had landed in the hardening waves
-(#27/#30/#33/#38/#43) and the last two landed today (T2-10 → #75
-pinned audio horizon, T2-13 → #76 configLock publication). SEVEN
-A-class items remain, fronted by A-19 (restore roundtrip untimed) /
-A-24 (audio quit flag races) / A-23 (init throw ordering) — plus the
-audit caveats and the banked AV1 decision record. docs/README.md is the doc catalog (twenty
+**Where the work lives now:** the v1-final ANALYSIS remainder is
+**ESSENTIALLY CLOSED** (2026-08-02): every Tier-2 item done (eight in
+the hardening waves #27/#30/#33/#38/#43, T2-10 → #75, T2-13 → #76)
+and the A-train batch landed as #77 (bounded audio roundtrips +
+atomic exit reason), #78 (init validation above allocations), #79
+(clock-model anchor pairing + pinned order-invariance, decoy stamp
+discarded by contract). Only TWO items remain in TODO.md, both
+deliberately deferred to their proper homes: A-20 (channel-blind
+trains → the direct-leg quality refinement) and A-26 (duplications →
+the v2 Common/IO split). Suites at HEAD: Wire 513, root 284, host
+281 pup / 280 Mac. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
 
@@ -55,8 +58,8 @@ NVENC productionize (lyte-nvenc probe banked), Rext 4:4:4 in the
 native pens (returns the Best tier), E2 uinput-primary, E4 packaging
 aimed at Lyte OS.
 
-**Suites at HEAD:** Wire 512, root client 283, host 281 on pup — all
-green.
+**Suites at HEAD:** Wire 513, root client 284, host 281 on pup / 280
+Mac — all green (counts grew with the fix train's pins).
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
