@@ -594,6 +594,10 @@ final class ConnectionModel {
         chromaNoticeTask?.cancel()
         chromaNotice = nil
         linkHealth = nil
+        // The sitting is over — the cumulative stall books go with
+        // it. (Roam re-dials do NOT pass here; their recorder reset
+        // only restarts the meter's window, never the totals.)
+        linkHealthMeter.resetSessionBooks()
         statsVisible = false
         videoRendererHandoff?.stop()
         videoRendererHandoff = nil
