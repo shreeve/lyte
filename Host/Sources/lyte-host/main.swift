@@ -59,6 +59,10 @@ struct Options {
     /// CP-3 fallback (§4.1): passthrough seal, stream to the fixed peer
     /// without a handshake. The default is real Noise.
     var insecure = false
+    /// Pin the advertisement to one interface (e.g. the Ethernet NIC
+    /// on a wired+wireless host) so discovery never hands clients the
+    /// radio's address. Empty = all interfaces.
+    var advertiseInterface = ""
     /// HS-10: advertise `_lyte._udp` via Avahi while listening. On by
     /// default in `--wire-listen` Noise mode; Avahi being unavailable
     /// degrades to manual host:port, never a failure.
@@ -204,6 +208,12 @@ struct Options {
                 opts.insecure = true
             case "--no-advertise":
                 opts.advertise = false
+            case "--advertise-interface":
+                i += 1
+                guard i < args.count, !args[i].isEmpty else {
+                    throw HostError("--advertise-interface needs a name")
+                }
+                opts.advertiseInterface = args[i]
             case "--pair":
                 opts.pair = true
             case "--require-paired":
@@ -353,6 +363,10 @@ struct Options {
                                     encoder recipe pairs to it unless
                                     --bitrate-mbps splits them)
                   --no-advertise    skip the Avahi _lyte._udp advertisement
+                  --advertise-interface NAME
+                                    advertise on ONE interface (e.g. the
+                                    Ethernet NIC) so clients never get
+                                    handed the radio's address
                                     in --wire-listen mode
                   --pair            pairing mode (with --wire-listen): mint
                                     and print a 6-digit PIN, run the CPace
@@ -1849,7 +1863,8 @@ func run() throws {
                 do {
                     advertiser = try AvahiAdvertiser(
                         port: listenPort,
-                        staticPublicKey: hostStatic.publicKey
+                        staticPublicKey: hostStatic.publicKey,
+                        interfaceName: opts.advertiseInterface
                     )
                 } catch {
                     print("discovery: unavailable (\(error)) — "
