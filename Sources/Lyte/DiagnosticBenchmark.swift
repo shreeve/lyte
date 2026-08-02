@@ -2,6 +2,7 @@ import AppKit
 @preconcurrency import AVFoundation
 import CoreVideo
 import Foundation
+import LyteCorpus
 import LyteTransport
 
 struct DiagnosticBenchmarkSample: Codable {

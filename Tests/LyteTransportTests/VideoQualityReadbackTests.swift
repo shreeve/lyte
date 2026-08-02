@@ -1,5 +1,6 @@
 import CoreVideo
 import VideoToolbox
+import LyteCorpus
 import XCTest
 @testable import LyteTransport
 

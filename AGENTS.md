@@ -43,7 +43,11 @@ H-era build plans completed their ladder and are retired to git history
 - **Root** — package `Lyte`: the macOS client (macOS-only; SwiftUI app
  `Lyte`, `lyte-cli`). `LyteTransport` is the whole client protocol stack
  (imports LyteWire): socket + demux, video/audio pipelines, discovery,
- pairing, session. `LyteUI` holds the shared AppKit shims (render view,
+ pairing, session. `LyteCorpus` is the corpus/diagnostic harness
+ (corpus frames, gate math, PNG IO, the decode readback tap, the
+ quality scorer) — consumed only by lyte-cli, the app's env-gated
+ benchmark, and tests; the streaming stack carries no harness code.
+ `LyteUI` holds the shared AppKit shims (render view,
  icon); `lyte-helperd` + `LyteHelperProtocol` are the SMAppService AWDL
  helper pair; `COpus` is the one C leaf (libopus decode/PLC). The
  GameStream stack (`LyteKit`/`CEnet`/`CNanors`) was deleted at the H2
