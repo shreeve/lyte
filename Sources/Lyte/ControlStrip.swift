@@ -46,6 +46,25 @@ struct StreamContainer: View {
         StripEdge(rawValue: stripEdgeRaw) ?? .bottom
     }
 
+    /// "Network stalls — 3/min, worst 115 ms": the count says how
+    /// often, the worst says how visible, the stage says whose fault.
+    private func linkHealthLine(
+        _ health: LinkHealthAssessment
+    ) -> String {
+        let stage: String
+        switch health.dominantStage {
+        case "network": stage = "Network stalls"
+        case "host": stage = "Host capture stalls"
+        case "renderer": stage = "Render stalls"
+        default: stage = "Delivery stalls"
+        }
+        let rate = health.stallsPerMinute
+            .formatted(.number.precision(.fractionLength(0)))
+        let worst = health.worstStallMilliseconds
+            .formatted(.number.precision(.fractionLength(0)))
+        return "\(stage) — \(rate)/min, worst \(worst) ms"
+    }
+
     var body: some View {
         StreamView(model: model, onMouseActivity: { pointerActivity($0) })
             .overlay(alignment: stripEdge == .top ? .bottom : .top) {
@@ -87,8 +106,39 @@ struct StreamContainer: View {
                             .foregroundStyle(.orange)
                             .transition(.opacity)
                     }
+                    // The link-health pill: the flight recorder's
+                    // per-frame stage timings, folded to a verdict at
+                    // 1 Hz. Appears ONLY when stalls are measured —
+                    // the software confesses before the user has to
+                    // heisenbug (the 2026-08-01 Wi-Fi hunt) — and
+                    // names the guilty stage with the numbers.
+                    if let health = model.linkHealth,
+                       health.level != .good {
+                        Label(linkHealthLine(health),
+                              systemImage: "waveform.path.ecg")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(.ultraThinMaterial))
+                            .foregroundStyle(
+                                health.level == .poor ? .red : .yellow)
+                            .transition(.opacity)
+                            .help("Measured delivery stalls in the "
+                                + "last minute; the stage named is "
+                                + "where the delay was measured. "
+                                + "\"network\" with clean host books "
+                                + "usually means Wi-Fi.")
+                    }
                 }
                 .padding(stripEdge == .top ? .bottom : .top, 10)
+                .task {
+                    // The 1 Hz verdict tick — cheap by construction
+                    // (folds only frames recorded since last tick).
+                    while !Task.isCancelled {
+                        model.tickLinkHealth()
+                        try? await Task.sleep(for: .seconds(1))
+                    }
+                }
             }
             .overlay(alignment: stripEdge == .top ? .bottomLeading : .topLeading) {
                 // The stats readout keeps clear of the strip's edge too.
