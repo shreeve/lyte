@@ -33,12 +33,13 @@ next respawn execs the new binary). Never kill the owner's 41151 loop;
 test hosts use fresh 41xxx ports with `--no-advertise`.
 
 **Where the work lives now:** TODO.md carries the ANALYSIS live
-remainder — re-verified at code level 2026-08-02: seven items had
-already landed in the hardening waves (#27/#30/#33/#38) and are
-retired with their pins; NINE remain, fronted by T2-10 audio horizon
-off the wire / T2-13 unlocked post-handshake config / T2-16 held keys
-never flushed — plus the audit caveats and the banked AV1 decision
-record. docs/README.md is the doc catalog (twenty
+remainder — re-verified at code level 2026-08-02, and **every Tier-2
+item is now CLOSED**: eight had landed in the hardening waves
+(#27/#30/#33/#38/#43) and the last two landed today (T2-10 → #75
+pinned audio horizon, T2-13 → #76 configLock publication). SEVEN
+A-class items remain, fronted by A-19 (restore roundtrip untimed) /
+A-24 (audio quit flag races) / A-23 (init throw ordering) — plus the
+audit caveats and the banked AV1 decision record. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
 

@@ -83,29 +83,14 @@ retry sleeps OUTSIDE the session lock), **T2-15** helper interruption
 handler (#33: `interruptionHandler` installed beside invalidation),
 **A-18** stale belief across RECOVERY (#27: `applyIdrPacing`'s
 half-stale arm resets belief, delivery windows, cadence hold, and band
-floor — the exact invariant is documented at the site). The nine below
-are confirmed OPEN at HEAD `b0d9e2e`.*
-
-- **T2-10 Audio retention horizon read off the wire** (Wire) —
-  `Wire/Sources/LyteWire/AudioDepacketizer.swift`: staleness gate and
-  eviction derive `k` from the *arriving shard's* declared FEC geometry,
-  not the stream's. One legal `k=1` shard shrinks the horizon ~4× and
-  flushes groups still awaiting parity; a `k=255` shard widens admission
-  ~1000×. The horizon is local policy — pin it in the depacketizer's
-  config.
-
-- **T2-13 Post-handshake config published unlocked to the drain thread**
-  (host) — `Host/Sources/lyte-host/main.swift` writes
-  `inputInjector`/clipboard closures/`bulkShell` while the drain thread
-  may already read them; `noteMonitorExtent` mutates the injector from
-  the video thread unlocked (now called from DirectEyeLeg since #72).
-  All cold paths — route through `lock`.
-
-- **T2-16 Held keys never flushed** (app) —
-  `Sources/Lyte/LyteInputCapture.swift`: no all-keys-up on
-  resign-key/stop/teardown anywhere in client or host. ⌘Tab away with a
-  modifier down leaves the host with Super/Alt latched; a held key
-  across app-switch → host-side auto-repeat storm.
+floor — the exact invariant is documented at the site), and **T2-16**
+held keys (#43: `heldKeys`/`heldButtons` tracking with
+`releaseAllHeld()` on focus-resign AND stop — found on the second
+look; the first sweep grepped the wrong symbol names). The last two
+T2 items closed 2026-08-02: **T2-10** → #75 (horizon pinned as local
+policy, adversarial pin in AudioInteriorTests) and **T2-13** → #76
+(configLock publication + `_Atomic` uinput extent). **Every T2 item is
+now closed**; the seven below — all A-class — are confirmed OPEN.*
 
 - **A-19 (audio half) shutdown `roundtrip` with no timeout** —
   `Host/Sources/CPipeWireAudio/audio.c` (`lyte_pw_audio_restore`): a wedged
