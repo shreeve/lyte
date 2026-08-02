@@ -143,11 +143,13 @@ when present.
 - Avoid `--amend`. Never force-push main.
 - **The PR train is the working pattern** (established with the
   2026-07-30 audit sweep, #1–#19): branch → fix → reproducing pin →
-  suites green on Mac AND pup → `gh pr create` → squash-merge with a
+  suites green on Mac AND pup → `gh pr create` → merge with a
   ledger-voice subject carrying `(#N)` → record the landing → push.
   Main is pushed as part of the train; land on success, close on
-  failure. This repo squash-merges — PR association lives in the
-  `(#N)` subject suffix, never merge commits.
+  failure. PR association lives in the `(#N)` subject suffix. The
+  sweep-era PRs squash-merged; when `gh pr merge` is unavailable,
+  landing via `git merge --no-ff` with the `(#N)` subject is the
+  accepted fallback (#72, #73 landed that way).
 
 **HANDOFF.md** is the tracked session ledger. Read it first for current
 state and the resume point; edit it freely; commit updates in the

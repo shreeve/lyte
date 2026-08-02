@@ -33,8 +33,9 @@ Wire/     LyteWire — the sans-IO protocol core both ends import
             envelope codec · Noise IK + CPace PAKE · ARQ sublayer
             RS-FEC · capabilities · session state machine · frozen vectors
 Host/     LyteHost — the Linux host (lyte-host)
-            PipeWire capture · NVENC HEVC · Opus · congestion control
-            Avahi discovery · Mutter/uinput input injection
+            direct KMS capture · our own HEVC bitstream pens on VAAPI
+            Opus · congestion control · Avahi discovery
+            Mutter/uinput input injection
 (root)    the macOS client
             Lyte.app (SwiftUI) + lyte-cli
             LyteTransport — socket, demux, video/audio render, input send
@@ -56,28 +57,36 @@ DSCP, and app-level congestion control fed by burst dispersion.
 
 ## The media path: hardware at both ends
 
-The hard work of video never touches a CPU. On the host, PipeWire frames go
-straight into **NVENC** — the dedicated encode silicon on the GPU, separate
-from its 3D cores — as HEVC. On the client, compressed samples are handed to
-`AVSampleBufferDisplayLayer`, which drives **VideoToolbox** — the dedicated
-decode engine on Apple Silicon — through decode, color conversion, and
-display timing. The CPUs at both ends do only the light work: packetizing,
-ChaCha20-Poly1305 sealing, RS-FEC parity and repair, and pacing.
+The hard work of video never touches a CPU. On the host, the **direct eye**
+reads the display's live scanout straight from the kernel (KMS) — below the
+compositor, no portals, no screen-share dialogs — imports it into the GPU's
+3D engine for a colorspace blit, and hands it to the **dedicated encode
+silicon** (VAAPI on the GPU that owns the panel; NVENC banked for
+NVIDIA-panel hosts) driven by our own HEVC bitstream writers. On the
+client, compressed samples are handed to `AVSampleBufferDisplayLayer`,
+which drives **VideoToolbox** — the dedicated decode engine on Apple
+Silicon — through decode, color conversion, and display timing. The CPUs at
+both ends do only the light work: packetizing, ChaCha20-Poly1305 sealing,
+RS-FEC parity and repair, and pacing.
 
 Same silicon Sunshine/Moonlight drive — the difference is what we ask of it.
-Lyte's encoding is **damage-driven**: NVENC is asked to encode only the
-regions that actually changed, so a still desktop costs near-zero bandwidth
-at full sharpness, while fixed-cadence streamers re-encode every frame
-whether pixels moved or not.
+Lyte's encoding is **change-driven**: a doorbell on the kernel's
+framebuffer ID means nothing is captured or encoded unless the screen
+actually changed, so a still desktop costs near-zero bandwidth at full
+sharpness, while fixed-cadence streamers re-encode every frame whether
+pixels moved or not.
 
 ## Status
 
-H2 functional parity: video, 5 ms audio, input injection, congestion
-control, loss repair, and blackout recovery all live end-to-end (the
-2026-07-22 H2 joint gate; its report is retired to git history). The
-client's original GameStream stack — its bootstrap scaffolding against
-Sunshine hosts — was deleted at the H2 exit, as designed. See
-[LYTE-PLAN.md](LYTE-PLAN.md) for strategy.
+Live end-to-end since 2026-07-22 (the H2 joint gate): video, 5 ms audio,
+input injection, congestion control, loss repair, blackout recovery. Since
+then: bidirectional clipboard with images, file transfer with
+drag-and-drop, the quality ratchet, adaptive playout cushion — and as of
+2026-08-02 (tag `self-hosted`) the host captures and encodes with **no
+third-party media stack at all**: kernel scanout in, our own HEVC
+bitstream out, zero ffmpeg/libav anywhere in the binary. The client's
+original GameStream bootstrap scaffolding was deleted at the H2 exit, as
+designed. See [LYTE-PLAN.md](LYTE-PLAN.md) for strategy.
 
 ## License
 
