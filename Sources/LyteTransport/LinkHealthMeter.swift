@@ -69,6 +69,11 @@ public final class LinkHealthMeter {
     private var highWaterFrameSeconds: TimeInterval = 0
     private var sessionStallCount = 0
     private var sessionWorstMilliseconds = 0.0
+    /// LYTE_LINK_HEALTH_DEBUG=1: every episode append and every book
+    /// reset prints — the owner's "total equals rate" hunt needs the
+    /// live path to confess, not the unit tests to pass again.
+    private let debugTrace = ProcessInfo.processInfo
+        .environment["LYTE_LINK_HEALTH_DEBUG"] == "1"
 
     public init() {}
 
@@ -92,6 +97,11 @@ public final class LinkHealthMeter {
             // Ordinals ran backwards: the recorder was reset
             // (reconnect). Old episodes AND the session books belong
             // to the old session.
+            if debugTrace {
+                print("link-health: RESET — ordinal \(ordinal) < "
+                    + "high-water \(highWaterOrdinal) "
+                    + "(had \(sessionStallCount) total)")
+            }
             episodes.removeAll()
             sessionStallCount = 0
             sessionWorstMilliseconds = 0
@@ -137,6 +147,12 @@ public final class LinkHealthMeter {
                 at: frameSeconds, worstMilliseconds: worst,
                 stage: stage))
             sessionStallCount += 1
+            if debugTrace {
+                print(String(format: "link-health: episode #%d %@ "
+                    + "%.0f ms at frame-t %.3f (ordinal %d)",
+                    sessionStallCount, stage, worst, frameSeconds,
+                    ordinal))
+            }
         }
         sessionWorstMilliseconds = max(sessionWorstMilliseconds, worst)
     }
