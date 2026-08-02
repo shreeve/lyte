@@ -1067,8 +1067,15 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// their consumers and feeds the lifecycle machine's evidence
     /// clocks (every authenticated arrival — the file comment's
     /// receiver-side evidence rule).
+    ///
+    /// The arrival stamp is DELIBERATELY discarded (A-25): it may be
+    /// kernel wall-clock (SCM_TIMESTAMP) while every clock in here —
+    /// the echo responder's t2 included — lives on the session's
+    /// injected monotonic `now()`. Wiring it into t2 would mix clock
+    /// domains and corrupt every RTT sample; the discard binding makes
+    /// the compiler hold that line.
     public func handleDatagram(
-        _ outcome: IngestOutcome, arrivalMicroseconds: UInt64
+        _ outcome: IngestOutcome, arrivalMicroseconds _: UInt64
     ) {
         guard case .accepted(let envelope, let payload) = outcome else {
             return

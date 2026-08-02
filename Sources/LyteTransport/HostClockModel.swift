@@ -130,14 +130,19 @@ public final class HostClockModel: @unchecked Sendable {
         let accepted = samples.filter {
             $0.rttMicroseconds <= minRtt &+ config.rttGateMicroseconds
         }
-        let anchor = accepted.max {
+        let anchorSample = accepted.max {
             $0.measuredAt.microseconds < $1.measuredAt.microseconds
-        }!.measuredAt
+        }!
+        let anchor = anchorSample.measuredAt
 
-        // Center the regression at the anchor (x) and the newest accepted
-        // offset (y): offsets are ~10¹¹ µs when boot epochs differ, and
-        // centering keeps every Double exact.
-        let offset0 = accepted.last!.offsetMicroseconds
+        // Center the regression at the anchor's x AND the anchor's y —
+        // the SAME sample for both (A-27: `.last` paired a different
+        // sample's offset whenever ingest arrived out of order; the
+        // centering constant cancels algebraically, but mismatched
+        // pairing made the float rounding ingest-order-dependent).
+        // Offsets are ~10¹¹ µs when boot epochs differ, and centering
+        // keeps every Double exact.
+        let offset0 = anchorSample.offsetMicroseconds
         let xs = accepted.map { Double($0.measuredAt.microseconds(since: anchor)) }
         let ys = accepted.map { Double($0.offsetMicroseconds &- offset0) }
         let n = Double(accepted.count)

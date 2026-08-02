@@ -163,6 +163,44 @@ final class HostClockModelTests: XCTestCase {
         XCTAssertEqual(Double(mapped.microseconds), 31_000_000, accuracy: 5)
     }
 
+    func testOutOfOrderIngestMatchesInOrderExactly() throws {
+        // A-27's pin: the anchor (max measuredAt) and the centering
+        // offset must come from the SAME sample regardless of ingest
+        // order — position-based pairing (`.last`) named a different
+        // sample under reordering. Same 50 ppm trace as above,
+        // ingested through a deterministic scramble: the fit must
+        // equal the in-order fit and still anchor at t = 30 s.
+        let base: Int64 = -129_894_000_000
+        let samples = (0..<31).map { i -> ClockSample in
+            let t = Double(i)
+            return sample(
+                seq: UInt32(i), atSeconds: t,
+                offset: base + Int64((50e-6 * t * 1_000_000).rounded()),
+                rtt: 6_000)
+        }
+
+        let inOrder = HostClockModel()
+        samples.forEach { inOrder.ingest($0) }
+
+        let scrambled = HostClockModel()
+        // Stride 12 is coprime to 31: every index once, far from sorted.
+        let order = (0..<31).map { ($0 * 12) % 31 }
+        XCTAssertEqual(Set(order).count, 31, "the scramble is a permutation")
+        order.forEach { scrambled.ingest(samples[$0]) }
+
+        let sorted = try XCTUnwrap(inOrder.estimate())
+        let shuffled = try XCTUnwrap(scrambled.estimate())
+        XCTAssertEqual(shuffled.offsetMicroseconds, sorted.offsetMicroseconds,
+                       "the fit must not depend on ingest order")
+        XCTAssertEqual(shuffled.skewPartsPerMillion,
+                       sorted.skewPartsPerMillion, accuracy: 0.01)
+        XCTAssertEqual(shuffled.acceptedSamples, sorted.acceptedSamples)
+        // The anchor is the newest SAMPLE, not the newest ARRIVAL:
+        // offset at t = 30 s is base + 1500 no matter what arrived last.
+        XCTAssertEqual(Double(shuffled.offsetMicroseconds),
+                       Double(base + 1_500), accuracy: 2)
+    }
+
     func testTooFewSamplesDegradeToOffsetOnly() throws {
         let model = HostClockModel(config: .init(minimumSamplesForSkew: 3))
         // Two skewed samples: a naive 2-point fit would chase them.

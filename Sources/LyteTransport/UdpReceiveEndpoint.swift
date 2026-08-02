@@ -38,9 +38,10 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
     private let crypto: TransportCrypto
     /// Per-datagram hook, with the same arrival stamp the demux got
     /// (kernel SCM_TIMESTAMP wall-clock µs when available, monotonic µs
-    /// otherwise). Consumers needing a monotonic instant (the beacon
-    /// echo's t2) take their own stamp — the hook runs inline on the
-    /// receive thread, so it is within microseconds of true arrival.
+    /// otherwise) — a MIXED clock domain, never safe in monotonic math
+    /// like RTT (A-25). Consumers needing a monotonic instant (the
+    /// beacon echo's t2) take their own stamp — the hook runs inline on
+    /// the receive thread, so it is within microseconds of true arrival.
     private let onDatagram: (@Sendable (IngestOutcome, _ arrivalMicroseconds: UInt64) -> Void)?
 
     /// Internal (not private) so the stop-order pin can observe that
