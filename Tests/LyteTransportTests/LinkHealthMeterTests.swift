@@ -15,14 +15,14 @@ final class LinkHealthMeterTests: XCTestCase {
                 ordinal: o, transitStretchMilliseconds: 0.5,
                 sourceGapMilliseconds: 16.7,
                 queueWaitMilliseconds: 0.05,
-                enqueueMilliseconds: 0.03, now: time)
+                enqueueMilliseconds: 0.03, frameSeconds: time)
         }
     }
 
     func testQuietLinkIsGoodAndBlamesNobody() {
         let meter = LinkHealthMeter()
         feedClean(meter, ordinals: 1..<120, at: 10)
-        let verdict = meter.assessment(now: 10)
+        let verdict = meter.assessment()
         XCTAssertEqual(verdict.level, .good)
         XCTAssertEqual(verdict.stallsPerMinute, 0)
         XCTAssertEqual(verdict.dominantStage, "none")
@@ -34,8 +34,8 @@ final class LinkHealthMeterTests: XCTestCase {
         meter.observe(
             ordinal: 60, transitStretchMilliseconds: 88,
             sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
-            enqueueMilliseconds: 0.03, now: 10)
-        let verdict = meter.assessment(now: 10)
+            enqueueMilliseconds: 0.03, frameSeconds: 10)
+        let verdict = meter.assessment()
         XCTAssertEqual(verdict.level, .degraded)
         XCTAssertEqual(verdict.worstStallMilliseconds, 88)
         XCTAssertEqual(verdict.dominantStage, "network")
@@ -48,8 +48,8 @@ final class LinkHealthMeterTests: XCTestCase {
         deep.observe(
             ordinal: 1, transitStretchMilliseconds: 115,
             sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
-            enqueueMilliseconds: 0.03, now: 5)
-        XCTAssertEqual(deep.assessment(now: 5).level, .poor)
+            enqueueMilliseconds: 0.03, frameSeconds: 5)
+        XCTAssertEqual(deep.assessment().level, .poor)
 
         // Frequent: three separated 30 ms stalls are poor too —
         // the 2026-08-01 Wi-Fi comb shape.
@@ -59,9 +59,9 @@ final class LinkHealthMeterTests: XCTestCase {
                 ordinal: UInt64(i + 1), transitStretchMilliseconds: 30,
                 sourceGapMilliseconds: 16.7,
                 queueWaitMilliseconds: 0.05,
-                enqueueMilliseconds: 0.03, now: t)
+                enqueueMilliseconds: 0.03, frameSeconds: t)
         }
-        let verdict = frequent.assessment(now: 30)
+        let verdict = frequent.assessment()
         XCTAssertEqual(verdict.level, .poor)
         XCTAssertEqual(verdict.stallsPerMinute, 3.0)
     }
@@ -77,9 +77,9 @@ final class LinkHealthMeterTests: XCTestCase {
                 sourceGapMilliseconds: 16.7,
                 queueWaitMilliseconds: 0.05,
                 enqueueMilliseconds: 0.03,
-                now: 10 + Double(i) * 0.02)
+                frameSeconds: 10 + Double(i) * 0.02)
         }
-        let verdict = meter.assessment(now: 10.1)
+        let verdict = meter.assessment()
         XCTAssertEqual(verdict.stallsPerMinute, 1.0)
         XCTAssertEqual(verdict.worstStallMilliseconds, 115)
         XCTAssertEqual(verdict.level, .poor)
@@ -90,9 +90,12 @@ final class LinkHealthMeterTests: XCTestCase {
         meter.observe(
             ordinal: 1, transitStretchMilliseconds: 90,
             sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
-            enqueueMilliseconds: 0.03, now: 10)
-        XCTAssertEqual(meter.assessment(now: 20).level, .degraded)
-        XCTAssertEqual(meter.assessment(now: 80).level, .good)
+            enqueueMilliseconds: 0.03, frameSeconds: 10)
+        XCTAssertEqual(meter.assessment().level, .degraded)
+        // The window ages on the FRAME clock — a later clean frame
+        // moves it past the stall.
+        feedClean(meter, ordinals: 2..<3, at: 80)
+        XCTAssertEqual(meter.assessment().level, .good)
     }
 
     func testStageAttributionPicksTheGuiltyParty() {
@@ -100,16 +103,16 @@ final class LinkHealthMeterTests: XCTestCase {
         meter.observe(
             ordinal: 1, transitStretchMilliseconds: 1,
             sourceGapMilliseconds: 120, queueWaitMilliseconds: 0.05,
-            enqueueMilliseconds: 0.03, now: 10)
-        XCTAssertEqual(meter.assessment(now: 10).dominantStage, "host")
+            enqueueMilliseconds: 0.03, frameSeconds: 10)
+        XCTAssertEqual(meter.assessment().dominantStage, "host")
 
         let renderer = LinkHealthMeter()
         renderer.observe(
             ordinal: 1, transitStretchMilliseconds: nil,
             sourceGapMilliseconds: nil, queueWaitMilliseconds: 9,
-            enqueueMilliseconds: 3, now: 10)
+            enqueueMilliseconds: 3, frameSeconds: 10)
         XCTAssertEqual(
-            renderer.assessment(now: 10).dominantStage, "renderer")
+            renderer.assessment().dominantStage, "renderer")
     }
 
     func testRecorderResetForgetsTheOldSession() {
@@ -117,15 +120,15 @@ final class LinkHealthMeterTests: XCTestCase {
         meter.observe(
             ordinal: 500, transitStretchMilliseconds: 115,
             sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
-            enqueueMilliseconds: 0.03, now: 10)
-        XCTAssertEqual(meter.assessment(now: 10).level, .poor)
+            enqueueMilliseconds: 0.03, frameSeconds: 10)
+        XCTAssertEqual(meter.assessment().level, .poor)
         // Reconnect: ordinals restart. The old session's stalls must
         // not haunt the new one.
         meter.observe(
             ordinal: 1, transitStretchMilliseconds: 0.5,
             sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
-            enqueueMilliseconds: 0.03, now: 11)
-        XCTAssertEqual(meter.assessment(now: 11).level, .good)
+            enqueueMilliseconds: 0.03, frameSeconds: 11)
+        XCTAssertEqual(meter.assessment().level, .good)
     }
 
     func testSessionBooksOutliveTheWindowAndDieWithTheSession() {
@@ -133,14 +136,16 @@ final class LinkHealthMeterTests: XCTestCase {
         meter.observe(
             ordinal: 1, transitStretchMilliseconds: 39,
             sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
-            enqueueMilliseconds: 0.03, now: 10)
+            enqueueMilliseconds: 0.03, frameSeconds: 10)
         meter.observe(
             ordinal: 2, transitStretchMilliseconds: 27,
             sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
-            enqueueMilliseconds: 0.03, now: 20)
-        // Two minutes later the window has forgotten both; the
-        // session books have not — "2 total, worst 39 ms" still true.
-        let verdict = meter.assessment(now: 140)
+            enqueueMilliseconds: 0.03, frameSeconds: 20)
+        // Two minutes of clean frames later the window has forgotten
+        // both; the session books have not — "2 total, worst 39 ms"
+        // still true.
+        feedClean(meter, ordinals: 3..<4, at: 140)
+        let verdict = meter.assessment()
         XCTAssertEqual(verdict.level, .good)
         XCTAssertEqual(verdict.sessionStallCount, 2)
         XCTAssertEqual(verdict.sessionWorstMilliseconds, 39)
@@ -148,8 +153,8 @@ final class LinkHealthMeterTests: XCTestCase {
         meter.observe(
             ordinal: 1, transitStretchMilliseconds: 0.5,
             sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
-            enqueueMilliseconds: 0.03, now: 150)
-        let fresh = meter.assessment(now: 150)
+            enqueueMilliseconds: 0.03, frameSeconds: 150)
+        let fresh = meter.assessment()
         XCTAssertEqual(fresh.sessionStallCount, 0)
         XCTAssertEqual(fresh.sessionWorstMilliseconds, 0)
     }
@@ -161,15 +166,15 @@ final class LinkHealthMeterTests: XCTestCase {
                 ordinal: 7, transitStretchMilliseconds: 80,
                 sourceGapMilliseconds: 16.7,
                 queueWaitMilliseconds: 0.05,
-                enqueueMilliseconds: 0.03, now: 10)
+                enqueueMilliseconds: 0.03, frameSeconds: 10)
         }
         // Re-fed frames (the 1 Hz scan overlaps the ring) count once.
-        XCTAssertEqual(meter.assessment(now: 10).stallsPerMinute, 1.0)
+        XCTAssertEqual(meter.assessment().stallsPerMinute, 1.0)
         // A later distinct stall past the coalesce window is a second.
         meter.observe(
             ordinal: 8, transitStretchMilliseconds: 80,
             sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
-            enqueueMilliseconds: 0.03, now: 12)
-        XCTAssertEqual(meter.assessment(now: 12).stallsPerMinute, 2.0)
+            enqueueMilliseconds: 0.03, frameSeconds: 12)
+        XCTAssertEqual(meter.assessment().stallsPerMinute, 2.0)
     }
 }

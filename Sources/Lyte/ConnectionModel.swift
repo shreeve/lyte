@@ -618,7 +618,6 @@ final class ConnectionModel {
     /// task loop): fold the recorder's ring — the meter's high-water
     /// mark skips frames already folded — and publish the verdict.
     func tickLinkHealth() {
-        let now = ProcessInfo.processInfo.systemUptime
         for f in videoFlightRecorder.recentFrames() {
             linkHealthMeter.observe(
                 ordinal: f.ordinal,
@@ -626,9 +625,9 @@ final class ConnectionModel {
                 sourceGapMilliseconds: f.sourceGapMilliseconds,
                 queueWaitMilliseconds: f.queueWaitMilliseconds,
                 enqueueMilliseconds: f.enqueueMilliseconds,
-                now: now)
+                frameSeconds: Double(f.hostMicroseconds) / 1_000_000)
         }
-        linkHealth = linkHealthMeter.assessment(now: now)
+        linkHealth = linkHealthMeter.assessment()
     }
 
     func disconnect() {
