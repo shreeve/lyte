@@ -9,6 +9,21 @@ struct LyteSettingsView: View {
     @AppStorage(ConnectionModel.playoutCushionKey)
     private var cushionMilliseconds = ConnectionModel.playoutCushionDefault
 
+    /// Stalls are time-based (the radio doesn't care about refresh
+    /// rate), so the KNOB stays in milliseconds — this readout just
+    /// translates it into frames at a 60 fps reference so the number
+    /// has a shape: 50 ms ≈ 3 frames.
+    private var cushionReadout: String {
+        guard cushionMilliseconds > 0 else { return "0 ms — cushion off" }
+        let frames = Double(cushionMilliseconds) * 60 / 1_000
+        let tenths = (frames * 10).rounded() / 10
+        let count = tenths == tenths.rounded()
+            ? String(Int(tenths))
+            : String(format: "%.1f", tenths)
+        let noun = tenths == 1 ? "frame" : "frames"
+        return "\(cushionMilliseconds) ms ≈ \(count) \(noun) at 60 fps"
+    }
+
     var body: some View {
         Form {
             Section {
@@ -26,7 +41,7 @@ struct LyteSettingsView: View {
                             step: 5
                         )
                         .frame(width: 220)
-                        Text("\(cushionMilliseconds) ms")
+                        Text(cushionReadout)
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
@@ -36,7 +51,9 @@ struct LyteSettingsView: View {
                     + "are actually measured and shrinks again on a "
                     + "clean link — this sets the ceiling. 50 ms rides "
                     + "out ordinary jitter; ~120 ms swallows a full "
-                    + "Wi-Fi scan blackout. Applies to new connections.")
+                    + "Wi-Fi scan blackout; 0 turns the cushion off "
+                    + "and frames show the instant they arrive. "
+                    + "Changes apply live, even mid-stream.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {
@@ -44,7 +61,9 @@ struct LyteSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 420)
+        // Grouped forms are list-backed and claim all the height they
+        // are offered; hug the single section instead.
+        .frame(width: 420, height: 240)
         .navigationTitle("Lyte Settings")
     }
 }

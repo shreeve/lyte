@@ -37,6 +37,9 @@ struct LyteApp: App {
         Settings {
             LyteSettingsView()
         }
+        // Without this the Settings scene opens at a stock height far
+        // taller than the one-section form needs.
+        .windowResizability(.contentSize)
     }
 }
 

@@ -47,7 +47,7 @@ public struct AdaptiveVideoPlayout: Sendable {
         public var shouldFlush: Bool
     }
 
-    public let config: Config
+    public private(set) var config: Config
     public private(set) var targetDelayMicroseconds: UInt64
     private var lastPathDelayMicroseconds: UInt64?
     private var lastSourceCaptureMicroseconds: UInt64?
@@ -69,6 +69,28 @@ public struct AdaptiveVideoPlayout: Sendable {
         precondition(config.shrinkCadenceFrames > 0)
         self.config = config
         self.targetDelayMicroseconds = config.initialDelayMicroseconds
+    }
+
+    /// Moves the cushion ceiling mid-flight (the Settings slider is
+    /// live). The floor and initial delay recompute from stock so a
+    /// ceiling below them drags them down and a later raise restores
+    /// them. Lowering clamps the learned delay immediately — the next
+    /// frame schedules tighter; raising only grants headroom (delay
+    /// still grows solely on measured lateness), so sliding up never
+    /// adds latency by itself.
+    public mutating func updateDelayCeiling(
+        maximumDelayMicroseconds cap: UInt64
+    ) {
+        let stock = Config()
+        config.maximumDelayMicroseconds = cap
+        config.minimumDelayMicroseconds =
+            min(stock.minimumDelayMicroseconds, cap)
+        config.initialDelayMicroseconds =
+            min(stock.initialDelayMicroseconds, cap)
+        targetDelayMicroseconds = min(
+            max(targetDelayMicroseconds,
+                config.minimumDelayMicroseconds),
+            cap)
     }
 
     public mutating func reset() {
@@ -269,6 +291,13 @@ public final class AdaptiveVideoPlayoutController: @unchecked Sendable {
 
     public func reset() {
         lock.lock(); policy.reset(); lock.unlock()
+    }
+
+    public func updateDelayCeiling(maximumDelayMicroseconds: UInt64) {
+        lock.lock()
+        policy.updateDelayCeiling(
+            maximumDelayMicroseconds: maximumDelayMicroseconds)
+        lock.unlock()
     }
 
     public func noteRandomAccessEnqueued() {
