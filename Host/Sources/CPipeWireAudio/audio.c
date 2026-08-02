@@ -6,6 +6,7 @@
 #include <spa/utils/dict.h>
 
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,8 +46,10 @@ struct lyte_pw_audio {
     int have_format;
     uint64_t total_frames; /* fallback clock if pw_time is not ready yet */
 
-    /* 0 = quit requested, 1 = timeout, -1 = error */
-    int exit_reason;
+    /* 0 = quit requested, 1 = timeout, -1 = error. Atomic: quit()
+       stores from the session thread while the loop thread writes
+       error/timeout verdicts (A-24). */
+    _Atomic int exit_reason;
     char error[256];
 
     /* --- hostMuted (virtual sink) state --- */
@@ -111,14 +114,43 @@ static const struct pw_core_events core_events = {
     .error = on_core_error,
 };
 
+/* A wedged server must not hang setup or restore (A-19: exit used to
+   block forever with the desktop's default sink still pointed at
+   "Lyte Audio"). Generous for a local-socket sync; the next-start
+   sweep backstops an abandoned restore. */
+#define ROUNDTRIP_TIMEOUT_SEC 2
+
+static void on_roundtrip_timeout(void *data, uint64_t expirations)
+{
+    struct lyte_pw_audio *a = data;
+    (void)expirations;
+    if (!a->sync_pending)
+        return;
+    a->sync_pending = 0;
+    snprintf(a->error, sizeof(a->error),
+             "pipewire roundtrip timed out (%ds)", ROUNDTRIP_TIMEOUT_SEC);
+    a->exit_reason = -1;
+    pw_main_loop_quit(a->loop);
+}
+
 /* One server roundtrip: everything we asked for before the sync is
    processed (and its events delivered) before this returns. Returns
-   0, or -1 when the core reported an error mid-trip. */
+   0, or -1 when the core reported an error mid-trip or the guard
+   timer expired. */
 static int roundtrip(struct lyte_pw_audio *a)
 {
+    struct pw_loop *loop = pw_main_loop_get_loop(a->loop);
+    struct spa_source *guard =
+        pw_loop_add_timer(loop, on_roundtrip_timeout, a);
+    if (guard) {
+        struct timespec value = { .tv_sec = ROUNDTRIP_TIMEOUT_SEC };
+        pw_loop_update_timer(loop, guard, &value, NULL, false);
+    }
     a->sync_pending = 1;
     a->sync_seq = pw_core_sync(a->core, PW_ID_CORE, 0);
     pw_main_loop_run(a->loop);
+    if (guard)
+        pw_loop_destroy_source(loop, guard);
     return a->exit_reason == -1 ? -1 : 0;
 }
 
@@ -499,7 +531,13 @@ int lyte_pw_audio_run(lyte_pw_audio *a, double timeout_sec,
 
 void lyte_pw_audio_quit(lyte_pw_audio *a)
 {
-    a->exit_reason = 0;
+    /* Cross-thread stop request. An error verdict already recorded by
+       the loop thread must survive the quit — the run-error line is
+       the operator's only witness (A-24). */
+    int cur = atomic_load(&a->exit_reason);
+    while (cur != -1 &&
+           !atomic_compare_exchange_weak(&a->exit_reason, &cur, 0)) {
+    }
     pw_main_loop_quit(a->loop);
 }
 
