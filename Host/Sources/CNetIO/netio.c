@@ -389,19 +389,7 @@ int lyte_set_dumpable(void) {
     return prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
 }
 
-#include <linux/capability.h>
-#include <sys/syscall.h>
+/* Moved here from the demolished CHevcEncode leaf (E5): prints must
+ * land live through an ssh pipe on every binary. */
+void lyte_stdout_linebuf(void) { setvbuf(stdout, NULL, _IOLBF, 0); }
 
-/* Empties effective/permitted/inheritable. The kernel's ptrace guard
- * denies /proc/<pid> reads to any peer whose caps are not a superset
- * of ours — with an empty permitted set every same-uid peer (portal
- * daemons included) passes that test again. Raw syscall: libcap is a
- * dependency this file refuses to grow. */
-int lyte_drop_all_caps(void) {
-    struct __user_cap_header_struct hdr;
-    struct __user_cap_data_struct data[2];
-    memset(&hdr, 0, sizeof hdr);
-    memset(data, 0, sizeof data);
-    hdr.version = _LINUX_CAPABILITY_VERSION_3;
-    return (int)syscall(SYS_capset, &hdr, data);
-}

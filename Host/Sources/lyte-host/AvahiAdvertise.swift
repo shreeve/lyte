@@ -1,8 +1,8 @@
 // HS-10: LAN discovery — the host advertises `_lyte._udp` through the
-// Avahi daemon's D-Bus API, on the system bus but over the exact same
-// libdbus plumbing PortalScreenCast drives on the session bus. No system
-// library beyond CDBus is needed: Avahi's daemon owns the mDNS socket,
-// we only file a service registration with it.
+// Avahi daemon's D-Bus API, on the system bus over the house libdbus
+// plumbing (DBus.swift). No system library beyond CDBus is needed:
+// Avahi's daemon owns the mDNS socket, we only file a service
+// registration with it.
 //
 // TXT design (transport pillar §4: "host identity key hash, protocol
 // versions, and port"): the port rides the SRV record, so TXT carries

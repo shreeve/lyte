@@ -852,8 +852,8 @@ final class SessionWire {
 
     /// HS-20: arm the encoder-VBV policy once the encoder's opening
     /// rate-control posture is known (main calls this right after the
-    /// session comes up; the policy's baseline mirrors what
-    /// lyte_hevc_enc_new configured).
+    /// session comes up; the policy's baseline mirrors the native
+    /// seat's opening posture).
     func armEncoderVbv(_ config: EncoderVbvConfig) {
         lock.lock()
         defer { lock.unlock() }

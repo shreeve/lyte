@@ -1,15 +1,16 @@
-// lyte-host capture spike (H0a slice 1): portal ScreenCast → PipeWire frames
-// → NVENC HEVC (libavcodec leaf) → Annex-B file. HS-5 added the wire mode;
-// HS-7 turns it into a real session: `--wire-out HOST:PORT` (or
-// `--wire-listen PORT`) runs HostWire.Session — Noise IK responder
-// handshake against a connecting client (default) or the `--insecure`
-// CP-3 passthrough — then capture → encode → VideoChannel → seal → Pacer
-// → CNetIO, with 1 Hz beacons, conn-id TLVs, and inbound handling
-// (echoes, IDR requests, path challenges) on the same loop.
+// lyte-host: the direct eye (KMS doorbell + EGL blit + native VAAPI
+// encode — HostEye) → Annex-B file, or the Lyte-UDP session (HS-7):
+// `--wire-out HOST:PORT` (or `--wire-listen PORT`) runs
+// HostWire.Session — Noise IK responder handshake against a connecting
+// client (default) or the `--insecure` CP-3 passthrough — then capture
+// → encode → VideoChannel → seal → Pacer → CNetIO, with 1 Hz beacons,
+// conn-id TLVs, and inbound handling (echoes, IDR requests, path
+// challenges) on the same loop.
+// E5: the portal/mutter ScreenCast backends, PipeWire video, and the
+// libav encoder seat are demolished — the direct eye is the only
+// capture organ, and every muscle above the drivers is ours.
 
-import CHevcEncode
 import CNetIO
-import CPipeWireCapture
 import Foundation
 import HostCore
 import HostWire
@@ -17,29 +18,14 @@ import LyteWire
 
 // MARK: - Options
 
-enum Backend: String {
-    case portal
-    case mutter
-    /// E1: the direct eye — KMS doorbell + EGL blit + hevc_vaapi
-    /// (docs/20260801-direct-eye-plan.md). Needs CAP_SYS_ADMIN.
-    case direct
-}
-
 struct Options {
     var outputPath = "/tmp/lyte-h0a.hevc"
     var seconds = 5.0
-    var bitrate: Int64 = 10_000_000
-    /// True when --bitrate-mbps was given: in session mode an
-    /// unspecified encoder recipe PAIRS to the wire rate (HS-23/R2 —
-    /// one knob moves both unless the operator splits them).
-    var bitrateExplicit = false
     var fps: Int32 = 60
-    var backend: Backend = .portal
-    /// Debug-only capture replacement. It bypasses PipeWire/Mutter only;
-    /// encoder, session, packetizer, crypto, sockets, and client stay real.
-    var syntheticMotion: (width: UInt32, height: UInt32)?
-    var connector = ""
-    var idleFloor = true
+    /// Accepted-and-ignored since E5: the portal-era quality-ratchet
+    /// prototype died with its backend. The flag survives parsing so
+    /// standing loop scripts keep working; ratchet-style refinement on
+    /// the direct leg is the filed follow-up.
     var ratchet = false
     /// HS-5/HS-7: run a session to this peer instead of writing the file.
     var wireOut: (host: String, port: UInt16)?
@@ -111,13 +97,9 @@ struct Options {
     var cookieEnter = 20
     var cookieExit = 5
     /// HS-22 isolation lever: false = never arm the EncoderVbvPolicy —
-    /// the encoder keeps its opening recipe for the whole run (the
+    /// the encoder keeps its opening posture for the whole run (the
     /// pre-HS-20 posture, everything else identical). Debug only.
     var vbvReconfigure = true
-    /// HS-24: the NVENC recipe. The shipped posture is
-    /// EncoderRecipe.sessionDefault (test-pinned in HostCore); the
-    /// --enc-* knobs exist for A/B ladder legs, one flag per leg.
-    var encoderRecipe = EncoderRecipe.sessionDefault
 
     static func parse(_ args: [String]) throws -> Options {
         var opts = Options()
@@ -134,19 +116,20 @@ struct Options {
                     throw HostError("--seconds needs a positive number")
                 }
                 opts.seconds = v
-            case "--bitrate-mbps":
-                i += 1
-                guard i < args.count, let v = Double(args[i]), v > 0 else {
-                    throw HostError("--bitrate-mbps needs a positive number")
-                }
-                opts.bitrate = Int64(v * 1_000_000)
-                opts.bitrateExplicit = true
             case "--backend":
                 i += 1
-                guard i < args.count, let b = Backend(rawValue: args[i]) else {
-                    throw HostError("--backend must be 'portal', 'mutter', or 'direct'")
+                // E5: the portal and mutter ScreenCast backends are
+                // demolished — the direct eye is the only capture
+                // organ. The flag survives as a no-op so holds/scripts
+                // keep working; asking for a dead backend fails loudly.
+                guard i < args.count, args[i] == "direct" else {
+                    let asked = i < args.count ? args[i] : "(missing)"
+                    throw HostError("--backend \(asked): the portal and "
+                        + "mutter ScreenCast backends were demolished "
+                        + "after first-light — the direct eye is the "
+                        + "only backend (--backend direct is an "
+                        + "accepted no-op)")
                 }
-                opts.backend = b
             case "--encoder":
                 i += 1
                 // The libav seat was demolished after first-light:
@@ -159,27 +142,6 @@ struct Options {
                         + "is the direct eye's only encoder "
                         + "(--encoder native is an accepted no-op)")
                 }
-            case "--synthetic-motion":
-                i += 1
-                guard i < args.count else {
-                    throw HostError("--synthetic-motion needs WIDTHxHEIGHT")
-                }
-                let dimensions = args[i].split(separator: "x")
-                guard dimensions.count == 2,
-                      let width = UInt32(dimensions[0]),
-                      let height = UInt32(dimensions[1]),
-                      width >= 640, height >= 360
-                else {
-                    throw HostError(
-                        "--synthetic-motion needs WIDTHxHEIGHT (minimum 640x360)")
-                }
-                opts.syntheticMotion = (width, height)
-            case "--connector":
-                i += 1
-                guard i < args.count else { throw HostError("--connector needs a name") }
-                opts.connector = args[i]
-            case "--no-idle-floor":
-                opts.idleFloor = false
             case "--ratchet":
                 opts.ratchet = true
             case "--wire-out":
@@ -274,35 +236,6 @@ struct Options {
                 opts.cookieExit = v
             case "--no-vbv-reconfigure":
                 opts.vbvReconfigure = false
-            case "--enc-preset":
-                i += 1
-                guard i < args.count else {
-                    throw HostError("--enc-preset needs p1…p7")
-                }
-                opts.encoderRecipe.preset = args[i]
-            case "--enc-tune":
-                i += 1
-                guard i < args.count else {
-                    throw HostError("--enc-tune needs ull or ll")
-                }
-                opts.encoderRecipe.tune = args[i]
-            case "--enc-multipass":
-                i += 1
-                guard i < args.count else {
-                    throw HostError(
-                        "--enc-multipass needs disabled, qres, or fullres")
-                }
-                opts.encoderRecipe.multipass = args[i]
-            case "--enc-spatial-aq":
-                opts.encoderRecipe.spatialAQ = true
-            case "--enc-temporal-aq":
-                opts.encoderRecipe.temporalAQ = true
-            case "--enc-aq-strength":
-                i += 1
-                guard i < args.count, let v = Int(args[i]) else {
-                    throw HostError("--enc-aq-strength needs 1…15")
-                }
-                opts.encoderRecipe.aqStrength = v
             case "--audio-bitrate-kbps":
                 i += 1
                 guard i < args.count, let v = Int32(args[i]), v > 0 else {
@@ -312,39 +245,23 @@ struct Options {
                 opts.audioBitrate = v * 1_000
             case "--help", "-h":
                 print("""
-                usage: lyte-host [--out PATH] [--seconds N] [--bitrate-mbps N]
-                                 [--backend portal|mutter] [--connector NAME]
-                                 [--synthetic-motion WIDTHxHEIGHT]
-                                 [--no-idle-floor] [--ratchet]
+                usage: lyte-host [--out PATH] [--seconds N]
                                  [--wire-out HOST:PORT] [--wire-rate-mbps N]
-                Captures the desktop and writes Annex-B HEVC (hevc_nvenc) to
-                PATH (default /tmp/lyte-h0a.hevc).
-                  --backend portal  xdg-desktop-portal ScreenCast (primary;
-                                    one-time on-screen consent on first run)
-                  --backend direct  the direct eye: KMS doorbell + EGL
-                                    blit + VAAPI encode on the iGPU — no
-                                    portal, no PipeWire video, no Mutter
-                                    (needs CAP_SYS_ADMIN)
+                Captures the desktop with the direct eye (KMS doorbell +
+                EGL blit, needs CAP_SYS_ADMIN) and encodes native VAAPI
+                HEVC — to Annex-B PATH (default /tmp/lyte-h0a.hevc) or a
+                Lyte-UDP session.
+                  --backend direct  accepted no-op: the direct eye is the
+                                    only backend (portal and mutter were
+                                    demolished after first-light)
                   --encoder native  accepted no-op: the native VAAPI
                                     seat is the direct eye's only
                                     encoder (the libav seat was
                                     demolished after first-light)
-                  --backend mutter  org.gnome.Mutter.ScreenCast (no dialog;
-                                    spike fallback for headless/ssh runs)
-                  --synthetic-motion WIDTHxHEIGHT
-                                    DEBUG ONLY: deterministic 60 Hz BGRX at
-                                    the capture/encoder seam; requires
-                                    LYTE_ALLOW_SYNTHETIC_CAPTURE=1
-                  --connector NAME  monitor connector for the mutter backend
-                                    (e.g. DP-1); empty records the primary
-                  --no-idle-floor   disable the steady-rate supply (encode
-                                    only damage-driven frames; debugging aid)
-                  --ratchet         quality-ratchet prototype: capped-CQ VBR
-                                    instead of CBR; after 250ms of damage
-                                    quiet, re-encode the retained frame at a
-                                    fraction of fps until quality converges
-                                    at the visually-lossless floor, then go
-                                    silent (replaces the steady idle floor)
+                  --ratchet         accepted-and-ignored: the portal-era
+                                    ratchet prototype died in the E5
+                                    demolition (direct-leg quality
+                                    refinement is the filed follow-up)
                   --wire-out H:P    session mode: Noise IK handshake with
                                     the client at HOST:PORT, then sealed
                                     Lyte-UDP shards (packetizer + FEC +
@@ -424,22 +341,7 @@ struct Options {
                                     encoder's rate control from the
                                     estimator's ceiling (HS-22's
                                     isolation lever — the opening
-                                    recipe rides the whole run)
-                  --enc-preset pN   NVENC preset override (p1…p7) for
-                                    an A/B ladder leg; the shipped
-                                    recipe is HostCore's test-pinned
-                                    EncoderRecipe.sessionDefault
-                  --enc-tune T      NVENC tuning override: ull or ll
-                  --enc-multipass M rate-control passes: disabled,
-                                    qres, or fullres
-                  --enc-spatial-aq  enable spatial adaptive quantization
-                  --enc-temporal-aq enable temporal AQ (expected to be
-                                    rejected at open: it needs
-                                    lookahead, which the latency frame
-                                    forbids)
-                  --enc-aq-strength N
-                                    spatial-AQ strength 1…15
-                                    (default: nvenc's 8)
+                                    posture rides the whole run)
                   --host-audio MODE audible (default) keeps the host's
                                     speakers playing (default-sink
                                     monitor capture); muted routes the
@@ -451,7 +353,6 @@ struct Options {
                                     next start)
 
                 subcommands: lyte-host sniff --port PORT  (header dissector)
-                             lyte-host rd-spike …         (CP-5 input probe)
                              lyte-host advertise …        (HS-10 discovery)
                 """)
                 exit(0)
@@ -460,961 +361,7 @@ struct Options {
             }
             i += 1
         }
-        do {
-            _ = try opts.encoderRecipe.validated()
-        } catch let knob as EncoderRecipe.KnobError {
-            switch knob {
-            case .preset(let v):
-                throw HostError("--enc-preset must be p1…p7 (got \(v))")
-            case .tune(let v):
-                throw HostError("--enc-tune must be ull or ll (got \(v))")
-            case .multipass(let v):
-                throw HostError("--enc-multipass must be disabled, qres, "
-                    + "or fullres (got \(v))")
-            case .aqStrength(let v):
-                throw HostError("--enc-aq-strength must be 1…15 (got \(v))")
-            // No CLI flag reaches these three — the chroma knobs are
-            // negotiated (V-4), not operator-tunable; a hit here is a
-            // recipe-authoring bug, named plainly.
-            case .profile(let v):
-                throw HostError("recipe profile must be '' or rext (got \(v))")
-            case .rgbMode(let v):
-                throw HostError("recipe rgb-mode must be '' or yuv444 "
-                    + "(got \(v))")
-            case .ratchetFloorQP(let v):
-                throw HostError("recipe ratchet floor must be 1…51 (got \(v))")
-            }
-        }
         return opts
-    }
-}
-
-// MARK: - Capture → encode sink
-
-final class Sink {
-    let opts: Options
-    var capture: OpaquePointer?
-    var encoder: OpaquePointer?
-    /// Exactly one of these is the packet destination: the Annex-B file
-    /// (H0a spike) or the Lyte-UDP session leg (HS-7 `--wire-out`).
-    var file: UnsafeMutablePointer<FILE>?
-    var wire: SessionWire?
-    private let syntheticTrace: FileHandle? = {
-        guard let path = ProcessInfo.processInfo.environment[
-            "LYTE_SYNTHETIC_TRACE_JSONL"] else { return nil }
-        _ = FileManager.default.createFile(atPath: path, contents: nil)
-        return FileHandle(forWritingAtPath: path)
-    }()
-    private let markerWitness: FileHandle? = {
-        guard let path = ProcessInfo.processInfo.environment[
-            "LYTE_MARKER_WITNESS_JSONL"] else { return nil }
-        _ = FileManager.default.createFile(atPath: path, contents: nil)
-        return FileHandle(forWritingAtPath: path)
-    }()
-    private var markerWitnessFrames = 0
-
-    var framesIn = 0
-    var damageFrames = 0
-    var repeatedFrames = 0
-    var packetsOut = 0
-    var bytesOut = 0
-    var keyframes = 0
-    var firstFrameAt: Double?
-    var lastError: String?
-    var firstPacket: [UInt8] = []
-    var negotiated: (width: UInt32, height: UInt32, format: String)?
-
-    // Idle-floor state. On a tick with no fresh frame since the previous
-    // tick, the last frame is re-encoded as an ordinary P-frame — via
-    // lyte_hevc_enc_resend, which reuses the pixels the encoder's own
-    // AVFrame retained from the last send (no per-damage-frame copy of
-    // the ~full capture buffer). lastFrame survives only for LYTE_DUMP_RAW,
-    // which wants the raw pixels at exit. Ticks and frame callbacks share
-    // the PipeWire loop thread, so no locking is needed.
-    let wantsRawDump =
-        ProcessInfo.processInfo.environment["LYTE_DUMP_RAW"] != nil
-    var lastFrame: [UInt8] = []
-    var lastStride: Int32 = 0
-    var encodedSinceTick = false
-
-    // Capture-timestamp plumbing (HS-5): the graph-clock µs of the frame
-    // an encode call is about to consume; onPacket forwards it into the
-    // envelope (encode is synchronous — NVENC runs zero-delay, 1-in-1-out).
-    // A repeated/ratcheted frame carries the RETAINED frame's stamp: the
-    // timestamp says when the pixels were captured, not when they were
-    // re-encoded.
-    var pendingCaptureUs: UInt64 = 0
-    var lastFrameGraphUs: UInt64 = 0
-    /// HS-18: the SIGINT/SIGTERM notice printed once.
-    var terminationNoted = false
-
-    // Quality-ratchet prototype (--ratchet). The encoder runs capped-CQ VBR
-    // with qmin pinned at the floor; each re-encode of the retained frame
-    // lets nvenc walk the frame QP one rung down, so the ladder emerges from
-    // rate control — Swift only decides when to feed passes and when to stop.
-    enum Ratchet {
-        // The floor QP itself lives on the EncoderRecipe (V-4: the
-        // Good tier ships 12 — spec §3's visually-lossless target —
-        // and the Best tier carries its own); the Sink reads it off
-        // the recipe the negotiated posture chose.
-        // A fresh callback already suppresses the tick that shares its loop
-        // turn (`encodedSinceTick`). Start refinement on the next idle tick:
-        // another damage callback resets the episode before it can continue,
-        // while a genuine one-frame wake gets the full 60-pass first second.
-        static let settle = 0.0
-        // Refinements run at every ratchet timer tick. The matched 2048x1280
-        // Best walk needs ~50 passes / ~3 MB. The ratchet timer is armed at
-        // 2× capture cadence below: one five-run repeatability leg proved a
-        // nominal 60 Hz timer could leave only 23 passes decoded at the first
-        // observation after portal startup. Encoder capacity and the fixed
-        // total wire spend both remain inside the measured posture.
-        static let paceDivisor = 1
-    }
-    var lastDamageAt: Double?
-    var ratchetTriggeredAt: Double?
-    var ratchetConverged = false
-    var ratchetTickCount = 0
-    var ratchetStep = 0
-    var ratchetConvergence: QualityRatchetConvergence
-    var ratchetEpisodeBytes = 0
-    var ratchetFrames = 0
-    var ratchetBytes = 0
-
-    // Most recent packet's stats, recorded by onPacket for the ratchet pass
-    // that synchronously produced it.
-    var lastPacketBytes = 0
-    var lastPacketQP = -1
-    // HS-20: encoder-VBV reconfigures applied to the leaf, and the
-    // rolling frame-size books (5 s windows, session mode only) — the
-    // live gate's before/during/after percentile evidence that a rate
-    // drop actually shrinks emitted frames.
-    var encoderReconfigures = 0
-    var frameWindowSizes: [Int] = []
-    var frameWindowStartedAt: Double?
-    static let frameWindowSeconds = 5.0
-    // HS-22 quality books: one line per second of session-mode
-    // encoding — nvenc's frame-average QP (the packet's quality-stats
-    // side data, already delivered per packet: the cheapest correct
-    // source), emitted frame-size percentiles, the encoder's CURRENT
-    // rate-control posture vs its opening recipe, and the live
-    // ceiling/pacer pair. The line that tells "the encoder is being
-    // squeezed on a clean path" from "the estimator is holding low".
-    var lastAppliedDirective: EncoderRateDirective?
-    var qualityWindowQPs: [Int] = []
-    var qualityWindowSizes: [Int] = []
-    var qualityWindowStartedAt: Double?
-    static let qualityWindowSeconds = 1.0
-    // The fps-ceiling stage books (Q-1's red row): where each frame
-    // period actually went, in µs — the capture inter-arrival gap,
-    // the synchronous NVENC encode, the packetize+FEC+seal ingest,
-    // and the pacer-drain wait — plus capture frames the backpressure
-    // gate skipped. Session mode only; one `stages:` line per ~5 s.
-    var stageGapUs: [UInt64] = []
-    var stageEncodeUs: [UInt64] = []
-    var stageIngestUs: [UInt64] = []
-    var stageDrainUs: [UInt64] = []
-    var stageWindowStartedAt: Double?
-    var lastOnFrameAt: Double?
-    /// Capture-starvation tripwire. Only pointer motion is a structural
-    /// damage witness with EMBEDDED cursor mode: keys/buttons/scroll may
-    /// legitimately draw nothing. `pointerMotionsAtLastFrame` lets the
-    /// detector require a burst of motion injected since the last
-    /// capture callback instead of mistaking a damage-driven static desk
-    /// (often one compositor frame per second) for starvation.
-    var pointerMotionsAtLastFrame = 0
-    var starvationWarnedAt: Double?
-    var starvationEpisodes = 0
-    /// Nanoseconds onPacket spent inside wire.sendFrame during the
-    /// current encode call — the packet callback runs INSIDE
-    /// lyte_hevc_enc_send, so the encoder's own share is the
-    /// difference.
-    var sendFrameNanosThisEncode: UInt64 = 0
-    var throttledFrames = 0
-    static let stageWindowSeconds = 5.0
-    // HS-11: the most recent encoded packet's bytes, retained only in
-    // ratchet+session mode — on convergence this IS the final converged
-    // frame, re-sent on a reliable one-shot before the idle flip.
-    var lastEncodedPacket: [UInt8] = []
-
-    // HS-25: the opening VBV cap actually applied (nil = the recipe's
-    // own VBV already sat under the protectable ceiling), and the last
-    // unprotectable-drop count already logged.
-    var openingVbvCapBits: Int64?
-    var unprotectableLogged = 0
-
-    // The estimator-ramp hunt's cause-tagged IDR books (session mode):
-    // every keyframe the encoder emits is attributed to the demand(s)
-    // recorded at encode time — opening / the session's typed demands
-    // (client-request, wake, recovery, path-promotion, stale-nack,
-    // unprotectable) / a VBV reconfigure (under DISTRO libavcodec every
-    // rate move is a hidden NVENC reset + forced IDR — the HS-22
-    // correction; under the HS-33 vendored no-reset lib a rate move
-    // mints NO IDR and its tag goes to `reconfigureBooks.noReset`
-    // instead, never into this tally) / spontaneous (nothing armed —
-    // gop=INT_MAX makes that a finding, not noise). One line per IDR
-    // (they are sparse by design), tallied on the final stats block.
-    var pendingIdrCauses: [String] = []
-    var idrCauseTally: [String: Int] = [:]
-    // HS-33: per-directive cost books — IDR-minting vs no-reset,
-    // decided by observing whether the encode a directive rode into
-    // came back a keyframe (truth by observation, not configuration).
-    var reconfigureBooks = EncoderReconfigureBooks()
-    /// Whether the linked libavcodec applies rate moves without a
-    /// reset (lyte_hevc_noreset_enable at startup: the vendored lib
-    /// PROVES itself via its configuration marker + the env gate).
-    let noResetRateMoves: Bool
-
-    // V-4: the negotiated chroma posture (drives the encoder open), the
-    // recipe it chose (floor QP included — the ratchet reads it here),
-    // and the brief pre-agreement hold. The capability exchange rides
-    // the reliable stream right behind the handshake, so it is nearly
-    // always settled before the portal delivers a first frame; when it
-    // is not, encoding holds briefly rather than opening the wrong
-    // posture (chroma never moves mid-session — a wrong open would ride
-    // to teardown). A peer that never declares (the grandfathered
-    // pre-W7 posture) falls back to 4:2:0 at the deadline.
-    var activeChroma = ChromaPosture.yuv420
-    var activeRecipe: EncoderRecipe
-    var chromaHoldStartedAt: Double?
-    var framesHeldForChroma = 0
-    static let chromaHoldSeconds = 2.0
-
-    init(opts: Options, file: UnsafeMutablePointer<FILE>?, wire: SessionWire?,
-         noResetRateMoves: Bool = false) {
-        self.opts = opts
-        self.file = file
-        self.wire = wire
-        self.activeRecipe = opts.encoderRecipe
-        self.ratchetConvergence = QualityRatchetConvergence(
-            floorQP: opts.encoderRecipe.ratchetFloorQP)
-        self.noResetRateMoves = noResetRateMoves
-    }
-
-    static func pixFmtName(_ fmt: lyte_pixfmt) -> String? {
-        switch fmt {
-        case LYTE_PIXFMT_BGRX: return "bgr0"
-        case LYTE_PIXFMT_BGRA: return "bgra"
-        case LYTE_PIXFMT_RGBX: return "rgb0"
-        case LYTE_PIXFMT_RGBA: return "rgba"
-        default: return nil
-        }
-    }
-
-    func fail(_ message: String) {
-        lastError = message
-        if let capture { lyte_pw_capture_quit(capture) }
-    }
-
-    func traceSynthetic(_ record: String) {
-        guard let data = (record + "\n").data(using: .utf8) else { return }
-        syntheticTrace?.write(data)
-    }
-
-    private func witnessMarker(
-        data: UnsafePointer<UInt8>, stride: Int32,
-        width: UInt32, height: UInt32, graphUs: UInt64
-    ) {
-        guard let markerWitness, markerWitnessFrames < 300,
-              width >= 624, height >= 24, stride >= Int32(width * 4)
-        else { return }
-        let block = 24
-        func bright(_ blockIndex: Int) -> Bool {
-            let offset = (block / 2) * Int(stride)
-                + (blockIndex * block + block / 2) * 4
-            return Int(data[offset]) + Int(data[offset + 1])
-                + Int(data[offset + 2]) >= 384
-        }
-        var marker: UInt32 = 0
-        for bit in 0..<24 where bright(bit + 1) {
-            marker |= UInt32(1) << UInt32(bit)
-        }
-        let validSentinels = bright(0) && bright(25)
-        let line = "{\"frameID\":\(marker),\"graphMicroseconds\":"
-            + "\(graphUs),\"callbackNS\":\(monotonicNS()),"
-            + "\"sentinelsValid\":\(validSentinels),\"width\":\(width),"
-            + "\"height\":\(height),\"stride\":\(stride)}\n"
-        markerWitness.write(line.data(using: .utf8)!)
-        try? markerWitness.synchronize()
-        markerWitnessFrames += 1
-    }
-
-    func onFrame(data: UnsafePointer<UInt8>, size: UInt32, stride: Int32,
-                 width: UInt32, height: UInt32, fmt: lyte_pixfmt,
-                 graphUs: UInt64) {
-        if lastError != nil { return }
-
-        // The buffer-bounds law (v1-final analysis, finding 2): the
-        // encode memcpy reads (h-1)*stride + w*4 bytes of this buffer
-        // on trust, so no frame — including frame 0 — reaches an
-        // encode until its own declared extent fits inside its own
-        // declared size. All supported formats are 4 bytes/pixel.
-        if width == 0 || height == 0 || stride <= 0
-            || Int64(size) < (Int64(height) - 1) * Int64(stride)
-                + Int64(width) * 4 {
-            fail("capture frame geometry unsafe — \(width)x\(height), "
-                + "stride \(stride), \(size) bytes: the frame's extent "
-                + "does not fit its buffer; refusing to read past the "
-                + "mapped MemFd")
-            return
-        }
-        witnessMarker(
-            data: data, stride: stride, width: width,
-            height: height, graphUs: graphUs)
-
-        // The geometry pin (same finding): the encoder is opened once
-        // with frame-0 geometry and never revalidated, while PipeWire's
-        // negotiated range (1×1…8192×8192) explicitly permits mid-
-        // session renegotiation — a monitor-mode change used to send
-        // the new extent through the old encoder's memcpy (SIGSEGV or
-        // silent adjacent-heap encoding). A changed extent now ends
-        // the session cleanly with a typed teardown; the client's
-        // reconnect renegotiates at the new geometry.
-        if let neg = negotiated, width != neg.width || height != neg.height {
-            fail("capture geometry changed mid-session — "
-                + "\(neg.width)x\(neg.height) → \(width)x\(height): the "
-                + "encoder is opened for the original extent; ending "
-                + "the session (reconnect renegotiates)")
-            return
-        }
-
-        if encoder == nil {
-            guard let name = Sink.pixFmtName(fmt) else {
-                fail("PipeWire negotiated an unsupported pixel format "
-                    + "(spa value \(fmt.rawValue)); this slice supports "
-                    + "BGRx/BGRA/RGBx/RGBA")
-                return
-            }
-            // V-4: the encoder posture branches on the agreed chroma
-            // singleton (declaration-as-choice, owner decision 1).
-            // Agreement pending → hold encoding briefly instead of
-            // opening a posture the client didn't choose.
-            if let wire {
-                let agreed = wire.agreedChromaModes
-                if agreed == nil {
-                    let now = monotonicNow()
-                    let started = chromaHoldStartedAt ?? now
-                    chromaHoldStartedAt = started
-                    if now - started < Self.chromaHoldSeconds {
-                        framesHeldForChroma += 1
-                        return
-                    }
-                    print("chroma: no capability declaration after "
-                        + "\(Int(Self.chromaHoldSeconds)) s "
-                        + "(\(framesHeldForChroma) frames held) — "
-                        + "grandfathered peer, opening 4:2:0")
-                }
-                activeChroma = ChromaPosture.from(agreedChromaModes: agreed)
-            }
-            var recipe = opts.encoderRecipe
-            if activeChroma == .yuv444 {
-                recipe = recipe.chroma444()
-            }
-            activeRecipe = recipe
-            ratchetConvergence = QualityRatchetConvergence(
-                floorQP: recipe.ratchetFloorQP)
-            var err = [CChar](repeating: 0, count: 256)
-            let cq: Int32 = opts.ratchet ? Int32(recipe.ratchetFloorQP) : 0
-            guard let enc = lyte_hevc_enc_new(Int32(width), Int32(height), name,
-                                              opts.fps, opts.bitrate, cq,
-                                              recipe.preset, recipe.tune,
-                                              recipe.multipass,
-                                              recipe.spatialAQ ? 1 : 0,
-                                              recipe.temporalAQ ? 1 : 0,
-                                              Int32(recipe.aqStrength),
-                                              recipe.profile, recipe.rgbMode,
-                                              &err, err.count) else {
-                fail("encoder init failed: \(errString(err))")
-                return
-            }
-            encoder = enc
-            negotiated = (width, height, name)
-            wire?.noteMonitorExtent(width: width, height: height)
-            let rcDesc = opts.ratchet
-                ? "capped-CQ vbr cq=\(recipe.ratchetFloorQP), cap \(opts.bitrate / 1_000_000) Mbps"
-                : "cbr \(opts.bitrate / 1_000_000) Mbps"
-            let chromaDesc = activeChroma == .yuv444
-                ? "4:4:4 Rext rgb_mode (VUI 601-limited, signed truthfully)"
-                : "4:2:0"
-            print("capture: \(width)x\(height) \(name), stride \(stride) — "
-                + "encoding hevc_nvenc (\(recipe.summary), \(rcDesc), "
-                + "chroma \(chromaDesc))")
-
-            // HS-25: in session mode the opening posture itself must
-            // bound every frame to what ONE FEC group can protect (the
-            // GF(2⁸) 255-shard block — a 307 KB IDR at the 50 Mbps/p4
-            // recipe packetized to 279 data shards and killed the
-            // session at HEAD). Capped-CQ opens with NO VBV at all and
-            // CBR's single-frame VBV can exceed the block at high
-            // rates, so whenever the opening VBV is absent or larger
-            // than the worst-case protectable ceiling (lossy column,
-            // input stamp riding), impose exactly that ceiling. The
-            // wrapper folds it into the first send — which is the
-            // forced IDR frame 0 anyway, so the reconfigure costs
-            // nothing extra.
-            if let wire {
-                let capBits =
-                    Int64(wire.worstCaseProtectableFrameCeiling) * 8
-                let openingVbv: Int64? = opts.ratchet
-                    ? nil : Int64(opts.bitrate) / Int64(opts.fps)
-                if openingVbv == nil || openingVbv! > capBits {
-                    if lyte_hevc_enc_set_rate(enc, 0, opts.bitrate,
-                                              capBits,
-                                              &err, err.count) == 0 {
-                        openingVbvCapBits = capBits
-                        print("encoder: unprotectable-frame guard — "
-                            + "opening vbv capped at \(capBits / 8) B "
-                            + "(one FEC group's worst-case ceiling)")
-                    } else {
-                        print("encoder: unprotectable-frame guard vbv "
-                            + "cap REJECTED: \(errString(err)) — the "
-                            + "session-side drop guard still holds")
-                    }
-                }
-            }
-        }
-
-        let now = monotonicNow()
-        if firstFrameAt == nil { firstFrameAt = now }
-        if wire != nil {
-            if let last = lastOnFrameAt {
-                stageGapUs.append(UInt64(max(now - last, 0) * 1e6))
-            }
-            lastOnFrameAt = now
-            pointerMotionsAtLastFrame =
-                wire?.pointerMotionWitness.count ?? pointerMotionsAtLastFrame
-        }
-
-        // Hard queue-budget admission: skip BEFORE encode once the live
-        // queue has consumed its clean/impaired latency allowance.
-        // Session owns both numbers and fall purge uses the same budget,
-        // so a capacity cliff cannot leave one policy admitting while
-        // another policy preserves a stale tail.
-        if let wire {
-            let posture = wire.videoAdmissionPosture
-            if posture.backlogWireTimeNS >= posture.budgetNS {
-                throttledFrames += 1
-                return
-            }
-        }
-
-        if opts.idleFloor || opts.ratchet {
-            if wantsRawDump {
-                let count = Int(size)
-                if lastFrame.count != count {
-                    lastFrame = [UInt8](repeating: 0, count: count)
-                }
-                lastFrame.withUnsafeMutableBytes { dst in
-                    dst.copyMemory(
-                        from: UnsafeRawBufferPointer(start: data, count: count))
-                }
-                lastStride = stride
-            }
-            lastFrameGraphUs = graphUs
-        }
-        pendingCaptureUs = graphUs
-
-        // Fresh damage abandons any ratchet in progress; the episode restarts
-        // once damage goes quiet again.
-        lastDamageAt = now
-        ratchetTriggeredAt = nil
-        ratchetConverged = false
-        ratchetStep = 0
-        ratchetConvergence.reset()
-        ratchetEpisodeBytes = 0
-
-        // HS-11: fresh damage into the lifecycle machine BEFORE the
-        // encode — in IDLE this is the WAKE (mode=active + this frame
-        // owed as an IDR, which encode()'s forced-IDR poll consumes);
-        // in ACTIVE it aborts a pending idle flip.
-        wire?.noteDamage()
-
-        guard encode(data: data, stride: stride) else { return }
-        damageFrames += 1
-        encodedSinceTick = true
-
-        quitIfElapsed(now)
-    }
-
-    /// Idle-floor tick, on the PipeWire loop thread at the fps interval:
-    /// when no fresh frame was encoded since the previous tick, re-encode
-    /// the retained copy so output flows at a steady rate. In ratchet mode
-    /// the same tick instead drives quality-refinement passes. In session
-    /// mode the tick is also the between-frames service point — inbound
-    /// datagrams (echoes, IDR requests, path messages) and the 1 Hz
-    /// beacon timer run here, on the same thread as everything else.
-    func onTick() {
-        if lastError != nil { return }
-
-        // HS-18: an interrupted run (SIGINT/SIGTERM) exits through the
-        // same door as a completed one, so the audio-routing restore
-        // and the typed teardown both happen.
-        if lyteTerminationRequested != 0, let capture {
-            if !terminationNoted {
-                terminationNoted = true
-                print("session: termination signal — closing cleanly")
-            }
-            lyte_pw_capture_quit(capture)
-            return
-        }
-
-        wire?.service()
-        if syntheticTrace != nil, let wire {
-            for flight in wire.takeFrameTransmitTelemetry() {
-                traceSynthetic(
-                    "{\"type\":\"wire\",\"frameNumber\":"
-                    + "\(flight.frameNumber),\"captureMicroseconds\":"
-                    + "\(flight.captureTimestampMicroseconds),\"admittedNS\":"
-                    + "\(flight.admittedAtNS),\"firstTransmitNS\":"
-                    + "\(flight.firstTransmitAtNS ?? 0),\"lastTransmitNS\":"
-                    + "\(flight.lastTransmitAtNS ?? 0),\"encodedBytes\":"
-                    + "\(flight.encodedBytes),\"averageQP\":"
-                    + "\(flight.averageQP ?? -1),\"keyframe\":"
-                    + "\(flight.isKeyframe),\"queuedWireTimeNS\":"
-                    + "\(flight.queuedWireTimeBeforeAdmissionNS),\"purged\":"
-                    + "\(flight.purged)}")
-            }
-        }
-        flushFrameWindow(monotonicNow())
-        flushQualityWindow(monotonicNow())
-        flushStageWindow(monotonicNow())
-
-        // The session is over (peer gone, teardown, liveness): stop the
-        // capture loop cleanly — the HS-11 graceful exit.
-        if wire?.sessionEnded == true, let capture {
-            lyte_pw_capture_quit(capture)
-            return
-        }
-
-        let now = monotonicNow()
-        quitIfElapsed(now)
-        checkCaptureStarvation(now)
-
-        if encodedSinceTick {
-            encodedSinceTick = false
-            return
-        }
-        guard framesIn > 0 else { return } // nothing to repeat yet
-
-        if opts.ratchet {
-            ratchetTick(now)
-            return
-        }
-
-        pendingCaptureUs = lastFrameGraphUs
-        if encode(data: nil, stride: 0) { repeatedFrames += 1 }
-    }
-
-    /// One ratchet opportunity: after damage has been quiet for the settle
-    /// time, re-encode the retained frame at fps/paceDivisor. Each pass lets
-    /// capped-CQ rate control step the frame QP down; stop on convergence —
-    /// an ~all-skip pass, or byte-stable passes once the QP floor is reached.
-    /// After convergence: true silence until new damage.
-    private func ratchetTick(_ now: Double) {
-        guard !ratchetConverged else { return }
-        guard let quietSince = lastDamageAt,
-              now - quietSince >= Ratchet.settle else { return }
-
-        ratchetTickCount += 1
-        guard ratchetTickCount % Ratchet.paceDivisor == 0 else { return }
-
-        if ratchetTriggeredAt == nil { ratchetTriggeredAt = now }
-        pendingCaptureUs = lastFrameGraphUs
-        guard encode(data: nil, stride: 0) else { return }
-
-        ratchetStep += 1
-        ratchetFrames += 1
-        ratchetBytes += lastPacketBytes
-        ratchetEpisodeBytes += lastPacketBytes
-        let sinceTrigger = (now - ratchetTriggeredAt!) * 1000
-        print(String(format: "ratchet: step %2d  qp=%2d  bytes=%7d  t+%.0f ms",
-                     ratchetStep, lastPacketQP, lastPacketBytes, sinceTrigger))
-
-        ratchetConverged = ratchetConvergence.note(
-            bytes: lastPacketBytes,
-            averageQP: lastPacketQP)
-
-        if ratchetConverged {
-            print(String(format: "ratchet: converged after %d passes, "
-                + "%d bytes, %.0f ms — going silent", ratchetStep,
-                ratchetEpisodeBytes, sinceTrigger))
-            // HS-11: the all-skip stop is the machine's ratchetConverged
-            // input — the final converged frame rides a reliable
-            // one-shot, and its acknowledgment flips the mode to IDLE.
-            if let wire, !lastEncodedPacket.isEmpty {
-                wire.noteRatchetConverged(
-                    finalFrame: lastEncodedPacket,
-                    captureMicros: lastFrameGraphUs
-                )
-            }
-        }
-    }
-
-    /// Encodes one frame; pts advances monotonically per encoded frame.
-    /// Frame 0 is a forced IDR, and in session mode so is any frame the
-    /// session demands one for (HS-12 path promotion or a client 0x10 —
-    /// the takeFreshKeyframeRequest poll, consulted per encode).
-    /// `data == nil` re-encodes the retained frame inside the C leaf
-    /// (the encoder's AVFrame still holds the last-submitted pixels) —
-    /// the idle-floor repeat and ratchet passes pay no input copy. Callers
-    /// of the nil form must have encoded at least once (framesIn > 0).
-    private func encode(data: UnsafePointer<UInt8>?, stride: Int32) -> Bool {
-        var err = [CChar](repeating: 0, count: 256)
-        let user = Unmanaged.passUnretained(self).toOpaque()
-        let demand = wire?.takeForcedIdrDemand() ?? []
-        let forceIdr = framesIn == 0 || !demand.isEmpty
-        pendingIdrCauses = framesIn == 0 ? ["opening"] : []
-        pendingIdrCauses += demand.names
-        // HS-20: the estimator's ceiling into the encoder BEFORE this
-        // frame — the wrapper folds the changed rc fields into one
-        // NvEncReconfigureEncoder on the send below.
-        var appliedDirectiveKind: EncoderRateDirective.Kind?
-        if let directive = wire?.takeEncoderRateDirective() {
-            if lyte_hevc_enc_set_rate(
-                encoder,
-                Int64(directive.averageBitsPerSecond ?? 0),
-                Int64(directive.maxBitsPerSecond),
-                Int64(directive.vbvBits),
-                &err, err.count
-            ) == 0 {
-                encoderReconfigures += 1
-                appliedDirectiveKind = directive.kind
-                // The books' cause tag for the IDR this reconfigure is
-                // about to force through DISTRO libavcodec (nvenc
-                // resets on any rc delta) — the policy names its own
-                // move (HS-27): tighten / rung (a sustained loosening
-                // step) / restore (the recipe back). Under the HS-33
-                // no-reset lib the move mints NO IDR, so the tag never
-                // arms — it lands in reconfigureBooks.noReset after
-                // the send observes the outcome.
-                if !noResetRateMoves {
-                    switch directive.kind {
-                    case .tighten: pendingIdrCauses.append("vbv-tighten")
-                    case .loosen: pendingIdrCauses.append("vbv-rung")
-                    case .restore: pendingIdrCauses.append("vbv-restore")
-                    }
-                }
-                lastAppliedDirective = directive
-                let avg = directive.averageBitsPerSecond
-                    .map { "avg \($0 / 1_000) kbps, " } ?? ""
-                print("encoder: rate reconfigure"
-                    + (noResetRateMoves ? " (no-reset)" : "")
-                    + " — \(avg)max "
-                    + "\(directive.maxBitsPerSecond / 1_000) kbps, vbv "
-                    + "\(directive.vbvBits / 8) B (frame ceiling "
-                    + "\(directive.frameByteCeiling) B)")
-            } else {
-                print("encoder: rate reconfigure REJECTED: "
-                    + errString(err))
-            }
-        }
-        sendFrameNanosThisEncode = 0
-        let keyframesBeforeSend = keyframes
-        let encodeStart = monotonicNS()
-        let rc: Int32
-        if let data {
-            rc = lyte_hevc_enc_send(encoder, data, stride, Int64(framesIn),
-                                    forceIdr ? 1 : 0,
-                                    packetTrampoline, user, &err, err.count)
-        } else {
-            rc = lyte_hevc_enc_resend(encoder, Int64(framesIn),
-                                      forceIdr ? 1 : 0,
-                                      packetTrampoline, user, &err, err.count)
-        }
-        if rc == -2 { return false } // nothing retained — callers guard framesIn
-        if rc != 0 {
-            fail("encode failed at frame \(framesIn): \(errString(err))")
-            return false
-        }
-        if wire != nil {
-            // The packet callback (→ sendFrame) runs inside the send
-            // call; the encoder's own share is what remains.
-            let total = monotonicNS() - encodeStart
-            stageEncodeUs.append(
-                (total - min(sendFrameNanosThisEncode, total)) / 1_000)
-        }
-        if syntheticTrace != nil {
-            traceSynthetic(
-                "{\"type\":\"encode\",\"frameNumber\":\(framesIn),"
-                + "\"captureMicroseconds\":\(pendingCaptureUs),"
-                + "\"encodeStartNS\":\(encodeStart),"
-                + "\"encodeFinishedNS\":\(monotonicNS()),"
-                + "\"bytes\":\(lastPacketBytes),\"averageQP\":"
-                + "\(lastPacketQP),\"keyframe\":"
-                + "\(keyframes > keyframesBeforeSend)}")
-        }
-        // HS-33 books: the directive's observed cost. zerolatency means
-        // this frame's packet emerged inside the send above, so "did
-        // the reconfigure reset the encoder" is answerable RIGHT HERE:
-        // a keyframe = the distro wrapper's forced IDR (attributed via
-        // the cause tag armed above); a P-frame = the no-reset path
-        // rode. A demanded IDR (forceIdr) coinciding with a no-reset
-        // move stays the demand's IDR, not the reconfigure's.
-        if let kind = appliedDirectiveKind {
-            let mintedByReconfigure = noResetRateMoves
-                ? (keyframes > keyframesBeforeSend && !forceIdr)
-                : keyframes > keyframesBeforeSend
-            reconfigureBooks.note(kind, mintedIdr: mintedByReconfigure)
-            if noResetRateMoves && mintedByReconfigure {
-                // Should be structurally impossible (the spike measured
-                // zero across every move shape) — loud if it ever isn't.
-                print("encoder: WARNING — no-reset rate reconfigure "
-                    + "returned an IDR anyway (kind \(kind.rawValue)); "
-                    + "investigate before trusting the idr-books")
-            }
-        }
-        // Attribution done (zerolatency: the packet emerged inside the
-        // send above) — a cause never bleeds onto a later frame.
-        pendingIdrCauses.removeAll(keepingCapacity: true)
-        framesIn += 1
-        return true
-    }
-
-    /// HS-20 evidence books: every ~5 s of session-mode encoding, one
-    /// line of emitted frame-size percentiles next to the live ceiling
-    /// and pacer rate — the host-side proof that a rate drop shrinks
-    /// frames (and that a release lets them grow back).
-    private func flushFrameWindow(_ now: Double) {
-        guard let wire else { return }
-        guard let started = frameWindowStartedAt else {
-            frameWindowStartedAt = now
-            return
-        }
-        guard now - started >= Self.frameWindowSeconds else { return }
-        defer {
-            frameWindowSizes.removeAll(keepingCapacity: true)
-            frameWindowStartedAt = now
-        }
-        guard !frameWindowSizes.isEmpty else { return }
-        let sorted = frameWindowSizes.sorted()
-        func pct(_ q: Double) -> Int {
-            sorted[max(Int((q * Double(sorted.count)).rounded(.up)), 1) - 1]
-        }
-        print("frames: \(sorted.count) in \(Int(now - started)) s — "
-            + "p50 \(pct(0.5)) B, p95 \(pct(0.95)) B, max \(sorted.last!) B"
-            + " | ceiling \(wire.frameByteCeiling(fps: Int(opts.fps))) B, "
-            + "pacer \(wire.pacerRate / 1_000) kbps")
-    }
-
-    /// HS-22 quality books: every ~1 s of session-mode encoding, the
-    /// quality line — QP avg/max, frame-size percentiles, the
-    /// encoder's standing rate-control posture vs its opening recipe,
-    /// and the live ceiling + pacer rate. Skips windows that encoded
-    /// nothing (converged idle).
-    private func flushQualityWindow(_ now: Double) {
-        guard let wire else { return }
-        guard let started = qualityWindowStartedAt else {
-            qualityWindowStartedAt = now
-            return
-        }
-        guard now - started >= Self.qualityWindowSeconds else { return }
-        defer {
-            qualityWindowQPs.removeAll(keepingCapacity: true)
-            qualityWindowSizes.removeAll(keepingCapacity: true)
-            qualityWindowStartedAt = now
-        }
-        guard !qualityWindowSizes.isEmpty else { return }
-        let sorted = qualityWindowSizes.sorted()
-        func pct(_ q: Double) -> Int {
-            sorted[max(Int((q * Double(sorted.count)).rounded(.up)), 1) - 1]
-        }
-        let qp: String
-        if qualityWindowQPs.isEmpty {
-            qp = "—"
-        } else {
-            let avg = qualityWindowQPs.reduce(0, +) / qualityWindowQPs.count
-            qp = "avg \(avg) max \(qualityWindowQPs.max()!)"
-        }
-        let openingVbv = openingVbvCapBits
-            .map { "\($0 / 8) B (guard)" }
-            ?? (opts.ratchet
-                ? "none"
-                : "\(Int(opts.bitrate) / Int(opts.fps) / 8) B")
-        let opening = (opts.ratchet
-            ? "capped-cq cap" : "cbr")
-            + " \(opts.bitrate / 1_000) kbps vbv \(openingVbv)"
-        let posture: String
-        if let d = lastAppliedDirective {
-            let avg = d.averageBitsPerSecond
-                .map { "avg \($0 / 1_000) kbps " } ?? ""
-            posture = "applied \(avg)max \(d.maxBitsPerSecond / 1_000) "
-                + "kbps vbv \(d.vbvBits / 8) B (opening \(opening))"
-        } else {
-            posture = "opening \(opening)"
-        }
-        print("quality: \(sorted.count) fr — qp \(qp), "
-            + "p50 \(pct(0.5)) B p95 \(pct(0.95)) B | enc \(posture) | "
-            + "ceiling \(wire.frameByteCeiling(fps: Int(opts.fps))) B, "
-            + "pacer \(wire.pacerRate / 1_000) kbps")
-    }
-
-    /// The fps-ceiling stage books: one line per ~5 s of session-mode
-    /// encoding — µs percentiles of the capture inter-arrival gap and
-    /// the per-frame encode / ingest (packetize+FEC+seal) / pacer-drain
-    /// stages. This is the book that says where a 60 Hz frame period
-    /// went when the glass reads 48.
-    private func flushStageWindow(_ now: Double) {
-        guard wire != nil else { return }
-        guard let started = stageWindowStartedAt else {
-            stageWindowStartedAt = now
-            return
-        }
-        guard now - started >= Self.stageWindowSeconds else { return }
-        defer {
-            stageGapUs.removeAll(keepingCapacity: true)
-            stageEncodeUs.removeAll(keepingCapacity: true)
-            stageIngestUs.removeAll(keepingCapacity: true)
-            stageDrainUs.removeAll(keepingCapacity: true)
-            stageWindowStartedAt = now
-        }
-        guard !stageEncodeUs.isEmpty else { return }
-        func book(_ samples: [UInt64]) -> String {
-            let sorted = samples.sorted()
-            guard !sorted.isEmpty else { return "—" }
-            func pct(_ q: Double) -> Double {
-                Double(sorted[max(
-                    Int((q * Double(sorted.count)).rounded(.up)), 1) - 1])
-                    / 1_000
-            }
-            return String(format: "p50 %.1f p95 %.1f max %.1f",
-                          pct(0.5), pct(0.95), Double(sorted.last!) / 1_000)
-        }
-        print("stages: \(stageEncodeUs.count) fr — "
-            + "gap \(book(stageGapUs)) | encode \(book(stageEncodeUs)) | "
-            + "ingest \(book(stageIngestUs)) | drain \(book(stageDrainUs)) "
-            + "ms | throttled \(throttledFrames)")
-    }
-
-    private func quitIfElapsed(_ now: Double) {
-        if let start = firstFrameAt, now - start >= opts.seconds, let capture {
-            lyte_pw_capture_quit(capture)
-        }
-    }
-
-    /// Runtime capture tripwire. A damage-driven screencast is allowed
-    /// to sit silent indefinitely; generic input is not proof that pixels
-    /// changed. A burst of at least three newly injected pointer motions
-    /// is different: EMBEDDED cursor mode owes visible cursor damage.
-    /// The C-leaf counters distinguish "PipeWire stopped scheduling us"
-    /// from "callbacks arrived but buffers were empty" in one bounded
-    /// line, without restarting capture or manufacturing frames/IDRs.
-    private func checkCaptureStarvation(_ now: Double) {
-        guard let wire, wire.currentWireMode == .active,
-              let lastFrame = lastOnFrameAt, now - lastFrame > 0.5 else {
-            starvationWarnedAt = nil
-            return
-        }
-        let motion = wire.pointerMotionWitness
-        let motionsSinceFrame = motion.count - pointerMotionsAtLastFrame
-        guard motionsSinceFrame >= 3, motion.lastAtMicros != 0 else {
-            starvationWarnedAt = nil
-            return
-        }
-        let motionAge =
-            Double(monotonicMicros() &- motion.lastAtMicros) / 1e6
-        guard motionAge < 0.25 else { return }
-        if starvationWarnedAt == nil { starvationEpisodes += 1 }
-        if let warned = starvationWarnedAt, now - warned < 5 { return }
-        starvationWarnedAt = now
-        var pw = lyte_pw_capture_stats()
-        lyte_pw_capture_get_stats(capture, &pw)
-        let processAgeMS = pw.last_process_monotonic_ns == 0
-            ? -1
-            : Int((monotonicNS() &- pw.last_process_monotonic_ns)
-                / 1_000_000)
-        print(String(
-            format: "capture: STARVED — %d pointer motions since frame "
-                + "(last %.2f s ago), no frame for %.0f ms (episode %d); "
-                + "PipeWire state=%d process=%llu frames=%llu "
-                + "dequeue-empty=%llu buffer-empty=%llu process-age=%d ms",
-            motionsSinceFrame, motionAge, (now - lastFrame) * 1000,
-            starvationEpisodes, pw.stream_state, pw.process_callbacks,
-            pw.frames_delivered, pw.dequeue_empty, pw.buffer_empty,
-            processAgeMS))
-    }
-
-    func onPacket(data: UnsafePointer<UInt8>, size: Int, keyframe: Bool, avgQP: Int) {
-        if firstPacket.isEmpty {
-            firstPacket = Array(UnsafeBufferPointer(start: data, count: size))
-        }
-        if let wire {
-            let sendStart = monotonicNS()
-            do {
-                try wire.sendFrame(data: data, size: size,
-                                   isKeyframe: keyframe,
-                                   captureMicros: pendingCaptureUs)
-                let telemetryCauses = keyframe
-                    ? (pendingIdrCauses.isEmpty
-                        ? ["spontaneous"] : pendingIdrCauses)
-                    : []
-                wire.annotateLastVideoFrame(
-                    averageQP: avgQP >= 0 ? avgQP : nil,
-                    idrCauses: telemetryCauses
-                )
-            } catch {
-                fail("session send failed at packet \(packetsOut): \(error)")
-                return
-            }
-            sendFrameNanosThisEncode &+= monotonicNS() - sendStart
-            stageIngestUs.append(wire.lastFrameIngestNanos / 1_000)
-            stageDrainUs.append(wire.lastFrameDrainNanos / 1_000)
-            // HS-25: the session drops (never throws) a frame one FEC
-            // group cannot protect — loud in the log, invisible to the
-            // process lifetime. Should only fire if a frame slips past
-            // the opening VBV cap above.
-            let dropped = wire.videoFramesUnprotectable
-            if dropped > unprotectableLogged {
-                unprotectableLogged = dropped
-                print("video: packet \(packetsOut) UNPROTECTABLE "
-                    + "(\(size) B > ceiling "
-                    + "\(wire.protectableFrameCeiling) B) — frame "
-                    + "dropped, fresh IDR armed (total \(dropped))")
-            }
-        } else if let file {
-            fwrite(data, 1, size, file)
-        }
-        packetsOut += 1
-        bytesOut += size
-        if keyframe { keyframes += 1 }
-        if keyframe, wire != nil {
-            // The cause-tagged IDR books: attribute this keyframe to
-            // whatever armed it at encode time; nothing armed means the
-            // encoder minted it on its own (gop=INT_MAX → a finding).
-            let causes = pendingIdrCauses.isEmpty
-                ? ["spontaneous"] : pendingIdrCauses
-            for cause in causes { idrCauseTally[cause, default: 0] += 1 }
-            let elapsed = firstFrameAt.map {
-                monotonicNow() - $0
-            } ?? 0
-            print("idr: #\(keyframes) at t+"
-                + String(format: "%.1f", elapsed) + "s — "
-                + causes.joined(separator: "+") + " (\(size) B)")
-        }
-        if wire != nil {
-            frameWindowSizes.append(size)
-            qualityWindowSizes.append(size)
-            if avgQP >= 0 { qualityWindowQPs.append(avgQP) }
-        }
-        lastPacketBytes = size
-        lastPacketQP = avgQP
-        if opts.ratchet, wire != nil {
-            lastEncodedPacket = Array(
-                UnsafeBufferPointer(start: data, count: size)
-            )
-        }
-    }
-
-    func flushEncoder() throws {
-        guard let encoder else { return }
-        var err = [CChar](repeating: 0, count: 256)
-        let user = Unmanaged.passUnretained(self).toOpaque()
-        if lyte_hevc_enc_flush(encoder, packetTrampoline, user, &err, err.count) != 0 {
-            throw HostError("encoder flush failed: \(errString(err))")
-        }
-    }
-
-    func freeEncoder() {
-        if let encoder { lyte_hevc_enc_free(encoder) }
-        encoder = nil
     }
 }
 
@@ -1470,28 +417,6 @@ func handlePairingEvent(_ event: PairingResponderService.Event) {
     }
 }
 
-/// V-4: the empirical 4:4:4 gate (pillar §1's probe discipline) — a
-/// real tiny Rext open through the production leaf, run at startup
-/// before the capability declaration is built. A successful open IS
-/// the NV_ENC_CAPS_SUPPORT_YUV444_ENCODE caps check (V-1: the wrapper
-/// rejects at open when the cap reads 0), so the host never declares a
-/// chroma it hasn't just proven on this exact silicon/driver/wrapper.
-/// Returns nil on success, the leaf's error on failure.
-func probeRext444Encode() -> String? {
-    var err = [CChar](repeating: 0, count: 256)
-    let r = EncoderRecipe.best444
-    guard let enc = lyte_hevc_enc_new(
-        320, 180, "bgr0", 60, 5_000_000, Int32(r.ratchetFloorQP),
-        r.preset, r.tune, r.multipass,
-        r.spatialAQ ? 1 : 0, r.temporalAQ ? 1 : 0, Int32(r.aqStrength),
-        r.profile, r.rgbMode, &err, err.count
-    ) else {
-        return errString(err)
-    }
-    lyte_hevc_enc_free(enc)
-    return nil
-}
-
 /// Decodes a NUL-terminated C error buffer.
 func errString(_ buf: [CChar]) -> String {
     let bytes = buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
@@ -1504,173 +429,40 @@ func monotonicNow() -> Double {
     return Double(ts.tv_sec) + Double(ts.tv_nsec) / 1e9
 }
 
-/// Does the seat's gnome-shell carry `disable-direct-scanout` in
-/// MUTTER_DEBUG_PAINT? Without it, Mutter promotes fullscreen video to
-/// direct scanout a few seconds in — compositing stops and the
-/// ScreenCast starves, so the remote glass freezes while the host
-/// idles (2026-07-30 verdict: wake IDRs + 1 s capture gaps). The flag
-/// only lands via gnome-shell's login environment — no runtime toggle
-/// exists on stock Mutter — so the most the host can do is testify at
-/// startup. Returns nil when there is no readable gnome-shell to
-/// inspect (other compositor, headless test rig): nothing to testify.
-func mutterDirectScanoutDisabled() -> Bool? {
-    let fm = FileManager.default
-    guard let entries = try? fm.contentsOfDirectory(atPath: "/proc") else { return nil }
-    for pid in entries where Int(pid) != nil {
-        guard let comm = try? String(contentsOfFile: "/proc/\(pid)/comm", encoding: .utf8),
-              comm.trimmingCharacters(in: .whitespacesAndNewlines) == "gnome-shell",
-              let environ = fm.contents(atPath: "/proc/\(pid)/environ")
-        else { continue }  // other users' environ is unreadable — skip
-        return environ.split(separator: 0).contains { entry in
-            entry.starts(with: Array("MUTTER_DEBUG_PAINT=".utf8))
-                && String(decoding: entry, as: UTF8.self).contains("disable-direct-scanout")
-        }
-    }
-    return nil
-}
-
-private func frameTrampoline(user: UnsafeMutableRawPointer?,
-                             data: UnsafePointer<UInt8>?, size: UInt32,
-                             stride: Int32, width: UInt32, height: UInt32,
-                             fmt: lyte_pixfmt, graphUs: UInt64) {
-    guard let user, let data else { return }
-    let sink = Unmanaged<Sink>.fromOpaque(user).takeUnretainedValue()
-    sink.onFrame(data: data, size: size, stride: stride,
-                 width: width, height: height, fmt: fmt, graphUs: graphUs)
-}
-
-private func tickTrampoline(user: UnsafeMutableRawPointer?) {
-    guard let user else { return }
-    let sink = Unmanaged<Sink>.fromOpaque(user).takeUnretainedValue()
-    sink.onTick()
-}
-
-private func packetTrampoline(user: UnsafeMutableRawPointer?,
-                              data: UnsafePointer<UInt8>?, size: Int,
-                              keyframe: Int32, avgQP: Int32) {
-    guard let user, let data else { return }
-    let sink = Unmanaged<Sink>.fromOpaque(user).takeUnretainedValue()
-    sink.onPacket(data: data, size: size, keyframe: keyframe != 0,
-                  avgQP: Int(avgQP))
-}
-
 // MARK: - Main
 
 func run() throws {
     lyte_stdout_linebuf()
 
-    var opts = try Options.parse(CommandLine.arguments)
-    // A cap_sys_admin file capability (the direct backend's DRM
-    // ticket) seals /proc/<pid> two ways: it clears the dumpable
-    // flag at exec, and the runtime caps put every uncapped same-uid
-    // peer on the losing side of the kernel's capability-subset
-    // ptrace rule. The PORTAL backend survives neither — xdg-desktop-
-    // portal vets its caller by opening /proc/<pid>/root and answers
-    // AccessDenied when refused (CreateSession dies mid-session-up).
-    // Portal needs no privilege, so it sheds ALL caps, then re-arms
-    // dumpability; direct keeps its cap and re-arms dumpability for
-    // crash forensics only (owner-machine threat model; E4's
-    // packaging owns the real answer). NOTE the direct path's
-    // /proc/self/exe stays ptrace-guarded regardless — the benchmark
-    // rig reads its provenance witness via sudo.
-    if opts.backend == .portal, lyte_drop_all_caps() != 0 {
-        print("portal: WARNING — could not drop capabilities "
-            + "(a cap-tagged binary will fail portal caller vetting)")
-    }
+    let opts = try Options.parse(CommandLine.arguments)
+    // The cap_sys_admin file capability (the direct eye's DRM ticket)
+    // clears the dumpable flag at exec — re-arm dumpability for crash
+    // forensics (owner-machine threat model; E4's packaging owns the
+    // real answer). NOTE /proc/self/exe stays ptrace-guarded regardless
+    // (the kernel's capability-subset rule) — the benchmark rig reads
+    // its provenance witness via sudo.
     if lyte_set_dumpable() != 0 {
         print("host: WARNING — could not restore dumpability "
             + "(coredumps stay disabled)")
     }
 
-    // THE RECIPE PAIRING (HS-23, the supremacy plan's R2): a session's
-    // encoder recipe follows the wire rate unless --bitrate-mbps split
-    // them deliberately — the pacer's headroom and the encoder's cap
-    // move as ONE ceiling-relative recipe (the EncoderVbv k-ladder and
-    // clean boundary are fractions of it, so they scale with it).
-    // File mode keeps its own 10 Mbps default: no pacer to pair with.
-    if opts.wireOut != nil || opts.wireListen != nil, !opts.bitrateExplicit {
-        opts.bitrate = Int64(opts.wireRateMbps * 1_000_000)
-    }
-
-    // The direct eye needs no session bus for capture (E1) — its video
-    // never touches the portal/PipeWire. Input/clipboard leaves that DO
-    // still want the session are E2/E4's packaging story; file-mode
-    // probes under sudo must not be blocked by a portal-era assumption.
-    if opts.backend != .direct {
-        guard ProcessInfo.processInfo.environment["DBUS_SESSION_BUS_ADDRESS"] != nil
-            || FileManager.default.fileExists(
-                atPath: "\(ProcessInfo.processInfo.environment["XDG_RUNTIME_DIR"] ?? "/nonexistent")/bus")
-        else {
-            throw HostError("no user session bus reachable (DBUS_SESSION_BUS_ADDRESS unset "
-                + "and $XDG_RUNTIME_DIR/bus missing) — lyte-host must run inside the "
-                + "logged-in user session")
-        }
-    }
-
     let sessionMode = opts.wireOut != nil || opts.wireListen != nil
-    if opts.syntheticMotion != nil {
-        guard ProcessInfo.processInfo.environment[
-            "LYTE_ALLOW_SYNTHETIC_CAPTURE"] == "1" else {
-            throw HostError("--synthetic-motion is debug-only and requires "
-                + "LYTE_ALLOW_SYNTHETIC_CAPTURE=1")
-        }
-        guard sessionMode else {
-            throw HostError("--synthetic-motion exists to test the complete "
-                + "session pipeline; give --wire-listen or --wire-out")
-        }
-        guard opts.fps == 60 else {
-            throw HostError("--synthetic-motion is pinned to 60 Hz")
-        }
-    }
     let destination = sessionMode
         ? "lyte-udp session ("
             + (opts.wireOut.map { "\($0.host):\($0.port)" }
                 ?? "listen :\(opts.wireListen!)")
             + (opts.insecure ? ", INSECURE" : ", noise") + ")"
         : opts.outputPath
-    let captureDescription: String
-    let encoderDescription: String
-    if opts.syntheticMotion != nil {
-        captureDescription = "SYNTHETIC-DEBUG-BGRX (PipeWire/Mutter BYPASSED)"
-        encoderDescription = "hevc_nvenc"
-    } else if opts.backend == .direct {
-        captureDescription = "direct eye (KMS doorbell + EGL blit)"
-        encoderDescription = "native VAAPI (our pens)"
-    } else {
-        captureDescription = "\(opts.backend.rawValue) → PipeWire"
-        encoderDescription = "hevc_nvenc"
-    }
-    print("lyte-host — \(captureDescription) → "
-        + "\(encoderDescription) → \(destination)")
-
-    // HS-33: which libavcodec did this binary link? The vendored
-    // no-reset build (Scripts/vendor-ffmpeg.sh) signs itself with a
-    // configuration marker; lyte_hevc_noreset_enable reads it and
-    // defaults the env gate ON (explicit LYTE_NVENC_NO_RESET_RATE=0
-    // forces the upstream reset+IDR path — the live A/B control
-    // through the same binary). Everything downstream that branches on
-    // this (the ladder retune, the idr-books tags) keys off THIS
-    // proof, never off an assumption about the build.
-    let noResetRateMoves = lyte_hevc_noreset_enable() != 0
-    if opts.backend == .direct {
-        // E6b: libavcodec is out of the video path entirely — rate
-        // moves are RC misc buffers on the next frame, by construction.
-        print("encoder: native VAAPI seat — rate directives ride the "
-            + "next frame's RC buffer (no libavcodec in the video path)")
-    } else {
-        print(noResetRateMoves
-            ? "encoder: vendored no-reset libavcodec — rate directives "
-                + "reconfigure in place (zero reset, zero IDR)"
-            : "encoder: no-reset rate moves INACTIVE (distro libavcodec, "
-                + "or the vendored lib with LYTE_NVENC_NO_RESET_RATE=0) — "
-                + "every rate directive resets the encoder and mints an IDR")
-    }
-
-    if mutterDirectScanoutDisabled() == false {
-        print("capture: WARNING — gnome-shell lacks MUTTER_DEBUG_PAINT="
-            + "disable-direct-scanout; fullscreen video will freeze the "
-            + "stream (direct scanout starves the ScreenCast). Run "
-            + "Scripts/setup-host.sh and log in again.")
+    print("lyte-host — direct eye (KMS doorbell + EGL blit) → "
+        + "native VAAPI (our pens) → \(destination)")
+    // E6b: libavcodec is out of the video path entirely — rate
+    // moves are RC misc buffers on the next frame, by construction.
+    print("encoder: native VAAPI seat — rate directives ride the "
+        + "next frame's RC buffer (no libavcodec in the video path)")
+    if opts.ratchet {
+        print("note: --ratchet accepted-and-ignored — the portal-era "
+            + "ratchet prototype died in the E5 demolition (direct-leg "
+            + "quality refinement is the filed follow-up)")
     }
 
     // The session comes up BEFORE capture: in Noise mode the host blocks
@@ -1810,40 +602,20 @@ func run() throws {
         if bulkShell != nil {
             declared = declared.declaringBulkTransfer()
         }
-        // E3: key 13 (cursorShape) belongs to the DIRECT eye alone —
-        // the portal-era backends composite the cursor into the video,
-        // so they truthfully have no shape to send.
-        if opts.backend == .direct {
-            declared = declared.declaringCursorShape()
-        }
+        // E3: key 13 (cursorShape) — the direct eye sends the cursor
+        // plane as metadata, never composited into the video.
+        declared = declared.declaringCursorShape()
 
-        // V-4: chroma is declared on PROOF, never a hardcoded claim —
-        // the Best tier (4:4:4) joins the declaration only when the
-        // startup Rext self-probe just opened on this box. A failed
-        // probe truthfully declares [420] alone: a Best-declaring
-        // client then hits `noCommonChromaMode` and its auto-re-dial
-        // banner, the pillar's NAMED degradation.
-        // E5 audit GAP 2: the probe opens an NVENC leaf — proof for
-        // the PORTAL seat only. The direct eye's native VAAPI pens
-        // write NV12 4:2:0 and nothing else yet, so a direct host
-        // declares [420] alone regardless of what the dGPU could do;
-        // the Best tier returns to direct when Rext lands in the
-        // native pens (the recorded ladder item), proven by its own
-        // probe, not borrowed from another encoder's.
-        if opts.backend == .direct {
-            print("chroma: native VAAPI seat is 4:2:0 — declaring "
-                + "chroma [420] only (Best tier returns with Rext "
-                + "in the native pens)")
-        } else if let probeError = probeRext444Encode() {
-            print("chroma: Rext 4:4:4 self-probe FAILED (\(probeError)) "
-                + "— declaring chroma [420] only; Best tier not offered")
-        } else {
-            declared.chromaModes = [
-                CapabilityChroma.yuv420, CapabilityChroma.yuv444,
-            ]
-            print("chroma: Rext 4:4:4 self-probe passed — declaring "
-                + "chroma [420, 444]")
-        }
+        // V-4: chroma is declared on PROOF, never a hardcoded claim.
+        // The direct eye's native VAAPI pens write NV12 4:2:0 and
+        // nothing else yet, so the host declares [420] alone
+        // regardless of what the silicon could do; the Best tier
+        // (4:4:4) returns when Rext lands in the native pens (the
+        // recorded ladder item), proven by its own probe — never
+        // borrowed from another encoder's.
+        print("chroma: native VAAPI seat is 4:2:0 — declaring "
+            + "chroma [420] only (Best tier returns with Rext "
+            + "in the native pens)")
 
         // HS-21: arm the retry-cookie dial when asked. A random secret,
         // process-scoped: the host both mints and verifies with it, and
@@ -1898,51 +670,35 @@ func run() throws {
             + "TOS (video 0xA0 / ctrl+audio+repairs 0xC0), 1 Hz beacon "
             + "on CTRL")
 
-        // HS-20: the encoder finally consumes frameByteCeiling. The
-        // baseline mirrors the opening posture lyte_hevc_enc_new will
-        // configure (CBR: avg = max = --bitrate-mbps, single-frame VBV;
-        // capped-CQ: only the max-rate cap) — the policy caps against
-        // it and never pushes above it. Sink polls per encode.
-        // HS-25: the baseline VBV is now the unprotectable-frame
-        // guard's ceiling wherever the recipe's own VBV was absent or
-        // larger (the Sink imposes the same cap at encoder open) — so
-        // a squeeze→clean RESTORE returns to the guarded posture and
-        // can never re-open the >255-shard hole.
+        // HS-20: the estimator's ceiling reaches the encoder as rate
+        // directives — the direct leg applies them live (RC misc
+        // buffer on the next frame). The baseline mirrors the native
+        // seat's opening posture: VBR under the wire-rate cap, no CBR
+        // average, VBV at the unprotectable-frame guard's ceiling
+        // (HS-25: a squeeze→clean RESTORE returns to the guarded
+        // posture and can never re-open the >255-shard hole).
         if opts.vbvReconfigure {
             let guardBits = w.worstCaseProtectableFrameCeiling * 8
-            // HS-33 retune: with the vendored no-reset lib a directive
-            // stops costing an IDR, so the ladder NARROWS to half-rungs
-            // (posture/pacer slack 2× → ≤√2: a tighten lands the
-            // posture closer above the fallen rate, shrinking the
-            // oversized-frame transient the §5 fall-repricing finding
-            // measured). The loosening sustain stays at HS-27's 10 s
-            // DELIBERATELY: an eager (2 s) sustain was measured live
-            // to chase every climb — the posture re-postures at/above
-            // the still-climbing pacer, frames overstay their budget,
-            // and queuing-delay overuse fires a floor limit cycle with
-            // ZERO loss (the 2026-07-29 armed A/B: 10 falls to
-            // 500 kbps vs the control's clean ride). The sustain costs
-            // no IDRs under no-reset — it is pure climb-lag, and the
-            // books keep it honest. Distro lib keeps the HS-27 posture
-            // verbatim — the knobs follow the PROVEN capability above.
+            let rateBits = Int(opts.wireRateMbps * 1_000_000)
+            // The native seat applies rate moves without a reset BY
+            // CONSTRUCTION (no libavcodec, no hidden NVENC reset), so
+            // the ladder keeps the posture the vendored no-reset lib
+            // had to prove: half-rungs and exact tightens (HS-33).
+            // The loosening sustain stays at HS-27's 10 s DELIBERATELY
+            // — an eager sustain was measured live to chase every
+            // climb into a zero-loss floor limit cycle (2026-07-29
+            // armed A/B).
             w.armEncoderVbv(EncoderVbvConfig(
                 fps: Int(opts.fps),
-                baselineAverageBitsPerSecond:
-                    opts.ratchet ? nil : Int(opts.bitrate),
-                baselineMaxBitsPerSecond: Int(opts.bitrate),
-                baselineVbvBits: opts.ratchet
-                    ? guardBits
-                    : min(Int(opts.bitrate) / Int(opts.fps), guardBits),
-                rungsPerOctave: noResetRateMoves ? 2 : 1,
-                // The second free harvest: tightens land exactly on
-                // the ceiling rate (no √2 slack above the fallen
-                // rate) — only under the proven no-reset lib, same
-                // gate as the half-rung ladder.
-                exactTighten: noResetRateMoves
+                baselineAverageBitsPerSecond: nil,
+                baselineMaxBitsPerSecond: rateBits,
+                baselineVbvBits: guardBits,
+                rungsPerOctave: 2,
+                exactTighten: true
             ))
         } else {
             print("encoder-vbv: DISABLED (--no-vbv-reconfigure) — the "
-                + "opening recipe rides the whole run")
+                + "opening posture rides the whole run")
         }
 
         // HS-13: the injection backend comes up with the session — the
@@ -2065,156 +821,17 @@ func run() throws {
         file = f
     }
 
-    let sink = Sink(opts: opts, file: file, wire: wire,
-                    noResetRateMoves: noResetRateMoves)
-    var directLeg: DirectEyeLeg?
-    var err = [CChar](repeating: 0, count: 256)
-    var captureResult: Int32 = 0
-    var mutter: MutterScreenCast?
-    var portal: PortalScreenCast?
-    defer {
-        mutter?.stop()
-        _ = portal
-    }
-    if let synthetic = opts.syntheticMotion {
-        let source = SyntheticMotionSource(
-            width: Int(synthetic.width), height: Int(synthetic.height))
-        var pixels: [UInt8] = []
-        let frameCount = Int((opts.seconds * 60).rounded(.up))
-        print("synthetic-capture: DEBUG ONLY — \(synthetic.width)x"
-            + "\(synthetic.height) BGRX, \(frameCount) frames at absolute "
-            + "60 Hz deadlines; compositor and PipeWire are bypassed")
-        // Capability agreement and encoder open are bounded startup, not a
-        // 60 Hz source beat. Service the declaration, then send one loudly
-        // traced primer IDR before the measured absolute-deadline sequence.
-        for _ in 0..<20 {
-            usleep(5_000)
-            sink.onTick()
-        }
-        source.render(frameID: 0, into: &pixels)
-        let primerSubmitted = monotonicNS()
-        sink.traceSynthetic(
-            "{\"type\":\"primer\",\"frameID\":0,\"submittedNS\":"
-            + "\(primerSubmitted)}")
-        pixels.withUnsafeBufferPointer { buffer in
-            sink.onFrame(
-                data: buffer.baseAddress!,
-                size: UInt32(buffer.count),
-                stride: Int32(synthetic.width * 4),
-                width: synthetic.width,
-                height: synthetic.height,
-                fmt: LYTE_PIXFMT_BGRX,
-                graphUs: primerSubmitted / 1_000)
-        }
-        sink.encodedSinceTick = true
-        sink.onTick()
-        usleep(100_000)
+    // E1/E5: the direct eye is capture AND encode — encoded access
+    // units go straight to the wire (or the probe file).
+    let leg = DirectEyeLeg(
+        config: .init(
+            seconds: opts.seconds,
+            bitrateBitsPerSecond: wire != nil
+                ? Int64(opts.wireRateMbps * 1_000_000) : 0),
+        wire: wire, file: file)
+    leg.run()
 
-        let schedule = SyntheticMotionSchedule(
-            startNanoseconds: monotonicNS() + 100_000_000, fps: 60)
-        for index in 0..<frameCount {
-            let frameID = UInt32(index + 1)
-            let renderStart = monotonicNS()
-            source.render(frameID: frameID, into: &pixels)
-            let renderFinished = monotonicNS()
-            let deadline = schedule.deadline(frameID: UInt32(index))
-            var target = timespec(
-                tv_sec: Int(deadline / 1_000_000_000),
-                tv_nsec: Int(deadline % 1_000_000_000))
-            while clock_nanosleep(
-                CLOCK_MONOTONIC, TIMER_ABSTIME, &target, nil) == EINTR {}
-            let submitted = monotonicNS()
-            sink.traceSynthetic(
-                "{\"type\":\"source\",\"frameID\":\(frameID),"
-                + "\"deadlineNS\":\(deadline),\"submittedNS\":\(submitted),"
-                + "\"latenessNS\":\(submitted >= deadline ? submitted - deadline : 0),"
-                + "\"renderStartNS\":\(renderStart),\"renderFinishedNS\":"
-                + "\(renderFinished)}")
-            pixels.withUnsafeBufferPointer { buffer in
-                sink.onFrame(
-                    data: buffer.baseAddress!,
-                    size: UInt32(buffer.count),
-                    stride: Int32(synthetic.width * 4),
-                    width: synthetic.width,
-                    height: synthetic.height,
-                    fmt: LYTE_PIXFMT_BGRX,
-                    graphUs: deadline / 1_000)
-            }
-            // This is a fresh-source clock beat even if queue admission
-            // rejected its encode. Do not let the ratchet timer manufacture a
-            // retained repeat and confuse the dynamic source identity.
-            sink.encodedSinceTick = true
-            sink.onTick()
-            if sink.lastError != nil || sink.wire?.sessionEnded == true {
-                break
-            }
-        }
-        // Let the production sender drain and publish final kernel telemetry.
-        for _ in 0..<20 {
-            usleep(5_000)
-            sink.onTick()
-        }
-    } else if opts.backend == .direct {
-        // E1: the direct eye replaces capture AND encode — the Sink's
-        // NVENC leaf stays closed; encoded AUs go straight to the wire.
-        let leg = DirectEyeLeg(
-            config: .init(
-                seconds: opts.seconds,
-                bitrateBitsPerSecond: wire != nil
-                    ? Int64(opts.wireRateMbps * 1_000_000) : 0),
-            wire: wire, file: file)
-        directLeg = leg
-        leg.run()
-        if let failure = leg.lastError {
-            sink.lastError = failure
-        }
-    } else {
-        // Both backends must stay alive for the whole capture: dropping them
-        // closes their D-Bus connection and destroys the PipeWire node.
-        let stream: ScreenCastStream
-        switch opts.backend {
-        case .portal:
-            let p = try PortalScreenCast()
-            portal = p
-            stream = try p.openDesktopStream()
-            print("portal: ScreenCast granted — PipeWire node "
-                + "\(stream.nodeId), fd \(stream.pipewireFd)")
-        case .mutter:
-            let m = try MutterScreenCast()
-            mutter = m
-            stream = try m.openMonitorStream(connector: opts.connector)
-            print("mutter: ScreenCast started — PipeWire node "
-                + "\(stream.nodeId) on default remote")
-        case .direct:
-            preconditionFailure("direct backend dispatches above")
-        }
-        let user = Unmanaged.passUnretained(sink).toOpaque()
-        guard let capture = lyte_pw_capture_new(
-            stream.pipewireFd, stream.nodeId, frameTrampoline, user,
-            &err, err.count) else {
-            if let file { fclose(file) }
-            throw HostError("pipewire capture setup failed: \(errString(err))")
-        }
-        sink.capture = capture
-
-        if opts.idleFloor {
-            let tickRate =
-                opts.ratchet ? UInt64(opts.fps) * 2 : UInt64(opts.fps)
-            let interval = UInt64(1_000_000_000) / tickRate
-            guard lyte_pw_capture_set_tick(
-                capture, interval, tickTrampoline, user) == 0 else {
-                if let file { fclose(file) }
-                throw HostError("failed to arm the idle-floor tick timer")
-            }
-        }
-        captureResult = lyte_pw_capture_run(
-            capture, opts.seconds + 15.0, &err, err.count)
-    }
-
-    try sink.flushEncoder()
     if let file { fclose(file) }
-    sink.freeEncoder()
-    mutter?.stop()
 
     // HS-15: quit the audio loop BEFORE the teardown so the last audio
     // shards ride out ahead of the 0x0A, not into a closed session.
@@ -2223,10 +840,10 @@ func run() throws {
     // HS-11: the orderly exit — a typed SessionTeardown on the reliable
     // stream (retransmitted until acknowledged or patience runs out), so
     // the client learns the session ended instead of inferring it.
-    sink.wire?.shutdown(reason: .shuttingDown)
+    wire?.shutdown(reason: .shuttingDown)
     // HS-13: close the Mutter RemoteDesktop session (uinput devices die
     // with the process either way).
-    sink.wire?.inputInjector?.stop()
+    wire?.inputInjector?.stop()
     // HS-19: close the clipboard leaf's RemoteDesktop session (its
     // selection ownership and pending transfers die with it; the
     // connection-owned session can never be stranded by a crash).
@@ -2236,29 +853,33 @@ func run() throws {
     // session's re-offer resumes from the gap, sha-exact.
     bulkShell?.teardown()
 
-    // Measurement aid: dump the final retained raw frame (stride-packed
-    // BGRx as delivered by PipeWire) so decoded output can be PSNR'd
-    // against ground truth. Env-gated; not a product surface.
-    if let rawPath = ProcessInfo.processInfo.environment["LYTE_DUMP_RAW"],
-       !sink.lastFrame.isEmpty {
-        _ = FileManager.default.createFile(
-            atPath: rawPath, contents: Data(sink.lastFrame))
-        print("raw reference dumped: \(rawPath) "
-            + "(\(sink.lastFrame.count) bytes, stride \(sink.lastStride))")
-    }
-
-    if let failure = sink.lastError {
+    if let failure = leg.lastError {
         throw HostError(failure)
     }
-    if captureResult == -1 {
-        throw HostError("capture failed: \(errString(err))")
+    if leg.frames == 0 {
+        throw HostError("direct eye produced no frames in "
+            + "\(Int(opts.seconds))s")
     }
-    // The session books, shared by every backend tail — the wire
-    // half is backend-agnostic evidence (E1 owed this to the
-    // direct leg).
-    func printSessionBooks() {
-    let captured = sink.firstFrameAt.map { monotonicNow() - $0 } ?? 0
-    if let wire = sink.wire {
+    print("""
+
+    done: \(leg.frames) frames encoded (direct eye), \
+    \(leg.keyframes) IDR, \(leg.bytes) bytes, \
+    missed_grabs \(leg.missedGrabs), \
+    rate directives applied \(leg.directivesApplied)
+    """)
+    // The stream-startability gate: the native encoder must open with
+    // VPS/SPS/PPS + IRAP or the client can never join mid-life.
+    let directNals = AnnexB.nalUnits(in: leg.firstPacket)
+    print("first packet NALs: \(AnnexB.summary(of: leg.firstPacket))")
+    guard AnnexB.startsWithParameterSetsAndIrap(leg.firstPacket) else {
+        throw HostError("the direct eye's first packet does not begin "
+            + "with VPS/SPS/PPS + an IRAP picture (got: "
+            + "\(directNals.map { HevcNal.name($0.type) }.joined(separator: " ")))")
+    }
+    print("first packet starts with parameter sets + IDR: OK")
+
+    // The session books — the wire half is backend-agnostic evidence.
+    if let wire {
         let t = wire.pacerTelemetry
         let c = wire.counters
         let s = wire.sessionCounters
@@ -2343,15 +964,10 @@ func run() throws {
         \(s.videoFramesSuppressed) frames suppressed (FROZEN/closed), \
         \(s.videoFramesUnprotectable) dropped unprotectable \
         (ceiling \(wire.protectableFrameCeiling) B), \
-        \(sink.throttledFrames) capture frames throttled (backlog gate), \
-        \(sink.starvationEpisodes) capture-starvation episodes, \
         final state \(wire.lifecycleState.map { "\($0)" } ?? "—") \
         (wire mode \(wire.currentWireMode.map { "\($0)" } ?? "—"))
         chroma: agreed \(wire.agreedChromaModes.map { "\($0)" } ?? "— (no declaration)"), \
-        encoder \(sink.activeChroma == .yuv444
-            ? "4:4:4 (\(sink.activeRecipe.summary), floor cq\(sink.activeRecipe.ratchetFloorQP))"
-            : "4:2:0 (\(sink.activeRecipe.summary))"), \
-        \(sink.framesHeldForChroma) frames held pre-agreement
+        encoder 4:2:0 (native VAAPI)
         input: \(s.inputEventsReceived) events received, \
         \(wire.inputInjected) injected \
         (\(wire.inputInjectFailures) failed), \
@@ -2428,13 +1044,10 @@ func run() throws {
         \(wire.frameByteCeiling(fps: Int(opts.fps))) B; borrowed ingress \
         \(wire.borrowedFrameBytesIngested) B (entry-copy bytes avoided)
         encoder-vbv: \(wire.vbvDirectivesIssued) directives, \
-        \(sink.encoderReconfigures) applied, \
+        \(leg.directivesApplied) applied, \
         \(wire.vbvRateMovesAbsorbed) rate moves absorbed \
-        (pacer-only, no encoder reset); applied cost — \
-        \(sink.reconfigureBooks.idrMintingTotal) IDR-minting \
-        (\(EncoderReconfigureBooks.summary(sink.reconfigureBooks.idrMinting))), \
-        \(sink.reconfigureBooks.noResetTotal) no-reset \
-        (\(EncoderReconfigureBooks.summary(sink.reconfigureBooks.noReset)))\(vbvFinal)
+        (pacer-only, no encoder reset); applied live — native seat, \
+        zero reset, zero IDR by construction\(vbvFinal)
         repair: \(s.nackEntriesReceived) NACK entries \
         (\(s.nacksHonored) honored → \(s.repairDatagramsEnqueued) repair \
         datagrams, \(s.nacksJudgedStale) stale, \
@@ -2449,19 +1062,6 @@ func run() throws {
         srtt \(wire.srttMicros.map { "\($0) µs" } ?? "—"), \
         store \(wire.repairStoreBytes) B
         """)
-        // The estimator-ramp hunt's cause-tagged IDR books, tallied:
-        // which cause dominates, and the beauty-bar rate itself.
-        let idrPerMinute = captured > 0
-            ? Double(sink.keyframes) * 60.0 / captured : 0
-        let idrBook = sink.idrCauseTally.isEmpty ? "none"
-            : sink.idrCauseTally
-                .sorted { $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key) }
-                .map { "\($0.key) \($0.value)" }
-                .joined(separator: ", ")
-        print("idr-books: \(sink.keyframes) IDRs = "
-            + String(format: "%.2f", idrPerMinute)
-            + "/min over \(String(format: "%.0f", captured)) s — "
-            + idrBook)
         if let audio = audioWire {
             print("audio: \(audio.packetsEncoded) packets encoded "
                 + "(\(audio.encodeFailures) encode failures)"
@@ -2474,73 +1074,6 @@ func run() throws {
     } else {
         print("output: \(opts.outputPath)")
     }
-    }
-
-    if let leg = directLeg {
-        // The direct leg keeps its own books; the Sink never opened.
-        if leg.frames == 0 {
-            throw HostError("direct eye produced no frames in "
-                + "\(Int(opts.seconds))s")
-        }
-        print("""
-
-        done: \(leg.frames) frames encoded (direct eye), \
-        \(leg.keyframes) IDR, \(leg.bytes) bytes, \
-        missed_grabs \(leg.missedGrabs), \
-        rate directives applied \(leg.directivesApplied)
-        """)
-        // The same stream-startability gate the portal leg gets —
-        // hevc_vaapi must open with VPS/SPS/PPS + IRAP or the client
-        // can never join mid-life. (Session books integration rides
-        // with E1's live-validation half.)
-        let directNals = AnnexB.nalUnits(in: leg.firstPacket)
-        print("first packet NALs: \(AnnexB.summary(of: leg.firstPacket))")
-        guard AnnexB.startsWithParameterSetsAndIrap(leg.firstPacket) else {
-            throw HostError("the direct eye's first packet does not begin "
-                + "with VPS/SPS/PPS + an IRAP picture (got: "
-                + "\(directNals.map { HevcNal.name($0.type) }.joined(separator: " ")))")
-        }
-        print("first packet starts with parameter sets + IDR: OK")
-        printSessionBooks()
-        return
-    }
-    if sink.framesIn == 0 {
-        throw HostError(opts.syntheticMotion == nil
-            ? "no frames arrived from PipeWire within "
-                + "\(Int(opts.seconds + 15))s"
-            : "synthetic source produced no encoded frames")
-    }
-
-    let captured = sink.firstFrameAt.map { monotonicNow() - $0 } ?? 0
-    let n = sink.negotiated!
-    print("""
-
-    done: \(sink.framesIn) frames encoded (\(sink.damageFrames) damage, \
-    \(sink.repeatedFrames) repeated, \(sink.ratchetFrames) ratchet), \
-    \(sink.packetsOut) packets out \
-    (\(sink.keyframes) IDR), \(sink.bytesOut) bytes over \(String(format: "%.1f", captured))s
-    resolution \(n.width)x\(n.height), input format \(n.format)
-    """)
-    if opts.ratchet {
-        print("ratchet total: \(sink.ratchetFrames) passes, "
-            + "\(sink.ratchetBytes) bytes"
-            + (sink.ratchetConverged ? ", converged" : ", NOT converged"))
-    }
-    if captureResult == 1 {
-        print("note: capture ended at the safety timeout — the desktop was mostly "
-            + "static, so frames arrived only on damage")
-    }
-
-    let firstNals = AnnexB.nalUnits(in: sink.firstPacket)
-    print("first packet NALs: \(AnnexB.summary(of: sink.firstPacket))")
-    guard AnnexB.startsWithParameterSetsAndIrap(sink.firstPacket) else {
-        throw HostError("the first encoded packet does not begin with "
-            + "VPS/SPS/PPS + an IRAP picture (got: "
-            + "\(firstNals.map { HevcNal.name($0.type) }.joined(separator: " ")))"
-            + " — the bitstream is not stream-startable")
-    }
-    print("first packet starts with parameter sets + IDR: OK")
-    printSessionBooks()
     if let pairing = pairingService {
         if let key = pairing.pairedClientStaticPublicKey {
             print("pairing: result — PAIRED, client "
@@ -2552,24 +1085,15 @@ func run() throws {
         }
     }
 
-    // The capture leaf is not freed here: PipeWire loop/context teardown can
-    // block on the compositor after the stream is done, and the spike's
-    // deliverable (the file) is already complete and flushed. Exit directly.
-    // The advertiser is retained to this line on purpose: the record stays
-    // published for the whole session and exiting withdraws it.
+    // The advertiser is retained to this line on purpose: the record
+    // stays published for the whole session and returning withdraws it.
     withExtendedLifetime(advertiser) {}
-    lyte_stdout_flush()
-    exit(0)
 }
 
-// Subcommands, each of which never returns: `rd-spike` is the CP-5
-// RemoteDesktop headless-injection probe (RemoteDesktopSpike.swift);
-// `sniff` is the HS-5 Lyte-UDP header dissector (Sniff.swift);
-// `advertise` is the HS-10 standalone Avahi advertisement
-// (AvahiAdvertise.swift). Everything else is the capture path.
-if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "rd-spike" {
-    rdSpikeMain(Array(CommandLine.arguments.dropFirst(2)))
-}
+// Subcommands, each of which never returns: `sniff` is the HS-5
+// Lyte-UDP header dissector (Sniff.swift); `advertise` is the HS-10
+// standalone Avahi advertisement (AvahiAdvertise.swift). Everything
+// else is the capture path.
 if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "sniff" {
     sniffMain(Array(CommandLine.arguments.dropFirst(2)))
 }

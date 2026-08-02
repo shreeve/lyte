@@ -7,10 +7,9 @@
 // Honored session levers:
 //   - forced-IDR demands (0x0302 / opening) → forceIDR encode
 //   - capture timestamps: monotonic µs at ticket grab
-//   - encoder rate directives — NATIVE seat only (E6b): the directive's
-//     bit cap rides the next frame's RC misc buffer. The libav seat
-//     still defers (hevc_vaapi takes rate control at open() only);
-//     it exists as scaffolding until the demolition PR.
+//   - encoder rate directives (E6b): the directive's bit cap rides
+//     the next frame's RC misc buffer — the native seat is the only
+//     seat since the E5 demolition.
 
 #if os(Linux)
 
@@ -102,6 +101,11 @@ final class DirectEyeLeg {
         let width = Int32(probe.width)
         let height = Int32(probe.height)
         probe.release()
+        // HS-13: the uinput fallback maps absolute pointer coordinates
+        // against the monitor extent — tell the wire what we captured
+        // (the portal Sink used to do this at encoder open).
+        wire?.noteMonitorExtent(
+            width: UInt32(width), height: UInt32(height))
 
         // The encoder seat (E6b, sole occupant since the demolition):
         // the native VAAPI pens — zero libavcodec, rate directives
@@ -144,6 +148,15 @@ final class DirectEyeLeg {
 
         while nowSeconds() - t0 < config.seconds {
             if wire?.sessionEnded == true { break }
+            // HS-18: an interrupted run (SIGINT/SIGTERM) exits through
+            // the same door as a completed one, so the audio-routing
+            // restore and the typed teardown both happen. (The portal
+            // Sink polled this on its tick; the leg is the only poller
+            // now that the Sink is demolished.)
+            if lyteTerminationRequested != 0 {
+                print("session: termination signal — closing cleanly")
+                break
+            }
             // The shell service cadence: the portal path drives
             // SessionWire.service() from its idle-floor tick, and the
             // agreed-time pendings (the 0x19 starting posture, the
