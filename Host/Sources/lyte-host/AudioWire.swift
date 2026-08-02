@@ -29,6 +29,7 @@
 import COpusEncode
 import CPipeWireAudio
 import Foundation
+import HostCore
 import HostWire
 import LyteWire
 
@@ -62,6 +63,11 @@ final class AudioWire: @unchecked Sendable {
     private var marks: [(startFrame: Int, us: UInt64)] = []
     private var framesSeen = 0
     private var packet = [UInt8]()
+    /// The postures design's auto-quiet gate (audio-thread confined;
+    /// counters read after join). Engages ONLY when the session agreed
+    /// key 15 — checked per packet, so a legacy client keeps the
+    /// always-on contract and a fresh session re-decides.
+    private var tripwire = AudioTripwire()
 
     // Evidence, read after join.
     private(set) var packetsEncoded = 0
@@ -69,6 +75,8 @@ final class AudioWire: @unchecked Sendable {
     private(set) var negotiated: (rate: UInt32, channels: UInt32)?
     private(set) var negotiationError: String?
     private(set) var runError: String?
+    /// Tripwire evidence — like the counters above, read after join.
+    var tripwireCounters: AudioTripwireCounters { tripwire.counters }
 
     init(
         wire: SessionWire, bitrate: Int32,
@@ -265,6 +273,18 @@ final class AudioWire: @unchecked Sendable {
                 * 1_000_000 / UInt64(sampleRate)
         }
 
+        // The tripwire's ear: RMS over this packet's PCM, taken
+        // before the slice leaves `pending`. ~480 floats at 200/s —
+        // noise next to the Opus encode beside it.
+        let sampleCount = packetFrames * channels
+        var sumSquares: Float = 0
+        pending.withUnsafeBufferPointer { pcm in
+            for i in 0..<sampleCount {
+                sumSquares += pcm[i] * pcm[i]
+            }
+        }
+        let rms = (sumSquares / Float(sampleCount)).squareRoot()
+
         var err = [CChar](repeating: 0, count: 256)
         let n = pending.withUnsafeBufferPointer { pcm in
             lyte_opus_enc_encode(encoder, pcm.baseAddress, &packet,
@@ -281,7 +301,34 @@ final class AudioWire: @unchecked Sendable {
             return
         }
         packetsEncoded += 1
-        wire.sendAudioPacket(Array(packet.prefix(Int(n))), captureMicros: ts)
+        let encoded = Array(packet.prefix(Int(n)))
+
+        // Capture never stops — the gate is transmission-side, and it
+        // exists at all only under the key-15 agreement (per-packet
+        // check: cheap locked read, and a fresh session re-decides).
+        guard wire.audioQuietPostureAgreed() else {
+            wire.sendAudioPacket(encoded, captureMicros: ts)
+            return
+        }
+        switch tripwire.ingest(
+            rms: rms, packet: encoded, captureMicroseconds: ts
+        ) {
+        case .transmit:
+            wire.sendAudioPacket(encoded, captureMicros: ts)
+        case .beginQuiet:
+            wire.sendAudioTrackState(.quiet)
+        case .stayQuiet(let checkIn):
+            if checkIn { wire.sendAudioTrackState(.quiet) }
+        case .wake(let preRoll):
+            // Announce first, then the burst — the ring already ends
+            // with this packet, numbering stays contiguous, and the
+            // client's parked cursor plays the onset intact.
+            wire.sendAudioTrackState(.active)
+            for held in preRoll {
+                wire.sendAudioPacket(
+                    held.bytes, captureMicros: held.captureMicroseconds)
+            }
+        }
     }
 }
 

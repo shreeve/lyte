@@ -143,6 +143,16 @@ public enum CapabilityKey {
     /// intersection only on mutual declaration; a client never sends
     /// 0x03 against a set without it. Accessors in AudioRouting.swift.
     public static let audioStreamOff: UInt64 = 14
+    /// bool — this end speaks the audio tripwire's track-state
+    /// announcement (CTRL 0x25: the host may GATE audio transmission
+    /// during announced silence — capture never stops — and ships a
+    /// pre-roll ring on wake). Rides the spine through
+    /// `unknownEntries` (one canonical `0F F5` entry), surviving
+    /// intersection only on mutual declaration; a host never gates
+    /// against a set without it — a legacy client keeps today's
+    /// always-on contract, silence included. Accessors in
+    /// AudioTrackState.swift.
+    public static let audioQuietPosture: UInt64 = 15
 
     /// The renegotiable subset (transport pillar §4: "fixed after
     /// exchange except where a capability itself declares

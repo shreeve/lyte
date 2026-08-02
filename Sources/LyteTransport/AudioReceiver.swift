@@ -91,6 +91,15 @@ public final class AudioReceiver: @unchecked Sendable {
         }
     }
 
+    /// Tripwire: the host announced audio-quiet (0x25). Rest the
+    /// jitter adaptation — the lattice re-bases on the wake burst —
+    /// without touching the earned target.
+    public func noteAnnouncedQuiet() {
+        lock.lock()
+        defer { lock.unlock() }
+        buffer.noteIntentionalGap()
+    }
+
     /// One playout decision for the pump. `renderPipelineMicroseconds`
     /// is what still sits between this feed and the speaker (ring
     /// depth + the accelerator's gather + device latency) so the

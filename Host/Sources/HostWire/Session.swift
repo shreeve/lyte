@@ -392,6 +392,9 @@ public enum SessionEvent: Equatable, Sendable {
     /// HS-18: an applied posture left as a 0x19 status on the reliable
     /// stream (at capability agreement and after every applied flip).
     case audioRoutingStatusSent(HostAudioRoutingMode)
+    /// Tripwire: a 0x25 track-state announcement left on the reliable
+    /// stream (gate close, still-quiet check-in, or wake).
+    case audioTrackStateSent(AudioTrackState.State)
     /// CL-15: a client 0x1A clipboard set arrived on the reliable
     /// stream — exactly once, in order. Only surfaces when the agreed
     /// capabilities carry clipboardText (the W7 rule-3 gate); the
@@ -697,6 +700,8 @@ public struct SessionCounters: Equatable, Sendable {
     public var audioRoutingStatusesSent = 0
     /// CL-15: 0x1A clipboard sets delivered (past the rule-3 gate).
     public var clipboardSetsReceived = 0
+    /// Tripwire: 0x25 track-state announcements sent.
+    public var audioTrackStatesSent = 0
     /// CL-15: 0x1B clipboard announces sent.
     public var clipboardAnnouncesSent = 0
     /// CL-15: leaf-reported changes the book/ceiling suppressed.
@@ -899,6 +904,13 @@ public final class Session {
     /// consumption and 0x19 emission.
     public var agreedHostAudioRouting: Bool {
         negotiator.agreed?.hostAudioRouting == true
+    }
+    /// The tripwire's gate: true when audioQuietPosture (key 15)
+    /// survived the intersection. The audio leg gates transmission
+    /// ONLY under this agreement — a legacy client keeps the
+    /// always-on contract, silence included.
+    public var agreedAudioQuietPosture: Bool {
+        negotiator.agreed?.audioQuietPosture == true
     }
     /// CL-15: true when clipboardText (key 10) survived the
     /// intersection. Gates 0x1A consumption and 0x1B emission.
@@ -1677,6 +1689,28 @@ public final class Session {
             return [.audioRoutingStatusSent(mode)]
         } catch {
             return [.sendFailed("audio routing status: \(error)")]
+        }
+    }
+
+    /// The tripwire's announcement: quiet when the gate closes and on
+    /// every ~5 s still-quiet check-in, active the instant it fires
+    /// (immediately before the pre-roll burst). Silently a no-op
+    /// unless key 15 survived intersection — the noteAudioRoutingApplied
+    /// rule: a legacy client neither asked for the key nor knows the
+    /// byte.
+    public func noteAudioTrackState(
+        _ state: AudioTrackState.State, now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        guard agreedAudioQuietPosture else { return [] }
+        do {
+            try sendReliable(
+                AudioTrackState(state: state).encode(),
+                now: now, hostMicroseconds: hostMicroseconds
+            )
+            counters.audioTrackStatesSent += 1
+            return [.audioTrackStateSent(state)]
+        } catch {
+            return [.sendFailed("audio track state: \(error)")]
         }
     }
 

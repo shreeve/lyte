@@ -865,4 +865,122 @@ final class AudioRoutingClientGateTests: XCTestCase {
         print("CL-18 gate (migration): nil/true → muted, explicit "
             + "false → audible; stored prefs keep their meaning")
     }
+
+    // MARK: Leg 8 — the tripwire's 0x25 (key 15), in vivo
+
+    /// One sealed chan-1 datagram — the audio evidence the blackout
+    /// detector tightens on (payload content is irrelevant to the
+    /// evidence rule; the depacketizer's own counters absorb it).
+    private func sealedAudio(
+        host: RoutingHostStandIn, seq: UInt16, hostMicros: UInt64
+    ) throws -> [UInt8] {
+        let envelope = Envelope(
+            channel: .audio,
+            seq: ChannelSeq(rawValue: seq),
+            frame: FrameNumber(rawValue: UInt32(seq)),
+            timestamp: hostMicros,
+            fec: 0
+        )
+        let header = try envelope.encode(payload: [])
+        let payload = try host.transport!.seal(
+            plaintext: [0x00][...], aad: header[...], envelope: envelope
+        )
+        return try envelope.encode(payload: payload)
+    }
+
+    func testGateAnnouncedQuietRelaxesDetectorAndAudioRetightens() throws {
+        let host = RoutingHostStandIn(
+            localCapabilities: .wireDefault.declaringHostAudioRouting()
+                .declaringAudioQuietPosture())
+        var config = LyteUdpSessionCoreConfig()
+        config.desiredHostAudioRouting = nil
+        let harness = try Harness(host: host, coreConfig: config)
+        var t: UInt64 = 1_000
+        harness.clock.value = t
+        try harness.core.open(now: ClientTimestamp(microseconds: t))
+        try harness.settle(t: &t)
+
+        // Key 15 survived intersection, both views.
+        XCTAssertEqual(host.agreed?.audioQuietPosture, true,
+                       "the host must see key 15 in the client's 0x0F")
+        XCTAssertEqual(
+            harness.core.agreedCapabilities?.audioQuietPosture, true)
+
+        // Audio evidence tightens the detector (the existing rule).
+        XCTAssertFalse(harness.core.detectorTightened)
+        harness.absorb(
+            try sealedAudio(host: host, seq: 0, hostMicros: t), tMicros: t)
+        XCTAssertTrue(harness.core.detectorTightened,
+                      "chan-1 evidence must tighten to 350 ms")
+
+        // The gate closes: 0x25 quiet relaxes the detector — gated
+        // silence is contract, not a dark path.
+        try host.injectReliable(
+            AudioTrackState(state: .quiet).encode(), nowMicros: t)
+        try harness.settle(t: &t)
+        XCTAssertFalse(harness.core.detectorTightened,
+                       "announced quiet must relax the blackout detector")
+        XCTAssertEqual(
+            harness.core.snapshotCounters().audioTrackStatesReceived, 1)
+
+        // A still-quiet check-in repeats harmlessly (idempotent).
+        try host.injectReliable(
+            AudioTrackState(state: .quiet).encode(), nowMicros: t)
+        try harness.settle(t: &t)
+        XCTAssertFalse(harness.core.detectorTightened)
+        XCTAssertEqual(
+            harness.core.snapshotCounters().audioTrackStatesReceived, 2)
+
+        // Wake: 0x25 active, then the pre-roll's first packet — the
+        // audio evidence re-tightens through the existing rule.
+        try host.injectReliable(
+            AudioTrackState(state: .active).encode(), nowMicros: t)
+        try harness.settle(t: &t)
+        XCTAssertEqual(
+            harness.core.snapshotCounters().audioTrackStatesReceived, 3)
+        harness.absorb(
+            try sealedAudio(host: host, seq: 1, hostMicros: t), tMicros: t)
+        XCTAssertTrue(harness.core.detectorTightened,
+                      "the wake burst's evidence must re-tighten")
+
+        XCTAssertEqual(
+            harness.core.snapshotCounters().malformedReliableMessages, 0)
+        print("tripwire gate (in vivo): quiet relaxes to beacon-bounded, "
+            + "check-ins idempotent, wake evidence re-tightens to 350 ms")
+    }
+
+    func testGateUnnegotiatedTrackStateDropsLoud() throws {
+        // A key-9-only host (no key 15) injecting 0x25 anyway: the
+        // client drops it before any contract switches — the rule-3
+        // gate, tripwire verse.
+        let host = RoutingHostStandIn(
+            localCapabilities: .wireDefault.declaringHostAudioRouting())
+        var config = LyteUdpSessionCoreConfig()
+        config.desiredHostAudioRouting = nil
+        let harness = try Harness(host: host, coreConfig: config)
+        var t: UInt64 = 1_000
+        harness.clock.value = t
+        try harness.core.open(now: ClientTimestamp(microseconds: t))
+        try harness.settle(t: &t)
+        XCTAssertEqual(
+            harness.core.agreedCapabilities?.audioQuietPosture, false)
+
+        harness.absorb(
+            try sealedAudio(host: host, seq: 0, hostMicros: t), tMicros: t)
+        XCTAssertTrue(harness.core.detectorTightened)
+
+        try host.injectReliable(
+            AudioTrackState(state: .quiet).encode(), nowMicros: t)
+        try harness.settle(t: &t)
+        XCTAssertTrue(harness.core.detectorTightened,
+                      "an unnegotiated 0x25 must not relax anything")
+        XCTAssertEqual(
+            harness.core.snapshotCounters().audioTrackStatesReceived, 0)
+        XCTAssertTrue(harness.events.contains {
+            if case .protocolNote(let note) = $0 {
+                return note.contains("0x25 without negotiated key 15")
+            }
+            return false
+        }, "the drop must be loud")
+    }
 }

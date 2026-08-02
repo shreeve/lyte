@@ -218,6 +218,9 @@ public struct LyteUdpSessionCounters: Sendable {
     public var audioRoutingRequestsSent: UInt64 = 0
     /// 0x19 applied-posture statuses consumed (CL-13).
     public var audioRoutingStatusesReceived: UInt64 = 0
+    /// Tripwire: 0x25 track-state announcements received (gate
+    /// closes, still-quiet check-ins, and wakes all count here).
+    public var audioTrackStatesReceived: UInt64 = 0
     /// Loud audio-routing drops (CL-13): an unnegotiated 0x19, or a
     /// role-confused 0x18 arriving AT the client — the host's rule-3
     /// gate, mirrored.
@@ -333,7 +336,13 @@ public struct LyteUdpSessionCoreConfig: Sendable {
             // NSCursor, so it always declares; whether shapes SEND is
             // the host's capture-organ truth (only the direct eye,
             // whose video carries no cursor, declares its side).
-            .declaringCursorShape(),
+            .declaringCursorShape()
+            // Tripwire: key 15 (audioQuietPosture) — dialect, sixth
+            // verse: this client can always honor an announced quiet
+            // (relax the audio-fed blackout detector, let the jitter
+            // buffer rest), so it always declares; whether the host
+            // GATES is its own tripwire's verdict.
+            .declaringAudioQuietPosture(),
         machineConfig: SessionMachineConfig = SessionMachineConfig(
             blackoutSilenceMicroseconds: 2_500_000
         ),
@@ -1152,6 +1161,64 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         nackPolicy.handleRefusal(frame: refusal.frame, now: now)
     }
 
+    /// Tripwire (0x25): the host's audio track-state announcement —
+    /// silence with a signed IOU. Quiet relaxes the audio-fed
+    /// blackout detector back to the beacon-bounded threshold (gated
+    /// silence is CONTRACT, not evidence of a dark path — without
+    /// this, 350 ms into the first announced quiet the session would
+    /// false-FROZEN) and rests the jitter adaptation across the gap.
+    /// Active precedes the wake's pre-roll burst; the burst's first
+    /// authenticated datagram re-tightens the detector through the
+    /// existing evidence rule (`detectorTightened` was reset).
+    private func receiveAudioTrackState(
+        _ bytes: [UInt8], now: ClientTimestamp
+    ) {
+        guard let message = try? AudioTrackState.decode(bytes) else {
+            noteMalformed("audio track state")
+            return
+        }
+        lock.lock()
+        guard agreed?.audioQuietPosture == true else {
+            lock.unlock()
+            onEvent(.protocolNote(
+                "audio track-state 0x25 without negotiated key 15 — dropped"))
+            return
+        }
+        counters.audioTrackStatesReceived += 1
+        lock.unlock()
+        switch message.state {
+        case .quiet:
+            audio.noteAnnouncedQuiet()
+            relaxDetectorForAnnouncedQuiet(now: now)
+        case .active:
+            // The resumed packets are the evidence; nothing to arm
+            // here — the tighten path owns the transition.
+            break
+        }
+    }
+
+    /// The tighten's mirror: rebuilds the receiver machine at the
+    /// beacon-bounded default and clears `detectorTightened`, so the
+    /// wake's first audio datagram tightens it right back. No-op when
+    /// already relaxed (check-ins repeat every ~5 s by design).
+    private func relaxDetectorForAnnouncedQuiet(now: ClientTimestamp) {
+        lock.lock()
+        guard detectorTightened, machine.state != .closed else {
+            lock.unlock()
+            return
+        }
+        detectorTightened = false
+        var rebuilt = SessionStateMachine<ClientClock>(
+            role: .mediaReceiver, config: config.machineConfig, now: now)
+        _ = rebuilt.apply(.modeMessage(machine.wireMode), now: now)
+        machine = rebuilt
+        lock.unlock()
+        onEvent(.protocolNote(String(
+            format: "audio quiet announced — blackout detector relaxed "
+                + "to %d ms",
+            config.machineConfig.blackoutSilenceMicroseconds / 1_000)))
+    }
+
     /// Rebuilds the receiver machine at the tightened threshold,
     /// transplanting the wire mode (a receiver machine's only durable
     /// state — FROZEN would exit on this very evidence anyway, and
@@ -1347,6 +1414,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
         case CtrlMessageType.audioRoutingStatus:
             receiveAudioRoutingStatus(bytes, now: now)
+
+        case CtrlMessageType.audioTrackState:
+            receiveAudioTrackState(bytes, now: now)
 
         case CtrlMessageType.audioRoutingRequest:
             // Role confusion: 0x18 is client→host only. The host's

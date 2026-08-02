@@ -585,9 +585,12 @@ func run() throws {
         // key 11 (bulkTransfer, F-3) whenever the file-drop shell is.
         // Key 14 (audioStreamOff, postures design) rides with key 9:
         // an audio-capable host can always honor "send me nothing".
+        // Key 15 (audioQuietPosture, the tripwire) rides the same
+        // gate: an audio-capable host can always gate its silence.
         var declared = opts.audio
             ? Capabilities.wireDefault.declaringHostAudioRouting()
                 .declaringAudioStreamOff()
+                .declaringAudioQuietPosture()
             : .wireDefault
         if clipboardLeaf != nil {
             declared = declared.declaringClipboardText()
@@ -1063,11 +1066,18 @@ func run() throws {
         store \(wire.repairStoreBytes) B
         """)
         if let audio = audioWire {
+            let trip = audio.tripwireCounters
             print("audio: \(audio.packetsEncoded) packets encoded "
                 + "(\(audio.encodeFailures) encode failures)"
                 + (audio.negotiated.map {
                     ", negotiated F32 \($0.rate) Hz \($0.channels)ch"
                 } ?? ", no buffers arrived")
+                + (trip.quietEntries > 0
+                    ? "; tripwire \(trip.quietEntries) quiet, "
+                        + "\(trip.wakes) wakes, "
+                        + "\(trip.packetsGated) gated, "
+                        + "\(trip.preRollShipped) pre-roll shipped"
+                    : "")
                 + (audio.negotiationError.map { "; ERROR \($0)" } ?? "")
                 + (audio.runError.map { "; run error \($0)" } ?? ""))
         }

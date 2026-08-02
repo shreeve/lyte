@@ -1493,6 +1493,35 @@ final class SessionWire {
         }
     }
 
+    /// Tripwire: whether THIS session agreed key 15 (audioQuietPosture).
+    /// The audio thread asks per packet before ever gating — a legacy
+    /// client keeps the always-on contract, silence included.
+    func audioQuietPostureAgreed() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let session, session.phase == .established else { return false }
+        return session.agreedAudioQuietPosture
+    }
+
+    /// Tripwire: one 0x25 track-state announcement onto the reliable
+    /// stream (a no-op at the session layer unless key 15 was agreed).
+    func sendAudioTrackState(_ state: AudioTrackState.State) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let session, session.phase == .established else { return }
+        for event in session.noteAudioTrackState(
+            state, now: monotonicNS(), hostMicroseconds: monotonicMicros()
+        ) {
+            log(event)
+        }
+        do {
+            try serviceOnce()
+            try flushOutbox()
+        } catch {
+            lastSendError = String(describing: error)
+        }
+    }
+
     /// Pumps the pacer at its own wake instants until empty, servicing
     /// inbound + timers at each pass and flushing each pump's datagrams
     /// as sendmmsg batches. The sleep is capped: while the pacer holds
@@ -1937,6 +1966,8 @@ final class SessionWire {
             pendingAudioRouting.append(mode)
         case .audioRoutingStatusSent(let mode):
             emit("audio-routing: status \(mode) sent (0x19)")
+        case .audioTrackStateSent(let state):
+            emit("audio-track: \(state) announced (0x25)")
         case .clipboardSetReceived(let text):
             // CL-15/HS-19: the session's gate + book already ran (the
             // book is pre-armed against this apply's echo). Delivered
