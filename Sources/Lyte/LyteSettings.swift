@@ -9,6 +9,21 @@ struct LyteSettingsView: View {
     @AppStorage(ConnectionModel.playoutCushionKey)
     private var cushionMilliseconds = ConnectionModel.playoutCushionDefault
 
+    /// Stalls are time-based (the radio doesn't care about refresh
+    /// rate), so the KNOB stays in milliseconds — this readout just
+    /// translates it into frames at a 60 fps reference so the number
+    /// has a shape: 50 ms ≈ 3 frames.
+    private var cushionReadout: String {
+        guard cushionMilliseconds > 0 else { return "0 ms — cushion off" }
+        let frames = Double(cushionMilliseconds) * 60 / 1_000
+        let tenths = (frames * 10).rounded() / 10
+        let count = tenths == tenths.rounded()
+            ? String(Int(tenths))
+            : String(format: "%.1f", tenths)
+        let noun = tenths == 1 ? "frame" : "frames"
+        return "\(cushionMilliseconds) ms ≈ \(count) \(noun) at 60 fps"
+    }
+
     var body: some View {
         Form {
             Section {
@@ -26,7 +41,7 @@ struct LyteSettingsView: View {
                             step: 5
                         )
                         .frame(width: 220)
-                        Text("\(cushionMilliseconds) ms")
+                        Text(cushionReadout)
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
