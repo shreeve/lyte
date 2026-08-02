@@ -66,22 +66,27 @@ public final class LinkHealthMeter {
 
     private var episodes: [Episode] = []
     private var highWaterOrdinal: UInt64 = 0
+    private var highWaterFrameSeconds: TimeInterval = 0
     private var sessionStallCount = 0
     private var sessionWorstMilliseconds = 0.0
 
     public init() {}
 
-    /// Feed one recorded frame (primitives, so tests need no recorder).
-    /// `now` is the caller's clock; episodes live on it. Ordinals only
-    /// gate re-feeding — a lower ordinal than seen means the recorder
-    /// was reset (reconnect), and the meter starts fresh with it.
+    /// Feed one recorded frame (primitives, so tests need no
+    /// recorder). `frameSeconds` is the FRAME'S OWN clock (the
+    /// recorder's host timestamp) — the 1 Hz fold hands whole batches
+    /// in at once, so coalescing on feed time would collapse distinct
+    /// stalls within a batch into one episode (the owner caught the
+    /// undercount live: "1 total" under a visibly hiccuping link).
+    /// Ordinals gate re-feeding — a lower ordinal than seen means the
+    /// recorder was reset (reconnect), and the meter starts fresh.
     public func observe(
         ordinal: UInt64,
         transitStretchMilliseconds: Double?,
         sourceGapMilliseconds: Double?,
         queueWaitMilliseconds: Double,
         enqueueMilliseconds: Double,
-        now: TimeInterval
+        frameSeconds: TimeInterval
     ) {
         if ordinal < highWaterOrdinal {
             // Ordinals ran backwards: the recorder was reset
@@ -90,10 +95,15 @@ public final class LinkHealthMeter {
             episodes.removeAll()
             sessionStallCount = 0
             sessionWorstMilliseconds = 0
+            // The new session's host clock may have restarted below
+            // the old high water; carrying it would age new episodes
+            // out on arrival.
+            highWaterFrameSeconds = 0
         } else if ordinal == highWaterOrdinal {
             return // already folded
         }
         highWaterOrdinal = ordinal
+        highWaterFrameSeconds = max(highWaterFrameSeconds, frameSeconds)
 
         var worst = 0.0
         var stage = ""
@@ -115,8 +125,8 @@ public final class LinkHealthMeter {
         guard worst > 0 else { return }
 
         if var last = episodes.last,
-           now - last.at <= Self.coalesceSeconds {
-            last.at = now
+           frameSeconds - last.at <= Self.coalesceSeconds {
+            last.at = frameSeconds
             if worst > last.worstMilliseconds {
                 last.worstMilliseconds = worst
                 last.stage = stage
@@ -124,7 +134,8 @@ public final class LinkHealthMeter {
             episodes[episodes.count - 1] = last
         } else {
             episodes.append(Episode(
-                at: now, worstMilliseconds: worst, stage: stage))
+                at: frameSeconds, worstMilliseconds: worst,
+                stage: stage))
             sessionStallCount += 1
         }
         sessionWorstMilliseconds = max(sessionWorstMilliseconds, worst)
@@ -134,7 +145,12 @@ public final class LinkHealthMeter {
     /// window) or deep (≥100 ms — a full visible freeze). Degraded:
     /// any stall in the window. Good: quiet — and the UI shows
     /// nothing, because a clean link needs no announcement.
-    public func assessment(now: TimeInterval) -> LinkHealthAssessment {
+    /// The verdict windows against the FRAME clock's high-water mark:
+    /// "the last minute of delivered frames." A fully frozen stream
+    /// stops aging the window — and is the FROZEN pill's business,
+    /// not this one's.
+    public func assessment() -> LinkHealthAssessment {
+        let now = highWaterFrameSeconds
         episodes.removeAll { now - $0.at > Self.windowSeconds }
         let count = episodes.count
         let worst = episodes.map(\.worstMilliseconds).max() ?? 0

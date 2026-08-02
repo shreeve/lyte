@@ -300,7 +300,8 @@ final class DirectEyeLeg {
             + "\(keyframes) IDRs, missed_grabs=\(missedGrabs), "
             + "directives_applied=\(directivesApplied), "
             + "directives_deferred=\(directivesDeferred), "
-            + "cursor_shapes=\(cursorShapesSeen)")
+            + "cursor_shapes=\(cursorShapesSeen), "
+            + "hotspot_corrections=\(cursorHotspotCorrections)")
     }
 
     /// E3: one cursor poll — fb changes become 0x24s. The hotspot is
@@ -331,6 +332,19 @@ final class DirectEyeLeg {
             }
             hx = min(max(hx, 0), frame.width - 1)
             hy = min(max(hy, 0), frame.height - 1)
+            // The derivation ledger (owner's ~25 px aim offset): the
+            // first few shapes print their full inputs so a wrong
+            // hotspot reads straight back to which term lied.
+            if cursorShapesSeen <= 6 {
+                let p = wire.lastAbsolutePointerInjection()
+                print("direct: cursor derive #\(cursorShapesSeen): "
+                    + "\(frame.width)x\(frame.height) "
+                    + "crop(\(frame.cropX),\(frame.cropY)) "
+                    + "plane(\(frame.planeCrtcX),\(frame.planeCrtcY)) "
+                    + "pointer("
+                    + (p.map { "\(Int($0.x)),\(Int($0.y))" } ?? "none")
+                    + ") → hotspot(\(hx),\(hy))")
+            }
             lastCursorFrame = frame
             sentHotspot = (hx, hy)
             hotspotRecheckArmed = true
@@ -372,6 +386,10 @@ final class DirectEyeLeg {
         hotspotRecheckArmed = false
         guard hx != sent.x || hy != sent.y else { return }
         cursorHotspotCorrections += 1
+        print("direct: cursor hotspot corrected "
+            + "(\(sent.x),\(sent.y)) → (\(hx),\(hy)) at rest — "
+            + "plane(\(plane.x),\(plane.y)) "
+            + "pointer(\(Int(pointer.x)),\(Int(pointer.y)))")
         sentHotspot = (hx, hy)
         wire.noteCursorShape(CursorShape(
             width: UInt16(frame.width),
