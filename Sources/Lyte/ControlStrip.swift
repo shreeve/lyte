@@ -364,6 +364,29 @@ struct ControlStrip: View {
                 .disabled(model.hostAudioPosture == nil)
             }
 
+            // Mute-at-source (postures design, key 14): the whole
+            // audio TRACK leaves the wire — zero capture, zero
+            // packets — while the host's own speakers keep playing.
+            // The waveform glyph wears the WIRE caption: this is
+            // neither machine's speakers, it's the stream itself.
+            if model.audioStreamOffNegotiated {
+                stripButton(
+                    active: model.hostAudioOff,
+                    help: model.hostAudioPosture == nil
+                        ? "Audio stream — waiting for the host's posture"
+                        : (model.hostAudioOff
+                            ? "Audio stream is off (zero bandwidth) — click to stream sound again"
+                            : "Turn the audio stream off — no sound crosses the network at all"),
+                    action: { model.setHostAudioOff(!model.hostAudioOff) },
+                    label: {
+                        mutableGlyph(base: "waveform",
+                                     muted: model.hostAudioOff,
+                                     caption: "WIRE")
+                    }
+                )
+                .disabled(model.hostAudioPosture == nil)
+            }
+
             // Client-side mute — the local pipeline's mixer (CL-11);
             // always available while the session runs.
             stripButton(

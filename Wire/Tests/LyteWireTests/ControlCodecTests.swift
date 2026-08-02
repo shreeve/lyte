@@ -280,6 +280,37 @@ final class ControlCodecTests: XCTestCase {
         XCTAssertFalse(declared.intersecting(refusing).hostAudioRouting)
     }
 
+    func testAudioStreamOffRidesTheSpineLikeKeyNine() throws {
+        // Key 14 (mute-at-source): declaration appends exactly one
+        // canonical entry, reads back through the v1 decoder, and
+        // survives intersection only on mutual declaration — the
+        // key-9 laws, fourteenth verse.
+        let declared = Capabilities.wireDefault.declaringAudioStreamOff()
+        XCTAssertTrue(declared.audioStreamOff)
+        XCTAssertFalse(Capabilities.wireDefault.audioStreamOff)
+        XCTAssertEqual(declared.declaringAudioStreamOff(), declared)
+
+        let decoded = try Capabilities.decodeCbor(declared.encodeCbor())
+        XCTAssertTrue(decoded.audioStreamOff)
+        XCTAssertEqual(decoded, declared)
+
+        XCTAssertTrue(declared.intersecting(declared).audioStreamOff)
+        XCTAssertFalse(declared.intersecting(.wireDefault).audioStreamOff)
+        XCTAssertFalse(
+            Capabilities.wireDefault.intersecting(declared).audioStreamOff
+        )
+
+        // The wire byte: streamOff is 0x04 — 0x03 is the tombstone
+        // the frozen routing-mode-unknown vector pinned.
+        XCTAssertEqual(HostAudioRoutingMode.streamOff.rawValue, 0x04)
+        XCTAssertEqual(
+            AudioRoutingRequest(mode: .streamOff).encode(), [0x18, 0x04]
+        )
+        XCTAssertEqual(
+            try AudioRoutingStatus.decode([0x19, 0x04]).mode, .streamOff
+        )
+    }
+
     // MARK: The registry itself
 
     func testPromotedRegistryNumbersAreThePinnedOnes() {

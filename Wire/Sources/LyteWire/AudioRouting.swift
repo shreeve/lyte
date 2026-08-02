@@ -52,6 +52,16 @@ public enum HostAudioRoutingMode: UInt8, Hashable, CaseIterable, Sendable {
     /// silent; the original default is restored at teardown (crash
     /// paths included).
     case hostMuted = 0x02
+    /// The postures-design mute-at-source (2026-08-02): the host
+    /// captures and encodes NOTHING — the whole audio track is zero
+    /// bytes on the wire; the host's own speakers keep playing.
+    /// Appended under the key-14 gate (audioStreamOff): a client
+    /// sends it only when BOTH ends declared key 14, so a legacy
+    /// decoder never meets a byte it must reject.
+    /// 0x04, NOT 0x03: the frozen vector `routing-mode-unknown` pins
+    /// 0x03 as unknownMode forever — a pinned-reject byte is a
+    /// tombstone, never a name (the vectors are law).
+    case streamOff = 0x04
 }
 
 // MARK: - The capability spine helpers
@@ -84,6 +94,30 @@ extension Capabilities {
         guard !hostAudioRouting else { return self }
         var declared = self
         declared.unknownEntries.append(Self.hostAudioRoutingEntry)
+        return declared
+    }
+
+    /// The key-14 entry (audioStreamOff): CBOR bool under unsigned
+    /// key 14, one canonical byte image (`0E F5`) — the rule-3 spine
+    /// exactly as keys 9–13 ride it.
+    private static var audioStreamOffEntry: CborMapEntry {
+        CborMapEntry(
+            key: .unsigned(CapabilityKey.audioStreamOff),
+            value: .bool(true)
+        )
+    }
+
+    /// True when this set carries `audioStreamOff: true` — the mode
+    /// 0x03 dialect gate. Absence and refusal are the same posture.
+    public var audioStreamOff: Bool {
+        unknownEntries.contains(Self.audioStreamOffEntry)
+    }
+
+    /// A copy of this set declaring audioStreamOff support.
+    public func declaringAudioStreamOff() -> Capabilities {
+        guard !audioStreamOff else { return self }
+        var declared = self
+        declared.unknownEntries.append(Self.audioStreamOffEntry)
         return declared
     }
 }

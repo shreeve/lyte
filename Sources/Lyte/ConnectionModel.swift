@@ -39,6 +39,14 @@ final class ConnectionModel {
     // the toggle asks and waits for the wire's answer.
     private(set) var hostAudioNegotiated = false
     private(set) var hostAudioPosture: HostAudioRoutingMode?
+    /// Postures design (key 14): whether the WIRE audio-off control
+    /// exists — mode 0x03 survived intersection. The posture itself
+    /// still rides `hostAudioPosture` (0x19 truth, never the ask).
+    private(set) var audioStreamOffNegotiated = false
+    /// The posture to return to when the stream comes back on — the
+    /// last 0x19-confirmed STREAMING mode (streamOff never lands
+    /// here). Seeded with the CL-18 default.
+    private var lastStreamingAudioPosture: HostAudioRoutingMode = .hostMuted
     // CL-15: clipboard sharing — `clipboardNegotiated` decides whether
     // the strip's toggle EXISTS (key 10 survived intersection);
     // `clipboardSharing` is the live consent state (seeded from the
@@ -348,6 +356,7 @@ final class ConnectionModel {
         lyteWireMode = .active
         lyteFrozen = false
         hostAudioNegotiated = false
+        audioStreamOffNegotiated = false
         hostAudioPosture = nil
         clipboardNegotiated = false
         clipboardSharing = pinned.shareClipboard == true
@@ -491,6 +500,7 @@ final class ConnectionModel {
             // The strip's host-mute button exists exactly when key 9
             // survived intersection (CL-13).
             hostAudioNegotiated = agreed.hostAudioRouting
+            audioStreamOffNegotiated = agreed.audioStreamOff
             // CL-15: the clipboard toggle exists exactly when key 10
             // survived; the watcher starts if consent is already on.
             clipboardNegotiated = agreed.clipboardText
@@ -513,6 +523,7 @@ final class ConnectionModel {
             bulkCoordinator?.ingest(message)
         case .hostAudioRoutingStatus(let mode):
             hostAudioPosture = mode
+            if mode != .streamOff { lastStreamingAudioPosture = mode }
         case .hostClipboardChanged(let text):
             // Already through the core's gates (negotiated + sharing
             // on, book pre-armed); the glue just applies.
@@ -585,6 +596,7 @@ final class ConnectionModel {
         }
         lyteFrozen = false
         hostAudioNegotiated = false
+        audioStreamOffNegotiated = false
         hostAudioPosture = nil
         pasteboardSync?.stop()
         pasteboardSync = nil
@@ -829,6 +841,7 @@ final class ConnectionModel {
         videoInMeter.reset()
         lyteFrozen = false
         hostAudioNegotiated = false
+        audioStreamOffNegotiated = false
         pasteboardSync?.stop()
         pasteboardSync = nil
         clipboardNegotiated = false
@@ -993,6 +1006,7 @@ final class ConnectionModel {
         lyteFrozen = false
         hostAddress = address
         hostAudioNegotiated = false
+        audioStreamOffNegotiated = false
         // hostAudioPosture stays: the reconnect config already asked
         // for it; the host's first 0x19 refreshes the truth.
         clipboardNegotiated = false
@@ -1039,6 +1053,19 @@ final class ConnectionModel {
         guard hostAudioNegotiated else { return }
         try? lyteSession?.requestHostAudioRouting(
             muted ? .hostMuted : .hostAudible)
+    }
+
+    /// The wire is currently carrying no audio track at all.
+    var hostAudioOff: Bool { hostAudioPosture == .streamOff }
+
+    /// Mute-at-source (postures design): off → 0x03, the whole track
+    /// leaves the wire; on → back to the last confirmed STREAMING
+    /// posture. Same contract as setHostMuted — the button renders
+    /// the 0x19 answer, never the ask.
+    func setHostAudioOff(_ off: Bool) {
+        guard audioStreamOffNegotiated else { return }
+        try? lyteSession?.requestHostAudioRouting(
+            off ? .streamOff : lastStreamingAudioPosture)
     }
 
     /// The per-host "start sessions with host muted" default, read
@@ -1320,6 +1347,7 @@ final class ConnectionModel {
             switch hostAudioPosture {
             case .hostMuted: mode += " · host audio muted"
             case .hostAudible: mode += " · host audio audible"
+            case .streamOff: mode += " · audio stream off"
             case nil: mode += " · host audio pending"
             }
         }

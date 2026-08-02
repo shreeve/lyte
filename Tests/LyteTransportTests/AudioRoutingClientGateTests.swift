@@ -518,6 +518,55 @@ final class AudioRoutingClientGateTests: XCTestCase {
             + "failed flip reports old posture")
     }
 
+    func testGateStreamOffNeedsKeyFourteenAndRoundTripsWhenAgreed() throws {
+        // Leg A: a key-9-only host (today's build) — the routing
+        // dialect works, but streamOff (key 14, mute-at-source) is
+        // refused TYPED, before a byte leaves: 0x04 against a legacy
+        // decoder would be a protocol break, so it never travels.
+        let legacy = RoutingHostStandIn(
+            localCapabilities: .wireDefault.declaringHostAudioRouting())
+        var config = LyteUdpSessionCoreConfig()
+        config.desiredHostAudioRouting = nil
+        let h1 = try Harness(host: legacy, coreConfig: config)
+        var t: UInt64 = 1_000
+        h1.clock.value = t
+        try h1.core.open(now: ClientTimestamp(microseconds: t))
+        try h1.settle(t: &t)
+        XCTAssertTrue(h1.core.hostAudioRoutingNegotiated)
+        XCTAssertEqual(h1.core.agreedCapabilities?.audioStreamOff, false)
+        XCTAssertThrowsError(try h1.core.requestHostAudioRouting(
+            .streamOff, now: ClientTimestamp(microseconds: t))
+        ) { error in
+            XCTAssertEqual(
+                error as? AudioRoutingAskError, .streamOffNotNegotiated)
+        }
+        try h1.settle(t: &t)
+        XCTAssertEqual(legacy.requestsReceived, [],
+                       "no [0x18 0x04] may ever reach a key-9-only host")
+
+        // Leg B: a key-9+14 host — streamOff round-trips byte-exact
+        // ([0x18 0x04] → 0x19) and the posture lands.
+        let modern = RoutingHostStandIn(
+            localCapabilities: .wireDefault
+                .declaringHostAudioRouting().declaringAudioStreamOff())
+        let h2 = try Harness(host: modern, coreConfig: config)
+        var t2: UInt64 = 1_000
+        h2.clock.value = t2
+        try h2.core.open(now: ClientTimestamp(microseconds: t2))
+        try h2.settle(t: &t2)
+        XCTAssertEqual(h2.core.agreedCapabilities?.audioStreamOff, true)
+        try h2.core.requestHostAudioRouting(
+            .streamOff, now: ClientTimestamp(microseconds: t2))
+        try h2.settle(t: &t2)
+        XCTAssertEqual(modern.requestsReceived, [[0x18, 0x04]],
+                       "streamOff must ride byte-exact as 0x04")
+        XCTAssertEqual(h2.core.hostAudioRoutingPosture, .streamOff)
+
+        print("key-14 gate: streamOff refused typed against a "
+            + "key-9-only host; [0x18 0x04] round-trips against a "
+            + "declaring one")
+    }
+
     // MARK: Leg 4 — the session-start posture parameter
 
     func testGateSessionStartPostureAsksExactlyOnceWhenDiffering() throws {
