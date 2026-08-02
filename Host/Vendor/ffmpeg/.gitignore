@@ -1,4 +1,0 @@
-# Build products of Scripts/vendor-ffmpeg.sh — never committed (the
-# repo carries no multi-MB binaries; the script IS the artifact).
-build/
-prefix/

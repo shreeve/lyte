@@ -6,7 +6,7 @@
 // unchanged once Noise (HS-7) seals payloads; payload decryption behind
 // a key flag is an explicitly deferred slice.
 
-import CHevcEncode // lyte_stdout_linebuf
+import CNetIO // lyte_stdout_linebuf
 import CNetIO
 import Foundation
 import HostWire

@@ -133,11 +133,9 @@ void lyte_netio_free(lyte_netio *n);
  * Owner-machine threat model only; E4's packaging revisits this. */
 int lyte_set_dumpable(void);
 
-/* Empties this process's capability sets (raw capset, no libcap). The
- * PORTAL backend needs no privilege, and holding any keeps every
- * same-uid peer — xdg-desktop-portal's caller vetting included — on
- * the losing side of the kernel's capability-subset ptrace rule. */
-int lyte_drop_all_caps(void);
+/* Line-buffer stdout (moved from the demolished CHevcEncode leaf,
+ * E5): prints must land live through an ssh pipe. */
+void lyte_stdout_linebuf(void);
 
 #ifdef __cplusplus
 }

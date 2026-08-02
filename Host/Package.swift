@@ -43,44 +43,9 @@ products.append(.executable(name: "lyte-host", targets: ["lyte-host"]))
 products.append(.executable(name: "lyte-eye", targets: ["lyte-eye"]))
 products.append(.executable(name: "lyte-nvenc", targets: ["lyte-nvenc"]))
 
-// HS-33: the vendored no-reset FFmpeg (Vendor/ffmpeg/README.md — rate
-// reconfigures without resetEncoder/forceIDR). Env-gated: with
-// LYTE_FFMPEG_PREFIX set (the canonical build exports it alongside
-// PKG_CONFIG_PATH — see the README's one recipe), the libav consumers
-// link the static archives BY PATH. `-lavcodec` + a `-L` prepend is
-// not enough here: the distro .pc files of the other leaves (pipewire,
-// dbus) inject `-L/usr/lib/<triple>` ahead of any vendored dir, so
-// search order resolves the shared lib; a direct archive path has no
-// search order to lose. Unset (fresh checkout, CI): distro libav via
-// -l flags, exactly as before. Set-but-missing fails LOUDLY — never a
-// silent fallback to distro.
-let ffmpegVendorPrefix =
-    ProcessInfo.processInfo.environment["LYTE_FFMPEG_PREFIX"]
-let libavLinkerSettings: [LinkerSetting]
-if let prefix = ffmpegVendorPrefix {
-    guard FileManager.default.fileExists(
-        atPath: "\(prefix)/lib/libavcodec.a")
-    else {
-        fatalError("LYTE_FFMPEG_PREFIX=\(prefix) but "
-            + "\(prefix)/lib/libavcodec.a is missing — run "
-            + "Scripts/vendor-ffmpeg.sh (or unset the env)")
-    }
-    libavLinkerSettings = [.unsafeFlags([
-        "\(prefix)/lib/libavcodec.a",
-        "\(prefix)/lib/libavutil.a",
-        // The vendored libavcodec.pc's own Libs tail (the .a carries
-        // no DT_NEEDED): atomics beyond the inlined ones, and — since
-        // the direct eye enabled hevc_vaapi in the vendor recipe —
-        // libva for the VAAPI hwcontext the archive now references.
-        "-latomic",
-        "-lva", "-lva-drm",
-    ])]
-} else {
-    libavLinkerSettings = [
-        .linkedLibrary("avcodec"),
-        .linkedLibrary("avutil"),
-    ]
-}
+// E5: the vendored no-reset FFmpeg is GONE — the portal path it
+// served is demolished. LYTE_FFMPEG_PREFIX is accepted-and-ignored
+// so existing build recipes keep working; nothing links libav.
 
 targets += [
     .systemLibrary(
@@ -94,25 +59,9 @@ targets += [
         providers: [.apt(["libpipewire-0.3-dev"])]
     ),
     .systemLibrary(
-        name: "CLibAV",
-        pkgConfig: "libavcodec",
-        providers: [.apt(["libavcodec-dev", "libavutil-dev"])]
-    ),
-    .systemLibrary(
         name: "COpus",
         pkgConfig: "opus",
         providers: [.apt(["libopus-dev"])]
-    ),
-    // C leaf: PipeWire stream consumption (SPA pod construction is macro-based
-    // and unreachable from Swift; this is the hardware/OS boundary).
-    .target(
-        name: "CPipeWireCapture",
-        dependencies: ["CPipeWire"]
-    ),
-    // C leaf: libavcodec hevc_nvenc with Sunshine's low-latency recipe.
-    .target(
-        name: "CHevcEncode",
-        dependencies: ["CLibAV"]
     ),
     // C leaf: pw_stream capture of the default sink's monitor
     // (stream.capture.sink), F32 48 kHz stereo, graph-clock timestamps.
@@ -223,29 +172,20 @@ targets += [
             .linkedLibrary("opus"),
         ]
     ),
-    // HS-24 A/B harness: deterministic raw frames through the exact
-    // CHevcEncode leaf with recipe knobs on the CLI; the ladder script
-    // (Scripts/encoder-ab.sh) pairs its Annex-B output with ffmpeg PSNR.
-    .executableTarget(
-        name: "lyte-encode-check",
-        dependencies: ["HostCore", "CHevcEncode"],
-        linkerSettings: libavLinkerSettings
-    ),
     .executableTarget(
         name: "lyte-host",
         dependencies: [
             "HostCore",
             "HostWire",
             "CDBus",
-            "CPipeWireCapture",
-            "CHevcEncode",
             // HS-15: the audio leg — monitor capture + Opus encode
             // feeding the session's audio channel.
             "CPipeWireAudio",
             "COpusEncode",
             "CNetIO",
             "CInputUinput",
-            // E1: the direct eye as a capture backend (--backend direct).
+            // E5: the direct eye is THE capture organ — the portal
+            // and mutter ScreenCast backends are demolished.
             "HostEye",
             .product(name: "LyteWire", package: "Wire"),
             // HS-10: one SHA-256 for the advertised identity hash
@@ -253,7 +193,7 @@ targets += [
             // in the graph via Wire — no new external dependency.
             .product(name: "Crypto", package: "swift-crypto"),
         ],
-        linkerSettings: libavLinkerSettings + [
+        linkerSettings: [
             .linkedLibrary("dbus-1"),
             .linkedLibrary("pipewire-0.3"),
             .linkedLibrary("opus"),
