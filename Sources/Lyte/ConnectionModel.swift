@@ -681,7 +681,6 @@ final class ConnectionModel {
             linkHealthMeter.observe(
                 ordinal: f.ordinal,
                 transitStretchMilliseconds: f.transitStretchMilliseconds,
-                sourceGapMilliseconds: f.sourceGapMilliseconds,
                 queueWaitMilliseconds: f.queueWaitMilliseconds,
                 enqueueMilliseconds: f.enqueueMilliseconds,
                 frameSeconds: Double(f.hostMicroseconds) / 1_000_000)

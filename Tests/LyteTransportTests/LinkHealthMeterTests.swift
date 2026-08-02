@@ -17,7 +17,6 @@ final class LinkHealthMeterTests: XCTestCase {
         for o in ordinals {
             meter.observe(
                 ordinal: o, transitStretchMilliseconds: 0.5,
-                sourceGapMilliseconds: 16.7,
                 queueWaitMilliseconds: 0.05,
                 enqueueMilliseconds: 0.03, frameSeconds: time)
         }
@@ -29,7 +28,7 @@ final class LinkHealthMeterTests: XCTestCase {
     ) {
         meter.observe(
             ordinal: ordinal, transitStretchMilliseconds: transit,
-            sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
+            queueWaitMilliseconds: 0.05,
             enqueueMilliseconds: 0.03, frameSeconds: time)
     }
 
@@ -130,19 +129,25 @@ final class LinkHealthMeterTests: XCTestCase {
     }
 
     func testStageAttributionPicksTheGuiltyParty() {
+        // Source-capture gaps are deliberately NOT a stage: portal
+        // capture is damage-driven, so an idle desktop with a seconds
+        // clock produces 1000 ms gaps by design (the 2026-08-01
+        // "Host capture stalls — worst 1,002 ms" false alarm). The
+        // meter no longer accepts them as evidence at all — clean
+        // transit on a quiet desktop stays good however sparse the
+        // frames.
         let meter = LinkHealthMeter()
         feedClean(meter, ordinals: 1..<2, at: 0)
-        meter.observe(
-            ordinal: 2, transitStretchMilliseconds: 1,
-            sourceGapMilliseconds: 120, queueWaitMilliseconds: 0.05,
-            enqueueMilliseconds: 0.03, frameSeconds: 15)
-        XCTAssertEqual(meter.assessment().dominantStage, "host")
+        feedClean(meter, ordinals: 2..<3, at: 15)
+        feedClean(meter, ordinals: 3..<4, at: 16)
+        XCTAssertEqual(meter.assessment().level, .good)
+        XCTAssertEqual(meter.assessment().dominantStage, "none")
 
         let renderer = LinkHealthMeter()
         feedClean(renderer, ordinals: 1..<2, at: 0)
         renderer.observe(
             ordinal: 2, transitStretchMilliseconds: nil,
-            sourceGapMilliseconds: nil, queueWaitMilliseconds: 9,
+            queueWaitMilliseconds: 9,
             enqueueMilliseconds: 3, frameSeconds: 15)
         XCTAssertEqual(
             renderer.assessment().dominantStage, "renderer")
