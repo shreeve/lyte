@@ -16,6 +16,7 @@
 // in Host/Scripts/corpus-harness.sh — these commands are the
 // measurement seams it cannot get wrong.
 
+import LyteCorpus
 import ArgumentParser
 import Foundation
 import LyteTransport

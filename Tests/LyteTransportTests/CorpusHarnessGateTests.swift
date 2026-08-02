@@ -1,4 +1,5 @@
 import XCTest
+import LyteCorpus
 import LyteTransport
 
 // THE V-3 GATES (H4 plan: the §7 corpus harness). Three contracts,

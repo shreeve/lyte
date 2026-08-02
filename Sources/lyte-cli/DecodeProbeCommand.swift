@@ -20,6 +20,7 @@ import ArgumentParser
 import CoreVideo
 import Foundation
 import ImageIO
+import LyteCorpus
 import LyteTransport
 import LyteUI
 import LyteWire
