@@ -35,10 +35,6 @@ struct Options {
     var bitrateExplicit = false
     var fps: Int32 = 60
     var backend: Backend = .portal
-    /// E6b: the direct backend's encoder seat — false = libav
-    /// hevc_vaapi scaffolding (CQP, directives deferred), true = the
-    /// native VAAPI encoder (our pens; directives apply live).
-    var nativeEncoder = false
     /// Debug-only capture replacement. It bypasses PipeWire/Mutter only;
     /// encoder, session, packetizer, crypto, sockets, and client stay real.
     var syntheticMotion: (width: UInt32, height: UInt32)?
@@ -153,11 +149,16 @@ struct Options {
                 opts.backend = b
             case "--encoder":
                 i += 1
-                guard i < args.count,
-                      ["libav", "native"].contains(args[i]) else {
-                    throw HostError("--encoder must be 'libav' or 'native'")
+                // The libav seat was demolished after first-light:
+                // native VAAPI is the direct eye's only encoder. The
+                // flag survives as a no-op so holds/scripts keep
+                // working; asking for the dead seat fails loudly.
+                guard i < args.count, args[i] == "native" else {
+                    throw HostError("--encoder libav was demolished "
+                        + "after first-light — the native VAAPI seat "
+                        + "is the direct eye's only encoder "
+                        + "(--encoder native is an accepted no-op)")
                 }
-                opts.nativeEncoder = args[i] == "native"
             case "--synthetic-motion":
                 i += 1
                 guard i < args.count else {
@@ -324,11 +325,10 @@ struct Options {
                                     blit + VAAPI encode on the iGPU — no
                                     portal, no PipeWire video, no Mutter
                                     (needs CAP_SYS_ADMIN)
-                  --encoder SEAT    direct-eye encoder seat: 'libav'
-                                    (hevc_vaapi scaffolding — CQP, rate
-                                    directives deferred) or 'native'
-                                    (E6b pens — rate directives apply
-                                    live). Default libav.
+                  --encoder native  accepted no-op: the native VAAPI
+                                    seat is the direct eye's only
+                                    encoder (the libav seat was
+                                    demolished after first-light)
                   --backend mutter  org.gnome.Mutter.ScreenCast (no dialog;
                                     spike fallback for headless/ssh runs)
                   --synthetic-motion WIDTHxHEIGHT
@@ -484,10 +484,6 @@ struct Options {
             case .ratchetFloorQP(let v):
                 throw HostError("recipe ratchet floor must be 1…51 (got \(v))")
             }
-        }
-        if opts.nativeEncoder, opts.backend != .direct {
-            throw HostError("--encoder native is a direct-eye seat "
-                + "(add --backend direct)")
         }
         return opts
     }
@@ -1639,8 +1635,7 @@ func run() throws {
         encoderDescription = "hevc_nvenc"
     } else if opts.backend == .direct {
         captureDescription = "direct eye (KMS doorbell + EGL blit)"
-        encoderDescription = opts.nativeEncoder
-            ? "native VAAPI (our pens)" : "hevc_vaapi"
+        encoderDescription = "native VAAPI (our pens)"
     } else {
         captureDescription = "\(opts.backend.rawValue) → PipeWire"
         encoderDescription = "hevc_nvenc"
@@ -1657,7 +1652,7 @@ func run() throws {
     // this (the ladder retune, the idr-books tags) keys off THIS
     // proof, never off an assumption about the build.
     let noResetRateMoves = lyte_hevc_noreset_enable() != 0
-    if opts.nativeEncoder {
+    if opts.backend == .direct {
         // E6b: libavcodec is out of the video path entirely — rate
         // moves are RC misc buffers on the next frame, by construction.
         print("encoder: native VAAPI seat — rate directives ride the "
@@ -2141,8 +2136,7 @@ func run() throws {
             config: .init(
                 seconds: opts.seconds,
                 bitrateBitsPerSecond: wire != nil
-                    ? Int64(opts.wireRateMbps * 1_000_000) : 0,
-                nativeEncoder: opts.nativeEncoder),
+                    ? Int64(opts.wireRateMbps * 1_000_000) : 0),
             wire: wire, file: file)
         directLeg = leg
         leg.run()
@@ -2468,8 +2462,7 @@ func run() throws {
         done: \(leg.frames) frames encoded (direct eye), \
         \(leg.keyframes) IDR, \(leg.bytes) bytes, \
         missed_grabs \(leg.missedGrabs), \
-        rate directives applied \(leg.directivesApplied), \
-        deferred \(leg.directivesDeferred)
+        rate directives applied \(leg.directivesApplied)
         """)
         // The same stream-startability gate the portal leg gets —
         // hevc_vaapi must open with VPS/SPS/PPS + IRAP or the client

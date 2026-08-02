@@ -171,9 +171,10 @@ targets += [
     .target(
         name: "HostEye",
         dependencies: [
-            "CDRM", "CGBM", "CEGL", "CVA", "CLibAV",
-            // E6b: the native encoder feeds HostCore's pens
-            // (HevcParameterSets, HevcSliceHeader) to the driver.
+            // libav-free since the E6b demolition: the native encoder
+            // feeds HostCore's pens (HevcParameterSets,
+            // HevcSliceHeader) straight to the driver via libva.
+            "CDRM", "CGBM", "CEGL", "CVA",
             "HostCore",
         ]
     ),
@@ -181,8 +182,8 @@ targets += [
     // and capture mode (milestone 2: full loop → Annex-B file).
     .executableTarget(
         name: "lyte-eye",
-        dependencies: ["HostEye", "CDRM", "CLibAV"],
-        linkerSettings: libavLinkerSettings + [
+        dependencies: ["HostEye", "CDRM"],
+        linkerSettings: [
             .linkedLibrary("va"),
             .linkedLibrary("va-drm"),
         ]
