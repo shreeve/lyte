@@ -64,6 +64,30 @@ final class AdaptiveVideoPlayoutTests: XCTestCase {
             "a 120 ms cushion must absorb the second 117 ms stall")
     }
 
+    func testZeroCeilingTurnsTheCushionOffEntirely() {
+        // Slider at 0: floor/initial/ceiling all collapse to zero and
+        // every frame — punctual or late — presents the instant it
+        // arrives. No delay is ever learned.
+        var policy = AdaptiveVideoPlayout(config: .init(
+            minimumDelayMicroseconds: 0,
+            maximumDelayMicroseconds: 0,
+            initialDelayMicroseconds: 0))
+        for i in 0..<10 {
+            let d = policy.schedule(
+                mappedCaptureMicroseconds: 1_000_000 + UInt64(i) * 16_667,
+                arrivalMicroseconds: 1_002_000 + UInt64(i) * 16_667)
+            XCTAssertEqual(
+                d.presentationMicroseconds, 1_002_000 + UInt64(i) * 16_667)
+            XCTAssertEqual(d.targetDelayMicroseconds, 0)
+        }
+        let stalled = policy.schedule(
+            mappedCaptureMicroseconds: 1_500_000,
+            arrivalMicroseconds: 1_617_000)
+        XCTAssertEqual(stalled.presentationMicroseconds, 1_617_000)
+        XCTAssertEqual(stalled.targetDelayMicroseconds, 0,
+                       "a 0 ceiling must never learn any delay")
+    }
+
     func testExcessiveLatenessRebasesWithCushionWithoutBreakingContinuity() {
         var policy = AdaptiveVideoPlayout()
         let decision = policy.schedule(

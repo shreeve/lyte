@@ -36,7 +36,9 @@ struct LyteSettingsView: View {
                     + "are actually measured and shrinks again on a "
                     + "clean link — this sets the ceiling. 50 ms rides "
                     + "out ordinary jitter; ~120 ms swallows a full "
-                    + "Wi-Fi scan blackout. Applies to new connections.")
+                    + "Wi-Fi scan blackout; 0 turns the cushion off "
+                    + "and frames show the instant they arrive. "
+                    + "Applies to new connections.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {

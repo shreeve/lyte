@@ -625,22 +625,35 @@ final class ConnectionModel {
     /// this knob decides how much it is ALLOWED to grow. 50 ms
     /// absorbs ordinary jitter; ~120 swallows a full Wi-Fi roam-scan
     /// deaf-window (the measured 75–115 ms class) at the cost of that
-    /// much video delay while the link misbehaves. Read at session
-    /// start; new connections pick up changes.
+    /// much video delay while the link misbehaves. 0 disables the
+    /// cushion entirely: the floor and starting delay collapse with
+    /// the ceiling and frames present the moment they arrive. Read at
+    /// session start; new connections pick up changes.
     static let playoutCushionKey = "playoutCushionMilliseconds"
     static let playoutCushionDefault = 50
-    static let playoutCushionRange = 20...150
+    static let playoutCushionRange = 0...150
 
     private static func playoutConfigFromSettings()
         -> AdaptiveVideoPlayout.Config
     {
-        let stored = UserDefaults.standard
-            .integer(forKey: playoutCushionKey)
-        let ms = stored == 0
+        // 0 is a legal setting now, so "never set" must be the absent
+        // key, not the integer default.
+        let defaults = UserDefaults.standard
+        let ms = defaults.object(forKey: playoutCushionKey) == nil
             ? playoutCushionDefault
-            : min(max(stored, playoutCushionRange.lowerBound),
+            : min(max(defaults.integer(forKey: playoutCushionKey),
+                      playoutCushionRange.lowerBound),
                   playoutCushionRange.upperBound)
-        return .init(maximumDelayMicroseconds: UInt64(ms) * 1_000)
+        let cap = UInt64(ms) * 1_000
+        var config = AdaptiveVideoPlayout.Config(
+            maximumDelayMicroseconds: cap)
+        // The playout requires minimum ≤ initial ≤ maximum; a ceiling
+        // below the stock 15/20 ms drags both down with it.
+        config.minimumDelayMicroseconds =
+            min(config.minimumDelayMicroseconds, cap)
+        config.initialDelayMicroseconds =
+            min(config.initialDelayMicroseconds, cap)
+        return config
     }
 
     /// The 1 Hz link-health tick (driven by the stream container's
