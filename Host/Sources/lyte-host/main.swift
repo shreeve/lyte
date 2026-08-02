@@ -1820,7 +1820,18 @@ func run() throws {
         // probe truthfully declares [420] alone: a Best-declaring
         // client then hits `noCommonChromaMode` and its auto-re-dial
         // banner, the pillar's NAMED degradation.
-        if let probeError = probeRext444Encode() {
+        // E5 audit GAP 2: the probe opens an NVENC leaf — proof for
+        // the PORTAL seat only. The direct eye's native VAAPI pens
+        // write NV12 4:2:0 and nothing else yet, so a direct host
+        // declares [420] alone regardless of what the dGPU could do;
+        // the Best tier returns to direct when Rext lands in the
+        // native pens (the recorded ladder item), proven by its own
+        // probe, not borrowed from another encoder's.
+        if opts.backend == .direct {
+            print("chroma: native VAAPI seat is 4:2:0 — declaring "
+                + "chroma [420] only (Best tier returns with Rext "
+                + "in the native pens)")
+        } else if let probeError = probeRext444Encode() {
             print("chroma: Rext 4:4:4 self-probe FAILED (\(probeError)) "
                 + "— declaring chroma [420] only; Best tier not offered")
         } else {

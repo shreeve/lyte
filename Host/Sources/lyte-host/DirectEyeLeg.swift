@@ -40,6 +40,13 @@ final class DirectEyeLeg {
     private(set) var keyframes = 0
     private(set) var missedGrabs = 0
     private(set) var directivesApplied = 0
+    /// E5 audit GAP 1: forced-IDR demands arriving while the screen
+    /// is static are served by re-encoding the last surface — armed
+    /// here, counted for the books.
+    private var staticIdrWanted = false
+    private var lastEncodedSurface: UInt32?
+    private var lastEncodedCaptureUs: UInt64 = 0
+    private(set) var staticIdrsServed = 0
     private(set) var cursorShapesSeen = 0
     private(set) var cursorReadFailures = 0
     private(set) var cursorHotspotCorrections = 0
@@ -155,8 +162,42 @@ final class DirectEyeLeg {
                 }
             }
 
+            // E5 audit GAP 1: demands are taken EVERY poll, not only
+            // when pixels change — a client recovering on a static
+            // desktop must not wait for the next damage to get its
+            // IDR. With no new fb, the last encoded surface still
+            // holds the screen: re-encode it as the IDR, stamped with
+            // its ORIGINAL capture time (the playout's retained-frame
+            // law: recovery re-encodes are quality/dependency events,
+            // not network-late frames).
+            let demand = wire?.takeForcedIdrDemand() ?? []
+            if !demand.isEmpty {
+                pendingCauses += demand.names
+                staticIdrWanted = true
+            }
+
             guard let fb = currentFB(fd: fd, planeId: planes.primary.id),
                   fb != lastFB else {
+                if staticIdrWanted, let sid = lastEncodedSurface {
+                    do {
+                        let packet = try encoder.encode(
+                            surface: sid, forceIDR: true)
+                        let causes = packet.keyframe ? pendingCauses : []
+                        if packet.keyframe { pendingCauses.removeAll() }
+                        deliver(Data(packet.data),
+                                keyframe: packet.keyframe,
+                                causes: causes,
+                                captureUs: lastEncodedCaptureUs)
+                        staticIdrWanted = false
+                        staticIdrsServed += 1
+                        print("direct: static-screen IDR served "
+                            + "(re-encoded retained surface \(sid))")
+                    } catch {
+                        lastError = "direct: static IDR: \(error)"
+                        return
+                    }
+                    continue
+                }
                 usleep(config.pollUs)
                 continue
             }
@@ -167,10 +208,9 @@ final class DirectEyeLeg {
             }
             let captureUs = UInt64(nowSeconds() * 1_000_000)
 
-            let demand = wire?.takeForcedIdrDemand() ?? []
-            let forceIdr = frames == 0 || !demand.isEmpty
+            let forceIdr = frames == 0 || staticIdrWanted
+            staticIdrWanted = false
             if frames == 0 { pendingCauses.append("opening") }
-            pendingCauses += demand.names
 
             var ticketReleased = false
             do {
@@ -222,6 +262,8 @@ final class DirectEyeLeg {
                 try blitInto(sid) { try encoder.exportSurface(sid) }
                 let packet = try encoder.encode(
                     surface: sid, forceIDR: forceIdr)
+                lastEncodedSurface = sid
+                lastEncodedCaptureUs = captureUs
                 let causes = packet.keyframe ? pendingCauses : []
                 if packet.keyframe { pendingCauses.removeAll() }
                 deliver(Data(packet.data), keyframe: packet.keyframe,
@@ -239,6 +281,7 @@ final class DirectEyeLeg {
         print("direct: eye closed — \(frames) frames, \(bytes) bytes, "
             + "\(keyframes) IDRs, missed_grabs=\(missedGrabs), "
             + "directives_applied=\(directivesApplied), "
+            + "static_idrs=\(staticIdrsServed), "
             + "cursor_shapes=\(cursorShapesSeen), "
             + "hotspot_corrections=\(cursorHotspotCorrections)")
     }
