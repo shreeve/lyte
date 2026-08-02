@@ -1,5 +1,6 @@
 // Doorbell mode (E0 milestone 1) — output format frozen for
-// line-comparability with Host/Probes/kms-eye/fbid-poll.c.
+// line-comparability with the fbid-poll.c feasibility probe (retired
+// to git history with Host/Probes/kms-eye/).
 
 #if os(Linux)
 

@@ -8,82 +8,50 @@ H4, and the Beauty Bar's full per-row forensics — is frozen in git
 history (`git show 4bb3e11:docs/20260730-103326-handoff-archive-h2-h4.md`;
 the pre-overhaul file is commit `a54ab69`).*
 
-# SESSION RESUME — START HERE (2026-08-01: THE DIRECT-EYE EPOCH)
+# SESSION RESUME — START HERE (2026-08-02: SELF-HOSTED)
 
-**Read this first:** the project pivoted on 2026-08-01. After the
-network campaign convicted and fixed the real bottleneck (the
-gateway's 6 GHz radio — see docs/20260801-075746-lyte-pup-scan-stall-study.md;
-pup is now WIRED at 10.0.0.232) and the portal/Mutter capture path
-froze three times at the owner's glass in one evening, the owner
-directed a capture rearchitecture: **the direct eye**
-(docs/20260801-105800-direct-eye-plan.md — the governing plan, phases E0–E5).
-Main is tagged **`portal-era-final`** (#44 closed the old era's books:
-probes in Host/Probes/kms-eye/ with measured numbers, owner decisions
-in TODO.md). The chain: FB-ID doorbell → GETFB2/dmabuf → EGL
-modifier-aware import → GPU blit RGB→NV12 → VAAPI (Arc, on pup) /
-NVENC (NVIDIA-panel desktops) → the UNCHANGED existing wire. Swift-
-first via module maps (no .c files). **E0 is COMPLETE**: #45 landed
-the doorbell (pure Swift, C-probe parity: 1.00 flips/s idle, 61.00/s
-motion, ~4 µs/poll, unprivileged); #46 landed the full loop —
-`lyte-eye capture` measured 61.08 fps motion / 1.37 fps idle (same
-binary, cadence IS content), 0.85 ms blit + 0.47 ms encode per frame,
-and the M5's `lyte decode-probe` hardware-decoded 611/611 access
-units with BT.709 intact. Vendored libavcodec now carries hevc_vaapi
-(encoders=2; no-reset marker verified). **E1 code-half LANDED (#47)**:
-HostEye library + `--backend direct` in lyte-host — DirectEyeLeg feeds
-wire.sendFrame directly; IDR demands honored, rate directives
-consumed-and-deferred (the vaapi wrapper takes rc at open() only —
-per-frame control is E6-VAAPI's charter); keyframe truth rides
-AV_PKT_FLAG_KEY (the wrapper pipelines by one frame); the session-bus
-startup guard is portal-only now. Probe inside the REAL host binary:
-367 frames @ 61 fps, first packet VPS+SPS+PPS+IDR, M5 decode-probe
-367/367 hardware. **E1 is ARCHITECTURALLY
-COMPLETE (#48 A/B, #49 soak)**: the live A/B — direct leg 1810
-frames / p99 17.6 ms vs the portal's no_frames on the SAME leg — and
-the soak: **107,212 frames / 30 min / 0 missed grabs / 0 freezes /
-p99 18.0 ms**. The six quality reds were one constant (gop_size=120,
-902 periodic IDR bursts); the eye now runs the product discipline
-(gop=∞, on-demand IDRs, static VBR envelope) and direct legs print
-the full session books. Privileges: setcap cap_sys_admin on pup's
-lyte-host (REDO after every rebuild; rig checks). Residuals FILED,
-host exonerated by books: client-side audio feed (~0.1%
-concealment), transit-gate calibration for real-capture frame sizes,
-idr-books direct counter. **E3 cursor metadata LANDED (2026-08-01)**:
-CTRL 0x24 CursorShape (content-cropped BGRA ≤ 64 KB, hidden =
-all-zero state) + capability key 13 on the W7 spine; host
-EyeCursorWatcher polls the cursor plane FB_ID at doorbell cadence,
-mmaps the LINEAR ARGB8888 buffer, derives the hotspot (injected
-absolute pointer − plane CRTC − crop origin; i915 has no HOTSPOT
-props); client wears it as NSCursor over the stream view (position
-stays local = zero latency). Live gate on the paired app: 10 shapes
-sent / 4 deduped / 0 failures alongside 300 frames / 0 missed
-grabs. Residuals: motion rig's cadence preflight failed 3× (pup now
-runs the owner's incus/QEMU win11 VM — compositor jitter; rig needs
-a settling retry), and static-workload grading assumes portal idle
-machinery the direct leg lacks. **Post-E3 landings (2026-08-01)**:
-(#51) the direct leg now drives SessionWire.service() every 10 ms —
-before it, the shell pendings starved (0x19 posture never sent, the
-app's mute never applied so direct legs left pup's speakers LIVE,
-standing cursor shape never flushed); the motion leg's books caught
-it (`cursor: 0 shapes sent` beside a PASS). (#52) **E6a milestone 1**:
-lyte-nvenc, pure Swift against libnvidia-encode (CNvEnc = vendored
-nv-codec-headers 12.2; CCuda = 7 hand-declared driver prototypes, no
-toolkit) — on the 4050: IDRs at [0] only, NvEncReconfigureEncoder
-35→18 Mbps mid-stream with zero reset/zero IDR, decode gate 120/120
-VideoToolbox hardware. With the owner's win11 VM shut down, the
-motion leg posted the direct-eye era's FIRST FULL PASS (1800/1800
-frames, 0 corruption, readyGap p50 16.64 ms, input p99 1.5 ms); the
-VM was the whole preflight story (skips 85→1→0), though the
-zero-skip gate still flakes on single skips. NEXT on the butter
-ladder: E6a productionize (NVENC leg behind the doctor), E6b
-VAAPI-native (live rate directives, frees pup, kills
-vendor-ffmpeg.sh), Arc Rext-444 leg, E2 uinput, E4 packaging, E5
-demolition, then AV1.
-AV1 is deferred until after the rearchitecture (owner decision; the
-four HEVC-shaped seams are inventoried in TODO.md — owner's Mac is an
-M5, pup has two hw AV1 encoders). Audio STAYS on PipeWire. Consent =
-pairing. Input goes uinput-primary at E2. Everything below this block
-is the pre-pivot ledger, still true of the transport and client.
+**The direct-eye epoch is COMPLETE.** Phases E0–E6b all landed
+(#45–#57 and friends), and the E5 portal demolition merged as **PR #72**
+with the annotated tag **`self-hosted`** on merge `860369a`: the portal
+and mutter ScreenCast backends, PipeWire video, the libav NVENC seat,
+and the vendored no-reset FFmpeg are deleted. Capture is the direct
+eye (KMS doorbell → EGL blit → native VAAPI through our own HEVC
+pens); `ldd lyte-host` shows zero libav; a plain `swift build` (no
+ffmpeg env) is itself a gate. The earlier tag `first-light` marks the
+first NO-DROPS real session (cushion 0–150 ms slider, honest
+link-health pill, avahi pinned to the wired NIC).
+
+**Live ops:** pup runs a standing supervisor loop (`~/lyte-loop.sh`,
+nohup) on `--backend direct --encoder native --wire-listen 41151
+--ratchet --clipboard=images --advertise-interface enxf8e43b7ede7c`
+(`--backend`/`--encoder`/`--ratchet` are accepted no-ops since E5) —
+wired at 10.0.0.232. After EVERY rebuild:
+`sudo -n setcap cap_sys_admin+ep .build/debug/lyte-host` (the loop's
+next respawn execs the new binary). Never kill the owner's 41151 loop;
+test hosts use fresh 41xxx ports with `--no-advertise`.
+
+**Where the work lives now:** TODO.md carries the ANALYSIS live
+remainder (the v2 fix train: start T2-7 peer retarget / T2-8 NACK-IDR
+throttle / T2-9 ARQ group reclaim), the audit caveats, and the
+capture-organ decision record. docs/README.md is the doc catalog
+(twenty finished records retired to git history 2026-08-02;
+`git show 4bb3e11:docs/<name>`).
+
+**The active track is the postures design**
+(docs/20260802-013946-postures-design.md): audio first —
+mute-at-source LANDED (#71, key 14, `streamOff` 0x04, WIRE strip
+button); NEXT = tripwire + pre-roll (capture never stops, transmission
+gates, ~200 ms pre-roll ring saves onsets), then the REWIND (opt-in
+host-MEMORY ring, never disk). After audio: video quiet posture +
+posture announcement messages, direct-leg quality refinement
+(ratchet's successor), the native-seat benchmark quality witness, E6a
+NVENC productionize (lyte-nvenc probe banked), Rext 4:4:4 in the
+native pens (returns the Best tier), E2 uinput-primary, E4 packaging
+aimed at Lyte OS.
+
+**Suites at HEAD:** Wire 512, root client 283, host 281 on pup — all
+green. Everything below this line is the pre-pivot ledger, still true
+of the transport and client.
 
 # PREVIOUS RESUME (2026-07-30, pre-pivot)
 

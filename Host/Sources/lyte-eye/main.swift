@@ -3,7 +3,7 @@
 // Two modes:
 //   lyte-eye [device] [seconds] [poll_us]           — the doorbell
 //     (milestone 1): FB_ID change detection, unprivileged, output
-//     line-comparable with Host/Probes/kms-eye/fbid-poll.c.
+//     line-comparable with the retired fbid-poll.c probe.
 //   lyte-eye capture [--device D] [--render R] [--seconds N]
 //            [--out PATH] [--qp N]                   — the full loop
 //     (milestone 2): doorbell → GETFB2/dmabuf → EGL import → GL blit

@@ -201,7 +201,9 @@ docs/20260720-215100-lyte-udp-decision.md.)*
 
 Linux is the first host target because that's the machine on the other end
 today (the reference host), and because it's the platform where owning the
-host pays off immediately (Wayland clipboard, 4:4:4 via NVENC).
+host pays off immediately (Wayland clipboard, compositor-free capture —
+since E5, the direct eye and our own HEVC bitstream pens; 4:4:4 returns
+when Rext lands in the native pens).
 
 Implementation detail and evidence for these choices lived in
 docs/HOST-PLAN.md, retired 2026-08-02 to git history
@@ -218,11 +220,13 @@ lyte (host role)
 ├── Advertise/      Bonjour _lyte._udp; identity, capabilities
 ├── PairHost/       PIN-PAKE approval, Noise static-key pinning (per the transport pillar)
 ├── SessionHost/    Lyte-UDP session/control host side; one session per display, N feature channels
-├── Capture/        Linux: PipeWire/portal (Wayland), KMS; macOS: ScreenCaptureKit
-├── Encode/         NVENC / VAAPI / VideoToolbox behind one Swift facade; HEVC⇄H.264; 4:4:4
-│                   (NVENC is the reference-host path and the 4:4:4-capable one; VAAPI banked for Intel hosts)
+├── Capture/        Linux: the direct eye — KMS doorbell + EGL blit (compositor-free; portal
+│                   demolished at E5); macOS host someday: ScreenCaptureKit
+├── Encode/         native VAAPI via our own HEVC pens (reference path, Intel);
+│                   NVENC-native banked (lyte-nvenc, E6a) for NVIDIA-panel hosts;
+│                   4:4:4 returns with Rext in the native pens
 ├── AudioCap/       PipeWire capture → Opus encode → Lyte-UDP datagrams + FEC
-├── InputInject/    portal RemoteDesktop primary, uinput fallback — keyboard, mouse, scroll
+├── InputInject/    Mutter RemoteDesktop primary, uinput fallback — keyboard, mouse, scroll
 ├── Features/       clipboard watcher/setter, print interception, file channel
 └── Telemetry/      encoder queue depth, capture latency, per-client loss — feeds the doctor
 ```
