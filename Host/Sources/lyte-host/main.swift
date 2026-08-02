@@ -1791,8 +1791,11 @@ func run() throws {
         // truthfully never declares it. Key 10 (clipboardText, CL-15)
         // rides the same spine whenever the clipboard leaf is up, and
         // key 11 (bulkTransfer, F-3) whenever the file-drop shell is.
+        // Key 14 (audioStreamOff, postures design) rides with key 9:
+        // an audio-capable host can always honor "send me nothing".
         var declared = opts.audio
             ? Capabilities.wireDefault.declaringHostAudioRouting()
+                .declaringAudioStreamOff()
             : .wireDefault
         if clipboardLeaf != nil {
             declared = declared.declaringClipboardText()
@@ -2011,6 +2014,17 @@ func run() throws {
                 // owns the quantum forcing, so two never overlap.
                 audioWire?.stop()
                 audioWire = nil
+                // Mute-at-source (postures design, mode 0x03): stop
+                // IS the whole apply — no capture, no encode, zero
+                // packets; the host's own speakers keep playing. The
+                // return-to-streaming request rebuilds below like any
+                // other flip.
+                if mode == .streamOff {
+                    print("audio-routing: stream OFF — the wire "
+                        + "carries no audio track (host speakers "
+                        + "unaffected)")
+                    return true
+                }
                 do {
                     let flipped = try AudioWire(
                         wire: w, bitrate: opts.audioBitrate, mode: mode

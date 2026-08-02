@@ -260,6 +260,22 @@
     },
     {
       "codec" : "audioRoutingRequest",
+      "description" : "type ‖ mode: [0x18, 0x04] — streamOff (key-14 mute-at-source; 0x03 stays the pinned tombstone).",
+      "kind" : "roundtrip",
+      "messageHex" : "1804",
+      "mode" : "streamOff",
+      "name" : "routing-request-streamoff"
+    },
+    {
+      "codec" : "audioRoutingStatus",
+      "description" : "type ‖ mode: [0x19, 0x04] — streamOff applied.",
+      "kind" : "roundtrip",
+      "messageHex" : "1904",
+      "mode" : "streamOff",
+      "name" : "routing-status-streamoff"
+    },
+    {
+      "codec" : "audioRoutingRequest",
       "description" : "The bare type byte rejects.",
       "error" : "truncatedMessage",
       "kind" : "decodeReject",

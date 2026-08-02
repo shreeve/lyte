@@ -573,6 +573,7 @@ final class WireViewStatsPrinter: Sendable {
             switch core.hostAudioRoutingPosture {
             case .hostMuted: sess += ", host-audio MUTED"
             case .hostAudible: sess += ", host-audio audible"
+            case .streamOff: sess += ", audio stream OFF"
             case nil: sess += ", host-audio pending"
             }
         } else if core.agreedCapabilities != nil {

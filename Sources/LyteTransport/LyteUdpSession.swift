@@ -59,6 +59,10 @@ import Synchronization
 /// when the 0x18/0x19 codecs promoted into LyteWire.
 public enum AudioRoutingAskError: Error, Equatable, Sendable {
     case notNegotiated
+    /// streamOff asked against an intersection without key 14 — the
+    /// mute-at-source dialect never survived, so the ask is refused
+    /// before a byte leaves.
+    case streamOffNotNegotiated
 }
 
 // MARK: - Client-side bulk-channel policy (F-4)
@@ -308,7 +312,8 @@ public struct LyteUdpSessionCoreConfig: Sendable {
 
     public init(
         capabilities: Capabilities = .wireDefault
-            .declaringHostAudioRouting().declaringClipboardText()
+            .declaringHostAudioRouting().declaringAudioStreamOff()
+            .declaringClipboardText()
             // F-4: key 11 (bulkTransfer) — dialect, not consent (the
             // key-9/key-10 rule, third verse): this client can always
             // SEND a dropped file, so it always declares; whether an
@@ -789,6 +794,13 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         guard agreed?.hostAudioRouting == true else {
             lock.unlock()
             throw AudioRoutingAskError.notNegotiated
+        }
+        // The key-14 gate: streamOff is a separate dialect — a legacy
+        // host would reject the byte as a protocol break, so the
+        // refusal happens HERE, typed, before anything leaves.
+        if mode == .streamOff, agreed?.audioStreamOff != true {
+            lock.unlock()
+            throw AudioRoutingAskError.streamOffNotNegotiated
         }
         counters.audioRoutingRequestsSent += 1
         lock.unlock()

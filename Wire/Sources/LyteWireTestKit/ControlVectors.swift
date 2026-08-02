@@ -117,6 +117,9 @@ public struct ControlVector: Codable, Sendable {
     public enum RoutingMode: String, Codable, Sendable {
         case hostAudible
         case hostMuted
+        /// 0x04 — 0x03 is the tombstone the routing-mode-unknown
+        /// vector pinned forever.
+        case streamOff
     }
 
     public init(
@@ -240,6 +243,7 @@ public func controlVectorMode(
     switch mode {
     case .hostAudible: return .hostAudible
     case .hostMuted: return .hostMuted
+    case .streamOff: return .streamOff
     }
 }
 
