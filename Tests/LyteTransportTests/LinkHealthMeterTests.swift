@@ -128,6 +128,32 @@ final class LinkHealthMeterTests: XCTestCase {
         XCTAssertEqual(meter.assessment(now: 11).level, .good)
     }
 
+    func testSessionBooksOutliveTheWindowAndDieWithTheSession() {
+        let meter = LinkHealthMeter()
+        meter.observe(
+            ordinal: 1, transitStretchMilliseconds: 39,
+            sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
+            enqueueMilliseconds: 0.03, now: 10)
+        meter.observe(
+            ordinal: 2, transitStretchMilliseconds: 27,
+            sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
+            enqueueMilliseconds: 0.03, now: 20)
+        // Two minutes later the window has forgotten both; the
+        // session books have not — "2 total, worst 39 ms" still true.
+        let verdict = meter.assessment(now: 140)
+        XCTAssertEqual(verdict.level, .good)
+        XCTAssertEqual(verdict.sessionStallCount, 2)
+        XCTAssertEqual(verdict.sessionWorstMilliseconds, 39)
+        // A reconnect (ordinals restart) starts fresh books.
+        meter.observe(
+            ordinal: 1, transitStretchMilliseconds: 0.5,
+            sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
+            enqueueMilliseconds: 0.03, now: 150)
+        let fresh = meter.assessment(now: 150)
+        XCTAssertEqual(fresh.sessionStallCount, 0)
+        XCTAssertEqual(fresh.sessionWorstMilliseconds, 0)
+    }
+
     func testDuplicateOrdinalsFoldOnce() {
         let meter = LinkHealthMeter()
         for _ in 0..<5 {

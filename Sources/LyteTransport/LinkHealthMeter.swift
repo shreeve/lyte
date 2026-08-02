@@ -18,18 +18,27 @@ public struct LinkHealthAssessment: Equatable, Sendable {
     /// stretch: host stamp → client-ready), "host" (capture/encode
     /// cadence), "renderer" (queue/enqueue).
     public var level: Level
+    /// Rate and level grade the rolling window — the pill relaxes
+    /// when the link recovers. Total and worst are SESSION books —
+    /// "43 total, worst 115 ms" quantifies the whole sitting even
+    /// after the window forgets.
     public var stallsPerMinute: Double
     public var worstStallMilliseconds: Double
     public var dominantStage: String
+    public var sessionStallCount: Int
+    public var sessionWorstMilliseconds: Double
 
     public init(
         level: Level, stallsPerMinute: Double,
-        worstStallMilliseconds: Double, dominantStage: String
+        worstStallMilliseconds: Double, dominantStage: String,
+        sessionStallCount: Int, sessionWorstMilliseconds: Double
     ) {
         self.level = level
         self.stallsPerMinute = stallsPerMinute
         self.worstStallMilliseconds = worstStallMilliseconds
         self.dominantStage = dominantStage
+        self.sessionStallCount = sessionStallCount
+        self.sessionWorstMilliseconds = sessionWorstMilliseconds
     }
 }
 
@@ -57,6 +66,8 @@ public final class LinkHealthMeter {
 
     private var episodes: [Episode] = []
     private var highWaterOrdinal: UInt64 = 0
+    private var sessionStallCount = 0
+    private var sessionWorstMilliseconds = 0.0
 
     public init() {}
 
@@ -74,8 +85,11 @@ public final class LinkHealthMeter {
     ) {
         if ordinal < highWaterOrdinal {
             // Ordinals ran backwards: the recorder was reset
-            // (reconnect). Old episodes belong to the old session.
+            // (reconnect). Old episodes AND the session books belong
+            // to the old session.
             episodes.removeAll()
+            sessionStallCount = 0
+            sessionWorstMilliseconds = 0
         } else if ordinal == highWaterOrdinal {
             return // already folded
         }
@@ -111,7 +125,9 @@ public final class LinkHealthMeter {
         } else {
             episodes.append(Episode(
                 at: now, worstMilliseconds: worst, stage: stage))
+            sessionStallCount += 1
         }
+        sessionWorstMilliseconds = max(sessionWorstMilliseconds, worst)
     }
 
     /// The rolling verdict. Poor: stalls are frequent (3+ in the
@@ -136,6 +152,8 @@ public final class LinkHealthMeter {
         }
         return LinkHealthAssessment(
             level: level, stallsPerMinute: perMinute,
-            worstStallMilliseconds: worst, dominantStage: dominant)
+            worstStallMilliseconds: worst, dominantStage: dominant,
+            sessionStallCount: sessionStallCount,
+            sessionWorstMilliseconds: sessionWorstMilliseconds)
     }
 }
