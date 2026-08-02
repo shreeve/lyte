@@ -480,6 +480,14 @@ final class SessionWire {
     ) throws {
         precondition(listenPort != nil || peer != nil,
                      "a session needs a port to listen on or a peer")
+        // A-23: every validation that can refuse lives ABOVE the first
+        // allocation. A throw after the drain thread holds `self` would
+        // leave that thread on a deinit'd object — nothing may throw
+        // past thread.start() below.
+        if insecure, peer == nil {
+            throw HostError("--insecure streams to a fixed peer; "
+                + "give --wire-out HOST:PORT")
+        }
         self.insecure = insecure
         self.rateBitsPerSecond = rateBitsPerSecond
         self.capabilities = capabilities
@@ -547,12 +555,8 @@ final class SessionWire {
         thread.start()
 
         if insecure {
-            guard let peer else {
-                lyte_netio_free(n)
-                scratch.deallocate()
-                throw HostError("--insecure streams to a fixed peer; "
-                    + "give --wire-out HOST:PORT")
-            }
+            // Validated above the allocations: insecure implies peer.
+            let peer = peer!
             makeSession(
                 crypto: .insecure,
                 clientTuple: FourTuple(
