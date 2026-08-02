@@ -323,8 +323,18 @@ final class DirectEyeLeg {
             wire.noteCursorShape(.hidden)
         case .shape(let frame):
             cursorShapesSeen += 1
+            // The derivation ledger (2026-08-01) convicted the plane
+            // position: this stack commits legacy cursor moves that
+            // leave CRTC_X/Y at 0, so pointer − plane − crop slammed
+            // into the clamp and stamped every hotspot bottom-right
+            // (the owner's ~25 px aim offset). A (0,0) plane reading
+            // with the pointer far away IS the lie's fingerprint —
+            // fall back to the content top-left, which is the arrow's
+            // true tip within a few pixels. (Exact per-shape hotspots
+            // = the Xcursor theme matcher, filed as the real fix.)
             var hx = 0, hy = 0
-            if let pointer = wire.lastAbsolutePointerInjection() {
+            if let pointer = wire.lastAbsolutePointerInjection(),
+               frame.planeCrtcX != 0 || frame.planeCrtcY != 0 {
                 hx = Int(pointer.x.rounded())
                     - frame.planeCrtcX - frame.cropX
                 hy = Int(pointer.y.rounded())
@@ -375,7 +385,11 @@ final class DirectEyeLeg {
         else { return }
         let nowMicros = UInt64(nowSeconds() * 1_000_000)
         guard nowMicros &- pointer.atMicros > 150_000 else { return }
-        guard let plane = watcher.planeCrtcPosition() else {
+        guard let plane = watcher.planeCrtcPosition(),
+              plane.x != 0 || plane.y != 0 else {
+            // Same fingerprint as the derive path: a (0,0) plane is
+            // the legacy-cursor lie — a rest recheck against it would
+            // "correct" a good hotspot into garbage.
             hotspotRecheckArmed = false
             return
         }
