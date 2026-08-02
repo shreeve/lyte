@@ -41,8 +41,8 @@ atomic exit reason), #78 (init validation above allocations), #79
 discarded by contract). Only TWO items remain in TODO.md, both
 deliberately deferred to their proper homes: A-20 (channel-blind
 trains → the direct-leg quality refinement) and A-26 (duplications →
-the v2 Common/IO split). Suites at HEAD: Wire 513, root 284, host
-281 pup / 280 Mac. docs/README.md is the doc catalog (twenty
+the v2 Common/IO split). Suites at HEAD: Wire 517, root 287, host
+290 pup / 289 Mac. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
 
@@ -58,13 +58,19 @@ Settings dials, DTX warm rung, DSP fades. The REWIND was RE-SIZED by
 the owner (2026-08-02): "more like 2–5 seconds" — an instant-replay
 button, not a DVR; the tripwire's ring already banks the mechanism
 (deepen to ~5 s ≈ 80 KB when demand shows up), so it's PARKED behind
-demand, not next. NEXT = video quiet posture + posture announcements
-(the doc's table: keepalive backs off 1→2→4→…→30 s after ~30 s no
-damage, each step announced; damage or client input IS the wake). After audio:
-video quiet posture + posture announcement messages, direct-leg
-quality refinement (ratchet's successor — owns A-20), the native-seat
-benchmark quality witness, E6a NVENC productionize (lyte-nvenc probe
-banked), Rext 4:4:4 in the native pens (returns the Best tier), E2
+demand, not next. **Video quiet posture LANDED (#81, 2026-08-02)**:
+capability key 16 + CTRL 0x26 posture-state, HostCore VideoQuietPacer
+(keepalive 1→2→4→8→16→30 s, one rung per 30 s stillness, each step
+announced once; FB damage or client input IS the wake and collapses
+to 1 s with one active announcement); client stores
+announcedVideoPosture, drops unnegotiated 0x26 — no detector change
+needed (#66 already gap-normalized video freshness). Live smoke:
+`posture_announcements=0` at pup's 1 Hz clock repaint (honest —
+ladder pinned by unit + in-vivo legs instead). NEXT = the native-seat
+benchmark quality witness (GPU readback — restores the Beauty Bar
+instrument). Then: direct-leg quality refinement (ratchet's successor
+— owns A-20), E6a NVENC productionize (lyte-nvenc probe banked),
+Rext 4:4:4 in the native pens (returns the Best tier), E2
 uinput-primary, E4 packaging aimed at Lyte OS.
 
 **Suites at HEAD:** Wire 513, root client 284, host 281 on pup / 280
