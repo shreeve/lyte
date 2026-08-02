@@ -221,6 +221,9 @@ public struct LyteUdpSessionCounters: Sendable {
     /// Tripwire: 0x25 track-state announcements received (gate
     /// closes, still-quiet check-ins, and wakes all count here).
     public var audioTrackStatesReceived: UInt64 = 0
+    /// Video posture: 0x26 announcements received (ladder steps and
+    /// wakes).
+    public var videoPostureStatesReceived: UInt64 = 0
     /// Loud audio-routing drops (CL-13): an unnegotiated 0x19, or a
     /// role-confused 0x18 arriving AT the client — the host's rule-3
     /// gate, mirrored.
@@ -342,7 +345,12 @@ public struct LyteUdpSessionCoreConfig: Sendable {
             // (relax the audio-fed blackout detector, let the jitter
             // buffer rest), so it always declares; whether the host
             // GATES is its own tripwire's verdict.
-            .declaringAudioQuietPosture(),
+            .declaringAudioQuietPosture()
+            // Video posture: key 16 — dialect, seventh verse: this
+            // client can always arm its freshness expectations
+            // against an ANNOUNCED keepalive interval, so it always
+            // declares; whether the host backs off is its ladder.
+            .declaringVideoQuietPosture(),
         machineConfig: SessionMachineConfig = SessionMachineConfig(
             blackoutSilenceMicroseconds: 2_500_000
         ),
@@ -435,6 +443,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// True once the first authenticated chan-1 datagram landed and
     /// (config permitting) the detector re-armed at 350 ms.
     public private(set) var detectorTightened = false
+    /// Video posture: the last 0x26 the host announced (nil = never
+    /// announced — the always-on contract). Read by the UI's pill.
+    public private(set) var announcedVideoPosture: VideoPostureState?
 
     /// The production machine-poll wake; nil until `startTimers()`.
     private var machineTimer: DispatchSourceTimer?
@@ -1197,6 +1208,36 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         }
     }
 
+    /// Video posture (0x26): the host's keepalive ladder announcement.
+    /// v1 consumers: the counter, the note, and the stored posture the
+    /// UI's pill can render as calm idle — video freshness alarms were
+    /// already gap-normalized (#66), so no detector rebuild is needed
+    /// on this axis; the announcement makes the slow heartbeat HONEST
+    /// rather than survivable.
+    private func receiveVideoPostureState(_ bytes: [UInt8]) {
+        guard let message = try? VideoPostureState.decode(bytes) else {
+            noteMalformed("video posture state")
+            return
+        }
+        lock.lock()
+        guard agreed?.videoQuietPosture == true else {
+            lock.unlock()
+            onEvent(.protocolNote(
+                "video posture 0x26 without negotiated key 16 — dropped"))
+            return
+        }
+        counters.videoPostureStatesReceived += 1
+        let changed = announcedVideoPosture != message
+        announcedVideoPosture = message
+        lock.unlock()
+        if changed {
+            onEvent(.protocolNote(message.posture == .quiet
+                ? "video quiet — keepalive \(message.keepaliveSeconds)s "
+                    + "announced"
+                : "video active — keepalive 1 s"))
+        }
+    }
+
     /// The tighten's mirror: rebuilds the receiver machine at the
     /// beacon-bounded default and clears `detectorTightened`, so the
     /// wake's first audio datagram tightens it right back. No-op when
@@ -1417,6 +1458,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
         case CtrlMessageType.audioTrackState:
             receiveAudioTrackState(bytes, now: now)
+
+        case CtrlMessageType.videoPostureState:
+            receiveVideoPostureState(bytes)
 
         case CtrlMessageType.audioRoutingRequest:
             // Role confusion: 0x18 is client→host only. The host's

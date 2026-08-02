@@ -359,6 +359,63 @@ final class ControlCodecTests: XCTestCase {
         XCTAssertThrowsError(try AudioTrackState.decode([0x25, 0x01, 0]))
     }
 
+    // MARK: Capability key 16 + the 0x26 video-posture codec
+
+    func testVideoQuietPostureRidesTheSpineLikeKeyNine() throws {
+        let declared = Capabilities.wireDefault.declaringVideoQuietPosture()
+        XCTAssertTrue(declared.videoQuietPosture)
+        XCTAssertFalse(Capabilities.wireDefault.videoQuietPosture)
+        XCTAssertEqual(declared.declaringVideoQuietPosture(), declared)
+
+        let decoded = try Capabilities.decodeCbor(declared.encodeCbor())
+        XCTAssertTrue(decoded.videoQuietPosture)
+        XCTAssertEqual(decoded, declared)
+
+        XCTAssertTrue(declared.intersecting(declared).videoQuietPosture)
+        XCTAssertFalse(declared.intersecting(.wireDefault).videoQuietPosture)
+        XCTAssertFalse(
+            Capabilities.wireDefault.intersecting(declared).videoQuietPosture
+        )
+    }
+
+    func testVideoPostureCodecPinsBytesAndRejectsHostiles() throws {
+        XCTAssertEqual(
+            VideoPostureState(posture: .active, keepaliveSeconds: 1).encode(),
+            [0x26, 0x01, 0x01]
+        )
+        XCTAssertEqual(
+            VideoPostureState(posture: .quiet, keepaliveSeconds: 30).encode(),
+            [0x26, 0x02, 0x1E]
+        )
+        for posture in VideoPostureState.Posture.allCases {
+            for interval: UInt8 in [1, 2, 4, 8, 16, 30, 255] {
+                let decoded = try VideoPostureState.decode(
+                    VideoPostureState(
+                        posture: posture, keepaliveSeconds: interval
+                    ).encode())
+                XCTAssertEqual(decoded.posture, posture)
+                XCTAssertEqual(decoded.keepaliveSeconds, interval)
+            }
+        }
+        // A zero interval never travels (the init clamps) and never
+        // decodes (a hostile zero rejects).
+        XCTAssertEqual(
+            VideoPostureState(posture: .quiet, keepaliveSeconds: 0)
+                .keepaliveSeconds, 1)
+        XCTAssertThrowsError(try VideoPostureState.decode([0x26, 0x02, 0x00]))
+        // Truncation, foreign types, unknown postures, trailing bytes.
+        XCTAssertThrowsError(try VideoPostureState.decode([]))
+        XCTAssertThrowsError(try VideoPostureState.decode([0x26]))
+        XCTAssertThrowsError(try VideoPostureState.decode([0x26, 0x02]))
+        XCTAssertThrowsError(try VideoPostureState.decode([0x25, 0x01, 0x01]))
+        for posture: UInt8 in [0x00, 0x03, 0xFF] {
+            XCTAssertThrowsError(
+                try VideoPostureState.decode([0x26, posture, 0x01]))
+        }
+        XCTAssertThrowsError(
+            try VideoPostureState.decode([0x26, 0x01, 0x01, 0]))
+    }
+
     // MARK: The registry itself
 
     func testPromotedRegistryNumbersAreThePinnedOnes() {
@@ -373,5 +430,7 @@ final class ControlCodecTests: XCTestCase {
         XCTAssertEqual(CapabilityKey.hostAudioRouting, 9)
         XCTAssertEqual(CtrlMessageType.audioTrackState, 0x25)
         XCTAssertEqual(CapabilityKey.audioQuietPosture, 15)
+        XCTAssertEqual(CtrlMessageType.videoPostureState, 0x26)
+        XCTAssertEqual(CapabilityKey.videoQuietPosture, 16)
     }
 }

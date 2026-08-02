@@ -1503,6 +1503,48 @@ final class SessionWire {
         return session.agreedAudioQuietPosture
     }
 
+    /// Video posture: whether THIS session agreed key 16. The video
+    /// leg asks per poll before ever backing off its keepalive.
+    func videoQuietPostureAgreed() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let session, session.phase == .established else { return false }
+        return session.agreedVideoQuietPosture
+    }
+
+    /// Video posture: one 0x26 announcement onto the reliable stream
+    /// (a no-op at the session layer unless key 16 was agreed).
+    func sendVideoPostureState(quiet: Bool, keepaliveSeconds: UInt8) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let session, session.phase == .established else { return }
+        let state = VideoPostureState(
+            posture: quiet ? .quiet : .active,
+            keepaliveSeconds: keepaliveSeconds)
+        for event in session.noteVideoPostureState(
+            state, now: monotonicNS(), hostMicroseconds: monotonicMicros()
+        ) {
+            log(event)
+        }
+        do {
+            try serviceOnce()
+            try flushOutbox()
+        } catch {
+            lastSendError = String(describing: error)
+        }
+    }
+
+    /// The wake-on-input half of the video posture: the drain thread
+    /// stamps every injected input event; the video leg reads the
+    /// stamp each poll — an input packet IS the wake, zero added
+    /// latency (postures design). Monotonic ns, atomic via configLock
+    /// (cold: one store per input event, one load per poll).
+    private var _lastInputActivityNS: UInt64 = 0
+    var lastInputActivityNS: UInt64 {
+        get { withConfigLock { _lastInputActivityNS } }
+        set { withConfigLock { _lastInputActivityNS = newValue } }
+    }
+
     /// Tripwire: one 0x25 track-state announcement onto the reliable
     /// stream (a no-op at the session layer unless key 15 was agreed).
     func sendAudioTrackState(_ state: AudioTrackState.State) {
@@ -1968,6 +2010,9 @@ final class SessionWire {
             emit("audio-routing: status \(mode) sent (0x19)")
         case .audioTrackStateSent(let state):
             emit("audio-track: \(state) announced (0x25)")
+        case .videoPostureStateSent(let state):
+            emit("video-posture: \(state.posture) "
+                + "keepalive \(state.keepaliveSeconds)s announced (0x26)")
         case .clipboardSetReceived(let text):
             // CL-15/HS-19: the session's gate + book already ran (the
             // book is pre-armed against this apply's echo). Delivered
@@ -2062,6 +2107,9 @@ final class SessionWire {
     private func injectInput(
         _ event: InputEvent, receivedAtMicroseconds rxMicros: UInt64
     ) {
+        // The video posture's wake signal — stamped whether or not an
+        // injector is live (the user acted either way).
+        lastInputActivityNS = monotonicNS()
         guard let injector = inputInjector else {
             if !inputNoInjectorWarned {
                 inputNoInjectorWarned = true

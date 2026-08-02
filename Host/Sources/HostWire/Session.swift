@@ -395,6 +395,9 @@ public enum SessionEvent: Equatable, Sendable {
     /// Tripwire: a 0x25 track-state announcement left on the reliable
     /// stream (gate close, still-quiet check-in, or wake).
     case audioTrackStateSent(AudioTrackState.State)
+    /// Video posture: a 0x26 announcement left on the reliable stream
+    /// (a backoff step, or the wake back to active).
+    case videoPostureStateSent(VideoPostureState)
     /// CL-15: a client 0x1A clipboard set arrived on the reliable
     /// stream — exactly once, in order. Only surfaces when the agreed
     /// capabilities carry clipboardText (the W7 rule-3 gate); the
@@ -702,6 +705,8 @@ public struct SessionCounters: Equatable, Sendable {
     public var clipboardSetsReceived = 0
     /// Tripwire: 0x25 track-state announcements sent.
     public var audioTrackStatesSent = 0
+    /// Video posture: 0x26 announcements sent.
+    public var videoPostureStatesSent = 0
     /// CL-15: 0x1B clipboard announces sent.
     public var clipboardAnnouncesSent = 0
     /// CL-15: leaf-reported changes the book/ceiling suppressed.
@@ -911,6 +916,12 @@ public final class Session {
     /// always-on contract, silence included.
     public var agreedAudioQuietPosture: Bool {
         negotiator.agreed?.audioQuietPosture == true
+    }
+    /// The video ladder's gate: true when videoQuietPosture (key 16)
+    /// survived the intersection — the keepalive backs off only under
+    /// this agreement.
+    public var agreedVideoQuietPosture: Bool {
+        negotiator.agreed?.videoQuietPosture == true
     }
     /// CL-15: true when clipboardText (key 10) survived the
     /// intersection. Gates 0x1A consumption and 0x1B emission.
@@ -1711,6 +1722,24 @@ public final class Session {
             return [.audioTrackStateSent(state)]
         } catch {
             return [.sendFailed("audio track state: \(error)")]
+        }
+    }
+
+    /// The video posture's announcement: one 0x26 per ladder step and
+    /// one on the wake back to active. Silently a no-op unless key 16
+    /// survived intersection (the noteAudioRoutingApplied rule).
+    public func noteVideoPostureState(
+        _ state: VideoPostureState, now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        guard agreedVideoQuietPosture else { return [] }
+        do {
+            try sendReliable(
+                state.encode(), now: now, hostMicroseconds: hostMicroseconds
+            )
+            counters.videoPostureStatesSent += 1
+            return [.videoPostureStateSent(state)]
+        } catch {
+            return [.sendFailed("video posture state: \(error)")]
         }
     }
 

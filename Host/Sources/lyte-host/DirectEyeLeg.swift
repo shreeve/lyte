@@ -16,6 +16,7 @@
 import CDRM
 import Foundation
 import Glibc
+import HostCore
 import HostEye
 import LyteWire
 
@@ -53,6 +54,10 @@ final class DirectEyeLeg {
     static let keepaliveSeconds = 1.0
     private var lastDeliveryWallSeconds = 0.0
     private(set) var keepalivesSent = 0
+    /// The video quiet ladder (postures design): engaged only under
+    /// the key-16 agreement; every step and wake is announced (0x26).
+    private var quietPacer = VideoQuietPacer()
+    private(set) var postureAnnouncements = 0
     /// E5 audit item 4: set when the leg ended because the display's
     /// geometry changed under it — a clean, deliberate exit, not an
     /// error.
@@ -145,6 +150,8 @@ final class DirectEyeLeg {
         var pendingCauses: [String] = []
         let t0 = nowSeconds()
         var lastServiceAt = 0.0
+        // The stillness clock: last damage (FB flip) or client input.
+        var lastActivityWallSeconds = t0
 
         while nowSeconds() - t0 < config.seconds {
             if wire?.sessionEnded == true { break }
@@ -232,9 +239,28 @@ final class DirectEyeLeg {
                 // law), never an IDR, wire sessions only — file-mode
                 // captures stay damage-driven so their books grade
                 // the screen, not the heartbeat.
+                var keepaliveInterval = Self.keepaliveSeconds
+                if let wire {
+                    // Client input wakes the posture preemptively —
+                    // the input packet IS the wake (postures design).
+                    let inputSeconds =
+                        Double(wire.lastInputActivityNS) / 1e9
+                    let idle = nowSeconds()
+                        - max(lastActivityWallSeconds, inputSeconds)
+                    if wire.videoQuietPostureAgreed() {
+                        let verdict = quietPacer.assess(idleSeconds: idle)
+                        keepaliveInterval = verdict.keepaliveSeconds
+                        if let announce = verdict.announce {
+                            wire.sendVideoPostureState(
+                                quiet: announce.quiet,
+                                keepaliveSeconds: announce.keepaliveSeconds)
+                            postureAnnouncements += 1
+                        }
+                    }
+                }
                 if wire != nil, let sid = lastEncodedSurface,
                    nowSeconds() - lastDeliveryWallSeconds
-                       >= Self.keepaliveSeconds {
+                       >= keepaliveInterval {
                     do {
                         let packet = try encoder.encode(
                             surface: sid, forceIDR: false)
@@ -254,6 +280,7 @@ final class DirectEyeLeg {
                 continue
             }
             lastFB = fb
+            lastActivityWallSeconds = nowSeconds()
             guard let ticket = grabTicket(fd: fd, fbId: fb) else {
                 missedGrabs += 1
                 continue
@@ -353,6 +380,7 @@ final class DirectEyeLeg {
             + "directives_applied=\(directivesApplied), "
             + "static_idrs=\(staticIdrsServed), "
             + "keepalives=\(keepalivesSent), "
+            + "posture_announcements=\(postureAnnouncements), "
             + "cursor_shapes=\(cursorShapesSeen), "
             + "hotspot_corrections=\(cursorHotspotCorrections)")
     }

@@ -608,6 +608,9 @@ func run() throws {
         // E3: key 13 (cursorShape) — the direct eye sends the cursor
         // plane as metadata, never composited into the video.
         declared = declared.declaringCursorShape()
+        // Video posture (key 16): the direct eye's keepalive can
+        // always back off honestly — announced, never inferred.
+        declared = declared.declaringVideoQuietPosture()
 
         // V-4: chroma is declared on PROOF, never a hardcoded claim.
         // The direct eye's native VAAPI pens write NV12 4:2:0 and

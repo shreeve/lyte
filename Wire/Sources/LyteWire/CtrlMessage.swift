@@ -187,6 +187,14 @@ public enum CtrlMessageType {
     /// intersection.
     public static let audioTrackState: UInt8 = 0x25
 
+    /// Host→client video posture announcement (VideoPostureState, the
+    /// postures design's quiet/wake axis): quiet = the retained
+    /// keepalive backed off to the carried interval (a new 0x26 rides
+    /// every step); active = damage-driven with the 1 s keepalive.
+    /// ARQ ordered stream, gated on capability key 16 surviving
+    /// intersection.
+    public static let videoPostureState: UInt8 = 0x26
+
     /// The type byte of a CTRL payload, nil when the payload is empty.
     /// Dispatch on this, then hand the whole payload (type byte included)
     /// to the named codec's `decode`.
