@@ -56,6 +56,32 @@ Floor: fully idle + muted ≈ one 40-byte beacon per 30 s — below
 VNC's idle (which still pays TCP keepalives) — while one announced
 state-change away from full-rate cushioned streaming.
 
+## The rewind (owner, 2026-08-02 — "this is huge")
+
+The pre-roll ring generalizes: keep a DEEPER host-side ring (30 s to
+a few minutes, configurable) of encoded audio, and the client can
+ask for it after the fact — "something just happened; play me the
+last 30 seconds" — even though nothing was streaming at the time.
+The tripwire covers "from now on"; the rewind covers "what did I
+miss." No product in this space has it.
+
+Privacy posture, non-negotiable: the ring lives in HOST MEMORY only,
+never touches disk, is bounded, and is OPT-IN (a remote-desktop tool
+that silently records audio is a different product with different
+obligations). The announcement machinery covers it: a client that
+enables rewind is told the ring depth; a host that disables it says
+so.
+
+## Strategic weight (owner, same session)
+
+The audio postures are not a feature, they are the CATEGORY move:
+mute-at-source alone covers the enormous "I don't care about sound,
+done" class; the tripwire + rewind covers the real-time class better
+than always-on does. Together with video postures: beat VNC at
+silence, RDP at office thrift, Sunshine/Moonlight at motion — one
+wire. Endpoint form: the owner names it **Lyte OS** (the
+appliance/terminal vision).
+
 ## Wire notes
 
 - Posture announcements are NEW typed control messages (Wire is
@@ -67,14 +93,24 @@ state-change away from full-rate cushioned streaming.
 - Mute rides the existing audio-routing negotiation surface as a
   third routing value.
 
-## Sequencing
+## Sequencing (revised after the owner's "this is huge")
 
-Post-E5 (the flip and burn come first — postures build on the
-self-hosted host). Estimated two PRs: (1) wire messages + host
-posture machine + client contract switches, (2) mute routing + UI
-(Settings + control strip). Serves the Lyte Terminal north star
-directly: an endpoint that idles at VNC cost and wakes at Moonlight
-fidelity is the thin-client story in one sentence.
+The AUDIO track is backend-agnostic — AudioWire is shared by portal
+and direct hosts — so it does NOT need to wait for E5:
+
+1. **Now, in parallel with the soak**: mute-at-source (rides the
+   existing 0x18 routing surface; the biggest value-per-line PR in
+   the plan), then the tripwire + pre-roll, then rewind.
+2. **The soak** (owner daily-driving direct+native) runs on its own
+   clock alongside; it gates the E5 flip, not the audio work.
+3. **Post-E5**: VIDEO quiet posture + the posture announcement
+   messages (these touch the idle-floor/keepalive machinery that E5
+   unifies — building them twice across two backends is waste).
+4. **E4 packaging aimed at Lyte OS** after that.
+
+Serves the Lyte OS north star directly: an endpoint that idles at
+VNC cost and wakes at Moonlight fidelity is the thin-client story in
+one sentence.
 
 ## Strategic frame (owner, 2026-08-02)
 
