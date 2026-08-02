@@ -115,20 +115,28 @@ final class LinkHealthMeterTests: XCTestCase {
             renderer.assessment().dominantStage, "renderer")
     }
 
-    func testRecorderResetForgetsTheOldSession() {
+    func testRecorderResetRestartsTheWindowButKeepsTheBooks() {
         let meter = LinkHealthMeter()
         meter.observe(
             ordinal: 500, transitStretchMilliseconds: 115,
             sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
             enqueueMilliseconds: 0.03, frameSeconds: 10)
         XCTAssertEqual(meter.assessment().level, .poor)
-        // Reconnect: ordinals restart. The old session's stalls must
-        // not haunt the new one.
+        // A roam re-dial resets the recorder (ordinals restart): the
+        // WINDOW must not carry old-clock episodes, but the sitting's
+        // totals survive — the stalls that trigger re-dials are
+        // exactly the ones the total exists to count.
         meter.observe(
             ordinal: 1, transitStretchMilliseconds: 0.5,
             sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
             enqueueMilliseconds: 0.03, frameSeconds: 11)
-        XCTAssertEqual(meter.assessment().level, .good)
+        let after = meter.assessment()
+        XCTAssertEqual(after.level, .good)
+        XCTAssertEqual(after.sessionStallCount, 1)
+        XCTAssertEqual(after.sessionWorstMilliseconds, 115)
+        // Only the sitting's end clears the books.
+        meter.resetSessionBooks()
+        XCTAssertEqual(meter.assessment().sessionStallCount, 0)
     }
 
     func testSessionBooksOutliveTheWindowAndDieWithTheSession() {
@@ -149,11 +157,14 @@ final class LinkHealthMeterTests: XCTestCase {
         XCTAssertEqual(verdict.level, .good)
         XCTAssertEqual(verdict.sessionStallCount, 2)
         XCTAssertEqual(verdict.sessionWorstMilliseconds, 39)
-        // A reconnect (ordinals restart) starts fresh books.
+        // A roam re-dial (ordinals restart) keeps the books; only
+        // the sitting's end clears them.
         meter.observe(
             ordinal: 1, transitStretchMilliseconds: 0.5,
             sourceGapMilliseconds: 16.7, queueWaitMilliseconds: 0.05,
             enqueueMilliseconds: 0.03, frameSeconds: 150)
+        XCTAssertEqual(meter.assessment().sessionStallCount, 2)
+        meter.resetSessionBooks()
         let fresh = meter.assessment()
         XCTAssertEqual(fresh.sessionStallCount, 0)
         XCTAssertEqual(fresh.sessionWorstMilliseconds, 0)

@@ -38,8 +38,24 @@ final class AvahiAdvertiser {
     /// Registers and commits the service. Throws when the system bus or
     /// the Avahi daemon is unavailable — the caller decides whether that
     /// is fatal (it never is for the session path).
-    init(port: UInt16, staticPublicKey: [UInt8], name: String? = nil) throws {
+    ///
+    /// `interfaceName` pins the advertisement to ONE interface (e.g.
+    /// pup's Ethernet NIC): a host on wired+wireless otherwise
+    /// advertises on both, the client resolver picks whichever, and
+    /// sessions silently ride the radio (the owner's .249-vs-.232
+    /// hunt). Empty = all interfaces, exactly as before.
+    init(port: UInt16, staticPublicKey: [UInt8], name: String? = nil,
+         interfaceName: String = "") throws {
         self.port = port
+        var ifIndex: Int32 = -1 // AVAHI_IF_UNSPEC: all interfaces
+        if !interfaceName.isEmpty {
+            let index = if_nametoindex(interfaceName)
+            guard index != 0 else {
+                throw HostError("--advertise-interface \(interfaceName): "
+                    + "no such interface")
+            }
+            ifIndex = Int32(index)
+        }
         txtRecords = [
             "v=\(WireVersion.major)",
             "pkh=" + HostStaticKey.hex(IdentityHash.sha256(staticPublicKey)),
@@ -69,7 +85,8 @@ final class AvahiAdvertiser {
             do {
                 try Self.addService(bus: bus, groupPath: groupPath,
                                     name: candidate, port: port,
-                                    txtRecords: txtRecords)
+                                    txtRecords: txtRecords,
+                                    ifIndex: ifIndex)
                 break
             } catch let error as HostError
                 where error.message.contains("CollisionError") && attempt < 4
@@ -96,12 +113,13 @@ final class AvahiAdvertiser {
     /// during init, before all stored properties are set.
     private static func addService(bus: SessionBus, groupPath: String,
                                    name: String, port: UInt16,
-                                   txtRecords: [String]) throws {
+                                   txtRecords: [String],
+                                   ifIndex: Int32) throws {
         let reply = try bus.call(
             dest: dest, path: groupPath,
             interface: groupInterface, method: "AddService",
             appendArgs: { iter in
-                var ifIndex: Int32 = -1 // AVAHI_IF_UNSPEC: all interfaces
+                var ifIndex = ifIndex
                 dbus_message_iter_append_basic(&iter, DType.int32, &ifIndex)
                 var proto: Int32 = -1 // AVAHI_PROTO_UNSPEC: IPv4 + IPv6
                 dbus_message_iter_append_basic(&iter, DType.int32, &proto)

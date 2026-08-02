@@ -69,6 +69,11 @@ public final class LinkHealthMeter {
     private var highWaterFrameSeconds: TimeInterval = 0
     private var sessionStallCount = 0
     private var sessionWorstMilliseconds = 0.0
+    /// LYTE_LINK_HEALTH_DEBUG=1: every episode append and every book
+    /// reset prints — the owner's "total equals rate" hunt needs the
+    /// live path to confess, not the unit tests to pass again.
+    private let debugTrace = ProcessInfo.processInfo
+        .environment["LYTE_LINK_HEALTH_DEBUG"] == "1"
 
     public init() {}
 
@@ -89,15 +94,22 @@ public final class LinkHealthMeter {
         frameSeconds: TimeInterval
     ) {
         if ordinal < highWaterOrdinal {
-            // Ordinals ran backwards: the recorder was reset
-            // (reconnect). Old episodes AND the session books belong
-            // to the old session.
+            // Ordinals ran backwards: the recorder was reset. That
+            // happens on ROAMING RE-DIALS too — and the stalls big
+            // enough to matter are exactly the ones that trigger
+            // re-dials, so wiping the totals here erased the count
+            // right as it earned its keep (the owner's "total equals
+            // rate, every time"). The WINDOW belongs to the frame
+            // clock and must restart with it; the session books
+            // belong to the SITTING and only resetSessionBooks()
+            // (a real disconnect) clears them.
+            if debugTrace {
+                print("link-health: window reset — ordinal \(ordinal) "
+                    + "< high-water \(highWaterOrdinal) "
+                    + "(keeping \(sessionStallCount) total)")
+                fflush(stdout)
+            }
             episodes.removeAll()
-            sessionStallCount = 0
-            sessionWorstMilliseconds = 0
-            // The new session's host clock may have restarted below
-            // the old high water; carrying it would age new episodes
-            // out on arrival.
             highWaterFrameSeconds = 0
         } else if ordinal == highWaterOrdinal {
             return // already folded
@@ -137,6 +149,13 @@ public final class LinkHealthMeter {
                 at: frameSeconds, worstMilliseconds: worst,
                 stage: stage))
             sessionStallCount += 1
+            if debugTrace {
+                print(String(format: "link-health: episode #%d %@ "
+                    + "%.0f ms at frame-t %.3f (ordinal %d)",
+                    sessionStallCount, stage, worst, frameSeconds,
+                    ordinal))
+                fflush(stdout)
+            }
         }
         sessionWorstMilliseconds = max(sessionWorstMilliseconds, worst)
     }
@@ -145,6 +164,16 @@ public final class LinkHealthMeter {
     /// window) or deep (≥100 ms — a full visible freeze). Degraded:
     /// any stall in the window. Good: quiet — and the UI shows
     /// nothing, because a clean link needs no announcement.
+    /// The sitting is over (a real disconnect, not a roam re-dial):
+    /// the cumulative books go with it.
+    public func resetSessionBooks() {
+        episodes.removeAll()
+        highWaterOrdinal = 0
+        highWaterFrameSeconds = 0
+        sessionStallCount = 0
+        sessionWorstMilliseconds = 0
+    }
+
     /// The verdict windows against the FRAME clock's high-water mark:
     /// "the last minute of delivered frames." A fully frozen stream
     /// stops aging the window — and is the FROZEN pill's business,
