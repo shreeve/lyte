@@ -75,7 +75,43 @@ final class DirectEyeLeg {
     private var lastCursorFrame: CursorFrame?
     private var sentHotspot: (x: Int, y: Int)?
     private var hotspotRecheckArmed = false
+    /// The Conductor's host-side witness: who skips the capture
+    /// beats — the compositor (source) or this loop (loop). The
+    /// doorbell's poll cadence is the evidence; the stage clocks
+    /// below say WHERE the loop spent a blind interval.
+    private var beatBook = CaptureBeatBook()
+    private var beatSkipLinesPrinted = 0
+    private struct StageClocks {
+        var serviceUs: UInt64 = 0
+        var cursorUs: UInt64 = 0
+        var grabUs: UInt64 = 0
+        var blitUs: UInt64 = 0
+        var encodeUs: UInt64 = 0
+        var deliverUs: UInt64 = 0
+        mutating func formMax(_ other: StageClocks) {
+            serviceUs = max(serviceUs, other.serviceUs)
+            cursorUs = max(cursorUs, other.cursorUs)
+            grabUs = max(grabUs, other.grabUs)
+            blitUs = max(blitUs, other.blitUs)
+            encodeUs = max(encodeUs, other.encodeUs)
+            deliverUs = max(deliverUs, other.deliverUs)
+        }
+        func described() -> String {
+            "service=\(Self.ms(serviceUs)) cursor=\(Self.ms(cursorUs)) "
+            + "grab=\(Self.ms(grabUs)) blit=\(Self.ms(blitUs)) "
+            + "encode=\(Self.ms(encodeUs)) deliver=\(Self.ms(deliverUs))"
+        }
+        static func ms(_ us: UInt64) -> String {
+            String(format: "%.1f", Double(us) / 1000)
+        }
+    }
+    private var lastStages = StageClocks()
+    private var maxStages = StageClocks()
     var lastError: String?
+
+    private func nowMicroseconds() -> UInt64 {
+        UInt64(nowSeconds() * 1_000_000)
+    }
 
     init(config: Config, wire: SessionWire?,
          file: UnsafeMutablePointer<FILE>?) {
@@ -175,9 +211,13 @@ final class DirectEyeLeg {
             let now = nowSeconds()
             if now - lastServiceAt >= 0.010 {
                 lastServiceAt = now
+                let serviceStart = nowMicroseconds()
                 wire?.service()
+                lastStages.serviceUs = nowMicroseconds() - serviceStart
             }
+            let cursorStart = nowMicroseconds()
             pollCursor(cursorWatcher)
+            lastStages.cursorUs = nowMicroseconds() - cursorStart
 
             // Rate directives apply live: the cap becomes the VBR
             // envelope on the next frame's RC misc buffer.
@@ -207,8 +247,9 @@ final class DirectEyeLeg {
                 staticIdrWanted = true
             }
 
-            guard let fb = currentFB(fd: fd, planeId: planes.primary.id),
-                  fb != lastFB else {
+            let fbRead = currentFB(fd: fd, planeId: planes.primary.id)
+            beatBook.notePoll(nowMicroseconds: nowMicroseconds())
+            guard let fb = fbRead, fb != lastFB else {
                 if staticIdrWanted, let sid = lastEncodedSurface {
                     do {
                         let packet = try encoder.encode(
@@ -281,6 +322,22 @@ final class DirectEyeLeg {
             }
             lastFB = fb
             lastActivityWallSeconds = nowSeconds()
+            // The flip is judged at DETECTION (the honest doorbell
+            // moment); the capture stamp below stays post-grab so the
+            // wire's score is untouched by the bookkeeping.
+            if let skip = beatBook.noteFlip(
+                nowMicroseconds: nowMicroseconds()) {
+                beatSkipLinesPrinted += 1
+                if beatSkipLinesPrinted <= 40 {
+                    print("direct: beat-skip gap="
+                        + StageClocks.ms(skip.gapMicroseconds)
+                        + " ms blind="
+                        + StageClocks.ms(skip.blindMicroseconds)
+                        + " ms verdict=\(skip.verdict.rawValue)"
+                        + " prev[\(lastStages.described())] ms")
+                }
+            }
+            let grabStart = nowMicroseconds()
             guard let ticket = grabTicket(fd: fd, fbId: fb) else {
                 missedGrabs += 1
                 continue
@@ -303,6 +360,7 @@ final class DirectEyeLeg {
                 return
             }
             let captureUs = UInt64(nowSeconds() * 1_000_000)
+            lastStages.grabUs = captureUs - grabStart
 
             let forceIdr = frames == 0 || staticIdrWanted
             staticIdrWanted = false
@@ -355,15 +413,22 @@ final class DirectEyeLeg {
                 // to the IDR when it emerges.
                 let sid = encoder.inputSurfaces[
                     frames % encoder.inputSurfaces.count]
+                let blitStart = nowMicroseconds()
                 try blitInto(sid) { try encoder.exportSurface(sid) }
+                let encodeStart = nowMicroseconds()
+                lastStages.blitUs = encodeStart - blitStart
                 let packet = try encoder.encode(
                     surface: sid, forceIDR: forceIdr)
+                let deliverStart = nowMicroseconds()
+                lastStages.encodeUs = deliverStart - encodeStart
                 lastEncodedSurface = sid
                 lastEncodedCaptureUs = captureUs
                 let causes = packet.keyframe ? pendingCauses : []
                 if packet.keyframe { pendingCauses.removeAll() }
                 deliver(Data(packet.data), keyframe: packet.keyframe,
                         causes: causes, captureUs: captureUs)
+                lastStages.deliverUs = nowMicroseconds() - deliverStart
+                maxStages.formMax(lastStages)
                 frames += 1
                 lastDeliveryWallSeconds = nowSeconds()
             } catch {
@@ -383,6 +448,15 @@ final class DirectEyeLeg {
             + "posture_announcements=\(postureAnnouncements), "
             + "cursor_shapes=\(cursorShapesSeen), "
             + "hotspot_corrections=\(cursorHotspotCorrections)")
+        print("direct: beat-book — flips=\(beatBook.flips), "
+            + "skips=\(beatBook.skips) "
+            + "(source=\(beatBook.sourceSkips), "
+            + "loop=\(beatBook.loopSkips)), "
+            + "stills=\(beatBook.stillGaps), "
+            + "gap_max=\(StageClocks.ms(beatBook.gapMaxMicroseconds))"
+            + " ms, blind_max="
+            + StageClocks.ms(beatBook.blindMaxMicroseconds)
+            + " ms, stage_max[\(maxStages.described())] ms")
     }
 
     /// E3: one cursor poll — fb changes become 0x24s. The hotspot is
