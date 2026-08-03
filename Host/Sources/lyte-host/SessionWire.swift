@@ -749,7 +749,7 @@ final class SessionWire {
     /// so no video is encoded for nobody.
     func awaitClient(hostStatic: NoiseKeyPair, timeoutSeconds: Double) throws {
         print("noise: host static public key "
-            + HostStaticKey.hex(hostStatic.publicKey))
+            + Hex.string(hostStatic.publicKey))
         print("noise: awaiting client handshake on port "
             + "\(lyte_netio_local_port(netio)) …")
         traceHandshake("awaitClientBegin", fields: [
@@ -1303,11 +1303,11 @@ final class SessionWire {
                 case .send(let reply):
                     replies.append(reply)
                 case .offerAccepted(let id, let name, let bytes, let resuming):
-                    print("files: offer \(String(id, radix: 16)) accepted — "
+                    print("files: offer \(Hex.string(id)) accepted — "
                         + "\"\(BulkFileNaming.sanitized(name))\" "
                         + "(\(bytes) B\(resuming ? ", RESUMING" : ""))")
                 case .offerRefusedBusy(let id):
-                    print("files: offer \(String(id, radix: 16)) refused — "
+                    print("files: offer \(Hex.string(id)) refused — "
                         + "busy (one transfer at a time in v1)")
                 case .insufficientDiskSpace(let needed, let free):
                     print("files: offer refused — needs \(needed) B, "
@@ -1779,7 +1779,7 @@ final class SessionWire {
         switch event {
         case .handshakeCompleted(let remote):
             emit("noise: handshake complete — client static "
-                + HostStaticKey.hex(remote))
+                + Hex.string(remote))
             // HS-9: the pairing run binds to THIS session's transcript
             // and statics; a re-handshake rebinds (and keeps the guess
             // budget — reconnecting never refills it).
@@ -1820,7 +1820,7 @@ final class SessionWire {
             }
             emit("ctrl-arq: message group \(group.rawValue) "
                 + "(\(message.count) B, type "
-                + "0x\(String(message.first ?? 0, radix: 16)))")
+                + "\(Hex.string(message.first ?? 0, prefix: true)))")
         case .reliableOneShotAcknowledged(let group):
             emit("ctrl-arq: one-shot group \(group.rawValue) acknowledged")
         case .arqIgnored(let reason):

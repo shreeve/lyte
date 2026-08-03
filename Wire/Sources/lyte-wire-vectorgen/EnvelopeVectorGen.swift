@@ -5,6 +5,7 @@
 // produced by the codec they test) is broken by the hand-computed anchor
 // bytes in EnvelopeTests.
 
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 

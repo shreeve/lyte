@@ -39,7 +39,7 @@ final class SyntheticMotionReferenceTests: XCTestCase {
         ]
         for pin in pins {
             let digest = Sha256.digest(source.frame(pin.frameID))
-            let hex = digest.map { String(format: "%02x", $0) }.joined()
+            let hex = Hex.string(digest)
             XCTAssertEqual(hex, pin.sha256,
                            "frame \(pin.frameID) drifted from the glass")
         }

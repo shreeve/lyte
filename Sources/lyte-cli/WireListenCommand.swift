@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import LyteCore
 import LyteTransport
 import LyteWire
 
@@ -142,7 +143,7 @@ private final class WireStatsPrinter: Sendable {
     private static func describe(_ s: ChannelStats) -> String {
         var parts = ["\(s.datagrams) dg", "\(s.payloadBytes) B"]
         if let high = s.seqHighest {
-            parts.append(String(format: "seq→0x%04x", high))
+            parts.append("seq→" + Hex.string(high, width: 4, prefix: true))
         }
         parts.append("\(s.seqMissing) missing")
         if s.seqLateFilled > 0 { parts.append("\(s.seqLateFilled) late-filled") }

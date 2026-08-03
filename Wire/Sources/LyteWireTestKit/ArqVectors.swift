@@ -3,6 +3,7 @@
 // frame-sequence payload rule). Same doctrine as the other loaders:
 // TestKit may import Foundation, LyteWire may not.
 
+import LyteCore
 import Foundation
 import LyteWire
 

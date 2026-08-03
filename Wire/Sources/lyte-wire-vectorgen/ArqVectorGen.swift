@@ -3,6 +3,7 @@
 // circularity is broken by the hand-computed anchor bytes in
 // ArqCodecTests, which pin the same nominal frames.
 
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 

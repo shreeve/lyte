@@ -13,6 +13,7 @@
 // no envelope — byte counts and class tags only.
 
 import LyteIO
+import LyteCore
 import CNetIO
 import Foundation
 import HostCore
@@ -246,7 +247,7 @@ func run() throws {
     var sentTosTally: [UInt8: Int] = [:]
     for p in packets { sentTosTally[tos(for: p.cls), default: 0] += 1 }
     let tallyLine = sentTosTally.keys.sorted(by: >).map { t in
-        "0x" + String(t, radix: 16, uppercase: true)
+        Hex.string(t, uppercase: true, prefix: true)
             + " sent \(sentTosTally[t] ?? 0) recv \(rxTosTally[t] ?? 0)"
     }.joined(separator: "; ")
     print("per-class TOS (IP_RECVTOS): \(tallyLine)")

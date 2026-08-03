@@ -5,6 +5,7 @@
 // the hand-computed anchor bytes in ClipboardCodecTests, which pin the
 // same nominal messages.
 
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 

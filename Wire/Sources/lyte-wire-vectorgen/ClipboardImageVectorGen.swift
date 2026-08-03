@@ -6,15 +6,12 @@
 // ClipboardImageCodecTests, which pin the same nominal message.
 
 import Foundation
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 
 func makeClipboardImageVectorFile() throws -> ClipboardImageVectorFile {
     var vectors: [ClipboardImageVector] = []
-
-    func hex(_ value: UInt64) -> String {
-        String(format: "%016llx", value)
-    }
 
     // MARK: Cargo-marker roundtrips
 
@@ -28,7 +25,7 @@ func makeClipboardImageVectorFile() throws -> ClipboardImageVectorFile {
             + "anchor.",
         kind: .roundtrip, codec: .imageCargo,
         messageHex: Hex.string(nominal.encode()),
-        transferIdHex: hex(nominal.transferId),
+        transferIdHex: Hex.string(nominal.transferId, width: 16),
         mimeUtf8Hex: Hex.string(Array(nominal.mime.utf8))
     ))
     let maxId = try ClipboardImageCargo(
@@ -41,7 +38,7 @@ func makeClipboardImageVectorFile() throws -> ClipboardImageVectorFile {
             + "same reason.",
         kind: .roundtrip, codec: .imageCargo,
         messageHex: Hex.string(maxId.encode()),
-        transferIdHex: hex(maxId.transferId),
+        transferIdHex: Hex.string(maxId.transferId, width: 16),
         mimeUtf8Hex: Hex.string(Array(maxId.mime.utf8))
     ))
     // A well-formed marker with a mime this build doesn't carry:
@@ -58,7 +55,7 @@ func makeClipboardImageVectorFile() throws -> ClipboardImageVectorFile {
             + "never a parse error, so future formats stay speakable.",
         kind: .roundtrip, codec: .imageCargo,
         messageHex: Hex.string(foreign.encode()),
-        transferIdHex: hex(foreign.transferId),
+        transferIdHex: Hex.string(foreign.transferId, width: 16),
         mimeUtf8Hex: Hex.string(Array(foreign.mime.utf8))
     ))
     // The 255-byte mime ceiling, legal to the byte: "image/" + 249
@@ -73,7 +70,7 @@ func makeClipboardImageVectorFile() throws -> ClipboardImageVectorFile {
             + "— the u8 length ceiling is legal to the byte.",
         kind: .roundtrip, codec: .imageCargo,
         messageHex: Hex.string(atCeiling.encode()),
-        transferIdHex: hex(atCeiling.transferId),
+        transferIdHex: Hex.string(atCeiling.transferId, width: 16),
         mimeUtf8Hex: Hex.string(Array(ceilingMime.utf8))
     ))
 

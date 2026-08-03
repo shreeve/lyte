@@ -6,6 +6,7 @@
 // hand-built bytes in PairingCodecTests and the draft-pinned math in
 // CPaceCoreTests.
 
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 

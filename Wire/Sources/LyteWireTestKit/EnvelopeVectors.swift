@@ -4,6 +4,7 @@
 // do, byte-exact, on both platforms. TestKit may import Foundation — only
 // LyteWire itself is Foundation-free.
 
+import LyteCore
 import Foundation
 import LyteWire
 

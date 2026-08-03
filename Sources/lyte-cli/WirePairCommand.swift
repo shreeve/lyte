@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import LyteCore
 import LyteTransport
 import LyteWire
 
@@ -100,7 +101,7 @@ struct WirePair: AsyncParsableCommand {
             throw ValidationError(
                 "Keychain refused the client identity (OSStatus \(status)) — build via Scripts/build-cli.sh so the binary is signed (docs/MACOS-SIGNING.md)")
         }
-        let identityHex = identity.publicKey.map { String(format: "%02x", $0) }.joined()
+        let identityHex = Hex.string(identity.publicKey)
         print("wire-pair: client static \(identityHex)")
 
         // ── The run. ──
@@ -123,7 +124,7 @@ struct WirePair: AsyncParsableCommand {
                 port: dialPort,
                 pairedAt: ISO8601DateFormatter().string(from: Date()))
             try store.save()
-            let hex = key.map { String(format: "%02x", $0) }.joined()
+            let hex = Hex.string(key)
             print("wire-pair: PAIRED — host static \(hex) "
                 + (fresh ? "pinned" : "re-pinned") + " → \(PinnedHostStore.url.path)")
             print("wire-pair: reconnects are now 1-RTT Noise IK with zero UI: "

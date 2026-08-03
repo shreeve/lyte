@@ -75,7 +75,7 @@ public enum LyteDiscovery {
     /// The same shared digest the host advertises, for matching pinned
     /// keys against browse results.
     public static func publicKeyHash(ofStaticPublicKey key: [UInt8]) -> String {
-        Sha256.digest(key).map { String(format: "%02x", $0) }.joined()
+        Hex.string(Sha256.digest(key))
     }
 
     /// Parses the advertisement's TXT dictionary. Tolerant by design —

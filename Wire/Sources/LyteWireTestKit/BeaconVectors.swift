@@ -3,6 +3,7 @@
 // and feedback sender against before the host exists. Same doctrine as
 // the envelope loader: TestKit may import Foundation, LyteWire may not.
 
+import LyteCore
 import Foundation
 import LyteWire
 

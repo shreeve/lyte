@@ -5,6 +5,7 @@
 // distribution story).
 
 import Foundation
+import LyteCore
 import LyteWire
 
 enum HostStaticKey {
@@ -38,9 +39,5 @@ enum HostStaticKey {
         )
         print("noise: generated host static key → \(keyPath.path)")
         return pair
-    }
-
-    static func hex(_ bytes: [UInt8]) -> String {
-        bytes.map { String(format: "%02x", $0) }.joined()
     }
 }

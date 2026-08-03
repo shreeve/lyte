@@ -899,7 +899,7 @@ Top-level: `format` ("lyte-wire-retry-vectors"), `formatVersion` (1),
 `cookieVectors` (all `provenance` "pinned-self-consistent" — no
 published set covers our transcript; the HMAC beneath them is anchored
 in `RetryCookieTests` against an independent RFC 2104 construction
-over TestKit's `Sha256`): `mint` rows re-mint from (`tupleHex`,
+over LyteCore's `Sha256`): `mint` rows re-mint from (`tupleHex`,
 `message1Hex`, `mintNowHex`, `secretHex`) and must reproduce
 `cookieHex` byte-exact, then verify at `verifyNowHex` under
 `secretsHex` (current-first) — with `lifetimeHex` overriding the
