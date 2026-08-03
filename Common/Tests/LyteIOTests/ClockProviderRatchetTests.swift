@@ -23,12 +23,13 @@ final class ClockProviderRatchetTests: XCTestCase {
     }
 
     func testVideoPoliciesReceiveTimeInsteadOfReadingTheShellClock() throws {
+        let repositoryRoot = RepositorySourceTree().repositoryRoot
         let paths = [
             "Sources/LyteTransport/LyteVideoPipeline.swift",
             "Sources/LyteTransport/VideoFlightRecorder.swift",
         ]
         for path in paths {
-            let file = Self.repositoryRoot.appendingPathComponent(path)
+            let file = repositoryRoot.appendingPathComponent(path)
             let source = try String(contentsOf: file, encoding: .utf8)
             XCTAssertFalse(
                 source.contains("SystemMonotonicClock"),
