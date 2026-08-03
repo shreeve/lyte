@@ -324,9 +324,29 @@ recovery-lifecycle stamps at exactly 1,000,000 and 1,250,000 µs, and the clock
 ratchet now covers both pipeline and recorder. No default initializer or shim
 survives. Wire and frozen vectors were untouched; the standing pup binary was
 left untouched, its system service and capability remain active, and its
-identity files are unchanged. **NEXT: open Theme 4 with the `VideoSink` seam —
-replace the raw sample closure/direct AVFoundation ownership with one named
-client boundary and a headless test sink, without changing enqueue behavior.**
+identity files are unchanged. Theme 4 opened immediately below.
+
+**CLEANUP THEME 4 OPENED (#111–#112, 2026-08-03): client video has one render
+organ, including its headless implementation.** #111 introduced `VideoSink`
+as the sole ready-sample boundary across pipeline, session core, and production
+session. The app's bounded `VideoRendererHandoff` conforms directly;
+wire-view uses the named AVFoundation leaf; every display-free gate uses one
+`HeadlessVideoSink`. The raw `(CMSampleBuffer, DecodeUnit) -> Void` production
+seam and all `onSample` plumbing were deleted without an overload or shim.
+Recovery filtering, input delivery, chroma audit, dimension updates, async
+teardown forwarding, sample order, and build telemetry stayed pinned. The
+named headless async gate preserved exact order and telemetry, and a
+cross-platform source ratchet rejects a second protocol or raw production
+callback. #112 reconciled the concurrent #108 landing before ledger close:
+the new ratchet now consumes LyteTestKit's one fail-closed source scanner, and
+the canonical Mac gate fingerprints an overrideable Python 3.9–3.12 bootstrap
+with NumPy's requirements instead of accidentally selecting Homebrew 3.14.
+Canonical Mac passed all packages, 25 analyzer tests, and signed debug/release
+artifacts; isolated pup passed all packages, the plain host build, netio and
+pacing harnesses, and protected-state verification. Wire and frozen vectors
+were untouched. **NEXT CLEANUP SLICE: `ScreenSource` — collapse DirectEyeLeg
+and EyeCapture's two doorbell/capture loops behind the Lyte OS swap seam,
+keeping one real hardware loop and its existing direct-eye gates.**
 
 **THE TREE MIGRATION OPENED (#103 + #108, 2026-08-03): every move has a
 gate, and Common now speaks one filesystem grammar.** #103 recorded the
@@ -342,10 +362,10 @@ every exit with protected-state verification. **NEXT MIGRATION SLICE:
 organize Wire internally without changing its module, products, or frozen
 vectors.**
 
-**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 74 Mac / 75 pup;
+**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 76 Mac / 77 pup;
 root client 262; host 284 pup / 283 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
-pins.
+pins; the VideoSink source ratchet adds two more.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
