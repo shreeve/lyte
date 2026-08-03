@@ -191,8 +191,22 @@ display path — the shell's 10 s comb is the evidence). AV1 stays
 a 4:2:0 lane (no 4:4:4 hardware encoders exist anywhere,
 2026-08).
 
-**Suites at HEAD:** Wire 513, root client 284, host 300 on pup / 299
-Mac — all green (host grew the Rext pen pins and the E2 harness).
+**CLEANUP THEME 1 OPENED (#95, 2026-08-03): one clock owns the
+tick.** The v2 `Common/` package now exists with sibling targets
+`LyteCore` (sans-IO, declaration-free until policy moves) and
+`LyteIO`; `SystemMonotonicClock` is the one OS adapter for ns/µs/s.
+Every client and Linux shell call site moved to it and the six raw
+`clock_gettime` copies, inline `DispatchTime` reads, and three private
+helpers were deleted in the same PR. A cross-tree ratchet refuses a
+new bypass; the Linux gate brackets the provider between direct
+`CLOCK_MONOTONIC` reads and proved the absolute domain unchanged.
+Build provenance and pup sync now include Common. Wire and every
+policy injection seam stayed untouched. **NEXT: Theme 1 histogram
+unification — pin the non-rolling and rolling semantics, then move
+and delete all five copies.**
+
+**Suites at HEAD:** Wire 517 Mac / 517 pup; Common 3 Mac / 4 pup;
+root client 293; host 300 pup / 299 Mac — all green.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
