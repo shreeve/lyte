@@ -7,7 +7,7 @@ final class COpusDeclarationRatchetTests: XCTestCase {
         let tree = RepositorySourceTree()
         let manifestPaths = [
             "Client/Package.swift", "Common/Package.swift", "Host/Package.swift",
-            "Wire/Package.swift",
+            "SystemTests/Package.swift", "Wire/Package.swift",
         ]
         let declaration = try NSRegularExpression(
             pattern: #"\.systemLibrary\s*\(\s*name:\s*\"COpus\""#

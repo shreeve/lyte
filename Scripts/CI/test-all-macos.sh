@@ -71,7 +71,8 @@ build_graph_hash="$({
         Client/Package.swift Client/Package.resolved \
         Common/Package.swift Common/Package.resolved \
         Wire/Package.swift Wire/Package.resolved \
-        Host/Package.swift Host/Package.resolved
+        Host/Package.swift Host/Package.resolved \
+        SystemTests/Package.swift SystemTests/Package.resolved
     do
         if [[ -f "$manifest" ]]; then
             shasum -a 256 "$manifest"
@@ -82,7 +83,7 @@ build_graph_hash="$({
     # layout migration even when every manifest is unchanged. Make the
     # structural source graph part of cache identity so dependent packages
     # rebuild cleanly after files are added, removed, or moved.
-    for package_root in Client Common Wire Host; do
+    for package_root in Client Common Wire Host SystemTests; do
         for tree in Sources Tests Plugins; do
             source_root="$package_root/$tree"
             if [[ -d "$source_root" ]]; then
@@ -96,6 +97,8 @@ run_package_tests "Common" "$repo_root/Common" "$repo_root/Common/.build"
 run_package_tests "Wire" "$repo_root/Wire" "$repo_root/Wire/.build"
 run_package_tests "Host" "$repo_root/Host" "$repo_root/Host/.build"
 run_package_tests "client" "$repo_root/Client" "$repo_root/.build"
+run_package_tests \
+    "SystemTests" "$repo_root/SystemTests" "$repo_root/SystemTests/.build"
 
 echo "==> benchmark safety tests"
 Scripts/Tests/test-benchmark-safety.sh
