@@ -28,8 +28,7 @@ public enum HevcSpsChroma {
     /// emulation-prevention bytes still in place).
     public static func chromaFormatIdc(inSpsNal nal: [UInt8]) -> UInt32? {
         guard nal.count > 2 else { return nil }
-        let rbsp = stripEmulationPrevention(Array(nal.dropFirst(2)))
-        var reader = BitReader(rbsp)
+        var reader = HevcBitReader(nal: nal)
         // sps_video_parameter_set_id u(4), sps_max_sub_layers_minus1
         // u(3), sps_temporal_id_nesting_flag u(1)
         guard reader.skip(bits: 4),
@@ -48,7 +47,7 @@ public enum HevcSpsChroma {
     /// The general block is 88 fixed bits + 8 level bits; each present
     /// sub-layer repeats the same widths behind its presence flags.
     private static func skipProfileTierLevel(
-        _ reader: inout BitReader, maxSubLayersMinus1: Int
+        _ reader: inout HevcBitReader, maxSubLayersMinus1: Int
     ) -> Bool {
         guard reader.skip(bits: 88 + 8) else { return false }
         guard maxSubLayersMinus1 > 0 else { return true }
@@ -70,76 +69,4 @@ public enum HevcSpsChroma {
         return true
     }
 
-    // MARK: - RBSP extraction
-
-    /// Drops each emulation-prevention 0x03 (a 00 00 03 whose next
-    /// byte is ≤ 0x03 — the spec's insertion rule, inverted).
-    static func stripEmulationPrevention(_ bytes: [UInt8]) -> [UInt8] {
-        var out: [UInt8] = []
-        out.reserveCapacity(bytes.count)
-        var zeros = 0
-        var i = 0
-        while i < bytes.count {
-            let byte = bytes[i]
-            if zeros >= 2, byte == 3, i + 1 < bytes.count,
-               bytes[i + 1] <= 3 {
-                zeros = 0
-                i += 1
-                continue
-            }
-            zeros = byte == 0 ? zeros + 1 : 0
-            out.append(byte)
-            i += 1
-        }
-        return out
-    }
-}
-
-/// MSB-first bit reader over an RBSP byte array. Reads past the end
-/// answer nil/false — hostile bytes never trap.
-struct BitReader {
-    private let bytes: [UInt8]
-    private var bitIndex = 0
-
-    init(_ bytes: [UInt8]) {
-        self.bytes = bytes
-    }
-
-    private var bitsRemaining: Int { bytes.count * 8 - bitIndex }
-
-    /// Reads up to 32 bits, MSB first.
-    mutating func read(bits count: Int) -> UInt32? {
-        guard count >= 0, count <= 32, bitsRemaining >= count else {
-            return nil
-        }
-        var value: UInt32 = 0
-        for _ in 0..<count {
-            let byte = bytes[bitIndex >> 3]
-            let bit = (byte >> (7 - UInt8(bitIndex & 7))) & 1
-            value = (value << 1) | UInt32(bit)
-            bitIndex += 1
-        }
-        return value
-    }
-
-    mutating func skip(bits count: Int) -> Bool {
-        guard count >= 0, bitsRemaining >= count else { return false }
-        bitIndex += count
-        return true
-    }
-
-    /// ue(v) exp-Golomb. Prefixes past 31 leading zeros are refused —
-    /// no legitimate SPS field this walk touches gets near that.
-    mutating func readUe() -> UInt32? {
-        var leadingZeros = 0
-        while true {
-            guard let bit = read(bits: 1) else { return nil }
-            if bit == 1 { break }
-            leadingZeros += 1
-            guard leadingZeros <= 31 else { return nil }
-        }
-        guard leadingZeros > 0 else { return 0 }
-        guard let suffix = read(bits: leadingZeros) else { return nil }
-        return (1 << UInt32(leadingZeros)) - 1 + suffix
-    }
 }

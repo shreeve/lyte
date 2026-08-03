@@ -12,6 +12,8 @@
 // tiles/PCM/scaling lists — not a general H.265 header library.
 // NVENC writes its own headers (E6a); this pen serves VAAPI alone.
 
+import LyteCore
+
 /// What actually varies between sessions. Everything else is the
 /// dialect, fixed in the serializers below with the field names the
 /// spec uses (§7.3.2) so a byte-diff dispute reads straight back to

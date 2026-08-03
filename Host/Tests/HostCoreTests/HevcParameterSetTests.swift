@@ -1,5 +1,6 @@
 import XCTest
 import HostCore
+import LyteCore
 
 // THE GATE (E6b milestone 1): the Swift pen writes libavcodec's
 // headers byte-for-byte. The oracle bytes below are a REAL capture —
@@ -30,54 +31,6 @@ final class HevcParameterSetTests: XCTestCase {
         "420101016000000300b00000030000030096a00100200501624b9246"
         + "daa6a020202080000003008000001e6be10082")
     private static let oraclePPS = hex("4401c065581120")
-
-    // MARK: The bit-writer laws
-
-    func testExpGolombAnchors() {
-        // ue: 0→1, 1→010, 2→011, 3→00100, 4→00101 (§9.2 table).
-        var w = HevcBitWriter()
-        w.ue(0); w.ue(1); w.ue(2); w.ue(3); w.ue(4)
-        // 1 010 011 00100 00101 → 1010 0110 0100 0010 1(000)
-        w.rbspTrailingBits() // appended stop bit lands mid-byte
-        XCTAssertEqual(Array(w.rbsp.prefix(2)), [0b1010_0110, 0b0100_0010])
-
-        // se: 1→ue(1), −1→ue(2), 2→ue(3), −2→ue(4) (§9.2.2).
-        var s1 = HevcBitWriter(); s1.se(-2); s1.rbspTrailingBits()
-        var u4 = HevcBitWriter(); u4.ue(4); u4.rbspTrailingBits()
-        XCTAssertEqual(s1.rbsp, u4.rbsp)
-        var s2 = HevcBitWriter(); s2.se(1); s2.rbspTrailingBits()
-        var u1 = HevcBitWriter(); u1.ue(1); u1.rbspTrailingBits()
-        XCTAssertEqual(s2.rbsp, u1.rbsp)
-    }
-
-    func testEmulationPrevention() {
-        // 00 00 00 → 00 00 03 00; 00 00 01/02/03 likewise; 00 00 04
-        // untouched (only x ≤ 3 needs the escape).
-        XCTAssertEqual(
-            HevcBitWriter.nal(type: 32, rbsp: [0, 0, 0]),
-            [0x40, 0x01, 0, 0, 3, 0]
-        )
-        XCTAssertEqual(
-            HevcBitWriter.nal(type: 32, rbsp: [0, 0, 1]),
-            [0x40, 0x01, 0, 0, 3, 1]
-        )
-        XCTAssertEqual(
-            HevcBitWriter.nal(type: 32, rbsp: [0, 0, 4]),
-            [0x40, 0x01, 0, 0, 4]
-        )
-        // A run of four zeros escapes once mid-run, then again when
-        // the next pair completes: 00 00 03 00 00 03 ….
-        XCTAssertEqual(
-            HevcBitWriter.nal(type: 32, rbsp: [0, 0, 0, 0, 2]),
-            [0x40, 0x01, 0, 0, 3, 0, 0, 3, 2]
-        )
-        // The escape counter RESETS after inserting (00 00 03 00 00
-        // needs a second 03 only after two MORE zeros).
-        XCTAssertEqual(
-            HevcBitWriter.nal(type: 33, rbsp: [0, 0, 2, 0, 2]),
-            [0x42, 0x01, 0, 0, 3, 2, 0, 2]
-        )
-    }
 
     // MARK: The oracle — byte-exact against hevc_vaapi's own pen
 
@@ -158,78 +111,45 @@ final class HevcParameterSetTests: XCTestCase {
 
     // MARK: Rext Main 4:4:4 (the Best tier) — field-verified
 
-    /// A minimal bit reader: NAL header stripped, emulation
-    /// prevention un-escaped, MSB-first u(n) and §9.2 ue(v).
-    private struct BitReader {
-        private let bytes: [UInt8]
-        private var bit = 0
-        init(nal: [UInt8]) {
-            var rbsp: [UInt8] = []
-            var zeros = 0
-            for byte in nal.dropFirst(2) {
-                if zeros >= 2, byte == 3 { zeros = 0; continue }
-                zeros = byte == 0 ? zeros + 1 : 0
-                rbsp.append(byte)
-            }
-            bytes = rbsp
-        }
-        mutating func u(_ n: Int) -> UInt32 {
-            var value: UInt32 = 0
-            for _ in 0..<n {
-                let byte = bytes[bit >> 3]
-                value = (value << 1)
-                    | UInt32((byte >> (7 - bit % 8)) & 1)
-                bit += 1
-            }
-            return value
-        }
-        mutating func ue() -> UInt32 {
-            var zeros = 0
-            while u(1) == 0 { zeros += 1 }
-            return zeros == 0 ? 0
-                : (1 << zeros) - 1 + u(zeros)
-        }
-    }
-
     /// Walks the Rext SPS field-by-field: profile_idc 4, the §A.3.5
     /// "Main 4:4:4" constraint row, chroma_format_idc 3 with joint
     /// colour planes, and the untouched geometry.
     func testRextSpsFieldsAreTheMain444Row() {
         let recipe = HevcHeaderRecipe(
             width: 2048, height: 1280, chroma444: true)
-        var r = BitReader(nal: HevcParameterSets.sps(recipe))
-        _ = r.u(4)  // sps_video_parameter_set_id
-        _ = r.u(3)  // sps_max_sub_layers_minus1
-        _ = r.u(1)  // sps_temporal_id_nesting_flag
-        XCTAssertEqual(r.u(2), 0, "general_profile_space")
-        XCTAssertEqual(r.u(1), 0, "general_tier_flag")
-        XCTAssertEqual(r.u(5), 4, "general_profile_idc = Rext")
-        XCTAssertEqual(r.u(32), 0x0800_0000, "compat: profile 4 only")
-        XCTAssertEqual(r.u(1), 1, "progressive_source")
-        XCTAssertEqual(r.u(1), 0, "interlaced_source")
-        XCTAssertEqual(r.u(1), 1, "non_packed")
-        XCTAssertEqual(r.u(1), 1, "frame_only")
-        XCTAssertEqual(r.u(1), 1, "max_12bit")
-        XCTAssertEqual(r.u(1), 1, "max_10bit")
-        XCTAssertEqual(r.u(1), 1, "max_8bit")
-        XCTAssertEqual(r.u(1), 0, "max_422chroma")
-        XCTAssertEqual(r.u(1), 0, "max_420chroma")
-        XCTAssertEqual(r.u(1), 0, "max_monochrome")
-        XCTAssertEqual(r.u(1), 0, "intra_only")
-        XCTAssertEqual(r.u(1), 0, "one_picture_only")
-        XCTAssertEqual(r.u(1), 1, "lower_bit_rate")
-        XCTAssertEqual(r.u(32), 0, "reserved_zero_34 high")
-        XCTAssertEqual(r.u(2), 0, "reserved_zero_34 low")
-        XCTAssertEqual(r.u(1), 0, "reserved_zero_bit")
-        XCTAssertEqual(r.u(8), 150, "level_idc = L5.0")
-        XCTAssertEqual(r.ue(), 0, "sps_seq_parameter_set_id")
-        XCTAssertEqual(r.ue(), 3, "chroma_format_idc = 4:4:4")
-        XCTAssertEqual(r.u(1), 0, "separate_colour_plane_flag")
-        XCTAssertEqual(r.ue(), 2048, "pic_width_in_luma_samples")
-        XCTAssertEqual(r.ue(), 1280, "pic_height_in_luma_samples")
-        XCTAssertEqual(r.u(1), 0, "conformance_window_flag")
-        XCTAssertEqual(r.ue(), 0, "bit_depth_luma_minus8")
-        XCTAssertEqual(r.ue(), 0, "bit_depth_chroma_minus8")
+        var r = HevcBitReader(nal: HevcParameterSets.sps(recipe))
+        _ = r.read(bits: 4)!  // sps_video_parameter_set_id
+        _ = r.read(bits: 3)!  // sps_max_sub_layers_minus1
+        _ = r.read(bits: 1)!  // sps_temporal_id_nesting_flag
+        XCTAssertEqual(r.read(bits: 2)!, 0, "general_profile_space")
+        XCTAssertEqual(r.read(bits: 1)!, 0, "general_tier_flag")
+        XCTAssertEqual(r.read(bits: 5)!, 4, "general_profile_idc = Rext")
+        XCTAssertEqual(r.read(bits: 32)!, 0x0800_0000, "compat: profile 4 only")
+        XCTAssertEqual(r.read(bits: 1)!, 1, "progressive_source")
+        XCTAssertEqual(r.read(bits: 1)!, 0, "interlaced_source")
+        XCTAssertEqual(r.read(bits: 1)!, 1, "non_packed")
+        XCTAssertEqual(r.read(bits: 1)!, 1, "frame_only")
+        XCTAssertEqual(r.read(bits: 1)!, 1, "max_12bit")
+        XCTAssertEqual(r.read(bits: 1)!, 1, "max_10bit")
+        XCTAssertEqual(r.read(bits: 1)!, 1, "max_8bit")
+        XCTAssertEqual(r.read(bits: 1)!, 0, "max_422chroma")
+        XCTAssertEqual(r.read(bits: 1)!, 0, "max_420chroma")
+        XCTAssertEqual(r.read(bits: 1)!, 0, "max_monochrome")
+        XCTAssertEqual(r.read(bits: 1)!, 0, "intra_only")
+        XCTAssertEqual(r.read(bits: 1)!, 0, "one_picture_only")
+        XCTAssertEqual(r.read(bits: 1)!, 1, "lower_bit_rate")
+        XCTAssertEqual(r.read(bits: 32)!, 0, "reserved_zero_34 high")
+        XCTAssertEqual(r.read(bits: 2)!, 0, "reserved_zero_34 low")
+        XCTAssertEqual(r.read(bits: 1)!, 0, "reserved_zero_bit")
+        XCTAssertEqual(r.read(bits: 8)!, 150, "level_idc = L5.0")
+        XCTAssertEqual(r.readUe()!, 0, "sps_seq_parameter_set_id")
+        XCTAssertEqual(r.readUe()!, 3, "chroma_format_idc = 4:4:4")
+        XCTAssertEqual(r.read(bits: 1)!, 0, "separate_colour_plane_flag")
+        XCTAssertEqual(r.readUe()!, 2048, "pic_width_in_luma_samples")
+        XCTAssertEqual(r.readUe()!, 1280, "pic_height_in_luma_samples")
+        XCTAssertEqual(r.read(bits: 1)!, 0, "conformance_window_flag")
+        XCTAssertEqual(r.readUe()!, 0, "bit_depth_luma_minus8")
+        XCTAssertEqual(r.readUe()!, 0, "bit_depth_chroma_minus8")
     }
 
     /// The Rext VPS carries the same profile row (the PTL is shared
@@ -238,13 +158,13 @@ final class HevcParameterSetTests: XCTestCase {
     func testRextVpsCarriesTheRextProfile() {
         let recipe = HevcHeaderRecipe(
             width: 2048, height: 1280, chroma444: true)
-        var r = BitReader(nal: HevcParameterSets.vps(recipe))
-        _ = r.u(4); _ = r.u(1); _ = r.u(1)  // vps ids/flags
-        _ = r.u(6); _ = r.u(3); _ = r.u(1)
-        XCTAssertEqual(r.u(16), 0xFFFF, "vps_reserved_0xffff")
-        XCTAssertEqual(r.u(2), 0, "profile_space")
-        XCTAssertEqual(r.u(1), 0, "tier")
-        XCTAssertEqual(r.u(5), 4, "profile_idc = Rext")
+        var r = HevcBitReader(nal: HevcParameterSets.vps(recipe))
+        _ = r.read(bits: 4)!; _ = r.read(bits: 1)!; _ = r.read(bits: 1)!  // vps ids/flags
+        _ = r.read(bits: 6)!; _ = r.read(bits: 3)!; _ = r.read(bits: 1)!
+        XCTAssertEqual(r.read(bits: 16)!, 0xFFFF, "vps_reserved_0xffff")
+        XCTAssertEqual(r.read(bits: 2)!, 0, "profile_space")
+        XCTAssertEqual(r.read(bits: 1)!, 0, "tier")
+        XCTAssertEqual(r.read(bits: 5)!, 4, "profile_idc = Rext")
     }
 
     /// The 4:2:0 dialect is UNTOUCHED by the Rext branch: the oracle

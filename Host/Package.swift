@@ -19,7 +19,13 @@ var targets: [Target] = [
         name: "HostCore",
         dependencies: [.product(name: "LyteCore", package: "Common")]
     ),
-    .testTarget(name: "HostCoreTests", dependencies: ["HostCore"]),
+    .testTarget(
+        name: "HostCoreTests",
+        dependencies: [
+            "HostCore",
+            .product(name: "LyteCore", package: "Common"),
+        ]
+    ),
     // HS-5: encoded Annex-B frames → packetizer + FEC → paced datagram
     // blobs, plus the `lyte sniff` header formatter. Cross-platform on
     // purpose: the macOS integration test is this slice's gate.
