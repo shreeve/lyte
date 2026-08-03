@@ -1,4 +1,4 @@
-import CryptoKit
+import LyteCore
 import XCTest
 @testable import LyteTransport
 
@@ -38,7 +38,7 @@ final class SyntheticMotionReferenceTests: XCTestCase {
             (900, "00c770aac5dcfc5d5489c0ee62e32bd8b541105e4b2fca41d9ba8ea463c1c43f"),
         ]
         for pin in pins {
-            let digest = SHA256.hash(data: Data(source.frame(pin.frameID)))
+            let digest = Sha256.digest(source.frame(pin.frameID))
             let hex = digest.map { String(format: "%02x", $0) }.joined()
             XCTAssertEqual(hex, pin.sha256,
                            "frame \(pin.frameID) drifted from the glass")

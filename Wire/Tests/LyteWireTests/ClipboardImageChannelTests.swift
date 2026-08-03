@@ -1,10 +1,11 @@
 import XCTest
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 
 // The clipboard-image channel's laws (P-1, clipboard v2): a full
 // marker → offer → chunks → digest-verdict loopback between two
-// channels (the ends hash — TestKit's Sha256 plays both), the
+// channels (the ends hash — LyteCore's Sha256 plays both), the
 // suppression ladder, the refusal ladder with its abort answers, the
 // refused-id swallow, lane-occupancy discipline, and the book
 // interplay that keeps an applied image from boomeranging.

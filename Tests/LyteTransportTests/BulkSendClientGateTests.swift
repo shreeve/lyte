@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import LyteCore
 import LyteTransport
 import LyteWire
 import LyteWireTestKit

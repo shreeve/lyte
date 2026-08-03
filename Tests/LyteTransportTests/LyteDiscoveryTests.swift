@@ -14,7 +14,7 @@ final class LyteDiscoveryTests: XCTestCase {
     private static let zeroKeyHash =
         "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
 
-    // MARK: - pkh hashing (must mirror the host's IdentityHash exactly)
+    // MARK: - pkh hashing (both ends consume LyteCore's exact digest)
 
     func testPublicKeyHashMatchesKnownSha256Vector() {
         let hash = LyteDiscovery.publicKeyHash(

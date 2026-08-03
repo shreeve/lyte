@@ -22,8 +22,8 @@
 // `supplyChunk` legally). Reads the engine issues are credit-bounded
 // (design §4), so the re-entry depth is bounded by the window.
 
-import Crypto
 import Foundation
+import LyteCore
 import LyteWire
 #if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
@@ -170,7 +170,7 @@ public enum BulkFilePreparer {
 
         // Size is counted as read, not asked of attributes — the bytes
         // hashed are exactly the bytes the offer promises.
-        var hasher = StreamingSha256()
+        var hasher = Sha256()
         var totalByteCount: UInt64 = 0
         do {
             while let block = try handle.read(
@@ -188,7 +188,7 @@ public enum BulkFilePreparer {
             transferId: transferId,
             totalByteCount: totalByteCount,
             chunkByteCount: chunkByteCount,
-            sha256: hasher.finalize(),
+            sha256: hasher.finalized(),
             name: wireName(for: url),
             mimeHint: mimeHint(for: url)
         )
@@ -389,23 +389,5 @@ public final class BulkSendShell: @unchecked Sendable {
     /// resume entry.
     func closeReaderForTeardown() {
         closeReader()
-    }
-}
-
-// MARK: - Streaming SHA-256 (the sanctioned provider)
-
-/// Thin wrapper so the preparer's hashing stays in one obvious place
-/// (swift-crypto is the package's sanctioned provider — the
-/// LyteDiscovery pkh precedent; LyteWire's SHA-256 is internal to its
-/// Crypto/ leaf).
-struct StreamingSha256 {
-    private var hasher = SHA256()
-
-    mutating func update(_ data: Data) {
-        hasher.update(data: data)
-    }
-
-    mutating func finalize() -> [UInt8] {
-        Array(hasher.finalize())
     }
 }

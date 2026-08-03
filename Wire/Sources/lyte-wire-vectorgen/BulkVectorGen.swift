@@ -8,6 +8,7 @@
 // composition) and replay through the same TestKit harness the suite
 // uses.
 
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 

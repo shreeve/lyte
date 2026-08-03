@@ -9,7 +9,6 @@ let package = Package(
         .executable(name: "Lyte", targets: ["Lyte"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.8.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         // The sans-IO wire core (envelope, channels, vocabulary) shared with
         // the host; the frozen Vectors/ files are the contract CL-1 codes to.
@@ -36,10 +35,6 @@ let package = Package(
                 .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteIO", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
-                // The sanctioned crypto provider, for exactly one digest:
-                // LyteDiscovery's pkh identity hash (LyteWire's SHA-256 is
-                // internal to its Crypto/ leaf).
-                .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
         // The corpus/diagnostic harness (H4 V-2/V-3): authored corpus

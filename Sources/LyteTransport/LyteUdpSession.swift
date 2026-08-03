@@ -46,7 +46,6 @@
 import LyteIO
 import LyteCore
 import CoreMedia
-import Crypto
 import Dispatch
 import Foundation
 import LyteWire
@@ -977,7 +976,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             return .sharingDisabled
         }
         let events = imageChannel.shareLocalImage(
-            data, sha256: Self.sha256(data),
+            data, sha256: Sha256.digest(data),
             book: &clipboardBook, rng: &imageRng
         )
         lock.unlock()
@@ -1044,13 +1043,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             }
         }
         return outcome
-    }
-
-    /// swift-crypto is the client package's sanctioned SHA-256 (the
-    /// BulkSendShell/LyteDiscovery precedent; LyteWire's is internal
-    /// to its Crypto/ leaf, and the channel takes digests injected).
-    private static func sha256(_ bytes: [UInt8]) -> [UInt8] {
-        Array(SHA256.hash(data: Data(bytes)))
     }
 
     // MARK: Bulk transfer (F-4)
@@ -1534,7 +1526,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         lock.lock()
         if imageChannel.claims(message) {
             let events = imageChannel.ingest(
-                message, book: &clipboardBook, sha256: Self.sha256
+                message, book: &clipboardBook, sha256: Sha256.digest
             )
             lock.unlock()
             processImageEvents(events, now: now)

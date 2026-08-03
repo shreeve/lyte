@@ -37,20 +37,4 @@ final class AnnexBStreamTests: XCTestCase {
         XCTAssertEqual(Array((au0 + au1)[ranges[1]]), au1)
     }
 
-    func testSha256KnownAnswers() {
-        XCTAssertEqual(
-            Sha256.hex([]),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        )
-        XCTAssertEqual(
-            Sha256.hex(Array("abc".utf8)),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        )
-        XCTAssertEqual(
-            Sha256.hex(Array(
-                "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq".utf8
-            )),
-            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
-        )
-    }
 }

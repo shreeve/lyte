@@ -21,6 +21,7 @@
 
 import CDBus
 import Foundation
+import LyteCore
 import LyteWire
 
 final class AvahiAdvertiser {
@@ -58,7 +59,7 @@ final class AvahiAdvertiser {
         }
         txtRecords = [
             "v=\(WireVersion.major)",
-            "pkh=" + HostStaticKey.hex(IdentityHash.sha256(staticPublicKey)),
+            "pkh=" + HostStaticKey.hex(Sha256.digest(staticPublicKey)),
         ]
         bus = try SessionBus(kind: .system)
 

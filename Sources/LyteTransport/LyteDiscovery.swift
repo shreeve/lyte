@@ -24,7 +24,7 @@
 
 import Foundation
 import Network
-import Crypto
+import LyteCore
 import LyteWire
 
 /// One advertised Lyte host, resolved and parsed. `wireVersion` and
@@ -72,10 +72,10 @@ public enum LyteDiscovery {
     public static let serviceType = "_lyte._udp"
 
     /// The TXT `pkh` value for a raw 32-byte Noise static public key —
-    /// the client-side mirror of the host's IdentityHash, for matching
-    /// pinned keys against browse results.
+    /// The same shared digest the host advertises, for matching pinned
+    /// keys against browse results.
     public static func publicKeyHash(ofStaticPublicKey key: [UInt8]) -> String {
-        SHA256.hash(data: key).map { String(format: "%02x", $0) }.joined()
+        Sha256.digest(key).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Parses the advertisement's TXT dictionary. Tolerant by design —

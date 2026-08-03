@@ -6,6 +6,7 @@
 // host sends a datagram.
 
 import Foundation
+import LyteCore
 import LyteWire
 
 /// One vector file: `Wire/Vectors/video-v1.json`.
@@ -60,7 +61,10 @@ public struct VideoFrameSource: Codable, Sendable {
     }
 
     public static func corpus(file: String, bytes: [UInt8]) -> VideoFrameSource {
-        VideoFrameSource(kind: "corpus", file: file, sha256: Sha256.hex(bytes))
+        VideoFrameSource(
+            kind: "corpus", file: file,
+            sha256: Hex.string(Sha256.digest(bytes))
+        )
     }
 
     /// Resolves the frame bytes, verifying the corpus pin.
@@ -79,7 +83,7 @@ public struct VideoFrameSource: Codable, Sendable {
                 contentsOf: URL(fileURLWithPath: corpusDirectory + "/" + file)
             )
             let bytes = [UInt8](data)
-            guard Sha256.hex(bytes) == sha256 else {
+            guard Hex.string(Sha256.digest(bytes)) == sha256 else {
                 throw VectorFileError.malformedField(
                     "corpus \(file): sha256 mismatch — corpus and vector file have drifted"
                 )
@@ -152,7 +156,7 @@ public struct VideoShardVector: Codable, Sendable {
     ) {
         self.seq = seq.rawValue
         self.fecHex = fecHex
-        self.datagramSha256 = Sha256.hex(datagram)
+        self.datagramSha256 = Hex.string(Sha256.digest(datagram))
         self.datagramHex = includeHex ? Hex.string(datagram) : nil
     }
 }
