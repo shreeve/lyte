@@ -23,14 +23,17 @@ ffmpeg env) is itself a gate. The earlier tag `first-light` marks the
 first NO-DROPS real session (cushion 0–150 ms slider, honest
 link-health pill, avahi pinned to the wired NIC).
 
-**Live ops:** pup runs a standing supervisor loop (`~/lyte-loop.sh`,
-nohup) on `--backend direct --encoder native --wire-listen 41151
---ratchet --clipboard=images --advertise-interface enxf8e43b7ede7c`
+**Live ops:** pup runs the standing systemd service `lyte-host.service`
+from `~/src/lyte-host/.build/debug/lyte-host`, configured by
+`/etc/lyte/lyte-host.conf`, on `--backend direct --encoder native
+--wire-listen 41151 --ratchet --clipboard=images
+--advertise-interface enxf8e43b7ede7c`
 (`--backend`/`--encoder`/`--ratchet` are accepted no-ops since E5) —
 wired at 10.0.0.232. After EVERY rebuild:
-`sudo -n setcap cap_sys_admin+ep .build/debug/lyte-host` (the loop's
-next respawn execs the new binary). Never kill the owner's 41151 loop;
-test hosts use fresh 41xxx ports with `--no-advertise`.
+`sudo -n systemctl restart lyte-host`; the unit grants the direct eye its
+ambient CAP_SYS_ADMIN, so the service binary needs no file capability.
+Hand-run `lyte-eye` still needs `setcap`. Never kill the owner's 41151
+service; test hosts use fresh 41xxx ports with `--no-advertise`.
 
 **Where the work lives now:** the v1-final ANALYSIS remainder is
 **ESSENTIALLY CLOSED** (2026-08-02): every Tier-2 item done (eight in
@@ -326,8 +329,9 @@ survives. Wire and frozen vectors were untouched; the standing pup binary was
 left untouched, its system service and capability remain active, and its
 identity files are unchanged. Theme 4 opened immediately below.
 
-**CLEANUP THEME 4 OPENED (#111–#112, 2026-08-03): client video has one render
-organ, including its headless implementation.** #111 introduced `VideoSink`
+**CLEANUP THEME 4'S AVAILABLE SEAMS ARE COMPLETE (#111–#112, #114,
+2026-08-03): client video has one render organ and host video has one capture
+organ.** #111 introduced `VideoSink`
 as the sole ready-sample boundary across pipeline, session core, and production
 session. The app's bounded `VideoRendererHandoff` conforms directly;
 wire-view uses the named AVFoundation leaf; every display-free gate uses one
@@ -344,9 +348,23 @@ with NumPy's requirements instead of accidentally selecting Homebrew 3.14.
 Canonical Mac passed all packages, 25 analyzer tests, and signed debug/release
 artifacts; isolated pup passed all packages, the plain host build, netio and
 pacing harnesses, and protected-state verification. Wire and frozen vectors
-were untouched. **NEXT CLEANUP SLICE: `ScreenSource` — collapse DirectEyeLeg
-and EyeCapture's two doorbell/capture loops behind the Lyte OS swap seam,
-keeping one real hardware loop and its existing direct-eye gates.**
+were untouched. #114 introduced the pure `HostCore.ScreenDoorbell` and made
+`DirectScreenSource` the one owner of DRM device lifetime, primary-plane
+discovery, FB_ID transition state, and GETFB2 scanout tickets. Production's
+`DirectEyeLeg` and the standalone `lyte-eye capture` witness both consume the
+source; their encoder/session/reporting policy remains separate. Both private
+doorbell/capture loops, their framebuffer state, and their direct DRM calls
+were deleted without an alias. Unit pins cover first/change/hold, failed reads,
+and reset; the cross-tree ratchet refuses a second seam or a rebuilt loop in
+either consumer. Canonical Mac passed Common 78, Wire 507, Host 286, client
+262, analyzer 25, and both signed products; isolated pup passed Common 79,
+Wire 507, Host 287, the plain build, netio/pacing, and protected-state gates.
+The deployed hardware witness captured 4 frames from the 2048×1280 scanout in
+3 s, wrote 99,244 HEVC bytes, and missed zero grabs; the systemd host is active
+and all protected identity hashes are unchanged. `EncoderSeat` remains parked
+until NVENC hardware exists and `AudioSource` belongs to the Lyte OS track,
+exactly as chartered. **NEXT CLEANUP SLICE: Theme 3's cross-end composition
+gates land first, before any session-spine extraction.**
 
 **THE TREE MIGRATION OPENED (#103 + #108, 2026-08-03): every move has a
 gate, and Common now speaks one filesystem grammar.** #103 recorded the
@@ -362,10 +380,11 @@ every exit with protected-state verification. **NEXT MIGRATION SLICE:
 organize Wire internally without changing its module, products, or frozen
 vectors.**
 
-**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 76 Mac / 77 pup;
-root client 262; host 284 pup / 283 Mac — all green. Eighteen conductor/gauge
+**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 78 Mac / 79 pup;
+root client 262; host 287 pup / 286 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
-pins; the VideoSink source ratchet adds two more.
+pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
+screen doorbell adds three pins.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
