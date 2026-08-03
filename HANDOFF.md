@@ -272,7 +272,14 @@ the Host's conservative 4:2:0 posture. Common pins the generic singleton and
 the existing role suites pin both interpretations; a production-source
 ratchet rejects the retired `[CapabilityChroma.yuv444]` twin. Wire and frozen
 vectors were untouched; pup's rebuilt systemd host is active and its identity
-files are unchanged. **NEXT: finish Theme 1's conditional COpus row now that
+files are unchanged. #104 repaired the eight cleanup source ratchets after the
+next row exposed their shared off-by-one `#filePath` walk: they had resolved
+`Common/` as the repository root and scanned nonexistent children. Each now
+resolves and asserts the real root; pup's split deployment layout supplies an
+explicit clean source mirror. Clock, histogram, Annex-B, HEVC bits, SHA-256,
+hex, TOS, and chroma scanners all traversed the production trees on Mac and
+Linux, and the full package matrix stayed green. No production code changed.
+**NEXT: finish Theme 1's conditional COpus row now that
 Common exists — move both package declarations to one shared system-library
 target, re-point both consumers, and delete the old module-map twins in the
 same PR.**
