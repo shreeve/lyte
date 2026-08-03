@@ -77,23 +77,38 @@ run_package_tests "client" "$repo_root"
 echo "==> analyzer tests"
 python_env="$repo_root/.build/ci-python"
 python_requirements="$repo_root/Scripts/requirements.txt"
-python_requirements_hash="$python_env/.lyte-requirements-sha256"
-required_hash="$(shasum -a 256 "$python_requirements" | awk '{print $1}')"
+python_bootstrap="${LYTE_CI_PYTHON:-/usr/bin/python3}"
+python_environment_hash="$python_env/.lyte-environment-sha256"
 
-if [[ ! -x "$python_env/bin/python3" ]]; then
-    python3 -m venv "$python_env"
+if [[ ! -x "$python_bootstrap" ]]; then
+    echo "macOS gate FAILED: Python bootstrap missing: $python_bootstrap" >&2
+    exit 1
+fi
+if ! "$python_bootstrap" -c \
+    'import sys; raise SystemExit(not ((3, 9) <= sys.version_info[:2] < (3, 13)))'
+then
+    echo "macOS gate FAILED: NumPy 2.0.2 needs Python 3.9–3.12; " \
+        "set LYTE_CI_PYTHON to a compatible interpreter" >&2
+    exit 1
 fi
 
+required_hash="$({
+    "$python_bootstrap" -c \
+        'import os, sys; print(os.path.realpath(sys.executable)); print(sys.version)'
+    shasum -a 256 "$python_requirements"
+} | shasum -a 256 | awk '{print $1}')"
 installed_hash=""
-if [[ -f "$python_requirements_hash" ]]; then
-    installed_hash="$(<"$python_requirements_hash")"
+if [[ -f "$python_environment_hash" ]]; then
+    installed_hash="$(<"$python_environment_hash")"
 fi
 
-if [[ "$installed_hash" != "$required_hash" ]]; then
+if [[ ! -x "$python_env/bin/python3" || "$installed_hash" != "$required_hash" ]]; then
+    rm -rf -- "$python_env"
+    "$python_bootstrap" -m venv "$python_env"
     "$python_env/bin/python3" -m pip install \
         --disable-pip-version-check \
         --requirement "$python_requirements"
-    printf '%s\n' "$required_hash" > "$python_requirements_hash"
+    printf '%s\n' "$required_hash" > "$python_environment_hash"
 fi
 
 "$python_env/bin/python3" Scripts/test_analyze_app_benchmark.py
