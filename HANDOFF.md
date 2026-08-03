@@ -191,10 +191,11 @@ display path — the shell's 10 s comb is the evidence). AV1 stays
 a 4:2:0 lane (no 4:4:4 hardware encoders exist anywhere,
 2026-08).
 
-**CLEANUP THEME 1 IS RUNNING (#95 + #96, 2026-08-03): one clock,
-one histogram.** The v2 `Common/` package now exists with sibling
-targets `LyteCore` (sans-IO shared policy) and `LyteIO` (shared OS
-adapters); `SystemMonotonicClock` is the one OS adapter for ns/µs/s.
+**CLEANUP THEME 1 IS RUNNING (#95–#97, 2026-08-03): one clock,
+one histogram, one Annex-B walker.** The v2 `Common/` package now exists
+with sibling targets `LyteCore` (sans-IO shared policy) and `LyteIO`
+(shared OS adapters); `SystemMonotonicClock` is the one OS adapter for
+ns/µs/s.
 Every client and Linux shell call site moved to it and the six raw
 `clock_gettime` copies, inline `DispatchTime` reads, and three private
 helpers were deleted in the same PR. A cross-tree ratchet refuses a
@@ -209,13 +210,22 @@ stays the general rule; the delivery gauge's historical exact-boundary
 promotion is named and pinned separately (its 100-sample p99 still
 carries one stall). The old parallel tests moved into Common beside a
 production-twin ratchet, and LyteCore's no-Foundation lint now runs
-automatically on both platforms. Wire and every vector stayed
-untouched. **NEXT: Theme 1 Annex-B NAL walker — merge the two walkers
-and the dependent access-unit splitter into LyteCore, with the parallel
-malformed corpus and byte-offset tests as the ratchet.**
+automatically on both platforms. #97 moved the richer slice-relative,
+allocation-free Annex-B walker plus the production first-slice
+access-unit splitter into LyteCore; Wire, Host, client, corpus, and
+vector tooling all consume it. The Host and Wire walkers (whose types
+had been renamed solely to dodge collisions), the client splitter, and
+their parallel test copies were deleted in the same PR — 694 lines out,
+431 in. The merged Core gates pin 3/4-byte start codes, malformed
+prefixes, short NALs, emulation prevention, relative offsets, bootstrap
+shape, prefix/suffix attribution, and multi-slice pictures against 500
+seeded hostile streams; the cross-tree ratchet rejects another twin.
+Wire bytes and every frozen vector stayed untouched. **NEXT: Theme 1
+HEVC bit vocabulary — make the writer and two readers explicit inverse
+functions in LyteCore, then delete all three private codecs.**
 
-**Suites at HEAD:** Wire 517 Mac / 517 pup; Common 15 Mac / 16 pup;
-root client 288; host 296 pup / 295 Mac — all green.
+**Suites at HEAD:** Wire 508 Mac / 508 pup; Common 23 Mac / 24 pup;
+root client 283; host 286 pup / 285 Mac — all green.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
