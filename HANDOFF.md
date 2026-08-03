@@ -66,12 +66,20 @@ to 1 s with one active announcement); client stores
 announcedVideoPosture, drops unnegotiated 0x26 — no detector change
 needed (#66 already gap-normalized video freshness). Live smoke:
 `posture_announcements=0` at pup's 1 Hz clock repaint (honest —
-ladder pinned by unit + in-vivo legs instead). NEXT = the native-seat
-benchmark quality witness (GPU readback — restores the Beauty Bar
-instrument). Then: direct-leg quality refinement (ratchet's successor
-— owns A-20), E6a NVENC productionize (lyte-nvenc probe banked),
-Rext 4:4:4 in the native pens (returns the Best tier), E2
-uinput-primary, E4 packaging aimed at Lyte OS.
+ladder pinned by unit + in-vivo legs instead). **Native-seat quality
+witness LANDED (#82, 2026-08-02)**: motion + quality-static legs read
+the displayed buffer back from the GPU, decode the presenter's 24-bit
+marker, regenerate the authored frame from the client twin
+(SyntheticMotionReference), and PSNR/SSIM the glass; the three
+renderers (GTK canvas / numpy twin / Swift mirror) are pinned
+byte-identical by shared SHA-256 fixtures in both suites. Client
+exports hostAnnouncedAudioQuiet so the analyzer books tripwire
+stillness as announced_quiet_stillness, not blackout. NEXT =
+direct-leg quality refinement (ratchet's successor — owns A-20 and
+the witness's standing red cell + floors). Then: E6a NVENC
+productionize (lyte-nvenc probe banked), Rext 4:4:4 in the native
+pens (returns the Best tier), E2 uinput-primary, E4 packaging aimed
+at Lyte OS.
 
 **Suites at HEAD:** Wire 513, root client 284, host 281 on pup / 280
 Mac — all green (counts grew with the fix train's pins).
@@ -175,15 +183,22 @@ worker left on disk, keep or revert it, relaunch fresh. Standing infra
 that is NOT a worker and stays up: the pup 41151 loop and the owner's
 client app bundle.
 
-# THE BEAUTY BAR — the standing quality gate, between instruments
+# THE BEAUTY BAR — the standing quality gate, new instrument era
 
-The per-release quality bar (static ≥ 50 dB · motion ≥ 55 dB · fps
-p50 ≥ 55 · IDR ≤ 2/min · churn 0 · loss ≤ 1/150 s) reached its first
-all-green row at `f63587c` (2026-07-30, IDR 1.6/min on verified-clean
-air). Its instruments (`quality-probe.sh`, `encoder-ab.sh`) measured
-the libav seat and were deleted with it in E5; the successor is
-`Scripts/benchmark-app.sh` plus the FILED native-seat quality witness
-(GPU readback — see the postures queue). The full eight-row table
-with footnotes: `git show 0753cbc:HANDOFF.md`; per-row forensics:
+The instrument is `Scripts/benchmark-app.sh` (#82): GPU readback of
+the displayed buffer, marker-locked against the byte-pinned authored
+frame. The old corpus-era bars (static ≥ 50 dB · motion ≥ 55 dB) do
+NOT carry over — the synthetic pattern is chroma-adversarial (thin
+saturated lines pin R/B near 31 dB at 4:2:0), so the commissioned
+floors are min-channel 28 dB active / 30 dB converged / SSIM 0.995;
+raising them is the direct-leg quality refinement's work. Baseline
+row at `0410e16` (2026-08-02, panel at 60 Hz — REQUIRED for motion
+legs; at 120 Hz Mutter presents the 60 fps pattern unevenly and the
+preflight refuses): quality-static PASS (31.2 dB min-channel, SSIM
+0.9991, 29/29 phase-locked, announced-quiet audio); motion 30.8 dB /
+SSIM 0.999 / 60.2 fps decoded with ONE STANDING RED CELL —
+client presentation lateness p99 ~18 ms vs the 8 ms bar,
+reproducible across runs. The libav-era eight-row table with
+footnotes: `git show 0753cbc:HANDOFF.md`; per-row forensics:
 `git show 4bb3e11:docs/20260730-103326-handoff-archive-h2-h4.md`.
 Never massage a red cell: a FAIL at HEAD is a finding.
