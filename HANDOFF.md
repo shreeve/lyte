@@ -160,8 +160,9 @@ received stream read "stream chroma 4:4:4", 16 decoded / 0 skipped /
 first frame 19.2 ms; `--chroma 420` stayed 4:2:0, zero flips. NO
 Wire changes — the rails (yuv444 id, ChromaTier UI/persistence/
 re-dial/fallback, ChromaPosture) shipped earlier and lit up
-unchanged. Owed: owner's eyeball on real text at Best from the app
-(Settings → Chroma → Best; a re-dial applies it). Banked follow-up:
+unchanged. OWNER VERDICT (2026-08-03, live session at Best from the
+app): "Screen crispness is undeniable!" — the eyeball gate is
+PASSED; the Best tier is the rig's daily posture. Banked follow-up:
 SccMain444 (screen-content coding, also GREEN on the Arc probe).**
 Then: E6a NVENC productionize (lyte-nvenc probe banked; NVENC 4:4:4
 via best444 recipe when it lands), E4 packaging aimed at Lyte OS
