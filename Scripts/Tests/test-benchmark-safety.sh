@@ -78,7 +78,7 @@ then
     exit 1
 fi
 
-bash -n "$benchmark" "$benchmark_netem"
+bash -n "$benchmark" "$benchmark_netem" "$pup_gate"
 sh -n "$netem" "$build_cli" "$make_app"
 
 # The Client package lives under Client/, but every user-facing artifact stays
@@ -95,6 +95,13 @@ grep -Fq 'Client/Package.swift Client/Package.resolved Client/Sources' \
 grep -Fq 'run_package_tests "client" "$repo_root/Client" "$repo_root/.build"' \
     "$macos_gate"
 grep -Fq 'rsync -a --delete --exclude .build Client/' "$pup_gate"
+grep -Fq 'command -v findmnt' "$pup_gate"
+grep -Fq 'refuse_mounts_below "$namespace"' "$pup_gate"
+grep -Fq 'find "$directory" -xdev -depth -delete' "$pup_gate"
+if grep -Fq 'rm -rf -- "$gate_root/Sources"' "$pup_gate"; then
+    echo "pup gate regained an unconstrained recursive delete" >&2
+    exit 1
+fi
 grep -Fq 'Scripts/build-cli.sh debug' "$vscode_tasks"
 grep -Fq 'Scripts/build-cli.sh release' "$vscode_tasks"
 grep -Fq 'Scripts/make-app.sh debug' "$vscode_tasks"
