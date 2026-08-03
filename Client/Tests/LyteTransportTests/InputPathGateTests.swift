@@ -1,4 +1,5 @@
 import XCTest
+import LyteClientTestKit
 import Foundation
 import LyteTransport
 import LyteWire
@@ -682,7 +683,7 @@ final class InputPathGateTests: XCTestCase {
         let crypto: NoiseTransportCrypto
         let demux: ReceiveDemux
         var core: LyteUdpSessionCore!
-        let outbound = LockedPile()
+        let outbound = LockedBytePile()
         let clock = LockedClock()
         var deliveredFrames: [UInt32] = []
 
@@ -725,14 +726,6 @@ final class InputPathGateTests: XCTestCase {
                 XCTFail("host datagram refused: \(outcome)")
             }
         }
-    }
-
-    final class LockedPile: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [[UInt8]] = []
-        func append(_ d: [UInt8]) { lock.lock(); stored.append(d); lock.unlock() }
-        var all: [[UInt8]] { lock.lock(); defer { lock.unlock() }; return stored }
-        var count: Int { lock.lock(); defer { lock.unlock() }; return stored.count }
     }
 
     final class LockedClock: @unchecked Sendable {

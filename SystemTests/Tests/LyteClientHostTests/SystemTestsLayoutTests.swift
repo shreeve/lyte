@@ -16,25 +16,27 @@ final class SystemTestsLayoutTests: XCTestCase {
                 of: .host,
                 below: "SystemTests/Tests"
             ),
-            ["SystemTests/Tests/LyteClientHostTests/PairingGateTests.swift"]
+            [
+                "SystemTests/Tests/LyteClientHostTests/NackRepairClientGateTests.swift",
+                "SystemTests/Tests/LyteClientHostTests/PairingGateTests.swift",
+            ]
         )
         XCTAssertEqual(
             try importers(
                 of: .client,
                 below: "SystemTests/Tests"
             ),
-            ["SystemTests/Tests/LyteClientHostTests/PairingGateTests.swift"]
+            [
+                "SystemTests/Tests/LyteClientHostTests/NackRepairClientGateTests.swift",
+                "SystemTests/Tests/LyteClientHostTests/PairingGateTests.swift",
+            ]
         )
         XCTAssertEqual(
             try importers(
                 of: .host,
                 below: "Client/Tests"
             ),
-            [
-                // Named migration debt: the next slice moves this gate after
-                // its reusable client equipment earns LyteClientTestKit.
-                "Client/Tests/LyteTransportTests/NackRepairClientGateTests.swift",
-            ]
+            []
         )
         XCTAssertEqual(
             try importers(
@@ -50,6 +52,13 @@ final class SystemTestsLayoutTests: XCTestCase {
         let pairingImports = importedModules(from: pairing)
         XCTAssertTrue(pairingImports.contains("HostWire"))
         XCTAssertTrue(pairingImports.contains("LyteTransport"))
+
+        let nack = try source(
+            at: "SystemTests/Tests/LyteClientHostTests/NackRepairClientGateTests.swift"
+        )
+        let nackImports = importedModules(from: nack)
+        XCTAssertTrue(nackImports.contains("HostWire"))
+        XCTAssertTrue(nackImports.contains("LyteTransport"))
     }
 
     func testAttributedAndQualifiedImportsCannotEvadeTheBoundary() {
@@ -91,11 +100,50 @@ final class SystemTestsLayoutTests: XCTestCase {
                 "LyteSystemTestKit does not exist until reusable equipment earns it"
             )
         }
+
+        let clientManifest = try source(at: "Client/Package.swift")
+        XCTAssertFalse(
+            clientManifest.contains("../Host"),
+            "Client must not depend on the Host package"
+        )
+        XCTAssertFalse(
+            clientManifest.contains("package: \"Host\""),
+            "Client targets must not import Host products"
+        )
+        XCTAssertEqual(
+            clientManifest.components(separatedBy: "\"LyteClientTestKit\"").count - 1,
+            4,
+            "the TestKit product/target may be consumed only by LyteTransportTests"
+        )
+        XCTAssertEqual(
+            try importers(
+                ofModule: "LyteClientTestKit",
+                below: "Client/Sources"
+            ),
+            [],
+            "shipping Client sources must not import test equipment"
+        )
     }
 
     private func importers(
         of role: ProductRole,
         below relativeRoot: String
+    ) throws -> [String] {
+        try importers(below: relativeRoot) {
+            belongsToRole($0, role: role)
+        }
+    }
+
+    private func importers(
+        ofModule module: String,
+        below relativeRoot: String
+    ) throws -> [String] {
+        try importers(below: relativeRoot) { $0 == module }
+    }
+
+    private func importers(
+        below relativeRoot: String,
+        matching predicate: (String) -> Bool
     ) throws -> [String] {
         let root = sourceTree.repositoryRoot.appendingPathComponent(relativeRoot)
         guard let enumerator = FileManager.default.enumerator(
@@ -110,9 +158,7 @@ final class SystemTestsLayoutTests: XCTestCase {
         for case let file as URL in enumerator
         where file.pathExtension == "swift" {
             let source = try String(contentsOf: file, encoding: .utf8)
-            if importedModules(from: source).contains(where: {
-                belongsToRole($0, role: role)
-            }) {
+            if importedModules(from: source).contains(where: predicate) {
                 result.append(sourceTree.relativePath(for: file))
             }
         }

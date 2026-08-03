@@ -1,4 +1,5 @@
 import XCTest
+import LyteClientTestKit
 import CoreMedia
 import Foundation
 import LyteCore
