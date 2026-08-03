@@ -5,6 +5,9 @@ let package = Package(
     name: "Lyte",
     platforms: [.macOS(.v15)],
     products: [
+        // The real client role, exported for the repository's cross-end
+        // SystemTests composition package. Shipping products remain below.
+        .library(name: "LyteTransport", targets: ["LyteTransport"]),
         .executable(name: "lyte-cli", targets: ["lyte-cli"]),
         .executable(name: "Lyte", targets: ["Lyte"]),
     ],

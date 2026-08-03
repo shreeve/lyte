@@ -94,7 +94,10 @@ grep -Fq 'Client/Package.swift Client/Package.resolved Client/Sources' \
     "$benchmark"
 grep -Fq 'run_package_tests "client" "$repo_root/Client" "$repo_root/.build"' \
     "$macos_gate"
+grep -Fq '"SystemTests" "$repo_root/SystemTests" "$repo_root/SystemTests/.build"' \
+    "$macos_gate"
 grep -Fq 'rsync -a --delete --exclude .build Client/' "$pup_gate"
+grep -Fq 'SystemTests/ "$pup:$pup_gate_root/SystemTests/"' "$pup_gate"
 grep -Fq 'command -v findmnt' "$pup_gate"
 grep -Fq 'refuse_mounts_below "$namespace"' "$pup_gate"
 grep -Fq 'find "$directory" -xdev -depth -delete' "$pup_gate"

@@ -19,7 +19,7 @@ the Sunshine install on the reference host were demolished at the H2 exit
 H-era build plans completed their ladder and are retired to git history
 (`git show 4bb3e11:docs/20260720-222500-lyte-build-plan.md`).
 
-## Repo structure — four SwiftPM packages (all swift-tools-version 6.0)
+## Repo structure — five SwiftPM packages (all swift-tools-version 6.0)
 
 - **`Wire/`** — package `LyteWire`: the shared, sans-IO, Foundation-free
   protocol core both ends import. Targets: `LyteWire` (codecs, FEC, Noise,
@@ -71,6 +71,12 @@ H-era build plans completed their ladder and are retired to git history
  GameStream stack (`LyteKit`/`CEnet`/`CNanors`) was deleted at the H2
  exit per the demolition checklist in the client build plan (retired
  to git history).
+- **`SystemTests/`** — package `LyteSystemTests`: the macOS-only composition
+  graph for tests that require both real roles. `LyteClientHostTests` imports
+  the exported `LyteTransport` and `HostWire` libraries; package-local tests
+  stay with their owner. `LyteSystemTestKit` does not exist until reusable
+  cross-end equipment earns it. Linux execution begins only after an IO-free
+  client session target exists.
 
 ## Build & test
 
@@ -82,6 +88,7 @@ cd Common && DEVELOPER_DIR=/Applications/Xcode.app swift test
 cd Host && DEVELOPER_DIR=/Applications/Xcode.app swift test
 DEVELOPER_DIR=/Applications/Xcode.app swift test \
   --package-path Client --scratch-path .build           # from repo root
+cd SystemTests && DEVELOPER_DIR=/Applications/Xcode.app swift test
 ```
 
 The no-Foundation lints (`Wire/Scripts/lint-no-foundation.sh` and
