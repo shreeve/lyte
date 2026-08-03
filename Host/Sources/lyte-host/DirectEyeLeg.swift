@@ -18,6 +18,7 @@ import Foundation
 import Glibc
 import HostCore
 import HostEye
+import HostWire
 import LyteWire
 
 final class DirectEyeLeg {
@@ -58,6 +59,9 @@ final class DirectEyeLeg {
     /// the key-16 agreement; every step and wake is announced (0x26).
     private var quietPacer = VideoQuietPacer()
     private(set) var postureAnnouncements = 0
+    /// V-4: true once a Best-tier agreement reopened the encoder in
+    /// Rext 4:4:4 — the stats block reports the encoder that RAN.
+    private(set) var chroma444Active = false
     /// E5 audit item 4: set when the leg ended because the display's
     /// geometry changed under it — a clean, deliberate exit, not an
     /// error.
@@ -160,7 +164,7 @@ final class DirectEyeLeg {
         // the native VAAPI pens — zero libavcodec, rate directives
         // apply live (the RC misc buffer rides the next frame).
         let gl: EyeGL
-        let encoder: EyeVaapiEncoder
+        var encoder: EyeVaapiEncoder
         do {
             gl = try EyeGL(renderNode: config.renderNode)
             encoder = try EyeVaapiEncoder(
@@ -190,6 +194,7 @@ final class DirectEyeLeg {
         }
 
         var targets: [UInt32: NV12Target] = [:]
+        var targets444: [UInt32: AyuvTarget] = [:]
         var lastFB: UInt32 = 0
         var pendingCauses: [String] = []
         let t0 = nowSeconds()
@@ -253,6 +258,42 @@ final class DirectEyeLeg {
             let cursorStart = nowMicroseconds()
             pollCursor(cursorWatcher)
             lastStages.cursorUs = nowMicroseconds() - cursorStart
+
+            // V-4: the agreed chroma is connect-time truth that
+            // lands AFTER the leg opened its encoder (the declaration
+            // rides the handshake). One session per leg lifetime → at
+            // most one flip: a Best-tier agreement reopens the encoder
+            // in Rext 4:4:4. The fresh encoder's first frame is the
+            // IDR the joiner needs, and zeroing lastFB makes the very
+            // next poll treat the current screen as damage — a static
+            // desktop still delivers immediately.
+            if !chroma444Active,
+               ChromaPosture.from(
+                   agreedChromaModes: wire?.agreedChromaModes
+               ) == .yuv444 {
+                do {
+                    for sid in targets.keys {
+                        gl.destroy(&targets[sid]!)
+                    }
+                    targets.removeAll()
+                    lastEncodedSurface = nil
+                    lastFB = 0
+                    encoder = try EyeVaapiEncoder(
+                        width: width, height: height, fps: 60,
+                        qp: config.qp,
+                        renderNode: config.renderNode,
+                        bitrateBitsPerSecond:
+                            config.bitrateBitsPerSecond,
+                        chroma444: true)
+                    chroma444Active = true
+                    print("direct: Best tier agreed — encoder "
+                        + "reopened as Rext 4:4:4 (AYUV, one-pass "
+                        + "blit)")
+                } catch {
+                    lastError = "direct: 4:4:4 reopen: \(error)"
+                    return
+                }
+            }
 
             // Rate directives apply live: the cap becomes the VBR
             // envelope on the next frame's RC misc buffer.
@@ -441,6 +482,27 @@ final class DirectEyeLeg {
                     ticketReleased = true
                 }
 
+                func blit444Into(_ sid: UInt32) throws {
+                    if targets444[sid] == nil {
+                        let plane = try encoder.exportSurfacePacked(sid)
+                        let target = try gl.makeAyuvTarget(
+                            width: width, height: height,
+                            modifier: plane.modifier,
+                            plane: (plane.fd, plane.offset,
+                                    plane.pitch))
+                        close(plane.fd)
+                        targets444[sid] = target
+                    }
+                    gl.blit444(
+                        source: source,
+                        srcWidth: Int32(ticket.width),
+                        srcHeight: Int32(ticket.height),
+                        into: targets444[sid]!)
+                    gl.destroy(&source)
+                    ticket.release()
+                    ticketReleased = true
+                }
+
                 // Synchronous seat: vaSyncSurface inside encode
                 // means the round-robin input is free by return —
                 // no in-flight aliasing. 1-in-1-out: keyframe truth
@@ -449,7 +511,11 @@ final class DirectEyeLeg {
                 let sid = encoder.inputSurfaces[
                     frames % encoder.inputSurfaces.count]
                 let blitStart = nowMicroseconds()
-                try blitInto(sid) { try encoder.exportSurface(sid) }
+                if chroma444Active {
+                    try blit444Into(sid)
+                } else {
+                    try blitInto(sid) { try encoder.exportSurface(sid) }
+                }
                 let encodeStart = nowMicroseconds()
                 lastStages.blitUs = encodeStart - blitStart
                 let packet = try encoder.encode(

@@ -285,6 +285,22 @@ public final class EyeGL {
         imported = ImportedTexture(image: nil, texture: 0)
     }
 
+    /// Full teardown of an NV12 target (the chroma re-open path):
+    /// FBOs, textures, EGL images — the exported dmabuf fds were
+    /// closed at import time.
+    public func destroy(_ target: inout NV12Target) {
+        var fbos = [target.fboY, target.fboUV]
+        glDeleteFramebuffers(2, &fbos)
+        destroy(&target.y)
+        destroy(&target.uv)
+    }
+
+    public func destroy(_ target: inout AyuvTarget) {
+        var fbo = target.fbo
+        glDeleteFramebuffers(1, &fbo)
+        destroy(&target.plane)
+    }
+
     // MARK: - NV12 render target
 
     private func attach(_ tex: GLuint) throws -> GLuint {

@@ -13,6 +13,7 @@
 import CNetIO
 import Foundation
 import HostCore
+import HostEye
 import HostWire
 import LyteWire
 
@@ -615,16 +616,23 @@ func run() throws {
         // always back off honestly — announced, never inferred.
         declared = declared.declaringVideoQuietPosture()
 
-        // V-4: chroma is declared on PROOF, never a hardcoded claim.
-        // The direct eye's native VAAPI pens write NV12 4:2:0 and
-        // nothing else yet, so the host declares [420] alone
-        // regardless of what the silicon could do; the Best tier
-        // (4:4:4) returns when Rext lands in the native pens (the
-        // recorded ladder item), proven by its own probe — never
-        // borrowed from another encoder's.
-        print("chroma: native VAAPI seat is 4:2:0 — declaring "
-            + "chroma [420] only (Best tier returns with Rext "
-            + "in the native pens)")
+        // V-4: chroma is declared on PROOF, never a hardcoded
+        // claim. Rext landed in the native pens (#89) — so the proof
+        // is the silicon's own answer, asked at startup: only a
+        // Main444 encode entrypoint declares the Best tier. The
+        // client's singleton declaration picks the session's posture
+        // (declaration-as-choice); the leg reopens the encoder when
+        // a Best agreement lands.
+        if EyeVaapiEncoder.probesMain444() {
+            declared.chromaModes = [
+                CapabilityChroma.yuv420, CapabilityChroma.yuv444,
+            ]
+            print("chroma: Main444 probe GREEN — declaring "
+                + "[420, 444] (Best tier open, Rext native pens)")
+        } else {
+            print("chroma: no Main444 encode entrypoint — declaring "
+                + "[420] only")
+        }
 
         // HS-21: arm the retry-cookie dial when asked. A random secret,
         // process-scoped: the host both mints and verifies with it, and
@@ -975,7 +983,7 @@ func run() throws {
         final state \(wire.lifecycleState.map { "\($0)" } ?? "—") \
         (wire mode \(wire.currentWireMode.map { "\($0)" } ?? "—"))
         chroma: agreed \(wire.agreedChromaModes.map { "\($0)" } ?? "— (no declaration)"), \
-        encoder 4:2:0 (native VAAPI)
+        encoder \(leg.chroma444Active ? "4:4:4 (Rext)" : "4:2:0") (native VAAPI)
         input: \(s.inputEventsReceived) events received, \
         \(wire.inputInjected) injected \
         (\(wire.inputInjectFailures) failed), \
