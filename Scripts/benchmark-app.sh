@@ -619,7 +619,11 @@ run_leg() {
 EOF
 
   QUALITY_REFERENCE_RAW=""
-  benchmark_chroma=""
+  # V-4: pin the leg's chroma tier from the caller's environment
+  # (good|best — ChromaTier rawValues). Empty = the app's own seeding
+  # (the pinned host's persisted tier) — fine for smoke, ambiguous
+  # for an A/B.
+  benchmark_chroma="${LYTE_BENCHMARK_CHROMA_TIER:-}"
   benchmark_reference_name=""
   motion_leg=""
   synthetic_motion=""

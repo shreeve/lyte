@@ -122,12 +122,16 @@ def quality_observation(elapsed, decoded_frames, psnr=46.0, ssim=0.996):
     }
 
 
-def quality_sample(elapsed, decoded_frames, psnr=46.0, ssim=0.996):
+def quality_sample(
+    elapsed, decoded_frames, psnr=46.0, ssim=0.996, chroma=None
+):
     fixture = sample("quality-static", 0, ["freshCapture"])
     fixture["elapsedSeconds"] = elapsed
     fixture["video"]["framesDecoded"] = decoded_frames
     fixture["quality"] = quality_observation(
         elapsed, decoded_frames, psnr, ssim)
+    if chroma is not None:
+        fixture["streamChroma"] = chroma
     return fixture
 
 
@@ -311,6 +315,44 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "PASS")
         self.assertTrue(result["quality"]["decodedFramesAdvancedDuringRun"])
         self.assertNotIn("quality_static_retention_failed", result["failures"])
+
+    def test_best_tier_floors_hold_the_444_standard(self):
+        # 52 dB passes 4:2:0's converged floor (30) by 22 dB, but a
+        # Best-tier stream is graded on the 4:4:4 bar (50/0.9995) —
+        # the commissioned 2026-08-03 baseline is 56.8–57.6 dB, so a
+        # slide to 48 dB is a REGRESSION the old floor would bless.
+        passing = [
+            quality_sample(t, 29, psnr=52.0, ssim=0.99990, chroma="4:4:4")
+            for t in (1.0, 2.0, 4.0, 5.0, 6.0)
+        ]
+        result = self.analyze(passing[-1], samples=passing)
+        self.assertEqual(result["verdict"], "PASS")
+        self.assertEqual(result["quality"]["streamChroma"], "4:4:4")
+        self.assertEqual(
+            result["quality"]["thresholds"]["convergedMinRGBPSNRDB"], 50.0)
+
+        sliding = [
+            quality_sample(t, 29, psnr=48.0, ssim=0.99990, chroma="4:4:4")
+            for t in (1.0, 2.0, 4.0, 5.0, 6.0)
+        ]
+        result = self.analyze(sliding[-1], samples=sliding)
+        self.assertEqual(result["verdict"], "FAIL")
+        self.assertIn("quality_converged_gate_failed", result["failures"])
+
+    def test_420_streams_keep_the_legacy_floors(self):
+        # The same 31 dB that is honest 4:2:0 health must not be
+        # graded on the 4:4:4 bar; absent streamChroma (a pre-tier
+        # recording) grades 4:2:0 too.
+        for chroma in ("4:2:0", None):
+            fixtures = [
+                quality_sample(t, 29, psnr=31.2, ssim=0.9991, chroma=chroma)
+                for t in (1.0, 2.0, 4.0, 5.0, 6.0)
+            ]
+            result = self.analyze(fixtures[-1], samples=fixtures)
+            self.assertEqual(result["verdict"], "PASS")
+            self.assertEqual(
+                result["quality"]["thresholds"]["convergedMinRGBPSNRDB"],
+                30.0)
 
     def test_cadence_clean_but_blurry_quality_fails(self):
         fixtures = [

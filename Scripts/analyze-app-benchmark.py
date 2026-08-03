@@ -8,18 +8,27 @@ import sys
 from pathlib import Path
 
 
-# Commissioning floors for the native-seat witness, measured against
-# the motion-definition pattern (2026-08-02, quality-static leg on the
-# rig: min-channel 31.2 dB, G 40.6 dB, luma SSIM 0.9991). The pattern
-# is chroma-adversarial by design — thin saturated lines pin R/B near
-# 31 dB at 4:2:0 regardless of encoder health — so the min-channel
-# floors sit below the measured baseline to catch regressions
-# (colorimetry swaps, encoder faults) rather than assert headroom the
-# chroma format cannot give. Raising them is the direct-leg quality
-# refinement's job.
-QUALITY_ACTIVE_MIN_DB = 28.0
-QUALITY_CONVERGED_MIN_DB = 30.0
-QUALITY_CONVERGED_MIN_SSIM = 0.995
+# Commissioning floors for the native-seat witness, PER CHROMA TIER
+# (the sample's streamChroma is the SPS-audit truth of what the wire
+# carried; absent = a pre-tier recording, graded 4:2:0).
+#
+# 4:2:0 (2026-08-02 baseline: min-channel 31.2 dB, G 40.6, SSIM
+# 0.9991): the motion-definition pattern is chroma-adversarial by
+# design — thin saturated lines pin R/B near 31 dB at 4:2:0
+# regardless of encoder health — so the floors sit below the measured
+# baseline to catch regressions (colorimetry swaps, encoder faults)
+# rather than assert headroom the chroma format cannot give.
+#
+# 4:4:4 (Rext Best tier, commissioned 2026-08-03: static 57.6 /
+# motion 56.8 dB min-channel, SSIM 0.99999, converged from the FIRST
+# observation — the VBR envelope at keepalive cadence already floors
+# QP on stills, no explicit ratchet required): floors at 45/50 dB and
+# SSIM 0.9995 hold the visually-lossless standard with margin for
+# pattern/driver drift.
+QUALITY_FLOORS = {
+    "4:2:0": {"active": 28.0, "converged": 30.0, "ssim": 0.995},
+    "4:4:4": {"active": 45.0, "converged": 50.0, "ssim": 0.9995},
+}
 
 
 def percentile(values, percent):
@@ -244,6 +253,12 @@ def audio_interval_analysis(samples, warmup_seconds=3.0):
 
 
 def quality_analysis(samples, elapsed):
+    stream_chroma = next(
+        (sample["streamChroma"] for sample in reversed(samples)
+         if sample.get("streamChroma")),
+        None,
+    )
+    floors = QUALITY_FLOORS.get(stream_chroma, QUALITY_FLOORS["4:2:0"])
     observations = [
         sample["quality"] for sample in samples
         if sample.get("quality") is not None
@@ -293,10 +308,11 @@ def quality_analysis(samples, elapsed):
     ssims = [float(item["lumaSSIM"]) for item in valid]
     latest = observations[-1] if observations else {}
     return {
+        "streamChroma": stream_chroma,
         "thresholds": {
-            "activeMinRGBPSNRDB": QUALITY_ACTIVE_MIN_DB,
-            "convergedMinRGBPSNRDB": QUALITY_CONVERGED_MIN_DB,
-            "convergedMinLumaSSIM": QUALITY_CONVERGED_MIN_SSIM,
+            "activeMinRGBPSNRDB": floors["active"],
+            "convergedMinRGBPSNRDB": floors["converged"],
+            "convergedMinLumaSSIM": floors["ssim"],
         },
         "observations": len(observations),
         "validObservations": len(valid),
@@ -343,11 +359,11 @@ def quality_analysis(samples, elapsed):
         # window through the readback-gap gate, so an empty warm-up is
         # not itself a failure.
         "warmupPass": all(
-            item["psnrMinDB"] >= QUALITY_ACTIVE_MIN_DB for item in warmup
+            item["psnrMinDB"] >= floors["active"] for item in warmup
         ),
         "steadyPass": bool(steady) and all(
-            item["psnrMinDB"] >= QUALITY_CONVERGED_MIN_DB
-            and item["lumaSSIM"] >= QUALITY_CONVERGED_MIN_SSIM
+            item["psnrMinDB"] >= floors["converged"]
+            and item["lumaSSIM"] >= floors["ssim"]
             for item in steady
         ),
         "geometry": {

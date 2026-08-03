@@ -282,18 +282,36 @@ client app bundle.
 The instrument is `Scripts/benchmark-app.sh` (#82): GPU readback of
 the displayed buffer, marker-locked against the byte-pinned authored
 frame. The old corpus-era bars (static ≥ 50 dB · motion ≥ 55 dB) do
-NOT carry over — the synthetic pattern is chroma-adversarial (thin
-saturated lines pin R/B near 31 dB at 4:2:0), so the commissioned
-floors are min-channel 28 dB active / 30 dB converged / SSIM 0.995;
-raising them is the direct-leg quality refinement's work. Baseline
-row at `0410e16` (2026-08-02, panel at 60 Hz — REQUIRED for motion
-legs; at 120 Hz Mutter presents the 60 fps pattern unevenly and the
-preflight refuses): quality-static PASS (31.2 dB min-channel, SSIM
-0.9991, 29/29 phase-locked, announced-quiet audio); motion PASS at
-`61fb56b` (#83's metronome): gap p50=p95=p99 16.667 ms exactly,
-lateness p99 1.68 ms, 30.76 dB / SSIM 0.9989, 59.5 fps, 0 IDR — the
-lateness red cell turned green. Standing finding now HOST-side:
-~20 skipped capture beats per 30 s under encode load. The libav-era eight-row table with
-footnotes: `git show 0753cbc:HANDOFF.md`; per-row forensics:
+NOT carry over. FLOORS ARE PER CHROMA TIER since 2026-08-03 (the
+sample's `streamChroma` = the wire's SPS-audit truth; absent = a
+pre-tier recording, graded 4:2:0):
+  · 4:2:0 — min-channel 28 dB active / 30 dB converged / SSIM 0.995
+    (the synthetic pattern is chroma-adversarial: thin saturated
+    lines pin R/B near 31 dB at 4:2:0 regardless of encoder health)
+  · 4:4:4 — 45 dB active / 50 dB converged / SSIM 0.9995 (the
+    Best-tier commissioning, below)
+Pin the leg's tier with `LYTE_BENCHMARK_CHROMA_TIER=good|best`
+(empty = the pinned host's persisted tier — ambiguous for an A/B).
+Baseline rows (panel at 60 Hz — REQUIRED for motion legs; at 120 Hz
+Mutter presents the 60 fps pattern unevenly and the preflight
+refuses): 4:2:0 at `0410e16` (2026-08-02): quality-static PASS
+31.2 dB / SSIM 0.9991, 29/29 phase-locked; motion PASS at `61fb56b`
+(#83's metronome): gap p50=p95=p99 16.667 ms exactly, lateness p99
+1.68 ms, 30.76 dB / SSIM 0.9989, 59.5 fps, 0 IDR. 4:4:4 BEST-TIER
+COMMISSIONING (2026-08-03, post-#90): quality-static 57.6 dB
+min-channel / SSIM 0.999994; motion 56.8 dB / SSIM 0.99999 at
+59.97 fps, gap 16.667 ms exact, lateness p99 1.92 ms — +26 dB over
+4:2:0 at zero cadence cost. RATCHET FINDING (closes the A-20
+quality-refinement ambition for stills): Best-tier static quality
+converges from the FIRST observation — the VBR envelope at
+keepalive cadence already floors QP, so the portal-era explicit
+QP-descent ratchet has nothing left to fetch; the refinement work
+became these floors. ENVIRONMENT WART on the books: macOS
+resurrects awdl0 mid-run (~1×/30 s some days); the helper's
+re-engage costs a ~100 ms audio window → `audio_steady_state_late_
+or_plc` FAILs that are tier-independent and environmental — check
+stderr for "awdl0 UP while streaming" before blaming the wire.
+The libav-era eight-row table with footnotes:
+`git show 0753cbc:HANDOFF.md`; per-row forensics:
 `git show 4bb3e11:docs/20260730-103326-handoff-archive-h2-h4.md`.
 Never massage a red cell: a FAIL at HEAD is a finding.
