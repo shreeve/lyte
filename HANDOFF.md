@@ -191,10 +191,10 @@ display path — the shell's 10 s comb is the evidence). AV1 stays
 a 4:2:0 lane (no 4:4:4 hardware encoders exist anywhere,
 2026-08).
 
-**CLEANUP THEME 1 IS RUNNING (#95–#102, 2026-08-03): one clock,
+**CLEANUP THEME 1 IS COMPLETE (#95–#102, #104–#105, 2026-08-03): one clock,
 one histogram, one Annex-B walker, one HEVC bit vocabulary, one
 SHA-256 state, one hex vocabulary, one TOS vocabulary, one chroma
-pairing rule.** The v2
+pairing rule, one libopus module.** The v2
 `Common/` package now exists
 with sibling targets `LyteCore` (sans-IO shared policy) and `LyteIO`
 (shared OS adapters); `SystemMonotonicClock` is the one OS adapter for
@@ -279,12 +279,19 @@ resolves and asserts the real root; pup's split deployment layout supplies an
 explicit clean source mirror. Clock, histogram, Annex-B, HEVC bits, SHA-256,
 hex, TOS, and chroma scanners all traversed the production trees on Mac and
 Linux, and the full package matrix stayed green. No production code changed.
-**NEXT: finish Theme 1's conditional COpus row now that
-Common exists — move both package declarations to one shared system-library
-target, re-point both consumers, and delete the old module-map twins in the
-same PR.**
+#105 made `Common/COpus` the one pkg-config system-library product for both
+platforms. The client decoder/PLC and real Opus tests plus the Host's
+`COpusEncode` leaf consume it; the root and Host declarations, both private
+module maps, and both divergent shims were deleted in the same PR. The
+cardinality ratchet requires exactly one manifest declaration and one module
+map. `lyte-cli` resolved Homebrew's `libopus.0.dylib`; pup's rebuilt
+`lyte-host` resolved the system `libopus.so.0`, its systemd service is active,
+and its identity files are unchanged. **NEXT: Theme 2 starts with the chartered
+`RendererHandoffPolicy` split — move policy onto sans-IO frame descriptors,
+leave `CMSampleBuffer` in the shell, carry the lint with the extracted type,
+and preserve every handoff verdict.**
 
-**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 42 Mac / 43 pup;
+**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 43 Mac / 44 pup;
 root client 284; host 284 pup / 283 Mac — all green.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
