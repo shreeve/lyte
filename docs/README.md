@@ -37,6 +37,10 @@ studies, and the Sunshine/Moonlight/moonshine reference reads).*
 - [20260730-115707 v2 rulings](20260730-115707-lyte-v2-rulings.md) —
   one repo + `v1-final` tag, the Client/Common/Host target shape,
   LyteCore/LyteIO/LyteTestKit naming, spec-before-code.
+- [20260803-084328 source layout and migration](20260803-084328-source-layout-and-migration.md) —
+  the owner-approved SwiftPM filesystem grammar, cross-platform target
+  hierarchy, dependency law, equivalence contract, and always-green move
+  sequence; supersedes the v2 ruling's directory/target-shape section only.
 - [20260801-105800 direct-eye plan](20260801-105800-direct-eye-plan.md) —
   the capture rearchitecture, phases E0–E5. **COMPLETE** (see banner):
   the portal demolition landed 2026-08-02, tag `self-hosted`.
