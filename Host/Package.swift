@@ -211,6 +211,7 @@ targets += [
             // E5: the direct eye is THE capture organ — the portal
             // and mutter ScreenCast backends are demolished.
             "HostEye",
+            .product(name: "LyteCore", package: "Common"),
             .product(name: "LyteIO", package: "Common"),
             .product(name: "LyteWire", package: "Wire"),
             // HS-10: one SHA-256 for the advertised identity hash

@@ -2,6 +2,7 @@ import AppKit
 import ArgumentParser
 @preconcurrency import AVFoundation
 import Foundation
+import LyteCore
 import LyteTransport
 import LyteUI
 import LyteWire
@@ -814,7 +815,7 @@ final class WireViewStatsPrinter: Sendable {
 
     /// "label p50/p99 A/B ms" for one recorded edge; empty pre-samples.
     private static func latency(
-        _ label: String, _ hist: LatencyHistogram
+        _ label: String, _ hist: Histogram<UInt64>
     ) -> String {
         guard let p50 = hist.p50, let p99 = hist.p99 else { return "" }
         return String(format: "%@ p50/p99 %.1f/%.1f ms",

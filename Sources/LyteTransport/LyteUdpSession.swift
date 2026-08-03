@@ -44,6 +44,7 @@
 // injection point; nothing in Wire/ changes.
 
 import LyteIO
+import LyteCore
 import CoreMedia
 import Crypto
 import Dispatch
@@ -2115,14 +2116,14 @@ public final class InputSendTiming: @unchecked Sendable {
         public var queued: UInt64
         public var sent: UInt64
         public var failed: UInt64
-        public var queueWaitMicroseconds: LatencyHistogram
+        public var queueWaitMicroseconds: Histogram<UInt64>
     }
 
     private let lock = NSLock()
     private var queuedCount: UInt64 = 0
     private var sentCount: UInt64 = 0
     private var failedCount: UInt64 = 0
-    private var waits = LatencyHistogram(capacity: 360)
+    private var waits = Histogram<UInt64>(capacity: 360, retention: .rolling)
 
     func queued() {
         lock.lock(); queuedCount += 1; lock.unlock()

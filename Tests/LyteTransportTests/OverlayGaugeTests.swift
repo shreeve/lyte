@@ -92,25 +92,6 @@ final class VideoDeliveryBooksTests: XCTestCase {
     }
 }
 
-final class LatencyHistogramPercentilesTests: XCTestCase {
-
-    func testMultiQuantileMatchesSingleCallsExactly() {
-        var histogram = LatencyHistogram(capacity: 128)
-        XCTAssertEqual(histogram.percentiles([0.5, 0.99]), [nil, nil])
-        for value in [7, 3, 99, 1, 42, 42, 500, 12] {
-            histogram.record(UInt64(value))
-        }
-        let multi = histogram.percentiles([0.0, 0.5, 0.95, 0.99, 1.0])
-        XCTAssertEqual(multi, [
-            histogram.percentile(0.0),
-            histogram.p50,
-            histogram.p95,
-            histogram.p99,
-            histogram.percentile(1.0),
-        ], "one sort must answer exactly what five sorts did")
-    }
-}
-
 final class RadioHoldPolicyTests: XCTestCase {
 
     func testHeldRadioIsHealthy() {

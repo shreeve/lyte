@@ -56,6 +56,7 @@
 // still owed when a second client address exists to roam to.
 
 import LyteIO
+import LyteCore
 import CNetIO
 import Foundation
 import HostCore
@@ -232,7 +233,7 @@ final class SessionWire {
     /// intersection: the client is owed one starting-posture 0x19.
     private var routingAnnounceOwed = false
     /// receive→inject per event, µs (the HS-13 p99 < 2 ms gate edge).
-    private(set) var inputLatency = Histogram()
+    private(set) var inputLatency = Histogram<UInt64>()
     private(set) var inputInjected = 0
     private(set) var inputInjectFailures = 0
     private var inputNoInjectorWarned = false
@@ -284,7 +285,7 @@ final class SessionWire {
     private(set) var audioMailboxMaxDepth = 0
     private(set) var audioMailboxOverflows = 0
     private(set) var audioMailboxMaxDwellNS: UInt64 = 0
-    private(set) var audioMailboxDwell = Histogram()
+    private(set) var audioMailboxDwell = Histogram<UInt64>()
     /// Root-cause telemetry for the split video path. Preparation includes
     /// Annex-B classification + RS-FEC and is now deliberately off-lock;
     /// commit includes seq allocation, Noise sealing, and pacer insertion.

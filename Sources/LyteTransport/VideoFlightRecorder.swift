@@ -1,4 +1,5 @@
 import LyteIO
+import LyteCore
 import Foundation
 
 /// Bounded, per-frame timing ledger for the real app delivery path.
@@ -450,21 +451,17 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         _ keyPath: KeyPath<FrameObservation, Double?>,
         percentile rank: Int = 99
     ) -> Double? {
-        percentile(ring.compactMap { $0[keyPath: keyPath] }, rank)
+        Histogram<Double>.percentile(
+            of: ring.compactMap { $0[keyPath: keyPath] },
+            Double(rank) / 100)
     }
 
     private func percentile(
         _ keyPath: KeyPath<FrameObservation, Double>,
         percentile rank: Int = 99
     ) -> Double? {
-        percentile(ring.map { $0[keyPath: keyPath] }, rank)
-    }
-
-    private func percentile(_ values: [Double], _ percentile: Int) -> Double? {
-        guard !values.isEmpty else { return nil }
-        let sorted = values.sorted()
-        let rank = Int(
-            ceil(Double(percentile) / 100 * Double(sorted.count))) - 1
-        return sorted[min(sorted.count - 1, max(0, rank))]
+        Histogram<Double>.percentile(
+            of: ring.map { $0[keyPath: keyPath] },
+            Double(rank) / 100)
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import LyteCore
 
 /// THE GAUGE WINDOW (owner ruling 2026-07-30): every overlay gauge
 /// describes the last ~3 seconds — one mental model, no per-stat
@@ -56,17 +57,13 @@ public final class VideoDeliveryBooks: @unchecked Sendable {
     private let lock = NSLock()
     private var enqueued: UInt64 = 0
     /// ~3 s of hop durations at 60 fps — the gauge window.
-    private var ring = [Double](repeating: 0, count: 180)
-    private var ringCount = 0
-    private var ringIndex = 0
+    private var hops = Histogram<Double>(capacity: 180, retention: .rolling)
     private let outMeter = RateMeter()
 
     public func record(hopMilliseconds: Double) {
         lock.lock()
         enqueued += 1
-        ring[ringIndex] = hopMilliseconds
-        ringIndex = (ringIndex + 1) % ring.count
-        ringCount = min(ringCount + 1, ring.count)
+        hops.record(hopMilliseconds)
         lock.unlock()
     }
 
@@ -75,8 +72,7 @@ public final class VideoDeliveryBooks: @unchecked Sendable {
     public func reset() {
         lock.lock()
         enqueued = 0
-        ringCount = 0
-        ringIndex = 0
+        hops.removeAll()
         lock.unlock()
         outMeter.reset()
     }
@@ -87,14 +83,12 @@ public final class VideoDeliveryBooks: @unchecked Sendable {
     ) -> (outFps: Double?, hopP50: Double?, hopP99: Double?) {
         lock.lock()
         let count = enqueued
-        let retained = Array(ring.prefix(ringCount))
+        let hopSnapshot = hops
         lock.unlock()
         let fps = outMeter.rate(
             count: count, nowMicroseconds: nowMicroseconds)
-        guard !retained.isEmpty else { return (fps, nil, nil) }
-        let sorted = retained.sorted()
-        let p50 = sorted[sorted.count / 2]
-        let p99 = sorted[min(sorted.count - 1, (sorted.count * 99) / 100)]
-        return (fps, p50, p99)
+        let percentiles = hopSnapshot.percentiles(
+            [0.50, 0.99], rank: .upperBoundary)
+        return (fps, percentiles[0], percentiles[1])
     }
 }
