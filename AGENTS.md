@@ -40,7 +40,8 @@ H-era build plans completed their ladder and are retired to git history
   one-shot digest model; `LyteCore.Hex` is the one byte/integer hex spelling;
   `LyteCore.WireTos` owns the four product DSCP lanes; `LyteCore.ChromaPairing`
   owns the Best singleton shape while the host/client role types stay split;
-  the first extracted adapter is the one process-wide monotonic clock.
+  the first extracted adapter is the one process-wide monotonic clock;
+  `COpus` is the one shared libopus system-library module.
 - **`Host/`** — package `LyteHost`: the Linux host. Depends on
   `.package(path: "../Wire")` and, for Linux shells, `../Common`.
   `HostCore` (pure Swift bitstream helpers) and
@@ -48,7 +49,7 @@ H-era build plans completed their ladder and are retired to git history
   everywhere, macOS included. The `lyte-host`/`lyte-eye`/`lyte-nvenc`
   executables, `HostEye` (the direct eye: KMS doorbell + EGL blit +
   native VAAPI pens), and the C leaves (`CPipeWireAudio`, `COpusEncode`,
-  `CNetIO`, `CInputUinput`, plus the `CDBus`/`CPipeWire`/`COpus`/
+  `CNetIO`, `CInputUinput`, plus the `CDBus`/`CPipeWire`/
   `CDRM`/`CGBM`/`CEGL`/`CVA`/`CNvEnc`/`CCuda` system-library modules)
   exist only under `#if os(Linux)` in the manifest. The portal-era
   leaves (`CPipeWireCapture`, `CHevcEncode`, `CLibAV`, the vendored
@@ -63,7 +64,7 @@ H-era build plans completed their ladder and are retired to git history
  benchmark, and tests; the streaming stack carries no harness code.
  `LyteUI` holds the shared AppKit shims (render view,
  icon); `lyte-helperd` + `LyteHelperProtocol` are the SMAppService AWDL
- helper pair; `COpus` is the one C leaf (libopus decode/PLC). The
+ helper pair; the client decoder/PLC consumes Common's `COpus` leaf. The
  GameStream stack (`LyteKit`/`CEnet`/`CNanors`) was deleted at the H2
  exit per the demolition checklist in the client build plan (retired
  to git history).

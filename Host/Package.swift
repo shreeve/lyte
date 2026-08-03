@@ -69,11 +69,6 @@ targets += [
         pkgConfig: "libpipewire-0.3",
         providers: [.apt(["libpipewire-0.3-dev"])]
     ),
-    .systemLibrary(
-        name: "COpus",
-        pkgConfig: "opus",
-        providers: [.apt(["libopus-dev"])]
-    ),
     // C leaf: pw_stream capture of the default sink's monitor
     // (stream.capture.sink), F32 48 kHz stereo, graph-clock timestamps.
     .target(
@@ -84,7 +79,7 @@ targets += [
     // 48 kHz stereo, 5 ms frames, DTX off) + the loop-decode half.
     .target(
         name: "COpusEncode",
-        dependencies: ["COpus"]
+        dependencies: [.product(name: "COpus", package: "Common")]
     ),
     // The direct eye (docs/20260801-105800-direct-eye-plan.md, E0): libdrm
     // imported straight into Swift — a module map, no .c files. The

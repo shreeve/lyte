@@ -17,21 +17,13 @@ let package = Package(
         .package(path: "Common"),
     ],
     targets: [
-        // C leaf (CL-11): libopus for the client audio receiver — decode
-        // + PLC (the system AudioConverter has neither). Mirrors Host/'s
-        // COpus system-library posture; brew supplies opus on the Mac.
-        .systemLibrary(
-            name: "COpus",
-            pkgConfig: "opus",
-            providers: [.brew(["opus"]), .apt(["libopus-dev"])]
-        ),
         // The Lyte-UDP client (CL-1..CL-12): owns the receive socket,
         // decodes envelopes via LyteWire, demuxes (chan, seq), renders
         // video/audio, sends input — the client's entire protocol stack.
         .target(
             name: "LyteTransport",
             dependencies: [
-                "COpus",
+                .product(name: "COpus", package: "Common"),
                 .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteIO", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
@@ -91,7 +83,7 @@ let package = Package(
                 // CL-11: the Opus leaf round-trip generates real packets
                 // with libopus' encoder (test-only; production encodes
                 // nothing client-side).
-                "COpus",
+                .product(name: "COpus", package: "Common"),
                 .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
                 .product(name: "LyteWireTestKit", package: "Wire"),

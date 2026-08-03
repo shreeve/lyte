@@ -22,12 +22,13 @@ closed 2026-07-22 (gate report in git history); the portal era ended
 - `Sources/HostEye` — the direct eye (Linux): KMS doorbell + GETFB2/dmabuf
   export, EGL import + RGB→NV12 blit, the native VAAPI encoder seat fed
   by HostCore's pens, cursor-plane tracking.
-- `Sources/CDBus`, `CPipeWire`, `COpus`, `CDRM`, `CGBM`, `CEGL`, `CVA`,
+- `Sources/CDBus`, `CPipeWire`, `CDRM`, `CGBM`, `CEGL`, `CVA`,
   `CNvEnc`, `CCuda` — pkg-config/systemLibrary module maps (Linux only).
 - `Sources/CPipeWireAudio` — C leaf: default-sink monitor audio capture
   at the 5 ms quantum (PipeWire survives E5 for AUDIO only).
 - `Sources/COpusEncode` — C leaf: libopus 5 ms hard-CBR encode (+ decode
-  for loop verification).
+  for loop verification), importing the one `COpus` system module from
+  `Common/`.
 - `Sources/CNetIO` — C leaf: the UDP socket (sendmmsg/recvmmsg, per-packet
   TOS cmsgs, kernel TX timestamps, line-buffered stdout).
 - `Sources/CInputUinput` — C leaf: virtual evdev devices, the input
