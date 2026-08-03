@@ -14,7 +14,6 @@
 #if os(Linux)
 
 import LyteIO
-import CDRM
 import Foundation
 import Glibc
 import HostCore
@@ -132,25 +131,26 @@ final class DirectEyeLeg {
     /// Blocking loop, portal-run-shaped: returns when the clock (or a
     /// session end / failure) says so.
     func run() {
-        let fd = open(config.device, O_RDWR)
-        guard fd >= 0 else {
-            lastError = "direct: open(\(config.device)) errno \(errno)"
+        let screen: DirectScreenSource
+        do {
+            screen = try DirectScreenSource(device: config.device)
+        } catch DirectScreenSourceError.openDevice(let path, let code) {
+            lastError = "direct: open(\(path)) errno \(code)"
             return
-        }
-        defer { close(fd) }
-        drmSetClientCap(fd, UInt64(DRM_CLIENT_CAP_UNIVERSAL_PLANES), 1)
-        guard let planes = findActivePlanes(fd: fd) else {
+        } catch DirectScreenSourceError.noActivePrimaryPlane(_) {
             lastError = "direct: no active primary plane"
             return
-        }
-        guard let probe = grabTicket(fd: fd, fbId: planes.primary.fb) else {
+        } catch DirectScreenSourceError.initialTicketDenied(_) {
             lastError = "direct: GETFB2 refused — the direct backend "
                 + "needs CAP_SYS_ADMIN (run under sudo or the E4 unit)"
             return
+        } catch {
+            lastError = "direct: screen source failed: \(error)"
+            return
         }
-        let width = Int32(probe.width)
-        let height = Int32(probe.height)
-        probe.release()
+        let fd = screen.fileDescriptor
+        let width = screen.width
+        let height = screen.height
         // HS-13: the uinput fallback maps absolute pointer coordinates
         // against the monitor extent — tell the wire what we captured
         // (the portal Sink used to do this at encoder open).
@@ -192,7 +192,6 @@ final class DirectEyeLeg {
 
         var targets: [UInt32: NV12Target] = [:]
         var targets444: [UInt32: AyuvTarget] = [:]
-        var lastFB: UInt32 = 0
         var pendingCauses: [String] = []
         let t0 = SystemMonotonicClock.nowSeconds
         // The stillness clock: last damage (FB flip) or client input.
@@ -274,7 +273,7 @@ final class DirectEyeLeg {
                     }
                     targets.removeAll()
                     lastEncodedSurface = nil
-                    lastFB = 0
+                    screen.resetDoorbell()
                     encoder = try EyeVaapiEncoder(
                         width: width, height: height, fps: 60,
                         qp: config.qp,
@@ -320,9 +319,9 @@ final class DirectEyeLeg {
                 staticIdrWanted = true
             }
 
-            let fbRead = currentFB(fd: fd, planeId: planes.primary.id)
+            let change = screen.poll()
             beatBook.notePoll(nowMicroseconds: SystemMonotonicClock.nowMicroseconds)
-            guard let fb = fbRead, fb != lastFB else {
+            guard let change else {
                 if staticIdrWanted, let sid = lastEncodedSurface {
                     do {
                         let packet = try encoder.encode(
@@ -393,7 +392,6 @@ final class DirectEyeLeg {
                 usleep(config.pollUs)
                 continue
             }
-            lastFB = fb
             lastActivityWallSeconds = SystemMonotonicClock.nowSeconds
             // The flip is judged at DETECTION (the honest doorbell
             // moment); the capture stamp below stays post-grab so the
@@ -411,7 +409,7 @@ final class DirectEyeLeg {
                 }
             }
             let grabStart = SystemMonotonicClock.nowMicroseconds
-            guard let ticket = grabTicket(fd: fd, fbId: fb) else {
+            guard let ticket = screen.capture(change) else {
                 missedGrabs += 1
                 continue
             }

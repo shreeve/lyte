@@ -146,6 +146,10 @@ when present.
 - **`VideoSink` is the client render organ**: pipeline and session submit only
   through the named seam. The app handoff, wire-view's AVFoundation adapter,
   and the test target's headless sink are its concrete owners.
+- **`ScreenSource` is the host capture organ**: production and `lyte-eye`
+  share `DirectScreenSource` for DRM lifetime, the FB_ID doorbell, and GETFB2
+  tickets. Encoder/session policy remains in each consumer; Lyte OS replaces
+  this source rather than growing a third capture loop.
 - **Test vectors are frozen wire contracts**, not fixtures
   (`Wire/Vectors/README.md`). A committed vector file never regenerates: if
   codec and vector disagree, that is a wire-contract break to investigate.
