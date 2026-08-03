@@ -396,10 +396,10 @@ typed refusal still ends the wait immediately. Focused 13/13 passed after
 rebase; canonical Mac and pup repeated the same 78/507/286/262 and
 79/507/287 matrices above, including analyzer, signed products, Linux
 build/harnesses, and protected state. No production source, wire byte, vector,
-or persisted format changed. **NEXT CLEANUP SLICE: close the other repair
-half by carrying the real client's NACK report into the real Host `Session`
-judgement, then remove the overlapping round-trip scaffolding from the two
-1,300-line suites.**
+or persisted format changed. #125 closed the other repair half in the
+migration ledger below; Theme 3's pairing and targeted-repair doubles are now
+gone. **NEXT CLEANUP SLICE: inventory and design the session-spine extraction
+now that the cross-end composition gates exercise real peers.**
 
 **THE TREE MIGRATION OPENED (#103 + #108 + #115 + #117 + #119 + #120 + #121, 2026-08-03): every move has
 a gate, and Common now speaks one filesystem grammar.** #103 recorded the
@@ -506,13 +506,34 @@ Mac passed Common 80, Wire 508, Host 286, Client 250, SystemTests 17, analyzer
 25, benchmark safety, and both signed products; isolated pup passed Common 81,
 Wire 508, Host 287, the plain build, netio/pacing, and protected-state
 verification. Independent architecture and adversarial reviews found no
-blocker; frozen vectors and production behavior stayed unchanged. **NEXT
-CLEANUP SLICE: close Theme 3's other repair half by carrying the real client's
-NACK report into the real Host `Session` judgement, then remove the overlapping
-round-trip scaffolding from the two large suites.**
+blocker; frozen vectors and production behavior stayed unchanged. **That
+cleanup slice completed as #125.** #125 carries the real client's Noise-sealed
+NACK report untouched into the real Host `Session` judgement, then returns the
+Session's real `.videoTail` repairs and split-entry 0x23 refusals through the
+client demux. The gate-local repair host, direct `VideoChannel` construction,
+manual feedback decoding, refusal construction, and control preclassification
+are gone. The headline gate pins the dropped shard indices, original
+frame/FEC/geometry/capture stamp, fresh repair sequences, and byte-exact healed
+frame; refusal, storm, stale, straggler, superseded, and accepted-IRAP legs all
+cross the same production boundary. Client arrival time is monotonically
+coupled to Host release time, and both clocks fail loudly on retreat. Feedback
+overflow, refusal bookkeeping, and assembler-to-policy duplicate routing now
+live in their owning Client suites; two redundant Host round trips were
+deleted, shrinking the two large repair suites by 177 lines together. A
+target-wide lexical ratchet—pinned against comments plus ordinary, raw, and
+multiline-string evasions—prevents a reconstructed Noise responder, direct
+video channel, feedback decoder, or refusal path from growing back anywhere under
+SystemTests. No production source, manifest, package edge, frozen vector, wire
+byte, or persisted format changed. Canonical Mac passed Common 80, Wire 508,
+Host 284, Client 253, SystemTests 16, analyzer 25, benchmark safety, and both
+signed products; isolated pup passed Common 81, Wire 508, Host 285, the plain
+build, netio/pacing, and protected-state verification. Independent architecture
+and adversarial reviews found no blocker. **NEXT CLEANUP SLICE: inventory and
+design the session-spine extraction before moving code; keep the real pairing
+and repair composition gates green throughout.**
 
 **Suites at HEAD:** Wire 508 Mac / 508 pup; Common 80 Mac / 81 pup;
-client 250; SystemTests 17 Mac; host 287 pup / 286 Mac — all green. Eighteen conductor/gauge
+client 253; SystemTests 16 Mac; host 285 pup / 284 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
