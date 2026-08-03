@@ -24,9 +24,9 @@ MOTION_SOURCE_LOG=""
 REMOTE_MOTION_PRESENTER=""
 REMOTE_MOTION_DEFINITION=""
 REMOTE_MOTION_LOG=""
-TAKEOVER_HOST_PID=""
-TAKEOVER_HOST_LOG_REMOTE=""
-HOST_SUPERVISOR_PID=""
+FRESH_HOST_RECOVERY_NEEDED=0
+FRESH_HOST_PROTECTED_STATE=""
+FRESH_HOST_JOURNAL_SINCE=""
 NO_BUILD=0
 APP_SHA256=""
 HOST_SHA256=""
@@ -190,10 +190,16 @@ for root, label, source_dirs in roots:
 
 HOST_PID="$(
   ssh -o ConnectTimeout=10 "$PUP" \
-    "pgrep -o -f 'lyte-host.*--wire-listen 41151' || true"
+    "systemctl is-active --quiet lyte-host \
+&& systemctl show lyte-host --property MainPID --value || true"
 )"
-[[ "$HOST_PID" =~ ^[0-9]+$ ]] || {
-  echo "benchmark refused: no standing pup Host on port 41151" >&2
+[[ "$HOST_PID" =~ ^[0-9]+$ && "$HOST_PID" -gt 0 ]] || {
+  echo "benchmark refused: no active standing pup Host service" >&2
+  exit 1
+}
+ssh -o ConnectTimeout=10 "$PUP" \
+  "sudo -n ss -H -lunp 'sport = :41151' | grep -q 'pid=$HOST_PID,'" || {
+  echo "benchmark refused: lyte-host.service MainPID does not own UDP 41151" >&2
   exit 1
 }
 # A capability-tagged host (the direct eye's cap_sys_admin) is
@@ -247,7 +253,7 @@ start_handshake_evidence() {
 sudo -n nohup tcpdump -i any -nn -U -w '/tmp/$run_id-host.pcap' \
 'udp port 41151' >'/tmp/$run_id-host-tcpdump.stderr' 2>&1 & echo \$!")"
   ssh "$PUP" "date -u +%FT%TZ; \
-p=\$(pgrep -o -f '[l]yte-host.*--wire-listen 41151'); \
+p=\$(systemctl show lyte-host --property MainPID --value); \
 ps -o pid,lstart,args -p \"\$p\"; \
 { sha256sum /proc/\$p/exe 2>/dev/null || sudo -n sha256sum /proc/\$p/exe; }; \
 sha256sum ~/src/lyte-host/.build/debug/lyte-host; \
@@ -274,15 +280,11 @@ collect_handshake_evidence() {
     "$OUT_DIR/$run_id-host-handshake.jsonl" 2>/dev/null || true
   rsync -a "$PUP:/tmp/$run_id-host-tcpdump.stderr" \
     "$OUT_DIR/$run_id-host-tcpdump.stderr" 2>/dev/null || true
-  if [[ -n "$TAKEOVER_HOST_LOG_REMOTE" ]]; then
-    rsync -a "$PUP:$TAKEOVER_HOST_LOG_REMOTE" \
-      "$OUT_DIR/$run_id-host.log" 2>/dev/null || true
-  fi
   tcpdump -nn -tttt -vv -r "$OUT_DIR/$run_id-host.pcap" \
     "udp port 41151" > "$OUT_DIR/$run_id-host-packets.txt" \
     2>/dev/null || true
   ssh "$PUP" "date -u +%FT%TZ; \
-p=\$(pgrep -o -f '[l]yte-host.*--wire-listen 41151' || true); \
+p=\$(systemctl show lyte-host --property MainPID --value || true); \
 if test -n \"\$p\"; then ps -o pid,lstart,args -p \"\$p\"; \
 { sha256sum /proc/\$p/exe 2>/dev/null || sudo -n sha256sum /proc/\$p/exe; }; fi; \
 ss -u -a -n -p; ip -s link show" \
@@ -321,16 +323,13 @@ cleanup() {
       "rm -f '$REMOTE_MOTION_PRESENTER' '$REMOTE_MOTION_DEFINITION' \
 '$REMOTE_MOTION_LOG' '$REMOTE_MOTION_LOG.stderr'" || true
   fi
-  if [[ -n "$TAKEOVER_HOST_PID" ]]; then
+  if (( FRESH_HOST_RECOVERY_NEEDED )); then
     ssh -o ConnectTimeout=10 "$PUP" \
-      "kill -9 '$TAKEOVER_HOST_PID' 2>/dev/null || true; \
-kill -CONT '$HOST_SUPERVISOR_PID' 2>/dev/null || true" || true
-    TAKEOVER_HOST_PID=""
-  fi
-  if [[ -n "$HOST_SUPERVISOR_PID" ]]; then
-    ssh -o ConnectTimeout=10 "$PUP" \
-      "kill -CONT '$HOST_SUPERVISOR_PID' 2>/dev/null || true" || true
-    HOST_SUPERVISOR_PID=""
+      "sudo -n systemctl start lyte-host; \
+systemctl is-active --quiet lyte-host" || {
+      echo "WARNING: failed to restore lyte-host.service" >&2
+    }
+    FRESH_HOST_RECOVERY_NEEDED=0
   fi
 }
 trap cleanup EXIT INT TERM
@@ -557,72 +556,100 @@ stop_motion() {
   FFPLAY_PID=""
 }
 
-# handshake-only measures connect latency against a fresh host on the
-# standing port: pause the supervisor, replace the standing host with a
-# direct-eye takeover host (E5: the direct eye is the only backend), and
-# restore the loop afterwards. Identity files must be untouched.
-start_takeover_host() {
-  local run_id="$1"
-  local standing identity_before identity_after
-  TAKEOVER_HOST_LOG_REMOTE="/tmp/$run_id-host.log"
-  standing="$(ssh -o ConnectTimeout=10 "$PUP" \
-    "pgrep -o -f 'lyte-host.*--wire-listen 41151' || true")"
-  [[ "$standing" =~ ^[0-9]+$ ]] || {
-    echo "takeover requires the standing Host on 41151" >&2
-    exit 1
-  }
-  identity_before="$(ssh -o ConnectTimeout=10 "$PUP" \
-    "sha256sum ~/.config/lyte-host/noise_static.key \
-~/.config/lyte-host/paired_clients | awk '{print \$1}'")"
-  HOST_SUPERVISOR_PID="$(ssh -o ConnectTimeout=10 "$PUP" \
-    "pgrep -o -f '[b]ash /home/shreeve/lyte-loop.sh' || true")"
-  [[ "$HOST_SUPERVISOR_PID" =~ ^[0-9]+$ ]] || {
-    echo "takeover requires the known lyte-loop supervisor" >&2
-    exit 1
-  }
+# handshake-only measures connect latency against a fresh process on the
+# standing port. The host is a systemd system service: restarting that real
+# unit preserves its operator-owned arguments, seat environment, and ambient
+# CAP_SYS_ADMIN instead of inventing a parallel launch path. Protected host
+# identity and configuration must remain byte-identical across the restart.
+protected_host_fingerprint() {
   ssh -o ConnectTimeout=10 "$PUP" \
-    "kill -STOP '$HOST_SUPERVISOR_PID'; \
-kill -9 '$standing'; \
-XDG_RUNTIME_DIR=/run/user/1000 \
-DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-WAYLAND_DISPLAY=wayland-0 \
-LYTE_HANDSHAKE_WITNESS_JSONL='$HANDSHAKE_REMOTE_WITNESS' \
-nohup ~/src/lyte-host/.build/debug/lyte-host --backend direct \
---wire-listen 41151 --clipboard=images \
---wire-rate-mbps 50 --seconds '$((BENCH_SECONDS + 5))' \
->'$TAKEOVER_HOST_LOG_REMOTE' 2>&1 & echo \$!" \
-    > "$OUT_DIR/$run_id.takeover-host.pid"
-  read -r TAKEOVER_HOST_PID < "$OUT_DIR/$run_id.takeover-host.pid"
-  [[ "$TAKEOVER_HOST_PID" =~ ^[0-9]+$ ]] || {
-    echo "failed to start takeover Host" >&2
-    exit 1
-  }
-  sleep 1
-  ssh "$PUP" "kill -0 '$TAKEOVER_HOST_PID'" || {
-    echo "takeover Host exited before client handshake" >&2
-    exit 1
-  }
-  identity_after="$(ssh -o ConnectTimeout=10 "$PUP" \
-    "sha256sum ~/.config/lyte-host/noise_static.key \
-~/.config/lyte-host/paired_clients | awk '{print \$1}'")"
-  [[ "$identity_before" == "$identity_after" ]] || {
-    echo "takeover Host startup changed protected identity files" >&2
-    exit 1
-  }
+    "{ sha256sum ~/.config/lyte-host/portal_token \
+~/.config/lyte-host/noise_static.key \
+~/.config/lyte-host/paired_clients; \
+stat -c '%n %a %U %G %s' \
+~/.config/lyte-host/portal_token \
+~/.config/lyte-host/noise_static.key \
+~/.config/lyte-host/paired_clients; \
+sudo -n sha256sum /etc/lyte/lyte-host.conf; \
+sudo -n stat -c '%n %a %U %G %s' /etc/lyte/lyte-host.conf; }" \
+    | shasum -a 256 \
+    | awk '{print $1}'
 }
 
-stop_takeover_host() {
+start_fresh_host() {
+  local run_id="$1"
+  local restart_result before_pid after_pid
+
+  ssh -o ConnectTimeout=10 "$PUP" \
+    "systemctl is-active --quiet lyte-host" || {
+    echo "handshake-only requires active lyte-host.service" >&2
+    exit 1
+  }
+
+  FRESH_HOST_PROTECTED_STATE="$(protected_host_fingerprint)"
+  FRESH_HOST_JOURNAL_SINCE="$(date -u +%FT%TZ)"
+  FRESH_HOST_RECOVERY_NEEDED=1
+  restart_result="$(ssh -o ConnectTimeout=10 "$PUP" '
+set -eu
+before=$(systemctl show lyte-host --property MainPID --value)
+sudo -n systemctl restart lyte-host
+i=0
+while [ "$i" -lt 100 ]; do
+  after=$(systemctl show lyte-host --property MainPID --value)
+  if systemctl is-active --quiet lyte-host \
+      && [ "$after" -gt 0 ] && [ "$after" != "$before" ] \
+      && sudo -n ss -H -lunp "sport = :41151" \
+          | grep -q "pid=$after,"; then
+    set -- $(sudo -n sha256sum "/proc/$after/exe")
+    running=$1
+    set -- $(sha256sum "$HOME/src/lyte-host/.build/debug/lyte-host")
+    built=$1
+    [ "$running" = "$built" ] || {
+      echo "fresh service process is not the built host" >&2
+      exit 1
+    }
+    printf "%s %s\n" "$before" "$after"
+    exit 0
+  fi
+  i=$((i + 1))
+  sleep 0.1
+done
+echo "lyte-host.service did not publish a fresh active MainPID" >&2
+exit 1
+')"
+  read -r before_pid after_pid <<< "$restart_result"
+  [[ "$before_pid" =~ ^[0-9]+$ && "$after_pid" =~ ^[0-9]+$ \
+      && "$before_pid" != "$after_pid" ]] || {
+    echo "lyte-host.service restart did not produce a fresh process" >&2
+    exit 1
+  }
+  FRESH_HOST_RECOVERY_NEEDED=0
+
+  [[ "$(protected_host_fingerprint)" == "$FRESH_HOST_PROTECTED_STATE" ]] || {
+    echo "lyte-host.service restart changed protected host state" >&2
+    exit 1
+  }
+  printf '%s %s\n' "$before_pid" "$after_pid" \
+    > "$OUT_DIR/$run_id.fresh-host.pids"
+}
+
+finish_fresh_host() {
   local run_id="$1"
   local host_log="$OUT_DIR/$run_id-host.log"
-  [[ -z "$TAKEOVER_HOST_PID" ]] || \
-    ssh -o ConnectTimeout=10 "$PUP" \
-      "kill -9 '$TAKEOVER_HOST_PID' 2>/dev/null || true"
-  sleep 1
-  rsync -a "$PUP:$TAKEOVER_HOST_LOG_REMOTE" "$host_log"
   ssh -o ConnectTimeout=10 "$PUP" \
-    "kill -CONT '$HOST_SUPERVISOR_PID'"
-  TAKEOVER_HOST_PID=""
-  HOST_SUPERVISOR_PID=""
+    "sudo -n journalctl -u lyte-host \
+--since '$FRESH_HOST_JOURNAL_SINCE' --no-pager" > "$host_log"
+  ssh -o ConnectTimeout=10 "$PUP" \
+    "systemctl is-active --quiet lyte-host" || {
+    echo "lyte-host.service is not active after handshake-only" >&2
+    exit 1
+  }
+  [[ "$(protected_host_fingerprint)" == "$FRESH_HOST_PROTECTED_STATE" ]] || {
+    echo "handshake-only changed protected host state" >&2
+    exit 1
+  }
+  FRESH_HOST_PROTECTED_STATE=""
+  FRESH_HOST_JOURNAL_SINCE=""
 }
 
 run_leg() {
@@ -669,15 +696,19 @@ EOF
     QUALITY_WIDTH=2048
     QUALITY_HEIGHT=1280
     start_handshake_evidence "$run_id"
-    start_takeover_host "$run_id"
+    start_fresh_host "$run_id"
   fi
   if [[ "$workload" == handshake-only ]]; then
-    python3 - "$provenance_file" <<PY
-import json, pathlib
-path = pathlib.Path("$provenance_file")
+    python3 - "$provenance_file" "$OUT_DIR/$run_id.fresh-host.pids" <<PY
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+old_pid, new_pid = map(int, pathlib.Path(sys.argv[2]).read_text().split())
 record = json.loads(path.read_text())
 record.update({
     "motionLeg": "handshake-only",
+    "hostLifecycle": "systemd-restart",
+    "hostMainPIDBefore": old_pid,
+    "hostMainPIDAfter": new_pid,
     "qualityWidth": 2048,
     "qualityHeight": 1280,
 })
@@ -739,7 +770,7 @@ PY
   FALLBACK_APP_PID=""
   [[ "$workload" != handshake-only ]] || collect_handshake_evidence
   [[ "$workload" != motion && "$workload" != quality-static ]] || stop_motion
-  [[ "$workload" != handshake-only ]] || stop_takeover_host "$run_id"
+  [[ "$workload" != handshake-only ]] || finish_fresh_host "$run_id"
 
   echo "benchmark JSONL: $jsonl"
   echo "benchmark provenance: $provenance_file"

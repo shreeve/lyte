@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The impairment SLO gate (buttery-smooth program, step 9's live half).
-# Shapes the host's egress with tc netem ON PUP around one real
-# motion-pipeline benchmark leg, then judges the analyzer verdict
+# Shapes only the standing host's UDP flow to this client with tc netem ON
+# PUP around one real motion benchmark leg, then judges the analyzer verdict
 # against the program's IMPAIRMENT SLOs — not the clean-air gates
 # (under deliberate 20 ms jitter the clean transport rung fails by
 # design; the contract under impairment is bounded presentation cadence
@@ -21,9 +21,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PUP="${LYTE_BENCHMARK_PUP:-pup}"
 HOST="${LYTE_BENCHMARK_HOST:-10.0.0.232}"
 PROFILE="${1:-moderate}"
+HOST_PORT=41151
+NETEM_HELPER="$ROOT/Scripts/netem/port-netem.sh"
 
 case "$PROFILE" in
-  moderate) NETEM="delay 20ms 10ms loss 1%" ;;
+  moderate) DELAY_MS=20; JITTER_MS=10; LOSS_PCT=1 ;;
   *) echo "usage: Scripts/benchmark-netem.sh [moderate]" >&2; exit 2 ;;
 esac
 
@@ -31,47 +33,82 @@ esac
 # resolves whatever routing says tomorrow).
 CLIENT_IP=$(route -n get "$HOST" 2>/dev/null | awk '/interface/{print $2}' \
   | xargs -I{} ipconfig getifaddr {} 2>/dev/null || true)
-IFACE=$(ssh "$PUP" "ip -o route get ${CLIENT_IP:-10.0.0.1} | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p'")
-[ -n "$IFACE" ] || { echo "cannot resolve pup egress interface" >&2; exit 1; }
+[[ "$CLIENT_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || {
+  echo "cannot resolve the benchmark client's IPv4 address" >&2
+  exit 1
+}
+IFACE=$(ssh "$PUP" \
+  "ip -o route get '$CLIENT_IP' | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p'")
+[[ "$IFACE" =~ ^[A-Za-z0-9_.:-]+$ ]] || {
+  echo "cannot resolve pup egress interface" >&2
+  exit 1
+}
 
-EXISTING=$(ssh "$PUP" "tc qdisc show dev $IFACE" | head -1)
-case "$EXISTING" in
-  *netem*|*htb*|*tbf*)
-    echo "refusing: $IFACE already shaped: $EXISTING" >&2; exit 1 ;;
-esac
+mkdir -p "$ROOT/.build/benchmarks"
+RUN_DIR=$(mktemp -d \
+  "$ROOT/.build/benchmarks/netem-${PROFILE}-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
+echo "netem evidence: $RUN_DIR"
+REMOTE_HELPER="/tmp/lyte-port-netem-$$.sh"
+NETEM_APPLIED=0
+ssh "$PUP" "tc qdisc show dev '$IFACE'" > "$RUN_DIR/qdisc-before.txt"
+rsync -a "$NETEM_HELPER" "$PUP:$REMOTE_HELPER"
 
 cleanup() {
-  ssh "$PUP" "sudo -n tc qdisc del dev $IFACE root 2>/dev/null" || true
-  LEFT=$(ssh "$PUP" "tc qdisc show dev $IFACE" | head -1 || true)
-  case "$LEFT" in
-    *netem*) echo "WARNING: netem still installed on $IFACE — remove by hand:" >&2
-             echo "  ssh $PUP sudo tc qdisc del dev $IFACE root" >&2 ;;
-  esac
+  initial_status=$?
+  trap - EXIT INT TERM
+  set +e
+  cleanup_failed=0
+  if (( NETEM_APPLIED )); then
+    ssh "$PUP" \
+      "sudo -n sh '$REMOTE_HELPER' remove '$IFACE'" \
+      > "$RUN_DIR/netem-remove.txt" 2>&1 || cleanup_failed=1
+  fi
+  ssh "$PUP" "tc qdisc show dev '$IFACE'" \
+    > "$RUN_DIR/qdisc-after.txt" 2>&1 || cleanup_failed=1
+  if grep -q 'qdisc prio 1a7e: root' "$RUN_DIR/qdisc-after.txt"; then
+    echo "netem cleanup FAILED: owned qdisc remains on $PUP/$IFACE" >&2
+    cleanup_failed=1
+  fi
+  ssh "$PUP" "rm -f '$REMOTE_HELPER'" >/dev/null 2>&1 || true
+  if (( cleanup_failed )); then
+    echo "netem cleanup evidence: $RUN_DIR" >&2
+    exit 1
+  fi
+  exit "$initial_status"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
-echo "netem[$PROFILE] on $PUP/$IFACE: $NETEM"
-ssh "$PUP" "sudo -n tc qdisc add dev $IFACE root netem $NETEM"
+echo "netem[$PROFILE] on $PUP/$IFACE: udp sport $HOST_PORT to $CLIENT_IP"
+ssh "$PUP" \
+  "sudo -n sh '$REMOTE_HELPER' apply '$IFACE' '$CLIENT_IP' '$HOST_PORT' \
+'$DELAY_MS' '$JITTER_MS' '$LOSS_PCT'" \
+  | tee "$RUN_DIR/netem-apply.txt"
+NETEM_APPLIED=1
+ssh "$PUP" "sudo -n sh '$REMOTE_HELPER' status '$IFACE'" \
+  > "$RUN_DIR/qdisc-impaired.txt"
 
-VERDICT_JSON=$(mktemp)
-BEFORE=$(ls -t "$ROOT/.build/benchmarks/" \
-  | grep -E '^motion-pipeline.*[0-9]\.jsonl$' | head -1 || true)
-LOG=$(mktemp)
+VERDICT_JSON="$RUN_DIR/analyzer-verdict.json"
+LOG="$RUN_DIR/benchmark.log"
 # The clean-air gates are allowed to fail under deliberate impairment —
 # the SLO judgment below is ours — but the leg must actually RUN.
 LYTE_BENCHMARK_HOST="$HOST" "$ROOT/Scripts/benchmark-app.sh" \
-  --no-build motion-pipeline >"$LOG" 2>&1 || true
-LATEST=$(ls -t "$ROOT/.build/benchmarks/" \
-  | grep -E '^motion-pipeline.*[0-9]\.jsonl$' | head -1)
-if [ -z "$LATEST" ] || [ "$LATEST" = "$BEFORE" ]; then
-  echo "the impaired benchmark leg produced no new artifact — log tail:" >&2
+  --no-build --out "$RUN_DIR" motion >"$LOG" 2>&1 || true
+shopt -s nullglob
+artifacts=("$RUN_DIR"/motion-*.jsonl)
+shopt -u nullglob
+if (( ${#artifacts[@]} != 1 )); then
+  echo "the impaired benchmark leg produced ${#artifacts[@]} artifacts; expected exactly one — log tail:" >&2
   tail -15 "$LOG" >&2
   exit 1
 fi
-python3 "$ROOT/Scripts/analyze-app-benchmark.py" \
-  "$ROOT/.build/benchmarks/$LATEST" > "$VERDICT_JSON"
+if ! python3 "$ROOT/Scripts/analyze-app-benchmark.py" \
+    "${artifacts[0]}" > "$VERDICT_JSON"; then
+  echo "clean-air analyzer failed as permitted under impairment; applying netem SLO" \
+    >> "$LOG"
+fi
 
-python3 - "$VERDICT_JSON" "$PROFILE" <<'PY'
+python3 - "$VERDICT_JSON" "$PROFILE" <<'PY' \
+  | tee "$RUN_DIR/netem-verdict.json"
 import json
 import sys
 

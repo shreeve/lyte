@@ -6,14 +6,16 @@ import unittest
 from pathlib import Path
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
+
 SPEC = importlib.util.spec_from_file_location(
-    "analyzer", Path(__file__).with_name("analyze-app-benchmark.py")
+    "analyzer", SCRIPT_DIR / "analyze-app-benchmark.py"
 )
 ANALYZER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ANALYZER)
 
 PRESENTER_SPEC = importlib.util.spec_from_file_location(
-    "presenter", Path(__file__).with_name("motion-presenter.py")
+    "presenter", SCRIPT_DIR / "motion-presenter.py"
 )
 PRESENTER = importlib.util.module_from_spec(PRESENTER_SPEC)
 PRESENTER_SPEC.loader.exec_module(PRESENTER)
@@ -474,7 +476,7 @@ class TwinRendererPinTests(unittest.TestCase):
         import hashlib
 
         definition = json.loads(
-            Path(__file__).with_name("motion-definition.json").read_text())
+            (SCRIPT_DIR / "motion-definition.json").read_text())
         frames = PRESENTER.MotionFrames(1024, 640, definition)
         for frame_id, expected in self.PINS.items():
             digest = hashlib.sha256(

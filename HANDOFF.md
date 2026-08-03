@@ -32,8 +32,9 @@ from `~/src/lyte-host/.build/debug/lyte-host`, configured by
 wired at 10.0.0.232. After EVERY rebuild:
 `sudo -n systemctl restart lyte-host`; the unit grants the direct eye its
 ambient CAP_SYS_ADMIN, so the service binary needs no file capability.
-Hand-run `lyte-eye` still needs `setcap`. Never kill the owner's 41151
-service; test hosts use fresh 41xxx ports with `--no-advertise`.
+Hand-run `lyte-eye` still needs `setcap`. Never stop the owner's 41151
+service except through an explicit, restoring live gate; test hosts use
+fresh 41xxx ports with `--no-advertise`.
 
 **Where the work lives now:** the v1-final ANALYSIS remainder is
 **ESSENTIALLY CLOSED** (2026-08-02): every Tier-2 item done (eight in
@@ -448,9 +449,10 @@ screen doorbell adds three pins.
   a parent process; it needs its own bundle for a proper macOS
   window/menu bar). Client & host are PAIRED (client static
   `357a83cc…`) — a healthy reconnect shows **no PIN**. If a 6-digit
-  pairing box appears, the client lost its pinned identity: restart
-  the host loop with `--pair` so it mints+prints a PIN to the session
-  log (3 wrong guesses burn it).
+  pairing box appears, the client lost its pinned identity: restart the
+  systemd host with `--pair` in its operator-owned `LYTE_HOST_ARGS` so it
+  mints+prints a PIN to the session log (3 wrong guesses burn it); remove the
+  temporary flag and restart the unit after pairing.
 - **Secrets law**: NEVER touch pup's
   `~/.config/lyte-host/{portal_token,noise_static.key,paired_clients}`.
   sha-verify around live runs: `noise_static.key 72860390…cfed`,
@@ -459,7 +461,7 @@ screen doorbell adds three pins.
 - **Harness discipline**: test lyte-hosts MUST run `--no-advertise`
   on fresh 41xxx ports — an advertised test host is a second "pup"
   in discovery and the owner's app WILL connect to it. Never kill or
-  connect to the owner's 41151 loop. When a slice runs live legs on
+  connect to the owner's 41151 service. When a slice runs live legs on
   pup while the owner might connect, both hosts capture the same
   physical screen — tell the owner BEFORE the leg, not after they
   report black.
@@ -480,7 +482,8 @@ screen doorbell adds three pins.
   `.build`), then on pup:
   `LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build` (or
   `test`). No ffmpeg env exists anymore — a plain build succeeding is
-  itself an E5 gate. Then setcap (see live ops). Good-build marker in
+  itself an E5 gate. Restart the systemd unit for standing deployment;
+  setcap is only for hand-run hardware probes (see live ops). Good-build marker in
   any host run: the session books print
   `encoder 4:2:0 (native VAAPI)`.
 - Wire/ vectors are frozen contracts — append-only, never mutate.

@@ -8,20 +8,24 @@ filter on the Lyte port (and DSCP class where a leg needs it).
 
 ## Current contents
 
+- `port-netem.sh` — the reusable LAN-flow helper. It preserves `fq_codel`
+  for unmatched traffic and sends only one IPv4 UDP source-port/client-IP
+  pair through netem. Its distinctive qdisc handles make apply/remove
+  ownership verifiable. `benchmark-netem.sh` uploads and invokes it on pup;
+  direct use requires root.
+
 - `lo-netem.sh` — the loopback variant, for pre-client development
   (pacer/FEC/netio work against a local test receiver). Applies a
   port-scoped netem delay/loss profile on `lo`, removes it, or shows
   status. See the header comment for usage; needs root for apply/remove.
 
   ```sh
-  sudo Scripts/netem/lo-netem.sh apply 47999 20     # 20 ms delay
-  sudo Scripts/netem/lo-netem.sh apply 47999 20 1   # + 1% loss
+  sudo Scripts/netem/lo-netem.sh apply 41099 20     # 20 ms delay
+  sudo Scripts/netem/lo-netem.sh apply 41099 20 1   # + 1% loss
   sudo Scripts/netem/lo-netem.sh remove
   ```
 
-## To come
-
-One script per gate row — the R-G1..R-G8 profiles on the LAN interface
-(egress netem with a u32 filter matched to the client IP, plus an `ifb`
-redirect for gates needing impairment toward the host). Each will print
-its exact profile and duration, per the host plan.
+`benchmark-netem.sh moderate` is the current real-client egress SLO leg. It
+matches host UDP source port 41151 and the resolved client `/32`; it does not
+shape feedback toward the host. Bidirectional impairment remains a distinct
+future gate requiring an ingress/ifb design.
