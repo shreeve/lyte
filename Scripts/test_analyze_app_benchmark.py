@@ -398,13 +398,13 @@ class AnalyzerTests(unittest.TestCase):
         result = self.analyze(steady, samples=[warmup, steady])
         self.assertIn("audio_steady_state_late_or_plc", result["failures"])
 
-    def test_announced_quiet_does_not_excuse_late_drops(self):
+    def test_announced_quiet_does_not_excuse_sustained_late_drops(self):
         warmup = quality_sample(2.0, 30)
         steady = quality_sample(10.0, 40)
         steady["audio"]["hostAnnouncedQuiet"] = True
         steady["audio"]["plcInvocations"] = 20
         steady["audio"]["plcPacketsFed"] = 20
-        steady["audio"]["latePacketsDropped"] = 3
+        steady["audio"]["latePacketsDropped"] = 12
         steady["audio"]["underrunFrames"] = 15_070
         steady["audio"]["declickProtectedUnderrunFrames"] = 15_070
         result = self.analyze(steady, samples=[warmup, steady])

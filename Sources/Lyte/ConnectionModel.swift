@@ -663,18 +663,12 @@ final class ConnectionModel {
     }
 
     private static func playoutConfigFromSettings()
-        -> AdaptiveVideoPlayout.Config
+        -> VideoBeatConductor.Config
     {
-        let cap = cushionMicrosecondsFromSettings()
-        var config = AdaptiveVideoPlayout.Config(
-            maximumDelayMicroseconds: cap)
-        // The playout requires minimum ≤ initial ≤ maximum; a ceiling
-        // below the stock 15/20 ms drags both down with it.
-        config.minimumDelayMicroseconds =
-            min(config.minimumDelayMicroseconds, cap)
-        config.initialDelayMicroseconds =
-            min(config.initialDelayMicroseconds, cap)
-        return config
+        // The slider is the cue's ceiling. The conductor needs at
+        // least one beat to hold the grid; Config clamps below that.
+        VideoBeatConductor.Config(
+            maximumCueMicroseconds: cushionMicrosecondsFromSettings())
     }
 
     /// The 1 Hz link-health tick (driven by the stream container's
@@ -1587,14 +1581,14 @@ private final class VideoRendererHandoff: @unchecked Sendable {
         var dispatchedNanoseconds: UInt64
         var token: VideoFlightRecorder.Token
         var build: VideoFrameBuildTelemetry?
-        var decision: AdaptiveVideoPlayout.Decision
+        var decision: VideoBeatConductor.Decision
         var encounteredRendererBackpressure: Bool
     }
 
     private let renderer: AVSampleBufferVideoRenderer
     private let queue: DispatchQueue
     private let clockModel: HostClockModel
-    private let playout: AdaptiveVideoPlayoutController
+    private let playout: VideoBeatConductorController
     private let books: VideoDeliveryBooks
     private let recorder: VideoFlightRecorder
     private let recoveryRequester: VideoRecoveryRequester
@@ -1613,7 +1607,7 @@ private final class VideoRendererHandoff: @unchecked Sendable {
         books: VideoDeliveryBooks,
         recorder: VideoFlightRecorder,
         recoveryRequester: VideoRecoveryRequester,
-        playoutConfig: AdaptiveVideoPlayout.Config = .init()
+        playoutConfig: VideoBeatConductor.Config = .init()
     ) {
         self.renderer = renderer
         self.queue = queue
@@ -1621,15 +1615,15 @@ private final class VideoRendererHandoff: @unchecked Sendable {
         self.books = books
         self.recorder = recorder
         self.recoveryRequester = recoveryRequester
-        self.playout = AdaptiveVideoPlayoutController(
+        self.playout = VideoBeatConductorController(
             config: playoutConfig)
     }
 
     /// The Settings slider is live — the model's 1 Hz tick pushes
     /// ceiling changes here mid-stream.
     func updateCushionCeiling(microseconds: UInt64) {
-        playout.updateDelayCeiling(
-            maximumDelayMicroseconds: microseconds)
+        playout.updateCueCeiling(
+            maximumCueMicroseconds: microseconds)
     }
 
     func submit(sample: CMSampleBuffer, unit: DecodeUnit) {
