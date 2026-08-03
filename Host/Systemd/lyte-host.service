@@ -1,0 +1,52 @@
+# lyte-host.service — E4: the host as a first-class service.
+#
+# Why a SYSTEM unit with User= instead of a user unit: ambient
+# capabilities are granted by the service manager, and only pid 1
+# has them to give — a user manager cannot confer CAP_SYS_ADMIN.
+# AmbientCapabilities makes the direct eye's DRM ticket a property
+# of the SERVICE, not of the binary file, which ends the setcap-
+# after-every-rebuild trap for good: rebuild, `systemctl restart
+# lyte-host`, done.
+#
+# The seat user's session environment (XDG_RUNTIME_DIR + the session
+# bus) rides along because two organs still need it: the clipboard
+# leaf's Mutter RemoteDesktop session (D-Bus) and audio capture
+# (PipeWire's per-user socket). The video path needs neither — the
+# direct eye reads the scanout from DRM alone.
+#
+# Output appends to /tmp/lyte-host-session.log — the rig's standing
+# recipes (beat books, chroma lines, session forensics) all grep
+# that file; the journal keeps the unit lifecycle. The redirect
+# lives INSIDE the shell (which runs as the seat user) because
+# Ubuntu's fs.protected_regular forbids root — i.e. systemd's own
+# StandardOutput=append: — from opening another user's file in
+# sticky /tmp.
+#
+# Install (idempotent): Host/Scripts/install-host.sh
+
+[Unit]
+Description=Lyte host — the direct eye (KMS doorbell, EGL blit, native VAAPI pens)
+After=graphical.target
+Wants=graphical.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/lyte/lyte-host.conf
+User=lyte-seat-user-set-by-installer
+Environment=XDG_RUNTIME_DIR=/run/user/lyte-seat-uid-set-by-installer
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/lyte-seat-uid-set-by-installer/bus
+ExecStart=/bin/sh -c 'exec "$LYTE_HOST_BIN" $LYTE_HOST_ARGS >> /tmp/lyte-host-session.log 2>&1'
+AmbientCapabilities=CAP_SYS_ADMIN
+CapabilityBoundingSet=CAP_SYS_ADMIN
+# The 2 h leg ends by design (--seconds in LYTE_HOST_ARGS) and a
+# session teardown exits the process; both are normal — respawn.
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+# SCHED_RR for the latency-owning audio/drain threads (setup-host.sh
+# step 3 — the binary degrades safely without it).
+LimitRTPRIO=50
+
+[Install]
+WantedBy=graphical.target
