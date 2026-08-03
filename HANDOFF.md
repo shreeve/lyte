@@ -288,8 +288,8 @@ map. `lyte-cli` resolved Homebrew's `libopus.0.dylib`; pup's rebuilt
 `lyte-host` resolved the system `libopus.so.0`, its systemd service is active,
 and its identity files are unchanged.
 
-**CLEANUP THEME 2 IS RUNNING (#106–#107, 2026-08-03): renderer handoff policy
-is sans-IO and the video pipeline borrows time.** #106 moved
+**CLEANUP THEME 2 IS RUNNING (#106–#107, #109, 2026-08-03): renderer handoff
+and video scheduling policy are sans-IO; the pipeline borrows time.** #106 moved
 `RendererFrameDescriptor`, `BoundedRendererHandoff`, and
 `RendererRecoveryFlushBarrier` into LyteCore.
 Policy now sees only random-access and submission facts; the client's
@@ -306,12 +306,24 @@ lock duration, and sample-build duration derives from it. A stepping-clock
 test proves exact 1 µs telemetry and a source ratchet rejects another direct
 system-clock read; there is no default initializer or transition shim. Wire
 and frozen vectors were untouched; the standing pup service remained active
-and its identity files are unchanged. **NEXT: move the locks out of
-`VideoBeatConductor` and both `VideoDeliveryBooks` policy types — preserve
-their verdicts while making synchronization the shell's concern.**
+and its identity files are unchanged. #109 moved `ProofCounter`,
+`VideoBeatConductor`, the trailing `RateMeter`, and the new
+`VideoDeliveryGauge` into LyteCore as single-threaded values. Their old
+LyteTransport declarations and tests were retired in the same PR with no
+aliases. The conductor controller keeps one client-shell lock; delivery
+accounting fell from two nested locks to one shell lock and still copies its
+evidence before the percentile sort, preserving the short critical section.
+All conductor and gauge verdicts moved beside policy; a new ratchet rejects
+production twins and synchronization in core. Wire and frozen vectors were
+untouched; pup's rebuilt system host is active and re-armed, and its identity
+files are unchanged. **NEXT: inject time into `VideoFlightRecorder` — retire
+its two direct `SystemMonotonicClock` calls while preserving every recorded
+stamp and snapshot verdict.**
 
-**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 50 Mac / 51 pup;
-root client 280; host 284 pup / 283 Mac — all green.
+**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 71 Mac / 72 pup;
+root client 262; host 284 pup / 283 Mac — all green. Eighteen conductor/gauge
+tests moved from root to Common; the shared suite also gained reset and source
+ratchets.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
