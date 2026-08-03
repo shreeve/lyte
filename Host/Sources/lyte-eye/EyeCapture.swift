@@ -9,7 +9,6 @@
 #if os(Linux)
 
 import LyteIO
-import CDRM
 import Foundation
 import Glibc
 import HostEye
@@ -69,22 +68,28 @@ func runNativeCapture(
     output: String, qp: Int32, bitrateBitsPerSecond: Int64 = 0,
     chroma444: Bool = false
 ) -> Never {
-    let fd = open(device, O_RDWR)
-    guard fd >= 0 else { perror(device); exit(1) }
-    drmSetClientCap(fd, UInt64(DRM_CLIENT_CAP_UNIVERSAL_PLANES), 1)
-    guard let planes = findActivePlanes(fd: fd) else {
+    let screen: DirectScreenSource
+    do {
+        screen = try DirectScreenSource(device: device)
+    } catch DirectScreenSourceError.openDevice(_, let code) {
+        errno = code
+        perror(device)
+        exit(1)
+    } catch DirectScreenSourceError.noActivePrimaryPlane(_) {
         FileHandle.standardError.write(
             Data("no active primary plane on \(device)\n".utf8))
         exit(1)
-    }
-    guard let probe = grabTicket(fd: fd, fbId: planes.primary.fb) else {
+    } catch DirectScreenSourceError.initialTicketDenied(_) {
         FileHandle.standardError.write(Data(
             "GETFB2 failed — capture mode needs privileges\n".utf8))
         exit(1)
+    } catch {
+        FileHandle.standardError.write(Data(
+            "screen source: \(error)\n".utf8))
+        exit(1)
     }
-    let width = Int32(probe.width)
-    let height = Int32(probe.height)
-    probe.release()
+    let width = screen.width
+    let height = screen.height
     print("capture: \(device) \(width)x\(height) → \(output) "
         + "(qp \(qp), \(Int(seconds))s) [NATIVE — no libavcodec]"
         + (chroma444 ? " [Rext 4:4:4]" : ""))
@@ -112,7 +117,6 @@ func runNativeCapture(
 
     var targets: [UInt32: NV12Target] = [:]
     var targets444: [UInt32: AyuvTarget] = [:]
-    var lastFB: UInt32 = 0
     var frames = 0
     var bytes = 0
     var keyframes = 0
@@ -139,8 +143,7 @@ func runNativeCapture(
                 + "\(bitrateBitsPerSecond / 2_000_000) Mbps at midpoint "
                 + "(no reset, no IDR expected)")
         }
-        guard let fb = currentFB(fd: fd, planeId: planes.primary.id),
-              fb != lastFB else {
+        guard let change = screen.poll() else {
             usleep(1000)
             if t >= nextReport {
                 print("  t=\(String(format: "%2.0f", t - t0))s "
@@ -150,8 +153,7 @@ func runNativeCapture(
             }
             continue
         }
-        lastFB = fb
-        guard let ticket = grabTicket(fd: fd, fbId: fb) else {
+        guard let ticket = screen.capture(change) else {
             missedGrabs += 1
             continue
         }
@@ -250,7 +252,6 @@ func runNativeCapture(
                 + "encode %.2f ms/frame",
             blitMs / Double(frames), encodeMs / Double(frames)))
     }
-    close(fd)
     exit(0)
 }
 
