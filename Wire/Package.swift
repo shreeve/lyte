@@ -14,6 +14,10 @@ let package = Package(
     products: [
         .library(name: "LyteWire", targets: ["LyteWire"]),
         .library(name: "LyteWireTestKit", targets: ["LyteWireTestKit"]),
+        .executable(
+            name: "lyte-wire-vectorgen",
+            targets: ["LyteWireVectorGen"]
+        ),
     ],
     dependencies: [
         // Shared sans-IO utilities live beside the frozen wire contract.
@@ -51,7 +55,7 @@ let package = Package(
         // Authoring tool for Vectors/ — run once, commit, freeze. See
         // Vectors/README.md for the regeneration policy.
         .executableTarget(
-            name: "lyte-wire-vectorgen",
+            name: "LyteWireVectorGen",
             dependencies: [
                 "LyteWire", "LyteWireTestKit",
                 .product(name: "LyteCore", package: "Common"),
