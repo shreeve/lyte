@@ -367,8 +367,9 @@ until NVENC hardware exists and `AudioSource` belongs to the Lyte OS track,
 exactly as chartered. **NEXT CLEANUP SLICE: Theme 3's cross-end composition
 gates land first, before any session-spine extraction.**
 
-**CLEANUP THEME 3 OPENED (#116, 2026-08-03): pairing is the first real
-cross-end composition gate.** The root package now admits `HostWire` only to
+**CLEANUP THEME 3 OPENED (#116 + #118, 2026-08-03): pairing and targeted
+repair now meet real peers in the client gates.** #116 made the root package
+admit `HostWire` only to
 `LyteTransportTests`; `LyteTransport` and every shipping client product remain
 Host-free. The existing client pairing gate still drives the real Noise
 initiator, demux, sealed sender, reliable CTRL endpoint, and
@@ -382,9 +383,23 @@ focused five-test composition gate passed after rebase. Canonical Mac passed
 Common 78, Wire 507, Host 286, client 262, analyzer 25, and both signed
 products; isolated pup passed Common 79, Wire 507, Host 287, the plain build,
 netio/pacing, and protected-state gates. No production source, wire byte,
-vector, or persisted format changed. **NEXT CLEANUP SLICE: compose the real
-NACK/repair peers and retire the largest remaining 1,303/1,301-line gate
-stand-ins before extracting any shared session ritual.**
+vector, or persisted format changed. #118 completed the first repair half:
+all thirteen client NACK verdicts now use the shipping
+`HostWire.VideoChannel` for original packetization, repair retention,
+fresh-sequence/fresh-seal retransmission, and once-only shard discipline. The
+gate-local `VideoPacketizer`, retained-shard dictionary, repaired-shard set,
+and retransmission loop were deleted. Noise carriage and explicit network
+stimuli (loss, stragglers, duplication, and refusal) correctly remain in the
+test shell. Past-parity loss still heals byte-exact, the seeded storm still
+converges, late/duplicate/superseded answers retain their exact books, and the
+typed refusal still ends the wait immediately. Focused 13/13 passed after
+rebase; canonical Mac and pup repeated the same 78/507/286/262 and
+79/507/287 matrices above, including analyzer, signed products, Linux
+build/harnesses, and protected state. No production source, wire byte, vector,
+or persisted format changed. **NEXT CLEANUP SLICE: close the other repair
+half by carrying the real client's NACK report into the real Host `Session`
+judgement, then remove the overlapping round-trip scaffolding from the two
+1,300-line suites.**
 
 **THE TREE MIGRATION OPENED (#103 + #108 + #115, 2026-08-03): every move has
 a gate, and Common now speaks one filesystem grammar.** #103 recorded the
