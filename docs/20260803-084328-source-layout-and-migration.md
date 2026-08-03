@@ -95,6 +95,32 @@ formats. It remains Foundation-free, sans-IO, and vector-pinned.
 `LyteWireTestKit` owns reusable vector loaders and wire simulations. Actual
 tests remain `LyteWireTests`.
 
+Every Wire Swift target mirrors one subsystem grammar:
+
+```text
+<Target>/
+├── Arq/
+├── Audio/
+├── Bulk/
+├── Capabilities/
+├── Clipboard/
+├── Control/
+├── Crypto/{Noise,Pairing,Retry}/
+├── Fec/
+├── Session/
+├── Telemetry/
+└── Video/
+```
+
+A target omits a domain only when it has no files in that domain. The shared
+wire spine (`Envelope`, vocabulary, byte/error/budget/version primitives),
+cross-domain TestKit primitives, executable entry point, and whole-target
+architecture tests stay at their target roots rather than entering a vague
+drawer. `LyteWireTestKit` and `LyteWireTests` additionally use `Simulation`.
+`LyteWireVectorGen` is the UpperCamelCase authoring target; its executable
+product remains `lyte-wire-vectorgen`. A layout test enforces the complete
+grammar, exact root allowlists, and intentional omissions.
+
 ### Common
 
 `LyteCore` owns pure behavior that has exactly the same semantics on both

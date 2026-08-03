@@ -62,7 +62,7 @@ final class PathMigrationGateTests: XCTestCase {
     private static let fullDatagramBytes = 1_147
 
     // NOTE: the conn-id TLV and path-message CODEC tests moved to
-    // Wire/Tests/LyteWireTests/SessionCodecTests.swift with the codec
+    // Wire/Tests/LyteWireTests/Session/SessionCodecTests.swift with the codec
     // promotion; what stays here is the PathValidator behavior.
 
     // MARK: The gate — mid-stream rebind

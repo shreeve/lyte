@@ -14,11 +14,7 @@ import Foundation
 
 final class NoFoundationLintTests: XCTestCase {
 
-    private static var packageRoot: String {
-        var components = #filePath.split(separator: "/", omittingEmptySubsequences: false)
-        components.removeLast(3)
-        return components.joined(separator: "/")
-    }
+    private static let packageRoot = WireTestPaths.packageRoot
 
     private static let script = packageRoot + "/Scripts/lint-no-foundation.sh"
 

@@ -11,12 +11,7 @@ final class VectorFileTests: XCTestCase {
 
     private static let vectorsPath = packageRoot + "/Vectors/envelope-v1.json"
 
-    private static var packageRoot: String {
-        // Tests/LyteWireTests/VectorFileTests.swift → the Wire/ root.
-        var components = #filePath.split(separator: "/", omittingEmptySubsequences: false)
-        components.removeLast(3)
-        return components.joined(separator: "/")
-    }
+    private static let packageRoot = WireTestPaths.packageRoot
 
     private func loadFile() throws -> EnvelopeVectorFile {
         try EnvelopeVectorFile.load(from: Self.vectorsPath)

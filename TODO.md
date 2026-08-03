@@ -11,7 +11,7 @@ five-agent read pass plus all four suite legs; REMAINING.md was then
 retired. These are the advisory findings that pass surfaced — none are
 live bugs; each is armed only by a future change to its seam.*
 
-- **VideoAssembler threshold invariant** (`Wire/Sources/LyteWire/VideoAssembler.swift`,
+- **VideoAssembler threshold invariant** (`Wire/Sources/LyteWire/Video/VideoAssembler.swift`,
   walk early-out in `sweepLossPresumption`) — the early-out compares absent
   slots against `reorderThresholdPackets` only, while write-off uses
   `fecImpossibleThresholdPackets`; safe only while
