@@ -1,4 +1,5 @@
 import Foundation
+import LyteClientTestKit
 import XCTest
 
 final class ClientLayoutTests: XCTestCase {
@@ -19,8 +20,8 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertEqual(
             try directoryNames(at: root.appendingPathComponent("Sources")),
             [
-                "Lyte", "LyteCorpus", "LyteHelperProtocol", "LyteTransport",
-                "LyteUI", "lyte-cli", "lyte-helperd",
+                "Lyte", "LyteClientTestKit", "LyteCorpus", "LyteHelperProtocol",
+                "LyteTransport", "LyteUI", "lyte-cli", "lyte-helperd",
             ]
         )
         XCTAssertEqual(

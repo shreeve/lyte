@@ -8,6 +8,7 @@ let package = Package(
         // The real client role, exported for the repository's cross-end
         // SystemTests composition package. Shipping products remain below.
         .library(name: "LyteTransport", targets: ["LyteTransport"]),
+        .library(name: "LyteClientTestKit", targets: ["LyteClientTestKit"]),
         .executable(name: "lyte-cli", targets: ["lyte-cli"]),
         .executable(name: "Lyte", targets: ["Lyte"]),
     ],
@@ -18,9 +19,6 @@ let package = Package(
         .package(path: "../Wire"),
         // Shared operating-system adapters used by both client and host.
         .package(path: "../Common"),
-        // Test-only cross-end composition: the shipping client target does
-        // not depend on Host, but LyteTransportTests drive both real cores.
-        .package(path: "../Host"),
     ],
     targets: [
         // The Lyte-UDP client (CL-1..CL-12): owns the receive socket,
@@ -45,6 +43,14 @@ let package = Package(
         .target(name: "LyteCorpus"),
         .target(name: "LyteUI"),
         .target(name: "LyteHelperProtocol"),
+        .target(
+            name: "LyteClientTestKit",
+            dependencies: [
+                "LyteTransport",
+                .product(name: "LyteTestKit", package: "Common"),
+                .product(name: "LyteWire", package: "Wire"),
+            ]
+        ),
         .executableTarget(
             name: "lyte-helperd",
             dependencies: ["LyteHelperProtocol"]
@@ -87,13 +93,12 @@ let package = Package(
             dependencies: [
                 "LyteTransport",
                 "LyteCorpus",
+                "LyteClientTestKit",
                 // CL-11: the Opus leaf round-trip generates real packets
                 // with libopus' encoder (test-only; production encodes
                 // nothing client-side).
                 .product(name: "COpus", package: "Common"),
                 .product(name: "LyteCore", package: "Common"),
-                .product(name: "LyteTestKit", package: "Common"),
-                .product(name: "HostWire", package: "Host"),
                 .product(name: "LyteWire", package: "Wire"),
                 .product(name: "LyteWireTestKit", package: "Wire"),
             ],

@@ -69,7 +69,7 @@ public struct RepositorySourceTree {
             var enumerationError: Error?
             guard let enumerator = fileManager.enumerator(
                 at: root,
-                includingPropertiesForKeys: nil,
+                includingPropertiesForKeys: [.isDirectoryKey],
                 options: [],
                 errorHandler: { _, error in
                     enumerationError = error
@@ -82,9 +82,30 @@ public struct RepositorySourceTree {
             }
 
             var rootFiles: [URL] = []
-            for case let file as URL in enumerator
-            where file.pathExtension == "swift" {
-                rootFiles.append(file.standardizedFileURL)
+            for case let file as URL in enumerator {
+                do {
+                    let values = try file.resourceValues(
+                        forKeys: [.isDirectoryKey]
+                    )
+                    // Umbrella source roots contain multiple SwiftPM targets.
+                    // TestKit targets are reusable test equipment, not
+                    // production; a nested production directory merely named
+                    // *TestKit must remain visible and is pinned in tests.
+                    if values.isDirectory == true,
+                       root.lastPathComponent == "Sources",
+                       file.deletingLastPathComponent().standardizedFileURL
+                           == root.standardizedFileURL,
+                       file.lastPathComponent.hasSuffix("TestKit") {
+                        enumerator.skipDescendants()
+                        continue
+                    }
+                } catch {
+                    enumerationError = error
+                    break
+                }
+                if file.pathExtension == "swift" {
+                    rootFiles.append(file.standardizedFileURL)
+                }
             }
             if enumerationError != nil {
                 throw RepositorySourceTreeError.unreadableDirectory(

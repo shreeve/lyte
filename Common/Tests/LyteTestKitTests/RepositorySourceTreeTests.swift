@@ -25,6 +25,75 @@ final class RepositorySourceTreeTests: XCTestCase {
         }
     }
 
+    func testProductionScanExcludesEveryTestKitTargetRoot() throws {
+        let tree = RepositorySourceTree()
+        let relativePaths = try tree.productionSwiftFiles().map(
+            tree.relativePath(for:)
+        )
+
+        XCTAssertFalse(
+            relativePaths.contains(where: { path in
+                path.split(separator: "/").contains(where: {
+                    $0.hasSuffix("TestKit")
+                })
+            }),
+            "test equipment must not be scanned as production"
+        )
+        XCTAssertFalse(
+            relativePaths.contains(where: {
+                $0.hasPrefix("Client/Sources/LyteClientTestKit/")
+            })
+        )
+        XCTAssertFalse(
+            relativePaths.contains(where: {
+                $0.hasPrefix("Wire/Sources/LyteWireTestKit/")
+            })
+        )
+    }
+
+    func testOnlyImmediateTestKitTargetsAreExcluded() throws {
+        let fileManager = FileManager.default
+        let scratch = fileManager.temporaryDirectory.appendingPathComponent(
+            "lyte-testkit-boundary-\(UUID().uuidString)"
+        )
+        defer { try? fileManager.removeItem(at: scratch) }
+
+        let tree = RepositorySourceTree(repositoryRoot: scratch)
+        for root in tree.productionSourceRoots {
+            try fileManager.createDirectory(
+                at: root,
+                withIntermediateDirectories: true
+            )
+            try Data("// clean\n".utf8).write(
+                to: root.appendingPathComponent("Source.swift")
+            )
+        }
+
+        let clientRoot = scratch.appendingPathComponent("Client/Sources")
+        let targetTestKit = clientRoot.appendingPathComponent(
+            "LyteClientTestKit"
+        )
+        let hiddenTestKit = clientRoot.appendingPathComponent(
+            "LyteTransport/HiddenTestKit"
+        )
+        for directory in [targetTestKit, hiddenTestKit] {
+            try fileManager.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            try Data("struct ForbiddenTwin {}\n".utf8).write(
+                to: directory.appendingPathComponent("Twin.swift")
+            )
+        }
+
+        XCTAssertEqual(
+            try tree.violations(containing: ["ForbiddenTwin"]),
+            [
+                "Client/Sources/LyteTransport/HiddenTestKit/Twin.swift: ForbiddenTwin",
+            ]
+        )
+    }
+
     func testScannerFindsTwinsAndHonorsOnlyExplicitExclusions() throws {
         let fileManager = FileManager.default
         let scratch = fileManager.temporaryDirectory.appendingPathComponent(

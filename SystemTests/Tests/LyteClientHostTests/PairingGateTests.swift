@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import HostWire
+import LyteClientTestKit
 import LyteTransport
 import LyteWire
 import LyteWireTestKit
@@ -196,7 +197,7 @@ final class PairingGateTests: XCTestCase {
         let sender: TransportSender
         var reliable: ReliableCtrlEndpoint!
         var service: PairingInitiatorService!
-        let outbound = LockedPile()
+        let outbound = LockedBytePile()
         var events: [PairingInitiatorService.Event] = []
 
         init(hostPin: [UInt8], clientPin: [UInt8]) throws {
@@ -248,14 +249,6 @@ final class PairingGateTests: XCTestCase {
                 XCTFail("host datagram refused: \(outcome)")
             }
         }
-    }
-
-    final class LockedPile: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [[UInt8]] = []
-        func append(_ d: [UInt8]) { lock.lock(); stored.append(d); lock.unlock() }
-        var all: [[UInt8]] { lock.lock(); defer { lock.unlock() }; return stored }
-        var count: Int { lock.lock(); defer { lock.unlock() }; return stored.count }
     }
 
     /// Drives the exchange over SimNet to quiescence (virtual time).

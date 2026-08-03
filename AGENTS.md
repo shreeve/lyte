@@ -67,14 +67,18 @@ H-era build plans completed their ladder and are retired to git history
  benchmark, and tests; the streaming stack carries no harness code.
  `LyteUI` holds the shared AppKit shims (render view,
  icon); `lyte-helperd` + `LyteHelperProtocol` are the SMAppService AWDL
- helper pair; the client decoder/PLC consumes Common's `COpus` leaf. The
+ helper pair; `LyteClientTestKit` owns reusable client-side test equipment
+ (`HeadlessVideoSink`, repository/corpus paths, `LockedBytePile`) consumed by
+ Client tests and SystemTests; the client decoder/PLC consumes Common's
+ `COpus` leaf. The
  GameStream stack (`LyteKit`/`CEnet`/`CNanors`) was deleted at the H2
  exit per the demolition checklist in the client build plan (retired
  to git history).
 - **`SystemTests/`** — package `LyteSystemTests`: the macOS-only composition
   graph for tests that require both real roles. `LyteClientHostTests` imports
-  the exported `LyteTransport` and `HostWire` libraries; package-local tests
-  stay with their owner. `LyteSystemTestKit` does not exist until reusable
+  the exported `LyteTransport` and `HostWire` libraries; pairing and targeted
+  repair live here, and Client has no Host package dependency. Package-local
+  tests stay with their owner. `LyteSystemTestKit` does not exist until reusable
   cross-end equipment earns it. Linux execution begins only after an IO-free
   client session target exists.
 
