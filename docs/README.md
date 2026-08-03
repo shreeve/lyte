@@ -69,7 +69,8 @@ studies, and the Sunshine/Moonlight/moonshine reference reads).*
 - [20260728-164746 video quality probe](20260728-164746-lyte-video-quality-probe.md) —
   Q-1, the Beauty Bar's instrument.
 - [20260729-032500 V-3 corpus harness](20260729-032500-lyte-v3-corpus-harness.md) —
-  the goldens gate (goldens live in `Tests/Goldens/`; corpus-gen/gate
+  the goldens gate (goldens live in
+  `Client/Tests/LyteTransportTests/Fixtures/Goldens/`; corpus-gen/gate
   ride lyte-cli).
 
 ## Studies and scoping (banked, not scheduled)

@@ -25,8 +25,8 @@ final class ClockProviderRatchetTests: XCTestCase {
     func testVideoPoliciesReceiveTimeInsteadOfReadingTheShellClock() throws {
         let repositoryRoot = RepositorySourceTree().repositoryRoot
         let paths = [
-            "Sources/LyteTransport/LyteVideoPipeline.swift",
-            "Sources/LyteTransport/VideoFlightRecorder.swift",
+            "Client/Sources/LyteTransport/LyteVideoPipeline.swift",
+            "Client/Sources/LyteTransport/VideoFlightRecorder.swift",
         ]
         for path in paths {
             let file = repositoryRoot.appendingPathComponent(path)

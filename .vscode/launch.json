@@ -24,7 +24,7 @@
             "args": [],
             "cwd": "${workspaceFolder:lyte}",
             "name": "Debug Lyte",
-            "program": "${workspaceFolder:lyte}/.build/debug/Lyte",
+            "program": "${workspaceFolder:lyte}/.build/Lyte.app/Contents/MacOS/Lyte",
             "preLaunchTask": "swift: Build Debug Lyte"
         },
         {
@@ -33,7 +33,7 @@
             "args": [],
             "cwd": "${workspaceFolder:lyte}",
             "name": "Release Lyte",
-            "program": "${workspaceFolder:lyte}/.build/release/Lyte",
+            "program": "${workspaceFolder:lyte}/.build/Lyte.app/Contents/MacOS/Lyte",
             "preLaunchTask": "swift: Build Release Lyte"
         },
         {
@@ -42,7 +42,7 @@
             "args": [],
             "cwd": "${workspaceFolder:lyte}",
             "name": "Debug lyte-helperd",
-            "program": "${workspaceFolder:lyte}/.build/debug/lyte-helperd",
+            "program": "${workspaceFolder:lyte}/.build/Lyte.app/Contents/MacOS/lyte-helperd",
             "preLaunchTask": "swift: Build Debug lyte-helperd"
         },
         {
@@ -51,7 +51,7 @@
             "args": [],
             "cwd": "${workspaceFolder:lyte}",
             "name": "Release lyte-helperd",
-            "program": "${workspaceFolder:lyte}/.build/release/lyte-helperd",
+            "program": "${workspaceFolder:lyte}/.build/Lyte.app/Contents/MacOS/lyte-helperd",
             "preLaunchTask": "swift: Build Release lyte-helperd"
         }
     ]

@@ -3,7 +3,7 @@
 The phase where the v1 walls come down. Every item below removes
 duplication or welds a missing seam **without changing behavior**:
 each step is move + delete + re-point, gated by the existing suites
-(Wire 513 · root client 293 · host 300 · analyzer 25) staying green.
+(Wire 513 · client 293 · host 300 · analyzer 25) staying green.
 No feature work rides in these PRs; no cleanup PR mixes two themes.
 
 Ground truth for every claim here: the 2026-08-03 structural sweep
@@ -48,9 +48,9 @@ delete, suites green.
 | HEVC bit vocabulary | **3**: HostCore/HevcBitWriter.swift:10 (EPB insert), HevcSpsChroma.swift:100 (EPB strip), HevcParameterSetTests.swift:163 (EPB strip again, test-private) | Writer and readers are inverse functions in three places — one BitWriter + one BitReader, round-trip pinned |
 | SHA-256 | **2 hand-rolled + 3 wrappers**: HostWire/Sha256Stream.swift:13, LyteWireTestKit/Sha256.swift:8, BulkSendShell.swift:401, IdentityHash.swift:12 | One streaming impl (or one swift-crypto wrapper where allowed); the FIPS constant tables exist twice today |
 | Hex encode | **6** sites (HostStaticKey :43, BulkFileStore :259, SniffFormat :100, TestKit Hex, LyteDiscovery :78, netio-check :34) | One extension in LyteCore |
-| Monotonic clock | **~44** idioms: ~35 inline DispatchTime.now()/1000 in Sources/, 6 raw clock_gettime copies on the host, 3 private helper duplicates | One clock provider in LyteIO; cores take injected `now` (HostCore/HostWire already do — this is the shells' cleanup) |
+| Monotonic clock | **~44** idioms: ~35 inline DispatchTime.now()/1000 in Client/Sources/, 6 raw clock_gettime copies on the host, 3 private helper duplicates | One clock provider in LyteIO; cores take injected `now` (HostCore/HostWire already do — this is the shells' cleanup) |
 | TOS/DSCP constants | HostCore/WireTos.swift vs client inline magic (UdpReceiveEndpoint.swift:98 `0x1116`, :113 IP_TOS) | One WireTos in shared code; client's magic numbers die |
-| COpus system library | Declared twice (root Package.swift:22, Host/Package.swift:61) | One declaration once packages share a Common/ |
+| COpus system library | Declared twice (Client/Package.swift, Host/Package.swift) | One declaration once packages share a Common/ |
 | Chroma pairing rule | Encoded twice: ChromaPosture.swift:27, ChromaTier.swift:29-33 | The `[yuv444]`-singleton-is-Best rule becomes one shared function; the two ROLE types stay (law 3) |
 
 ## Theme 2 — Finish the sans-IO conquest (LyteTransport)

@@ -5,6 +5,12 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 netem="$repo_root/Scripts/netem/port-netem.sh"
 benchmark="$repo_root/Scripts/benchmark-app.sh"
 benchmark_netem="$repo_root/Scripts/benchmark-netem.sh"
+build_cli="$repo_root/Scripts/build-cli.sh"
+make_app="$repo_root/Scripts/make-app.sh"
+macos_gate="$repo_root/Scripts/CI/test-all-macos.sh"
+pup_gate="$repo_root/Scripts/CI/test-all-pup.sh"
+vscode_launch="$repo_root/.vscode/launch.json"
+vscode_tasks="$repo_root/.vscode/tasks.json"
 fake_tc="$repo_root/Scripts/Tests/Fixtures/fake-tc.sh"
 test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT
@@ -73,7 +79,28 @@ then
 fi
 
 bash -n "$benchmark" "$benchmark_netem"
-sh -n "$netem"
+sh -n "$netem" "$build_cli" "$make_app"
+
+# The Client package lives under Client/, but every user-facing artifact stays
+# in the repository-root .build directory. Keep build, provenance, and both
+# deterministic gates on that same contract.
+grep -Fq -- '--package-path Client' "$build_cli"
+grep -Fq -- '--scratch-path .build' "$build_cli"
+grep -Fq -- '--package-path Client' "$make_app"
+grep -Fq -- '--scratch-path .build' "$make_app"
+grep -Fq 'Client/Package.swift Client/Package.resolved Client/Sources' \
+    "$make_app"
+grep -Fq 'Client/Package.swift Client/Package.resolved Client/Sources' \
+    "$benchmark"
+grep -Fq 'run_package_tests "client" "$repo_root/Client" "$repo_root/.build"' \
+    "$macos_gate"
+grep -Fq 'rsync -a --delete --exclude .build Client/' "$pup_gate"
+grep -Fq 'Scripts/build-cli.sh debug' "$vscode_tasks"
+grep -Fq 'Scripts/build-cli.sh release' "$vscode_tasks"
+grep -Fq 'Scripts/make-app.sh debug' "$vscode_tasks"
+grep -Fq 'Scripts/make-app.sh release' "$vscode_tasks"
+grep -Fq '.build/Lyte.app/Contents/MacOS/Lyte' "$vscode_launch"
+grep -Fq '.build/Lyte.app/Contents/MacOS/lyte-helperd' "$vscode_launch"
 
 if grep -Fq 'lyte-loop.sh' "$benchmark" \
     || grep -Eq 'kill -(STOP|CONT)|kill -9.*standing' "$benchmark"

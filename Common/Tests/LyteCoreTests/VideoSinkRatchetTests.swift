@@ -12,7 +12,7 @@ final class VideoSinkRatchetTests: XCTestCase {
         }
         XCTAssertEqual(
             declarations.map(\.path),
-            ["Sources/LyteTransport/VideoSink.swift"])
+            ["Client/Sources/LyteTransport/VideoSink.swift"])
 
         let rawSampleClosure = try NSRegularExpression(
             pattern: #"@Sendable\s*\(CMSampleBuffer,\s*DecodeUnit\)\s*->\s*Void"#)
@@ -29,8 +29,8 @@ final class VideoSinkRatchetTests: XCTestCase {
     }
 
     func testProductionImplementationsRemainWired() throws {
-        let app = try source("Sources/Lyte/ConnectionModel.swift")
-        let cli = try source("Sources/lyte-cli/WireViewCommand.swift")
+        let app = try source("Client/Sources/Lyte/ConnectionModel.swift")
+        let cli = try source("Client/Sources/lyte-cli/WireViewCommand.swift")
         XCTAssertTrue(app.contains("VideoRendererHandoff: VideoSink"))
         XCTAssertTrue(cli.contains("AVSampleBufferRendererVideoSink"))
     }

@@ -221,11 +221,8 @@ final class ChromaTierGateTests: XCTestCase {
         // The frozen video corpus is the shipped 4:2:0 path — its IDR
         // carries in-band parameter sets, exactly what the session's
         // audit reads.
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false)
-        components.removeLast(3)
-        let idrPath = components.joined(separator: "/")
-            + "/Wire/Vectors/video-corpus-v1/frame-000-idr.annexb"
+        let idrPath = ClientTestPaths.videoCorpus
+            + "/frame-000-idr.annexb"
         let annexB = [UInt8](try Data(
             contentsOf: URL(fileURLWithPath: idrPath)))
         XCTAssertEqual(HevcSpsChroma.chromaFormatIdc(inAnnexB: annexB), 1)

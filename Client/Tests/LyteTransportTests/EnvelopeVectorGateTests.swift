@@ -13,10 +13,7 @@ import LyteWireTestKit
 final class EnvelopeVectorGateTests: XCTestCase {
 
     private static var vectorsPath: String {
-        // Tests/LyteTransportTests/EnvelopeVectorGateTests.swift → repo root.
-        var components = #filePath.split(separator: "/", omittingEmptySubsequences: false)
-        components.removeLast(3)
-        return components.joined(separator: "/") + "/Wire/Vectors/envelope-v1.json"
+        ClientTestPaths.repositoryRoot + "/Wire/Vectors/envelope-v1.json"
     }
 
     private func loadFile() throws -> EnvelopeVectorFile {

@@ -25,9 +25,7 @@ final class NackRepairClientGateTests: XCTestCase {
     // MARK: - Corpus
 
     private static var corpusDirectory: String {
-        var components = #filePath.split(separator: "/", omittingEmptySubsequences: false)
-        components.removeLast(3)
-        return components.joined(separator: "/") + "/Wire/Vectors/video-corpus-v1"
+        ClientTestPaths.videoCorpus
     }
 
     private func loadCorpus(_ count: Int) throws -> [[UInt8]] {

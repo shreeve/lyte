@@ -15,10 +15,9 @@ import LyteWireTestKit
 // typed teardown both directions — driven end to end in virtual time
 // against a LyteWire host build-up running the REAL mediaSender
 // machine, through SimNet impairment schedules (the established
-// ReliableCtrlGateTests/PairingGateTests pattern; the root package
-// cannot import HostWire, so the stand-in assembles the HS-11
-// Session's discipline from the same Wire parts the frozen vectors
-// pin).
+// ReliableCtrlGateTests/PairingGateTests pattern; this gate keeps an
+// isolated stand-in assembled from the same Wire parts that pin the
+// HS-11 Session's discipline).
 //
 // The scripted lifecycle mirrors the W4b simulation's G6 shape, now
 // over the production client object: capabilities as the first
@@ -36,9 +35,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
     // MARK: - Corpus
 
     private static var corpusDirectory: String {
-        var components = #filePath.split(separator: "/", omittingEmptySubsequences: false)
-        components.removeLast(3)
-        return components.joined(separator: "/") + "/Wire/Vectors/video-corpus-v1"
+        ClientTestPaths.videoCorpus
     }
 
     /// The decodable corpus prefix, in order (IDR first).

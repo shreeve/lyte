@@ -18,9 +18,7 @@ import LyteWireTestKit
 final class FeedbackPathTests: XCTestCase {
 
     private static var beaconVectorsPath: String {
-        var components = #filePath.split(separator: "/", omittingEmptySubsequences: false)
-        components.removeLast(3)
-        return components.joined(separator: "/") + "/Wire/Vectors/beacon-v1.json"
+        ClientTestPaths.repositoryRoot + "/Wire/Vectors/beacon-v1.json"
     }
 
     // MARK: - Helpers

@@ -12,12 +12,12 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         // The sans-IO wire core (envelope, channels, vocabulary) shared with
         // the host; the frozen Vectors/ files are the contract CL-1 codes to.
-        .package(path: "Wire"),
+        .package(path: "../Wire"),
         // Shared operating-system adapters used by both client and host.
-        .package(path: "Common"),
+        .package(path: "../Common"),
         // Test-only cross-end composition: the shipping client target does
         // not depend on Host, but LyteTransportTests drive both real cores.
-        .package(path: "Host"),
+        .package(path: "../Host"),
     ],
     targets: [
         // The Lyte-UDP client (CL-1..CL-12): owns the receive socket,
@@ -89,10 +89,12 @@ let package = Package(
                 // nothing client-side).
                 .product(name: "COpus", package: "Common"),
                 .product(name: "LyteCore", package: "Common"),
+                .product(name: "LyteTestKit", package: "Common"),
                 .product(name: "HostWire", package: "Host"),
                 .product(name: "LyteWire", package: "Wire"),
                 .product(name: "LyteWireTestKit", package: "Wire"),
-            ]
+            ],
+            exclude: ["Fixtures"]
         ),
     ]
 )

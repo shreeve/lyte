@@ -1,0 +1,47 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "swift: Build Debug lyte-cli",
+            "type": "shell",
+            "command": "Scripts/build-cli.sh debug",
+            "problemMatcher": "$swiftc",
+            "group": "build"
+        },
+        {
+            "label": "swift: Build Release lyte-cli",
+            "type": "shell",
+            "command": "Scripts/build-cli.sh release",
+            "problemMatcher": "$swiftc",
+            "group": "build"
+        },
+        {
+            "label": "swift: Build Debug Lyte",
+            "type": "shell",
+            "command": "Scripts/make-app.sh debug",
+            "problemMatcher": "$swiftc",
+            "group": "build"
+        },
+        {
+            "label": "swift: Build Release Lyte",
+            "type": "shell",
+            "command": "Scripts/make-app.sh release",
+            "problemMatcher": "$swiftc",
+            "group": "build"
+        },
+        {
+            "label": "swift: Build Debug lyte-helperd",
+            "type": "shell",
+            "command": "Scripts/make-app.sh debug",
+            "problemMatcher": "$swiftc",
+            "group": "build"
+        },
+        {
+            "label": "swift: Build Release lyte-helperd",
+            "type": "shell",
+            "command": "Scripts/make-app.sh release",
+            "problemMatcher": "$swiftc",
+            "group": "build"
+        }
+    ]
+}
