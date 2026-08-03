@@ -18,6 +18,7 @@
 
 #if os(Linux)
 
+import LyteIO
 import CCuda
 import CNvEnc
 import Foundation
@@ -187,12 +188,6 @@ var encodeNanos: [UInt64] = []
 let reconfigureAt = frameCount / 2
 var reconfigured = false
 
-func monotonicNanos() -> UInt64 {
-    var ts = timespec()
-    clock_gettime(CLOCK_MONOTONIC, &ts)
-    return UInt64(ts.tv_sec) * 1_000_000_000 + UInt64(ts.tv_nsec)
-}
-
 for frame in 0..<frameCount {
     // The midpoint lever: halve the envelope, zero reset, zero IDR —
     // the exact call the vendored patch fakes in libavcodec.
@@ -241,10 +236,10 @@ for frame in 0..<frameCount {
             NV_ENC_PIC_FLAG_FORCEIDR.rawValue
                 | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS.rawValue
     }
-    let t0 = monotonicNanos()
+    let t0 = SystemMonotonicClock.nowNanoseconds
     check(api.nvEncEncodePicture!(encoder, &pic),
           "nvEncEncodePicture frame \(frame)", lastError: lastError)
-    encodeNanos.append(monotonicNanos() - t0)
+    encodeNanos.append(SystemMonotonicClock.nowNanoseconds - t0)
 
     var lockBitstream = NV_ENC_LOCK_BITSTREAM()
     lockBitstream.version = LYTE_NV_ENC_LOCK_BITSTREAM_VER

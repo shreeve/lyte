@@ -84,7 +84,8 @@ source_fingerprint() {
   ) | shasum -a 256 | awk '{print $1}'
 }
 
-CLIENT_SOURCE_SHA256="$(source_fingerprint Package.swift Sources)"
+CLIENT_SOURCE_SHA256="$(source_fingerprint \
+  Package.swift Sources Common/Package.swift Common/Core Common/IO)"
 recorded_client_source="$APP/Contents/Resources/client-source.sha256"
 [[ -s "$recorded_client_source" ]] || {
   echo "benchmark refused: Lyte.app has no signed source provenance" >&2
@@ -105,7 +106,8 @@ read -r APP_BUILD_UTC < "$APP/Contents/Resources/build-utc.txt" || {
 if (( NO_BUILD )); then
   stale_client_source="$(
     cd "$ROOT"
-    git ls-files --cached --others --exclude-standard -- Sources Package.swift \
+    git ls-files --cached --others --exclude-standard -- \
+      Sources Package.swift Common/Package.swift Common/Core Common/IO \
       | while IFS= read -r path; do
           if [[ -f "$path" && "$path" -nt "$APP/Contents/MacOS/Lyte" ]]; then
             printf '%s\n' "$path"
@@ -135,9 +137,18 @@ deployed_delta="$(
   rsync -ani --checksum --no-times --omit-dir-times --delete \
     --exclude .build "$ROOT/Wire/Sources/" \
     "$PUP:src/Wire/Sources/"
+  rsync -ani --checksum --no-times --omit-dir-times --delete \
+    "$ROOT/Common/Package.swift" \
+    "$PUP:src/Common/Package.swift"
+  rsync -ani --checksum --no-times --omit-dir-times --delete \
+    "$ROOT/Common/Core/" \
+    "$PUP:src/Common/Core/"
+  rsync -ani --checksum --no-times --omit-dir-times --delete \
+    "$ROOT/Common/IO/" \
+    "$PUP:src/Common/IO/"
 )"
 [[ -z "$deployed_delta" ]] || {
-  echo "benchmark refused: local Host/Wire source differs from pup:" >&2
+  echo "benchmark refused: local Host/Wire/Common source differs from pup:" >&2
   printf '%s\n' "$deployed_delta" >&2
   exit 1
 }
@@ -148,13 +159,15 @@ stale_host_source="$(
 b = os.path.expanduser(\"~/src/lyte-host/.build/debug/lyte-host\")
 bm = os.path.getmtime(b)
 roots = [
-    (os.path.expanduser(\"~/src/lyte-host\"), \"Host\"),
-    (os.path.expanduser(\"~/src/Wire\"), \"Wire\"),
+    (os.path.expanduser(\"~/src/lyte-host\"), \"Host\", [\"Sources\"]),
+    (os.path.expanduser(\"~/src/Wire\"), \"Wire\", [\"Sources\"]),
+    (os.path.expanduser(\"~/src/Common\"), \"Common\", [\"Core\", \"IO\"]),
 ]
-for root, label in roots:
+for root, label, source_dirs in roots:
     paths = [os.path.join(root, \"Package.swift\")]
-    for directory, _, files in os.walk(os.path.join(root, \"Sources\")):
-        paths.extend(os.path.join(directory, name) for name in files)
+    for source_dir in source_dirs:
+        for directory, _, files in os.walk(os.path.join(root, source_dir)):
+            paths.extend(os.path.join(directory, name) for name in files)
     for path in paths:
         if os.path.isfile(path) and os.path.getmtime(path) > bm:
             print(label + \"/\" + os.path.relpath(path, root))'"
@@ -193,7 +206,8 @@ disk_host_sha="$(printf '%s\n' "$host_hashes" | awk 'NR == 2 {print}')"
 
 APP_SHA256="$(shasum -a 256 "$APP/Contents/MacOS/Lyte" | awk '{print $1}')"
 HOST_SHA256="$running_host_sha"
-HOST_SOURCE_SHA256="$(source_fingerprint Host)"
+HOST_SOURCE_SHA256="$(source_fingerprint \
+  Host Common/Package.swift Common/Core Common/IO)"
 
 FFPLAY_PID=""
 REMOTE_QUALITY_IMAGE=""

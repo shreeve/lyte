@@ -14,6 +14,8 @@ let package = Package(
         // The sans-IO wire core (envelope, channels, vocabulary) shared with
         // the host; the frozen Vectors/ files are the contract CL-1 codes to.
         .package(path: "Wire"),
+        // Shared operating-system adapters used by both client and host.
+        .package(path: "Common"),
     ],
     targets: [
         // C leaf (CL-11): libopus for the client audio receiver — decode
@@ -31,6 +33,7 @@ let package = Package(
             name: "LyteTransport",
             dependencies: [
                 "COpus",
+                .product(name: "LyteIO", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
                 // The sanctioned crypto provider, for exactly one digest:
                 // LyteDiscovery's pkh identity hash (LyteWire's SHA-256 is
@@ -59,6 +62,7 @@ let package = Package(
                 "LyteHelperProtocol",
                 "LyteTransport",
                 "LyteCorpus",
+                .product(name: "LyteIO", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
@@ -71,6 +75,7 @@ let package = Package(
                 // (VideoQualityReadback) — an explicit, honest dependency;
                 // the streaming stack itself carries no corpus code.
                 "LyteCorpus",
+                .product(name: "LyteIO", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
             ]
         ),

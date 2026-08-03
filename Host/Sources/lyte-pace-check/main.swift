@@ -12,6 +12,7 @@
 // Exits nonzero when any HS-6 gate bound is violated. No protocol,
 // no envelope — byte counts and class tags only.
 
+import LyteIO
 import CNetIO
 import Foundation
 import HostCore
@@ -24,12 +25,6 @@ struct CheckError: Error, CustomStringConvertible {
 func errString(_ buf: [CChar]) -> String {
     let bytes = buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
     return String(decoding: bytes, as: UTF8.self)
-}
-
-func monotonicNS() -> UInt64 {
-    var ts = timespec()
-    clock_gettime(CLOCK_MONOTONIC, &ts)
-    return UInt64(ts.tv_sec) * 1_000_000_000 + UInt64(ts.tv_nsec)
 }
 
 func realtimeNS() -> UInt64 {
@@ -151,10 +146,10 @@ func run() throws {
     var packets: [SentPacket] = []
     var idrEnqueuedRealNS: UInt64 = 0
 
-    let t0 = monotonicNS()
+    let t0 = SystemMonotonicClock.nowNanoseconds
     var i = 0
     while true {
-        let now = monotonicNS() - t0
+        let now = SystemMonotonicClock.nowNanoseconds - t0
         while i < arrivals.count, arrivals[i].at <= now {
             let a = arrivals[i]
             pacer.enqueue(a.cls, bytes: a.bytes, urgent: a.urgent,
@@ -162,7 +157,7 @@ func run() throws {
             if a.urgent, idrEnqueuedRealNS == 0 { idrEnqueuedRealNS = realtimeNS() }
             i += 1
         }
-        while let batch = pacer.nextBatch(now: monotonicNS() - t0) {
+        while let batch = pacer.nextBatch(now: SystemMonotonicClock.nowNanoseconds - t0) {
             var pkts: [lyte_netio_pkt] = []
             var off = 0
             for t in batch.tokens {
@@ -203,7 +198,7 @@ func run() throws {
         }
 
         if i >= arrivals.count, pacer.isEmpty { break }
-        let now2 = monotonicNS() - t0
+        let now2 = SystemMonotonicClock.nowNanoseconds - t0
         let nextArrival: UInt64? = i < arrivals.count ? arrivals[i].at : nil
         let wake = pacer.nextWake(now: now2)
         let target = [nextArrival, wake].compactMap { $0 }.min() ?? (now2 + ms)
@@ -222,8 +217,8 @@ func run() throws {
     }
     var received = 0
     var rxTosTally: [UInt8: Int] = [:]
-    let rxDeadline = monotonicNS() + 500_000_000
-    while received < packets.count, monotonicNS() < rxDeadline {
+    let rxDeadline = SystemMonotonicClock.nowNanoseconds + 500_000_000
+    while received < packets.count, SystemMonotonicClock.nowNanoseconds < rxDeadline {
         let got = lyte_netio_recv_batch(rx, &slots, 64, &err, err.count)
         if got < 0 { throw CheckError("recv failed: \(errString(err))") }
         if got == 0 { usleep(1000); continue }
@@ -235,8 +230,8 @@ func run() throws {
     var stamps: [UInt32: UInt64] = [:]
     var stampBuf = [lyte_netio_txstamp](
         repeating: lyte_netio_txstamp(pkt_id: 0, ts_ns: 0), count: 64)
-    let stampDeadline = monotonicNS() + 3_000_000_000
-    while stamps.count < packets.count, monotonicNS() < stampDeadline {
+    let stampDeadline = SystemMonotonicClock.nowNanoseconds + 3_000_000_000
+    while stamps.count < packets.count, SystemMonotonicClock.nowNanoseconds < stampDeadline {
         let got = lyte_netio_poll_txstamps(tx, &stampBuf, 64, &err, err.count)
         if got < 0 { throw CheckError("txstamp poll failed: \(errString(err))") }
         for s in stampBuf.prefix(Int(got)) { stamps[s.pkt_id] = s.ts_ns }

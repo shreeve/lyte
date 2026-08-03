@@ -1,3 +1,4 @@
+import LyteIO
 import ArgumentParser
 import Foundation
 import LyteTransport
@@ -110,7 +111,7 @@ struct WireSend: AsyncParsableCommand {
                         frame: accessUnits[0],
                         frameNumber: frameNumber,
                         captureTimestamp: HostTimestamp(
-                            microseconds: DispatchTime.now().uptimeNanoseconds / 1000),
+                            microseconds: SystemMonotonicClock.nowMicroseconds),
                         isIDR: true,
                         regime: fecRegime)
                     print("wire-send: HEAL — IDR request answered with fresh IDR " +
@@ -128,7 +129,7 @@ struct WireSend: AsyncParsableCommand {
                     frame: annexB,
                     frameNumber: frameNumber,
                     captureTimestamp: HostTimestamp(
-                        microseconds: DispatchTime.now().uptimeNanoseconds / 1000),
+                        microseconds: SystemMonotonicClock.nowMicroseconds),
                     isIDR: AnnexBCheck.containsIrap(annexB),
                     regime: fecRegime)
                 frameNumber = frameNumber.next
@@ -305,7 +306,7 @@ private final class HostStandIn: @unchecked Sendable {
             }
             // t4 measured locally at arrival — never on the wire.
             let t4 = HostTimestamp(
-                microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
+                microseconds: SystemMonotonicClock.nowMicroseconds)
             let sample = echo.clockSample(hostReceive: t4)
             lock.lock()
             echoes += 1
@@ -346,7 +347,7 @@ private final class HostStandIn: @unchecked Sendable {
         let mirror = lastEchoMirror
         lock.unlock()
 
-        let nowUs = DispatchTime.now().uptimeNanoseconds / 1000
+        let nowUs = SystemMonotonicClock.nowMicroseconds
         let beacon = ClockBeacon(
             beaconSeq: seq,
             hostSend: HostTimestamp(microseconds: nowUs),

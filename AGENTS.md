@@ -19,7 +19,7 @@ the Sunshine install on the reference host were demolished at the H2 exit
 H-era build plans completed their ladder and are retired to git history
 (`git show 4bb3e11:docs/20260720-222500-lyte-build-plan.md`).
 
-## Repo structure — three SwiftPM packages (all swift-tools-version 6.0)
+## Repo structure — four SwiftPM packages (all swift-tools-version 6.0)
 
 - **`Wire/`** — package `LyteWire`: the shared, sans-IO, Foundation-free
   protocol core both ends import. Targets: `LyteWire` (codecs, FEC, Noise,
@@ -29,8 +29,13 @@ H-era build plans completed their ladder and are retired to git history
   swift-crypto (`import Crypto`, lint-confined to `Sources/LyteWire/Crypto/`;
   CryptoKit forbidden everywhere). Builds and tests on macOS and Linux —
   byte-exact cross-platform is a gate, not a hope.
+- **`Common/`** — package `LyteCommon`: the v2 shared layer beside (never
+  inside) frozen LyteWire. `LyteCore` is sans-IO shared policy with injected
+  time; `LyteIO` is the operating-system adapter layer both ends consume.
+  The first extracted adapter is the one process-wide monotonic clock.
 - **`Host/`** — package `LyteHost`: the Linux host. Depends on
-  `.package(path: "../Wire")`. `HostCore` (pure Swift bitstream helpers) and
+  `.package(path: "../Wire")` and, for Linux shells, `../Common`.
+  `HostCore` (pure Swift bitstream helpers) and
   `HostWire` (packetizer/FEC/pacer wiring onto LyteWire) build and test
   everywhere, macOS included. The `lyte-host`/`lyte-eye`/`lyte-nvenc`
   executables, `HostEye` (the direct eye: KMS doorbell + EGL blit +
@@ -42,7 +47,8 @@ H-era build plans completed their ladder and are retired to git history
   ffmpeg) were demolished in E5 (2026-08-02, tag `self-hosted`).
 - **Root** — package `Lyte`: the macOS client (macOS-only; SwiftUI app
  `Lyte`, `lyte-cli`). `LyteTransport` is the whole client protocol stack
- (imports LyteWire): socket + demux, video/audio pipelines, discovery,
+ (imports LyteWire and LyteIO): socket + demux, video/audio pipelines,
+ discovery,
  pairing, session. `LyteCorpus` is the corpus/diagnostic harness
  (corpus frames, gate math, PNG IO, the decode readback tap, the
  quality scorer) — consumed only by lyte-cli, the app's env-gated
@@ -60,6 +66,7 @@ Mac (Command Line Tools lack XCTest, hence DEVELOPER_DIR):
 
 ```
 cd Wire && DEVELOPER_DIR=/Applications/Xcode.app swift test
+cd Common && DEVELOPER_DIR=/Applications/Xcode.app swift test
 cd Host && DEVELOPER_DIR=/Applications/Xcode.app swift test
 DEVELOPER_DIR=/Applications/Xcode.app swift test        # root, from repo root
 ```
@@ -80,10 +87,11 @@ authorization (`docs/MACOS-SIGNING.md`).
 .249): Ubuntu 26.04, GNOME/Mutter Wayland, Intel Meteor Lake Arc iGPU
 (owns the panel; the direct eye encodes on it) + RTX 4050, PipeWire,
 Swift 6.1.2 at `/usr/local/bin/swift`, passwordless sudo. Source syncs
-there; `Host/Package.swift` needs Wire as a sibling directory:
+there; `Host/Package.swift` needs Wire and Common as sibling directories:
 
 ```
 rsync -a --delete --exclude .build Wire/ pup:src/Wire/
+rsync -a --delete --exclude .build Common/ pup:src/Common/
 rsync -a --delete --exclude .build Host/ pup:src/lyte-host/
 ssh pup 'cd ~/src/lyte-host && \
   LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build'

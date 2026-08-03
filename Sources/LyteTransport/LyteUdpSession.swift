@@ -43,6 +43,7 @@
 // split (media vs CTRL) becomes real. The machine's config is the
 // injection point; nothing in Wire/ changes.
 
+import LyteIO
 import CoreMedia
 import Crypto
 import Dispatch
@@ -482,7 +483,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         asynchronousVideoBuild: Bool = false,
         now: @escaping @Sendable () -> ClientTimestamp = {
             ClientTimestamp(
-                microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
+                microseconds: SystemMonotonicClock.nowMicroseconds)
         },
         onVideoRecoveryDemand: @escaping @Sendable (
             VideoRecoveryCause, FrameNumber
@@ -2010,9 +2011,11 @@ public final class LyteUdpSession: @unchecked Sendable {
         orderedInput.finishAndDrain()
         if let core {
             core.beginTeardown(reason: reason)
-            let deadline = DispatchTime.now()
-                + .milliseconds(config.teardownLingerMilliseconds)
-            while !core.isReliableQuiescent, DispatchTime.now() < deadline {
+            let deadline = SystemMonotonicClock.nowNanoseconds
+                + UInt64(config.teardownLingerMilliseconds) * 1_000_000
+            while !core.isReliableQuiescent,
+                  SystemMonotonicClock.nowNanoseconds < deadline
+            {
                 usleep(20_000)
             }
         }

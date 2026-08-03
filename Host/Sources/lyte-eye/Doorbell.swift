@@ -4,6 +4,7 @@
 
 #if os(Linux)
 
+import LyteIO
 import CDRM
 import Foundation
 import Glibc
@@ -55,15 +56,15 @@ func runDoorbell(
 
     var polls = 0
     var pollCostNs = 0.0
-    let t0 = nowSeconds()
+    let t0 = SystemMonotonicClock.nowSeconds
     var nextReport = t0 + 1.0
     var primaryThisSecond = 0
     var t = t0
 
     while true {
-        t = nowSeconds()
+        t = SystemMonotonicClock.nowSeconds
         guard t - t0 < seconds else { break }
-        let costStart = nowSeconds()
+        let costStart = SystemMonotonicClock.nowSeconds
         if let fb = currentFB(fd: fd, planeId: primary.planeId),
            primary.observe(fb: fb, at: t) {
             primaryThisSecond += 1
@@ -71,7 +72,7 @@ func runDoorbell(
         if cursor != nil, let fb = currentFB(fd: fd, planeId: cursor!.planeId) {
             _ = cursor!.observe(fb: fb, at: t)
         }
-        pollCostNs += (nowSeconds() - costStart) * 1e9
+        pollCostNs += (SystemMonotonicClock.nowSeconds - costStart) * 1e9
         polls += 1
         if t >= nextReport {
             print("  t=\(String(format: "%2.0f", t - t0))s "

@@ -22,6 +22,7 @@
 // UdpReceiveEndpoint drives between bind and thread start, handing this
 // object blocking datagram IO aimed at the configured host.
 
+import LyteIO
 import Foundation
 import LyteWire
 
@@ -286,7 +287,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
             stateLock.unlock()
         }
 
-        let started = DispatchTime.now()
+        let started = SystemMonotonicClock.nowNanoseconds
         var lastFailure = "no response from \(hostAddress):\(hostPort) "
             + "after \(attempts) attempts"
         var sendsAccepted = 0
@@ -314,13 +315,13 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
                 type: CtrlMessageType.noiseHandshake1, message: message1))
             sendsAccepted += 1
 
-            let deadline = DispatchTime.now()
-                + .milliseconds(attemptTimeoutMilliseconds)
+            let deadline = SystemMonotonicClock.nowNanoseconds
+                + UInt64(attemptTimeoutMilliseconds) * 1_000_000
             while true {
-                let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
-                guard nowNanoseconds < deadline.uptimeNanoseconds else { break }
+                let nowNanoseconds = SystemMonotonicClock.nowNanoseconds
+                guard nowNanoseconds < deadline else { break }
                 let remaining = Int(
-                    (deadline.uptimeNanoseconds - nowNanoseconds) / 1_000_000)
+                    (deadline - nowNanoseconds) / 1_000_000)
                 guard let datagram = try io.receiveDatagram(
                     timeoutMilliseconds: max(1, min(remaining, 100))
                 ) else { continue }
@@ -378,8 +379,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
                 receiveTransport = made
                 handshakeHash = made.handshakeHash
                 handshakeMilliseconds = Double(
-                    DispatchTime.now().uptimeNanoseconds
-                        &- started.uptimeNanoseconds) / 1e6
+                    SystemMonotonicClock.nowNanoseconds &- started) / 1e6
                 established = true
                 receiveLock.unlock()
                 sendLock.unlock()
@@ -408,7 +408,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
             channel: .ctrl,
             seq: ChannelSeq(rawValue: 0),
             frame: FrameNumber(rawValue: 0),
-            timestamp: DispatchTime.now().uptimeNanoseconds / 1_000,
+            timestamp: SystemMonotonicClock.nowMicroseconds,
             fec: 0
         )
         // Handshake payloads (≤ 26 + 122 B with the cookie) cannot

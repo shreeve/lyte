@@ -283,8 +283,9 @@ Mac — all green (host grew the Rext pen pins and the E2 harness).
   (xcode-select points at CLT, which lacks XCTest). Capture exit
   codes as `rc=$?` after a redirect — never pipe `swift test` to
   grep directly (masks the code; `status` is zsh read-only).
-- pup host build/test: rsync `Wire/` → `pup:src/Wire/` and `Host/` →
-  `pup:src/lyte-host/` (exclude `.build`), then on pup:
+- pup host build/test: rsync `Wire/` → `pup:src/Wire/`, `Common/` →
+  `pup:src/Common/`, and `Host/` → `pup:src/lyte-host/` (exclude
+  `.build`), then on pup:
   `LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build` (or
   `test`). No ffmpeg env exists anymore — a plain build succeeding is
   itself an E5 gate. Then setcap (see live ops). Good-build marker in

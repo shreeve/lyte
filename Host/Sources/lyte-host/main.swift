@@ -427,12 +427,6 @@ func errString(_ buf: [CChar]) -> String {
     return String(decoding: bytes, as: UTF8.self)
 }
 
-func monotonicNow() -> Double {
-    var ts = timespec()
-    clock_gettime(CLOCK_MONOTONIC, &ts)
-    return Double(ts.tv_sec) + Double(ts.tv_nsec) / 1e9
-}
-
 // MARK: - Main
 
 func run() throws {

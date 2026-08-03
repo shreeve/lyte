@@ -5,6 +5,7 @@
 // via IP_RECVTOS, and drains software TX timestamps from the error queue.
 // Exits nonzero on any mismatch. No protocol, no policy — a leaf check.
 
+import LyteIO
 import CNetIO
 import Foundation
 
@@ -17,12 +18,6 @@ struct CheckError: Error, CustomStringConvertible {
 func errString(_ buf: [CChar]) -> String {
     let bytes = buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
     return String(decoding: bytes, as: UTF8.self)
-}
-
-func monotonicNow() -> Double {
-    var ts = timespec()
-    clock_gettime(CLOCK_MONOTONIC, &ts)
-    return Double(ts.tv_sec) + Double(ts.tv_nsec) / 1e9
 }
 
 func realtimeNowNS() -> UInt64 {
@@ -95,7 +90,7 @@ func run() throws {
 
     var firstId: UInt32 = 0
     let sendStartNS = realtimeNowNS()
-    let sendStartMono = monotonicNow()
+    let sendStartMono = SystemMonotonicClock.nowSeconds
     let sent = lyte_netio_send_batch(tx, &pkts, Int32(count), &firstId,
                                      &err, err.count)
     guard sent == count else {
@@ -118,8 +113,8 @@ func run() throws {
     }
     var received = 0
     var lastRecvAt = sendStartMono
-    let recvDeadline = monotonicNow() + 3.0
-    while received < count, monotonicNow() < recvDeadline {
+    let recvDeadline = SystemMonotonicClock.nowSeconds + 3.0
+    while received < count, SystemMonotonicClock.nowSeconds < recvDeadline {
         let got = lyte_netio_recv_batch(rx, &slots[received],
                                         Int32(count - received),
                                         &err, err.count)
@@ -128,7 +123,7 @@ func run() throws {
         }
         if got > 0 {
             received += Int(got)
-            lastRecvAt = monotonicNow()
+            lastRecvAt = SystemMonotonicClock.nowSeconds
         } else {
             usleep(1000)
         }
@@ -144,8 +139,8 @@ func run() throws {
     var stamps: [UInt32: UInt64] = [:]
     var stampBuf = [lyte_netio_txstamp](
         repeating: lyte_netio_txstamp(pkt_id: 0, ts_ns: 0), count: count)
-    let stampDeadline = monotonicNow() + 3.0
-    while stamps.count < count, monotonicNow() < stampDeadline {
+    let stampDeadline = SystemMonotonicClock.nowSeconds + 3.0
+    while stamps.count < count, SystemMonotonicClock.nowSeconds < stampDeadline {
         let got = lyte_netio_poll_txstamps(tx, &stampBuf, Int32(count),
                                            &err, err.count)
         guard got >= 0 else {

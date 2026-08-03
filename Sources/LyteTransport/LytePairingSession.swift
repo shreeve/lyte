@@ -19,6 +19,7 @@
 // together. Persistence is the caller's move on `.paired` — this file
 // touches neither the Keychain nor the pinned-host store.
 
+import LyteIO
 import Dispatch
 import Foundation
 import LyteWire
@@ -106,7 +107,7 @@ public enum LytePairing {
 
         let clientNow: @Sendable () -> ClientTimestamp = {
             ClientTimestamp(
-                microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
+                microseconds: SystemMonotonicClock.nowMicroseconds)
         }
         let reliableBox = PairingLockedBox<ReliableCtrlEndpoint?>(nil)
         let echoBox = PairingLockedBox<BeaconEchoResponder?>(nil)
@@ -211,9 +212,9 @@ public enum LytePairing {
 
         // ── Wait for the verdict; honesty needs quiescence (the confirm
         // or reject really reached the host and was acknowledged). ──
-        let deadline = DispatchTime.now()
-            + .milliseconds(Int(config.timeoutSeconds * 1000))
-        while DispatchTime.now() < deadline {
+        let deadline = SystemMonotonicClock.nowNanoseconds
+            + UInt64(Int(config.timeoutSeconds * 1000)) * 1_000_000
+        while SystemMonotonicClock.nowNanoseconds < deadline {
             if let outcome = verdict.value, reliable.isQuiescent {
                 return outcome
             }

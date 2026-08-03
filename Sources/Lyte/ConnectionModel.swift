@@ -1,3 +1,4 @@
+import LyteIO
 import SwiftUI
 @preconcurrency import AVFoundation
 import LyteTransport
@@ -278,7 +279,7 @@ final class ConnectionModel {
         // still fails immediately: patience is only for silence.
         connectGeneration += 1
         let generation = connectGeneration
-        let deadline = Self.monotonicMicroseconds()
+        let deadline = SystemMonotonicClock.nowMicroseconds
             + Self.freshConnectBudgetMicroseconds
         var dialAddress = host.address
         var dialPort = host.port
@@ -333,7 +334,7 @@ final class ConnectionModel {
                       case .connecting = phase else { return }
                 guard case TransportCryptoError.handshakeFailed(let why)
                         = error, why.hasPrefix("no response"),
-                      Self.monotonicMicroseconds() < deadline else {
+                      SystemMonotonicClock.nowMicroseconds < deadline else {
                     phase = .failed("Lyte-UDP connect: \(error)")
                     return
                 }
@@ -858,7 +859,7 @@ final class ConnectionModel {
         _ mutate: (inout RoamingPolicy, UInt64) -> [RoamingAction]
     ) {
         guard var policy = roaming else { return }
-        let now = Self.monotonicMicroseconds()
+        let now = SystemMonotonicClock.nowMicroseconds
         let actions = mutate(&policy, now)
         roaming = policy
         roamingStatus = policy.status
@@ -882,7 +883,7 @@ final class ConnectionModel {
         guard let deadline = roaming?.nextDeadline else { return }
         roamingTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                let now = Self.monotonicMicroseconds()
+                let now = SystemMonotonicClock.nowMicroseconds
                 if now < deadline {
                     try? await Task.sleep(
                         nanoseconds: (deadline - now) * 1_000)
@@ -1025,10 +1026,6 @@ final class ConnectionModel {
             policy.sessionEstablished(
                 address: address, port: port, now: now)
         }
-    }
-
-    private static func monotonicMicroseconds() -> UInt64 {
-        DispatchTime.now().uptimeNanoseconds / 1_000
     }
 
     // MARK: - Host audio routing (CL-13)
@@ -1406,7 +1403,7 @@ final class ConnectionModel {
         // incoming video from its own books (frame cadence, bitrate,
         // frame-size percentiles over ~5 s). Host QP/encoder posture
         // are host-log truth; this is the client-side half.
-        let nowMicroseconds = DispatchTime.now().uptimeNanoseconds / 1000
+        let nowMicroseconds = SystemMonotonicClock.nowMicroseconds
         let delivery = videoDeliveryBooks.snapshot(
             nowMicroseconds: nowMicroseconds)
         let pipelineStats = core.pipeline.snapshotStats()
@@ -1650,7 +1647,7 @@ private final class VideoRendererHandoff: @unchecked Sendable {
 
     func submit(sample: CMSampleBuffer, unit: DecodeUnit) {
         nonisolated(unsafe) let transferred = sample
-        let dispatched = DispatchTime.now().uptimeNanoseconds
+        let dispatched = SystemMonotonicClock.nowNanoseconds
         let arrival = dispatched / 1_000
         let mapped = clockModel.map(unit.timestamp)?.microseconds ?? arrival
         let decision = playout.schedule(
@@ -1748,7 +1745,7 @@ private final class VideoRendererHandoff: @unchecked Sendable {
                 cause: cause)
         }
 
-        let now = DispatchTime.now().uptimeNanoseconds / 1_000
+        let now = SystemMonotonicClock.nowMicroseconds
         let outcome = policy.offer(
             pending,
             isRandomAccess: pending.unit.isIDR,
@@ -1823,7 +1820,7 @@ private final class VideoRendererHandoff: @unchecked Sendable {
                 policy.awaitingRandomAccess
                 && policy.randomAccessPending
                 && pending.unit.isIDR
-            let started = DispatchTime.now().uptimeNanoseconds
+            let started = SystemMonotonicClock.nowNanoseconds
             guard let timed = VideoSampleTiming.retimed(
                 pending.sample,
                 presentationMicroseconds:
@@ -1897,7 +1894,7 @@ private final class VideoRendererHandoff: @unchecked Sendable {
             finish(
                 pending,
                 enqueueStarted: started,
-                enqueueFinished: DispatchTime.now().uptimeNanoseconds,
+                enqueueFinished: SystemMonotonicClock.nowNanoseconds,
                 rendererReady:
                     !pending.encounteredRendererBackpressure,
                 rendererFailed: false,
@@ -1913,7 +1910,7 @@ private final class VideoRendererHandoff: @unchecked Sendable {
     private func expire() {
         guard !stopped else { return }
         let outcome = policy.expire(
-            nowMicroseconds: DispatchTime.now().uptimeNanoseconds / 1_000)
+            nowMicroseconds: SystemMonotonicClock.nowMicroseconds)
         process(
             outcome,
             recoveryFrame: FrameNumber(rawValue: 0),
@@ -1992,7 +1989,7 @@ private final class VideoRendererHandoff: @unchecked Sendable {
         dropped: Bool,
         recovery: Bool
     ) {
-        let started = enqueueStarted ?? DispatchTime.now().uptimeNanoseconds
+        let started = enqueueStarted ?? SystemMonotonicClock.nowNanoseconds
         let finished = enqueueFinished ?? started
         books.record(
             hopMilliseconds:

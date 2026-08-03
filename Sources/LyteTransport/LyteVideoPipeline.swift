@@ -22,6 +22,7 @@
 // construction for deterministic assertions. Callbacks never hold the
 // assembler lock.
 
+import LyteIO
 import CoreMedia
 import Dispatch
 import Foundation
@@ -173,7 +174,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
             deadline: .now() + .milliseconds(evictionIntervalMilliseconds),
             repeating: .milliseconds(evictionIntervalMilliseconds))
         timer.setEventHandler { [weak self] in
-            self?.tick(now: Self.monotonicNow())
+            self?.tick(now: ClientTimestamp(microseconds: SystemMonotonicClock.nowMicroseconds))
         }
         timer.resume()
         evictionTimer = timer
@@ -191,17 +192,17 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     /// calls this with every `.accepted` outcome; other channels pass
     /// through untouched.
     public func ingest(envelope: Envelope, payload: [UInt8]) {
-        ingest(envelope: envelope, payload: payload, now: Self.monotonicNow())
+        ingest(envelope: envelope, payload: payload, now: ClientTimestamp(microseconds: SystemMonotonicClock.nowMicroseconds))
     }
 
     /// Injected-clock variant (tests drive time explicitly).
     public func ingest(envelope: Envelope, payload: [UInt8], now: ClientTimestamp) {
         guard envelope.channel == channel else { return }
-        let lockStarted = DispatchTime.now().uptimeNanoseconds
+        let lockStarted = SystemMonotonicClock.nowNanoseconds
         lock.lock()
         if firstIngest == nil { firstIngest = now }
         let events = assembler.ingest(envelope: envelope, payload: payload, now: now)
-        let lockHeld = (DispatchTime.now().uptimeNanoseconds &- lockStarted) / 1_000
+        let lockHeld = (SystemMonotonicClock.nowNanoseconds &- lockStarted) / 1_000
         let actions = process(events, now: now, assemblyLockHoldMicroseconds: lockHeld)
         lock.unlock()
         dispatch(actions)
@@ -221,7 +222,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         captureTimestampMicroseconds: UInt64,
         annexB: [UInt8]
     ) -> ReliableFrameOutcome {
-        let now = Self.monotonicNow()
+        let now = ClientTimestamp(microseconds: SystemMonotonicClock.nowMicroseconds)
         lock.lock()
         if let newest = newestDeliveredFrame,
            Int32(bitPattern: frame.rawValue &- newest.rawValue) <= 0 {
@@ -241,14 +242,14 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         var sample: CMSampleBuffer?
         var buildOutcome: ReliableFrameOutcome = .failed
         sampleQueue.sync {
-            let started = DispatchTime.now().uptimeNanoseconds
+            let started = SystemMonotonicClock.nowNanoseconds
             do {
                 sample = try factory.makeSampleBuffer(from: unit)
                 buildOutcome = sample == nil ? .withheld : .rendered
             } catch {
                 buildOutcome = .failed
             }
-            let elapsed = (DispatchTime.now().uptimeNanoseconds &- started) / 1_000
+            let elapsed = (SystemMonotonicClock.nowNanoseconds &- started) / 1_000
             lock.lock()
             stats.sampleBuildMicroseconds.record(elapsed)
             if sample != nil {
@@ -290,7 +291,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     }
 
     public func snapshotStats() -> VideoPipelineStats {
-        snapshotStats(now: Self.monotonicNow())
+        snapshotStats(now: ClientTimestamp(microseconds: SystemMonotonicClock.nowMicroseconds))
     }
 
     /// Injected-clock variant (tests drive time explicitly).
@@ -460,7 +461,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         now: ClientTimestamp,
         assemblyLockHoldMicroseconds: UInt64
     ) {
-        let started = DispatchTime.now().uptimeNanoseconds
+        let started = SystemMonotonicClock.nowNanoseconds
         PipelineWitness.record("sampleBuildBegin", fields: [
             "frame": String(unit.frameNumber.rawValue),
         ])
@@ -468,7 +469,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         do {
             sample = try factory.makeSampleBuffer(from: unit)
         } catch {
-            let elapsed = (DispatchTime.now().uptimeNanoseconds &- started) / 1_000
+            let elapsed = (SystemMonotonicClock.nowNanoseconds &- started) / 1_000
             lock.lock()
             stats.sampleBuildMicroseconds.record(elapsed)
             stats.sampleFailures += 1
@@ -479,7 +480,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
             lock.unlock()
             return
         }
-        let elapsed = (DispatchTime.now().uptimeNanoseconds &- started) / 1_000
+        let elapsed = (SystemMonotonicClock.nowNanoseconds &- started) / 1_000
         PipelineWitness.record("sampleBuildCompleted", fields: [
             "frame": String(unit.frameNumber.rawValue),
             "elapsedMicroseconds": String(elapsed),
@@ -526,7 +527,4 @@ public final class LyteVideoPipeline: @unchecked Sendable {
             sampleBuildMicroseconds: sampleBuild)
     }
 
-    static func monotonicNow() -> ClientTimestamp {
-        ClientTimestamp(microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
-    }
 }
