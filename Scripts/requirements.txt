@@ -1,0 +1,2 @@
+# Imported by motion-presenter.py and its deterministic analyzer tests.
+numpy==2.0.2

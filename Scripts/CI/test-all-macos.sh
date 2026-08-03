@@ -45,7 +45,28 @@ run_package_tests "Host" "$repo_root/Host"
 run_package_tests "client" "$repo_root"
 
 echo "==> analyzer tests"
-python3 Scripts/test_analyze_app_benchmark.py
+python_env="$repo_root/.build/ci-python"
+python_requirements="$repo_root/Scripts/requirements.txt"
+python_requirements_hash="$python_env/.lyte-requirements-sha256"
+required_hash="$(shasum -a 256 "$python_requirements" | awk '{print $1}')"
+
+if [[ ! -x "$python_env/bin/python3" ]]; then
+    python3 -m venv "$python_env"
+fi
+
+installed_hash=""
+if [[ -f "$python_requirements_hash" ]]; then
+    installed_hash="$(<"$python_requirements_hash")"
+fi
+
+if [[ "$installed_hash" != "$required_hash" ]]; then
+    "$python_env/bin/python3" -m pip install \
+        --disable-pip-version-check \
+        --requirement "$python_requirements"
+    printf '%s\n' "$required_hash" > "$python_requirements_hash"
+fi
+
+"$python_env/bin/python3" Scripts/test_analyze_app_benchmark.py
 
 echo "==> signed debug CLI"
 Scripts/build-cli.sh debug
