@@ -191,8 +191,9 @@ display path — the shell's 10 s comb is the evidence). AV1 stays
 a 4:2:0 lane (no 4:4:4 hardware encoders exist anywhere,
 2026-08).
 
-**CLEANUP THEME 1 IS RUNNING (#95–#97, 2026-08-03): one clock,
-one histogram, one Annex-B walker.** The v2 `Common/` package now exists
+**CLEANUP THEME 1 IS RUNNING (#95–#98, 2026-08-03): one clock,
+one histogram, one Annex-B walker, one HEVC bit vocabulary.** The v2
+`Common/` package now exists
 with sibling targets `LyteCore` (sans-IO shared policy) and `LyteIO`
 (shared OS adapters); `SystemMonotonicClock` is the one OS adapter for
 ns/µs/s.
@@ -220,12 +221,21 @@ their parallel test copies were deleted in the same PR — 694 lines out,
 prefixes, short NALs, emulation prevention, relative offsets, bootstrap
 shape, prefix/suffix attribution, and multi-slice pictures against 500
 seeded hostile streams; the cross-tree ratchet rejects another twin.
-Wire bytes and every frozen vector stayed untouched. **NEXT: Theme 1
-HEVC bit vocabulary — make the writer and two readers explicit inverse
-functions in LyteCore, then delete all three private codecs.**
+Wire bytes and every frozen vector stayed untouched. #98 moved the Host
+writer, client SPS reader/unescaper, and Host test reader into one
+bounds-checked `LyteCore` vocabulary, then deleted all three private
+codecs. The Host's real VAAPI VPS/SPS/PPS/slice byte oracles and the
+client's real-SPS/truncation gates stayed exact; fixed-width and signed/
+unsigned Exp-Golomb round trips, hostile bounds, the canonical escape
+anchors, and 513 seeded RBSP escape/unescape inverses now live beside
+the implementation. A production-source ratchet refuses another writer,
+reader, or unescaper. The rebuilt pup service is active and both binaries
+were re-armed after the Linux gate. **NEXT: Theme 1 SHA-256 — converge the
+two hand-rolled implementations on one LyteCore model, prove every digest,
+then delete both old copies.**
 
-**Suites at HEAD:** Wire 508 Mac / 508 pup; Common 23 Mac / 24 pup;
-root client 283; host 286 pup / 285 Mac — all green.
+**Suites at HEAD:** Wire 508 Mac / 508 pup; Common 29 Mac / 30 pup;
+root client 283; host 284 pup / 283 Mac — all green.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
