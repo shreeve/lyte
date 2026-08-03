@@ -59,6 +59,12 @@ final class SystemTestsLayoutTests: XCTestCase {
         let nackImports = importedModules(from: nack)
         XCTAssertTrue(nackImports.contains("HostWire"))
         XCTAssertTrue(nackImports.contains("LyteTransport"))
+        XCTAssertEqual(
+            try repairBoundaryViolations(
+                in: swiftSources(below: "SystemTests/Tests")
+            ),
+            []
+        )
     }
 
     func testAttributedAndQualifiedImportsCannotEvadeTheBoundary() {
@@ -73,6 +79,74 @@ final class SystemTestsLayoutTests: XCTestCase {
             importedModules(from: source),
             ["HostWire", "HostWire", "LyteClientShell", "HostCore", "LyteClientShell"]
         )
+    }
+
+    func testRepairBoundaryScannerRejectsDeadTokensAndRelocatedFakes() {
+        let nackPath =
+            "SystemTests/Tests/LyteClientHostTests/NackRepairClientGateTests.swift"
+        let deadTokens = [
+            nackPath: """
+            // SessionRepairHost session = Session( session.receive(
+            let decoy = "NoiseTransportCrypto("
+            """,
+        ]
+        let deadViolations = repairBoundaryViolations(in: deadTokens)
+        XCTAssertTrue(deadViolations.contains {
+            $0.contains("missing real Session construction")
+        })
+        XCTAssertTrue(deadViolations.contains {
+            $0.contains("missing Session.receive ingress")
+        })
+        XCTAssertTrue(deadViolations.contains {
+            $0.contains("missing real client Noise transport")
+        })
+
+        let relocatedFake = [
+            nackPath: """
+            final class SessionRepairHost {
+                lazy var session = Session(config: config)
+                func absorb() { session.receive(bytes) }
+            }
+            let crypto = NoiseTransportCrypto(hostAddress: "")
+            """,
+            "SystemTests/Tests/LyteClientHostTests/PairingGateTests.swift": """
+            let channel = HostWire.VideoChannel /* whitespace evasion */ (
+                config: config
+            )
+            channel.enqueueRepair (frame: frame, shardIndices: [])
+            let report = FeedbackReport . decode (bytes)
+            let refusal = RepairRefusal /* moved fake */ (frame: frame)
+            """,
+        ]
+        let relocatedViolations = repairBoundaryViolations(in: relocatedFake)
+        XCTAssertTrue(relocatedViolations.contains {
+            $0.contains("direct VideoChannel construction")
+        })
+        XCTAssertTrue(relocatedViolations.contains {
+            $0.contains("direct enqueueRepair")
+        })
+        XCTAssertTrue(relocatedViolations.contains {
+            $0.contains("manual FeedbackReport decode")
+        })
+        XCTAssertTrue(relocatedViolations.contains {
+            $0.contains("manual RepairRefusal construction")
+        })
+
+        let multilineSource = [
+            "let prose = " + String(repeating: "\"", count: 3),
+            "an unmatched ordinary quote: \"",
+            String(repeating: "\"", count: 3),
+            "let decoy = #\"enqueueRepair(\"#",
+            "let channel = VideoChannel(config: config)",
+        ].joined(separator: "\n")
+        let multilineViolations = repairBoundaryViolations(in: [
+            nackPath: relocatedFake[nackPath]!,
+            "SystemTests/Tests/LyteClientHostTests/PairingGateTests.swift":
+                multilineSource,
+        ])
+        XCTAssertTrue(multilineViolations.contains {
+            $0.contains("direct VideoChannel construction")
+        })
     }
 
     func testSystemPackageHasExactlyOneCanonicalTestBoundary() throws {
@@ -163,6 +237,190 @@ final class SystemTestsLayoutTests: XCTestCase {
             }
         }
         return result.sorted()
+    }
+
+    private func swiftSources(
+        below relativeRoot: String
+    ) throws -> [String: String] {
+        let root = sourceTree.repositoryRoot.appendingPathComponent(relativeRoot)
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: nil
+        ) else {
+            throw NSError(domain: "SystemTestsLayoutTests", code: 1)
+        }
+        var result: [String: String] = [:]
+        for case let file as URL in enumerator
+        where file.pathExtension == "swift" {
+            result[sourceTree.relativePath(for: file)] = try String(
+                contentsOf: file,
+                encoding: .utf8
+            )
+        }
+        return result
+    }
+
+    private func repairBoundaryViolations(
+        in sources: [String: String]
+    ) -> [String] {
+        let nackPath =
+            "SystemTests/Tests/LyteClientHostTests/NackRepairClientGateTests.swift"
+        let forbidden: [(label: String, tokens: [String])] = [
+            ("direct VideoChannel construction", ["VideoChannel", "("]),
+            ("direct enqueueRepair", ["enqueueRepair", "("]),
+            ("manual FeedbackReport decode", ["FeedbackReport", ".", "decode", "("]),
+            ("manual RepairRefusal construction", ["RepairRefusal", "("]),
+        ]
+        var violations: [String] = []
+        for (path, source) in sources {
+            let tokens = swiftTokens(from: source)
+            for rule in forbidden where contains(rule.tokens, in: tokens) {
+                violations.append("\(path): \(rule.label)")
+            }
+            if path == nackPath, tokens.contains("NoiseSession") {
+                violations.append("\(path): rebuilt Noise responder")
+            }
+        }
+
+        let nackTokens = sources[nackPath].map(swiftTokens(from:)) ?? []
+        let required: [(label: String, tokens: [String])] = [
+            ("missing real Session construction", ["session", "=", "Session", "("]),
+            ("missing Session.receive ingress", ["session", ".", "receive", "("]),
+            ("missing real client Noise transport", ["NoiseTransportCrypto", "("]),
+        ]
+        for rule in required where !contains(rule.tokens, in: nackTokens) {
+            violations.append("\(nackPath): \(rule.label)")
+        }
+        return violations.sorted()
+    }
+
+    private func contains(
+        _ needle: [String],
+        in tokens: [String]
+    ) -> Bool {
+        guard !needle.isEmpty, tokens.count >= needle.count else {
+            return false
+        }
+        return (0...(tokens.count - needle.count)).contains { start in
+            Array(tokens[start..<(start + needle.count)]) == needle
+        }
+    }
+
+    /// Enough Swift lexical structure for architectural source scans:
+    /// comments and string contents disappear, whitespace is irrelevant,
+    /// and identifiers plus the punctuation used by call sites remain.
+    private func swiftTokens(from source: String) -> [String] {
+        let characters = Array(source)
+        var tokens: [String] = []
+        var identifier = ""
+        var index = 0
+        var blockDepth = 0
+        var inLineComment = false
+        var stringHashes: Int?
+        var stringQuotes = 0
+
+        func flush() {
+            if !identifier.isEmpty {
+                tokens.append(identifier)
+                identifier.removeAll(keepingCapacity: true)
+            }
+        }
+
+        while index < characters.count {
+            let character = characters[index]
+            let next = index + 1 < characters.count
+                ? characters[index + 1] : "\0"
+
+            if inLineComment {
+                if character == "\n" { inLineComment = false }
+                index += 1
+                continue
+            }
+            if blockDepth > 0 {
+                if character == "/", next == "*" {
+                    blockDepth += 1
+                    index += 2
+                } else if character == "*", next == "/" {
+                    blockDepth -= 1
+                    index += 2
+                } else {
+                    index += 1
+                }
+                continue
+            }
+            if let hashes = stringHashes {
+                if hashes == 0, character == "\\" {
+                    index = min(index + 2, characters.count)
+                    continue
+                }
+                if delimiter(
+                    quoteCount: stringQuotes,
+                    hashCount: hashes,
+                    matches: characters,
+                    at: index
+                ) {
+                    index += stringQuotes + hashes
+                    stringHashes = nil
+                } else {
+                    index += 1
+                }
+                continue
+            }
+            if character == "/", next == "/" {
+                flush()
+                inLineComment = true
+                index += 2
+                continue
+            }
+            if character == "/", next == "*" {
+                flush()
+                blockDepth = 1
+                index += 2
+                continue
+            }
+            var hashes = 0
+            while index + hashes < characters.count,
+                  characters[index + hashes] == "#" {
+                hashes += 1
+            }
+            let quoteIndex = index + hashes
+            if quoteIndex < characters.count,
+               characters[quoteIndex] == "\"" {
+                flush()
+                stringHashes = hashes
+                stringQuotes = delimiter(
+                    quoteCount: 3,
+                    hashCount: 0,
+                    matches: characters,
+                    at: quoteIndex
+                ) ? 3 : 1
+                index = quoteIndex + stringQuotes
+                continue
+            }
+            if character.isLetter || character.isNumber || character == "_" {
+                identifier.append(character)
+            } else {
+                flush()
+                if [".", "(", "="].contains(character) {
+                    tokens.append(String(character))
+                }
+            }
+            index += 1
+        }
+        flush()
+        return tokens
+    }
+
+    private func delimiter(
+        quoteCount: Int,
+        hashCount: Int,
+        matches characters: [Character],
+        at start: Int
+    ) -> Bool {
+        let delimiter = Array(repeating: Character("\""), count: quoteCount)
+            + Array(repeating: Character("#"), count: hashCount)
+        guard start + delimiter.count <= characters.count else { return false }
+        return Array(characters[start..<(start + delimiter.count)]) == delimiter
     }
 
     private func importedModules(from source: String) -> [String] {
