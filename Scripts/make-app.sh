@@ -74,7 +74,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>LSMinimumSystemVersion</key>   <string>15.0</string>
     <key>NSHighResolutionCapable</key>  <true/>
     <key>LSApplicationCategoryType</key> <string>public.app-category.games</string>
-    <key>NSHumanReadableCopyright</key> <string>© 2026 Steve Shreeve · GPL-3.0</string>
+    <key>NSHumanReadableCopyright</key> <string>© 2026 Steve Shreeve · MIT</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Lyte discovers and streams from Lyte hosts on your local network.</string>
     <key>NSBonjourServices</key>
