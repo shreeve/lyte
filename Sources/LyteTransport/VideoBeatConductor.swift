@@ -95,13 +95,13 @@ public struct VideoBeatConductor: Sendable {
     private var lastSourceCaptureMicroseconds: UInt64?
     private var lastFrameWasRetained = false
 
-    // Tail estimation: a bounded ring of fresh path delays.
-    private var pathDelayRing: [UInt64] = []
-    private var pathDelayNext = 0
-    private static let tailWindow = 600
+    // Tail estimation: the Conductor's shared ring (the cue's
+    // evidence — path-delay p99 over the recent window).
+    private var pathDelayTailRing = BeatTailRing(capacity: 600)
 
-    // Slip proof: consecutive fresh frames with ≥1 beat of surplus.
-    private var surplusFrames = 0
+    // Slip proof: consecutive fresh frames with ≥1 beat of surplus
+    // (the shared proof-before-shed law).
+    private var slipProof = ProofCounter()
 
     // Debt (ported): a genuinely compressed catch-up train.
     private var lastFreshSourceMicroseconds: UInt64?
@@ -112,7 +112,6 @@ public struct VideoBeatConductor: Sendable {
 
     public init(config: Config = Config()) {
         self.config = config
-        pathDelayRing.reserveCapacity(Self.tailWindow)
     }
 
     public mutating func reset() {
@@ -123,9 +122,8 @@ public struct VideoBeatConductor: Sendable {
         lastPresentationMicroseconds = nil
         lastSourceCaptureMicroseconds = nil
         lastFrameWasRetained = false
-        pathDelayRing.removeAll(keepingCapacity: true)
-        pathDelayNext = 0
-        surplusFrames = 0
+        pathDelayTailRing.removeAll()
+        slipProof.reset()
         lastFreshSourceMicroseconds = nil
         lastFreshArrivalMicroseconds = nil
         freshBurstDebtMicroseconds = 0
@@ -221,7 +219,7 @@ public struct VideoBeatConductor: Sendable {
         // Path delay feeds the tail estimator.
         let pathDelay = arrivalMicroseconds >= mappedCaptureMicroseconds
             ? arrivalMicroseconds - mappedCaptureMicroseconds : 0
-        notePathDelay(pathDelay)
+        pathDelayTailRing.note(pathDelay)
 
         // beat: the grid advances ORDINALLY — each fresh part steps
         // round(sourceStep / period) beats (never less than one) from
@@ -282,7 +280,7 @@ public struct VideoBeatConductor: Sendable {
             // remainder stays honest lateness.
             beatsBehind = min(beatsBehind, room)
             presentation &+= beatsBehind &* period
-            surplusFrames = 0
+            slipProof.reset()
         }
 
         // slip: sustained proof of a full beat of surplus hands one
@@ -294,14 +292,15 @@ public struct VideoBeatConductor: Sendable {
             ? presentation - mappedCaptureMicroseconds : 0
         let cushionFloor = UInt64(config.cushionBeats) &* period
         if measuredCue >= pathDelay &+ cushionFloor &+ period {
-            surplusFrames += 1
-            if surplusFrames >= config.slipProofFrames,
-               measuredCue >= pathDelayTail() &+ cushionFloor &+ period {
+            slipProof.advance()
+            if slipProof.reached(config.slipProofFrames),
+               measuredCue >= pathDelayTailRing.tail(percentile: 99)
+                   &+ cushionFloor &+ period {
                 presentation -= period
-                surplusFrames = 0
+                slipProof.reset()
             }
         } else {
-            surplusFrames = 0
+            slipProof.reset()
         }
 
         // late: the beat stands even when it has passed — report the
@@ -328,23 +327,6 @@ public struct VideoBeatConductor: Sendable {
             shouldFlush: shouldFlush)
     }
 
-    private mutating func notePathDelay(_ delay: UInt64) {
-        if pathDelayRing.count < Self.tailWindow {
-            pathDelayRing.append(delay)
-        } else {
-            pathDelayRing[pathDelayNext] = delay
-            pathDelayNext = (pathDelayNext + 1) % Self.tailWindow
-        }
-    }
-
-    /// The p99 of the recent path-delay window (the cue's evidence).
-    private func pathDelayTail() -> UInt64 {
-        guard !pathDelayRing.isEmpty else { return 0 }
-        let sorted = pathDelayRing.sorted()
-        let index = min(
-            sorted.count - 1, (sorted.count * 99 + 99) / 100 - 1)
-        return sorted[max(index, 0)]
-    }
 }
 
 public final class VideoBeatConductorController: @unchecked Sendable {
