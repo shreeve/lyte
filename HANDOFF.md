@@ -191,8 +191,9 @@ display path — the shell's 10 s comb is the evidence). AV1 stays
 a 4:2:0 lane (no 4:4:4 hardware encoders exist anywhere,
 2026-08).
 
-**CLEANUP THEME 1 IS RUNNING (#95–#98, 2026-08-03): one clock,
-one histogram, one Annex-B walker, one HEVC bit vocabulary.** The v2
+**CLEANUP THEME 1 IS RUNNING (#95–#99, 2026-08-03): one clock,
+one histogram, one Annex-B walker, one HEVC bit vocabulary, one
+SHA-256 state.** The v2
 `Common/` package now exists
 with sibling targets `LyteCore` (sans-IO shared policy) and `LyteIO`
 (shared OS adapters); `SystemMonotonicClock` is the one OS adapter for
@@ -230,11 +231,22 @@ unsigned Exp-Golomb round trips, hostile bounds, the canonical escape
 anchors, and 513 seeded RBSP escape/unescape inverses now live beside
 the implementation. A production-source ratchet refuses another writer,
 reader, or unescaper. The rebuilt pup service is active and both binaries
-were re-armed after the Linux gate. **NEXT: Theme 1 SHA-256 — converge the
-two hand-rolled implementations on one LyteCore model, prove every digest,
-then delete both old copies.**
+were re-armed after the Linux gate. #99 made streaming
+`LyteCore.Sha256` the one digest model for Host file verification,
+both identity advertisements, client and Host clipboard images, bulk
+transfer, vector tooling, corpus pins, and every harness. The HostWire
+and TestKit FIPS tables plus the Host identity wrapper and both client
+wrappers were deleted; root and Host no longer declare direct crypto
+dependencies for digest-only calls. Published empty, `abc`, and
+million-`a` FIPS answers are exact on Mac and Linux; 15 streaming split
+geometries cross every block edge over a 200,001-byte seeded payload.
+The source ratchet refuses another table, SHA type, or digest wrapper;
+frozen vectors stayed byte-exact. The rebuilt pup service is active and
+both binaries were re-armed after the Linux gate. **NEXT: Theme 1 hex —
+give all six encoders one LyteCore spelling, then delete every private
+copy.**
 
-**Suites at HEAD:** Wire 508 Mac / 508 pup; Common 29 Mac / 30 pup;
+**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 32 Mac / 33 pup;
 root client 283; host 284 pup / 283 Mac — all green.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
