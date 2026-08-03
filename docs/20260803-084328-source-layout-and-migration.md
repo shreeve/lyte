@@ -95,6 +95,28 @@ formats. It remains Foundation-free, sans-IO, and vector-pinned.
 `LyteWireTestKit` owns reusable vector loaders and wire simulations. Actual
 tests remain `LyteWireTests`.
 
+Every Wire Swift target mirrors one subsystem grammar:
+
+```text
+<Target>/
+├── Base/
+├── Bulk/
+├── Clipboard/
+├── Control/
+├── Crypto/
+└── Media/
+    ├── Audio/
+    ├── FEC/
+    └── Video/
+```
+
+A target omits a domain only when it has no files in that domain.
+`LyteWireTestKit` and `LyteWireTests` additionally use `Simulation`; the
+vector authoring executable uses `Command` for its composition entry point;
+the test target uses `Support` for suite-local infrastructure. No Swift file
+sits at a target root. A layout test enforces the complete grammar, including
+the intentional omissions.
+
 ### Common
 
 `LyteCore` owns pure behavior that has exactly the same semantics on both
