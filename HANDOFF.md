@@ -136,8 +136,8 @@ so no translation layer anywhere; everything above the
 InputInjector seam untouched. The clipboard's OWN RemoteDesktop
 session survives by design (its Wayland helper stays filed —
 now the LAST Mutter-session tenant in the process). Owner
-feel-check (typing/⌘Tab/aim/scroll) owed after the standing loop
-respawns onto the new binary.** **REXT 4:4:4 LANDED — the Best tier
+feel-check PASSED (2026-08-03, live session on the uinput binary):
+typing/⌘Tab/aim/scroll all felt normal — E2 is fully closed.** **REXT 4:4:4 LANDED — the Best tier
 is LIVE (#89 + #90, 2026-08-03).** #89: the HEVC pens grew a
 `chroma444` recipe (profile_idc 4, the §A.3.5 Main 4:4:4 constraint
 row, SPS chroma_format_idc 3; BitReader pin tests walk every field,
