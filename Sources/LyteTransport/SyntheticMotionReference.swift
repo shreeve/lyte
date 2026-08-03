@@ -4,7 +4,7 @@
 /// The visible 24-bit marker picks the exact authored frame, preventing
 /// accidental cross-phase PSNR/SSIM. Any edit here must land in the
 /// presenter too: shared SHA-256 fixtures (SyntheticMotionReferenceTests
-/// ↔ test_analyze_app_benchmark.py) fail loudly if the twins drift.
+/// ↔ Scripts/Tests/test_analyze_app_benchmark.py) fail loudly if the twins drift.
 public struct SyntheticMotionReference: Sendable {
     public let width: Int
     public let height: Int

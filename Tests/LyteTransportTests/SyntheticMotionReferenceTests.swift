@@ -27,7 +27,7 @@ final class SyntheticMotionReferenceTests: XCTestCase {
     // The cross-language pin: these SHA-256 digests are computed from
     // MotionFrames in Scripts/motion-presenter.py (the numpy twin of the
     // GTK canvas) and asserted verbatim by
-    // Scripts/test_analyze_app_benchmark.py. If either renderer drifts
+    // Scripts/Tests/test_analyze_app_benchmark.py. If either renderer drifts
     // from the authored frame, exactly one side of the pin moves and
     // both suites fail.
     func testTwinRenderersAgreeByteForByte() {

@@ -217,11 +217,10 @@ The final gate runs both Good 4:2:0 and Best 4:4:4 Beauty Bar legs, plus
 video/audio/input/clipboard/file/lifecycle smoke, against byte-identical
 protected state.
 
-## 8. Known pre-migration repairs
+## 8. Pre-migration safety repairs
 
-The architecture audit found four false or stale safety surfaces. The first
-two are now repaired; the remaining two are work, not evidence, until
-repaired:
+The architecture audit found four false or stale safety surfaces. All four
+are now repaired and ratchet-pinned:
 
 1. **Resolved in the Common normalization:** every cross-tree ratchet now uses
    one `LyteTestKit` source-tree model that rejects missing, empty, or
@@ -229,12 +228,17 @@ repaired:
 2. **Resolved in the Common normalization:** client and host provenance now
    includes Wire and tracked SwiftPM resolution, while the package gates
    invalidate stale build state from one complete manifest-graph hash.
-3. `benchmark-app.sh handshake-only` still controls the retired supervisor
-   loop and is unsafe under the standing systemd service.
-4. `benchmark-netem.sh` names a removed benchmark mode and applies unscoped
-   root netem. It must use the current motion leg and port-scoped prio/u32
-   impairment before it may run.
+3. `benchmark-app.sh handshake-only` restarts the authoritative systemd unit,
+   requires a new `MainPID` that owns UDP 41151 and matches the built binary,
+   and brackets the run with protected identity/configuration fingerprints.
+   It never supervises or kills the host process directly.
+4. `benchmark-netem.sh` runs the current motion leg in a unique evidence
+   directory. A distinctively-owned prio/u32 topology preserves `fq_codel`
+   for unmatched traffic and diverts only UDP source port 41151 toward the
+   benchmark client's exact IPv4 address into netem; cleanup verifies that
+   the owned qdisc is gone.
 
-The deterministic gates do not invoke the two unsafe benchmark paths. Live
+The deterministic gate exercises the orchestration through fake-command
+failure tests; hardware/netem operation remains explicitly invoked. Live
 deployment uses systemd with ambient CAP_SYS_ADMIN; it does not apply setcap
 to the standing service binary.

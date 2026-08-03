@@ -5,7 +5,7 @@ Two renderers, one authored frame: the GTK canvas puts the frame on the
 glass; MotionFrames renders the identical bytes in numpy so tests (and
 the Swift client mirror, pinned by shared SHA-256 fixtures) can hold the
 glass accountable pixel-for-pixel. Any edit to one renderer must land in
-both — the cross-language fixture pins in test_analyze_app_benchmark.py
+both — the cross-language fixture pins in Tests/test_analyze_app_benchmark.py
 and SyntheticMotionReferenceTests fail loudly if they drift.
 
 The gi/GTK imports live inside run_presenter() so this module imports on

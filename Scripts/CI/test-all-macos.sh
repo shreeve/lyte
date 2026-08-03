@@ -74,6 +74,9 @@ run_package_tests "Wire" "$repo_root/Wire"
 run_package_tests "Host" "$repo_root/Host"
 run_package_tests "client" "$repo_root"
 
+echo "==> benchmark safety tests"
+Scripts/Tests/test-benchmark-safety.sh
+
 echo "==> analyzer tests"
 python_env="$repo_root/.build/ci-python"
 python_requirements="$repo_root/Scripts/requirements.txt"
@@ -111,7 +114,7 @@ if [[ ! -x "$python_env/bin/python3" || "$installed_hash" != "$required_hash" ]]
     printf '%s\n' "$required_hash" > "$python_environment_hash"
 fi
 
-"$python_env/bin/python3" Scripts/test_analyze_app_benchmark.py
+"$python_env/bin/python3" Scripts/Tests/test_analyze_app_benchmark.py
 
 echo "==> signed debug CLI"
 Scripts/build-cli.sh debug
