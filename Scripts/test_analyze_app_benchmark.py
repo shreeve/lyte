@@ -12,6 +12,12 @@ SPEC = importlib.util.spec_from_file_location(
 ANALYZER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ANALYZER)
 
+PRESENTER_SPEC = importlib.util.spec_from_file_location(
+    "presenter", Path(__file__).with_name("motion-presenter.py")
+)
+PRESENTER = importlib.util.module_from_spec(PRESENTER_SPEC)
+PRESENTER_SPEC.loader.exec_module(PRESENTER)
+
 
 def sample(workload, apple_drops, provenances):
     frames = []
@@ -68,6 +74,7 @@ def sample(workload, apple_drops, provenances):
         },
     }
     if workload == "motion":
+        fixture["quality"] = quality_observation(30.0, len(frames) or 1)
         fixture["motionSource"] = {
             "samples": 180,
             "width": 2048,
@@ -86,22 +93,13 @@ def sample(workload, apple_drops, provenances):
     return fixture
 
 
-def quality_sample(elapsed, decoded_frames, psnr=46.0, ssim=0.996):
-    fixture = sample("quality-static", 0, ["freshCapture"])
-    fixture["elapsedSeconds"] = elapsed
-    fixture["video"]["framesDecoded"] = decoded_frames
-    fixture["quality"] = {
+def quality_observation(elapsed, decoded_frames, psnr=46.0, ssim=0.996):
+    return {
         "elapsedSeconds": elapsed,
         "decodedFrames": decoded_frames,
-        "referenceName": "text-100",
+        "referenceName": "motion-definition-v1",
         "sourceWidth": 1920,
         "sourceHeight": 1080,
-        "sourceWitnessSHA256": "fixture",
-        "sourceWitnessRDB": 45.2,
-        "sourceWitnessGDB": 45.2,
-        "sourceWitnessBDB": 45.2,
-        "sourceWitnessMinDB": 45.2,
-        "sourceWitnessLumaSSIM": 0.9999,
         "decodedWidth": 1920,
         "decodedHeight": 1080,
         "psnrRDB": psnr + 1,
@@ -109,6 +107,8 @@ def quality_sample(elapsed, decoded_frames, psnr=46.0, ssim=0.996):
         "psnrBDB": psnr + 0.5,
         "psnrMinDB": psnr,
         "lumaSSIM": ssim,
+        "syntheticFrameID": decoded_frames,
+        "phaseMatched": True,
         "viewportWidthPoints": 1280,
         "viewportHeightPoints": 720,
         "viewportWidthPixels": 2560,
@@ -120,20 +120,14 @@ def quality_sample(elapsed, decoded_frames, psnr=46.0, ssim=0.996):
         "displayScaleY": 2 / 3,
         "error": None,
     }
-    return fixture
 
 
-def pipeline_sample(elapsed, decoded_frames, psnr=41.0, ssim=0.996):
-    fixture = quality_sample(elapsed, decoded_frames, psnr, ssim)
-    fixture["workload"] = "motion-pipeline"
-    fixture["motionLeg"] = "synthetic-host-pipeline"
-    fixture["quality"]["referenceName"] = "synthetic-motion-v1"
-    fixture["quality"]["syntheticFrameID"] = decoded_frames
-    fixture["quality"]["phaseMatched"] = True
-    fixture["hostPipeline"] = {
-        "sourceFrames": decoded_frames,
-        "sourceDeadlineLateness": {"p99Milliseconds": 0.2},
-    }
+def quality_sample(elapsed, decoded_frames, psnr=46.0, ssim=0.996):
+    fixture = sample("quality-static", 0, ["freshCapture"])
+    fixture["elapsedSeconds"] = elapsed
+    fixture["video"]["framesDecoded"] = decoded_frames
+    fixture["quality"] = quality_observation(
+        elapsed, decoded_frames, psnr, ssim)
     return fixture
 
 
@@ -216,118 +210,6 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(
             result["motion"]["firstJaggedBoundary"], "client_presentation")
 
-    def test_synthetic_pipeline_leg_passes_without_compositor_evidence(self):
-        fixtures = [
-            pipeline_sample(1.0, 60),
-            pipeline_sample(2.0, 120),
-            pipeline_sample(4.0, 240),
-            pipeline_sample(5.0, 300),
-        ]
-        result = self.analyze(fixtures[-1], samples=fixtures)
-        self.assertNotIn("motion_pipeline_provenance_missing", result["failures"])
-        self.assertNotIn(
-            "motion_pipeline_compositor_evidence_mixed", result["failures"])
-        self.assertNotIn(
-            "motion_pipeline_fresh_cadence_failed", result["failures"])
-
-    def test_compositor_and_synthetic_pipeline_legs_cannot_be_mixed(self):
-        fixture = pipeline_sample(5.0, 300)
-        fixture["motionSource"] = {
-            "pass": True,
-            "dimensionsExact": True,
-            "skippedSourceFrames": 0,
-            "gapP99Milliseconds": 17,
-            "phaseDriftP99Milliseconds": 1,
-        }
-        result = self.analyze(fixture)
-        self.assertIn(
-            "motion_pipeline_compositor_evidence_mixed", result["failures"])
-
-        compositor = sample("motion", 0, ["freshCapture"] * 4)
-        compositor["motionLeg"] = "synthetic-host-pipeline"
-        result = self.analyze(compositor)
-        self.assertIn("motion_compositor_provenance_mixed", result["failures"])
-
-    def test_synthetic_source_deadline_jitter_precedes_transport(self):
-        fixture = pipeline_sample(5.0, 300)
-        fixture["hostPipeline"]["sourceDeadlineLateness"][
-            "p99Milliseconds"] = 12.0
-        fixture["frames"][-1]["transitStretchMilliseconds"] = 20.0
-        result = self.analyze(fixture)
-        self.assertIn(
-            "motion_pipeline_source_deadline_failed", result["failures"])
-        self.assertEqual(
-            result["motion"]["firstJaggedBoundary"], "synthetic_host_source")
-
-    def analyze_with_host_trace(self, fixture, trace_records):
-        end = {
-            "type": "end",
-            "elapsedSeconds": 30.0,
-            "everStreaming": True,
-        }
-        with tempfile.TemporaryDirectory() as workdir:
-            run_id = fixture["runID"]
-            trace_path = Path(workdir) / f"{run_id}-host-trace.jsonl"
-            with open(trace_path, "w") as stream:
-                for record in trace_records:
-                    stream.write(json.dumps(record) + "\n")
-            jsonl_path = Path(workdir) / f"{run_id}.jsonl"
-            with open(jsonl_path, "w") as stream:
-                stream.write(json.dumps(fixture) + "\n")
-                stream.write(json.dumps(end) + "\n")
-            return ANALYZER.analyze(str(jsonl_path))
-
-    @staticmethod
-    def source_trace(latenesses_ms, cadence_ns=16_666_667):
-        t0 = 1_000_000_000
-        return [
-            {
-                "type": "source",
-                "frameID": index + 1,
-                "deadlineNS": t0 + index * cadence_ns,
-                "latenessNS": int(late * 1e6),
-            }
-            for index, late in enumerate(latenesses_ms)
-        ]
-
-    def test_warmup_drain_does_not_fail_the_source_gate(self):
-        # Frames 1–56 replay the documented first-second warm-up
-        # (starting ~228 ms behind, draining to zero); steady state is
-        # clean. Whole-run p99 says 178 ms; the gate must judge steady
-        # state and pass.
-        fixture = pipeline_sample(30.0, 1800)
-        fixture["hostPipeline"]["sourceDeadlineLateness"][
-            "p99Milliseconds"] = 178.0
-        drain = [max(0.0, 228.0 - 4.2 * n) for n in range(56)]
-        steady = [0.06] * 1200
-        result = self.analyze_with_host_trace(
-            fixture, self.source_trace(drain + steady))
-        self.assertNotIn(
-            "motion_pipeline_source_deadline_failed", result["failures"])
-        source = result["motion"]["source"]
-        self.assertTrue(source["pass"])
-        self.assertEqual(
-            source["deadlineLatenessP99Milliseconds"], 178.0)
-        self.assertLessEqual(
-            source["steadyStateDeadlineLateness"]
-            ["steadyStateP99Milliseconds"], 8)
-
-    def test_steady_state_lateness_still_fails_the_source_gate(self):
-        # A source that is late in steady state — not just during
-        # warm-up — must keep failing exactly as before.
-        fixture = pipeline_sample(30.0, 1800)
-        fixture["hostPipeline"]["sourceDeadlineLateness"][
-            "p99Milliseconds"] = 178.0
-        steady = [0.06] * 1000
-        steady[::50] = [40.0] * len(steady[::50])
-        result = self.analyze_with_host_trace(
-            fixture, self.source_trace([228.0] * 30 + steady))
-        self.assertIn(
-            "motion_pipeline_source_deadline_failed", result["failures"])
-        self.assertEqual(
-            result["motion"]["firstJaggedBoundary"],
-            "synthetic_host_source")
-
     def test_pts_regression_with_apple_drops_fails(self):
         fixture = sample("motion", 1, ["freshCapture", "freshCapture"])
         fixture["frames"][1]["scheduledPresentationMicroseconds"] = 1
@@ -365,8 +247,10 @@ class AnalyzerTests(unittest.TestCase):
     def test_steady_state_late_plc_fails_without_relaxing_slo(self):
         warmup = sample("motion", 0, ["freshCapture"])
         warmup["elapsedSeconds"] = 2.0
+        warmup["quality"]["elapsedSeconds"] = 2.0
         steady = json.loads(json.dumps(warmup))
         steady["elapsedSeconds"] = 10.0
+        steady["quality"]["elapsedSeconds"] = 10.0
         steady["audio"]["plcInvocations"] = 1
         steady["audio"]["plcPacketsFed"] = 1
         steady["audio"]["latePacketsDropped"] = 1
@@ -376,9 +260,11 @@ class AnalyzerTests(unittest.TestCase):
     def test_bounded_steady_blackout_at_ceiling_is_mitigated(self):
         warmup = sample("motion", 0, ["freshCapture"])
         warmup["elapsedSeconds"] = 2.0
+        warmup["quality"]["elapsedSeconds"] = 2.0
         warmup["audio"]["targetPackets"] = 20
         steady = json.loads(json.dumps(warmup))
         steady["elapsedSeconds"] = 10.0
+        steady["quality"]["elapsedSeconds"] = 10.0
         steady["audio"]["targetPackets"] = 20
         steady["audio"]["interArrivalStdDevMicroseconds"] = 4_000
         steady["audio"]["plcInvocations"] = 3
@@ -428,10 +314,10 @@ class AnalyzerTests(unittest.TestCase):
 
     def test_cadence_clean_but_blurry_quality_fails(self):
         fixtures = [
-            quality_sample(1.0, 60, psnr=41.0),
-            quality_sample(2.0, 120, psnr=42.0),
-            quality_sample(4.0, 240, psnr=44.9),
-            quality_sample(5.0, 300, psnr=44.9),
+            quality_sample(1.0, 60, psnr=29.0),
+            quality_sample(2.0, 120, psnr=29.4),
+            quality_sample(4.0, 240, psnr=29.9),
+            quality_sample(5.0, 300, psnr=29.9),
         ]
         result = self.analyze(fixtures[-1], samples=fixtures)
         self.assertEqual(result["verdict"], "FAIL")
@@ -456,19 +342,104 @@ class AnalyzerTests(unittest.TestCase):
         )
         self.assertIn("quality_readback_gap", result["failures"])
 
-    def test_fractionally_scaled_source_witness_fails_before_encoder(self):
+    def test_motion_leg_without_readback_fails_the_witness(self):
+        fixture = sample("motion", 0, ["freshCapture"] * 4)
+        del fixture["quality"]
+        result = self.analyze(fixture)
+        self.assertEqual(result["verdict"], "FAIL")
+        self.assertIn("quality_no_native_readback", result["failures"])
+
+    def test_witness_rejects_a_foreign_reference(self):
+        fixture = sample("motion", 0, ["freshCapture"] * 4)
+        fixture["quality"]["referenceName"] = "text-100"
+        result = self.analyze(fixture)
+        self.assertIn(
+            "quality_reference_not_controlled_corpus", result["failures"])
+
+    def test_witness_rejects_an_ambiguous_phase(self):
         fixtures = [
-            quality_sample(1.0, 10, psnr=46.0),
-            quality_sample(2.0, 20, psnr=46.0),
-            quality_sample(4.0, 30, psnr=46.0),
-            quality_sample(5.0, 30, psnr=46.0),
+            quality_sample(1.0, 60),
+            quality_sample(2.0, 120),
+            quality_sample(4.0, 240),
+            quality_sample(5.0, 300),
         ]
-        for fixture in fixtures:
-            fixture["quality"]["sourceWitnessMinDB"] = 10.51
-            fixture["quality"]["sourceWitnessLumaSSIM"] = 0.60639
+        fixtures[2]["quality"]["phaseMatched"] = False
         result = self.analyze(fixtures[-1], samples=fixtures)
-        self.assertIn("quality_source_witness_failed", result["failures"])
+        self.assertIn("quality_phase_ambiguous", result["failures"])
+
+    def test_clean_motion_witness_passes_end_to_end(self):
+        fixture = sample("motion", 2, ["freshCapture", "freshCapture"])
+        result = self.analyze(fixture)
+        self.assertEqual(result["verdict"], "PASS")
         self.assertNotIn("quality_converged_gate_failed", result["failures"])
+
+    def test_announced_quiet_stillness_is_not_a_blackout(self):
+        warmup = quality_sample(2.0, 30)
+        steady = quality_sample(10.0, 40)
+        steady["audio"]["hostAnnouncedQuiet"] = True
+        steady["audio"]["plcInvocations"] = 20
+        steady["audio"]["plcPacketsFed"] = 20
+        steady["audio"]["underrunFrames"] = 15_070
+        steady["audio"]["declickProtectedUnderrunFrames"] = 15_070
+        result = self.analyze(steady, samples=[warmup, steady])
+        self.assertEqual(result["verdict"], "PASS")
+        self.assertEqual(
+            result["audio"]["continuityClassification"],
+            "announced_quiet_stillness",
+        )
+
+    def test_unannounced_stillness_is_still_a_blackout(self):
+        warmup = quality_sample(2.0, 30)
+        steady = quality_sample(10.0, 40)
+        steady["audio"]["plcInvocations"] = 20
+        steady["audio"]["plcPacketsFed"] = 20
+        steady["audio"]["underrunFrames"] = 15_070
+        steady["audio"]["declickProtectedUnderrunFrames"] = 15_070
+        result = self.analyze(steady, samples=[warmup, steady])
+        self.assertIn("audio_steady_state_late_or_plc", result["failures"])
+
+    def test_announced_quiet_does_not_excuse_late_drops(self):
+        warmup = quality_sample(2.0, 30)
+        steady = quality_sample(10.0, 40)
+        steady["audio"]["hostAnnouncedQuiet"] = True
+        steady["audio"]["plcInvocations"] = 20
+        steady["audio"]["plcPacketsFed"] = 20
+        steady["audio"]["latePacketsDropped"] = 3
+        steady["audio"]["underrunFrames"] = 15_070
+        steady["audio"]["declickProtectedUnderrunFrames"] = 15_070
+        result = self.analyze(steady, samples=[warmup, steady])
+        self.assertIn("audio_steady_state_late_or_plc", result["failures"])
+
+
+class TwinRendererPinTests(unittest.TestCase):
+    """The cross-language pin, python side.
+
+    These digests are the same constants asserted by
+    SyntheticMotionReferenceTests.testTwinRenderersAgreeByteForByte in
+    the Swift suite. MotionFrames (the numpy twin of the GTK canvas)
+    and the client's SyntheticMotionReference must render the authored
+    frame byte-for-byte; a drift in either renderer moves exactly one
+    side of the pin and both suites fail.
+    """
+
+    PINS = {
+        0: "fec91c8942b63df2264470cd0db2ccc0e485454170edc36ccb9e90b3a43ca2b4",
+        257: "9183977edb22c8f8e21554388376ac82fc170da15a1ebb98579b08c9a13c68ff",
+        900: "00c770aac5dcfc5d5489c0ee62e32bd8b541105e4b2fca41d9ba8ea463c1c43f",
+    }
+
+    def test_numpy_twin_matches_the_pinned_frames(self):
+        import hashlib
+
+        definition = json.loads(
+            Path(__file__).with_name("motion-definition.json").read_text())
+        frames = PRESENTER.MotionFrames(1024, 640, definition)
+        for frame_id, expected in self.PINS.items():
+            digest = hashlib.sha256(
+                frames.render(frame_id).tobytes()).hexdigest()
+            self.assertEqual(
+                digest, expected,
+                f"frame {frame_id} drifted from the pinned glass")
 
 
 if __name__ == "__main__":

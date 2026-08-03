@@ -446,6 +446,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// Video posture: the last 0x26 the host announced (nil = never
     /// announced — the always-on contract). Read by the UI's pill.
     public private(set) var announcedVideoPosture: VideoPostureState?
+    /// Audio posture: true between a 0x25 quiet announcement and the
+    /// next evidence of life (a 0x25 active or an audio datagram).
+    /// Read by the benchmark witness so intentional stillness is not
+    /// booked as an audio blackout.
+    public private(set) var hostAnnouncedAudioQuiet = false
 
     /// The production machine-poll wake; nil until `startTimers()`.
     private var machineTimer: DispatchSourceTimer?
@@ -1136,6 +1141,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             lock.lock()
             counters.audioDatagramsReceived += 1
             lock.unlock()
+            if hostAnnouncedAudioQuiet { hostAnnouncedAudioQuiet = false }
             audio.ingest(envelope: envelope, payload: payload, now: now)
             tightenDetectorIfNeeded(now: now)
         }
@@ -1199,12 +1205,13 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         lock.unlock()
         switch message.state {
         case .quiet:
+            hostAnnouncedAudioQuiet = true
             audio.noteAnnouncedQuiet()
             relaxDetectorForAnnouncedQuiet(now: now)
         case .active:
             // The resumed packets are the evidence; nothing to arm
             // here — the tighten path owns the transition.
-            break
+            hostAnnouncedAudioQuiet = false
         }
     }
 

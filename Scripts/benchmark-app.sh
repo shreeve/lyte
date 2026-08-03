@@ -6,18 +6,18 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/.build/Lyte.app"
 ANALYZER="$ROOT/Scripts/analyze-app-benchmark.py"
 PUP="${PUP:-pup}"
-HOST="${LYTE_BENCHMARK_HOST:-10.0.0.249}"
+# The standing host advertises on the ethernet leg (enxf8e43b7ede7c =
+# 10.0.0.232); the wifi address answers ICMP but replies can source
+# from the wrong interface and the handshake dies silently.
+HOST="${LYTE_BENCHMARK_HOST:-10.0.0.232}"
 BENCH_SECONDS="${LYTE_BENCHMARK_SECONDS:-30}"
 OUT_DIR="${LYTE_BENCHMARK_OUT_DIR:-$ROOT/.build/benchmarks}"
 QUALITY_PROBE="${LYTE_BENCHMARK_QUALITY_PROBE:-1}"
+# The authored frame the quality-static leg holds on the glass (any ID
+# works; mid-pattern keeps the moving elements clear of the marker strip).
+FREEZE_FRAME_ID="${LYTE_BENCHMARK_FREEZE_FRAME_ID:-900}"
 QUALITY_WIDTH=""
 QUALITY_HEIGHT=""
-SOURCE_WITNESS_R_DB=""
-SOURCE_WITNESS_G_DB=""
-SOURCE_WITNESS_B_DB=""
-SOURCE_WITNESS_MIN_DB=""
-SOURCE_WITNESS_SSIM=""
-SOURCE_WITNESS_SHA256=""
 MOTION_PRESENTER_SHA256=""
 MOTION_DEFINITION_SHA256=""
 MOTION_SOURCE_LOG=""
@@ -35,10 +35,10 @@ HOST_SOURCE_SHA256=""
 APP_BUILD_UTC=""
 
 usage() {
-  echo "usage: Scripts/benchmark-app.sh [--no-build] [--seconds N] [--out DIR] static|motion|handshake-only|all"
-  echo "  (motion-pipeline and quality died with the E5 portal demolition:"
-  echo "   motion-presenter is the motion source of record; a native-seat"
-  echo "   quality witness is the filed follow-up)"
+  echo "usage: Scripts/benchmark-app.sh [--no-build] [--seconds N] [--out DIR] static|motion|quality-static|handshake-only|all"
+  echo "  (static = the idle desktop; motion = compositor motion scored by"
+  echo "   the GPU-readback quality witness; quality-static = the presenter"
+  echo "   frozen on one authored frame, witness held to the static bar)"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -46,12 +46,12 @@ while [[ $# -gt 0 ]]; do
     --no-build) NO_BUILD=1; shift ;;
     --seconds) BENCH_SECONDS="$2"; shift 2 ;;
     --out) OUT_DIR="$2"; shift 2 ;;
-    static|motion|handshake-only|all) MODE="$1"; shift ;;
+    static|motion|quality-static|handshake-only|all) MODE="$1"; shift ;;
     *) usage; exit 2 ;;
   esac
 done
 MODE="${MODE:-}"
-[[ "$MODE" =~ ^(static|motion|handshake-only|all)$ ]] || { usage; exit 2; }
+[[ "$MODE" =~ ^(static|motion|quality-static|handshake-only|all)$ ]] || { usage; exit 2; }
 minimum_seconds=5
 [[ "$MODE" != handshake-only ]] || minimum_seconds=1
 [[ "$BENCH_SECONDS" =~ ^[0-9]+$ ]] \
@@ -59,6 +59,8 @@ minimum_seconds=5
   || { echo "seconds must be an integer in ${minimum_seconds}...3600" >&2; exit 2; }
 [[ "$QUALITY_PROBE" =~ ^[01]$ ]] \
   || { echo "quality probe must be 0 or 1" >&2; exit 2; }
+[[ "$FREEZE_FRAME_ID" =~ ^[0-9]+$ ]] \
+  || { echo "freeze frame must be a non-negative integer" >&2; exit 2; }
 mkdir -p "$OUT_DIR"
 if (( ! NO_BUILD )); then
   "$ROOT/Scripts/make-app.sh" release
@@ -310,6 +312,7 @@ trap cleanup EXIT INT TERM
 
 start_motion() {
   local run_id="$1"
+  local freeze="${2:-}"
   local monitor_state discovered refresh scale summary
   local presenter="$ROOT/Scripts/motion-presenter.py"
   local definition="$ROOT/Scripts/motion-definition.json"
@@ -365,6 +368,7 @@ DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
 WAYLAND_DISPLAY=wayland-0 nohup python3 '$REMOTE_MOTION_PRESENTER' \
 --definition '$REMOTE_MOTION_DEFINITION' \
 --width '$QUALITY_WIDTH' --height '$QUALITY_HEIGHT' --refresh '$refresh' \
+${freeze:+--freeze $freeze} \
 --log '$REMOTE_MOTION_LOG' >'$REMOTE_MOTION_LOG.stderr' 2>&1 & echo \$!")"
   [[ "$FFPLAY_PID" =~ ^[0-9]+$ ]] || {
     echo "failed to obtain pup ffplay PID" >&2
@@ -379,12 +383,59 @@ WAYLAND_DISPLAY=wayland-0 nohup python3 '$REMOTE_MOTION_PRESENTER' \
   summary="$OUT_DIR/$run_id-motion-source-preflight.json"
   source_pass=1
   python3 - "$MOTION_SOURCE_LOG" "$summary" \
-      "$QUALITY_WIDTH" "$QUALITY_HEIGHT" "$scale" <<'PY' || source_pass=0
+      "$QUALITY_WIDTH" "$QUALITY_HEIGHT" "$scale" "$freeze" <<'PY' || source_pass=0
 import json, math, sys
 from pathlib import Path
 
-source, destination, width, height, scale = sys.argv[1:]
+source, destination, width, height, scale, freeze = sys.argv[1:]
 events = [json.loads(line) for line in Path(source).read_text().splitlines()]
+
+if freeze:
+    # Frozen presenter: the preflight proves the single authored frame
+    # reached the glass at exact dimensions; cadence has no meaning.
+    frozen_id = int(freeze)
+    rows = [row for row in events if row.get("event") == "sourceTick"]
+    if not rows:
+        raise SystemExit("frozen source never ticked")
+    if any(row["frameID"] != frozen_id for row in rows):
+        raise SystemExit("frozen source presented a foreign frame")
+    presented = [
+        row for row in events
+        if row.get("event") == "presentation"
+        and row.get("frameID") == frozen_id
+        and row.get("actualPresentationMicroseconds", 0) > 0
+    ]
+    scale = float(scale)
+    dimensions_exact = all(
+        row["textureWidth"] == int(width)
+        and row["textureHeight"] == int(height)
+        and abs(row["allocationWidthPoints"] * scale - int(width)) <= 1
+        and abs(row["allocationHeightPoints"] * scale - int(height)) <= 1
+        for row in rows
+    )
+    result = {
+        "samples": len(rows),
+        "actualPresentations": len(presented),
+        "width": int(width),
+        "height": int(height),
+        "logicalScale": scale,
+        "allocationWidthPoints": rows[-1]["allocationWidthPoints"],
+        "allocationHeightPoints": rows[-1]["allocationHeightPoints"],
+        "dimensionsExact": dimensions_exact,
+        "gapP50Milliseconds": 0.0,
+        "gapP95Milliseconds": 0.0,
+        "gapP99Milliseconds": 0.0,
+        "phaseDriftP99Milliseconds": 0.0,
+        "skippedSourceFrames": 0,
+        "kind": "frozen-frame",
+        "frozenFrameID": frozen_id,
+    }
+    result["pass"] = dimensions_exact and len(presented) >= 1
+    Path(destination).write_text(
+        json.dumps(result, separators=(",", ":")) + "\n")
+    print(json.dumps(result, sort_keys=True))
+    raise SystemExit(0 if result["pass"] else 1)
+
 rows = [row for row in events if row.get("event") == "sourceTick"][-180:]
 if len(rows) < 120:
     raise SystemExit("motion source produced fewer than 120 warm samples")
@@ -569,14 +620,22 @@ EOF
 
   QUALITY_REFERENCE_RAW=""
   benchmark_chroma=""
-  benchmark_reference_name="text-100"
+  benchmark_reference_name=""
   motion_leg=""
   synthetic_motion=""
   client_pipeline_witness=""
   if [[ "${LYTE_ENABLE_PIPELINE_WITNESS:-0}" == 1 ]]; then
     client_pipeline_witness="$OUT_DIR/$run_id-client-pipeline-witness.jsonl"
   fi
-  [[ "$workload" != motion ]] || start_motion "$run_id"
+  if [[ "$workload" == motion ]]; then
+    start_motion "$run_id"
+    synthetic_motion=1
+    benchmark_reference_name="motion-definition-v1"
+  elif [[ "$workload" == quality-static ]]; then
+    start_motion "$run_id" "$FREEZE_FRAME_ID"
+    synthetic_motion=1
+    benchmark_reference_name="motion-definition-v1"
+  fi
   if [[ "$workload" == handshake-only ]]; then
     QUALITY_WIDTH=2048
     QUALITY_HEIGHT=1280
@@ -609,12 +668,6 @@ PY
     --env "LYTE_BENCHMARK_REFERENCE_WIDTH=$QUALITY_WIDTH" \
     --env "LYTE_BENCHMARK_REFERENCE_HEIGHT=$QUALITY_HEIGHT" \
     --env "LYTE_BENCHMARK_READBACK_RAW=$readback_file" \
-    --env "LYTE_BENCHMARK_SOURCE_WITNESS_SHA256=$SOURCE_WITNESS_SHA256" \
-    --env "LYTE_BENCHMARK_SOURCE_WITNESS_R_DB=$SOURCE_WITNESS_R_DB" \
-    --env "LYTE_BENCHMARK_SOURCE_WITNESS_G_DB=$SOURCE_WITNESS_G_DB" \
-    --env "LYTE_BENCHMARK_SOURCE_WITNESS_B_DB=$SOURCE_WITNESS_B_DB" \
-    --env "LYTE_BENCHMARK_SOURCE_WITNESS_MIN_DB=$SOURCE_WITNESS_MIN_DB" \
-    --env "LYTE_BENCHMARK_SOURCE_WITNESS_SSIM=$SOURCE_WITNESS_SSIM" \
     --env "LYTE_BENCHMARK_MOTION_SOURCE_SUMMARY=$OUT_DIR/$run_id-motion-source-preflight.json" \
     --env "LYTE_BENCHMARK_MOTION_LEG=$motion_leg" \
     --env "LYTE_BENCHMARK_SYNTHETIC_MOTION=$synthetic_motion" \
@@ -656,7 +709,7 @@ PY
   APP_PID=""
   FALLBACK_APP_PID=""
   [[ "$workload" != handshake-only ]] || collect_handshake_evidence
-  [[ "$workload" != motion ]] || stop_motion
+  [[ "$workload" != motion && "$workload" != quality-static ]] || stop_motion
   [[ "$workload" != handshake-only ]] || stop_takeover_host "$run_id"
 
   echo "benchmark JSONL: $jsonl"
@@ -682,11 +735,13 @@ PY
 case "$MODE" in
   static) run_leg static ;;
   motion) run_leg motion ;;
+  quality-static) run_leg quality-static ;;
   handshake-only) run_leg handshake-only ;;
   all)
     rc=0
     run_leg static || rc=1
     run_leg motion || rc=1
+    run_leg quality-static || rc=1
     exit "$rc"
     ;;
 esac

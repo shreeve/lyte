@@ -1553,7 +1553,8 @@ final class ConnectionModel {
                 declickProtectedUnderrunFrames:
                     player?.underrunFrames ?? 0,
                 decodeFailures: player?.decodeFailures ?? 0,
-                routeChangeFailures: player?.routeChangeFailures ?? 0))
+                routeChangeFailures: player?.routeChangeFailures ?? 0,
+                hostAnnouncedQuiet: core?.hostAnnouncedAudioQuiet ?? false))
     }
 }
 
