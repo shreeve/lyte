@@ -7,16 +7,56 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 
 pup="${LYTE_PUP_HOST:-pup}"
+pup_gate_root="src/lyte-gates/deterministic"
+pup_gate_lock="src/lyte-gates/.deterministic.lock"
+lock_acquired=0
 
-echo "==> sync Common, Wire, and Host to $pup"
-rsync -a --delete --exclude .build Common/ "$pup:src/Common/"
-rsync -a --delete --exclude .build Wire/ "$pup:src/Wire/"
-rsync -a --delete --exclude .build Host/ "$pup:src/lyte-host/"
+release_gate_lock() {
+    if (( lock_acquired )); then
+        ssh "$pup" rmdir -- "$pup_gate_lock" >/dev/null 2>&1 || true
+    fi
+}
+trap release_gate_lock EXIT
+
+if ! ssh "$pup" 'bash -se' <<'PREFLIGHT'
+set -euo pipefail
+namespace="$HOME/src/lyte-gates"
+gate_root="$namespace/deterministic"
+gate_lock="$namespace/.deterministic.lock"
+
+mkdir -p "$namespace"
+if [[ -L "$namespace" || -L "$gate_root" ]]; then
+    echo "pup gate FAILED: fixed gate namespace contains a symlink" >&2
+    exit 1
+fi
+mkdir -p "$gate_root"
+if [[ "$(readlink -f -- "$gate_root")" != "$HOME/src/lyte-gates/deterministic" ]]; then
+    echo "pup gate FAILED: fixed gate root resolved outside its namespace" >&2
+    exit 1
+fi
+if ! mkdir "$gate_lock"; then
+    echo "pup gate FAILED: another deterministic gate holds the pup mirror" >&2
+    exit 1
+fi
+PREFLIGHT
+then
+    exit 1
+fi
+lock_acquired=1
+
+echo "==> sync client sources, Common, Wire, and Host to $pup:$pup_gate_root"
+rsync -a Package.swift "$pup:$pup_gate_root/Package.swift"
+rsync -a Package.resolved "$pup:$pup_gate_root/Package.resolved"
+rsync -a --delete Sources/ "$pup:$pup_gate_root/Sources/"
+rsync -a --delete --exclude .build Common/ "$pup:$pup_gate_root/Common/"
+rsync -a --delete --exclude .build Wire/ "$pup:$pup_gate_root/Wire/"
+rsync -a --delete --exclude .build Host/ "$pup:$pup_gate_root/Host/"
 
 ssh "$pup" 'bash -se' <<'REMOTE'
 set -euo pipefail
 
 export LD_LIBRARY_PATH="$HOME/.local/lib/swift-compat${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+gate_root="$HOME/src/lyte-gates/deterministic"
 
 protected_state_fingerprint() {
     local config="$HOME/.config/lyte-host"
@@ -41,19 +81,68 @@ protected_state_fingerprint() {
 
 before_state="$(protected_state_fingerprint)"
 
-echo "==> Common tests"
-(cd "$HOME/src/Common" && swift test)
+verify_protected_state() {
+    local after_state
+    after_state="$(protected_state_fingerprint)"
+    if [[ "$before_state" != "$after_state" ]]; then
+        echo "pup gate FAILED: protected host state or metadata changed" >&2
+        return 1
+    fi
+}
+on_remote_exit() {
+    local status=$?
+    trap - EXIT
+    if ! verify_protected_state; then
+        exit 1
+    fi
+    exit "$status"
+}
+trap on_remote_exit EXIT
 
-echo "==> Wire tests"
-(cd "$HOME/src/Wire" && swift test)
+manifest_graph_hash="$({
+    for manifest in \
+        "$gate_root/Package.swift" \
+        "$gate_root/Package.resolved" \
+        "$gate_root/Common/Package.swift" \
+        "$gate_root/Common/Package.resolved" \
+        "$gate_root/Wire/Package.swift" \
+        "$gate_root/Wire/Package.resolved" \
+        "$gate_root/Host/Package.swift" \
+        "$gate_root/Host/Package.resolved"
+    do
+        if [[ -f "$manifest" ]]; then
+            sha256sum "$manifest"
+        fi
+    done
+} | sha256sum | awk '{print $1}')"
 
-echo "==> Host tests"
-(cd "$HOME/src/lyte-host" && swift test)
+run_package_tests() {
+    local label="$1"
+    local path="$2"
+    local marker="$path/.build/.lyte-manifest-graph-sha256"
+    local installed_hash=""
+
+    echo "==> $label tests"
+    if [[ -f "$marker" ]]; then
+        installed_hash="$(<"$marker")"
+    fi
+    if [[ "$installed_hash" != "$manifest_graph_hash" ]]; then
+        echo "    package graph changed; invalidating stale SwiftPM build state"
+        (cd "$path" && swift package clean)
+    fi
+    (cd "$path" && swift package resolve && swift test)
+    mkdir -p "$path/.build"
+    printf '%s\n' "$manifest_graph_hash" > "$marker"
+}
+
+run_package_tests "Common" "$gate_root/Common"
+run_package_tests "Wire" "$gate_root/Wire"
+run_package_tests "Host" "$gate_root/Host"
 
 echo "==> plain Host build"
-(cd "$HOME/src/lyte-host" && swift build)
+(cd "$gate_root/Host" && swift build)
 
-host_binary="$HOME/src/lyte-host/.build/debug/lyte-host"
+host_binary="$gate_root/Host/.build/debug/lyte-host"
 test -x "$host_binary"
 
 if ldd "$host_binary" \
@@ -64,14 +153,15 @@ then
 fi
 
 echo "==> Linux socket and pacing harnesses"
-"$HOME/src/lyte-host/.build/debug/lyte-netio-check"
-"$HOME/src/lyte-host/.build/debug/lyte-pace-check"
+"$gate_root/Host/.build/debug/lyte-netio-check"
+"$gate_root/Host/.build/debug/lyte-pace-check"
 
-after_state="$(protected_state_fingerprint)"
-if [[ "$before_state" != "$after_state" ]]; then
-    echo "pup gate FAILED: protected host state or metadata changed" >&2
-    exit 1
-fi
+verify_protected_state
+trap - EXIT
 
 echo "pup gate PASSED; protected host state is unchanged"
 REMOTE
+
+release_gate_lock
+lock_acquired=0
+trap - EXIT

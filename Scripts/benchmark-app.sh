@@ -85,7 +85,9 @@ source_fingerprint() {
 }
 
 CLIENT_SOURCE_SHA256="$(source_fingerprint \
-  Package.swift Sources Common/Package.swift Common/Core Common/IO)"
+  Package.swift Package.resolved Sources \
+  Common/Package.swift Common/Sources \
+  Wire/Package.swift Wire/Package.resolved Wire/Sources)"
 recorded_client_source="$APP/Contents/Resources/client-source.sha256"
 [[ -s "$recorded_client_source" ]] || {
   echo "benchmark refused: Lyte.app has no signed source provenance" >&2
@@ -107,7 +109,9 @@ if (( NO_BUILD )); then
   stale_client_source="$(
     cd "$ROOT"
     git ls-files --cached --others --exclude-standard -- \
-      Sources Package.swift Common/Package.swift Common/Core Common/IO \
+      Package.swift Package.resolved Sources \
+      Common/Package.swift Common/Sources \
+      Wire/Package.swift Wire/Package.resolved Wire/Sources \
       | while IFS= read -r path; do
           if [[ -f "$path" && "$path" -nt "$APP/Contents/MacOS/Lyte" ]]; then
             printf '%s\n' "$path"
@@ -129,11 +133,17 @@ deployed_delta="$(
     "$ROOT/Host/Package.swift" \
     "$PUP:src/lyte-host/Package.swift"
   rsync -ani --checksum --no-times --omit-dir-times --delete \
+    "$ROOT/Host/Package.resolved" \
+    "$PUP:src/lyte-host/Package.resolved"
+  rsync -ani --checksum --no-times --omit-dir-times --delete \
     --exclude .build "$ROOT/Host/Sources/" \
     "$PUP:src/lyte-host/Sources/"
   rsync -ani --checksum --no-times --omit-dir-times --delete \
     "$ROOT/Wire/Package.swift" \
     "$PUP:src/Wire/Package.swift"
+  rsync -ani --checksum --no-times --omit-dir-times --delete \
+    "$ROOT/Wire/Package.resolved" \
+    "$PUP:src/Wire/Package.resolved"
   rsync -ani --checksum --no-times --omit-dir-times --delete \
     --exclude .build "$ROOT/Wire/Sources/" \
     "$PUP:src/Wire/Sources/"
@@ -141,11 +151,8 @@ deployed_delta="$(
     "$ROOT/Common/Package.swift" \
     "$PUP:src/Common/Package.swift"
   rsync -ani --checksum --no-times --omit-dir-times --delete \
-    "$ROOT/Common/Core/" \
-    "$PUP:src/Common/Core/"
-  rsync -ani --checksum --no-times --omit-dir-times --delete \
-    "$ROOT/Common/IO/" \
-    "$PUP:src/Common/IO/"
+    "$ROOT/Common/Sources/" \
+    "$PUP:src/Common/Sources/"
 )"
 [[ -z "$deployed_delta" ]] || {
   echo "benchmark refused: local Host/Wire/Common source differs from pup:" >&2
@@ -161,10 +168,13 @@ bm = os.path.getmtime(b)
 roots = [
     (os.path.expanduser(\"~/src/lyte-host\"), \"Host\", [\"Sources\"]),
     (os.path.expanduser(\"~/src/Wire\"), \"Wire\", [\"Sources\"]),
-    (os.path.expanduser(\"~/src/Common\"), \"Common\", [\"Core\", \"IO\"]),
+    (os.path.expanduser(\"~/src/Common\"), \"Common\", [\"Sources\"]),
 ]
 for root, label, source_dirs in roots:
-    paths = [os.path.join(root, \"Package.swift\")]
+    paths = [
+        os.path.join(root, \"Package.swift\"),
+        os.path.join(root, \"Package.resolved\"),
+    ]
     for source_dir in source_dirs:
         for directory, _, files in os.walk(os.path.join(root, source_dir)):
             paths.extend(os.path.join(directory, name) for name in files)
@@ -207,7 +217,8 @@ disk_host_sha="$(printf '%s\n' "$host_hashes" | awk 'NR == 2 {print}')"
 APP_SHA256="$(shasum -a 256 "$APP/Contents/MacOS/Lyte" | awk '{print $1}')"
 HOST_SHA256="$running_host_sha"
 HOST_SOURCE_SHA256="$(source_fingerprint \
-  Host Common/Package.swift Common/Core Common/IO)"
+  Host Common/Package.swift Common/Sources \
+  Wire/Package.swift Wire/Package.resolved Wire/Sources)"
 
 FFPLAY_PID=""
 REMOTE_QUALITY_IMAGE=""

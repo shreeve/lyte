@@ -24,7 +24,9 @@ cp ".build/$CONFIG/lyte-helperd" "$APP/Contents/MacOS/lyte-helperd"
 # this matching fingerprint is not valid benchmark evidence.
 (
   git ls-files --cached --others --exclude-standard -- \
-    Package.swift Sources Common/Package.swift Common/Core Common/IO \
+    Package.swift Package.resolved Sources \
+    Common/Package.swift Common/Sources \
+    Wire/Package.swift Wire/Package.resolved Wire/Sources \
     | LC_ALL=C sort \
     | while IFS= read -r path; do
         if [ -f "$path" ]; then

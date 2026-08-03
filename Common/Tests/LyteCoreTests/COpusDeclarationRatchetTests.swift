@@ -1,21 +1,10 @@
 import Foundation
+import LyteTestKit
 import XCTest
 
 final class COpusDeclarationRatchetTests: XCTestCase {
-    private static var repositoryRoot: URL {
-        if let override = ProcessInfo.processInfo.environment["LYTE_REPOSITORY_ROOT"] {
-            return URL(fileURLWithPath: override).standardizedFileURL
-        }
-        return URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-    }
-
     func testCOpusSystemLibraryHasOneDeclarationAndOneModuleMap() throws {
-        XCTAssertTrue(FileManager.default.fileExists(
-            atPath: Self.repositoryRoot.appendingPathComponent("CLEANUP.md").path))
+        let tree = RepositorySourceTree()
         let manifestPaths = ["Package.swift", "Host/Package.swift", "Common/Package.swift"]
         let declaration = try NSRegularExpression(
             pattern: #"\.systemLibrary\s*\(\s*name:\s*\"COpus\""#
@@ -24,7 +13,7 @@ final class COpusDeclarationRatchetTests: XCTestCase {
 
         for path in manifestPaths {
             let source = try String(
-                contentsOf: Self.repositoryRoot.appendingPathComponent(path),
+                contentsOf: tree.repositoryRoot.appendingPathComponent(path),
                 encoding: .utf8
             )
             let range = NSRange(source.startIndex..., in: source)
@@ -36,7 +25,7 @@ final class COpusDeclarationRatchetTests: XCTestCase {
 
         var moduleMaps: [String] = []
         for rootPath in ["Common", "Host/Sources", "Sources"] {
-            let root = Self.repositoryRoot.appendingPathComponent(rootPath)
+            let root = tree.repositoryRoot.appendingPathComponent(rootPath)
             guard let files = FileManager.default.enumerator(
                 at: root, includingPropertiesForKeys: nil
             ) else {
@@ -48,13 +37,14 @@ final class COpusDeclarationRatchetTests: XCTestCase {
                 let source = try String(contentsOf: file, encoding: .utf8)
                 if source.contains("module COpus") {
                     moduleMaps.append(
-                        file.path.replacingOccurrences(
-                            of: Self.repositoryRoot.path + "/", with: ""
-                        )
+                        tree.relativePath(for: file)
                     )
                 }
             }
         }
-        XCTAssertEqual(moduleMaps.sorted(), ["Common/COpus/module.modulemap"])
+        XCTAssertEqual(
+            moduleMaps.sorted(),
+            ["Common/Sources/COpus/module.modulemap"]
+        )
     }
 }
