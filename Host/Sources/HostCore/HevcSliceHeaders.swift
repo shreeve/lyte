@@ -12,6 +12,8 @@
 // never touches). Oracle-pinned in HevcParameterSetTests against a
 // real capture's IDR and TRAIL_R headers, decoded bit-by-bit.
 
+import LyteCore
+
 public enum HevcSliceHeader {
 
     /// The opening IDR_W_RADL (NAL type 19) slice-segment header.

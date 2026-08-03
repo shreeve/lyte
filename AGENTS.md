@@ -35,7 +35,9 @@ H-era build plans completed their ladder and are retired to git history
   time; `LyteIO` is the operating-system adapter layer both ends consume.
   `LyteCore.Histogram` owns the shared percentile and retention doctrine;
   `LyteCore.AnnexBCheck` owns the one NAL walker and production access-unit
-  splitter; the first extracted adapter is the one process-wide monotonic clock.
+  splitter; `LyteCore.HevcBitWriter`/`HevcBitReader` are the inverse bit and
+  emulation-prevention vocabulary; the first extracted adapter is the one
+  process-wide monotonic clock.
 - **`Host/`** — package `LyteHost`: the Linux host. Depends on
   `.package(path: "../Wire")` and, for Linux shells, `../Common`.
   `HostCore` (pure Swift bitstream helpers) and
