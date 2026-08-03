@@ -1283,11 +1283,20 @@ final class ConnectionModel {
     /// A compact snapshot of the session's existing books — the same
     /// counters wire-view prints, shaped for the overlay. Re-read on
     /// every call; the overlay's TimelineView drives the cadence.
-    func statsLines() -> [String] {
+    struct StatsRow: Identifiable {
+        var label: String
+        var value: String
+        var id: String { label }
+    }
+
+    func statsRows() -> [StatsRow] {
         guard let session = lyteSession,
               let endpoint = session.endpoint,
               let core = session.core else { return [] }
-        var lines: [String] = []
+        var rows: [StatsRow] = []
+        func row(_ label: String, _ value: String) {
+            rows.append(StatsRow(label: label, value: value))
+        }
 
         // Row order (owner-shaped, 2026-07-30): mode heads the block,
         // net under it, then audio and video ADJACENT (the two media
@@ -1303,8 +1312,8 @@ final class ConnectionModel {
         let lost = missing > lateFilled ? missing - lateFilled : 0
         let expected = totals.datagrams + lost
         var wire = lost == 0
-            ? "network: lost 0 of \(Self.compactCount(expected)) host packets"
-            : String(format: "network: lost %d of %@ host packets (%.3f%%)",
+            ? "lost 0 of \(Self.compactCount(expected)) host packets"
+            : String(format: "lost %d of %@ host packets (%.3f%%)",
                      lost, Self.compactCount(expected),
                      100 * Double(lost) / Double(max(1, expected)))
         // roundtrip min + jitter, spelled out — "±" falsely implies a
@@ -1329,13 +1338,15 @@ final class ConnectionModel {
         // lowercase so a HEALTHY overlay contains zero uppercase — the
         // glance-test is "any caps anywhere?". FROZEN and NOT CAPTURED
         // are the only words allowed to shout.
-        var mode = "session: \(core.wireMode == .active ? "active" : "idle")"
+        var mode = core.wireMode == .active ? "active" : "idle"
         if core.isFrozen { mode += " — FROZEN" }
         // Chroma lives HERE (owner catch, round three): it is fixed at
         // ANNOUNCE — changing tiers means a reconnect — so it is a
-        // session state like the postures beside it, not a live metric.
+        // session state like the postures beside it, not a live
+        // metric. The codec rides with it (same announce-time truth —
+        // the YouTube-panel steal, 2026-08-03).
         if let chroma = core.streamChromaDescription {
-            mode += " · \(chroma)"
+            mode += " · hevc \(chroma)"
         }
         if hostAudioNegotiated {
             switch hostAudioPosture {
@@ -1357,16 +1368,21 @@ final class ConnectionModel {
         // ONLY when streams are live, awdl0 stayed up through a
         // re-engage, and jitter is therefore about to say why.
         if AgentState.shared.radioAlarm { mode += " · AWDL LOOSE" }
-        lines.append(mode)
+        row("session", mode)
 
-        // Unconditional (CL-16): "user:    0 events sent to host" is
+        // Unconditional (CL-16): "user: 0 events sent to host" is
         // the datum that tells a client-capture failure from a
-        // host-side one.
-        lines.append(core.input.snapshotStats().overlayLine())
+        // host-side one. (The transport line keeps its ruled prefix;
+        // the ledger strips it into the label column.)
+        let userLine = core.input.snapshotStats().overlayLine()
+        row("user", userLine.hasPrefix("user:")
+            ? String(userLine.dropFirst(5))
+                .trimmingCharacters(in: .whitespaces)
+            : userLine)
 
         // Owner order: outbound then inbound — the directions read as
         // a pair — then the inbound media lines they frame.
-        lines.append(wire)
+        row("network", wire)
 
         let audio = core.audio.snapshotStats()
         if audio.depacketizer.datagramsIngested > 0 {
@@ -1383,7 +1399,7 @@ final class ConnectionModel {
             if audio.depacketizer.packetsRebuilt > 0 {
                 parts.append("repaired \(audio.depacketizer.packetsRebuilt)")
             }
-            lines.append("audio:   " + parts.joined(separator: " · "))
+            row("audio", parts.joined(separator: " · "))
         }
 
         // The HS-22 quality line — what the receive side can say about
@@ -1402,7 +1418,7 @@ final class ConnectionModel {
             // glass-side stall, not a network one. Mbps leads and
             // stands bare (self-naming); chroma moved to the stream
             // line (session state, not live metric).
-            var video = String(format: "video:   %.1f Mbps",
+            var video = String(format: "%.1f Mbps",
                                Double(q.bitsPerSecond) / 1e6)
             let inFps = videoInMeter.rate(
                 count: pipelineStats.framesDecoded,
@@ -1425,12 +1441,12 @@ final class ConnectionModel {
                 video += String(
                     format: " · deliver p50/p99 %.1f/%.1f ms", p50, p99)
             }
-            lines.append(video)
+            row("video", video)
         }
         let flight = videoFlightRecorder.snapshot()
         if flight.frames > 0 {
             var glass = String(
-                format: "glass:   source/ready p99 %.1f/%.1f ms"
+                format: "source/ready p99 %.1f/%.1f ms"
                     + " · transit %.1f ms · sample %.1f ms"
                     + " · queue/enqueue %.1f/%.1f ms",
                 flight.sourceGapP99Milliseconds ?? 0,
@@ -1447,8 +1463,13 @@ final class ConnectionModel {
                     format: " delay %.1f ms",
                     renderer.accumulatedDelayMilliseconds)
             }
+            // The conductor's standing cushion — YouTube's "buffer
+            // health" steal, in the grid's own beats-to-glass terms.
+            if let cushion = flight.targetDelayMilliseconds {
+                glass += String(format: " · cushion %.0f ms", cushion)
+            }
             glass += " · \(flight.bottleneck)"
-            lines.append(glass)
+            row("glass", glass)
         }
 
         let clipboard = core.snapshotCounters()
@@ -1456,7 +1477,7 @@ final class ConnectionModel {
             + clipboard.clipboardAnnouncesReceived
             + clipboard.clipboardLoopSuppressed
         if clipboardNegotiated, clipboardActivity > 0 {
-            lines.append("clipboard \(clipboard.clipboardSharesSent) sent"
+            row("clipboard", "\(clipboard.clipboardSharesSent) sent"
                 + " · \(clipboard.clipboardAnnouncesReceived) recv"
                 + " · \(clipboard.clipboardLoopSuppressed) suppressed")
         }
@@ -1466,7 +1487,7 @@ final class ConnectionModel {
         let imageActivity = images.sharesStarted + images.imagesApplied
             + images.sharesSuppressed + images.receivesRefused
         if clipboardImagesNegotiated, imageActivity > 0 {
-            lines.append("clip images \(images.sharesCompleted)"
+            row("clip images", "\(images.sharesCompleted)"
                 + "/\(images.sharesStarted) sent"
                 + " · \(images.imagesApplied) applied"
                 + " · \(images.sharesSuppressed) suppressed")
@@ -1474,15 +1495,15 @@ final class ConnectionModel {
 
         // F-4: the bulk channel's books, while it has any.
         if clipboard.bulkMessagesSent + clipboard.bulkMessagesReceived > 0 {
-            var line = "bulk \(clipboard.bulkMessagesSent) sent"
+            var line = "\(clipboard.bulkMessagesSent) sent"
                 + " · \(clipboard.bulkMessagesReceived) recv"
             if let progress = bulkStatus.progress,
                progress.totalByteCount > 0 {
                 line += String(format: " · %.0f%%", progress.fraction * 100)
             }
-            lines.append(line)
+            row("bulk", line)
         }
-        return lines
+        return rows
     }
 
     func diagnosticBenchmarkSample(
