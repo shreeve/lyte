@@ -401,7 +401,7 @@ half by carrying the real client's NACK report into the real Host `Session`
 judgement, then remove the overlapping round-trip scaffolding from the two
 1,300-line suites.**
 
-**THE TREE MIGRATION OPENED (#103 + #108 + #115, 2026-08-03): every move has
+**THE TREE MIGRATION OPENED (#103 + #108 + #115 + #119, 2026-08-03): every move has
 a gate, and Common now speaks one filesystem grammar.** #103 recorded the
 owner-approved `Sources` / `Tests` / `TestKit` hierarchy and added the full
 Mac + isolated-pup equivalence gates. #108 moved every Common production
@@ -421,11 +421,27 @@ rollback, foreign/changed topology refusal, invalid selectors, and removal of
 the retired supervisor and interface-wide netem paths. The Python analyzer
 and shell safety tests now live under canonical `Scripts/Tests`. Canonical Mac
 and isolated pup gates passed on the combined #114/#115 tree; no live service
-restart or impairment was performed. **NEXT MIGRATION SLICE:
-organize Wire internally without changing its module, products, or frozen
-vectors.**
+restart or impairment was performed. #119 organized all four Wire Swift
+targets with one mirrored, precise domain grammar: Arq, Audio, Bulk,
+Capabilities, Clipboard, Control, Crypto/{Noise,Pairing,Retry}, Fec, Session,
+Telemetry, and Video, with Simulation confined to TestKit/tests and only the
+module-wide spine left at target roots. The vector generator's Swift target
+is now `LyteWireVectorGen` under the canonical UpperCamelCase source root;
+the public `lyte-wire-vectorgen` product is unchanged. Production, TestKit,
+and generator sources moved byte-identically; all frozen vectors remained
+untouched. Nineteen depth-sensitive vector locators collapsed into one
+fail-closed package-root locator, and `WireLayoutTests` pins root allowlists,
+exact domains, nested Crypto families, and leaf depth. Canonical Mac passed
+Common 78, Wire 508, Host 286, client 262, analyzer 25, benchmark safety, and
+both signed products; isolated pup passed Common 79, Wire 508, Host 287, the
+plain build, netio/pacing, and protected-state gates. The final Wire head also
+passed 506 tests under WASI/wasmtime and an explicit vector-generator build.
+No public module, product, runtime behavior, wire byte, or persisted format
+changed. **NEXT MIGRATION SLICE: move the root macOS client package into
+`Client/` while preserving the repository-root build/artifact contract and
+keeping every package gate green.**
 
-**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 78 Mac / 79 pup;
+**Suites at HEAD:** Wire 508 Mac / 508 pup; Common 78 Mac / 79 pup;
 root client 262; host 287 pup / 286 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
