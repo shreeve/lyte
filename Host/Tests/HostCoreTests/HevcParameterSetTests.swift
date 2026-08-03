@@ -155,4 +155,111 @@ final class HevcParameterSetTests: XCTestCase {
                        HevcParameterSets.sps(base),
                        "QP is PPS business alone")
     }
+
+    // MARK: Rext Main 4:4:4 (the Best tier) — field-verified
+
+    /// A minimal bit reader: NAL header stripped, emulation
+    /// prevention un-escaped, MSB-first u(n) and §9.2 ue(v).
+    private struct BitReader {
+        private let bytes: [UInt8]
+        private var bit = 0
+        init(nal: [UInt8]) {
+            var rbsp: [UInt8] = []
+            var zeros = 0
+            for byte in nal.dropFirst(2) {
+                if zeros >= 2, byte == 3 { zeros = 0; continue }
+                zeros = byte == 0 ? zeros + 1 : 0
+                rbsp.append(byte)
+            }
+            bytes = rbsp
+        }
+        mutating func u(_ n: Int) -> UInt32 {
+            var value: UInt32 = 0
+            for _ in 0..<n {
+                let byte = bytes[bit >> 3]
+                value = (value << 1)
+                    | UInt32((byte >> (7 - bit % 8)) & 1)
+                bit += 1
+            }
+            return value
+        }
+        mutating func ue() -> UInt32 {
+            var zeros = 0
+            while u(1) == 0 { zeros += 1 }
+            return zeros == 0 ? 0
+                : (1 << zeros) - 1 + u(zeros)
+        }
+    }
+
+    /// Walks the Rext SPS field-by-field: profile_idc 4, the §A.3.5
+    /// "Main 4:4:4" constraint row, chroma_format_idc 3 with joint
+    /// colour planes, and the untouched geometry.
+    func testRextSpsFieldsAreTheMain444Row() {
+        let recipe = HevcHeaderRecipe(
+            width: 2048, height: 1280, chroma444: true)
+        var r = BitReader(nal: HevcParameterSets.sps(recipe))
+        _ = r.u(4)  // sps_video_parameter_set_id
+        _ = r.u(3)  // sps_max_sub_layers_minus1
+        _ = r.u(1)  // sps_temporal_id_nesting_flag
+        XCTAssertEqual(r.u(2), 0, "general_profile_space")
+        XCTAssertEqual(r.u(1), 0, "general_tier_flag")
+        XCTAssertEqual(r.u(5), 4, "general_profile_idc = Rext")
+        XCTAssertEqual(r.u(32), 0x0800_0000, "compat: profile 4 only")
+        XCTAssertEqual(r.u(1), 1, "progressive_source")
+        XCTAssertEqual(r.u(1), 0, "interlaced_source")
+        XCTAssertEqual(r.u(1), 1, "non_packed")
+        XCTAssertEqual(r.u(1), 1, "frame_only")
+        XCTAssertEqual(r.u(1), 1, "max_12bit")
+        XCTAssertEqual(r.u(1), 1, "max_10bit")
+        XCTAssertEqual(r.u(1), 1, "max_8bit")
+        XCTAssertEqual(r.u(1), 0, "max_422chroma")
+        XCTAssertEqual(r.u(1), 0, "max_420chroma")
+        XCTAssertEqual(r.u(1), 0, "max_monochrome")
+        XCTAssertEqual(r.u(1), 0, "intra_only")
+        XCTAssertEqual(r.u(1), 0, "one_picture_only")
+        XCTAssertEqual(r.u(1), 1, "lower_bit_rate")
+        XCTAssertEqual(r.u(32), 0, "reserved_zero_34 high")
+        XCTAssertEqual(r.u(2), 0, "reserved_zero_34 low")
+        XCTAssertEqual(r.u(1), 0, "reserved_zero_bit")
+        XCTAssertEqual(r.u(8), 150, "level_idc = L5.0")
+        XCTAssertEqual(r.ue(), 0, "sps_seq_parameter_set_id")
+        XCTAssertEqual(r.ue(), 3, "chroma_format_idc = 4:4:4")
+        XCTAssertEqual(r.u(1), 0, "separate_colour_plane_flag")
+        XCTAssertEqual(r.ue(), 2048, "pic_width_in_luma_samples")
+        XCTAssertEqual(r.ue(), 1280, "pic_height_in_luma_samples")
+        XCTAssertEqual(r.u(1), 0, "conformance_window_flag")
+        XCTAssertEqual(r.ue(), 0, "bit_depth_luma_minus8")
+        XCTAssertEqual(r.ue(), 0, "bit_depth_chroma_minus8")
+    }
+
+    /// The Rext VPS carries the same profile row (the PTL is shared
+    /// serializer code, but the pin proves the VPS actually calls it
+    /// with the Rext recipe).
+    func testRextVpsCarriesTheRextProfile() {
+        let recipe = HevcHeaderRecipe(
+            width: 2048, height: 1280, chroma444: true)
+        var r = BitReader(nal: HevcParameterSets.vps(recipe))
+        _ = r.u(4); _ = r.u(1); _ = r.u(1)  // vps ids/flags
+        _ = r.u(6); _ = r.u(3); _ = r.u(1)
+        XCTAssertEqual(r.u(16), 0xFFFF, "vps_reserved_0xffff")
+        XCTAssertEqual(r.u(2), 0, "profile_space")
+        XCTAssertEqual(r.u(1), 0, "tier")
+        XCTAssertEqual(r.u(5), 4, "profile_idc = Rext")
+    }
+
+    /// The 4:2:0 dialect is UNTOUCHED by the Rext branch: the oracle
+    /// bytes still reproduce exactly with chroma444 defaulted false.
+    func testRextBranchLeaves420OracleUntouched() {
+        let recipe = HevcHeaderRecipe(width: 2048, height: 1280)
+        XCTAssertEqual(HevcParameterSets.vps(recipe), Self.oracleVPS)
+        XCTAssertEqual(HevcParameterSets.sps(recipe), Self.oracleSPS)
+        XCTAssertEqual(HevcParameterSets.pps(recipe), Self.oraclePPS)
+        // And the PPS is chroma-agnostic at these settings: 8-bit
+        // 4:4:4 needs no pps_range_extension fields.
+        var rext = recipe
+        rext.chroma444 = true
+        XCTAssertEqual(HevcParameterSets.pps(rext),
+                       HevcParameterSets.pps(recipe),
+                       "PPS bytes identical across chroma at 8-bit")
+    }
 }
