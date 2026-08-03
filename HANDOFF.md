@@ -191,9 +191,9 @@ display path — the shell's 10 s comb is the evidence). AV1 stays
 a 4:2:0 lane (no 4:4:4 hardware encoders exist anywhere,
 2026-08).
 
-**CLEANUP THEME 1 IS RUNNING (#95–#100, 2026-08-03): one clock,
+**CLEANUP THEME 1 IS RUNNING (#95–#101, 2026-08-03): one clock,
 one histogram, one Annex-B walker, one HEVC bit vocabulary, one
-SHA-256 state, one hex vocabulary.** The v2
+SHA-256 state, one hex vocabulary, one TOS vocabulary.** The v2
 `Common/` package now exists
 with sibling targets `LyteCore` (sans-IO shared policy) and `LyteIO`
 (shared OS adapters); `SystemMonotonicClock` is the one OS adapter for
@@ -252,11 +252,22 @@ trust store deliberately retains its strict 64-character policy at its
 own boundary. A production-source ratchet rejects another Hex type,
 helper-shaped encoder, or `%02x` loop. Frozen vectors stayed byte-exact;
 the rebuilt pup service is active and both binaries were re-armed after
-the Linux gate. **NEXT: Theme 1 TOS/DSCP constants — consolidate the two
-spellings behind one shared vocabulary and retire both private copies.**
+the Linux gate. #101 made `LyteCore.WireTos` the one four-lane product
+vocabulary: unmarked/CS1/CS5/CS6 remain 0x00/0x20/0xA0/0xC0 with ECN
+clear. The Host-private type was deleted; only its exhaustive,
+role-specific `PacerClass` mapping remains as an extension over the shared
+bytes. The client now uses that same protected lane, and Darwin's raw
+socket-option numbers became SDK names. Common pins every byte and DSCP;
+the macOS socket reads back CS6 + VI, pup's netio witness round-tripped
+12/12 markings, and its pacer witness read back CS6 30/30 + CS5 32/32.
+The source ratchet rejects another vocabulary or the retired literals.
+Wire and frozen vectors were untouched; pup's rebuilt systemd host is
+active and its identity files are unchanged. **NEXT: Theme 1 chroma pairing
+rule — give the shared singleton-to-posture decision one owner while both
+role types remain.**
 
-**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 36 Mac / 37 pup;
-root client 283; host 284 pup / 283 Mac — all green.
+**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 39 Mac / 40 pup;
+root client 284; host 284 pup / 283 Mac — all green.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
