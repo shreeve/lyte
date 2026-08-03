@@ -113,16 +113,24 @@ struct StreamContainer: View {
                     // the software confesses before the user has to
                     // heisenbug (the 2026-08-01 Wi-Fi hunt) — and
                     // names the guilty stage with the numbers.
+                    // Owner ruling 2026-08-03: the warning pill FILLS
+                    // with its color and the text goes bold white
+                    // (black on amber — white washes out there), so a
+                    // red pill reads across the room instead of red
+                    // text whispering on glass.
                     if let health = model.linkHealth,
                        health.level != .good {
                         Label(linkHealthLine(health),
                               systemImage: "waveform.path.ecg")
-                            .font(.caption.weight(.semibold))
+                            .font(.caption.weight(.bold))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
-                            .background(Capsule().fill(.ultraThinMaterial))
+                            .background(Capsule().fill(
+                                health.level == .poor
+                                    ? Color.red : Color.yellow))
                             .foregroundStyle(
-                                health.level == .poor ? .red : .yellow)
+                                health.level == .poor
+                                    ? Color.white : Color.black)
                             .transition(.opacity)
                             .help("Measured delivery stalls in the "
                                 + "last minute; the stage named is "
