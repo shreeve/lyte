@@ -172,3 +172,23 @@ here is the banked AV1 decision and the standing encoder policy.*
   productionize, lyte-nvenc probe banked); the Intel→NVIDIA copy path
   stays rejected (keeps dGPU awake, wonky cross-adapter dmabuf, no
   quality win).
+- **E6a PARKED BEHIND HARDWARE (ruled 2026-08-03, scoped in full):**
+  productionize has no machine to gate on — pup's RTX 4050 owns zero
+  connectors (no-MUX verified), the copy path is rejected above, and
+  no NVIDIA-panel box exists on the rig; landing an ungateable seat
+  violates the declared-on-PROOF doctrine, so E6a waits for the
+  hardware, exactly like the rewind waits for demand. Scoping banked
+  for that day: extract the probe's 289 lines into an
+  EyeNvencEncoder mirroring EyeVaapiEncoder's surface; introduce the
+  encoder seam that does not exist (DirectEyeLeg is welded to
+  EyeVaapiEncoder and to VASurfaceID as the GL↔encoder currency);
+  wire the zero-copy input path (GL-texture/CUDA registration —
+  NV_ENC_REGISTER_RESOURCE is not even exported from the shim yet);
+  revive EncoderRecipe as the live knob source (its ladder verdicts
+  survive; its libav spellings — rgbMode/multipass/AQ — need
+  re-expressing against the raw SDK); map "CUDA device that owns the
+  scanout CRTC" (probe hardcodes ordinal 0); and the topology doctor
+  that picks the seat and names the hardware. NVENC writes its own
+  headers (HostCore pens stay VAAPI-only), so the stream-startability
+  gate and SPS audit carry over unchanged; probesMain444 is a libva
+  call and needs an NVENC twin for the chroma declaration.
