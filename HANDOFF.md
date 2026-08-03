@@ -191,9 +191,10 @@ display path — the shell's 10 s comb is the evidence). AV1 stays
 a 4:2:0 lane (no 4:4:4 hardware encoders exist anywhere,
 2026-08).
 
-**CLEANUP THEME 1 IS RUNNING (#95–#101, 2026-08-03): one clock,
+**CLEANUP THEME 1 IS RUNNING (#95–#102, 2026-08-03): one clock,
 one histogram, one Annex-B walker, one HEVC bit vocabulary, one
-SHA-256 state, one hex vocabulary, one TOS vocabulary.** The v2
+SHA-256 state, one hex vocabulary, one TOS vocabulary, one chroma
+pairing rule.** The v2
 `Common/` package now exists
 with sibling targets `LyteCore` (sans-IO shared policy) and `LyteIO`
 (shared OS adapters); `SystemMonotonicClock` is the one OS adapter for
@@ -262,11 +263,21 @@ the macOS socket reads back CS6 + VI, pup's netio witness round-tripped
 12/12 markings, and its pacer witness read back CS6 30/30 + CS5 32/32.
 The source ratchet rejects another vocabulary or the retired literals.
 Wire and frozen vectors were untouched; pup's rebuilt systemd host is
-active and its identity files are unchanged. **NEXT: Theme 1 chroma pairing
-rule — give the shared singleton-to-posture decision one owner while both
-role types remain.**
+active and its identity files are unchanged. #102 made
+`LyteCore.ChromaPairing.bestSingleton` the one spelling of Best's exact
+4:4:4 singleton declaration. The client tier and Host posture both consume
+that shape, while their role-specific policy remains split: Good/Better stay
+client choices, and nil, empty, 4:2:0, and multi-mode agreements still open
+the Host's conservative 4:2:0 posture. Common pins the generic singleton and
+the existing role suites pin both interpretations; a production-source
+ratchet rejects the retired `[CapabilityChroma.yuv444]` twin. Wire and frozen
+vectors were untouched; pup's rebuilt systemd host is active and its identity
+files are unchanged. **NEXT: finish Theme 1's conditional COpus row now that
+Common exists — move both package declarations to one shared system-library
+target, re-point both consumers, and delete the old module-map twins in the
+same PR.**
 
-**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 39 Mac / 40 pup;
+**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 42 Mac / 43 pup;
 root client 284; host 284 pup / 283 Mac — all green.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
