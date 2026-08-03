@@ -142,10 +142,19 @@ targets += [
     // plain Linux syscalls, no system library).
     .target(name: "CNetIO"),
     .testTarget(name: "CNetIOTests", dependencies: ["CNetIO"]),
-    // C leaf (HS-13, fallback only): virtual evdev devices over
-    // /dev/uinput — keyboard, relative mouse, absolute tablet. The
-    // ioctl surface; policy stays in Swift.
+    // C leaf (E2: the PRIMARY input injector): virtual evdev devices
+    // over /dev/uinput — keyboard, relative mouse, absolute tablet.
+    // The ioctl surface; policy stays in Swift. Compositor-agnostic
+    // by construction (the Mutter RemoteDesktop injector is retired).
     .target(name: "CInputUinput"),
+    // E2 verification harness: creates the three devices, reads them
+    // back from their evdev nodes, and asserts routing, absolute
+    // scaling/clamping, and v120 scroll accumulation byte-exact.
+    // Exits nonzero on mismatch. Needs sudo (evdev read side only).
+    .executableTarget(
+        name: "lyte-uinput-check",
+        dependencies: ["CInputUinput"]
+    ),
     // HS-4 verification harness: loopback batch send with per-packet DSCP,
     // received-TOS readback, TX-timestamp drain. Exits nonzero on mismatch.
     .executableTarget(
