@@ -20,6 +20,7 @@ func runCapture(_ rawArgs: [String]) -> Never {
     var output = "/tmp/lyte-eye.hevc"
     var qp: Int32 = 24
     var bitrateMbps: Int64 = 0
+    var chroma444 = false
     var it = rawArgs.makeIterator()
     while let arg = it.next() {
         switch arg {
@@ -33,6 +34,15 @@ func runCapture(_ rawArgs: [String]) -> Never {
         // midpoint via setRateBitsPerSecond — the gate is 1 IDR.
         case "--bitrate-mbps":
             bitrateMbps = Int64(it.next() ?? "") ?? bitrateMbps
+        // The Rext probe: 444 encodes Main 4:4:4 on AYUV surfaces.
+        case "--chroma":
+            let value = it.next() ?? "420"
+            guard value == "420" || value == "444" else {
+                FileHandle.standardError.write(
+                    Data("--chroma takes 420 or 444\n".utf8))
+                exit(2)
+            }
+            chroma444 = value == "444"
         default:
             FileHandle.standardError.write(
                 Data("unknown arg \(arg)\n".utf8))
@@ -42,7 +52,8 @@ func runCapture(_ rawArgs: [String]) -> Never {
     runNativeCapture(
         device: device, render: render, seconds: seconds,
         output: output, qp: qp,
-        bitrateBitsPerSecond: bitrateMbps * 1_000_000)
+        bitrateBitsPerSecond: bitrateMbps * 1_000_000,
+        chroma444: chroma444)
 }
 
 // MARK: - E6b: the native leg — same eye, libva spoken directly
@@ -54,7 +65,8 @@ func runCapture(_ rawArgs: [String]) -> Never {
 /// same shape as the libav leg for A/B reading.
 func runNativeCapture(
     device: String, render: String, seconds: Double,
-    output: String, qp: Int32, bitrateBitsPerSecond: Int64 = 0
+    output: String, qp: Int32, bitrateBitsPerSecond: Int64 = 0,
+    chroma444: Bool = false
 ) -> Never {
     let fd = open(device, O_RDWR)
     guard fd >= 0 else { perror(device); exit(1) }
@@ -73,7 +85,8 @@ func runNativeCapture(
     let height = Int32(probe.height)
     probe.release()
     print("capture: \(device) \(width)x\(height) → \(output) "
-        + "(qp \(qp), \(Int(seconds))s) [NATIVE — no libavcodec]")
+        + "(qp \(qp), \(Int(seconds))s) [NATIVE — no libavcodec]"
+        + (chroma444 ? " [Rext 4:4:4]" : ""))
 
     let gl: EyeGL
     let encoder: EyeVaapiEncoder
@@ -82,7 +95,8 @@ func runNativeCapture(
         encoder = try EyeVaapiEncoder(
             width: width, height: height, fps: 60, qp: qp,
             renderNode: render,
-            bitrateBitsPerSecond: bitrateBitsPerSecond)
+            bitrateBitsPerSecond: bitrateBitsPerSecond,
+            chroma444: chroma444)
     } catch {
         FileHandle.standardError.write(Data("init: \(error)\n".utf8))
         exit(1)
@@ -96,6 +110,7 @@ func runNativeCapture(
     }
 
     var targets: [UInt32: NV12Target] = [:]
+    var targets444: [UInt32: AyuvTarget] = [:]
     var lastFB: UInt32 = 0
     var frames = 0
     var bytes = 0
@@ -150,29 +165,46 @@ func runNativeCapture(
                 planes: ticket.planes)
             let surface = encoder.inputSurfaces[
                 frames % encoder.inputSurfaces.count]
-            if targets[surface] == nil {
-                let exported = try encoder.exportSurface(surface)
-                let target = try gl.makeNV12Target(
-                    width: width, height: height,
-                    yFourcc: exported.y.fourcc,
-                    yModifier: exported.y.modifier,
-                    yPlane: (exported.y.fd, exported.y.offset,
-                             exported.y.pitch),
-                    uvFourcc: exported.uv.fourcc,
-                    uvModifier: exported.uv.modifier,
-                    uvPlane: (exported.uv.fd, exported.uv.offset,
-                              exported.uv.pitch))
-                close(exported.y.fd)
-                if exported.uv.fd != exported.y.fd {
-                    close(exported.uv.fd)
+            if chroma444 {
+                if targets444[surface] == nil {
+                    let plane = try encoder.exportSurfacePacked(surface)
+                    let target = try gl.makeAyuvTarget(
+                        width: width, height: height,
+                        modifier: plane.modifier,
+                        plane: (plane.fd, plane.offset, plane.pitch))
+                    close(plane.fd)
+                    targets444[surface] = target
                 }
-                targets[surface] = target
+                gl.blit444(
+                    source: source,
+                    srcWidth: Int32(ticket.width),
+                    srcHeight: Int32(ticket.height),
+                    into: targets444[surface]!)
+            } else {
+                if targets[surface] == nil {
+                    let exported = try encoder.exportSurface(surface)
+                    let target = try gl.makeNV12Target(
+                        width: width, height: height,
+                        yFourcc: exported.y.fourcc,
+                        yModifier: exported.y.modifier,
+                        yPlane: (exported.y.fd, exported.y.offset,
+                                 exported.y.pitch),
+                        uvFourcc: exported.uv.fourcc,
+                        uvModifier: exported.uv.modifier,
+                        uvPlane: (exported.uv.fd, exported.uv.offset,
+                                  exported.uv.pitch))
+                    close(exported.y.fd)
+                    if exported.uv.fd != exported.y.fd {
+                        close(exported.uv.fd)
+                    }
+                    targets[surface] = target
+                }
+                gl.blit(
+                    source: source,
+                    srcWidth: Int32(ticket.width),
+                    srcHeight: Int32(ticket.height),
+                    into: targets[surface]!)
             }
-            gl.blit(
-                source: source,
-                srcWidth: Int32(ticket.width),
-                srcHeight: Int32(ticket.height),
-                into: targets[surface]!)
             gl.destroy(&source)
             ticket.release()
             ticketReleased = true

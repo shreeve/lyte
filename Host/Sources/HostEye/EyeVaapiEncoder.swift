@@ -8,7 +8,9 @@
 // field-for-field (read from the vendored tree, 2026-08-01), so the
 // driver sees exactly what it saw from ffmpeg — minus ffmpeg.
 //
-// Dialect: HEVC Main 8-bit 4:2:0, IPPP with one reference, CTB 64.
+// Dialect: HEVC Main 8-bit 4:2:0 — or, with chroma444 (the Best
+// tier), Rext Main 4:4:4 8-bit on AYUV surfaces — IPPP with one
+// reference, CTB 64.
 // The entrypoint is queried at open (EncSlice preferred, EncSliceLP
 // accepted — pup's Arc offers LP/VDENC); the driver's
 // PredictionDirection attribute decides GPB (BI_NOT_EMPTY → inter
@@ -42,6 +44,8 @@ public final class EyeVaapiEncoder {
     public let height: Int32
     public let fps: Int32
     public let qp: Int32
+    /// The Best tier: Rext Main 4:4:4 on packed AYUV surfaces.
+    public let chroma444: Bool
     /// True when the driver demanded GPB (BI_NOT_EMPTY) — the slice
     /// pen's trailGPB dialect. False would mean plain P slices,
     /// which no pen writes yet: open() refuses rather than guesses.
@@ -77,12 +81,14 @@ public final class EyeVaapiEncoder {
         width: Int32, height: Int32, fps: Int32, qp: Int32,
         renderNode: String = "/dev/dri/renderD128",
         bitrateBitsPerSecond: Int64 = 0,
-        inputSurfaceCount: Int = 8
+        inputSurfaceCount: Int = 8,
+        chroma444: Bool = false
     ) throws {
         self.width = width
         self.height = height
         self.fps = fps
         self.qp = qp
+        self.chroma444 = chroma444
         self.bitrateBitsPerSecond = bitrateBitsPerSecond
         self.currentRate = bitrateBitsPerSecond
         // The BRC dialect (pinned to ffmpeg's on this driver): under
@@ -96,7 +102,8 @@ public final class EyeVaapiEncoder {
             width: UInt32(width), height: UInt32(height),
             fpsNumerator: UInt32(fps), fpsDenominator: 1,
             initialQP: bitrateBitsPerSecond > 0 ? 30 : qp,
-            cuQpDeltaDepth: bitrateBitsPerSecond > 0 ? 3 : nil
+            cuQpDeltaDepth: bitrateBitsPerSecond > 0 ? 3 : nil,
+            chroma444: chroma444
         )
 
         drmFd = open(renderNode, O_RDWR)
@@ -111,6 +118,10 @@ public final class EyeVaapiEncoder {
         var major: Int32 = 0, minor: Int32 = 0
         try check(vaInitialize(display, &major, &minor), "vaInitialize")
 
+        // Profile: Main, or Rext Main444 for the Best tier (probed
+        // on the Arc: VAProfileHEVCMain444 offers EncSlice).
+        let profile = chroma444 ? VAProfileHEVCMain444 : VAProfileHEVCMain
+
         // Entrypoint: EncSlice preferred, LP accepted (pup's Arc is
         // VDENC-only for HEVC).
         var entrypoints = [VAEntrypoint](
@@ -119,8 +130,8 @@ public final class EyeVaapiEncoder {
         )
         var entrypointCount: Int32 = 0
         try check(vaQueryConfigEntrypoints(
-            display, VAProfileHEVCMain, &entrypoints, &entrypointCount
-        ), "vaQueryConfigEntrypoints(HEVCMain)")
+            display, profile, &entrypoints, &entrypointCount
+        ), "vaQueryConfigEntrypoints(HEVC)")
         let available = Set(entrypoints.prefix(Int(entrypointCount)))
         let entrypoint: VAEntrypoint
         if available.contains(VAEntrypointEncSlice) {
@@ -138,7 +149,7 @@ public final class EyeVaapiEncoder {
         var prediction = VAConfigAttrib(
             type: VAConfigAttribPredictionDirection, value: 0)
         _ = vaGetConfigAttributes(
-            display, VAProfileHEVCMain, entrypoint, &prediction, 1)
+            display, profile, entrypoint, &prediction, 1)
         if prediction.value != VA_ATTRIB_NOT_SUPPORTED {
             gpb = prediction.value
                 & UInt32(VA_PREDICTION_DIRECTION_BI_NOT_EMPTY) != 0
@@ -148,11 +159,14 @@ public final class EyeVaapiEncoder {
                 + "slice pen only speaks the iHD GPB dialect yet")
         }
 
-        // Config: NV12, our RC mode, and packed headers we author.
+        // Config: NV12 (or packed AYUV at 4:4:4), our RC mode, and
+        // packed headers we author.
+        let rtFormat = chroma444
+            ? UInt32(VA_RT_FORMAT_YUV444) : UInt32(VA_RT_FORMAT_YUV420)
         var attribs = [
             VAConfigAttrib(
                 type: VAConfigAttribRTFormat,
-                value: UInt32(VA_RT_FORMAT_YUV420)),
+                value: rtFormat),
             VAConfigAttrib(
                 type: VAConfigAttribRateControl,
                 value: bitrateBitsPerSecond > 0
@@ -163,24 +177,27 @@ public final class EyeVaapiEncoder {
                     | UInt32(VA_ENC_PACKED_HEADER_SLICE)),
         ]
         try check(vaCreateConfig(
-            display, VAProfileHEVCMain, entrypoint,
+            display, profile, entrypoint,
             &attribs, Int32(attribs.count), &configID
         ), "vaCreateConfig")
 
         // Surfaces: the GL-facing input pool and the driver-facing
         // recon pool (alternating pair — one holds the reference
         // while the other receives the current reconstruction).
+        let fourcc = chroma444
+            ? Int32(truncatingIfNeeded: 0x5655_5941 as UInt32) // AYUV
+            : Int32(truncatingIfNeeded: VA_FOURCC_NV12)
         var pixelFormat = VASurfaceAttrib(
             type: VASurfaceAttribPixelFormat,
             flags: UInt32(VA_SURFACE_ATTRIB_SETTABLE),
             value: VAGenericValue(
                 type: VAGenericValueTypeInteger,
-                value: .init(i: Int32(truncatingIfNeeded: VA_FOURCC_NV12))))
+                value: .init(i: fourcc)))
         inputSurfaces = [VASurfaceID](
             repeating: VASurfaceID(VA_INVALID_ID),
             count: inputSurfaceCount)
         try check(vaCreateSurfaces(
-            display, UInt32(VA_RT_FORMAT_YUV420),
+            display, rtFormat,
             UInt32(width), UInt32(height),
             &inputSurfaces, UInt32(inputSurfaceCount),
             &pixelFormat, 1
@@ -188,7 +205,7 @@ public final class EyeVaapiEncoder {
         reconSurfaces = [VASurfaceID](
             repeating: VASurfaceID(VA_INVALID_ID), count: 2)
         try check(vaCreateSurfaces(
-            display, UInt32(VA_RT_FORMAT_YUV420),
+            display, rtFormat,
             UInt32(width), UInt32(height),
             &reconSurfaces, 2, &pixelFormat, 1
         ), "vaCreateSurfaces(recon)")
@@ -202,7 +219,9 @@ public final class EyeVaapiEncoder {
         var coded = VABufferID(VA_INVALID_ID)
         try check(vaCreateBuffer(
             display, contextID, VAEncCodedBufferType,
-            UInt32(width * height * 3 / 2 + 1 << 16), 1, nil, &coded
+            UInt32(chroma444
+                ? width * height * 3 + 1 << 16
+                : width * height * 3 / 2 + 1 << 16), 1, nil, &coded
         ), "vaCreateBuffer(coded)")
         codedBuffer = coded
 
@@ -211,7 +230,8 @@ public final class EyeVaapiEncoder {
             : "cqp \(qp)"
         print("vaapi-native: \(String(cString: vaQueryVendorString(display))) "
             + "— \(entrypoint == VAEntrypointEncSliceLP ? "LP" : "std")"
-            + " entrypoint, GPB, \(rc)")
+            + " entrypoint, GPB, \(rc)"
+            + (chroma444 ? ", Rext Main444 (AYUV)" : ""))
     }
 
     deinit {
@@ -288,6 +308,43 @@ public final class EyeVaapiEncoder {
                 "expected 2 exported layers, got \(u32(80))")
         }
         return (layer(0), layer(1))
+    }
+
+    /// The 4:4:4 variant: a packed AYUV surface exports as one layer.
+    public func exportSurfacePacked(
+        _ id: VASurfaceID
+    ) throws -> ExportedPlane {
+        let descriptor = UnsafeMutableRawPointer.allocate(
+            byteCount: 512, alignment: 8)
+        defer { descriptor.deallocate() }
+        descriptor.initializeMemory(
+            as: UInt8.self, repeating: 0, count: 512)
+        let status = vaExportSurfaceHandle(
+            display, id,
+            UInt32(VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2),
+            UInt32(VA_EXPORT_SURFACE_WRITE_ONLY)
+                | UInt32(VA_EXPORT_SURFACE_SEPARATE_LAYERS),
+            descriptor
+        )
+        try check(status, "vaExportSurfaceHandle(\(id))")
+        func u32(_ offset: Int) -> UInt32 {
+            descriptor.load(fromByteOffset: offset, as: UInt32.self)
+        }
+        func u64(_ offset: Int) -> UInt64 {
+            descriptor.load(fromByteOffset: offset, as: UInt64.self)
+        }
+        guard u32(80) >= 1 else {
+            throw EyeVaapiError(
+                "expected 1 exported layer, got \(u32(80))")
+        }
+        let objectIndex = Int(u32(84 + 8))
+        return ExportedPlane(
+            fourcc: u32(84),
+            modifier: u64(16 + objectIndex * 16 + 8),
+            fd: Int32(bitPattern: u32(16 + objectIndex * 16)),
+            offset: u32(84 + 24),
+            pitch: u32(84 + 40)
+        )
     }
 
     // MARK: The per-frame drive
@@ -400,7 +457,7 @@ public final class EyeVaapiEncoder {
             ? UInt32(bitrateBitsPerSecond) : 0
         seq.pic_width_in_luma_samples = UInt16(width)
         seq.pic_height_in_luma_samples = UInt16(height)
-        seq.seq_fields.bits.chroma_format_idc = 1
+        seq.seq_fields.bits.chroma_format_idc = chroma444 ? 3 : 1
         seq.seq_fields.bits.amp_enabled_flag = 1
         seq.seq_fields.bits.sample_adaptive_offset_enabled_flag = 1
         seq.seq_fields.bits.sps_temporal_mvp_enabled_flag = 1

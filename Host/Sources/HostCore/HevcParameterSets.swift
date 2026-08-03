@@ -6,8 +6,9 @@
 // oracle in HevcParameterSetTests — a real capture's headers,
 // decoded field-by-field and mirrored here name-by-name).
 //
-// SCOPE: this is the iHD/Arc ENCODE dialect — Main profile, 8-bit
-// 4:2:0, one temporal layer, IPPP with one reference, CTB 64, no
+// SCOPE: this is the iHD/Arc ENCODE dialect — Main profile 8-bit
+// 4:2:0, or (the Best tier, recipe.chroma444) Rext Main 4:4:4 8-bit
+// — one temporal layer, IPPP with one reference, CTB 64, no
 // tiles/PCM/scaling lists — not a general H.265 header library.
 // NVENC writes its own headers (E6a); this pen serves VAAPI alone.
 
@@ -34,12 +35,19 @@ public struct HevcHeaderRecipe: Hashable, Sendable {
     /// The value is diff_cu_qp_delta_depth; the driver dialect uses
     /// log2_diff_max_min_luma_coding_block_size (= 3, 8x8 granularity).
     public var cuQpDeltaDepth: UInt32?
+    /// The Best tier (Rext): full-chroma Main 4:4:4, 8-bit. False =
+    /// the Main 4:2:0 dialect every prior capture pinned. Probed
+    /// 2026-08-03: the Arc encodes it (VAProfileHEVCMain444
+    /// EncSlice) and the M5 hardware-decodes it (444v, production
+    /// render path).
+    public var chroma444: Bool
 
     public init(
         width: UInt32, height: UInt32,
         fpsNumerator: UInt32 = 60, fpsDenominator: UInt32 = 1,
         initialQP: Int32 = 24, levelIdc: UInt32 = 150,
-        cuQpDeltaDepth: UInt32? = nil
+        cuQpDeltaDepth: UInt32? = nil,
+        chroma444: Bool = false
     ) {
         self.width = width
         self.height = height
@@ -48,29 +56,55 @@ public struct HevcHeaderRecipe: Hashable, Sendable {
         self.initialQP = initialQP
         self.levelIdc = levelIdc
         self.cuQpDeltaDepth = cuQpDeltaDepth
+        self.chroma444 = chroma444
     }
 }
 
 public enum HevcParameterSets {
 
-    // MARK: profile_tier_level (§7.3.3) — Main, progressive,
-    // frame-only, one layer
+    // MARK: profile_tier_level (§7.3.3) — Main or Rext Main 4:4:4,
+    // progressive, frame-only, one layer
 
     private static func profileTierLevel(
         _ w: inout HevcBitWriter, _ recipe: HevcHeaderRecipe
     ) {
         w.u(0, 2)  // general_profile_space
         w.u(0, 1)  // general_tier_flag (Main tier)
-        w.u(1, 5)  // general_profile_idc = Main
-        // Compatibility: profiles 1 (Main) and 2 (Main 10 decoders
-        // accept Main) — bits 1 and 2 of the MSB-first 32.
-        w.u(0x6000_0000, 32)
+        if recipe.chroma444 {
+            w.u(4, 5)  // general_profile_idc = Rext
+            // Compatibility: profile 4 only — bit 4 of the MSB-first
+            // 32 (a Rext stream is nobody else's business).
+            w.u(0x0800_0000, 32)
+        } else {
+            w.u(1, 5)  // general_profile_idc = Main
+            // Compatibility: profiles 1 (Main) and 2 (Main 10
+            // decoders accept Main) — bits 1 and 2 of the MSB-first
+            // 32.
+            w.u(0x6000_0000, 32)
+        }
         w.u(1, 1)  // general_progressive_source_flag
         w.u(0, 1)  // general_interlaced_source_flag
         w.u(1, 1)  // general_non_packed_constraint_flag
         w.u(1, 1)  // general_frame_only_constraint_flag
-        w.u(0, 32) // general_reserved_zero_43bits (high)
-        w.u(0, 11) // general_reserved_zero_43bits (low)
+        if recipe.chroma444 {
+            // Rext (profile_idc 4): the 43 reserved bits become the
+            // constraint flags; these are §A.3.5's "Main 4:4:4" row
+            // (8-bit, any chroma, inter allowed, lower bit rate).
+            w.u(1, 1)  // general_max_12bit_constraint_flag
+            w.u(1, 1)  // general_max_10bit_constraint_flag
+            w.u(1, 1)  // general_max_8bit_constraint_flag
+            w.u(0, 1)  // general_max_422chroma_constraint_flag
+            w.u(0, 1)  // general_max_420chroma_constraint_flag
+            w.u(0, 1)  // general_max_monochrome_constraint_flag
+            w.u(0, 1)  // general_intra_constraint_flag
+            w.u(0, 1)  // general_one_picture_only_constraint_flag
+            w.u(1, 1)  // general_lower_bit_rate_constraint_flag
+            w.u(0, 32) // general_reserved_zero_34bits (high)
+            w.u(0, 2)  // general_reserved_zero_34bits (low)
+        } else {
+            w.u(0, 32) // general_reserved_zero_43bits (high)
+            w.u(0, 11) // general_reserved_zero_43bits (low)
+        }
         w.u(0, 1)  // general_reserved_zero_bit / inbld
         w.u(recipe.levelIdc, 8) // general_level_idc
         // sps/vps_max_sub_layers_minus1 == 0: no sub-layer entries.
@@ -114,7 +148,12 @@ public enum HevcParameterSets {
         w.u(1, 1)      // sps_temporal_id_nesting_flag
         profileTierLevel(&w, recipe)
         w.ue(0)        // sps_seq_parameter_set_id
-        w.ue(1)        // chroma_format_idc = 4:2:0
+        if recipe.chroma444 {
+            w.ue(3)    // chroma_format_idc = 4:4:4
+            w.u(0, 1)  // separate_colour_plane_flag (joint planes)
+        } else {
+            w.ue(1)    // chroma_format_idc = 4:2:0
+        }
         w.ue(recipe.width)  // pic_width_in_luma_samples
         w.ue(recipe.height) // pic_height_in_luma_samples
         // conformance_window_flag: the eye's dimensions are CTB-round

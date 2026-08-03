@@ -58,6 +58,16 @@ public struct NV12Target {
     public var height: Int32
 }
 
+/// One packed-AYUV render target (the Rext 4:4:4 tier): a single
+/// plane, imported as ARGB8888 so one shader pass writes all three
+/// components at full resolution.
+public struct AyuvTarget {
+    public var plane: ImportedTexture
+    public var fbo: GLuint
+    public var width: Int32
+    public var height: Int32
+}
+
 public final class EyeGL {
     private var nodeFd: Int32 = -1
     private var gbm: OpaquePointer?
@@ -66,8 +76,10 @@ public final class EyeGL {
     private var imageTarget: ImageTargetTexture2D!
     private var progY: GLuint = 0
     private var progUV: GLuint = 0
+    private var prog444: GLuint = 0
     private var srcSizeLocY: GLint = -1
     private var srcSizeLocUV: GLint = -1
+    private var srcSizeLoc444: GLint = -1
 
     public init(renderNode: String) throws {
         nodeFd = open(renderNode, O_RDWR)
@@ -101,8 +113,10 @@ public final class EyeGL {
 
         progY = try buildProgram(fragment: Self.fragY)
         progUV = try buildProgram(fragment: Self.fragUV)
+        prog444 = try buildProgram(fragment: Self.frag444)
         srcSizeLocY = glGetUniformLocation(progY, "srcSize")
         srcSizeLocUV = glGetUniformLocation(progUV, "srcSize")
+        srcSizeLoc444 = glGetUniformLocation(prog444, "srcSize")
     }
 
     // MARK: - Shaders
@@ -142,6 +156,26 @@ public final class EyeGL {
         float v = (c.r - y) / 1.5748;
         gl_FragColor = vec4(128.0 / 255.0 + u * (224.0 / 255.0),
                             128.0 / 255.0 + v * (224.0 / 255.0), 0.0, 1.0);
+    }
+    """
+
+    // BT.709 limited-range Y, U, V — all three at full resolution in
+    // one pass, for the packed AYUV plane. The plane's memory bytes
+    // are [V, U, Y, A]; imported as DRM ARGB8888 its bytes read
+    // [B, G, R, A], so writing vec4(y, u, v, 1) lands Y in byte 2,
+    // U in byte 1, V in byte 0 — exactly AYUV.
+    private static let frag444 = """
+    #version 130
+    uniform sampler2D src;
+    uniform vec2 srcSize;
+    void main() {
+        vec3 c = texture(src, gl_FragCoord.xy / srcSize).rgb;
+        float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        float u = (c.b - y) / 1.8556;
+        float v = (c.r - y) / 1.5748;
+        gl_FragColor = vec4(16.0 / 255.0 + y * (219.0 / 255.0),
+                            128.0 / 255.0 + u * (224.0 / 255.0),
+                            128.0 / 255.0 + v * (224.0 / 255.0), 1.0);
     }
     """
 
@@ -290,6 +324,22 @@ public final class EyeGL {
             width: width, height: height)
     }
 
+    /// Wrap an exported packed AYUV surface (one layer) as an FBO
+    /// render target, imported as ARGB8888 (byte-identical layout —
+    /// see frag444 for the channel mapping).
+    public func makeAyuvTarget(
+        width: Int32, height: Int32, modifier: UInt64,
+        plane: (fd: Int32, offset: UInt32, pitch: UInt32)
+    ) throws -> AyuvTarget {
+        let argb8888: UInt32 = 0x3432_5241 // DRM_FORMAT_ARGB8888 'AR24'
+        let imported = try importTexture(
+            width: width, height: height, fourcc: argb8888,
+            modifier: modifier, planes: [plane])
+        let fbo = try attach(imported.texture)
+        return AyuvTarget(
+            plane: imported, fbo: fbo, width: width, height: height)
+    }
+
     // MARK: - The blit
 
     /// RGB scanout → NV12 target, two passes, then a full GPU sync so
@@ -310,6 +360,25 @@ public final class EyeGL {
         glUniform2f(srcSizeLocUV, GLfloat(srcWidth), GLfloat(srcHeight))
         glBindFramebuffer(GLenum(GL_FRAMEBUFFER), target.fboUV)
         glViewport(0, 0, target.width / 2, target.height / 2)
+        glDrawArrays(GLenum(GL_TRIANGLES), 0, 3)
+
+        glFinish()
+    }
+
+    /// RGB scanout → packed AYUV target, one pass at full resolution
+    /// (the 4:4:4 tier keeps every chroma sample), same prototype
+    /// glFinish sync as the NV12 blit.
+    public func blit444(
+        source: ImportedTexture, srcWidth: Int32, srcHeight: Int32,
+        into target: AyuvTarget
+    ) {
+        glActiveTexture(GLenum(GL_TEXTURE0))
+        glBindTexture(GLenum(GL_TEXTURE_2D), source.texture)
+
+        glUseProgram(prog444)
+        glUniform2f(srcSizeLoc444, GLfloat(srcWidth), GLfloat(srcHeight))
+        glBindFramebuffer(GLenum(GL_FRAMEBUFFER), target.fbo)
+        glViewport(0, 0, target.width, target.height)
         glDrawArrays(GLenum(GL_TRIANGLES), 0, 3)
 
         glFinish()
