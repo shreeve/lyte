@@ -86,14 +86,30 @@ ceiling cuts with whole-beat hysteresis (a pinned slider chattered
 the grid — pinned by test), slip repays drift. Witness verdict PASS:
 gap p50=p95=p99 = 16.667 ms EXACTLY, lateness p99 0.4–4.6 ms (bar 8,
 was ~18), 30.76 dB / SSIM 0.9989, 29/29 phase-locked, 0 IDR — owner
-confirmed by eye ("ABSOLUTELY SOLVED"). NEXT = the host-side hunt
-the metronome exposed: ~20 skipped capture beats per 30 s under
-encode load (compositor/eye contention — also fails the presenter
-preflight when a client streams during warm-up), plus GNOME focus
-denial covering the witness marker after remote input (benchmark
-needs a focus story; owner's desktop-click is the workaround). Then:
-audio onto the Conductor primitives, E6a NVENC productionize, Rext
-4:4:4, E2 uinput-primary, E4 packaging aimed at Lyte OS. Then: E6a NVENC
+confirmed by eye ("ABSOLUTELY SOLVED"). **The beat-skip hunt CLOSED
+(#84, 2026-08-03, CaptureBeatBook):** the host grew a sans-IO beat
+book (HostCore; every doorbell poll and flip stamped; gap ≥ 1.5
+beats books a skip with a verdict — `source` when the doorbell
+watched the FB hold still, `loop` when the doorbell went blind) plus
+per-stage clocks in DirectEyeLeg (service/cursor/grab/blit/encode/
+deliver, skip lines + closing beat-book books). Rig verdict: the
+HOST LOOP IS EXONERATED in steady state (all stages < 9 ms; one
+106 ms wire.service() stall at connect — audio-routing/clipboard
+setup on the capture thread, inside client warm-up). The source
+skips are a STRICT 10.000-second comb: GNOME Shell 50.1 itself burns
+20–30 ms of flat-out CPU at monotonic X4.958 every 10 s — present on
+an IDLE desktop, no presenter, no client, no encode (10 ms
+schedstat sampler; python GC and every daemon acquitted). The
+compositor misses two beats every ten seconds machine-wide: the
+owner's residual "occasional shudder" is pup's shell housekeeping
+(gjs full-GC signature), not Lyte. Mitigation is a system decision
+(shell extension diet / newer shell / accept). FILED from the hunt:
+move wire.service()'s shell half off the capture thread (a
+mid-session clipboard paste or file drop would stall capture for
+its duration — the 106 ms stall proves the seam); GNOME focus
+denial still covers the witness marker after remote input
+(benchmark needs a focus story; owner's desktop-click is the
+workaround). Then: audio onto the Conductor primitives, E6a NVENC
 productionize (lyte-nvenc probe banked), Rext 4:4:4 in the native
 pens (returns the Best tier), E2 uinput-primary, E4 packaging aimed
 at Lyte OS.
