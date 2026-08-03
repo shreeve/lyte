@@ -43,6 +43,7 @@ H-era build plans completed their ladder and are retired to git history
   `LyteCore.BoundedRendererHandoff` owns dependency-episode queue and recovery
   verdicts while CoreMedia sample adaptation stays in the client shell;
   the first extracted adapter is the one process-wide monotonic clock;
+  `LyteVideoPipeline` receives that clock through its constructor;
   `COpus` is the one shared libopus system-library module.
 - **`Host/`** — package `LyteHost`: the Linux host. Depends on
   `.package(path: "../Wire")` and, for Linux shells, `../Common`.

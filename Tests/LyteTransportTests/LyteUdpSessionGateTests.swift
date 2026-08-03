@@ -984,6 +984,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
         let corpus = try loadCorpus(2)
         let collected = LockedDatagramPile()   // count via appends
         let pipeline = LyteVideoPipeline(
+            nowNanoseconds: { 0 },
             onSample: { _, _ in collected.append([]) })
         // A P-frame idle frame with no format description yet: the
         // present-ASAP chain never shows garbage — withheld, exactly

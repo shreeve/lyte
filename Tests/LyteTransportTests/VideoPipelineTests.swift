@@ -60,6 +60,7 @@ final class VideoPipelineTests: XCTestCase {
 
         init() {
             pipeline = LyteVideoPipeline(
+                nowNanoseconds: { 0 },
                 onSample: { [weak self] sample, unit in
                     self?.samples.append((sample, unit))
                 },
@@ -85,6 +86,19 @@ final class VideoPipelineTests: XCTestCase {
         }
     }
 
+    private final class StepClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: UInt64 = 0
+
+        func read() -> UInt64 {
+            lock.lock()
+            defer { lock.unlock() }
+            let current = value
+            value &+= 1_000
+            return current
+        }
+    }
+
     // MARK: - The corpus renders, byte-exact, headless
 
     func testProductionSampleWorkerPreservesOrderingAndTelemetry() throws {
@@ -95,6 +109,7 @@ final class VideoPipelineTests: XCTestCase {
         let observed = AsyncFrames()
         let pipeline = LyteVideoPipeline(
             asynchronousSampleBuild: true,
+            nowNanoseconds: { 0 },
             onSample: { sample, unit in
                 observed.append(
                     unit.frameNumber.rawValue,
@@ -111,6 +126,27 @@ final class VideoPipelineTests: XCTestCase {
         XCTAssertEqual(observed.snapshot.0, [0, 1, 2])
         XCTAssertEqual(observed.snapshot.1, 3)
         XCTAssertEqual(pipeline.snapshotStats().samplesDelivered, 3)
+    }
+
+    func testInjectedClockOwnsLockAndSampleBuildTelemetry() throws {
+        let frame = try XCTUnwrap(loadPrefix().first)
+        let shards = try XCTUnwrap(try packetizePrefix([frame]).first)
+        let clock = StepClock()
+        let pipeline = LyteVideoPipeline(
+            nowNanoseconds: { clock.read() },
+            onSample: { _, _ in })
+
+        for shard in shards {
+            pipeline.ingest(
+                envelope: shard.envelope,
+                payload: shard.payload,
+                now: ClientTimestamp(microseconds: 1_000))
+        }
+
+        let telemetry = try XCTUnwrap(
+            pipeline.frameTelemetry(frame: FrameNumber(rawValue: 0)))
+        XCTAssertEqual(telemetry.assemblyLockHoldMicroseconds, 1)
+        XCTAssertEqual(telemetry.sampleBuildMicroseconds, 1)
     }
 
     func testCorpusShuffledParityBoundedLossRendersByteExact() throws {
