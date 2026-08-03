@@ -77,6 +77,34 @@ public final class EyeVaapiEncoder {
         }
     }
 
+    /// The startup probe behind the host's chroma declaration (V-4:
+    /// declared on PROOF, never a hardcoded claim): does this silicon
+    /// offer Rext Main 4:4:4 encode? A short-lived display of its
+    /// own — no session, no surfaces, closed before return.
+    public static func probesMain444(
+        renderNode: String = "/dev/dri/renderD128"
+    ) -> Bool {
+        let fd = open(renderNode, O_RDWR)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        guard let display = vaGetDisplayDRM(fd) else { return false }
+        var major: Int32 = 0, minor: Int32 = 0
+        guard vaInitialize(display, &major, &minor)
+            == VA_STATUS_SUCCESS else { return false }
+        defer { vaTerminate(display) }
+        var entrypoints = [VAEntrypoint](
+            repeating: VAEntrypointVLD,
+            count: Int(vaMaxNumEntrypoints(display))
+        )
+        var count: Int32 = 0
+        guard vaQueryConfigEntrypoints(
+            display, VAProfileHEVCMain444, &entrypoints, &count
+        ) == VA_STATUS_SUCCESS else { return false }
+        return entrypoints.prefix(Int(count)).contains {
+            $0 == VAEntrypointEncSlice || $0 == VAEntrypointEncSliceLP
+        }
+    }
+
     public init(
         width: Int32, height: Int32, fps: Int32, qp: Int32,
         renderNode: String = "/dev/dri/renderD128",
