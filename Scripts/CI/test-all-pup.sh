@@ -99,7 +99,7 @@ on_remote_exit() {
 }
 trap on_remote_exit EXIT
 
-manifest_graph_hash="$({
+build_graph_hash="$({
     for manifest in \
         "$gate_root/Package.swift" \
         "$gate_root/Package.resolved" \
@@ -114,25 +114,39 @@ manifest_graph_hash="$({
             sha256sum "$manifest"
         fi
     done
+
+    # A source-only layout change leaves Package.swift untouched, but old
+    # SwiftPM workspaces can still name the removed dependency paths. Include
+    # the structural source graph so the shared Linux mirror invalidates that
+    # stale state before testing dependents.
+    cd "$gate_root"
+    for package_root in . Common Wire Host; do
+        for tree in Sources Tests Plugins; do
+            source_root="$package_root/$tree"
+            if [[ -d "$source_root" ]]; then
+                find "$source_root" -type f -print
+            fi
+        done
+    done | LC_ALL=C sort
 } | sha256sum | awk '{print $1}')"
 
 run_package_tests() {
     local label="$1"
     local path="$2"
-    local marker="$path/.build/.lyte-manifest-graph-sha256"
+    local marker="$path/.build/.lyte-build-graph-sha256"
     local installed_hash=""
 
     echo "==> $label tests"
     if [[ -f "$marker" ]]; then
         installed_hash="$(<"$marker")"
     fi
-    if [[ "$installed_hash" != "$manifest_graph_hash" ]]; then
-        echo "    package graph changed; invalidating stale SwiftPM build state"
+    if [[ "$installed_hash" != "$build_graph_hash" ]]; then
+        echo "    package or source-path graph changed; invalidating stale SwiftPM build state"
         (cd "$path" && swift package clean)
     fi
     (cd "$path" && swift package resolve && swift test)
     mkdir -p "$path/.build"
-    printf '%s\n' "$manifest_graph_hash" > "$marker"
+    printf '%s\n' "$build_graph_hash" > "$marker"
 }
 
 run_package_tests "Common" "$gate_root/Common"
