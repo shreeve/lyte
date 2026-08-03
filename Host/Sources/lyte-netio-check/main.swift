@@ -29,7 +29,7 @@ func realtimeNowNS() -> UInt64 {
 
 func hexTOS(_ tos: UInt8) -> String {
     Hex.string(tos, width: 2, uppercase: true, prefix: true)
-        + "/dscp\(tos >> 2)"
+        + "/dscp\(WireTos.dscp(tos))"
 }
 
 func pad(_ s: String, _ width: Int) -> String {
@@ -66,7 +66,7 @@ func run() throws {
         throw CheckError("SO_TIMESTAMPING arm failed: \(errString(err))")
     }
 
-    let tosCycle: [UInt8] = [0xB8, 0xA0, 0xC0]
+    let tosCycle: [UInt8] = [0xB8, WireTos.video, WireTos.protected]
     let count = 12
     let payloadSize = 1152 // the universal datagram budget
     let sentTOS = (0..<count).map { tosCycle[$0 % tosCycle.count] }

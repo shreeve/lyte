@@ -1,5 +1,6 @@
 import XCTest
 import HostCore
+import LyteCore
 
 // THE GATE (HS-20, D-2): the wire-marking policy, pinned as data. The
 // protected CS6 lane carries control, audio, and — since HS-20 — the
@@ -13,15 +14,16 @@ final class WireTosTests: XCTestCase {
 
     func testMarkingPolicyPinned() {
         // The protected lane (CS6 / DSCP 48).
-        XCTAssertEqual(WireTos.byte(for: .control), 0xC0)
-        XCTAssertEqual(WireTos.byte(for: .audio), 0xC0)
-        XCTAssertEqual(WireTos.byte(for: .videoTail), 0xC0,
+        XCTAssertEqual(WireTos.byte(for: .control), WireTos.protected)
+        XCTAssertEqual(WireTos.byte(for: .audio), WireTos.protected)
+        XCTAssertEqual(WireTos.byte(for: .videoTail), WireTos.protected,
                        "repairs ride the protected lane (HS-20)")
         // The video lane (CS5 / DSCP 40).
-        XCTAssertEqual(WireTos.byte(for: .freshVideo), 0xA0)
-        XCTAssertEqual(WireTos.byte(for: .refinement), 0xA0)
+        XCTAssertEqual(WireTos.byte(for: .freshVideo), WireTos.video)
+        XCTAssertEqual(WireTos.byte(for: .refinement), WireTos.video)
         // Telemetry is deliberately unmarked.
-        XCTAssertEqual(WireTos.byte(for: .telemetry), 0x00)
+        XCTAssertEqual(WireTos.byte(for: .telemetry), WireTos.unmarked)
+        XCTAssertEqual(WireTos.byte(for: .bulk), WireTos.bulk)
     }
 
     func testEveryClassHasAMarking() {
