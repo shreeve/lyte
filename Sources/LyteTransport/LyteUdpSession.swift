@@ -515,6 +515,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
         self.pipeline = LyteVideoPipeline(
             asynchronousSampleBuild: asynchronousVideoBuild,
+            nowNanoseconds: { now().microseconds &* 1_000 },
             onSample: { [weak self] sample, unit in
                 // The input→photon seam (CL-9): a DELIVERED frame whose
                 // shards carried the lastInputSeq TLV closes every

@@ -36,6 +36,7 @@ final class MediaIsolationStressTests: XCTestCase {
         let releaseRendererSeam = DispatchSemaphore(value: 0)
         let pipeline = LyteVideoPipeline(
             asynchronousSampleBuild: true,
+            nowNanoseconds: { 0 },
             onSample: { _, _ in
                 enteredRendererSeam.signal()
                 releaseRendererSeam.wait()

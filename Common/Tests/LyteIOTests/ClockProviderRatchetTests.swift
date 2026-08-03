@@ -63,4 +63,13 @@ final class ClockProviderRatchetTests: XCTestCase {
                 )
         )
     }
+
+    func testVideoPipelineReceivesTimeInsteadOfReadingTheShellClock() throws {
+        let pipeline = Self.repositoryRoot.appendingPathComponent(
+            "Sources/LyteTransport/LyteVideoPipeline.swift")
+        let source = try String(contentsOf: pipeline, encoding: .utf8)
+        XCTAssertFalse(
+            source.contains("SystemMonotonicClock"),
+            "LyteVideoPipeline must receive time through its constructor")
+    }
 }
