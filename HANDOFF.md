@@ -286,13 +286,24 @@ module maps, and both divergent shims were deleted in the same PR. The
 cardinality ratchet requires exactly one manifest declaration and one module
 map. `lyte-cli` resolved Homebrew's `libopus.0.dylib`; pup's rebuilt
 `lyte-host` resolved the system `libopus.so.0`, its systemd service is active,
-and its identity files are unchanged. **NEXT: Theme 2 starts with the chartered
-`RendererHandoffPolicy` split — move policy onto sans-IO frame descriptors,
-leave `CMSampleBuffer` in the shell, carry the lint with the extracted type,
-and preserve every handoff verdict.**
+and its identity files are unchanged.
 
-**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 43 Mac / 44 pup;
-root client 284; host 284 pup / 283 Mac — all green.
+**CLEANUP THEME 2 IS RUNNING (#106, 2026-08-03): renderer handoff policy is
+sans-IO.** #106 moved `RendererFrameDescriptor`,
+`BoundedRendererHandoff`, and `RendererRecoveryFlushBarrier` into LyteCore.
+Policy now sees only random-access and submission facts; the client's
+`VideoSampleTiming` adapter alone sees `CMSampleBuffer`, attachments, and the
+CoreMedia timebase. All five queue/recovery verdict tests moved with the type,
+the LyteCore lint passes on both platforms, and a production-source ratchet
+rejects another policy twin. The real renderer shell and media-isolation gate
+consume the descriptor with every previous verdict intact. Wire and frozen
+vectors were untouched; pup's rebuilt systemd host is active and its identity
+files are unchanged. **NEXT: inject the clock into `LyteVideoPipeline` — move
+its timing decisions off direct shell reads while leaving scheduling and
+sample construction byte/telemetry exact.**
+
+**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 49 Mac / 50 pup;
+root client 279; host 284 pup / 283 Mac — all green.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
