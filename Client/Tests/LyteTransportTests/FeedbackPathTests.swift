@@ -160,6 +160,44 @@ final class FeedbackPathTests: XCTestCase {
         XCTAssertNoThrow(try report.encode(), "a decimated report always encodes")
     }
 
+    func testQueuedNacksFillOneReportAndSpillInOrder() throws {
+        let demux = ReceiveDemux(crypto: InsecureTransportCrypto())
+        let sender = TransportSender(
+            crypto: InsecureTransportCrypto(),
+            transmit: { _ in true }
+        )
+        let feedback = FeedbackSender(demux: demux, sender: sender)
+        let entries = try (0..<8).map { frame in
+            try FeedbackReport.NackEntry(
+                frame: FrameNumber(rawValue: UInt32(frame)),
+                missingShards: [UInt8(frame), 20]
+            )
+        }
+        feedback.enqueueNacks(entries)
+
+        let first = feedback.buildReport(
+            now: ClientTimestamp(microseconds: 1_000)
+        )
+        XCTAssertEqual(first.nacks.count, FeedbackBounds.maxNackEntries)
+        XCTAssertEqual(
+            first.nacks.map(\.frame.rawValue),
+            [0, 1, 2, 3, 4, 5]
+        )
+        XCTAssertEqual(
+            try FeedbackReport.decode(first.encode()).nacks,
+            first.nacks
+        )
+
+        let second = feedback.buildReport(
+            now: ClientTimestamp(microseconds: 2_000)
+        )
+        XCTAssertEqual(second.nacks.map(\.frame.rawValue), [6, 7])
+        XCTAssertTrue(feedback.buildReport(
+            now: ClientTimestamp(microseconds: 3_000)
+        ).nacks.isEmpty)
+        XCTAssertEqual(feedback.snapshotStats().nackEntriesSent, 8)
+    }
+
     // MARK: - Cadence
 
     func testCadenceClampsToBuildPlanRange() {

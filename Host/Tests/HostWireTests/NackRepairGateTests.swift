@@ -6,24 +6,18 @@ import LyteWireTestKit
 
 // THE GATE (build plan HS-17 row: "Congestion II: NACK responder
 // (≥4 s rings), per-frame adaptive FEC — client NACKs honored, closes
-// §4.7"). Pinned behaviors, each a leg below:
+// §4.7"). The full real-client → real-Session → repaired-client round
+// trip now belongs to SystemTests; this owner suite pins the Host-only
+// judgement, retention, estimator, and scheduling laws below:
 //
-//   • REPAIR ROUND TRIP: a NACK naming shards FEC could not recover
-//     (missing > parity) draws exactly those shards back as FRESH
-//     datagrams — fresh seqs (the W3/W9 rule), original frame number,
-//     fec field, capture timestamp, byte-identical payloads — on the
-//     `.videoTail` class (the overview's unified priority order), and
-//     the union of survivors + repairs loop-decodes to the original
-//     Annex-B byte-exact;
 //   • STALENESS VERDICTS (resiliency §1.1 rules 3–4): a frame older
 //     than the last IDR is refused dead (no repair, no IDR — the IDR
 //     already re-anchored the chain) while the IDR itself stays
 //     repairable; a NACK whose SRTT + retransmit serialization no
-//     longer fit the remaining freeze budget (2 frame intervals —
-//     Work mode has no video jitter buffer) is answered with the IDR
-//     alternative through the SAME coalesced keyframe latch client
-//     0x10 requests pull; no RTT evidence means no honest promise, so
-//     the gate refuses; an evicted frame is unavailable → IDR; one
+//     longer fit the cadence-derived freeze budget is answered with the
+//     IDR alternative through the SAME coalesced keyframe latch client
+//     0x10 requests pull; no RTT evidence means no honest promise, so the
+//     gate refuses; an evicted frame is unavailable → IDR; one
 //     attempt per shard, ever — no retransmission of retransmissions;
 //     a closed session suppresses repairs entirely;
 //   • THE ≥4 s RING: the repair store evicts by age and by byte cap,
@@ -219,113 +213,7 @@ final class NackRepairGateTests: XCTestCase {
         return (byIndex, geometry)
     }
 
-    // MARK: Leg 1 — repair round trip heals what FEC cannot
-
-    func testGateRepairRoundTripHealsWhatFecCannot() throws {
-        let box = Box()
-        let session = makeSession(box: box)
-        var now: UInt64 = 0
-        try establishSrtt(session, box: box, now: &now)
-
-        // One 30 KB frame: k = 28 data shards + 5 parity (clean 15%).
-        let annexB = syntheticFrame(byteCount: 30_000)
-        box.sendInstant = now
-        let shardCount = try session.ingestVideoFrame(
-            annexB, captureTimestampMicroseconds: now / 1_000,
-            isKeyframe: false, now: now
-        )
-        drain(session, box: box, until: now + 20 * Self.ms, now: &now)
-
-        let originals = box.fresh()
-        XCTAssertEqual(originals.count, shardCount)
-        let (byIndex, geo) = try shardsByIndex(originals, frame: 0)
-        let geometry = try XCTUnwrap(geo)
-        XCTAssertEqual(byIndex.count, geometry.totalShards)
-
-        // Lose SIX data shards — one past the 5-parity best case:
-        // FEC-impossible, the NACK's whole reason to exist.
-        let lost: [UInt8] = [0, 3, 9, 14, 20, 27]
-        XCTAssertGreaterThan(lost.count, geometry.parityShards)
-
-        let events = try feed(
-            session,
-            report: nackReport(
-                frame: 0, shards: lost, clientMicros: now / 1_000
-            ),
-            now: now
-        )
-        XCTAssertTrue(events.contains(.repairEnqueued(
-            frame: FrameNumber(rawValue: 0), shards: lost.count
-        )), "an in-budget NACK for a live frame must be honored")
-        drain(session, box: box, until: now + 10 * Self.ms, now: &now)
-
-        // ── The repairs: fresh datagrams, original interior ─────────
-        let repairs = box.tail()
-        XCTAssertEqual(repairs.count, lost.count)
-        let maxOriginalSeq = originals.map(\.seq.rawValue).max()!
-        var repairedSlots = [[UInt8]?](
-            repeating: nil, count: geometry.totalShards
-        )
-        for repair in repairs {
-            let (envelope, payload) = try Envelope.decode(repair.bytes)
-            guard case .reedSolomon(let index, let repairGeo) =
-                try FecField.decode(envelope.fec) else {
-                return XCTFail("repair without an RS fec field")
-            }
-            XCTAssertTrue(lost.contains(index),
-                          "repair named an un-NACKed shard")
-            XCTAssertEqual(repairGeo, geometry,
-                           "the fec field rides verbatim")
-            XCTAssertEqual(envelope.frame.rawValue, 0)
-            XCTAssertGreaterThan(envelope.seq.rawValue, maxOriginalSeq,
-                                 "a retransmit is a FRESH datagram (W3/W9)")
-            let original = try XCTUnwrap(byIndex[index])
-            XCTAssertEqual(Array(payload), original.payload,
-                           "repair payload must be byte-identical")
-            XCTAssertEqual(envelope.timestamp, original.envelope.timestamp,
-                           "capture stamp rides verbatim")
-            repairedSlots[Int(index)] = Array(payload)
-        }
-
-        // ── Survivors + repairs loop-decode byte-exact ──────────────
-        var slots = repairedSlots
-        for (index, shard) in byIndex where !lost.contains(index) {
-            slots[Int(index)] = shard.payload
-        }
-        let decoded = try FecDecoder.decode(
-            shards: slots, geometry: geometry
-        )
-        XCTAssertEqual(decoded, annexB,
-                       "the healed frame must be byte-identical")
-
-        XCTAssertEqual(session.counters.nacksHonored, 1)
-        XCTAssertEqual(session.counters.repairDatagramsEnqueued, lost.count)
-        XCTAssertFalse(session.takeFreshKeyframeRequest(),
-                       "an honored NACK must not arm an IDR")
-
-        // ── One attempt, ever (rule 3) ──────────────────────────────
-        let again = try feed(
-            session,
-            report: nackReport(
-                frame: 0, shards: lost, clientMicros: now / 1_000 + 100
-            ),
-            now: now
-        )
-        XCTAssertTrue(again.contains(.nackJudgedStale(
-            frame: FrameNumber(rawValue: 0), reason: .alreadyRepaired
-        )), "no retransmission of retransmissions")
-        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
-        XCTAssertEqual(box.tail().count, lost.count,
-                       "the re-NACK must add nothing to the wire")
-        XCTAssertFalse(session.takeFreshKeyframeRequest(),
-                       "in-flight repairs must not be doubled by an IDR")
-
-        print("HS-17 gate leg 1: \(lost.count) shards past parity healed "
-            + "byte-exact via videoTail repairs (fresh seqs > "
-            + "\(maxOriginalSeq)); re-NACK refused")
-    }
-
-    // MARK: Leg 2 — staleness verdicts
+    // MARK: Leg 1 — staleness verdicts
 
     func testNackOlderThanLastIdrRefusedDeadButIdrItselfRepairable() throws {
         let box = Box()
@@ -378,7 +266,7 @@ final class NackRepairGateTests: XCTestCase {
 
     func testNackPastFreezeBudgetArmsTheCoalescedIdrLatch() throws {
         let box = Box()
-        // Pin the HS-17 constant via the HS-32 override: this leg
+        // Pin the budget via the HS-32 override: this leg
         // tests the refusal behavior, not the derivation (which has
         // its own legs below).
         let session = makeSession(box: box) {
@@ -554,7 +442,7 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertFalse(session.takeFreshKeyframeRequest())
     }
 
-    // MARK: Leg 2b — HS-32: the derived budget, explicit refusals,
+    // MARK: Leg 2 — HS-32: the derived budget, explicit refusals,
     // and the opening-IDR exemption
 
     /// One empty (parseable) report — cadence evidence only.
@@ -611,7 +499,7 @@ final class NackRepairGateTests: XCTestCase {
 
     func testAskOnTheCadenceIsNowHonoredAndReAskStaysSilent() throws {
         // The HS-32 headline: an ask arriving 50 ms after the flight —
-        // dead on arrival under HS-17's 33 ms constant BY CONSTRUCTION
+        // dead on arrival under the retired HS-17 33 ms constant
         // (the ask itself rides the 40 ms feedback cadence) — is
         // inside the derived budget, and the repair actually flies.
         let box = Box()
@@ -662,37 +550,6 @@ final class NackRepairGateTests: XCTestCase {
         drain(session, box: box, until: now + 5 * Self.ms, now: &now)
         XCTAssertTrue(try refusalsOnWire(box).isEmpty)
         XCTAssertEqual(session.counters.repairRefusalsSent, 0)
-    }
-
-    func testBudgetRefusalIsExplicitOnTheWire() throws {
-        let box = Box()
-        let session = makeSession(box: box) {
-            $0.repairFreezeBudgetOverrideNS = 33_333_333
-        }
-        var now: UInt64 = 0
-        try establishSrtt(session, box: box, now: &now)
-        box.sendInstant = now
-        let flightAt = now
-        _ = try session.ingestVideoFrame(
-            syntheticFrame(byteCount: 8_000),
-            captureTimestampMicroseconds: now / 1_000,
-            isKeyframe: false, now: now
-        )
-        drain(session, box: box, until: now + 10 * Self.ms, now: &now)
-
-        now = flightAt + 50 * Self.ms
-        _ = try feed(
-            session,
-            report: nackReport(frame: 0, shards: [0],
-                               clientMicros: now / 1_000),
-            now: now
-        )
-        drain(session, box: box, until: now + 5 * Self.ms, now: &now)
-        XCTAssertEqual(try refusalsOnWire(box), [RepairRefusal(
-            frame: FrameNumber(rawValue: 0), reason: .staleBudget
-        )], "a budget refusal is explicit on the wire — 0x23")
-        XCTAssertEqual(session.counters.repairRefusalsSent, 1)
-        XCTAssertTrue(box.tail().isEmpty)
     }
 
     func testOlderThanIdrRefusalRidesSuperseded() throws {

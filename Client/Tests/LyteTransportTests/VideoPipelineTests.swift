@@ -230,6 +230,67 @@ final class VideoPipelineTests: XCTestCase {
                       "recoverable loss must not cry impossible")
     }
 
+    func testDuplicateRepairRoutesFromAssemblerIntoPolicyBook() throws {
+        let frame = try XCTUnwrap(loadPrefix().first)
+        let shards = try XCTUnwrap(try packetizePrefix([frame]).first)
+        XCTAssertGreaterThan(shards.count, 2)
+        guard case .reedSolomon(_, let geometry) =
+            try FecField.decode(shards[0].envelope.fec) else {
+            return XCTFail("packetizer emitted a non-RS fec field")
+        }
+
+        let policy = NackPolicy(
+            rtt: { 1_000 },
+            emit: { _ in },
+            escalate: { _, _ in }
+        )
+        let now = ClientTimestamp(microseconds: 1_000)
+        policy.handle(.nackCandidates(
+            frame: FrameNumber(rawValue: 0),
+            missingShardIndices: (0...geometry.parityShards).map(UInt8.init),
+            parityShards: geometry.parityShards,
+            frameAgeMicroseconds: 0
+        ), now: now)
+
+        let pipeline = LyteVideoPipeline(
+            nowNanoseconds: { 0 },
+            sink: HeadlessVideoSink(),
+            onRepairSignal: { signal, instant in
+                policy.handle(signal, now: instant)
+            }
+        )
+        // Shard 1 establishes the original sequence base while shard 0
+        // remains missing. A fresh-sequence shard 0 is therefore a repair;
+        // a second fresh-sequence copy hits the occupied slot as duplicate.
+        pipeline.ingest(
+            envelope: shards[1].envelope,
+            payload: shards[1].payload,
+            now: now
+        )
+        var repairEnvelope = shards[0].envelope
+        repairEnvelope.seq = ChannelSeq(
+            rawValue: repairEnvelope.seq.rawValue &+ 100
+        )
+        pipeline.ingest(
+            envelope: repairEnvelope,
+            payload: shards[0].payload,
+            now: now
+        )
+        repairEnvelope.seq = repairEnvelope.seq.next
+        pipeline.ingest(
+            envelope: repairEnvelope,
+            payload: shards[0].payload,
+            now: now
+        )
+
+        let pipelineStats = pipeline.snapshotStats()
+        XCTAssertEqual(pipelineStats.repairShardsAccepted, 1)
+        XCTAssertEqual(pipelineStats.shardsDropped, 1)
+        let policyStats = policy.snapshotStats()
+        XCTAssertEqual(policyStats.repairShardsReceived, 1)
+        XCTAssertEqual(policyStats.repairsDuplicate, 1)
+    }
+
     // MARK: - fecImpossible fires the CL-3 seam
 
     func testFecImpossibleFiresSeamAndPipelineMovesOn() throws {

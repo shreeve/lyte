@@ -232,4 +232,41 @@ final class NackPolicyTests: XCTestCase {
         XCTAssertEqual(classified.repairsDuplicate, 1)
     }
 
+    func testRefusalActsOnceOnlyForALiveAsk() throws {
+        let emitted = LockedBytePile()
+        let escalated = LockedBytePile()
+        let policy = NackPolicy(
+            rtt: { 1_000 },
+            emit: { entries in
+                for _ in entries { emitted.append([]) }
+            },
+            escalate: { frame, _ in
+                escalated.append([UInt8(frame.rawValue)])
+            }
+        )
+        let now = ClientTimestamp(microseconds: 10_000)
+        let asked = FrameNumber(rawValue: 5)
+
+        policy.handle(.nackCandidates(
+            frame: asked,
+            missingShardIndices: [0, 1],
+            parityShards: 1,
+            frameAgeMicroseconds: 0
+        ), now: now)
+        XCTAssertEqual(emitted.count, 1)
+
+        policy.handleRefusal(frame: asked, now: now)
+        policy.handleRefusal(frame: asked, now: now)
+        policy.handleRefusal(
+            frame: FrameNumber(rawValue: 77),
+            now: now
+        )
+
+        XCTAssertEqual(escalated.all, [[5]], "one ask acts at most once")
+        let stats = policy.snapshotStats()
+        XCTAssertEqual(stats.refusalsReceived, 3)
+        XCTAssertEqual(stats.refusalsActedOn, 1)
+        XCTAssertEqual(stats.refusalsIgnored, 2)
+    }
+
 }
