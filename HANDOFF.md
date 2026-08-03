@@ -367,8 +367,8 @@ until NVENC hardware exists and `AudioSource` belongs to the Lyte OS track,
 exactly as chartered. **NEXT CLEANUP SLICE: Theme 3's cross-end composition
 gates land first, before any session-spine extraction.**
 
-**THE TREE MIGRATION OPENED (#103 + #108, 2026-08-03): every move has a
-gate, and Common now speaks one filesystem grammar.** #103 recorded the
+**THE TREE MIGRATION OPENED (#103 + #108 + #115, 2026-08-03): every move has
+a gate, and Common now speaks one filesystem grammar.** #103 recorded the
 owner-approved `Sources` / `Tests` / `TestKit` hierarchy and added the full
 Mac + isolated-pup equivalence gates. #108 moved every Common production
 byte unchanged into `Sources/LyteCore`, `Sources/LyteIO`, and
@@ -377,7 +377,17 @@ scanner used by all cross-tree ratchets. SwiftPM resolution is tracked, app
 and host provenance includes Wire, and manifest-graph changes invalidate
 stale package build state once. Pup's deterministic mirror is fixed,
 symlink-checked, locked, separate from the live deployment tree, and brackets
-every exit with protected-state verification. **NEXT MIGRATION SLICE:
+every exit with protected-state verification. #115 repaired the last two
+pre-migration safety surfaces: handshake-only now restarts the authoritative
+systemd unit and proves its fresh PID, UDP ownership, executable, and protected
+state; the impairment gate runs the current motion leg and diverts only host
+UDP source port 41151 toward the exact client `/32` through an owned prio/u32
+topology whose unaffected band retains `fq_codel`. Fake-command tests pin
+rollback, foreign/changed topology refusal, invalid selectors, and removal of
+the retired supervisor and interface-wide netem paths. The Python analyzer
+and shell safety tests now live under canonical `Scripts/Tests`. Canonical Mac
+and isolated pup gates passed on the combined #114/#115 tree; no live service
+restart or impairment was performed. **NEXT MIGRATION SLICE:
 organize Wire internally without changing its module, products, or frozen
 vectors.**
 
@@ -385,7 +395,8 @@ vectors.**
 root client 262; host 287 pup / 286 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
-screen doorbell adds three pins.
+screen doorbell adds three pins; benchmark safety adds one deterministic shell
+suite beside the 25 analyzer tests.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
