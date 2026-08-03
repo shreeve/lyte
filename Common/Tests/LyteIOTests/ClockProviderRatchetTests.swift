@@ -64,12 +64,17 @@ final class ClockProviderRatchetTests: XCTestCase {
         )
     }
 
-    func testVideoPipelineReceivesTimeInsteadOfReadingTheShellClock() throws {
-        let pipeline = Self.repositoryRoot.appendingPathComponent(
-            "Sources/LyteTransport/LyteVideoPipeline.swift")
-        let source = try String(contentsOf: pipeline, encoding: .utf8)
-        XCTAssertFalse(
-            source.contains("SystemMonotonicClock"),
-            "LyteVideoPipeline must receive time through its constructor")
+    func testVideoPoliciesReceiveTimeInsteadOfReadingTheShellClock() throws {
+        let paths = [
+            "Sources/LyteTransport/LyteVideoPipeline.swift",
+            "Sources/LyteTransport/VideoFlightRecorder.swift",
+        ]
+        for path in paths {
+            let file = Self.repositoryRoot.appendingPathComponent(path)
+            let source = try String(contentsOf: file, encoding: .utf8)
+            XCTAssertFalse(
+                source.contains("SystemMonotonicClock"),
+                "\(path) must receive time through its constructor")
+        }
     }
 }
