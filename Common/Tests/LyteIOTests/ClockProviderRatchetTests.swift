@@ -3,13 +3,19 @@ import XCTest
 
 final class ClockProviderRatchetTests: XCTestCase {
     private static var repositoryRoot: URL {
-        URL(fileURLWithPath: #filePath)
+        if let override = ProcessInfo.processInfo.environment["LYTE_REPOSITORY_ROOT"] {
+            return URL(fileURLWithPath: override).standardizedFileURL
+        }
+        return URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // LyteIOTests
             .deletingLastPathComponent()  // Tests
             .deletingLastPathComponent()  // Common
+            .deletingLastPathComponent()  // repository
     }
 
     func testProductionShellsUseTheSharedMonotonicClock() throws {
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: Self.repositoryRoot.appendingPathComponent("CLEANUP.md").path))
         let fileManager = FileManager.default
         let sourceRoots = [
             Self.repositoryRoot.appendingPathComponent("Sources"),
