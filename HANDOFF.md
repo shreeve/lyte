@@ -288,8 +288,9 @@ map. `lyte-cli` resolved Homebrew's `libopus.0.dylib`; pup's rebuilt
 `lyte-host` resolved the system `libopus.so.0`, its systemd service is active,
 and its identity files are unchanged.
 
-**CLEANUP THEME 2 IS RUNNING (#106–#107, #109, 2026-08-03): renderer handoff
-and video scheduling policy are sans-IO; the pipeline borrows time.** #106 moved
+**CLEANUP THEME 2 IS COMPLETE (#106–#107, #109–#110, 2026-08-03): renderer
+handoff and video scheduling policy are sans-IO; pipeline telemetry borrows
+time.** #106 moved
 `RendererFrameDescriptor`, `BoundedRendererHandoff`, and
 `RendererRecoveryFlushBarrier` into LyteCore.
 Policy now sees only random-access and submission facts; the client's
@@ -316,9 +317,16 @@ evidence before the percentile sort, preserving the short critical section.
 All conductor and gauge verdicts moved beside policy; a new ratchet rejects
 production twins and synchronization in core. Wire and frozen vectors were
 untouched; pup's rebuilt system host is active and re-armed, and its identity
-files are unchanged. **NEXT: inject time into `VideoFlightRecorder` — retire
-its two direct `SystemMonotonicClock` calls while preserving every recorded
-stamp and snapshot verdict.**
+files are unchanged. #110 made `VideoFlightRecorder` require one injected
+microsecond clock and removed its LyteIO import plus both direct system reads.
+The client shell forwards the existing provider; a stepping clock pins the two
+recovery-lifecycle stamps at exactly 1,000,000 and 1,250,000 µs, and the clock
+ratchet now covers both pipeline and recorder. No default initializer or shim
+survives. Wire and frozen vectors were untouched; the standing pup binary was
+left untouched, its system service and capability remain active, and its
+identity files are unchanged. **NEXT: open Theme 4 with the `VideoSink` seam —
+replace the raw sample closure/direct AVFoundation ownership with one named
+client boundary and a headless test sink, without changing enqueue behavior.**
 
 **Suites at HEAD:** Wire 507 Mac / 507 pup; Common 71 Mac / 72 pup;
 root client 262; host 284 pup / 283 Mac — all green. Eighteen conductor/gauge
