@@ -113,10 +113,21 @@ connect), remaining skips all source class (the shell's comb).**
 Still filed: GNOME focus
 denial still covers the witness marker after remote input
 (benchmark needs a focus story; owner's desktop-click is the
-workaround). Then: audio onto the Conductor primitives, E6a NVENC
-productionize (lyte-nvenc probe banked), Rext 4:4:4 in the native
-pens (returns the Best tier), E2 uinput-primary, E4 packaging aimed
-at Lyte OS.
+workaround). **Conductor tier 2 LANDED (#86, 2026-08-03):
+ConductorPrimitives.swift — BeatTailRing (video's private p99 ring
+retired, parity-pinned), ProofCounter (one law, was four spellings:
+video slip proof + audio decay hold/step/retarget cadence), audio's
+private 5 ms constant now the wire's, LatencyHistogram rehomed.
+Doctrine asymmetries KEPT and recorded: audio's clock = the DAC
+(lattice detrend, never HostClockModel); audio's cushion statistic
+= window spread, not p99 (p99 discarded exactly the late/PLC
+events). Root suite 293 with every pre-existing audio/video pin
+unchanged — nothing moved. Tier 3 = LyteCore module in v2.** Then:
+E6a NVENC productionize (lyte-nvenc probe banked), Rext 4:4:4 in
+the native pens (returns the Best tier), E2 uinput-primary, E4
+packaging aimed at Lyte OS (first measured requirement banked
+2026-08-03: no stop-the-world runtime in the display path — the
+shell's 10 s comb is the evidence).
 
 **Suites at HEAD:** Wire 513, root client 284, host 281 on pup / 280
 Mac — all green (counts grew with the fix train's pins).
