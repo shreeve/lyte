@@ -11,6 +11,7 @@
 // function: the negotiator raises `noCommonChromaMode` and the typed
 // teardown follows (the client's auto-re-dial-at-420 handles it, V-5).
 
+import LyteCore
 import LyteWire
 
 /// The encoder posture a session opens with, derived from the agreed
@@ -23,6 +24,8 @@ public enum ChromaPosture: String, Equatable, Sendable {
 
     /// nil = no agreement (yet, or ever — the grandfathered posture).
     public static func from(agreedChromaModes: [UInt64]?) -> ChromaPosture {
-        agreedChromaModes == [CapabilityChroma.yuv444] ? .yuv444 : .yuv420
+        agreedChromaModes
+            == ChromaPairing.bestSingleton(CapabilityChroma.yuv444)
+            ? .yuv444 : .yuv420
     }
 }
