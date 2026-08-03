@@ -1,6 +1,7 @@
 import XCTest
 import CoreMedia
 import Foundation
+import HostWire
 import LyteCore
 import LyteTransport
 import LyteWire
@@ -11,14 +12,13 @@ import LyteWireTestKit
 // staleness mirror, once-ever dedupe, rule-4 IDR backstop) driven end to
 // end in virtual time through the REAL production parts: ReceiveDemux
 // unseal → LyteVideoPipeline → VideoAssembler presumption →
-// NackPolicy → FeedbackSender's NACK section on the wire → a LyteWire
-// host stand-in mirroring HS-17's responder (fresh-seq, fresh-seal
+// NackPolicy → FeedbackSender's NACK section on the wire → the real
+// HostWire VideoChannel responder (fresh-seq, fresh-seal
 // repair datagrams carrying the ORIGINAL frame number + fec field,
 // one attempt per shard) → the repaired frame emerging byte-exact from
-// the same receive path. The root package cannot import HostWire; the
-// stand-in rebuilds VideoChannel.enqueueRepair's shape from the same
-// Wire parts the frozen vectors pin — exactly the LyteUdpSessionGate
-// pattern.
+// the same receive path. Only the Noise socket carriage stays local to
+// this gate; packetization, retention, and repair policy are the host's
+// shipping implementation.
 
 final class NackRepairClientGateTests: XCTestCase {
 
@@ -42,23 +42,21 @@ final class NackRepairClientGateTests: XCTestCase {
         }
     }
 
-    // MARK: - The repairing host stand-in
+    // MARK: - The repairing host transport shell
 
-    /// Noise responder + the HS-17 repair discipline: every packetized
-    /// shard retained (plaintext + fec field), NACK entries read out of
-    /// the client's real chan-3 reports, honored shards re-sent as
-    /// FRESH datagrams — fresh seq continuing the channel counter,
-    /// fresh seal, original frame/fec/timestamp — one attempt per
-    /// shard, ever.
+    /// Noise responder around HostWire's real VideoChannel. NACK entries
+    /// still arrive through the client's real chan-3 reports; this shell
+    /// asks the product channel for repairs and carries its datagrams.
     private final class RepairHost: NoiseHandshakeIO {
         let staticKeys = NoiseKeyPair.generate()
         var transport: NoiseTransport?
         private var handshakeOutbox: [[UInt8]] = []
-
-        var nextVideoSeq = ChannelSeq(rawValue: 0)
-        /// frame → its original shards (envelope carries frame/fec/ts).
-        var retained: [UInt32: [(envelope: Envelope, payload: [UInt8])]] = [:]
-        var repairedShards = Set<UInt64>()   // frame<<8 | index
+        private var channel: VideoChannel!
+        private var channelNowNS: UInt64 = 0
+        private var emitted: [VideoChannelDatagram] = []
+        private var sealedPlaintexts: [UInt64: (
+            envelope: Envelope, payload: [UInt8]
+        )] = [:]
 
         // Evidence.
         var nackEntriesSeen: [(frame: UInt32, shards: [UInt8])] = []
@@ -76,6 +74,32 @@ final class NackRepairClientGateTests: XCTestCase {
             _ = try responder.readMessage1(payload.dropFirst())
             let message2 = try responder.writeMessage2()
             transport = try responder.makeTransport()
+            if channel == nil {
+                channel = VideoChannel(
+                    config: VideoChannelConfig(
+                        rateBitsPerSecond: 1_000_000_000
+                    ),
+                    now: channelNowNS,
+                    seal: { [unowned self] plaintext, aad, envelope in
+                        if case .reedSolomon(let index, _) =
+                            try FecField.decode(envelope.fec) {
+                            let key = UInt64(envelope.frame.rawValue) << 8
+                                | UInt64(index)
+                            sealedPlaintexts[key] = (
+                                envelope, Array(plaintext)
+                            )
+                        }
+                        return try self.transport!.seal(
+                            plaintext: plaintext,
+                            aad: aad,
+                            envelope: envelope
+                        )
+                    },
+                    send: { [unowned self] datagram in
+                        emitted.append(datagram)
+                    }
+                )
+            }
             let carriage = Envelope(
                 channel: .ctrl,
                 seq: ChannelSeq(rawValue: 0),
@@ -125,21 +149,17 @@ final class NackRepairClientGateTests: XCTestCase {
             annexB: [UInt8], frameNumber: UInt32, hostMicros: UInt64,
             dropping: Set<Int> = []
         ) throws -> (sent: [[UInt8]], held: [[UInt8]]) {
-            var packetizer = VideoPacketizer(firstSeq: nextVideoSeq)
-            let shards = try packetizer.packetize(
+            _ = try channel.ingest(
                 frame: annexB,
                 frameNumber: FrameNumber(rawValue: frameNumber),
-                captureTimestamp: HostTimestamp(microseconds: hostMicros),
-                isIDR: AnnexBCheck.containsIrap(annexB),
-                regime: .clean
+                captureTimestampMicroseconds: hostMicros,
+                isKeyframe: AnnexBCheck.containsIrap(annexB),
+                now: channelNowNS
             )
-            nextVideoSeq = nextVideoSeq.advanced(by: Int16(shards.count))
-            retained[frameNumber] = shards.map { ($0.envelope, $0.payload) }
+            let datagrams = drainChannel()
             var sent: [[UInt8]] = []
             var held: [[UInt8]] = []
-            for (index, shard) in shards.enumerated() {
-                let datagram = try seal(
-                    envelope: shard.envelope, plaintext: shard.payload)
+            for (index, datagram) in datagrams.enumerated() {
                 if dropping.contains(index) {
                     held.append(datagram)
                 } else {
@@ -149,22 +169,20 @@ final class NackRepairClientGateTests: XCTestCase {
             return (sent, held)
         }
 
-        /// The geometry `annexB` WILL packetize to at the current seq —
-        /// a scratch packetizer, no state disturbed (tests plan their
-        /// drop sets from it).
+        /// The geometry the production channel WILL use, without changing
+        /// sequence or retention state (tests plan drop sets from it).
         func plannedGeometry(annexB: [UInt8]) throws -> FecGeometry {
-            var scratch = VideoPacketizer(firstSeq: nextVideoSeq)
-            let shards = try scratch.packetize(
-                frame: annexB,
-                frameNumber: FrameNumber(rawValue: 0xFFFF_0000),
-                captureTimestamp: HostTimestamp(microseconds: 0),
-                isIDR: AnnexBCheck.containsIrap(annexB),
-                regime: .clean
+            let budget = channel.config.shardBudgetByteCount
+            let dataShards = (annexB.count + budget - 1) / budget
+            let parityShards = try FecGeometryTable.parityShards(
+                forDataShards: dataShards,
+                regime: channel.regime
             )
-            guard case .reedSolomon(_, let geometry) =
-                try FecField.decode(shards[0].envelope.fec)
-            else { preconditionFailure("packetizer emitted a non-RS shard") }
-            return geometry
+            return try FecGeometry(
+                dataShards: dataShards,
+                parityShards: parityShards,
+                groupByteCount: annexB.count
+            )
         }
 
         /// The HS-17 answer: fresh seq, fresh seal, original everything
@@ -172,23 +190,16 @@ final class NackRepairClientGateTests: XCTestCase {
         func repairDatagrams(
             frame: UInt32, shardIndices: [UInt8]
         ) throws -> [[UInt8]] {
-            guard let shards = retained[frame] else { return [] }
-            var out: [[UInt8]] = []
-            for index in shardIndices where Int(index) < shards.count {
-                let key = UInt64(frame) << 8 | UInt64(index)
-                guard !repairedShards.contains(key) else {
-                    duplicateAsks += 1
-                    continue
-                }
-                repairedShards.insert(key)
-                var envelope = shards[Int(index)].envelope
-                envelope.seq = nextVideoSeq
-                nextVideoSeq = nextVideoSeq.next
-                out.append(try seal(
-                    envelope: envelope,
-                    plaintext: shards[Int(index)].payload))
-                repairDatagramsSent += 1
-            }
+            let duplicatesBefore = channel.counters.repairShardsAlreadySent
+            _ = try channel.enqueueRepair(
+                frame: FrameNumber(rawValue: frame),
+                shardIndices: shardIndices,
+                now: channelNowNS
+            )
+            let out = drainChannel()
+            duplicateAsks += channel.counters.repairShardsAlreadySent
+                - duplicatesBefore
+            repairDatagramsSent += out.count
             return out
         }
 
@@ -201,13 +212,25 @@ final class NackRepairClientGateTests: XCTestCase {
         func duplicateRepairDatagram(
             frame: UInt32, shardIndex: UInt8
         ) throws -> [UInt8] {
-            let shards = retained[frame]!
-            var envelope = shards[Int(shardIndex)].envelope
-            envelope.seq = nextVideoSeq
-            nextVideoSeq = nextVideoSeq.next
+            let key = UInt64(frame) << 8 | UInt64(shardIndex)
+            let stored = sealedPlaintexts[key]!
+            var envelope = stored.envelope
+            envelope.seq = channel.nextSeq
             return try seal(
                 envelope: envelope,
-                plaintext: shards[Int(shardIndex)].payload)
+                plaintext: stored.payload)
+        }
+
+        private func drainChannel() -> [[UInt8]] {
+            while !channel.isIdle {
+                let wake = channel.nextWake(now: channelNowNS)
+                    ?? channelNowNS &+ 1_000_000
+                channelNowNS = max(channelNowNS &+ 1, wake)
+                channel.pump(now: channelNowNS)
+            }
+            let datagrams = emitted.map(\.bytes)
+            emitted.removeAll(keepingCapacity: true)
+            return datagrams
         }
 
         var nextCtrlSeq = ChannelSeq(rawValue: 0)
