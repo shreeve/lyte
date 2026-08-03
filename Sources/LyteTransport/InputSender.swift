@@ -33,13 +33,13 @@
 // time. One lock confines the pending books and the histograms.
 
 import LyteIO
+import LyteCore
 import Foundation
 import LyteWire
 import Synchronization
 
-// LatencyHistogram (HS-13's edge aggregator) lived here historically;
-// it moved to ConductorPrimitives.swift with the Conductor's shared
-// measurement machinery.
+// The edge books use LyteCore's rolling histogram; its retention and rank
+// doctrine are shared with every other percentile surface.
 
 /// One coherent snapshot of the sender's books.
 public struct InputSenderStats: Sendable {
@@ -63,13 +63,13 @@ public struct InputSenderStats: Sendable {
     public var lastStampSeen: UInt32?
     /// input→inject: capture → host injection, mapped onto the client
     /// clock via the CL-10 model (µs).
-    public var inputToInject = LatencyHistogram()
+    public var inputToInject = Histogram<UInt64>(retention: .rolling)
     /// input→photon: capture → the first delivered sample stamped at or
     /// past the event's seq (µs; see the file comment's honesty caveat).
-    public var inputToPhoton = LatencyHistogram()
+    public var inputToPhoton = Histogram<UInt64>(retention: .rolling)
     /// The host's own receive→inject edge (host µs, no clock mapping)
     /// — HS-13's gate figure, echoed back for free.
-    public var hostReceiveToInject = LatencyHistogram()
+    public var hostReceiveToInject = Histogram<UInt64>(retention: .rolling)
 }
 
 extension InputSenderStats {

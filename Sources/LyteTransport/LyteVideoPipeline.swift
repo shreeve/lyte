@@ -23,6 +23,7 @@
 // assembler lock.
 
 import LyteIO
+import LyteCore
 import CoreMedia
 import Dispatch
 import Foundation
@@ -43,10 +44,12 @@ public struct VideoPipelineStats: Sendable {
     /// CoreMedia sample construction on the receive thread, µs. This is
     /// the boundary between completed assembly and the app delivery hop;
     /// without it a factory stall is falsely blamed on network/assembly.
-    public var sampleBuildMicroseconds = LatencyHistogram(capacity: 360)
+    public var sampleBuildMicroseconds = Histogram<UInt64>(
+        capacity: 360, retention: .rolling)
     /// Time spent holding the assembly/state lock for an ingest that
     /// completed a frame. CoreMedia work is deliberately excluded.
-    public var assemblyLockHoldMicroseconds = LatencyHistogram(capacity: 360)
+    public var assemblyLockHoldMicroseconds = Histogram<UInt64>(
+        capacity: 360, retention: .rolling)
     /// fecImpossible verdicts (each also fired the seam callback).
     public var fecImpossibleCount: UInt64 = 0
     /// Groups evicted undecoded (stale or capacity).

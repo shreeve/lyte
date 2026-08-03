@@ -27,6 +27,7 @@
 // Sans-IO and single-threaded by contract: AudioReceiver owns the lock
 // and injects `now` (client-monotonic µs domain of arrival stamps).
 
+import LyteCore
 import LyteWire
 
 public struct AudioJitterConfig: Sendable {
@@ -121,10 +122,12 @@ public struct AudioJitterStats: Sendable {
     /// 600 pulls at the 5 ms cadence = the rolling 3 s gauge window
     /// (one window for every overlay gauge, owner ruling 2026-07-30) —
     /// the gauge describes NOW, not the session's opening minute.
-    public var depthPackets = LatencyHistogram(capacity: 600)
+    public var depthPackets = Histogram<UInt64>(
+        capacity: 600, retention: .rolling)
     /// |observed − nominal| inter-arrival deviation µs, fresh in-order
     /// arrivals only.
-    public var interArrivalDeviation = LatencyHistogram(capacity: 600)
+    public var interArrivalDeviation = Histogram<UInt64>(
+        capacity: 600, retention: .rolling)
     /// Current adaptive target (packets).
     public var targetPackets = 0
     /// Windowed standard deviation of inter-arrival time, µs.

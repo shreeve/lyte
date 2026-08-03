@@ -33,6 +33,7 @@ let package = Package(
             name: "LyteTransport",
             dependencies: [
                 "COpus",
+                .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteIO", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
                 // The sanctioned crypto provider, for exactly one digest:
@@ -62,6 +63,7 @@ let package = Package(
                 "LyteHelperProtocol",
                 "LyteTransport",
                 "LyteCorpus",
+                .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteIO", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),

@@ -1,4 +1,5 @@
 import Foundation
+import LyteCore
 
 // VideoBeatConductor — video's part under THE CONDUCTOR
 // (docs/20260803-050422-metronome-playout-design.md), sans-IO.
@@ -97,7 +98,8 @@ public struct VideoBeatConductor: Sendable {
 
     // Tail estimation: the Conductor's shared ring (the cue's
     // evidence — path-delay p99 over the recent window).
-    private var pathDelayTailRing = BeatTailRing(capacity: 600)
+    private var pathDelayTailRing = Histogram<UInt64>(
+        capacity: 600, retention: .rolling)
 
     // Slip proof: consecutive fresh frames with ≥1 beat of surplus
     // (the shared proof-before-shed law).
@@ -219,7 +221,7 @@ public struct VideoBeatConductor: Sendable {
         // Path delay feeds the tail estimator.
         let pathDelay = arrivalMicroseconds >= mappedCaptureMicroseconds
             ? arrivalMicroseconds - mappedCaptureMicroseconds : 0
-        pathDelayTailRing.note(pathDelay)
+        pathDelayTailRing.record(pathDelay)
 
         // beat: the grid advances ORDINALLY — each fresh part steps
         // round(sourceStep / period) beats (never less than one) from
@@ -294,7 +296,7 @@ public struct VideoBeatConductor: Sendable {
         if measuredCue >= pathDelay &+ cushionFloor &+ period {
             slipProof.advance()
             if slipProof.reached(config.slipProofFrames),
-               measuredCue >= pathDelayTailRing.tail(percentile: 99)
+               measuredCue >= (pathDelayTailRing.p99 ?? 0)
                    &+ cushionFloor &+ period {
                 presentation -= period
                 slipProof.reset()

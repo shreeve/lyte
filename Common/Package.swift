@@ -19,6 +19,11 @@ let package = Package(
             path: "IO"
         ),
         .testTarget(
+            name: "LyteCoreTests",
+            dependencies: ["LyteCore"],
+            path: "Tests/LyteCoreTests"
+        ),
+        .testTarget(
             name: "LyteIOTests",
             dependencies: ["LyteIO"],
             path: "Tests/LyteIOTests"
