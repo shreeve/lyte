@@ -38,7 +38,8 @@ H-era build plans completed their ladder and are retired to git history
   splitter; `LyteCore.HevcBitWriter`/`HevcBitReader` are the inverse bit and
   emulation-prevention vocabulary; `LyteCore.Sha256` is the one streaming and
   one-shot digest model; `LyteCore.Hex` is the one byte/integer hex spelling;
-  the first extracted adapter is the one process-wide monotonic clock.
+  `LyteCore.WireTos` owns the four product DSCP lanes; the first extracted
+  adapter is the one process-wide monotonic clock.
 - **`Host/`** — package `LyteHost`: the Linux host. Depends on
   `.package(path: "../Wire")` and, for Linux shells, `../Common`.
   `HostCore` (pure Swift bitstream helpers) and

@@ -18,6 +18,7 @@
 // traffic is control/input/feedback, including the Noise handshake, so
 // the socket rides the protected CS6 lane (0xC0) just like host control.
 
+import LyteCore
 import LyteIO
 import Foundation
 import LyteWire
@@ -95,8 +96,8 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         _ = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, socklen_t(MemoryLayout<Int32>.size))
 
         // Interactive-video service class (NET_SERVICE_TYPE_VI).
-        var serviceType: Int32 = 3
-        _ = setsockopt(fd, SOL_SOCKET, 0x1116 /* SO_NET_SERVICE_TYPE */,
+        var serviceType: Int32 = NET_SERVICE_TYPE_VI
+        _ = setsockopt(fd, SOL_SOCKET, SO_NET_SERVICE_TYPE,
                        &serviceType, socklen_t(MemoryLayout<Int32>.size))
 
         // Kernel arrival timestamps (SCM_TIMESTAMP cmsg on recvmsg).
@@ -110,7 +111,7 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         // The client sends control/input/feedback, never fresh video.
         // Marking the whole socket as CS5 incorrectly put Noise message 1
         // in the video queue; use the protocol's protected CS6 lane.
-        var tos: Int32 = 0xC0
+        var tos = Int32(WireTos.protected)
         _ = setsockopt(fd, IPPROTO_IP, IP_TOS, &tos, socklen_t(MemoryLayout<Int32>.size))
 
         var addr = sockaddr_in()

@@ -6,6 +6,7 @@
 // pins: when stop() returns, the receive thread's work is finished.
 
 import Foundation
+import LyteCore
 import LyteWire
 import XCTest
 
@@ -25,6 +26,30 @@ private struct PassthroughCrypto: TransportCrypto {
 }
 
 final class UdpReceiveEndpointStopTests: XCTestCase {
+    func testSocketUsesSharedProtectedTosAndNamedVideoServiceClass() throws {
+        let endpoint = UdpReceiveEndpoint(port: 0, crypto: PassthroughCrypto())
+        try endpoint.start()
+        defer { endpoint.stop() }
+
+        var tos: Int32 = -1
+        var tosLength = socklen_t(MemoryLayout<Int32>.size)
+        XCTAssertEqual(
+            getsockopt(endpoint.fd, IPPROTO_IP, IP_TOS, &tos, &tosLength), 0
+        )
+        XCTAssertEqual(tos, Int32(WireTos.protected))
+
+        var serviceType: Int32 = -1
+        var serviceTypeLength = socklen_t(MemoryLayout<Int32>.size)
+        XCTAssertEqual(
+            getsockopt(
+                endpoint.fd, SOL_SOCKET, SO_NET_SERVICE_TYPE,
+                &serviceType, &serviceTypeLength
+            ),
+            0
+        )
+        XCTAssertEqual(serviceType, NET_SERVICE_TYPE_VI)
+    }
+
     /// A datagram handler blocks mid-flight while another thread calls
     /// stop(): stop() must wait for the handler (the receive thread) to
     /// finish before returning. Pre-fix, stop() closed the fd and could
