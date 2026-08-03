@@ -225,10 +225,6 @@ targets += [
             .product(name: "LyteCore", package: "Common"),
             .product(name: "LyteIO", package: "Common"),
             .product(name: "LyteWire", package: "Wire"),
-            // HS-10: one SHA-256 for the advertised identity hash
-            // (IdentityHash.swift is the confined import site). Already
-            // in the graph via Wire — no new external dependency.
-            .product(name: "Crypto", package: "swift-crypto"),
         ],
         linkerSettings: [
             .linkedLibrary("dbus-1"),
@@ -241,21 +237,12 @@ targets += [
 ]
 #endif
 
-var dependencies: [Package.Dependency] = [
+let dependencies: [Package.Dependency] = [
     // First cross-package integration on the host side (HS-5): the
     // sans-IO protocol core every end codes against.
     .package(path: "../Wire"),
     .package(path: "../Common"),
 ]
-
-#if os(Linux)
-// Only the Linux-only lyte-host target consumes this directly (HS-10's
-// identity hash), so macOS resolution stays exactly as before. Same
-// version pin as Wire's — one swift-crypto in the graph.
-dependencies.append(
-    .package(url: "https://github.com/apple/swift-crypto.git", from: "3.8.0")
-)
-#endif
 
 let package = Package(
     name: "LyteHost",

@@ -7,7 +7,7 @@ doesn't change session to session.
 
 ## What Lyte is
 
-A GPLv3 remote-desktop system where we own both ends: a SwiftUI macOS
+An MIT-licensed remote-desktop system where we own both ends: a SwiftUI macOS
 client and a Swift Linux host. The core decision (2026-07-20): **both ends
 speak exactly one protocol, Lyte-UDP** — our own protocol over plain UDP.
 H2 functional parity (input, 5 ms audio, congestion control, targeted
@@ -36,8 +36,9 @@ H-era build plans completed their ladder and are retired to git history
   `LyteCore.Histogram` owns the shared percentile and retention doctrine;
   `LyteCore.AnnexBCheck` owns the one NAL walker and production access-unit
   splitter; `LyteCore.HevcBitWriter`/`HevcBitReader` are the inverse bit and
-  emulation-prevention vocabulary; the first extracted adapter is the one
-  process-wide monotonic clock.
+  emulation-prevention vocabulary; `LyteCore.Sha256` is the one streaming and
+  one-shot digest model; the first extracted adapter is the one process-wide
+  monotonic clock.
 - **`Host/`** — package `LyteHost`: the Linux host. Depends on
   `.package(path: "../Wire")` and, for Linux shells, `../Common`.
   `HostCore` (pure Swift bitstream helpers) and

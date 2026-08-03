@@ -21,6 +21,7 @@ import Darwin
 #else
 import Glibc
 #endif
+import LyteCore
 import LyteWire
 
 public enum BulkStoreError: Error, Equatable, Sendable {
@@ -94,7 +95,7 @@ public final class BulkFileStore: BulkReceiveStore {
 
     public func stagingDigest() throws -> [UInt8] {
         guard fd >= 0 else { throw BulkStoreError.noStagingOpen }
-        var stream = Sha256Stream()
+        var stream = Sha256()
         var buffer = [UInt8](repeating: 0, count: 1 << 16)
         var offset: off_t = 0
         while true {

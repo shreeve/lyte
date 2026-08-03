@@ -60,6 +60,7 @@
 // test drives the whole session in-process against a LyteWire initiator.
 
 import HostCore
+import LyteCore
 import LyteWire
 
 /// How the session's transport keys come to exist.
@@ -1843,7 +1844,7 @@ public final class Session {
             return []
         }
         let channelEvents = clipboardImageChannel.shareLocalImage(
-            data, sha256: Sha256Stream.digest(data),
+            data, sha256: Sha256.digest(data),
             book: &clipboardBook, rng: &imageRng
         )
         var events = processImageEvents(channelEvents, now: now)
@@ -2033,7 +2034,7 @@ public final class Session {
             return processImageEvents(
                 clipboardImageChannel.ingest(
                     message, book: &clipboardBook,
-                    sha256: Sha256Stream.digest
+                    sha256: Sha256.digest
                 ),
                 now: now
             )

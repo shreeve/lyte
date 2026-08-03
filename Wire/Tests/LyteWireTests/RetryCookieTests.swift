@@ -1,11 +1,12 @@
 import XCTest
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 
 // The stateless retry cookie: mint/verify determinism, the transcript
 // binding (tuple, timestamp window, msg1), and secret rotation. The
 // MAC itself is anchored against an INDEPENDENT HMAC-SHA256 built here
-// on TestKit's FIPS-verified Sha256 — RetryCookie's swift-crypto HMAC
+// on LyteCore's FIPS-verified Sha256 — RetryCookie's swift-crypto HMAC
 // never grades its own homework.
 
 final class RetryCookieTests: XCTestCase {
@@ -34,7 +35,7 @@ final class RetryCookieTests: XCTestCase {
         XCTAssertEqual(Array(cookie.prefix(8)), expected)
         // mac = HMAC-SHA256(secret, "lyte-retry-cookie-v1" ‖ ts ‖
         // tupleLen ‖ tuple ‖ msg1) truncated to 16 — recomputed via
-        // RFC 2104 over TestKit's Sha256.
+        // RFC 2104 over LyteCore's Sha256.
         var transcript = Array("lyte-retry-cookie-v1".utf8) + expected
         transcript.append(UInt8(Self.tuple.count))
         transcript += Self.tuple
@@ -285,7 +286,7 @@ final class RetryCookieTests: XCTestCase {
         _ = try initiator.readMessage2(message2[...])
     }
 
-    // MARK: RFC 2104 HMAC over TestKit's Sha256 (test-only oracle)
+    // MARK: RFC 2104 HMAC over LyteCore's Sha256 (test-only oracle)
 
     private static func independentHmacSha256(
         key: [UInt8], message: [UInt8]

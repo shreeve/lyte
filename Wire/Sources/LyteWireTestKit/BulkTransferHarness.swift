@@ -14,6 +14,7 @@
 // ARQ carriage, a blackout means the receiver saw a prefix of the
 // sender's emissions, which is precisely what the cap expresses.
 
+import LyteCore
 import LyteWire
 
 public struct BulkTransferHarness {

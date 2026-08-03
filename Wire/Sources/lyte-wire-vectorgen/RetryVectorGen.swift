@@ -4,7 +4,7 @@
 // circularity is broken twice over: the codec bytes are anchored by
 // the hand-built layouts in RetryCodecTests, and the MAC beneath the
 // cookie vectors is anchored in RetryCookieTests against an
-// independent RFC 2104 HMAC over TestKit's FIPS-verified Sha256.
+// independent RFC 2104 HMAC over LyteCore's FIPS-verified Sha256.
 
 import LyteWire
 import LyteWireTestKit

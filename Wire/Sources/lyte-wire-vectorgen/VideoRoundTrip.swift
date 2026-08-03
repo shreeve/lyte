@@ -108,7 +108,7 @@ func runVideoRoundTrip(inputPath: String, outputPath: String) throws {
     print("""
     round trip OK: \(ranges.count) frames, \(shardCount) shards, \
     \(lostCount) lost (\(String(format: "%.1f", 100.0 * Double(lostCount) / Double(shardCount)))%), \
-    byte-exact; sha256 \(Sha256.hex(reassembled))
+    byte-exact; sha256 \(Hex.string(Sha256.digest(reassembled)))
     wrote \(reassembled.count) bytes to \(outputPath)
     """)
 }

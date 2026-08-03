@@ -1,4 +1,5 @@
 import XCTest
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 
@@ -70,7 +71,7 @@ final class VideoVectorFileTests: XCTestCase {
                 )
                 let datagram = try shard.encodeDatagram()
                 XCTAssertEqual(
-                    Sha256.hex(datagram), frozen.datagramSha256,
+                    Hex.string(Sha256.digest(datagram)), frozen.datagramSha256,
                     "\(vector.name): datagram hash — the packetized corpus has drifted"
                 )
                 if let hex = frozen.datagramHex {
