@@ -7,8 +7,17 @@ let package = Package(
     products: [
         .library(name: "LyteCore", targets: ["LyteCore"]),
         .library(name: "LyteIO", targets: ["LyteIO"]),
+        .library(name: "COpus", targets: ["COpus"]),
     ],
     targets: [
+        // One libopus module for both products. pkg-config supplies the
+        // platform-specific include directory; policy stays out of this leaf.
+        .systemLibrary(
+            name: "COpus",
+            path: "COpus",
+            pkgConfig: "opus",
+            providers: [.brew(["opus"]), .apt(["libopus-dev"])]
+        ),
         // Shared policy stays sans-IO and WASM-buildable. The lint moves
         // here with the first extracted policy utility.
         .target(name: "LyteCore", path: "Core"),
