@@ -103,10 +103,14 @@ schedstat sampler; python GC and every daemon acquitted). The
 compositor misses two beats every ten seconds machine-wide: the
 owner's residual "occasional shudder" is pup's shell housekeeping
 (gjs full-GC signature), not Lyte. Mitigation is a system decision
-(shell extension diet / newer shell / accept). FILED from the hunt:
-move wire.service()'s shell half off the capture thread (a
-mid-session clipboard paste or file drop would stall capture for
-its duration — the 106 ms stall proves the seam); GNOME focus
+(shell extension diet / newer shell / accept). **The janitor LANDED
+(#85, 2026-08-03): wire.service() moved off the capture thread onto
+"lyte-shell-service" (10 ms sweep, default priority, only caller of
+service(), semaphore-joined through every exit door); live smoke on
+a 41199 test host: loop skips 0 across 1495 flips, service_max
+2.8 ms on the janitor (was a 106 ms capture-thread stall at
+connect), remaining skips all source class (the shell's comb).**
+Still filed: GNOME focus
 denial still covers the witness marker after remote input
 (benchmark needs a focus story; owner's desktop-click is the
 workaround). Then: audio onto the Conductor primitives, E6a NVENC
