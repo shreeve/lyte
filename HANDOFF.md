@@ -401,7 +401,7 @@ half by carrying the real client's NACK report into the real Host `Session`
 judgement, then remove the overlapping round-trip scaffolding from the two
 1,300-line suites.**
 
-**THE TREE MIGRATION OPENED (#103 + #108 + #115 + #119, 2026-08-03): every move has
+**THE TREE MIGRATION OPENED (#103 + #108 + #115 + #117 + #119 + #120, 2026-08-03): every move has
 a gate, and Common now speaks one filesystem grammar.** #103 recorded the
 owner-approved `Sources` / `Tests` / `TestKit` hierarchy and added the full
 Mac + isolated-pup equivalence gates. #108 moved every Common production
@@ -421,7 +421,9 @@ rollback, foreign/changed topology refusal, invalid selectors, and removal of
 the retired supervisor and interface-wide netem paths. The Python analyzer
 and shell safety tests now live under canonical `Scripts/Tests`. Canonical Mac
 and isolated pup gates passed on the combined #114/#115 tree; no live service
-restart or impairment was performed. #119 organized all four Wire Swift
+restart or impairment was performed. #117 made source-path topology part of
+every dependent SwiftPM cache key, so a move cannot reuse a stale product when
+the package graph itself is unchanged. #119 organized all four Wire Swift
 targets with one mirrored, precise domain grammar: Arq, Audio, Bulk,
 Capabilities, Clipboard, Control, Crypto/{Noise,Pairing,Retry}, Fec, Session,
 Telemetry, and Video, with Simulation confined to TestKit/tests and only the
@@ -437,12 +439,27 @@ both signed products; isolated pup passed Common 79, Wire 508, Host 287, the
 plain build, netio/pacing, and protected-state gates. The final Wire head also
 passed 506 tests under WASI/wasmtime and an explicit vector-generator build.
 No public module, product, runtime behavior, wire byte, or persisted format
-changed. **NEXT MIGRATION SLICE: move the root macOS client package into
-`Client/` while preserving the repository-root build/artifact contract and
-keeping every package gate green.**
+changed. #120 moved all 77 production client Swift files byte-identically into
+`Client/Sources`, the client tests into `Client/Tests`, and their goldens into
+the test-only `Fixtures/Goldens` hierarchy. The manifest and resolution lock
+now live at `Client/`; the repository root is no longer a Swift package. Every
+operator-facing contract remains rooted where it was: explicit SwiftPM
+package/scratch paths preserve `.build`, the signed CLI/app wrappers preserve
+their identities, provenance still covers every package, and VS Code invokes
+only the signed paths. Client test path walks now use the one fail-closed
+`LyteTestKit` repository locator, while Common, CI, benchmark, and layout
+ratchets pin the new topology and pup retires stale root-client paths only in
+its locked disposable mirror. Canonical Mac passed Common 78, Wire 508, Host
+286, client 264, analyzer 25, benchmark safety, and both signed products;
+isolated pup passed Common 79, Wire 508, Host 287, the plain build,
+netio/pacing (19.193 ms IDR drain against the 25 ms ceiling), and protected
+state. Frozen vectors were untouched; no public module, product, runtime
+behavior, wire byte, persisted format, signed identity, or artifact location
+changed. **NEXT MIGRATION SLICE: establish the canonical `SystemTests/`
+boundary before extracting any shared end-to-end session rituals.**
 
 **Suites at HEAD:** Wire 508 Mac / 508 pup; Common 78 Mac / 79 pup;
-root client 262; host 287 pup / 286 Mac — all green. Eighteen conductor/gauge
+client 264; host 287 pup / 286 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; benchmark safety adds one deterministic shell
