@@ -1548,7 +1548,8 @@ final class ConnectionModel {
                     player?.underrunFrames ?? 0,
                 decodeFailures: player?.decodeFailures ?? 0,
                 routeChangeFailures: player?.routeChangeFailures ?? 0,
-                hostAnnouncedQuiet: core?.hostAnnouncedAudioQuiet ?? false))
+                hostAnnouncedQuiet: core?.hostAnnouncedAudioQuiet ?? false),
+            streamChroma: core?.streamChromaDescription)
     }
 }
 
