@@ -46,10 +46,10 @@ studies, and the Sunshine/Moonlight/moonshine reference reads).*
   announced quiet/wake postures, tripwire audio + pre-roll, the REWIND,
   Lyte OS north star. THE ACTIVE TRACK.
 - [20260803-050422 THE CONDUCTOR](20260803-050422-metronome-playout-design.md) —
-  one clock, many instruments: the six laws of on-beat playout
-  (anchor/beat/miss/hole/drift/entanglement), audio + video on one
-  model, three-tier convergence into LyteCore. Video's metronome
-  playout owns the #82 witness's red cell. NEXT UP.
+  one score, one clock, many instruments: the six laws of on-beat
+  playout (cue/beat/late/hole/slip/chain), audio + video on one
+  model, rubato filed, three-tier convergence into LyteCore. Video's
+  metronome playout owns the #82 witness's red cell. NEXT UP.
 - [20260728-165538 video supremacy plan](20260728-165538-lyte-video-supremacy-plan.md) —
   the HS-wave strategy source (§R3/§7).
 

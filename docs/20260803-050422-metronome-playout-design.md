@@ -1,33 +1,47 @@
-# THE CONDUCTOR — one clock, many instruments, everything on the beat
+# THE CONDUCTOR — one score, one clock, many instruments, everything on the beat
 
-**Status: ADOPTED 2026-08-03 (owner design session; law names and the
-Conductor term are the owner's). The model is medium-agnostic: audio
-already lives it (jitter buffer = cushion, lattice = anchor, recenter
-= re-anchor); video adopts it via the metronome playout below, which
-owns the standing red cell (client presentation lateness p99 ~18 ms
-vs the 8 ms bar, measured by the #82 witness) and A-20's quality
-mandate. Implementation is the direct-leg quality refinement PR.**
+**Status: ADOPTED 2026-08-03 (owner design session; the Conductor term
+and the law names are the owner's — use them verbatim). The model is
+medium-agnostic: audio already lives it (jitter buffer = cushion,
+lattice = score, recenter = re-cue); video adopts it via the metronome
+playout below, which owns the standing red cell (client presentation
+lateness p99 ~18 ms vs the 8 ms bar, measured by the #82 witness) and
+A-20's quality mandate. Implementation is the direct-leg quality
+refinement PR.**
 
-One conductor — the receiver's clock, disciplined to the host's
-capture grid through HostClockModel — and many instruments: audio,
-video, and whatever media come later. Each instrument plays its own
-part with its own packet sizes, timings, and verbs, but nobody plays
-off the beat. Because every instrument anchors to the SAME grid, A/V
-sync stops being an accident and becomes a law.
+## The vocabulary
+
+- **The score** — the host's capture timeline, stamped on every part
+  at birth. The music as authored. The host writes it; the client
+  only performs it — the Conductor never rewrites the score.
+- **The conductor** — the client's clock, disciplined to the score
+  through HostClockModel (sub-millisecond residuals).
+- **The instruments** — audio, video, and whatever media come later.
+  Each plays its own part with its own packet sizes, timings, and
+  verbs, but nobody plays off the beat.
+- **The cushion** — the parts held in reserve, quantized in beats.
+- **Rubato** — audio's superpower: pitch-preserving time-stretch
+  (WSOLA), the one instrument allowed to bend tempo, provided it
+  lands back on the conductor's beat. (Future work — see the audio
+  refinement section.)
+
+Because every instrument cues from the SAME score, A/V sync stops
+being an accident and becomes a law.
 
 ## The six laws
 
 ```
-anchor       = host_capture_grid + path_delay_p99 + cushion × beat_period
-beat         = at every beat, play the newest part whose time has come
-miss         = ingest always, play never (its beat has passed)
-hole         = cushion empty: video holds the frame, audio conceals;
-               re-anchor +1 beat, once — refill happens on its own
-drift        = one scheduled beat-slip when cushion leaves its band
-entanglement = parts may depend on parts (video frames reference,
-               audio packets are free) — entangled parts are always
-               ingested even when their beat is lost
+cue   = score + path_delay_p99 + cushion × beat_period
+beat  = at every beat, play the newest part whose time has come
+late  = ingest always, play never (its beat has passed)
+hole  = cushion empty: video holds, audio conceals; re-cue +1 beat, once
+slip  = one scheduled beat-slip when the cushion leaves its band
+chain = parts may depend on parts — chained parts are always
+        ingested even when their beat is lost
 ```
+
+The cue in one sentence: *the score, plus the time it takes the parts
+to reach us, plus the cushion we hold in reserve.*
 
 Every part that ever reaches the glass or the speaker lands on a
 beat. Nothing is ever played off-grid. The cushion breathes; the
@@ -38,9 +52,9 @@ cadence never does.
 | Law | Audio (the ear needs continuity) | Video (the eye needs punctuality) |
 |---|---|---|
 | beat | play the next 5 ms slice at the DAC pull | show the newest ready frame at vsync |
-| miss | conceal (PLC), declick toward silence | hold the last frame — free, invisible |
-| hole | synthesize; silence after grace | no enqueue = no change |
-| entanglement | none — Opus packets + FEC stand alone | reference chains — decode always |
+| late | today: drop; future: bend it back on-beat (rubato) | hold the last frame — free, invisible |
+| hole | conceal (PLC), declick to silence after grace | no enqueue = no change |
+| chain | at the decoder: Opus prediction state — feeding late parts keeps the next decode clean | reference chains — decode always |
 
 ## Why (the finding that forced it)
 
@@ -68,15 +82,14 @@ streaming clients call it frame pacing; every audio stack since the
 recenter). Video joins the pattern it already trusts.
 
 Lyte's edge over the generic implementations: both endpoints are
-ours, both run at a locked 60 Hz, and HostClockModel maps the host
-capture clock with sub-millisecond residuals — so the metronome
-anchors directly to the host's capture grid instead of being
-statistically inferred, and the cushion can stay tighter for the
-same smoothness.
+ours, both run at a locked 60 Hz, and HostClockModel maps the score
+with sub-millisecond residuals — so the conductor cues directly from
+the score instead of statistically inferring it, and the cushion can
+stay tighter for the same smoothness.
 
 ## Law-by-law notes (video's part)
 
-- **anchor** — size the cushion from the measured path-delay TAIL
+- **cue** — size the cushion from the measured path-delay TAIL
   (p95/p99), never the mean: a cushion sized off the average stutters
   once a second at 60 fps. Path delay per frame is already measured
   (`arrival − mappedCapture`).
@@ -84,20 +97,39 @@ same smoothness.
   beat of bias so rounding works for us, not against us. At each beat
   present the newest frame whose time has come; older undisplayed
   frames retire silently.
-- **miss** — video frames are entangled: a late frame always enters
+- **late** — video frames are chained: a late frame always enters
   the decoder (frame N+1 is built on it); it just may never be shown.
   Skip the beat, never the ingest.
 - **hole** — an empty cushion means the glass holds the last frame
   (no enqueue = no change, visually free). The refill is ONE
-  deliberate re-anchor (+1 beat), not per-frame smearing: one
-  scheduled hiccup instead of ten random ones. Audio calls this a
-  recenter.
-- **drift** — pup's 60.0007 Hz and the client display's 60 Hz are
+  deliberate re-cue (+1 beat), not per-frame smearing: one scheduled
+  hiccup instead of ten random ones. Audio calls this a recenter.
+- **slip** — pup's 60.0007 Hz and the client display's 60 Hz are
   different crystals; the grids part by a frame over minutes. When
   the cushion leaves its band, do one scheduled beat-slip (show a
-  frame twice / retire one unshown). A metronome that hiccups once
-  every five minutes on purpose beats one that wobbles every second
-  by accident.
+  frame twice / retire one unshown) — "controlled slip" is the
+  telecom term of art for exactly this move. A metronome that hiccups
+  once every five minutes on purpose beats one that wobbles every
+  second by accident.
+
+## Audio refinement (filed, not scheduled): the late part's afterlife
+
+Today audio drops late packets outright (`latePacketsDropped`) and
+conceals with Opus PLC. A late audio part actually has three uses,
+ranked by psychoacoustic value:
+
+1. **FEC heal** (we do this) — RS-FEC rebuilds the loss before the
+   buffer ever sees a hole; a healed loss costs nothing.
+2. **Late-but-bent** (future: rubato) — play the late part
+   time-compressed (~1.05×, WSOLA pitch-preserving) to rejoin the
+   beat; the ear barely notices ±5% tempo but always notices a click.
+   NetEQ-style accelerate/expand. Also: crossfade the PLC seam when
+   the real part arrives mid-conceal, and feed late parts to the
+   decoder for prediction-state continuity (audio's chain law).
+3. **PLC extrapolation** (we do this) — synthetic continuation;
+   excellent under ~20 ms, degrades gracefully to ~100 ms.
+4. **Declicked fade to silence** (we do this) — honest quiet.
+5. **Zeros / raw click** — never acceptable; we never do this.
 
 ## Standardization — three tiers, no massive rewrite
 
@@ -110,11 +142,11 @@ the precedent) applied to timing:
    are the model of record for every medium; instruments differ only
    in verbs and constants.
 2. **The metronome-playout PR: extract the primitives that are
-   literally identical** — the anchor math (HostClockModel is already
+   literally identical** — the cue math (HostClockModel is already
    shared), the tail estimator (path-delay p99), the cushion-band
-   governor (depth target, re-anchor, drift slip). Audio's buffer
-   migrates onto them without behavior change; its existing test pins
-   prove nothing moved.
+   governor (depth target, re-cue, slip). Audio's buffer migrates
+   onto them without behavior change; its existing test pins prove
+   nothing moved.
 3. **v2 (`Common/Core` → `LyteCore`, per the v2 rulings): the
    Conductor becomes a real shared module.** Laws and primitives in
    LyteCore (sans-IO, injected time, WASM-buildable); each instrument
@@ -126,16 +158,16 @@ the precedent) applied to timing:
 
 ## The cushion is the user's dial
 
-Depth is quantized in frames — every setting stays perfectly on-beat;
+Depth is quantized in beats — every setting stays perfectly on-beat;
 only latency changes:
 
 | cushion | added latency | posture |
 |---|---|---|
-| 1 frame | ~17 ms | fast (interactive default candidate) |
-| 2 frames | ~33 ms | smooth |
-| 3 frames | ~50 ms | silk (movie-watching) |
+| 1 beat | ~17 ms | fast (interactive default candidate) |
+| 2 beats | ~33 ms | smooth |
+| 3 beats | ~50 ms | silk (movie-watching) |
 
-Today's measured tail (~1 beat) is covered by 1–2 frames.
+Today's measured tail (~1 beat) is covered by 1–2 beats.
 
 ## Acceptance (the witness proves it)
 
@@ -144,5 +176,5 @@ Today's measured tail (~1 beat) is covered by 1–2 frames.
 - steady presentation lateness p99 → < 8 ms (from ~18 ms; bar green)
 - fidelity/fps/churn cells stay green (30.8 dB / 0.999 / ~60 fps / 0 IDR)
 
-Never massage a red cell: if the metronome cannot hold the beat, that
+Never massage a red cell: if the conductor cannot hold the beat, that
 is a finding, not a rounding choice.

@@ -78,12 +78,14 @@ stillness as announced_quiet_stillness, not blackout. NEXT =
 direct-leg quality refinement (ratchet's successor — owns A-20 and
 the witness's standing red cell + floors); its adopted design is THE
 CONDUCTOR (docs/20260803-050422-metronome-playout-design.md — owner
-naming): six laws, anchor/beat/miss/hole/drift/entanglement — every
-played part lands on a beat, cushion quantized in frames and
-tail-sized, one scheduled re-anchor instead of per-frame smear;
-audio + video converge on the model in three tiers (vocabulary now,
-shared primitives in the PR, full LyteCore module in v2) by the
-direct-eye replacement playbook, never a big-bang rewrite. Then: E6a NVENC
+naming, use verbatim): the score (host capture timeline) and six
+laws, cue/beat/late/hole/slip/chain — every played part lands on a
+beat, cushion quantized in beats and tail-sized, one scheduled
+re-cue instead of per-frame smear; rubato (audio time-bend of late
+parts) filed as future work; audio + video converge on the model in
+three tiers (vocabulary now, shared primitives in the PR, full
+LyteCore module in v2) by the direct-eye replacement playbook, never
+a big-bang rewrite. Then: E6a NVENC
 productionize (lyte-nvenc probe banked), Rext 4:4:4 in the native
 pens (returns the Best tier), E2 uinput-primary, E4 packaging aimed
 at Lyte OS.
