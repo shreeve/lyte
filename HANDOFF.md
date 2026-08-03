@@ -463,7 +463,14 @@ cross a filesystem boundary. The deterministic shell pin proves every guard
 and rejects the retired broad recursive deletion. Canonical Mac and isolated
 pup gates passed again on the landed tree, including signed products,
 netio/pacing, and protected-state verification; independent review found no
-blocker. **NEXT MIGRATION SLICE: establish the canonical `SystemTests/`
+blocker. #122 closed the migrated CLI's last working-directory seam:
+`wire-send` preserves every explicit corpus path, but its unchanged default now
+walks to the repository-owned frozen Wire corpus when invoked from `Client/`.
+The signing guide pins the exact direct package/scratch invocation beside the
+stable-signature wrappers. The client delta passed the full canonical Mac and
+isolated-pup gates before #121 integrated; after reconciliation, benchmark
+safety and the focused 13-test repair gate passed again. **NEXT MIGRATION
+SLICE: establish the canonical `SystemTests/`
 boundary before extracting any shared end-to-end session rituals.**
 
 **Suites at HEAD:** Wire 508 Mac / 508 pup; Common 78 Mac / 79 pup;
