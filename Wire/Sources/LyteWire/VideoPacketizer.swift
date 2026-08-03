@@ -17,6 +17,8 @@
 // what makes its NACK-candidate lists (§4.7) and fec-impossible
 // presumption immediate.
 
+import LyteCore
+
 public struct VideoShard: Hashable, Sendable {
     public let envelope: Envelope
     /// The plaintext shard bytes (≤ 1112 B by construction).

@@ -1,6 +1,7 @@
 import LyteIO
 import ArgumentParser
 import Foundation
+import LyteCore
 import LyteTransport
 import LyteWire
 

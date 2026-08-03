@@ -6,6 +6,7 @@
 // never grades its own homework. Freeze policy per Vectors/README.md.
 
 import Foundation
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 

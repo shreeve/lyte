@@ -38,6 +38,8 @@
 // outside the group's original allocation; when the geometry matches the
 // tracked group it slots in by its FEC shard index and can complete the
 // group byte-exact (reported as `.repairShardAccepted`, never dropped).
+
+import LyteCore
 // Only a GEOMETRY disagreement remains `.inconsistentGroup` — that is a
 // sender bug; a seq-base disagreement is the repair lane working. The
 // group's own seq base (set by its first-arrived shard) keeps anchoring

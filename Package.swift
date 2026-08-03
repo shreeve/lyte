@@ -97,6 +97,7 @@ let package = Package(
                 // with libopus' encoder (test-only; production encodes
                 // nothing client-side).
                 "COpus",
+                .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
                 .product(name: "LyteWireTestKit", package: "Wire"),
             ]

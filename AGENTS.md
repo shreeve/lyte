@@ -25,7 +25,8 @@ H-era build plans completed their ladder and are retired to git history
   protocol core both ends import. Targets: `LyteWire` (codecs, FEC, Noise,
   vocabulary), `CNanorsWire` (vendored nanors RS-FEC C leaf),
   `LyteWireTestKit` (vector loaders; may use Foundation),
-  `lyte-wire-vectorgen` (vector authoring tool). One sanctioned dependency:
+  `lyte-wire-vectorgen` (vector authoring tool). It imports the sibling
+  `LyteCore` utility layer; its one sanctioned external dependency is
   swift-crypto (`import Crypto`, lint-confined to `Sources/LyteWire/Crypto/`;
   CryptoKit forbidden everywhere). Builds and tests on macOS and Linux —
   byte-exact cross-platform is a gate, not a hope.
@@ -33,7 +34,8 @@ H-era build plans completed their ladder and are retired to git history
   inside) frozen LyteWire. `LyteCore` is sans-IO shared policy with injected
   time; `LyteIO` is the operating-system adapter layer both ends consume.
   `LyteCore.Histogram` owns the shared percentile and retention doctrine;
-  the first extracted adapter is the one process-wide monotonic clock.
+  `LyteCore.AnnexBCheck` owns the one NAL walker and production access-unit
+  splitter; the first extracted adapter is the one process-wide monotonic clock.
 - **`Host/`** — package `LyteHost`: the Linux host. Depends on
   `.package(path: "../Wire")` and, for Linux shells, `../Common`.
   `HostCore` (pure Swift bitstream helpers) and

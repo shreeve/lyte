@@ -53,6 +53,7 @@
 // first flight; zero new wire bytes.
 
 import HostCore
+import LyteCore
 import LyteWire
 
 /// One ready-to-send datagram: encoded envelope + payload bytes plus the

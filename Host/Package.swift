@@ -15,7 +15,10 @@ var products: [Product] = [
 ]
 
 var targets: [Target] = [
-    .target(name: "HostCore"),
+    .target(
+        name: "HostCore",
+        dependencies: [.product(name: "LyteCore", package: "Common")]
+    ),
     .testTarget(name: "HostCoreTests", dependencies: ["HostCore"]),
     // HS-5: encoded Annex-B frames → packetizer + FEC → paced datagram
     // blobs, plus the `lyte sniff` header formatter. Cross-platform on
@@ -24,6 +27,7 @@ var targets: [Target] = [
         name: "HostWire",
         dependencies: [
             "HostCore",
+            .product(name: "LyteCore", package: "Common"),
             .product(name: "LyteWire", package: "Wire"),
         ]
     ),
@@ -32,6 +36,7 @@ var targets: [Target] = [
         dependencies: [
             "HostWire",
             "HostCore",
+            .product(name: "LyteCore", package: "Common"),
             .product(name: "LyteWire", package: "Wire"),
             .product(name: "LyteWireTestKit", package: "Wire"),
         ]
@@ -234,10 +239,10 @@ var dependencies: [Package.Dependency] = [
     // First cross-package integration on the host side (HS-5): the
     // sans-IO protocol core every end codes against.
     .package(path: "../Wire"),
+    .package(path: "../Common"),
 ]
 
 #if os(Linux)
-dependencies.append(.package(path: "../Common"))
 // Only the Linux-only lyte-host target consumes this directly (HS-10's
 // identity hash), so macOS resolution stays exactly as before. Same
 // version pin as Wire's — one swift-crypto in the graph.
