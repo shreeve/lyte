@@ -15,6 +15,9 @@ let package = Package(
         .package(path: "Wire"),
         // Shared operating-system adapters used by both client and host.
         .package(path: "Common"),
+        // Test-only cross-end composition: the shipping client target does
+        // not depend on Host, but LyteTransportTests drive both real cores.
+        .package(path: "Host"),
     ],
     targets: [
         // The Lyte-UDP client (CL-1..CL-12): owns the receive socket,
@@ -86,6 +89,7 @@ let package = Package(
                 // nothing client-side).
                 .product(name: "COpus", package: "Common"),
                 .product(name: "LyteCore", package: "Common"),
+                .product(name: "HostWire", package: "Host"),
                 .product(name: "LyteWire", package: "Wire"),
                 .product(name: "LyteWireTestKit", package: "Wire"),
             ]

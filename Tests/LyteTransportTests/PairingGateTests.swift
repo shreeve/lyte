@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import HostWire
 import LyteTransport
 import LyteWire
 import LyteWireTestKit
@@ -8,40 +9,41 @@ import LyteWireTestKit
 // stack — NoiseTransportCrypto initiator with a PERSISTENT static,
 // ReceiveDemux unseal, TransportSender seal, ReliableCtrlEndpoint, and
 // PairingInitiatorService driving LyteWire's PairingPakeInitiator —
-// completes the W6 CPace exchange against a host build-up running the
-// REAL PairingPakeResponder, through the W-G4 fault model (SimNet loss,
+// completes the W6 CPace exchange against the real HostWire
+// PairingResponderService, through the W-G4 fault model (SimNet loss,
 // duplication, jitter-reorder): exactly-once pairing, both ends pinning
 // the statics the Noise session authenticated, equal ISKs. Wrong PIN is
 // learned client-side from the host's tag one message early, answered
-// with the typed no-oracle reject, and leaves nothing pinned. (The root
-// package cannot import HostWire; the host-side PairingServiceTests gate
-// the mirror image with the real PairingResponderService.)
+// with the typed no-oracle reject, and leaves nothing pinned. This is the
+// first cross-end composition gate: neither end reimplements the other's
+// pairing policy.
 
 final class PairingGateTests: XCTestCase {
 
-    // MARK: The host stand-in
+    // MARK: The host transport shell
 
-    /// The host role, sans-IO: Noise responder, host-clock ARQ endpoint,
-    /// conn-id tagging, and HS-9's message discipline — a fresh
-    /// PairingPakeResponder per share A, share B out, confirm verified.
+    /// Noise responder, host-clock ARQ endpoint, and conn-id tagging around
+    /// HostWire's real PairingResponderService. Only the socket/session
+    /// carriage is built here; pairing policy belongs to the product type.
     private final class HostStandIn: NoiseHandshakeIO {
-        let staticKeys = NoiseKeyPair.generate()
+        let staticKeys: NoiseKeyPair
+        let service: PairingResponderService
         let connectionId: ConnectionId
-        let pin: [UInt8]
         var transport: NoiseTransport?
         var handshakeHash: [UInt8] = []
         var clientStatic: [UInt8] = []
         var ctrlSeq: UInt16 = 0
         var arq: ArqEndpoint<HostClock>
         private var handshakeOutbox: [[UInt8]] = []
-
-        var responder: PairingPakeResponder?
-        var result: PairingResult?
-        var rejectsSent = 0
-        var clientRejectSeen: PairingRejectReason?
+        var events: [PairingResponderService.Event] = []
 
         init(pin: [UInt8]) {
-            self.pin = pin
+            let staticKeys = NoiseKeyPair.generate()
+            self.staticKeys = staticKeys
+            service = PairingResponderService(
+                pin: pin,
+                hostStaticPublicKey: staticKeys.publicKey
+            )
             var rng = SplitMix64(seed: 0xC1_06)
             connectionId = ConnectionId.random(using: &rng)
             var config = ArqConfig()
@@ -69,6 +71,10 @@ final class PairingGateTests: XCTestCase {
             clientStatic = session.remoteStaticPublicKey ?? []
             handshakeHash = session.handshakeHash
             transport = try session.makeTransport()
+            service.sessionEstablished(
+                clientStaticPublicKey: clientStatic,
+                noiseHandshakeHash: handshakeHash
+            )
             let carriage = Envelope(
                 channel: .ctrl,
                 seq: ChannelSeq(rawValue: ctrlSeq),
@@ -144,47 +150,24 @@ final class PairingGateTests: XCTestCase {
             }
         }
 
-        /// HS-9's shape: fresh responder per share A, tag math on
-        /// confirm, silence after success.
+        /// The real HS-9 service owns fresh-run, tag, throttle, and budget
+        /// policy. This shell only carries its replies over the host ARQ.
         private func pairingMessage(
             _ message: [UInt8], nowMicros: UInt64
         ) throws {
-            switch message.first {
-            case CtrlMessageType.pairingShareA:
-                var fresh = try PairingPakeResponder(
-                    pin: pin,
-                    clientStaticPublicKey: clientStatic,
-                    hostStaticPublicKey: staticKeys.publicKey,
-                    noiseHandshakeHash: handshakeHash)
-                let shareB = try fresh.receiveShareA(
-                    try PairingShareA.decode(message))
-                responder = fresh
-                try arq.send(
-                    message: try shareB.encode(),
-                    now: HostTimestamp(microseconds: nowMicros))
-            case CtrlMessageType.pairingConfirm:
-                guard var run = responder else {
-                    XCTFail("confirm with no run open")
-                    return
-                }
-                responder = nil
-                do {
-                    try run.receiveConfirm(try PairingConfirm.decode(message))
-                    result = run.result
-                } catch {
-                    rejectsSent += 1
-                    try arq.send(
-                        message: PairingReject(
-                            reason: .confirmationFailed
-                        ).encode(),
-                        now: HostTimestamp(microseconds: nowMicros))
-                }
-            case CtrlMessageType.pairingReject:
-                clientRejectSeen =
-                    try PairingReject.decode(message).reason
-            default:
+            guard let output = service.handleReliableCtrl(
+                message, now: nowMicros * 1_000
+            ) else {
                 XCTFail("unexpected reliable message type \(message.first ?? 0)")
+                return
             }
+            for reply in output.replies {
+                try arq.send(
+                    message: reply,
+                    now: HostTimestamp(microseconds: nowMicros)
+                )
+            }
+            events.append(contentsOf: output.events)
         }
 
         /// Due ARQ output, sealed (single-frame payloads here — pairing
@@ -348,11 +331,14 @@ final class PairingGateTests: XCTestCase {
 
         // Host verdict: confirm verified, and it pins the SAME client
         // static the Noise session authenticated — the promotion rule.
-        let hostResult = try XCTUnwrap(harness.host.result)
         XCTAssertEqual(
-            hostResult.peerStaticPublicKeyToPin, harness.clientStatic.publicKey)
+            harness.host.service.pairedClientStaticPublicKey,
+            harness.clientStatic.publicKey)
         XCTAssertEqual(harness.host.clientStatic, harness.clientStatic.publicKey)
-        XCTAssertEqual(harness.host.rejectsSent, 0)
+        XCTAssertEqual(harness.host.events, [
+            .attemptOpened(attempt: 1, of: 3),
+            .paired(clientStaticPublicKey: harness.clientStatic.publicKey),
+        ])
 
         // The storm was real, and the reliable carriage healed it.
         XCTAssertGreaterThan(net.lostCount + net.duplicatedCount, 0,
@@ -372,10 +358,13 @@ final class PairingGateTests: XCTestCase {
         // no confirm ever sent, the typed reject went back instead.
         XCTAssertEqual(harness.events, [.pinMismatch])
         XCTAssertNil(harness.service.pairedHostStaticPublicKey)
-        XCTAssertNil(harness.host.result, "nothing must pin on either end")
-        XCTAssertEqual(harness.host.clientRejectSeen, .confirmationFailed)
-        XCTAssertEqual(harness.host.rejectsSent, 0,
-                       "the host never had a confirm to refuse")
+        XCTAssertNil(
+            harness.host.service.pairedClientStaticPublicKey,
+            "nothing must pin on either end")
+        XCTAssertEqual(harness.host.events, [
+            .attemptOpened(attempt: 1, of: 3),
+            .clientAborted(.confirmationFailed),
+        ], "the host saw the client's typed abort, never a confirm")
     }
 
     // MARK: Host reject and machine discipline
