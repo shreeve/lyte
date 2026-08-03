@@ -5,6 +5,7 @@
 // `ffmpeg -f null -` then decodes as the real-corpus half of the oracle.
 
 import Foundation
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 

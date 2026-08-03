@@ -15,6 +15,7 @@ import Foundation
 import HostCore
 import HostEye
 import HostWire
+import LyteCore
 import LyteWire
 
 // MARK: - Options
@@ -879,12 +880,12 @@ func run() throws {
     """)
     // The stream-startability gate: the native encoder must open with
     // VPS/SPS/PPS + IRAP or the client can never join mid-life.
-    let directNals = AnnexB.nalUnits(in: leg.firstPacket)
-    print("first packet NALs: \(AnnexB.summary(of: leg.firstPacket))")
-    guard AnnexB.startsWithParameterSetsAndIrap(leg.firstPacket) else {
+    let directNals = AnnexBCheck.nalUnits(in: leg.firstPacket)
+    print("first packet NALs: \(AnnexBCheck.summary(of: leg.firstPacket))")
+    guard AnnexBCheck.startsWithParameterSetsAndIrap(leg.firstPacket) else {
         throw HostError("the direct eye's first packet does not begin "
             + "with VPS/SPS/PPS + an IRAP picture (got: "
-            + "\(directNals.map { HevcNal.name($0.type) }.joined(separator: " ")))")
+            + "\(directNals.map { HevcNalType.name($0.type) }.joined(separator: " ")))")
     }
     print("first packet starts with parameter sets + IDR: OK")
 

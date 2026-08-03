@@ -21,6 +21,7 @@
 
 import CoreMedia
 import Foundation
+import LyteCore
 import LyteWire
 
 public enum VideoRenderError: Error, Sendable {

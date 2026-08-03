@@ -10,7 +10,7 @@
 // posture audit only; a wire-level SPS vocabulary would be a Wire/
 // slice with its own vector discussion.
 
-import LyteWire
+import LyteCore
 
 public enum HevcSpsChroma {
     /// Parses `chroma_format_idc` from the FIRST SPS NAL found in the

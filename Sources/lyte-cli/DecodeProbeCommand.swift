@@ -21,6 +21,7 @@ import CoreVideo
 import Foundation
 import ImageIO
 import LyteCorpus
+import LyteCore
 import LyteTransport
 import LyteUI
 import LyteWire

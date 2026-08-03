@@ -16,7 +16,9 @@ let package = Package(
         .library(name: "LyteWireTestKit", targets: ["LyteWireTestKit"]),
     ],
     dependencies: [
-        // The ONE sanctioned dependency (core plan §1): swift-crypto's
+        // Shared sans-IO utilities live beside the frozen wire contract.
+        .package(path: "../Common"),
+        // The ONE sanctioned external dependency (core plan §1): swift-crypto's
         // `Crypto` module is the crypto provider on ALL platforms — a thin
         // CryptoKit shim on Apple, vendored BoringSSL on Linux — so the
         // same Noise code compiles everywhere. Never import CryptoKit
@@ -35,19 +37,32 @@ let package = Package(
             name: "LyteWire",
             dependencies: [
                 "CNanorsWire",
+                .product(name: "LyteCore", package: "Common"),
                 .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
-        .target(name: "LyteWireTestKit", dependencies: ["LyteWire"]),
+        .target(
+            name: "LyteWireTestKit",
+            dependencies: [
+                "LyteWire",
+                .product(name: "LyteCore", package: "Common"),
+            ]
+        ),
         // Authoring tool for Vectors/ — run once, commit, freeze. See
         // Vectors/README.md for the regeneration policy.
         .executableTarget(
             name: "lyte-wire-vectorgen",
-            dependencies: ["LyteWire", "LyteWireTestKit"]
+            dependencies: [
+                "LyteWire", "LyteWireTestKit",
+                .product(name: "LyteCore", package: "Common"),
+            ]
         ),
         .testTarget(
             name: "LyteWireTests",
-            dependencies: ["LyteWire", "LyteWireTestKit"]
+            dependencies: [
+                "LyteWire", "LyteWireTestKit",
+                .product(name: "LyteCore", package: "Common"),
+            ]
         ),
     ]
 )

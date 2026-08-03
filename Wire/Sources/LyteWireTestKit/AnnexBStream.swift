@@ -10,7 +10,7 @@
 // land on start-code boundaries, so concatenating the ranges reproduces
 // the stream byte-exact.
 
-import LyteWire
+import LyteCore
 
 public enum AnnexBStream {
     /// Byte ranges of the stream's access units, covering the stream

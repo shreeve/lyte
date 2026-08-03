@@ -1,14 +1,6 @@
-// Annex-B HEVC integrity checks — the NAL-walking core carried over from
-// the frozen client depacketizer (VideoDepacketizer.swift's Cursor walk)
-// and HostCore's AnnexB helpers, stripped of every GameStream artifact:
-// no 8/24-byte Sunshine frame header, no AUD/SEI stripping, no
-// streamPacketIndex. LyteWire only needs what reassembly correctness
-// needs: locate NAL units, classify them, and vouch that a byte blob is
-// frame-shaped before the packetizer sends it or the assembler emits it.
-//
-// Types are named HevcNalType/HevcNalUnit/AnnexBCheck — deliberately
-// distinct from HostCore's HevcNal/NalUnit/AnnexB so both modules can
-// meet in the host's build graph without qualification fights.
+// One shared HEVC Annex-B vocabulary and walker for every Lyte endpoint.
+// Pure Swift, allocation-free when classifying a borrowed byte collection,
+// and deliberately independent of files, sockets, clocks, and Foundation.
 
 public enum HevcNalType {
     public static let trailN: UInt8 = 0
@@ -25,18 +17,14 @@ public enum HevcNalType {
     public static let prefixSei: UInt8 = 39
     public static let suffixSei: UInt8 = 40
 
-    /// VCL NAL types — the picture-carrying range.
     public static func isVcl(_ type: UInt8) -> Bool {
         type < 32
     }
 
-    /// IRAP picture NAL types (BLA/IDR/CRA and the reserved IRAP range) —
-    /// the "safe to start decoding here" property the isIDR flag carries.
     public static func isIrap(_ type: UInt8) -> Bool {
         (blaWLp...rsvIrapVcl23).contains(type)
     }
 
-    /// IDR picture NAL types specifically.
     public static func isIdr(_ type: UInt8) -> Bool {
         type == idrWRadl || type == idrNLp
     }
@@ -60,9 +48,9 @@ public enum HevcNalType {
     }
 }
 
-/// One NAL unit located inside an Annex-B byte blob. `offset`/`length`
-/// cover the NAL payload including its 2-byte header, excluding the start
-/// code; offsets are relative to the blob's start, not its slice indices.
+/// One NAL unit inside an Annex-B byte blob. Offsets are relative to the
+/// blob's start; the range covers the two-byte NAL header and payload but
+/// excludes its start code.
 public struct HevcNalUnit: Hashable, Sendable {
     public let offset: Int
     public let length: Int
@@ -75,8 +63,6 @@ public struct HevcNalUnit: Hashable, Sendable {
     }
 }
 
-/// The two properties needed at video ingress and egress, derived by one
-/// allocation-free NAL walk.
 public struct AnnexBFrameClassification: Hashable, Sendable {
     public let isFrameShaped: Bool
     public let containsIrap: Bool
@@ -88,18 +74,9 @@ public struct AnnexBFrameClassification: Hashable, Sendable {
 }
 
 public enum AnnexBCheck {
-    /// Splits an Annex-B byte blob on start codes (00 00 01, with or
-    /// without a leading zero) and returns the contained NAL units in
-    /// order — the proven walker from the frozen depacketizer's Cursor /
-    /// HostCore's AnnexB, including the skip-3 fast path and the
-    /// leading-zero attribution of 4-byte start codes. Bytes before the
-    /// first start code are not a NAL unit; units shorter than the 2-byte
-    /// NAL header are dropped.
     public static func nalUnits(in data: ArraySlice<UInt8>) -> [HevcNalUnit] {
         var units: [HevcNalUnit] = []
-        walkNalUnits(in: data) {
-            units.append($0)
-        }
+        walkNalUnits(in: data) { units.append($0) }
         return units
     }
 
@@ -107,8 +84,6 @@ public enum AnnexBCheck {
         nalUnits(in: data[...])
     }
 
-    /// The Annex-B start-code length at the blob's first byte: 3, 4, or
-    /// nil when the blob does not open on a start code.
     public static func leadingStartCodeLength<C>(_ data: C) -> Int?
     where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         let base = data.startIndex
@@ -116,15 +91,12 @@ public enum AnnexBCheck {
             return nil
         }
         if data[base + 2] == 1 { return 3 }
-        if data[base + 2] == 0, data.count >= 5, data[base + 3] == 1 { return 4 }
+        if data[base + 2] == 0, data.count >= 5, data[base + 3] == 1 {
+            return 4
+        }
         return nil
     }
 
-    /// Validates frame shape and classifies IRAP content in one NAL walk.
-    /// `containsIrap` remains independent of frame shape so malformed
-    /// prefixed blobs retain the legacy classifier semantics.
-    /// Works directly over array slices and synchronous borrowed buffers;
-    /// no view of `data` escapes the call.
     public static func classifyFrame<C>(
         _ data: C
     ) -> AnnexBFrameClassification
@@ -146,11 +118,6 @@ public enum AnnexBCheck {
         classifyFrame(data[...])
     }
 
-    /// The frame-boundary integrity check both video endpoints apply: a
-    /// frame's bytes must open on a start code (nothing rides before the
-    /// first NAL) and contain at least one VCL NAL unit. The packetizer
-    /// refuses input that fails this; the assembler suppresses recovered
-    /// output that fails it — correct bytes or nothing, never garbage.
     public static func isFrameShaped(_ data: ArraySlice<UInt8>) -> Bool {
         classifyFrame(data).isFrameShaped
     }
@@ -159,9 +126,6 @@ public enum AnnexBCheck {
         isFrameShaped(data[...])
     }
 
-    /// True when the frame carries an IRAP picture — how the assembler
-    /// derives `DecodeUnit.isIDR` from recovered bytes, and how the
-    /// packetizer audits the encoder's claimed flag.
     public static func containsIrap(_ data: ArraySlice<UInt8>) -> Bool {
         classifyFrame(data).containsIrap
     }
@@ -170,7 +134,15 @@ public enum AnnexBCheck {
         containsIrap(data[...])
     }
 
-    /// Human-readable NAL type sequence, for logs and gate evidence.
+    public static func startsWithParameterSetsAndIrap(_ data: [UInt8]) -> Bool {
+        let units = nalUnits(in: data)
+        let types = Set(units.map(\.type))
+        return types.contains(HevcNalType.vps)
+            && types.contains(HevcNalType.sps)
+            && types.contains(HevcNalType.pps)
+            && units.contains { HevcNalType.isIrap($0.type) }
+    }
+
     public static func summary(of data: ArraySlice<UInt8>) -> String {
         nalUnits(in: data).map { HevcNalType.name($0.type) }.joined(separator: " ")
     }
@@ -179,9 +151,6 @@ public enum AnnexBCheck {
         summary(of: data[...])
     }
 
-    /// Walks NAL units without first materializing a start-offset array.
-    /// The pending unit is emitted only when its end is known, preserving
-    /// the legacy leading-zero attribution and short-unit rejection.
     private static func walkNalUnits<C>(
         in data: C,
         _ visit: (HevcNalUnit) -> Void
@@ -196,8 +165,6 @@ public enum AnnexBCheck {
                 let nextStart = i + 3
                 if let start = pendingStart {
                     var end = nextStart - 3
-                    // A 4-byte start code's leading zero belongs to the
-                    // next start code, not this payload.
                     if end > start, data[end - 1] == 0 { end -= 1 }
                     let length = end - start
                     if length >= 2 {
@@ -225,5 +192,57 @@ public enum AnnexBCheck {
                 ))
             }
         }
+    }
+}
+
+/// Production access-unit boundaries for an HEVC Annex-B elementary stream.
+/// Prefix NALs attach to the following picture; suffix SEI stays behind.
+public enum AnnexBAccessUnits {
+    public static func ranges(in bytes: [UInt8]) -> [Range<Int>] {
+        let nals = AnnexBCheck.nalUnits(in: bytes)
+        guard nals.contains(where: { HevcNalType.isVcl($0.type) }) else {
+            return []
+        }
+
+        var starts: [Int] = [0]
+        var lastVclIndex: Int?
+        for (index, nal) in nals.enumerated() {
+            guard HevcNalType.isVcl(nal.type) else { continue }
+            if firstSliceFlag(of: nal, in: bytes), let lastVcl = lastVclIndex {
+                var boundary = index
+                while boundary - 1 > lastVcl,
+                      !HevcNalType.isVcl(nals[boundary - 1].type),
+                      nals[boundary - 1].type != HevcNalType.suffixSei {
+                    boundary -= 1
+                }
+                if starts.last != boundary { starts.append(boundary) }
+            }
+            lastVclIndex = index
+        }
+
+        return starts.enumerated().map { position, startIndex in
+            let lower = startCodeStart(of: nals[startIndex], in: bytes)
+            let upper = position + 1 < starts.count
+                ? startCodeStart(of: nals[starts[position + 1]], in: bytes)
+                : bytes.count
+            return lower..<upper
+        }
+    }
+
+    private static func firstSliceFlag(
+        of nal: HevcNalUnit,
+        in bytes: [UInt8]
+    ) -> Bool {
+        guard nal.length >= 3 else { return false }
+        return bytes[nal.offset + 2] & 0x80 != 0
+    }
+
+    private static func startCodeStart(
+        of nal: HevcNalUnit,
+        in bytes: [UInt8]
+    ) -> Int {
+        var start = nal.offset - 3
+        while start > 0, bytes[start - 1] == 0 { start -= 1 }
+        return max(start, 0)
     }
 }
