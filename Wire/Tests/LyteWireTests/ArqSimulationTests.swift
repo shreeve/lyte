@@ -53,6 +53,7 @@ final class ArqSimulationTests: XCTestCase {
     private func runTrial(seed: UInt64) {
         var rng = SplitMix64(seed: seed)
         let label = "seed \(seed)"
+        let horizon: UInt64 = 240_000_000
 
         // Fault profile.
         let baseDelay = Int64.random(in: 1_000...25_000, using: &rng)
@@ -76,6 +77,12 @@ final class ArqSimulationTests: XCTestCase {
         let bodyCeiling = [16, 64, 256].randomElement(using: &rng)!
         let config = ArqConfig(
             maxSegmentBodyByteCount: bodyCeiling,
+            // This gate promises reliable convergence throughout its
+            // 240-second world. Keep the independent abandoned-group
+            // admission policy from expiring an honest in-flight group
+            // before the property horizon; adversarial tests pin that
+            // policy separately.
+            receiveGroupLifetimeMicroseconds: Int64(horizon) + 1,
             initialSegmentSeq: initialSeq
         )
         var endpoints = [
@@ -193,7 +200,6 @@ final class ArqSimulationTests: XCTestCase {
 
         // The event loop.
         var now: UInt64 = 0
-        let horizon: UInt64 = 240_000_000
         var steps = 0
         while now <= horizon {
             steps += 1
