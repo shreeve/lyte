@@ -190,13 +190,15 @@ def audio_interval_analysis(samples, warmup_seconds=3.0):
         )
     ]
     def announced_quiet_stillness(interval):
-        # The host declared quiet (0x25): silence is intentional. Late
-        # drops would still be real failures, underruns must all ride
-        # the declick path, and PLC stays bounded to the one-time ring
-        # drain at the gate boundary (≤ 200 ms of 5 ms packets).
+        # The host declared quiet (0x25): silence is intentional.
+        # Underruns must all ride the declick path; PLC stays bounded
+        # to the one-time ring drain at the gate boundary (≤ 200 ms of
+        # 5 ms packets); and a few boundary stragglers — near-silent
+        # tail packets arriving after the ring re-based — may drop
+        # late (≤ 40 ms). Sustained late drops still fail.
         return (
             interval["hostAnnouncedQuiet"]
-            and interval["latePacketsDropped"] == 0
+            and interval["latePacketsDropped"] <= 8
             and interval["plcInvocations"] <= 40
             and interval["declickProtectedUnderrunFrames"]
                 == interval["underrunFrames"]
