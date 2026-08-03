@@ -208,9 +208,10 @@ TODO.md's "ANALYSIS ledger — the live remainder" section, beside the
 audit-caveats section. The v2 laws are `docs/20260730-115707-lyte-v2-rulings.md` — **read
 them as constraints, never re-litigate**: one repo forever (no v1/v2
 split, convergence in place, always green); target shape
-Client / Common / Host with Common split as `Common/Core` (`LyteCore`,
-sans-IO, lint-guarded) / `Common/IO` (`LyteIO`, shared OS adapters,
-adapters-never-policy) / `Common/TestKit` (`LyteTestKit`); fix before
+Client / Common / Host with Common split as `Common/Sources/LyteCore`
+(`LyteCore`, sans-IO, lint-guarded) / `Common/Sources/LyteIO` (`LyteIO`,
+shared OS adapters, adapters-never-policy) /
+`Common/Sources/LyteTestKit` (`LyteTestKit`); fix before
 spec; spec before code; rebuild only earned organs against the frozen
 vectors. Phase order: the ANALYSIS Tier 1/2 PR train → multi-agent
 spec phases (inventory → design panels → adversarial review →

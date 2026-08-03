@@ -279,7 +279,7 @@ resolves and asserts the real root; pup's split deployment layout supplies an
 explicit clean source mirror. Clock, histogram, Annex-B, HEVC bits, SHA-256,
 hex, TOS, and chroma scanners all traversed the production trees on Mac and
 Linux, and the full package matrix stayed green. No production code changed.
-#105 made `Common/COpus` the one pkg-config system-library product for both
+#105 made `Common/Sources/COpus` the one pkg-config system-library product for both
 platforms. The client decoder/PLC and real Opus tests plus the Host's
 `COpusEncode` leaf consume it; the root and Host declarations, both private
 module maps, and both divergent shims were deleted in the same PR. The

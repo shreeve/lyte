@@ -5,7 +5,7 @@ set -eu
 if [ $# -ge 1 ]; then
     dir="$1"
 else
-    dir="$(cd "$(dirname "$0")/../Core" && pwd)"
+    dir="$(cd "$(dirname "$0")/../Sources/LyteCore" && pwd)"
 fi
 
 pattern='^[[:space:]]*(@[A-Za-z_]+[[:space:]]+)*import([[:space:]]+(class|struct|enum|protocol|typealias|func|var|let))?[[:space:]]+(Foundation|FoundationEssentials|FoundationNetworking|Dispatch|Network|Crypto|CryptoKit)([^A-Za-z0-9_]|$)'

@@ -15,8 +15,24 @@ fi
 run_package_tests() {
     local label="$1"
     local path="$2"
+    local marker="$path/.build/.lyte-manifest-graph-sha256"
+    local installed_hash=""
     echo "==> $label tests"
-    (cd "$path" && swift test)
+
+    if [[ -f "$marker" ]]; then
+        installed_hash="$(<"$marker")"
+    fi
+    if [[ "$installed_hash" != "$manifest_graph_hash" ]]; then
+        echo "    package graph changed; invalidating stale SwiftPM build state"
+        (cd "$path" && swift package clean)
+    fi
+
+    # Path-only sibling-package moves do not always invalidate SwiftPM's
+    # existing workspace state. Resolve first so the gate is valid in an
+    # incremental developer checkout as well as a clean clone.
+    (cd "$path" && swift package resolve && swift test)
+    mkdir -p "$path/.build"
+    printf '%s\n' "$manifest_graph_hash" > "$marker"
 }
 
 verify_frozen_vectors() {
@@ -39,6 +55,20 @@ verify_frozen_vectors() {
 }
 
 verify_frozen_vectors
+
+manifest_graph_hash="$({
+    for manifest in \
+        Package.swift Package.resolved \
+        Common/Package.swift Common/Package.resolved \
+        Wire/Package.swift Wire/Package.resolved \
+        Host/Package.swift Host/Package.resolved
+    do
+        if [[ -f "$manifest" ]]; then
+            shasum -a 256 "$manifest"
+        fi
+    done
+} | shasum -a 256 | awk '{print $1}')"
+
 run_package_tests "Common" "$repo_root/Common"
 run_package_tests "Wire" "$repo_root/Wire"
 run_package_tests "Host" "$repo_root/Host"
