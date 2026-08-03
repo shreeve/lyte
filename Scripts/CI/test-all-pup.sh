@@ -45,6 +45,8 @@ fi
 lock_acquired=1
 
 echo "==> sync client sources, Common, Wire, and Host to $pup:$pup_gate_root"
+rsync -a Package.swift "$pup:$pup_gate_root/Package.swift"
+rsync -a Package.resolved "$pup:$pup_gate_root/Package.resolved"
 rsync -a --delete Sources/ "$pup:$pup_gate_root/Sources/"
 rsync -a --delete --exclude .build Common/ "$pup:$pup_gate_root/Common/"
 rsync -a --delete --exclude .build Wire/ "$pup:$pup_gate_root/Wire/"
@@ -99,6 +101,8 @@ trap on_remote_exit EXIT
 
 manifest_graph_hash="$({
     for manifest in \
+        "$gate_root/Package.swift" \
+        "$gate_root/Package.resolved" \
         "$gate_root/Common/Package.swift" \
         "$gate_root/Common/Package.resolved" \
         "$gate_root/Wire/Package.swift" \
