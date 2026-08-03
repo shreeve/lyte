@@ -28,12 +28,6 @@ struct DiagnosticBenchmarkSample: Codable {
         var referenceName: String
         var sourceWidth: Int
         var sourceHeight: Int
-        var sourceWitnessSHA256: String?
-        var sourceWitnessRDB: Double?
-        var sourceWitnessGDB: Double?
-        var sourceWitnessBDB: Double?
-        var sourceWitnessMinDB: Double?
-        var sourceWitnessLumaSSIM: Double?
         var decodedWidth: Int?
         var decodedHeight: Int?
         var readbackPixelFormat: String?
@@ -94,6 +88,9 @@ struct DiagnosticBenchmarkSample: Codable {
         var declickProtectedUnderrunFrames: UInt64
         var decodeFailures: UInt64
         var routeChangeFailures: UInt64
+        /// True while the host's 0x25 quiet announcement stands: the
+        /// stillness on the wire is intentional, not a blackout.
+        var hostAnnouncedQuiet: Bool
     }
 
     var type = "sample"
@@ -156,8 +153,7 @@ enum DiagnosticBenchmark {
         let qualityProbe = DiagnosticQualityProbe(
             environment: environment,
             enabled: qualityProbeAllowed
-                && (workload == "quality" || workload == "quality-static"
-                    || workload == "motion-pipeline"))
+                && (workload == "motion" || workload == "quality-static"))
         let motionSource: DiagnosticBenchmarkSample.MotionSource? = {
             guard let path = environment["LYTE_BENCHMARK_MOTION_SOURCE_SUMMARY"],
                   let data = FileManager.default.contents(atPath: path)
@@ -244,12 +240,6 @@ private final class DiagnosticQualityProbe {
     private let reference: [UInt8]?
     private let setupError: String?
     private let readbackPath: String?
-    private let sourceWitnessSHA256: String?
-    private let sourceWitnessRDB: Double?
-    private let sourceWitnessGDB: Double?
-    private let sourceWitnessBDB: Double?
-    private let sourceWitnessMinDB: Double?
-    private let sourceWitnessLumaSSIM: Double?
     private let syntheticMotion: Bool
     private let syntheticReference: SyntheticMotionReference?
     private var wroteReadback = false
@@ -258,18 +248,6 @@ private final class DiagnosticQualityProbe {
         self.enabled = enabled
         referenceName = environment["LYTE_BENCHMARK_REFERENCE_NAME"] ?? "unknown"
         readbackPath = environment["LYTE_BENCHMARK_READBACK_RAW"]
-        sourceWitnessSHA256 =
-            environment["LYTE_BENCHMARK_SOURCE_WITNESS_SHA256"]
-        sourceWitnessRDB = Double(
-            environment["LYTE_BENCHMARK_SOURCE_WITNESS_R_DB"] ?? "")
-        sourceWitnessGDB = Double(
-            environment["LYTE_BENCHMARK_SOURCE_WITNESS_G_DB"] ?? "")
-        sourceWitnessBDB = Double(
-            environment["LYTE_BENCHMARK_SOURCE_WITNESS_B_DB"] ?? "")
-        sourceWitnessMinDB = Double(
-            environment["LYTE_BENCHMARK_SOURCE_WITNESS_MIN_DB"] ?? "")
-        sourceWitnessLumaSSIM = Double(
-            environment["LYTE_BENCHMARK_SOURCE_WITNESS_SSIM"] ?? "")
         syntheticMotion =
             environment["LYTE_BENCHMARK_SYNTHETIC_MOTION"] == "1"
         sourceWidth = Int(environment["LYTE_BENCHMARK_REFERENCE_WIDTH"] ?? "") ?? 0
@@ -459,12 +437,6 @@ private final class DiagnosticQualityProbe {
             referenceName: referenceName,
             sourceWidth: sourceWidth,
             sourceHeight: sourceHeight,
-            sourceWitnessSHA256: sourceWitnessSHA256,
-            sourceWitnessRDB: sourceWitnessRDB,
-            sourceWitnessGDB: sourceWitnessGDB,
-            sourceWitnessBDB: sourceWitnessBDB,
-            sourceWitnessMinDB: sourceWitnessMinDB,
-            sourceWitnessLumaSSIM: sourceWitnessLumaSSIM,
             decodedWidth: decodedWidth,
             decodedHeight: decodedHeight,
             readbackPixelFormat: frame?.sourcePixelFormat,

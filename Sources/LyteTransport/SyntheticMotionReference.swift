@@ -1,20 +1,25 @@
-/// Client-side mirror of HostCore.SyntheticMotionSource.
+/// Client-side mirror of Scripts/motion-presenter.py — the byte-exact
+/// twin of the GTK canvas that the benchmark puts on the host's glass.
 ///
-/// It exists only for the debug motion gate: the visible 24-bit marker picks
-/// the exact authored frame, preventing accidental cross-phase PSNR/SSIM.
+/// The visible 24-bit marker picks the exact authored frame, preventing
+/// accidental cross-phase PSNR/SSIM. Any edit here must land in the
+/// presenter too: shared SHA-256 fixtures (SyntheticMotionReferenceTests
+/// ↔ test_analyze_app_benchmark.py) fail loudly if the twins drift.
 public struct SyntheticMotionReference: Sendable {
     public let width: Int
     public let height: Int
     private let base: [UInt8]
 
     public init(width: Int, height: Int) {
-        precondition(width >= 640 && height >= 360)
+        precondition(width >= 960 && height >= 600)
         self.width = width
         self.height = height
         var background = [UInt8](repeating: 0, count: width * height * 4)
+        // The definition's background [18, 12, 32] is (r, g, b), exactly
+        // as the GTK canvas reads it: BGRA bytes 32, 12, 18, 255.
         background.withUnsafeMutableBytes { raw in
             raw.bindMemory(to: UInt32.self)
-                .initialize(repeating: 0xFF20_0C12)
+                .initialize(repeating: 0xFF12_0C20)
         }
         for x in stride(from: 0, to: width, by: 64) {
             for y in 0..<height {
@@ -52,7 +57,9 @@ public struct SyntheticMotionReference: Sendable {
 
     public func frame(_ frameID: UInt32) -> [UInt8] {
         var bytes = base
-        let colors: [(UInt8, UInt8, UInt8)] = [
+        // Definition colors in the authored (r, g, b) order — the same
+        // order the GTK canvas feeds Gdk.RGBA.
+        let colors: [(r: UInt8, g: UInt8, b: UInt8)] = [
             (255, 54, 92), (36, 220, 255), (255, 224, 48),
             (116, 255, 88), (210, 72, 255),
         ]
@@ -61,26 +68,28 @@ public struct SyntheticMotionReference: Sendable {
             let x = (frame * 7 + index * 313) % width
             let y = (frame * 5 + index * 197) % height
             fill(&bytes, x: x, y: 0, width: min(5, width - x),
-                 height: height, b: color.0, g: color.1, r: color.2)
+                 height: height, b: color.b, g: color.g, r: color.r)
             fill(&bytes, x: 0, y: y, width: width,
                  height: min(5, height - y),
-                 b: color.0, g: color.1, r: color.2)
+                 b: color.b, g: color.g, r: color.r)
         }
-        let boxWidth = min(240, width / 4)
-        let boxHeight = min(150, height / 4)
+        // The glass draws fixed geometry (the init precondition keeps it
+        // in frame): 240×150 box, 12 px inset, 168 px square.
+        let boxWidth = 240
+        let boxHeight = 150
         let boxX = bounce(frame, 11, width, boxWidth)
         let boxY = bounce(frame, 7, height, boxHeight)
         fill(&bytes, x: boxX, y: boxY, width: boxWidth, height: boxHeight,
-             b: colors[0].0, g: colors[0].1, r: colors[0].2)
+             b: colors[0].b, g: colors[0].g, r: colors[0].r)
         fill(&bytes, x: boxX + 12, y: boxY + 12,
-             width: max(1, boxWidth - 24), height: max(1, boxHeight - 24),
-             b: colors[1].0, g: colors[1].1, r: colors[1].2)
-        let shapeSize = min(168, min(width, height) / 5)
-        let shapeX = bounce(frame, -9, width, shapeSize)
-        let shapeY = bounce(frame, 13, height, shapeSize)
-        fill(&bytes, x: shapeX, y: shapeY, width: shapeSize,
-             height: shapeSize, b: colors[3].0, g: colors[3].1,
-             r: colors[3].2)
+             width: boxWidth - 24, height: boxHeight - 24,
+             b: colors[1].b, g: colors[1].g, r: colors[1].r)
+        let radius = 84
+        let shapeX = bounce(frame, -9, width, radius * 2)
+        let shapeY = bounce(frame, 13, height, radius * 2)
+        fill(&bytes, x: shapeX, y: shapeY, width: radius * 2,
+             height: radius * 2, b: colors[3].b, g: colors[3].g,
+             r: colors[3].r)
         drawMarker(frameID, into: &bytes)
         return bytes
     }
