@@ -3,13 +3,19 @@ import XCTest
 
 final class Sha256RatchetTests: XCTestCase {
     private static var repositoryRoot: URL {
-        URL(fileURLWithPath: #filePath)
+        if let override = ProcessInfo.processInfo.environment["LYTE_REPOSITORY_ROOT"] {
+            return URL(fileURLWithPath: override).standardizedFileURL
+        }
+        return URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
     }
 
     func testSharedSha256HasNoProductionTwinOrWrapper() throws {
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: Self.repositoryRoot.appendingPathComponent("CLEANUP.md").path))
         let roots = [
             Self.repositoryRoot.appendingPathComponent("Sources"),
             Self.repositoryRoot.appendingPathComponent("Host/Sources"),
