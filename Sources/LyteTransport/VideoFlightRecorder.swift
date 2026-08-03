@@ -1,4 +1,3 @@
-import LyteIO
 import LyteCore
 import Foundation
 
@@ -139,6 +138,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
 
     private let lock = NSLock()
     private let capacity: Int
+    private let nowMicroseconds: @Sendable () -> UInt64
     private var ring: [FrameObservation] = []
     private var ringIndex = 0
     private var ordinal: UInt64 = 0
@@ -159,8 +159,12 @@ public final class VideoFlightRecorder: @unchecked Sendable {
     private var previousHostMicroseconds: UInt64?
     private var previousReadyNanoseconds: UInt64?
 
-    public init(capacity: Int = 360) {
+    public init(
+        capacity: Int = 360,
+        nowMicroseconds: @escaping @Sendable () -> UInt64
+    ) {
         self.capacity = max(1, capacity)
+        self.nowMicroseconds = nowMicroseconds
         ring.reserveCapacity(self.capacity)
     }
 
@@ -315,8 +319,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         recoveryEventSequence &+= 1
         recoveryLifecycle.append(.init(
             sequence: recoveryEventSequence,
-            uptimeMicroseconds:
-                SystemMonotonicClock.nowMicroseconds,
+            uptimeMicroseconds: nowMicroseconds(),
             kind: kind,
             frame: frame,
             cause: cause?.rawValue,
@@ -348,8 +351,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         recoveryEventSequence &+= 1
         recoveryLifecycle.append(.init(
             sequence: recoveryEventSequence,
-            uptimeMicroseconds:
-                SystemMonotonicClock.nowMicroseconds,
+            uptimeMicroseconds: nowMicroseconds(),
             kind: "rendererMetrics",
             frame: frame,
             cause: nil,

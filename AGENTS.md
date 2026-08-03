@@ -140,6 +140,9 @@ when present.
 - **LyteCore policy is single-threaded value state**: platform shells own
   locks. The video conductor and delivery gauge carry no synchronization;
   their client controllers/books are the cross-queue adapters.
+- **Client video policy receives time**: `LyteVideoPipeline` receives
+  nanoseconds and `VideoFlightRecorder` receives microseconds through
+  mandatory constructors; neither reads an OS clock internally.
 - **Test vectors are frozen wire contracts**, not fixtures
   (`Wire/Vectors/README.md`). A committed vector file never regenerates: if
   codec and vector disagree, that is a wire-contract break to investigate.

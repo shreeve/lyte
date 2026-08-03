@@ -1,9 +1,30 @@
+import Foundation
 import XCTest
 @testable import LyteTransport
 
 final class VideoFlightRecorderTests: XCTestCase {
+    private final class StepClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var next: UInt64
+        private let step: UInt64
+
+        init(start: UInt64, step: UInt64) {
+            next = start
+            self.step = step
+        }
+
+        func now() -> UInt64 {
+            lock.lock()
+            defer {
+                next &+= step
+                lock.unlock()
+            }
+            return next
+        }
+    }
+
     func testHealthyFramesReportNoMeasuredStall() {
-        let recorder = VideoFlightRecorder(capacity: 10)
+        let recorder = makeRecorder(capacity: 10)
         for i: UInt32 in 0..<10 {
             let ready = UInt64(i) * 16_667_000
             let token = recorder.frameReady(
@@ -28,15 +49,15 @@ final class VideoFlightRecorderTests: XCTestCase {
     }
 
     func testEachBoundaryProducesItsOwnVerdict() {
-        let source = VideoFlightRecorder()
+        let source = makeRecorder()
         recordPair(source, hostGapMS: 40, readyGapMS: 40)
         XCTAssertEqual(source.snapshot().bottleneck, "host capture/encode")
 
-        let transit = VideoFlightRecorder()
+        let transit = makeRecorder()
         recordPair(transit, hostGapMS: 16, readyGapMS: 40)
         XCTAssertEqual(transit.snapshot().bottleneck, "network/assembly")
 
-        let queue = VideoFlightRecorder()
+        let queue = makeRecorder()
         let token = queue.frameReady(
             frame: 1, hostMicroseconds: 1_000, nowNanoseconds: 1_000_000)
         queue.frameEnqueued(
@@ -47,7 +68,7 @@ final class VideoFlightRecorderTests: XCTestCase {
             rendererFailed: false)
         XCTAssertEqual(queue.snapshot().bottleneck, "app delivery queue")
 
-        let renderer = VideoFlightRecorder()
+        let renderer = makeRecorder()
         let rendererToken = renderer.frameReady(
             frame: 1, hostMicroseconds: 1_000, nowNanoseconds: 1_000_000)
         renderer.frameEnqueued(
@@ -61,7 +82,7 @@ final class VideoFlightRecorderTests: XCTestCase {
     }
 
     func testRendererMetricsOverrideUpstreamTiming() {
-        let recorder = VideoFlightRecorder()
+        let recorder = makeRecorder()
         recorder.recordRendererMetrics(.init(
             totalFrames: 120,
             droppedFrames: 7,
@@ -72,7 +93,7 @@ final class VideoFlightRecorderTests: XCTestCase {
     }
 
     func testRecoveryCausesAreCountedSeparately() {
-        let recorder = VideoFlightRecorder()
+        let recorder = makeRecorder()
         recorder.recordRecoveryCause(.fecAssemblerDamage)
         recorder.recordRecoveryCause(.fecAssemblerDamage)
         recorder.recordRecoveryCause(.hostPurgeInferredDamage)
@@ -85,7 +106,8 @@ final class VideoFlightRecorderTests: XCTestCase {
     }
 
     func testRecoveryLifecycleCorrelatesResetAndCorruptionDelta() {
-        let recorder = VideoFlightRecorder()
+        let clock = StepClock(start: 1_000_000, step: 250_000)
+        let recorder = makeRecorder(nowMicroseconds: clock.now)
         recorder.recordRecoveryLifecycle(
             kind: "rendererEnqueueIrap",
             frame: 42,
@@ -111,12 +133,14 @@ final class VideoFlightRecorderTests: XCTestCase {
         ])
         XCTAssertEqual(events[0].frame, 42)
         XCTAssertEqual(events[0].resetDecoderBeforeDecoding, true)
+        XCTAssertEqual(events[0].uptimeMicroseconds, 1_000_000)
         XCTAssertEqual(events[1].frame, 42)
         XCTAssertEqual(events[1].corruptedDelta, 7)
+        XCTAssertEqual(events[1].uptimeMicroseconds, 1_250_000)
     }
 
     func testRingIsBoundedAndRendererSamplingCadenceIsPinned() {
-        let recorder = VideoFlightRecorder(capacity: 3)
+        let recorder = makeRecorder(capacity: 3)
         var sampled: [UInt32] = []
         for i: UInt32 in 1...120 {
             let now = UInt64(i) * 1_000_000
@@ -138,7 +162,7 @@ final class VideoFlightRecorderTests: XCTestCase {
     }
 
     func testStructuredFrameTelemetryJSONAndSessionReset() throws {
-        let recorder = VideoFlightRecorder(capacity: 2)
+        let recorder = makeRecorder(capacity: 2)
         let token = recorder.frameReady(
             frame: 7, hostMicroseconds: 10_000,
             nowNanoseconds: 20_000_000)
@@ -170,7 +194,7 @@ final class VideoFlightRecorderTests: XCTestCase {
     }
 
     func testRepeatedCaptureTimestampIsRetainedProvenanceNotTransitStall() {
-        let recorder = VideoFlightRecorder(capacity: 10)
+        let recorder = makeRecorder(capacity: 10)
         for i: UInt32 in 0..<3 {
             let ready = UInt64(i) * 16_000_000
             let token = recorder.frameReady(
@@ -220,5 +244,14 @@ final class VideoFlightRecorderTests: XCTestCase {
             enqueueFinishedNanoseconds: readyGapMS * 1_000_000 + 200_000,
             rendererReady: true,
             rendererFailed: false)
+    }
+
+    private func makeRecorder(
+        capacity: Int = 360,
+        nowMicroseconds: @escaping @Sendable () -> UInt64 = { 0 }
+    ) -> VideoFlightRecorder {
+        VideoFlightRecorder(
+            capacity: capacity,
+            nowMicroseconds: nowMicroseconds)
     }
 }

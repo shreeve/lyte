@@ -114,7 +114,8 @@ final class ConnectionModel {
     /// delivery queue, renderer enqueue, and Apple's decode/display books.
     /// Bounded to six seconds at 60 fps and always on — visual failures
     /// cannot depend on the stats overlay being open.
-    private let videoFlightRecorder = VideoFlightRecorder()
+    private let videoFlightRecorder = VideoFlightRecorder(
+        nowMicroseconds: { SystemMonotonicClock.nowMicroseconds })
     /// The link-health fold over the recorder's ring (already-measured
     /// per-frame stage timings → one user-facing verdict). Ticked at
     /// 1 Hz from the stream container; the meter's ordinal high-water
