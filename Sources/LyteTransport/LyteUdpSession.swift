@@ -376,6 +376,32 @@ public struct LyteUdpSessionCoreConfig: Sendable {
 
 // MARK: - The core (everything above the socket)
 
+/// Breaks the construction cycle between the session core and its pipeline.
+/// Binding finishes before the pipeline can receive a sample; the weak owner
+/// keeps the core → pipeline → sink graph acyclic.
+private final class SessionVideoSink: VideoSink, @unchecked Sendable {
+    private weak var owner: LyteUdpSessionCore?
+    private let downstream: any VideoSink
+
+    init(downstream: any VideoSink) {
+        self.downstream = downstream
+    }
+
+    func bind(_ owner: LyteUdpSessionCore) {
+        self.owner = owner
+    }
+
+    func submit(sample: CMSampleBuffer, unit: DecodeUnit) {
+        guard let owner else {
+            // Preserve the retired weak-self callback's teardown behavior:
+            // sample work already in flight still reaches its owned sink.
+            downstream.submit(sample: sample, unit: unit)
+            return
+        }
+        owner.submitVideoSample(sample, unit: unit, to: downstream)
+    }
+}
+
 public final class LyteUdpSessionCore: @unchecked Sendable {
     public let config: LyteUdpSessionCoreConfig
 
@@ -491,9 +517,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         onVideoRecoveryTrace: @escaping @Sendable (
             VideoRecoveryTraceEvent
         ) -> Void = { _ in },
-        onSample: @escaping @Sendable (CMSampleBuffer, DecodeUnit) -> Void,
+        videoSink: any VideoSink,
         onEvent: @escaping @Sendable (LyteUdpSessionEvent) -> Void
     ) {
+        let sessionSink = SessionVideoSink(downstream: videoSink)
         self.config = config
         self.clockModel = clockModel
         self.now = now
@@ -516,42 +543,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         self.pipeline = LyteVideoPipeline(
             asynchronousSampleBuild: asynchronousVideoBuild,
             nowNanoseconds: { now().microseconds &* 1_000 },
-            onSample: { [weak self] sample, unit in
-                // The input→photon seam (CL-9): a DELIVERED frame whose
-                // shards carried the lastInputSeq TLV closes every
-                // pending event at or below its stamp. Delivery — not
-                // shard arrival — is the honest instant.
-                if let self {
-                    self.lock.lock()
-                    let mayRender =
-                        !self.videoRecoveryOutstanding || unit.isIDR
-                    self.lock.unlock()
-                    guard mayRender else {
-                        self.onVideoRecoveryTrace(.init(
-                            kind: "coreRejectedNonIrap",
-                            frame: unit.frameNumber,
-                            isRandomAccess: false))
-                        return
-                    }
-                    if unit.isIDR {
-                        self.onVideoRecoveryTrace(.init(
-                            kind: "coreForwardedIrap",
-                            frame: unit.frameNumber,
-                            isRandomAccess: true))
-                    }
-                    self.input.noteFrameDelivered(
-                        frame: unit.frameNumber, now: self.now())
-                    // V-5: IDRs carry the parameter sets in-band —
-                    // audit the stream's actual chroma against the
-                    // negotiated posture (the plan's assert-on-
-                    // mismatch: a doctor line, never a silent
-                    // resample).
-                    if unit.isIDR {
-                        self.auditStreamChroma(annexB: unit.annexB)
-                    }
-                }
-                onSample(sample, unit)
-            },
+            sink: sessionSink,
             onFecImpossible: { [weak self] frame, _, _ in
                 // CL-12: a frame with a live repair ask holds its IDR
                 // for the rule-4 window; everything else requests as
@@ -645,6 +637,41 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                     + "IDR instead"))
             })
         self.audio = AudioReceiver(jitterConfig: config.audioJitter)
+        sessionSink.bind(self)
+    }
+
+    fileprivate func submitVideoSample(
+        _ sample: CMSampleBuffer,
+        unit: DecodeUnit,
+        to sink: any VideoSink
+    ) {
+        // The input→photon seam (CL-9): a DELIVERED frame whose shards
+        // carried the lastInputSeq TLV closes every pending event at or below
+        // its stamp. Delivery — not shard arrival — is the honest instant.
+        lock.lock()
+        let mayRender = !videoRecoveryOutstanding || unit.isIDR
+        lock.unlock()
+        guard mayRender else {
+            onVideoRecoveryTrace(.init(
+                kind: "coreRejectedNonIrap",
+                frame: unit.frameNumber,
+                isRandomAccess: false))
+            return
+        }
+        if unit.isIDR {
+            onVideoRecoveryTrace(.init(
+                kind: "coreForwardedIrap",
+                frame: unit.frameNumber,
+                isRandomAccess: true))
+        }
+        input.noteFrameDelivered(frame: unit.frameNumber, now: now())
+        // V-5: IDRs carry parameter sets in-band. Audit actual chroma against
+        // the negotiated posture; mismatch is a doctor line, never a silent
+        // resample.
+        if unit.isIDR {
+            auditStreamChroma(annexB: unit.annexB)
+        }
+        sink.submit(sample: sample, unit: unit)
     }
 
     // MARK: Lifecycle
@@ -801,7 +828,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             frame: frame,
             cause: cause))
         // Queue the renderer gate before emitting the request. The app's
-        // serial handoff then observes this before any later onSample submit.
+        // serial handoff then observes this before any later sink submit.
         onVideoRecoveryDemand(cause, frame)
         idrRequester.recordRecoveryDemand(frame: frame, now: now)
     }
@@ -1803,7 +1830,7 @@ public final class LyteUdpSession: @unchecked Sendable {
     /// and the audio device came up.
     public private(set) var audioPlayer: LyteAudioPlayer?
 
-    private let onSample: @Sendable (CMSampleBuffer, DecodeUnit) -> Void
+    private let videoSink: any VideoSink
     private let onEvent: @Sendable (LyteUdpSessionEvent) -> Void
     private let onVideoRecoveryDemand:
         @Sendable (VideoRecoveryCause, FrameNumber) -> Void
@@ -1836,7 +1863,7 @@ public final class LyteUdpSession: @unchecked Sendable {
         onVideoRecoveryTrace: @escaping @Sendable (
             VideoRecoveryTraceEvent
         ) -> Void = { _ in },
-        onSample: @escaping @Sendable (CMSampleBuffer, DecodeUnit) -> Void,
+        videoSink: any VideoSink,
         onEvent: @escaping @Sendable (LyteUdpSessionEvent) -> Void
     ) {
         self.crypto = crypto
@@ -1844,7 +1871,7 @@ public final class LyteUdpSession: @unchecked Sendable {
         self.clockModel = clockModel
         self.onVideoRecoveryDemand = onVideoRecoveryDemand
         self.onVideoRecoveryTrace = onVideoRecoveryTrace
-        self.onSample = onSample
+        self.videoSink = videoSink
         self.onEvent = onEvent
     }
 
@@ -1878,7 +1905,7 @@ public final class LyteUdpSession: @unchecked Sendable {
             asynchronousVideoBuild: true,
             onVideoRecoveryDemand: onVideoRecoveryDemand,
             onVideoRecoveryTrace: onVideoRecoveryTrace,
-            onSample: onSample,
+            videoSink: videoSink,
             onEvent: onEvent
         )
         self.core = core

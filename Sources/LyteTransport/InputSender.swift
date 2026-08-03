@@ -263,7 +263,7 @@ public final class InputSender: @unchecked Sendable {
 
     /// Closes the photon loop for one DELIVERED frame: every pending
     /// event with seq ≤ the frame's stamp (wrap-aware) completes at
-    /// `now`. Call from the onSample seam — delivery, not shard
+    /// `now`. Call from the VideoSink seam — delivery, not shard
     /// arrival, is the honest instant.
     public func noteFrameDelivered(frame: FrameNumber, now: ClientTimestamp) {
         lock.lock()

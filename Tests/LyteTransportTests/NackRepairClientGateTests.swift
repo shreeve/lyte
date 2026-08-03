@@ -299,9 +299,10 @@ final class NackRepairClientGateTests: XCTestCase {
                 onVideoRecoveryTrace: { [weak self] event in
                     self?.recoveryTrace.append(event)
                 },
-                onSample: { [weak self] _, unit in
+                videoSink: HeadlessVideoSink(receive: {
+                    [weak self] _, unit in
                     self?.samples.append(unit)
-                },
+                }),
                 onEvent: { [weak self] event in
                     if case .protocolNote(let note) = event {
                         self?.notes.append(note)

@@ -708,9 +708,10 @@ final class InputPathGateTests: XCTestCase {
                 demux: demux,
                 sender: sender,
                 now: { ClientTimestamp(microseconds: clock.value) },
-                onSample: { [weak self] _, unit in
+                videoSink: HeadlessVideoSink(receive: {
+                    [weak self] _, unit in
                     self?.deliveredFrames.append(unit.frameNumber.rawValue)
-                },
+                }),
                 onEvent: { _ in })
         }
 

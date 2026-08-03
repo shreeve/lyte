@@ -61,9 +61,9 @@ final class VideoPipelineTests: XCTestCase {
         init() {
             pipeline = LyteVideoPipeline(
                 nowNanoseconds: { 0 },
-                onSample: { [weak self] sample, unit in
+                sink: HeadlessVideoSink(receive: { [weak self] sample, unit in
                     self?.samples.append((sample, unit))
-                },
+                }),
                 onFecImpossible: { [weak self] frame, _, _ in
                     self?.fecImpossibleFrames.append(frame)
                 })
@@ -101,7 +101,7 @@ final class VideoPipelineTests: XCTestCase {
 
     // MARK: - The corpus renders, byte-exact, headless
 
-    func testProductionSampleWorkerPreservesOrderingAndTelemetry() throws {
+    func testNamedHeadlessSinkPreservesOrderingAndTelemetry() throws {
         let frames = try loadPrefix()
         let groups = try packetizePrefix(Array(frames.prefix(3)))
         let completed = expectation(description: "three async samples")
@@ -110,13 +110,13 @@ final class VideoPipelineTests: XCTestCase {
         let pipeline = LyteVideoPipeline(
             asynchronousSampleBuild: true,
             nowNanoseconds: { 0 },
-            onSample: { sample, unit in
+            sink: HeadlessVideoSink(receive: { sample, unit in
                 observed.append(
                     unit.frameNumber.rawValue,
                     hasTelemetry:
                         VideoSampleTiming.buildTelemetry(from: sample) != nil)
                 completed.fulfill()
-            })
+            }))
         for shard in groups.flatMap({ $0 }) {
             pipeline.ingest(
                 envelope: shard.envelope, payload: shard.payload,
@@ -134,7 +134,7 @@ final class VideoPipelineTests: XCTestCase {
         let clock = StepClock()
         let pipeline = LyteVideoPipeline(
             nowNanoseconds: { clock.read() },
-            onSample: { _, _ in })
+            sink: HeadlessVideoSink())
 
         for shard in shards {
             pipeline.ingest(

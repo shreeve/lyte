@@ -613,7 +613,7 @@ final class RoamingClientGateTests: XCTestCase {
                 sender: sender,
                 config: LyteUdpSessionCoreConfig(),
                 now: { ClientTimestamp(microseconds: clockRef.value) },
-                onSample: { _, _ in },
+                videoSink: HeadlessVideoSink(),
                 onEvent: { [weak self] event in
                     self?.events.append(event)
                 })
