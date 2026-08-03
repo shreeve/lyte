@@ -23,15 +23,14 @@ set -euo pipefail
 namespace="$HOME/src/lyte-gates"
 gate_root="$namespace/deterministic"
 gate_lock="$namespace/.deterministic.lock"
+mount_targets=""
 
-mkdir -p "$namespace"
-if [[ -L "$namespace" || -L "$gate_root" ]]; then
-    echo "pup gate FAILED: fixed gate namespace contains a symlink" >&2
+if ! command -v findmnt >/dev/null 2>&1; then
+    echo "pup gate FAILED: findmnt is required for deletion safety" >&2
     exit 1
 fi
-mkdir -p "$gate_root"
-if [[ "$(readlink -f -- "$gate_root")" != "$HOME/src/lyte-gates/deterministic" ]]; then
-    echo "pup gate FAILED: fixed gate root resolved outside its namespace" >&2
+if ! mount_targets="$(findmnt -rn -o TARGET)"; then
+    echo "pup gate FAILED: cannot inspect mounted filesystems" >&2
     exit 1
 fi
 refuse_mounts_below() {
@@ -44,9 +43,28 @@ refuse_mounts_below() {
                 exit 1
                 ;;
         esac
-    done < <(findmnt -rn -o TARGET)
+    done <<< "$mount_targets"
 }
 
+if [[ -L "$namespace" || ( -e "$namespace" && ! -d "$namespace" ) ]]; then
+    echo "pup gate FAILED: fixed gate namespace is not a real directory" >&2
+    exit 1
+fi
+refuse_mounts_below "$namespace"
+mkdir -p "$namespace"
+if [[ "$(readlink -f -- "$namespace")" != "$HOME/src/lyte-gates" ]]; then
+    echo "pup gate FAILED: fixed gate namespace resolves elsewhere" >&2
+    exit 1
+fi
+if [[ -L "$gate_root" || ( -e "$gate_root" && ! -d "$gate_root" ) ]]; then
+    echo "pup gate FAILED: fixed gate root is not a real directory" >&2
+    exit 1
+fi
+mkdir -p "$gate_root"
+if [[ "$(readlink -f -- "$gate_root")" != "$HOME/src/lyte-gates/deterministic" ]]; then
+    echo "pup gate FAILED: fixed gate root resolved outside its namespace" >&2
+    exit 1
+fi
 for package in Client Common Wire Host; do
     target="$gate_root/$package"
     if [[ -L "$target" ]]; then
@@ -80,7 +98,25 @@ echo "==> sync Client, Common, Wire, and Host to $pup:$pup_gate_root"
 ssh "$pup" 'bash -se' <<'RETIRE_ROOT_CLIENT'
 set -euo pipefail
 gate_root="$HOME/src/lyte-gates/deterministic"
-[[ "$(readlink -f -- "$gate_root")" == "$gate_root" ]]
+if ! command -v findmnt >/dev/null 2>&1; then
+    echo "pup gate FAILED: findmnt is required for deletion safety" >&2
+    exit 1
+fi
+if [[ "$(readlink -f -- "$gate_root")" != "$HOME/src/lyte-gates/deterministic" ]]; then
+    echo "pup gate FAILED: refusing to retire paths outside the gate mirror" >&2
+    exit 1
+fi
+for path in Package.swift Package.resolved Sources Tests; do
+    target="$gate_root/$path"
+    if [[ -L "$target" ]]; then
+        echo "pup gate FAILED: stale root client path is a symlink: $target" >&2
+        exit 1
+    fi
+done
+if ! mount_targets="$(findmnt -rn -o TARGET)"; then
+    echo "pup gate FAILED: cannot inspect mounted filesystems" >&2
+    exit 1
+fi
 while IFS= read -r mounted; do
     case "$mounted" in
         "$gate_root/Sources"|"$gate_root/Sources"/*|\
@@ -89,7 +125,7 @@ while IFS= read -r mounted; do
             exit 1
             ;;
     esac
-done < <(findmnt -rn -o TARGET)
+done <<< "$mount_targets"
 rm -f -- "$gate_root/Package.swift" "$gate_root/Package.resolved"
 for directory in "$gate_root/Sources" "$gate_root/Tests"; do
     if [[ -d "$directory" ]]; then
