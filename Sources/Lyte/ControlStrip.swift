@@ -731,9 +731,19 @@ struct StatsOverlay: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
-            VStack(alignment: .leading, spacing: 3) {
-                ForEach(model.statsLines(), id: \.self) { line in
-                    Text(line)
+            // The two-column ledger (owner steal from YouTube's
+            // stats-for-nerds, 2026-08-03): labels right-aligned and
+            // dimmed, values left-aligned — the eye scans one seam.
+            // Grammar unchanged: lowercase nominal, caps = alarm.
+            Grid(alignment: .topLeading,
+                 horizontalSpacing: 8, verticalSpacing: 3) {
+                ForEach(model.statsRows()) { statsRow in
+                    GridRow {
+                        Text(statsRow.label)
+                            .gridColumnAlignment(.trailing)
+                            .foregroundStyle(.white.opacity(0.55))
+                        Text(statsRow.value)
+                    }
                 }
             }
             .font(.caption.monospaced())
