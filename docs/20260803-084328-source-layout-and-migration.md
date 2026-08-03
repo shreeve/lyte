@@ -219,14 +219,16 @@ protected state.
 
 ## 8. Known pre-migration repairs
 
-The architecture audit found four false or stale safety surfaces. They are
-work, not evidence, until repaired:
+The architecture audit found four false or stale safety surfaces. The first
+two are now repaired; the remaining two are work, not evidence, until
+repaired:
 
-1. Common's cross-tree ratchets currently calculate `/repo/Common` as the
-   repository root and silently scan nonexistent paths. The Common move must
-   replace their repeated locators with one shared, fail-closed TestKit model.
-2. Client and host build provenance omit Wire and hard-code today's source
-   paths. Layout moves must fingerprint the full compiled dependency closure.
+1. **Resolved in the Common normalization:** every cross-tree ratchet now uses
+   one `LyteTestKit` source-tree model that rejects missing, empty, or
+   unreadable production roots.
+2. **Resolved in the Common normalization:** client and host provenance now
+   includes Wire and tracked SwiftPM resolution, while the package gates
+   invalidate stale build state from one complete manifest-graph hash.
 3. `benchmark-app.sh handshake-only` still controls the retired supervisor
    loop and is unsafe under the standing systemd service.
 4. `benchmark-netem.sh` names a removed benchmark mode and applies unscoped
