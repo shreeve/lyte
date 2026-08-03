@@ -137,15 +137,41 @@ InputInjector seam untouched. The clipboard's OWN RemoteDesktop
 session survives by design (its Wayland helper stays filed —
 now the LAST Mutter-session tenant in the process). Owner
 feel-check (typing/⌘Tab/aim/scroll) owed after the standing loop
-respawns onto the new binary.** Then:
-E6a NVENC productionize (lyte-nvenc probe banked), Rext 4:4:4 in
-the native pens (returns the Best tier), E4
-packaging aimed at Lyte OS (first measured requirement banked
-2026-08-03: no stop-the-world runtime in the display path — the
-shell's 10 s comb is the evidence).
+respawns onto the new binary.** **REXT 4:4:4 LANDED — the Best tier
+is LIVE (#89 + #90, 2026-08-03).** #89: the HEVC pens grew a
+`chroma444` recipe (profile_idc 4, the §A.3.5 Main 4:4:4 constraint
+row, SPS chroma_format_idc 3; BitReader pin tests walk every field,
+4:2:0 oracle bytes proven untouched); the VAAPI encoder grew the
+matching mode (VAProfileHEVCMain444 — Arc probe GREEN, std
+entrypoint — packed AYUV surfaces, triple coded buffer, single-layer
+export); EyeGL converts in ONE pass (AYUV imports as ARGB8888, the
+byte layouts coincide: vec4(y,u,v,1) IS the AYUV plane), and
+`lyte-eye capture --chroma 444` gates it: M5 decode-probe HARDWARE
+5/5, '444v' output, frame eyeballed AS PIXELS (Chrome's four colors
+in order, the red record pill red — no chroma swap). #90: the host
+declares on PROOF — `probesMain444()` asks the silicon at startup,
+green → declares [420, 444]; the agreement lands after the leg's
+encoder opens, so the leg polls the agreed posture and flips ONCE
+(Best agreement → NV12 targets destroyed, encoder reopened Rext
+4:4:4, lastFB zeroed so a static desktop still delivers its IDR);
+stats line reports the encoder that RAN. Live gate both ways:
+`wire-view --chroma 444` → agreed [2], client SPS audit of the
+received stream read "stream chroma 4:4:4", 16 decoded / 0 skipped /
+first frame 19.2 ms; `--chroma 420` stayed 4:2:0, zero flips. NO
+Wire changes — the rails (yuv444 id, ChromaTier UI/persistence/
+re-dial/fallback, ChromaPosture) shipped earlier and lit up
+unchanged. Owed: owner's eyeball on real text at Best from the app
+(Settings → Chroma → Best; a re-dial applies it). Banked follow-up:
+SccMain444 (screen-content coding, also GREEN on the Arc probe).**
+Then: E6a NVENC productionize (lyte-nvenc probe banked; NVENC 4:4:4
+via best444 recipe when it lands), E4 packaging aimed at Lyte OS
+(first measured requirement banked 2026-08-03: no stop-the-world
+runtime in the display path — the shell's 10 s comb is the
+evidence). AV1 stays a 4:2:0 lane (no 4:4:4 hardware encoders
+exist anywhere, 2026-08).
 
-**Suites at HEAD:** Wire 513, root client 284, host 281 on pup / 280
-Mac — all green (counts grew with the fix train's pins).
+**Suites at HEAD:** Wire 513, root client 284, host 300 on pup / 299
+Mac — all green (host grew the Rext pen pins and the E2 harness).
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
