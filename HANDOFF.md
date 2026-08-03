@@ -328,10 +328,24 @@ identity files are unchanged. **NEXT: open Theme 4 with the `VideoSink` seam —
 replace the raw sample closure/direct AVFoundation ownership with one named
 client boundary and a headless test sink, without changing enqueue behavior.**
 
-**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 71 Mac / 72 pup;
+**THE TREE MIGRATION OPENED (#103 + #108, 2026-08-03): every move has a
+gate, and Common now speaks one filesystem grammar.** #103 recorded the
+owner-approved `Sources` / `Tests` / `TestKit` hierarchy and added the full
+Mac + isolated-pup equivalence gates. #108 moved every Common production
+byte unchanged into `Sources/LyteCore`, `Sources/LyteIO`, and
+`Sources/COpus`; `LyteTestKit` now owns the one fail-closed repository source
+scanner used by all cross-tree ratchets. SwiftPM resolution is tracked, app
+and host provenance includes Wire, and manifest-graph changes invalidate
+stale package build state once. Pup's deterministic mirror is fixed,
+symlink-checked, locked, separate from the live deployment tree, and brackets
+every exit with protected-state verification. **NEXT MIGRATION SLICE:
+organize Wire internally without changing its module, products, or frozen
+vectors.**
+
+**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 74 Mac / 75 pup;
 root client 262; host 284 pup / 283 Mac — all green. Eighteen conductor/gauge
-tests moved from root to Common; the shared suite also gained reset and source
-ratchets.
+tests moved from root to Common; LyteTestKit adds three fail-closed scanner
+pins.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
