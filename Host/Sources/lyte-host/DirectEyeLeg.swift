@@ -82,14 +82,12 @@ final class DirectEyeLeg {
     private var beatBook = CaptureBeatBook()
     private var beatSkipLinesPrinted = 0
     private struct StageClocks {
-        var serviceUs: UInt64 = 0
         var cursorUs: UInt64 = 0
         var grabUs: UInt64 = 0
         var blitUs: UInt64 = 0
         var encodeUs: UInt64 = 0
         var deliverUs: UInt64 = 0
         mutating func formMax(_ other: StageClocks) {
-            serviceUs = max(serviceUs, other.serviceUs)
             cursorUs = max(cursorUs, other.cursorUs)
             grabUs = max(grabUs, other.grabUs)
             blitUs = max(blitUs, other.blitUs)
@@ -97,7 +95,7 @@ final class DirectEyeLeg {
             deliverUs = max(deliverUs, other.deliverUs)
         }
         func described() -> String {
-            "service=\(Self.ms(serviceUs)) cursor=\(Self.ms(cursorUs)) "
+            "cursor=\(Self.ms(cursorUs)) "
             + "grab=\(Self.ms(grabUs)) blit=\(Self.ms(blitUs)) "
             + "encode=\(Self.ms(encodeUs)) deliver=\(Self.ms(deliverUs))"
         }
@@ -107,6 +105,16 @@ final class DirectEyeLeg {
     }
     private var lastStages = StageClocks()
     private var maxStages = StageClocks()
+    /// The janitor (the #84 finding made law): the shell service —
+    /// clipboard D-Bus applies, audio-routing moves, bulk file I/O —
+    /// used to ride the capture thread and stalled it 106 ms at
+    /// connect; a mid-session file drop would stall it for the whole
+    /// write. Now a dedicated thread sweeps every 10 ms and the eye
+    /// only watches. `serviceLock` guards the shared clocks/flag.
+    private let serviceLock = NSLock()
+    private var serviceStopRequested = false
+    private var serviceMaxMicroseconds: UInt64 = 0
+    private let serviceDone = DispatchSemaphore(value: 0)
     var lastError: String?
 
     private func nowMicroseconds() -> UInt64 {
@@ -185,9 +193,51 @@ final class DirectEyeLeg {
         var lastFB: UInt32 = 0
         var pendingCauses: [String] = []
         let t0 = nowSeconds()
-        var lastServiceAt = 0.0
         // The stillness clock: last damage (FB flip) or client input.
         var lastActivityWallSeconds = t0
+
+        // The shell service cadence: the agreed-time pendings (the
+        // 0x19 starting posture, the standing 0x24 cursor shape,
+        // clipboard applies, bulk file I/O) flush ONLY through
+        // service() — sendFrame's serviceOnce covers protocol timers,
+        // not the shell. It used to ride this loop and the beat book
+        // convicted it (106 ms connect stall = a skipped capture
+        // beat); now the janitor sweeps on its own thread and the
+        // doorbell never goes blind for a mop bucket. SessionWire is
+        // cross-thread by design with `lock` as the discipline; this
+        // thread is service()'s ONLY caller.
+        if let wire {
+            nonisolated(unsafe) let leg = self
+            nonisolated(unsafe) let wire = wire
+            let janitor = Thread {
+                while true {
+                    leg.serviceLock.lock()
+                    let stop = leg.serviceStopRequested
+                    leg.serviceLock.unlock()
+                    if stop { break }
+                    let start = leg.nowMicroseconds()
+                    wire.service()
+                    let took = leg.nowMicroseconds() - start
+                    leg.serviceLock.lock()
+                    if took > leg.serviceMaxMicroseconds {
+                        leg.serviceMaxMicroseconds = took
+                    }
+                    leg.serviceLock.unlock()
+                    usleep(10_000)
+                }
+                leg.serviceDone.signal()
+            }
+            janitor.name = "lyte-shell-service"
+            janitor.start()
+        }
+        defer {
+            if wire != nil {
+                serviceLock.lock()
+                serviceStopRequested = true
+                serviceLock.unlock()
+                serviceDone.wait()
+            }
+        }
 
         while nowSeconds() - t0 < config.seconds {
             if wire?.sessionEnded == true { break }
@@ -199,21 +249,6 @@ final class DirectEyeLeg {
             if lyteTerminationRequested != 0 {
                 print("session: termination signal — closing cleanly")
                 break
-            }
-            // The shell service cadence: the portal path drives
-            // SessionWire.service() from its idle-floor tick, and the
-            // agreed-time pendings (the 0x19 starting posture, the
-            // standing 0x24 cursor shape, clipboard applies) flush
-            // ONLY there — sendFrame's serviceOnce covers protocol
-            // timers, not the shell. Without this, a direct leg whose
-            // cursor never changes sends zero shapes (the E3 motion
-            // leg's 0-sent books caught it).
-            let now = nowSeconds()
-            if now - lastServiceAt >= 0.010 {
-                lastServiceAt = now
-                let serviceStart = nowMicroseconds()
-                wire?.service()
-                lastStages.serviceUs = nowMicroseconds() - serviceStart
             }
             let cursorStart = nowMicroseconds()
             pollCursor(cursorWatcher)
@@ -448,6 +483,9 @@ final class DirectEyeLeg {
             + "posture_announcements=\(postureAnnouncements), "
             + "cursor_shapes=\(cursorShapesSeen), "
             + "hotspot_corrections=\(cursorHotspotCorrections)")
+        serviceLock.lock()
+        let serviceMaxUs = serviceMaxMicroseconds
+        serviceLock.unlock()
         print("direct: beat-book — flips=\(beatBook.flips), "
             + "skips=\(beatBook.skips) "
             + "(source=\(beatBook.sourceSkips), "
@@ -456,7 +494,9 @@ final class DirectEyeLeg {
             + "gap_max=\(StageClocks.ms(beatBook.gapMaxMicroseconds))"
             + " ms, blind_max="
             + StageClocks.ms(beatBook.blindMaxMicroseconds)
-            + " ms, stage_max[\(maxStages.described())] ms")
+            + " ms, stage_max[\(maxStages.described())] ms, "
+            + "service_max=\(StageClocks.ms(serviceMaxUs)) ms "
+            + "(janitor thread)")
     }
 
     /// E3: one cursor poll — fb changes become 0x24s. The hotspot is
