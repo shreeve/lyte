@@ -64,6 +64,7 @@ let package = Package(
                 // (VideoQualityReadback) — an explicit, honest dependency;
                 // the streaming stack itself carries no corpus code.
                 "LyteCorpus",
+                .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteIO", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
             ]

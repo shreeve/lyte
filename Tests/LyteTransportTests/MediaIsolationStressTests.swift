@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import LyteCore
 import LyteWire
 import XCTest
 @testable import LyteTransport
@@ -53,11 +54,15 @@ final class MediaIsolationStressTests: XCTestCase {
         // video episode recovers while audio continues independently.
         var handoff = BoundedRendererHandoff<Int>(
             config: .init(capacity: 3, deadlineMicroseconds: 50_000))
-        _ = handoff.offer(0, isRandomAccess: true, nowMicroseconds: 0)
-        _ = handoff.offer(1, isRandomAccess: false, nowMicroseconds: 1_000)
-        _ = handoff.offer(2, isRandomAccess: false, nowMicroseconds: 2_000)
+        _ = handoff.offer(0, frame: .init(
+            isRandomAccess: true, submittedMicroseconds: 0))
+        _ = handoff.offer(1, frame: .init(
+            isRandomAccess: false, submittedMicroseconds: 1_000))
+        _ = handoff.offer(2, frame: .init(
+            isRandomAccess: false, submittedMicroseconds: 2_000))
         let pressure = handoff.offer(
-            3, isRandomAccess: false, nowMicroseconds: 3_000)
+            3, frame: .init(
+                isRandomAccess: false, submittedMicroseconds: 3_000))
         XCTAssertTrue(pressure.recoveryRequested)
         XCTAssertLessThanOrEqual(handoff.count, 3)
 

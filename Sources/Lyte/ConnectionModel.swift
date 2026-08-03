@@ -1,4 +1,5 @@
 import LyteIO
+import LyteCore
 import SwiftUI
 @preconcurrency import AVFoundation
 import LyteTransport
@@ -1748,8 +1749,9 @@ private final class VideoRendererHandoff: @unchecked Sendable {
         let now = SystemMonotonicClock.nowMicroseconds
         let outcome = policy.offer(
             pending,
-            isRandomAccess: pending.unit.isIDR,
-            nowMicroseconds: now)
+            frame: RendererFrameDescriptor(
+                isRandomAccess: pending.unit.isIDR,
+                submittedMicroseconds: now))
         process(
             outcome,
             recoveryFrame: pending.unit.frameNumber,

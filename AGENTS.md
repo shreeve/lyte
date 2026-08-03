@@ -40,6 +40,8 @@ H-era build plans completed their ladder and are retired to git history
   one-shot digest model; `LyteCore.Hex` is the one byte/integer hex spelling;
   `LyteCore.WireTos` owns the four product DSCP lanes; `LyteCore.ChromaPairing`
   owns the Best singleton shape while the host/client role types stay split;
+  `LyteCore.BoundedRendererHandoff` owns dependency-episode queue and recovery
+  verdicts while CoreMedia sample adaptation stays in the client shell;
   the first extracted adapter is the one process-wide monotonic clock;
   `COpus` is the one shared libopus system-library module.
 - **`Host/`** — package `LyteHost`: the Linux host. Depends on
