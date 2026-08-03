@@ -1,5 +1,5 @@
 import XCTest
-@testable import LyteTransport
+@testable import LyteCore
 
 // The Conductor's video instrument, law by law
 // (docs/20260803-050422-metronome-playout-design.md): cue, beat,
