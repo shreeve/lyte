@@ -59,7 +59,7 @@ final class AvahiAdvertiser {
         }
         txtRecords = [
             "v=\(WireVersion.major)",
-            "pkh=" + HostStaticKey.hex(Sha256.digest(staticPublicKey)),
+            "pkh=" + Hex.string(Sha256.digest(staticPublicKey)),
         ]
         bus = try SessionBus(kind: .system)
 

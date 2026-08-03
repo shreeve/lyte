@@ -142,7 +142,7 @@ struct WireView: AsyncParsableCommand {
             }
             print("wire-view: paired host \(pinned.name) — pinned static "
                 + "\(pinned.staticPublicKeyHex.prefix(8))…, client identity "
-                + identity.publicKey.prefix(4).map { String(format: "%02x", $0) }.joined()
+                + Hex.string(identity.publicKey.prefix(4))
                 + "…")
             crypto = try NoiseTransportCrypto(
                 hostAddress: host,

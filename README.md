@@ -2,7 +2,7 @@
 
 *Streaming at the speed of Lyte.*
 
-A GPLv3 remote-desktop system that owns both ends of the wire: a
+An MIT-licensed remote-desktop system that owns both ends of the wire: a
 SwiftUI-native macOS client and a Swift Linux host, speaking exactly one
 protocol — **Lyte-UDP**, our own datagram protocol over plain UDP. No RTSP,
 no RTP, no third-party dialect: every byte on the wire is ours, end-to-end
@@ -71,7 +71,8 @@ Silicon — through decode, color conversion, and display timing. The CPUs at
 both ends do only the light work: packetizing, ChaCha20-Poly1305 sealing,
 RS-FEC parity and repair, and pacing.
 
-Same silicon Sunshine/Moonlight drive — the difference is what we ask of it.
+The same class of dedicated silicon used by modern streaming systems — but
+Lyte owns the media path and decides exactly what to ask of it.
 Lyte's encoding is **change-driven**: a doorbell on the kernel's
 framebuffer ID means nothing is captured or encoded unless the screen
 actually changed, so a still desktop costs near-zero bandwidth at full
@@ -92,4 +93,4 @@ designed. See [LYTE-PLAN.md](LYTE-PLAN.md) for strategy.
 
 ## License
 
-GPLv3 — kept gladly from the Moonlight family Lyte grew up reading.
+MIT — see [LICENSE](LICENSE).

@@ -5,6 +5,7 @@
 // into CborTests as external anchors) and the hand-computed set/
 // message bytes in CapabilitiesTests / CapabilityCodecTests.
 
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 

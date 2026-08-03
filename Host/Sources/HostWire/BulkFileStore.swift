@@ -241,12 +241,12 @@ public final class BulkFileStore: BulkReceiveStore {
     /// vector replay) and audit stray files.
     public func stagingPath(_ transferId: UInt64) -> String {
         directoryPath + "/" + Self.stagingPrefix
-            + Self.hex16(transferId) + ".part"
+            + Hex.string(transferId, width: 16) + ".part"
     }
 
     public func resumePath(_ transferId: UInt64) -> String {
         directoryPath + "/" + Self.stagingPrefix
-            + Self.hex16(transferId) + ".resume"
+            + Hex.string(transferId, width: 16) + ".resume"
     }
 
     private func syncDirectory() {
@@ -255,11 +255,6 @@ public final class BulkFileStore: BulkReceiveStore {
             fsync(dirFd)
             close(dirFd)
         }
-    }
-
-    private static func hex16(_ value: UInt64) -> String {
-        let hex = String(value, radix: 16)
-        return String(repeating: "0", count: 16 - hex.count) + hex
     }
 
     private static func errnoText() -> String {

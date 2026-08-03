@@ -1,3 +1,4 @@
+import LyteCore
 import XCTest
 import Foundation
 import LyteTransport

@@ -200,8 +200,8 @@ the client's stats line should show the negotiated cap.
   visible text contrast *now*, in 4:2:0.
 - **Stage B (the crown): HEVC Rext 4:4:4 as the negotiated Work mode**
   per the pillar's standing decision — host-side RGB→YUV444 conversion
-  (Sunshine's CUDA `RGBA_to_YUV444` kernels from PR #4965 are the
-  GPL→GPL reference), Rext profile bit, capability tuple negotiation,
+  (implemented independently in Lyte's native direct-eye GPU path), Rext
+  profile bit, capability tuple negotiation,
   client `VTIsHardwareDecodeSupported` + real test decode. Apple
   Silicon VideoToolbox hardware-decodes HEVC Rext 4:4:4 8/10-bit on
   every generation — this is where we structurally beat Moonlight:

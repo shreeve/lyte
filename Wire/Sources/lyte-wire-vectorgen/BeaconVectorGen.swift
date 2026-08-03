@@ -5,6 +5,7 @@
 // bytes in ClockBeaconTests/FeedbackReportTests, which pin the same
 // nominal messages this file carries.
 
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 

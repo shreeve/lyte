@@ -7,6 +7,7 @@
 // the Linux-only socket loop lives in lyte-host; this part runs (and is
 // tested) on the Mac.
 
+import LyteCore
 import LyteWire
 
 public enum SniffFormat {
@@ -49,7 +50,7 @@ public enum SniffFormat {
         ]
         if !envelope.extensions.isEmpty {
             let types = envelope.extensions
-                .map { "0x" + hexByte($0.type) }
+                .map { Hex.string($0.type, width: 2, prefix: true) }
                 .joined(separator: ",")
             fields.append("tlv=[\(types)]")
         }
@@ -79,7 +80,7 @@ public enum SniffFormat {
         do {
             field = try FecField.decode(raw)
         } catch {
-            return "fec=malformed(0x\(String(raw, radix: 16)))"
+            return "fec=malformed(\(Hex.string(raw, prefix: true)))"
         }
         switch field {
         case .none:
@@ -97,8 +98,4 @@ public enum SniffFormat {
             + digits
     }
 
-    static func hexByte(_ value: UInt8) -> String {
-        let digits = String(value, radix: 16)
-        return digits.count == 1 ? "0" + digits : digits
-    }
 }

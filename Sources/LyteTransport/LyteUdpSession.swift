@@ -1493,9 +1493,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             lock.lock()
             counters.unknownReliableTypes += 1
             lock.unlock()
-            onEvent(.protocolNote(String(
-                format: "unregistered reliable CTRL type 0x%02x (%d B)",
-                bytes.first ?? 0, bytes.count)))
+            onEvent(.protocolNote(
+                "unregistered reliable CTRL type "
+                    + Hex.string(bytes.first ?? 0, width: 2, prefix: true)
+                    + " (\(bytes.count) B)"))
         }
     }
 
@@ -1518,9 +1519,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             lock.lock()
             counters.bulkDropsLoud += 1
             lock.unlock()
-            onEvent(.protocolNote(String(
-                format: "malformed bulk message dropped (type 0x%02x, %d B)",
-                bytes.first ?? 0, bytes.count)))
+            onEvent(.protocolNote(
+                "malformed bulk message dropped (type "
+                    + Hex.string(bytes.first ?? 0, width: 2, prefix: true)
+                    + ", \(bytes.count) B)"))
             return
         }
         lock.lock()

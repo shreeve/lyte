@@ -24,6 +24,7 @@
 
 import LyteIO
 import Foundation
+import LyteCore
 import LyteWire
 
 /// Blocking datagram IO for the pre-thread handshake window. The endpoint
@@ -221,22 +222,14 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
             throw TransportCryptoError.invalidHostKey(
                 "expected 64 hex digits, got \(trimmed.count)")
         }
-        var bytes = [UInt8]()
-        bytes.reserveCapacity(32)
-        var index = trimmed.startIndex
-        while index < trimmed.endIndex {
-            let next = trimmed.index(index, offsetBy: 2)
-            guard let byte = UInt8(trimmed[index..<next], radix: 16) else {
-                throw TransportCryptoError.invalidHostKey("non-hex digit in key")
-            }
-            bytes.append(byte)
-            index = next
+        guard let bytes = Hex.bytes(trimmed) else {
+            throw TransportCryptoError.invalidHostKey("non-hex digit in key")
         }
         return bytes
     }
 
     public var modeDescription: String {
-        let key = hostStaticPublicKey.prefix(4).map { String(format: "%02x", $0) }.joined()
+        let key = Hex.string(hostStaticPublicKey.prefix(4))
         let time = handshakeMillisecondsSnapshot.map {
             String(format: ", handshake %.1f ms", $0)
         } ?? ""

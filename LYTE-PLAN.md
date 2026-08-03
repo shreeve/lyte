@@ -38,7 +38,8 @@ responsiveness of game streaming with the conveniences of a remote desktop.
 Not a conferencing tool, not another VNC. Using another computer as if it were
 local.
 
-Everything is Swift. Everything is GPLv3. The transport is one
+Lyte is Swift-first. Everything authored for Lyte is MIT-licensed; bundled
+third-party leaves retain their own notices. The transport is one
 latency-optimized protocol that carries negotiated payloads — **Lyte-UDP,
 our own protocol, the only one either end speaks** (decision of 2026-07-20:
 [docs/20260720-215100-lyte-udp-decision.md](docs/20260720-215100-lyte-udp-decision.md)).
@@ -82,9 +83,10 @@ The client alone, however good, is capped by what Sunshine ships. Concretely:
    the total lift, the host ~55–65%. Not a 20/80 split. The host is more
    surface area but much of it is gluing proven components (capture APIs,
    hardware encoders) rather than inventing anything.
-5. **All the reference code is GPL and we are GPL.** Sunshine's solutions to
-   Linux capture/encode/input quirks are open for study, exactly as
-   moonlight-common-c was for the client (D5).
+5. **The current system is independently owned and MIT-licensed.** The
+   bootstrap-era Sunshine/GameStream implementation was demolished at the H2
+   exit. No Sunshine or Moonlight source remains in Lyte; bundled third-party
+   leaves retain their own licenses (D5).
 
 What we explicitly do **not** do: chase 1:1 Sunshine parity. The Lyte host
 starts narrow — stream one desktop, well — and grows by capability
@@ -130,7 +132,7 @@ convenience. Hit that and there's a clear reason to switch.
 | Area | Commitment | Notes |
 |------|-----------|-------|
 | Language | **Swift, both ends** | Client proven pure-Swift + two vendored C leaf libs (enet, nanors). Host follows the same rule: Swift core, C only at hardware/OS leaves (VAAPI/NVENC/PipeWire bindings). Swift is official on Linux and Windows. |
-| License | **GPLv3, whole repo** | Deliberate (D5): full freedom to study GPL reference code. Relicensing later remains legally ours to decide (single copyright holder) — but GPLv3 is the working assumption, not a placeholder. |
+| License | **MIT, all Lyte-authored code** | Permissive by design. Bundled third-party leaves retain their upstream licenses and notices. |
 | Video codecs | **HEVC primary, H.264 fallback; AV1 as a negotiated hook, later** | No MJPEG, no codec zoo. Modern hardware HEVC compresses static desktops to near-nothing and handles motion instantly — it beats VNC at VNC's own game once tuned (4:4:4 + rate control), and does full-motion video for free. |
 | Chroma | **4:4:4 as a first-class negotiated capability** | The desktop-text differentiator — **landed and measured** (H4, 2026-07-29: a client asking Best gets an Rext yuv444 session end to end, +22 dB on text at fewer bits vs 4:2:0). Surfaced as the owner's three-tier "Chroma" control (Good = 4:2:0 / Better = 4:2:2, dormant / Best = 4:4:4); a flip is a clean reconnect — a session parameter, not a live dial. Post-E5 (2026-08-02): the encoder that served Rext died with the libav seat — the native pens serve 4:2:0 today, and Best is dormant until Rext lands in the pens (queued on the postures track; the wire contract is unchanged). Color path: rgb_mode 601-limited ships (glass-correct, quality-equal); the full-range row is named-and-queued, not gating. |
 | Audio | **Opus, 4+2 RS FEC, Lyte-UDP datagrams** | Payload framing carries over from the proven client path; envelope and crypto are Lyte-UDP's (Noise AEAD). Mic-back channel is a future message type, not v1. |

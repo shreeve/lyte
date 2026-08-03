@@ -6,6 +6,7 @@
 // freeze. The circularity is broken by the hand-computed anchor bytes
 // in ControlCodecTests, which pin the same nominal messages.
 
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 

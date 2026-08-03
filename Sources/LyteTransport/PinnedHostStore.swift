@@ -14,6 +14,7 @@
 // ends' trust stores are deliberately independent.
 
 import Foundation
+import LyteCore
 import LyteWire
 
 /// One pinned host: everything reconnect needs (address/port are the
@@ -82,19 +83,10 @@ public struct PinnedHost: Codable, Equatable, Sendable {
 
     /// The raw 32-byte static, decoded from the stored hex.
     public var staticPublicKey: [UInt8]? {
-        let hex = staticPublicKeyHex
-        guard hex.count == 64 else { return nil }
-        var bytes: [UInt8] = []
-        bytes.reserveCapacity(32)
-        var index = hex.startIndex
-        while index < hex.endIndex {
-            let next = hex.index(index, offsetBy: 2)
-            guard let byte = UInt8(hex[index..<next], radix: 16) else {
-                return nil
-            }
-            bytes.append(byte)
-            index = next
-        }
+        guard staticPublicKeyHex.count == 64,
+              let bytes = Hex.bytes(staticPublicKeyHex),
+              bytes.count == 32
+        else { return nil }
         return bytes
     }
 
@@ -174,7 +166,7 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
         port: UInt16, pairedAt: String
     ) -> Bool {
         let pkh = LyteDiscovery.publicKeyHash(ofStaticPublicKey: staticPublicKey)
-        let hex = staticPublicKey.map { String(format: "%02x", $0) }.joined()
+        let hex = Hex.string(staticPublicKey)
         let fresh = hosts[pkh] == nil
         hosts[pkh] = PinnedHost(
             name: name, address: address, port: port,

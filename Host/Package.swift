@@ -178,6 +178,7 @@ targets += [
         name: "lyte-netio-check",
         dependencies: [
             "CNetIO",
+            .product(name: "LyteCore", package: "Common"),
             .product(name: "LyteIO", package: "Common"),
         ]
     ),
@@ -189,6 +190,7 @@ targets += [
         name: "lyte-pace-check",
         dependencies: [
             "HostCore", "CNetIO",
+            .product(name: "LyteCore", package: "Common"),
             .product(name: "LyteIO", package: "Common"),
         ]
     ),

@@ -7,6 +7,7 @@
 // a key flag is an explicitly deferred slice.
 
 import LyteIO
+import LyteCore
 import CNetIO // lyte_stdout_linebuf
 import CNetIO
 import Foundation
@@ -107,8 +108,9 @@ func sniffMain(_ args: [String]) -> Never {
         }
         for s in slots.prefix(Int(got)) {
             let bytes = Array(UnsafeBufferPointer(start: s.data, count: s.len))
-            let tosHex = String(s.tos, radix: 16, uppercase: true)
-            print("tos=0x\(tosHex.count == 1 ? "0" + tosHex : tosHex) "
+            let tosHex = Hex.string(
+                s.tos, width: 2, uppercase: true, prefix: true)
+            print("tos=\(tosHex) "
                 + SniffFormat.line(datagram: bytes))
             seen += 1
             if count > 0, seen >= count {

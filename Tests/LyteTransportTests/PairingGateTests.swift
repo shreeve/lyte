@@ -458,6 +458,10 @@ final class PairingGateTests: XCTestCase {
         let byHash = try XCTUnwrap(loaded.host(publicKeyHash: pkh))
         XCTAssertEqual(byHash.staticPublicKey, key)
         XCTAssertEqual(byHash.publicKeyHash, pkh)
+        var malformed = byHash
+        malformed.staticPublicKeyHex = String(repeating: "ab", count: 31) + "  "
+        XCTAssertNil(malformed.staticPublicKey,
+                     "stored keys stay exact-width, not CLI-tolerant")
         let advertisement = DiscoveredLyteHost(
             name: "pup", address: "10.0.0.249", port: 41_007,
             wireVersion: WireVersion.major, publicKeyHash: pkh)

@@ -388,7 +388,7 @@ func handlePairingEvent(_ event: PairingResponderService.Event) {
     case .attemptOpened(let attempt, let of):
         print("pairing: attempt \(attempt)/\(of) — share B sent")
     case .paired(let key):
-        let hex = HostStaticKey.hex(key)
+        let hex = Hex.string(key)
         do {
             var store = try PairedClients.load()
             if store.pin(key, note: "paired "
@@ -1095,7 +1095,7 @@ func run() throws {
     if let pairing = pairingService {
         if let key = pairing.pairedClientStaticPublicKey {
             print("pairing: result — PAIRED, client "
-                + HostStaticKey.hex(key))
+                + Hex.string(key))
         } else if pairing.isBurned {
             print("pairing: result — PIN burned, nothing pinned")
         } else {

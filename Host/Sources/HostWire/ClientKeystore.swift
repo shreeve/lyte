@@ -15,6 +15,8 @@
 //     store is someone else's write, and pretending a paired client
 //     away (or in) is a trust decision no parser gets to make.
 
+import LyteCore
+
 public struct ClientKeystore: Equatable, Sendable {
     public struct Entry: Equatable, Sendable {
         /// 32 raw bytes.
@@ -87,10 +89,7 @@ public struct ClientKeystore: Equatable, Sendable {
             "# (64 hex chars, optional note). Managed by `lyte-host --pair`.",
         ]
         for entry in entries {
-            let hex = entry.publicKey.map {
-                let h = String($0, radix: 16)
-                return h.count == 1 ? "0" + h : h
-            }.joined()
+            let hex = Hex.string(entry.publicKey)
             lines.append(
                 entry.note.isEmpty ? hex : hex + " " + entry.note
             )

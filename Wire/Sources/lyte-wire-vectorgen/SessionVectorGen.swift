@@ -5,6 +5,7 @@
 // The circularity is broken by the hand-computed anchor bytes in
 // SessionCodecTests, which pin the same nominal messages.
 
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 

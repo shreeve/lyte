@@ -51,21 +51,16 @@ over SSH when authorized. Known culprit signatures:
 
 Prior art: moonlight clients ship AWDL helpers on macOS — validates the concept.
 
-## D5. Stack: Swift throughout, GPL, reference-code informed
+## D5. Stack: Swift throughout, MIT, independently owned
 
-- **License: GPLv3, whole repo** — deliberately. It grants full freedom to read,
-  port, and link the ecosystem's battle-tested GPL code (moonlight-common-c,
-  moonlight-macos and derivatives) instead of re-deriving a decade of protocol
-  hardening from scratch. An MIT clean-room variant was considered and rejected:
-  the isolation cost (no reference code anywhere in the workflow) outweighed the
-  commercial optionality for an open project.
-- **LyteKit** is new Swift code implementing the protocol — pairing (HTTPS + PIN,
-  client certs), RTSP negotiation, ENet control/input, RTP + Reed-Solomon FEC —
-  written with the C reference open on the other monitor, and linking C pieces
-  (enet, FEC) where rewriting adds risk without value.
-- Reference checkouts live untracked in `misc/`; study summaries are committed:
-  the moonlight reference studies (retired to git history 2026-08-02).
-  Wolf's MIT protocol docs remain a good written spec.
+- **License: MIT for all Lyte-authored code.** Bundled third-party leaves retain
+  their upstream licenses and notices.
+- **LyteWire, LyteCore, LyteIO, HostCore, HostWire, and LyteTransport** are
+  independently owned Swift implementations of Lyte's protocol and policy.
+  The system speaks only Lyte-UDP; no GameStream, Sunshine, or Moonlight source
+  remains in the product.
+- Bootstrap-era compatibility code and reference studies were retired to git
+  history at the H2 exit. They are not dependencies of the current system.
 - Framework map (extracted from the shipping client binary): SwiftUI/Combine,
   VideoToolbox, CoreMedia/CoreVideo, Metal(+FX/Kit), CoreHID, GameController,
   CoreHaptics, CoreWLAN (Wi-Fi introspection for the doctor), ServiceManagement

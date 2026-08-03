@@ -111,10 +111,9 @@ mismatch. Policy:
   docs/sunshine-v2026.715.205118.md §5) proves both ends of our lineage
   already plumb this; our client's current Rec.601-limited request is a known
   bug to fix independently (LYTE-PLAN §4).
-- The conversion matrices are generated per ITU-T H.273 constants exactly as
-  Sunshine does (`video_colorspace.cpp` constexpr tables — same doc §5); the
-  CUDA `RGBA_to_YUV444` kernels from PR #4965 are the GPL→GPL reference for
-  the host's 4:4:4 conversion (HOST-PLAN §7).
+- The conversion matrices are generated from the ITU-T H.273 constants. Lyte's
+  4:4:4 conversion is independently implemented in the host's native
+  direct-eye GPU path (HOST-PLAN §7).
 - One trap to test explicitly: **full-range 4:4:4 through VideoToolbox must
   round-trip 0 and 255**. The §7 gates include literal black/white/primary
   patches asserted byte-exact after decode, because the failure mode

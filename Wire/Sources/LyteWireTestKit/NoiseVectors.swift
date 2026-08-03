@@ -15,6 +15,7 @@
 //   rather than an external oracle. The AEAD/handshake beneath them is
 //   externally verified by the section above.
 
+import LyteCore
 import Foundation
 import LyteWire
 

@@ -23,6 +23,7 @@
 // regression, honestly weaker than an external oracle. The primitives
 // and handshake beneath them are covered by the external section.
 
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 

@@ -6,6 +6,7 @@
 // the data shard — verifiable by eye) plus decode-recovers-encode across
 // every matrix, and byte-equality across both platforms.
 
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 

@@ -6,6 +6,7 @@
 // Exits nonzero on any mismatch. No protocol, no policy — a leaf check.
 
 import LyteIO
+import LyteCore
 import CNetIO
 import Foundation
 
@@ -27,8 +28,8 @@ func realtimeNowNS() -> UInt64 {
 }
 
 func hexTOS(_ tos: UInt8) -> String {
-    let hex = String(tos, radix: 16, uppercase: true)
-    return "0x" + (hex.count == 1 ? "0" : "") + hex + "/dscp\(tos >> 2)"
+    Hex.string(tos, width: 2, uppercase: true, prefix: true)
+        + "/dscp\(tos >> 2)"
 }
 
 func pad(_ s: String, _ width: Int) -> String {
