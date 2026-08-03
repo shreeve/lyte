@@ -187,7 +187,9 @@ struct Options {
                       let choice = InputBackendChoice(rawValue: args[i])
                 else {
                     throw HostError(
-                        "--input must be auto, mutter, uinput, or off")
+                        "--input must be auto, uinput, or off "
+                        + "(mutter was retired in E2 — uinput is "
+                        + "primary)")
                 }
                 opts.input = choice
             case "--no-audio":
@@ -296,9 +298,10 @@ struct Options {
                                     may complete the Noise handshake
                                     (reconnects are plain 1-RTT IK)
                   --input MODE      injection backend for client input
-                                    events (HS-13): auto (default —
-                                    Mutter RemoteDesktop, uinput
-                                    fallback), mutter, uinput, off
+                                    events (E2): auto/uinput (kernel
+                                    uinput, compositor-agnostic;
+                                    needs the setup-host.sh udev
+                                    rule), or off
                   --no-audio        skip the HS-15 audio leg (default in
                                     session mode: default-sink monitor →
                                     5 ms Opus → RS 4+2 → chan 1 at
@@ -707,9 +710,8 @@ func run() throws {
                 + "opening posture rides the whole run")
         }
 
-        // HS-13: the injection backend comes up with the session — the
-        // Mutter RemoteDesktop session is independent of the portal
-        // capture (CP-5 Q6: the video token is never touched).
+        // E2: kernel-uinput injection comes up with the session — no
+        // compositor session, no D-Bus, one settle at device create.
         if let injector = makeInputInjector(opts.input) {
             w.inputInjector = injector
             print("input: injection via \(injector.name) "

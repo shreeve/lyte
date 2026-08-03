@@ -11,9 +11,11 @@
 #     `swift build`. Needs root; this script prints the exact command
 #     and reports current state.
 #
-#  2. /dev/uinput seat access for the CInputUinput fallback input
-#     backend (HS-13). Needs root, so this script prints the exact
-#     sudo command instead of escalating itself.
+#  2. /dev/uinput seat access for the CInputUinput input backend —
+#     E2 made it PRIMARY (the Mutter RemoteDesktop injector is
+#     retired), so without this rule client input is OFF. Needs root,
+#     so this script prints the exact sudo command instead of
+#     escalating itself.
 #
 #  3. An rtprio rlimit lets the latency-owning audio and wire-drain
 #     threads obtain SCHED_RR. Optional: the binary degrades safely,
@@ -51,17 +53,18 @@ if [ -f "$CONF" ]; then
     printf '    rm %s   # then log out and back in\n' "$CONF"
 fi
 
-# --- 2. uinput seat access (input-injection fallback) ----------------
+# --- 2. uinput seat access (E2: the PRIMARY input backend) -----------
 RULE="/etc/udev/rules.d/60-lyte-uinput.rules"
 if [ -f "$RULE" ]; then
     ok "udev rule present: $RULE"
 else
-    todo "udev rule missing — run:"
+    todo "udev rule missing — WITHOUT IT CLIENT INPUT IS OFF (E2); run:"
     cat <<'EOF'
     sudo tee /etc/udev/rules.d/60-lyte-uinput.rules >/dev/null <<'RULE'
-# Lyte: seat-user access to /dev/uinput for the CInputUinput fallback
-# backend (HS-13). Carried over from Sunshine 60-sunshine.rules at its
-# H2-exit uninstall (2026-07-22).
+# Lyte: seat-user access to /dev/uinput for the CInputUinput input
+# backend — E2 primary (the Mutter RemoteDesktop injector is retired).
+# Shape carried over from Sunshine 60-sunshine.rules at its H2-exit
+# uninstall (2026-07-22).
 KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", GROUP="input", MODE="0660", TAG+="uaccess"
 RULE
     sudo udevadm control --reload && sudo udevadm trigger /dev/uinput

@@ -226,7 +226,7 @@ lyte (host role)
 │                   NVENC-native banked (lyte-nvenc, E6a) for NVIDIA-panel hosts;
 │                   4:4:4 returns with Rext in the native pens
 ├── AudioCap/       PipeWire capture → Opus encode → Lyte-UDP datagrams + FEC
-├── InputInject/    Mutter RemoteDesktop primary, uinput fallback — keyboard, mouse, scroll
+├── InputInject/    kernel uinput primary (E2, 2026-08-03; Mutter RemoteDesktop retired) — keyboard, mouse, scroll
 ├── Features/       clipboard watcher/setter, print interception, file channel
 └── Telemetry/      encoder queue depth, capture latency, per-client loss — feeds the doctor
 ```
@@ -259,8 +259,8 @@ entries; what remains below is printing (H5's second half) and H6.)*
   the reliable sublayer, the idle/active state machine — idle silence,
   reliable sparse idle frames, IDR-on-wake — and the liveness beacon.
 - **H2 ✓ — Parity.** Input injection (Mutter internal RemoteDesktop as
-  primary — the portal path proved hostile headless — uinput as
-  fallback); PipeWire monitor capture of the real desktop → Opus, with
+  primary at the time — the portal path proved hostile headless — uinput
+  as fallback; E2 flipped uinput to primary 2026-08-03); PipeWire monitor capture of the real desktop → Opus, with
   the audio-continuity doc's send pacing and per-packet DSCP (48 audio /
   40 video); the congestion/resiliency machinery (app-level CC, NACK,
   FROZEN/RECOVERY). Exit criteria met 2026-07-22: Sunshine uninstalled
@@ -384,8 +384,8 @@ One maintainer, one front at a time.
 
 | Risk | Mitigation |
 |------|-----------|
-| Wayland capture/input fragmentation across distros/compositors | RESOLVED for capture by E5 (2026-08-02): the direct eye reads the KMS scanout below every compositor — no portals, no ScreenCast dialects; the cost is CAP_SYS_ADMIN on the binary and owning consent (pairing is the consent model). Input still touches the compositor (Mutter RemoteDesktop primary, uinput fallback; E2 makes uinput primary). |
-| COSMIC portal immaturity — Pop!_OS is migrating from GNOME to COSMIC | MOOT for capture since E5 (compositor-free); input/clipboard leaves still prefer the Mutter session bus where present, with uinput as the portable floor. |
+| Wayland capture/input fragmentation across distros/compositors | RESOLVED for capture by E5 (2026-08-02): the direct eye reads the KMS scanout below every compositor — no portals, no ScreenCast dialects; the cost is CAP_SYS_ADMIN on the binary and owning consent (pairing is the consent model). RESOLVED for input by E2 (2026-08-03): kernel uinput is primary and sole — no compositor session; the clipboard leaf is the last Mutter-session tenant (Wayland helper filed). |
+| COSMIC portal immaturity — Pop!_OS is migrating from GNOME to COSMIC | MOOT for capture since E5 (compositor-free); input is compositor-free since E2 (kernel uinput); only the clipboard leaf still prefers the Mutter session bus (Wayland helper filed). |
 | Login-screen blackout — portal capture needed a logged-in session | SOLVED by E5: the direct eye captures the scanout with no session and no portal — a rebooted host streams its login screen (the Lyte OS packaging story, E4, builds on exactly this). |
 | Hardware encoder variance (VAAPI quirks, NVENC licensing surface, hybrid-GPU traps) | One Swift encode facade with capability probes; the reference-host case study already caught the hybrid-GPU silent-fallback trap — probe results become doctor diagnoses. |
 | Swift-on-Linux ecosystem gaps (no Foundation surprises, C interop volume) | The client already proved the pure-Swift + C-leaf pattern; keep the C boundary at hardware libraries only. |
