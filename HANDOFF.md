@@ -191,22 +191,31 @@ display path — the shell's 10 s comb is the evidence). AV1 stays
 a 4:2:0 lane (no 4:4:4 hardware encoders exist anywhere,
 2026-08).
 
-**CLEANUP THEME 1 OPENED (#95, 2026-08-03): one clock owns the
-tick.** The v2 `Common/` package now exists with sibling targets
-`LyteCore` (sans-IO, declaration-free until policy moves) and
-`LyteIO`; `SystemMonotonicClock` is the one OS adapter for ns/µs/s.
+**CLEANUP THEME 1 IS RUNNING (#95 + #96, 2026-08-03): one clock,
+one histogram.** The v2 `Common/` package now exists with sibling
+targets `LyteCore` (sans-IO shared policy) and `LyteIO` (shared OS
+adapters); `SystemMonotonicClock` is the one OS adapter for ns/µs/s.
 Every client and Linux shell call site moved to it and the six raw
 `clock_gettime` copies, inline `DispatchTime` reads, and three private
 helpers were deleted in the same PR. A cross-tree ratchet refuses a
 new bypass; the Linux gate brackets the provider between direct
 `CLOCK_MONOTONIC` reads and proved the absolute domain unchanged.
-Build provenance and pup sync now include Common. Wire and every
-policy injection seam stayed untouched. **NEXT: Theme 1 histogram
-unification — pin the non-rolling and rolling semantics, then move
-and delete all five copies.**
+Build provenance and pup sync now include Common. #96 moved all five
+named percentile dialects into generic `LyteCore.Histogram` and
+deleted every old copy: host telemetry explicitly keeps its
+prefix/drop-past-cap doctrine; client telemetry, the Conductor tail,
+and the delivery gauge explicitly keep rolling/wrap. Nearest-rank
+stays the general rule; the delivery gauge's historical exact-boundary
+promotion is named and pinned separately (its 100-sample p99 still
+carries one stall). The old parallel tests moved into Common beside a
+production-twin ratchet, and LyteCore's no-Foundation lint now runs
+automatically on both platforms. Wire and every vector stayed
+untouched. **NEXT: Theme 1 Annex-B NAL walker — merge the two walkers
+and the dependent access-unit splitter into LyteCore, with the parallel
+malformed corpus and byte-offset tests as the ratchet.**
 
-**Suites at HEAD:** Wire 517 Mac / 517 pup; Common 3 Mac / 4 pup;
-root client 293; host 300 pup / 299 Mac — all green.
+**Suites at HEAD:** Wire 517 Mac / 517 pup; Common 15 Mac / 16 pup;
+root client 288; host 296 pup / 295 Mac — all green.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
