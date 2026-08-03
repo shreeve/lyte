@@ -32,7 +32,8 @@ H-era build plans completed their ladder and are retired to git history
 - **`Common/`** — package `LyteCommon`: the v2 shared layer beside (never
   inside) frozen LyteWire. `LyteCore` is sans-IO shared policy with injected
   time; `LyteIO` is the operating-system adapter layer both ends consume.
-  The first extracted adapter is the one process-wide monotonic clock.
+  `LyteCore.Histogram` owns the shared percentile and retention doctrine;
+  the first extracted adapter is the one process-wide monotonic clock.
 - **`Host/`** — package `LyteHost`: the Linux host. Depends on
   `.package(path: "../Wire")` and, for Linux shells, `../Common`.
   `HostCore` (pure Swift bitstream helpers) and
@@ -71,11 +72,12 @@ cd Host && DEVELOPER_DIR=/Applications/Xcode.app swift test
 DEVELOPER_DIR=/Applications/Xcode.app swift test        # root, from repo root
 ```
 
-The no-Foundation lint (`Wire/Scripts/lint-no-foundation.sh`) runs
-automatically inside `swift test` via `NoFoundationLintTests` — CI needs
-nothing beyond `swift test`. It can also be invoked directly; it fails on
-any Foundation/Dispatch/Network import in `Wire/Sources/LyteWire` and on
-`import Crypto` outside `Crypto/`.
+The no-Foundation lints (`Wire/Scripts/lint-no-foundation.sh` and
+`Common/Scripts/lint-no-foundation.sh`) run automatically inside their
+packages' `swift test` via `NoFoundationLintTests` — CI needs nothing beyond
+the package suites. They fail on Foundation/Dispatch/Network imports in the
+sans-IO cores; Wire additionally confines `import Crypto` to `Crypto/`, while
+LyteCore forbids crypto imports entirely.
 
 Client binaries that contact a host: use `Scripts/build-cli.sh` /
 `Scripts/make-app.sh` so the stable "Lyte Dev" signature preserves Keychain
