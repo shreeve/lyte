@@ -232,14 +232,25 @@ Mac — all green (host grew the Rext pen pins and the E2 harness).
 
 # LIVE OPS — the owner's rig (direct-eye era)
 
-- **pup standing host**: `bash ~/lyte-loop.sh` (nohup, `while true`
-  respawn) runs `~/src/lyte-host/.build/debug/lyte-host` on port
-  **41151** — the owner's eyeball host; leave it alive. Session log:
-  `/tmp/lyte-host-session.log` on pup. It respawns onto whatever was
-  last built, so a rebuild + setcap migrates the loop on its next
-  cycle. The direct eye needs CAP_SYS_ADMIN on the binary — after
-  EVERY rebuild: `sudo -n setcap cap_sys_admin+ep
-  .build/debug/lyte-host` (a capless binary fails loudly at startup).
+- **pup standing host is a SYSTEMD SERVICE since E4 (2026-08-03)**:
+  `lyte-host.service` (system unit, `User=shreeve`,
+  `AmbientCapabilities=CAP_SYS_ADMIN`, `Restart=always`) on port
+  **41151** — the owner's eyeball host; leave it alive. The bash
+  `~/lyte-loop.sh` supervisor is RETIRED. Config:
+  `/etc/lyte/lyte-host.conf` (operator-owned; `LYTE_HOST_BIN` points
+  at the build tree, `LYTE_HOST_ARGS` is the old loop command line).
+  Session log: `/tmp/lyte-host-session.log` unchanged (the redirect
+  rides inside the unit's shell — Ubuntu's fs.protected_regular
+  forbids root append: into another user's /tmp file). **The deploy
+  loop is now: `swift build` then `sudo -n systemctl restart
+  lyte-host` — NO setcap step**: the capability is ambient on the
+  service (gate-proven on a caps-stripped binary). setcap remains
+  ONLY for hand-run hosts (test ports, lyte-eye probes:
+  `sudo -n setcap cap_sys_admin+ep .build/debug/lyte-eye`).
+  Restart/status: `systemctl is-active lyte-host`,
+  `sudo -n journalctl -u lyte-host` for unit lifecycle. Install/
+  repair: `bash ~/src/lyte-host/Scripts/install-host.sh`
+  (idempotent; never overwrites the conf).
 - **The owner's client** is the app bundle at `.build/Lyte.app` —
   launch with `open .build/Lyte.app` (NEVER run the raw binary under
   a parent process; it needs its own bundle for a proper macOS

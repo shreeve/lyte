@@ -5,11 +5,14 @@
 #
 # What a fresh machine needs beyond the binary:
 #
-#  1. CAP_SYS_ADMIN on the lyte-host binary — the direct eye's DRM
-#     ticket (GETFB2 + dmabuf export of the scanout). File capabilities
-#     don't survive a rebuild, so this must be re-armed after EVERY
-#     `swift build`. Needs root; this script prints the exact command
-#     and reports current state.
+#  1. CAP_SYS_ADMIN — the direct eye's DRM ticket (GETFB2 + dmabuf
+#     export of the scanout). Under the E4 service unit
+#     (Scripts/install-host.sh) this is an AMBIENT capability of the
+#     service and no file cap is needed, ever. File caps on the
+#     binary are only for HAND-RUN hosts (probes, test ports) — and
+#     those don't survive a rebuild, so re-arm after EVERY
+#     `swift build`. Needs root; this script prints the exact
+#     command and reports current state.
 #
 #  2. /dev/uinput seat access for the CInputUinput input backend —
 #     E2 made it PRIMARY (the Mutter RemoteDesktop injector is
