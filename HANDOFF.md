@@ -401,7 +401,7 @@ half by carrying the real client's NACK report into the real Host `Session`
 judgement, then remove the overlapping round-trip scaffolding from the two
 1,300-line suites.**
 
-**THE TREE MIGRATION OPENED (#103 + #108 + #115 + #117 + #119 + #120, 2026-08-03): every move has
+**THE TREE MIGRATION OPENED (#103 + #108 + #115 + #117 + #119 + #120 + #121, 2026-08-03): every move has
 a gate, and Common now speaks one filesystem grammar.** #103 recorded the
 owner-approved `Sources` / `Tests` / `TestKit` hierarchy and added the full
 Mac + isolated-pup equivalence gates. #108 moved every Common production
@@ -455,7 +455,15 @@ isolated pup passed Common 79, Wire 508, Host 287, the plain build,
 netio/pacing (19.193 ms IDR drain against the 25 ms ceiling), and protected
 state. Frozen vectors were untouched; no public module, product, runtime
 behavior, wire byte, persisted format, signed identity, or artifact location
-changed. **NEXT MIGRATION SLICE: establish the canonical `SystemTests/`
+changed. #121 made that new pup mirror cleanup fail closed: every cleanup
+target must be a canonical, non-symlinked directory; a required `findmnt`
+snapshot rejects mounts anywhere below the gate root; a fresh snapshot runs
+immediately before stale root-client deletion; and the bounded cleanup cannot
+cross a filesystem boundary. The deterministic shell pin proves every guard
+and rejects the retired broad recursive deletion. Canonical Mac and isolated
+pup gates passed again on the landed tree, including signed products,
+netio/pacing, and protected-state verification; independent review found no
+blocker. **NEXT MIGRATION SLICE: establish the canonical `SystemTests/`
 boundary before extracting any shared end-to-end session rituals.**
 
 **Suites at HEAD:** Wire 508 Mac / 508 pup; Common 78 Mac / 79 pup;
