@@ -5,7 +5,10 @@ import XCTest
 final class COpusDeclarationRatchetTests: XCTestCase {
     func testCOpusSystemLibraryHasOneDeclarationAndOneModuleMap() throws {
         let tree = RepositorySourceTree()
-        let manifestPaths = ["Package.swift", "Host/Package.swift", "Common/Package.swift"]
+        let manifestPaths = [
+            "Client/Package.swift", "Common/Package.swift", "Host/Package.swift",
+            "Wire/Package.swift",
+        ]
         let declaration = try NSRegularExpression(
             pattern: #"\.systemLibrary\s*\(\s*name:\s*\"COpus\""#
         )
@@ -24,7 +27,9 @@ final class COpusDeclarationRatchetTests: XCTestCase {
         XCTAssertEqual(declarations, ["Common/Package.swift"])
 
         var moduleMaps: [String] = []
-        for rootPath in ["Common", "Host/Sources", "Sources"] {
+        for rootPath in [
+            "Client/Sources", "Common/Sources", "Host/Sources", "Wire/Sources",
+        ] {
             let root = tree.repositoryRoot.appendingPathComponent(rootPath)
             guard let files = FileManager.default.enumerator(
                 at: root, includingPropertiesForKeys: nil

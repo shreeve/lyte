@@ -7,11 +7,7 @@ import XCTest
 
 final class MediaIsolationStressTests: XCTestCase {
     private static var corpusDirectory: String {
-        var parts = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false)
-        parts.removeLast(3)
-        return parts.joined(separator: "/")
-            + "/Wire/Vectors/video-corpus-v1"
+        ClientTestPaths.videoCorpus
     }
 
     func testVideoBuildBackpressureCannotBlockAudioPlcOrDeclick() throws {

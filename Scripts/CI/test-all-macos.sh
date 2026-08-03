@@ -14,8 +14,9 @@ fi
 
 run_package_tests() {
     local label="$1"
-    local path="$2"
-    local marker="$path/.build/.lyte-build-graph-sha256"
+    local package_path="$2"
+    local scratch_path="$3"
+    local marker="$scratch_path/.lyte-build-graph-sha256"
     local installed_hash=""
     echo "==> $label tests"
 
@@ -24,14 +25,23 @@ run_package_tests() {
     fi
     if [[ "$installed_hash" != "$build_graph_hash" ]]; then
         echo "    package or source-path graph changed; invalidating stale SwiftPM build state"
-        (cd "$path" && swift package clean)
+        swift package \
+            --package-path "$package_path" \
+            --scratch-path "$scratch_path" \
+            clean
     fi
 
     # Path-only sibling-package moves do not always invalidate SwiftPM's
     # existing workspace state. Resolve first so the gate is valid in an
     # incremental developer checkout as well as a clean clone.
-    (cd "$path" && swift package resolve && swift test)
-    mkdir -p "$path/.build"
+    swift package \
+        --package-path "$package_path" \
+        --scratch-path "$scratch_path" \
+        resolve
+    swift test \
+        --package-path "$package_path" \
+        --scratch-path "$scratch_path"
+    mkdir -p "$scratch_path"
     printf '%s\n' "$build_graph_hash" > "$marker"
 }
 
@@ -58,7 +68,7 @@ verify_frozen_vectors
 
 build_graph_hash="$({
     for manifest in \
-        Package.swift Package.resolved \
+        Client/Package.swift Client/Package.resolved \
         Common/Package.swift Common/Package.resolved \
         Wire/Package.swift Wire/Package.resolved \
         Host/Package.swift Host/Package.resolved
@@ -72,7 +82,7 @@ build_graph_hash="$({
     # layout migration even when every manifest is unchanged. Make the
     # structural source graph part of cache identity so dependent packages
     # rebuild cleanly after files are added, removed, or moved.
-    for package_root in . Common Wire Host; do
+    for package_root in Client Common Wire Host; do
         for tree in Sources Tests Plugins; do
             source_root="$package_root/$tree"
             if [[ -d "$source_root" ]]; then
@@ -82,10 +92,10 @@ build_graph_hash="$({
     done | LC_ALL=C sort
 } | shasum -a 256 | awk '{print $1}')"
 
-run_package_tests "Common" "$repo_root/Common"
-run_package_tests "Wire" "$repo_root/Wire"
-run_package_tests "Host" "$repo_root/Host"
-run_package_tests "client" "$repo_root"
+run_package_tests "Common" "$repo_root/Common" "$repo_root/Common/.build"
+run_package_tests "Wire" "$repo_root/Wire" "$repo_root/Wire/.build"
+run_package_tests "Host" "$repo_root/Host" "$repo_root/Host/.build"
+run_package_tests "client" "$repo_root/Client" "$repo_root/.build"
 
 echo "==> benchmark safety tests"
 Scripts/Tests/test-benchmark-safety.sh

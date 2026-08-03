@@ -23,7 +23,7 @@ live bugs; each is armed only by a future change to its seam.*
   and the `seqAdvanced || openedGroup` gate have no dedicated pins.
 
 - **ARQ PTO sleep-forever guard has no pin**
-  (`Sources/LyteTransport/ReliableCtrlEndpoint.swift`, `timerFired()`
+  (`Client/Sources/LyteTransport/ReliableCtrlEndpoint.swift`, `timerFired()`
   clearing `armedDeadlineMicros` before service) — the only sweep change
   whose correctness invariant is held by code + comment alone. Worth a
   virtual-time pin next time that file is open.
@@ -35,7 +35,7 @@ live bugs; each is armed only by a future change to its seam.*
   connect-failed line. A wedged stdout can still block the wire through
   those; route them through `emit` on the next touch.
 
-- **FROZEN exit one-beat deferral** (`Sources/LyteTransport/LyteUdpSession.swift`) —
+- **FROZEN exit one-beat deferral** (`Client/Sources/LyteTransport/LyteUdpSession.swift`) —
   a datagram landing inside the exact `applyMachine` critical section that
   enters FROZEN reads `machineFrozen == false`, skips the immediate exit,
   and is delivered by the next beat instead (≤100 ms in production;

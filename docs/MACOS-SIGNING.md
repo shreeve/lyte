@@ -44,7 +44,7 @@ Apple Developer account is required for local development.
 | Signing keychain | `~/Library/Keychains/lyte-signing.keychain-db` | dedicated, password `lyte`, holds only this dev cert |
 | Setup (one-time) | `Scripts/setup-dev-signing.sh` | creates cert + keychain; idempotent |
 | Signer | `Scripts/sign-dev.sh` | signs a binary or `.app` |
-| CLI build+sign | `Scripts/build-cli.sh` | `swift build --product lyte-cli` then sign |
+| CLI build+sign | `Scripts/build-cli.sh` | build `Client/` into root `.build`, then sign |
 | App build+sign | `Scripts/make-app.sh` | assembles `Lyte.app`, signs helper + app |
 
 The identity is kept in its **own** keychain rather than the login keychain so
@@ -97,7 +97,7 @@ Scripts/sign-dev.sh .build/debug/lyte-cli
 Scripts/sign-dev.sh .build/Lyte.app
 ```
 
-Prefer these over a bare `swift build` whenever the binary will talk to a host,
+Prefer these over a direct SwiftPM build whenever the binary will talk to a host,
 so the signature (and thus the keychain grant) stays intact.
 
 ## How `sign-dev.sh` picks the identifier
@@ -146,7 +146,8 @@ you'll get one fresh prompt.
   authenticates to Lyte hosts) and the *signing* key (`Lyte Dev`, in the
   lyte-signing keychain, signs our binaries). Signing the binary stably is
   what keeps the pairing key's ACL grant valid.
-- **A later bare `swift build` overwrites the CLI artifact.** SwiftPM emits an
+- **A later bare `swift build --package-path Client --scratch-path .build`
+  overwrites the CLI artifact.** SwiftPM emits an
   ad-hoc-signed executable at `.build/<configuration>/lyte-cli`, replacing the
   stable signature installed by `Scripts/build-cli.sh`. Run the signing script
   again immediately before any CLI command that touches the client identity.

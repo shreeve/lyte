@@ -18,9 +18,7 @@ import LyteWireTestKit
 final class VideoPipelineTests: XCTestCase {
 
     private static var corpusDirectory: String {
-        var components = #filePath.split(separator: "/", omittingEmptySubsequences: false)
-        components.removeLast(3)
-        return components.joined(separator: "/") + "/Wire/Vectors/video-corpus-v1"
+        ClientTestPaths.videoCorpus
     }
 
     /// The decodable 10-frame prefix, in order (IDR first).

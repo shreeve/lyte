@@ -57,7 +57,7 @@ H-era build plans completed their ladder and are retired to git history
   exist only under `#if os(Linux)` in the manifest. The portal-era
   leaves (`CPipeWireCapture`, `CHevcEncode`, `CLibAV`, the vendored
   ffmpeg) were demolished in E5 (2026-08-02, tag `self-hosted`).
-- **Root** — package `Lyte`: the macOS client (macOS-only; SwiftUI app
+- **`Client/`** — package `Lyte`: the macOS client (macOS-only; SwiftUI app
  `Lyte`, `lyte-cli`). `LyteTransport` is the whole client protocol stack
  (imports LyteWire and LyteIO): socket + demux, video/audio pipelines,
  discovery,
@@ -80,7 +80,8 @@ Mac (Command Line Tools lack XCTest, hence DEVELOPER_DIR):
 cd Wire && DEVELOPER_DIR=/Applications/Xcode.app swift test
 cd Common && DEVELOPER_DIR=/Applications/Xcode.app swift test
 cd Host && DEVELOPER_DIR=/Applications/Xcode.app swift test
-DEVELOPER_DIR=/Applications/Xcode.app swift test        # root, from repo root
+DEVELOPER_DIR=/Applications/Xcode.app swift test \
+  --package-path Client --scratch-path .build           # from repo root
 ```
 
 The no-Foundation lints (`Wire/Scripts/lint-no-foundation.sh` and

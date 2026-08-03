@@ -38,7 +38,7 @@ Host/     LyteHost — the Linux host (lyte-host)
             direct KMS capture · our own HEVC bitstream pens on VAAPI
             Opus · congestion control · Avahi discovery
             Mutter/uinput input injection
-(root)    the macOS client
+Client/  the macOS client
             Lyte.app (SwiftUI) + lyte-cli
             LyteTransport — socket, demux, video/audio render, input send
 ```

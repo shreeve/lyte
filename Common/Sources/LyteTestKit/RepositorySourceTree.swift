@@ -46,7 +46,7 @@ public struct RepositorySourceTree {
         [
             repositoryRoot.appendingPathComponent("Common/Sources/LyteCore"),
             repositoryRoot.appendingPathComponent("Common/Sources/LyteIO"),
-            repositoryRoot.appendingPathComponent("Sources"),
+            repositoryRoot.appendingPathComponent("Client/Sources"),
             repositoryRoot.appendingPathComponent("Host/Sources"),
             repositoryRoot.appendingPathComponent("Wire/Sources"),
         ]

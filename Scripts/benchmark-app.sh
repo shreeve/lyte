@@ -85,7 +85,7 @@ source_fingerprint() {
 }
 
 CLIENT_SOURCE_SHA256="$(source_fingerprint \
-  Package.swift Package.resolved Sources \
+  Client/Package.swift Client/Package.resolved Client/Sources \
   Common/Package.swift Common/Sources \
   Wire/Package.swift Wire/Package.resolved Wire/Sources)"
 recorded_client_source="$APP/Contents/Resources/client-source.sha256"
@@ -109,7 +109,7 @@ if (( NO_BUILD )); then
   stale_client_source="$(
     cd "$ROOT"
     git ls-files --cached --others --exclude-standard -- \
-      Package.swift Package.resolved Sources \
+      Client/Package.swift Client/Package.resolved Client/Sources \
       Common/Package.swift Common/Sources \
       Wire/Package.swift Wire/Package.resolved Wire/Sources \
       | while IFS= read -r path; do

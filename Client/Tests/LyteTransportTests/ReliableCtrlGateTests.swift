@@ -19,9 +19,9 @@ import LyteWireTestKit
 // NoiseSession responder plus its own ArqEndpoint<HostClock>, sealing
 // conn-id-tagged CTRL and repacking to the session's real 1101 B
 // plaintext ceiling — exactly the HS-8 Session's discipline, met
-// through the same frame codecs the frozen arq-v1 vectors pin. (The
-// root package cannot import HostWire; the host-side ArqCtrlGateTests
-// runs the mirror-image pairing with the real Session.)
+// through the same frame codecs the frozen arq-v1 vectors pin. The
+// host-side ArqCtrlGateTests runs the mirror-image pairing with the real
+// Session; this gate deliberately retains its isolated Wire peer.
 
 final class ReliableCtrlGateTests: XCTestCase {
 

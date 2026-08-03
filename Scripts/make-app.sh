@@ -5,8 +5,16 @@ set -e
 cd "$(dirname "$0")/.."
 
 CONFIG="${1:-release}"
-swift build -c "$CONFIG" --product Lyte
-swift build -c "$CONFIG" --product lyte-helperd
+swift build \
+  --package-path Client \
+  --scratch-path .build \
+  -c "$CONFIG" \
+  --product Lyte
+swift build \
+  --package-path Client \
+  --scratch-path .build \
+  -c "$CONFIG" \
+  --product lyte-helperd
 
 # The About box answers "which build am I running?": CFBundleVersion is
 # the git short hash, with "+" when the tree had uncommitted changes.
@@ -24,7 +32,7 @@ cp ".build/$CONFIG/lyte-helperd" "$APP/Contents/MacOS/lyte-helperd"
 # this matching fingerprint is not valid benchmark evidence.
 (
   git ls-files --cached --others --exclude-standard -- \
-    Package.swift Package.resolved Sources \
+    Client/Package.swift Client/Package.resolved Client/Sources \
     Common/Package.swift Common/Sources \
     Wire/Package.swift Wire/Package.resolved Wire/Sources \
     | LC_ALL=C sort \

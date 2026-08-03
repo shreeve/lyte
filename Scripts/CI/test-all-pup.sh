@@ -44,10 +44,17 @@ then
 fi
 lock_acquired=1
 
-echo "==> sync client sources, Common, Wire, and Host to $pup:$pup_gate_root"
-rsync -a Package.swift "$pup:$pup_gate_root/Package.swift"
-rsync -a Package.resolved "$pup:$pup_gate_root/Package.resolved"
-rsync -a --delete Sources/ "$pup:$pup_gate_root/Sources/"
+echo "==> sync Client, Common, Wire, and Host to $pup:$pup_gate_root"
+# Remove only the retired client-package paths inside the validated,
+# lock-owned deterministic mirror. They must not survive as a second package.
+ssh "$pup" 'bash -se' <<'RETIRE_ROOT_CLIENT'
+set -euo pipefail
+gate_root="$HOME/src/lyte-gates/deterministic"
+[[ "$(readlink -f -- "$gate_root")" == "$gate_root" ]]
+rm -f -- "$gate_root/Package.swift" "$gate_root/Package.resolved"
+rm -rf -- "$gate_root/Sources" "$gate_root/Tests"
+RETIRE_ROOT_CLIENT
+rsync -a --delete --exclude .build Client/ "$pup:$pup_gate_root/Client/"
 rsync -a --delete --exclude .build Common/ "$pup:$pup_gate_root/Common/"
 rsync -a --delete --exclude .build Wire/ "$pup:$pup_gate_root/Wire/"
 rsync -a --delete --exclude .build Host/ "$pup:$pup_gate_root/Host/"
@@ -101,8 +108,8 @@ trap on_remote_exit EXIT
 
 build_graph_hash="$({
     for manifest in \
-        "$gate_root/Package.swift" \
-        "$gate_root/Package.resolved" \
+        "$gate_root/Client/Package.swift" \
+        "$gate_root/Client/Package.resolved" \
         "$gate_root/Common/Package.swift" \
         "$gate_root/Common/Package.resolved" \
         "$gate_root/Wire/Package.swift" \
@@ -120,7 +127,7 @@ build_graph_hash="$({
     # the structural source graph so the shared Linux mirror invalidates that
     # stale state before testing dependents.
     cd "$gate_root"
-    for package_root in . Common Wire Host; do
+    for package_root in Client Common Wire Host; do
         for tree in Sources Tests Plugins; do
             source_root="$package_root/$tree"
             if [[ -d "$source_root" ]]; then

@@ -8,6 +8,10 @@ set -e
 cd "$(dirname "$0")/.."
 
 CONFIG="${1:-debug}"
-swift build -c "$CONFIG" --product lyte-cli
+swift build \
+  --package-path Client \
+  --scratch-path .build \
+  -c "$CONFIG" \
+  --product lyte-cli
 "$(dirname "$0")/sign-dev.sh" ".build/$CONFIG/lyte-cli"
 echo "built + signed .build/$CONFIG/lyte-cli"

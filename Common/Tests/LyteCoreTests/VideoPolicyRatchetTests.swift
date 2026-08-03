@@ -30,9 +30,9 @@ final class VideoPolicyRatchetTests: XCTestCase {
 
     func testSynchronizationStaysInOneShellPerCrossQueueOwner() throws {
         let conductor = try source(
-            "Sources/LyteTransport/VideoBeatConductorController.swift")
+            "Client/Sources/LyteTransport/VideoBeatConductorController.swift")
         let delivery = try source(
-            "Sources/LyteTransport/VideoDeliveryBooks.swift")
+            "Client/Sources/LyteTransport/VideoDeliveryBooks.swift")
         let core = try source(
             "Common/Sources/LyteCore/VideoBeatConductor.swift")
             + source("Common/Sources/LyteCore/VideoDeliveryGauge.swift")
