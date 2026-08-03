@@ -1,6 +1,6 @@
 # Lyte — Session Handoff
 
-*Current as of 2026-08-02 (post-E5, tag `self-hosted`). The session
+*Current as of 2026-08-03 (post-E5, tag `self-hosted`). The session
 ledger — update freely; commit updates in the ledger voice. This file
 carries ONLY what is live and actionable. Frozen history: the H2→H4
 wave ledger and Beauty Bar forensics are
@@ -469,16 +469,38 @@ walks to the repository-owned frozen Wire corpus when invoked from `Client/`.
 The signing guide pins the exact direct package/scratch invocation beside the
 stable-signature wrappers. The client delta passed the full canonical Mac and
 isolated-pup gates before #121 integrated; after reconciliation, benchmark
-safety and the focused 13-test repair gate passed again. **NEXT MIGRATION
-SLICE: establish the canonical `SystemTests/`
-boundary before extracting any shared end-to-end session rituals.**
+safety and the focused 13-test repair gate passed again. **That migration
+slice completed immediately below.** #123 established the canonical
+`SystemTests/` boundary as a fifth SwiftPM package. `LyteTransport` is now an
+additive library product without changing either shipping executable, and the
+five-test pairing composition gate moved byte-identically from Client into
+`SystemTests/Tests/LyteClientHostTests`. The macOS-only package imports both
+real roles; it owns no private vectors and deliberately has no empty
+`LyteSystemTestKit`. Its layout ratchet recognizes attributed, access-level,
+and scoped Swift imports, rejects new role crossings in Client or Host tests,
+forbids production-package back-edges and noncanonical SystemTests
+directories, proves pairing still imports both peers, and names the client
+NACK gate as the sole remaining Host import debt. Canonical Mac passed Common
+78, Wire 508, Host 286, Client 259, SystemTests 8, analyzer 25, benchmark
+safety, and both signed products. The deterministic pup mirror now includes
+SystemTests in safety checks and cache identity while correctly leaving its
+macOS-only suite unexecuted; pup passed Common 79, Wire 508, Host 287, the
+plain build, netio/pacing, and protected-state verification. Independent
+inventory and adversarial reviews found no blocker; frozen vectors and all
+production behavior stayed unchanged. **NEXT MIGRATION SLICE: earn
+`LyteClientTestKit` from the reusable headless video sink and client test-path
+equipment, move the 13-test NACK composition gate into SystemTests, then
+remove Client's final Host package dependency. Keep that move mechanical;
+the real-client-report → real-Host-Session consolidation follows in its own
+Theme 3 PR.**
 
 **Suites at HEAD:** Wire 508 Mac / 508 pup; Common 78 Mac / 79 pup;
-client 264; host 287 pup / 286 Mac — all green. Eighteen conductor/gauge
+client 259; SystemTests 8 Mac; host 287 pup / 286 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
-screen doorbell adds three pins; benchmark safety adds one deterministic shell
-suite beside the 25 analyzer tests.
+screen doorbell adds three pins; SystemTests adds three boundary pins;
+benchmark safety adds one deterministic shell suite beside the 25 analyzer
+tests.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
