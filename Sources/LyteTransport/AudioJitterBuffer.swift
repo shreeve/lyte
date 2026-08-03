@@ -30,8 +30,10 @@
 import LyteWire
 
 public struct AudioJitterConfig: Sendable {
-    /// The 5 ms cadence, in the arrival-clock domain.
-    public var packetDurationMicroseconds: Int64 = 5_000
+    /// The 5 ms cadence (audio's beat period), in the arrival-clock
+    /// domain — the wire's constant, not a private copy.
+    public var packetDurationMicroseconds =
+        Int64(AudioWire.packetDurationMicroseconds)
     /// Where the target starts and its floor: 5 packets (25 ms). One
     /// packet above the brief's conservative band, and deliberately:
     /// HS-15 emits parity behind the group's 4th packet, so a lost
@@ -177,9 +179,12 @@ public final class AudioJitterBuffer {
     private var lastArrival: (number: UInt32, atMicroseconds: UInt64)?
     private var deviationWindow: [Int64] = []
     private var deviationCursor = 0
-    private var freshSamplesSinceRetarget = 0
-    private var freshSamplesSinceTargetRaise = 0
-    private var freshSamplesSinceTargetDecrease = 0
+    // The Conductor's proof-before-shed law, audio's spelling: the
+    // retarget cadence, the post-raise hold, and the between-sheds
+    // step are each a ProofCounter fed one fresh packet at a time.
+    private var retargetProof = ProofCounter()
+    private var raiseHoldProof = ProofCounter()
+    private var shedStepProof = ProofCounter()
     /// A configured opening is deliberately drainable at once; only cushion
     /// raised by measured path tails earns the long hold.
     private var targetCushionEarnedByPath = false
@@ -225,8 +230,8 @@ public final class AudioJitterBuffer {
                         config.maxTargetPackets,
                         targetPackets + behind)
                     targetCushionEarnedByPath = true
-                    freshSamplesSinceTargetRaise = 0
-                    freshSamplesSinceTargetDecrease = 0
+                    raiseHoldProof.reset()
+                    shedStepProof.reset()
                     stats.targetPackets = targetPackets
                 }
                 stats.latePacketsDropped += 1
@@ -415,12 +420,12 @@ public final class AudioJitterBuffer {
                 for index in skewWindow.indices { skewWindow[index] -= low }
             }
         }
-        freshSamplesSinceRetarget += 1
-        freshSamplesSinceTargetRaise += 1
-        freshSamplesSinceTargetDecrease += 1
+        retargetProof.advance()
+        raiseHoldProof.advance()
+        shedStepProof.advance()
         let cadence = max(1, config.retargetCadencePackets)
-        guard freshSamplesSinceRetarget >= cadence else { return }
-        freshSamplesSinceRetarget = 0
+        guard retargetProof.reached(cadence) else { return }
+        retargetProof.reset()
         retarget()
     }
 
@@ -487,17 +492,17 @@ public final class AudioJitterBuffer {
         if desired > targetPackets {
             targetPackets = desired
             targetCushionEarnedByPath = true
-            freshSamplesSinceTargetRaise = 0
-            freshSamplesSinceTargetDecrease = 0
+            raiseHoldProof.reset()
+            shedStepProof.reset()
         } else if desired < targetPackets, !targetCushionEarnedByPath {
             targetPackets = desired
         } else if desired < targetPackets,
-                  freshSamplesSinceTargetRaise
-                    >= max(1, config.targetDecayHoldPackets),
-                  freshSamplesSinceTargetDecrease
-                    >= max(1, config.targetDecayStepPackets) {
+                  raiseHoldProof.reached(
+                    max(1, config.targetDecayHoldPackets)),
+                  shedStepProof.reached(
+                    max(1, config.targetDecayStepPackets)) {
             targetPackets -= 1
-            freshSamplesSinceTargetDecrease = 0
+            shedStepProof.reset()
             if targetPackets == config.minTargetPackets {
                 targetCushionEarnedByPath = false
             }

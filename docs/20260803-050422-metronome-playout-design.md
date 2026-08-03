@@ -145,12 +145,21 @@ the precedent) applied to timing:
 1. **Now (this doc): one vocabulary, one set of laws.** The six laws
    are the model of record for every medium; instruments differ only
    in verbs and constants.
-2. **The metronome-playout PR: extract the primitives that are
-   literally identical** — the cue math (HostClockModel is already
-   shared), the tail estimator (path-delay p99), the cushion-band
-   governor (depth target, re-cue, slip). Audio's buffer migrates
-   onto them without behavior change; its existing test pins prove
-   nothing moved.
+2. **Shared primitives — DONE (#86, 2026-08-03,
+   ConductorPrimitives.swift).** What proved literally identical and
+   was extracted: the tail ring (`BeatTailRing` — video's private
+   p99 estimator retired for it), the proof-before-shed law
+   (`ProofCounter` — video's slip proof and audio's decay
+   hold/step/retarget cadence were one law spelled four ways),
+   audio's private copy of the 5 ms beat constant (now the wire's),
+   and `LatencyHistogram`'s home (moved out of InputSender.swift).
+   What measured DIFFERENT and stays by doctrine: audio's clock of
+   record is the DAC, never HostClockModel (the ear forgives slow
+   drift, never a click — lattice detrend, not stamp mapping), and
+   audio sizes its cushion from the detrended window SPREAD, not a
+   percentile (the former p99 discarded exactly the late/PLC
+   events; a measured fix). Both instruments' full pin suites
+   passed unchanged across the migration — nothing moved.
 3. **v2 (`Common/Core` → `LyteCore`, per the v2 rulings): the
    Conductor becomes a real shared module.** Laws and primitives in
    LyteCore (sans-IO, injected time, WASM-buildable); each instrument

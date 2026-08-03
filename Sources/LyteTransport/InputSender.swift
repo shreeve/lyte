@@ -36,71 +36,9 @@ import Foundation
 import LyteWire
 import Synchronization
 
-/// Exact-percentile latency aggregator — the byte-for-byte shape of
-/// HostCore.Histogram (HS-13's edge instrumentation; the root package
-/// cannot import HostCore, and the aggregator is ~40 lines of pure
-/// Swift). Capped so a runaway producer cannot grow memory without
-/// bound: samples past the cap still count and still update min/max,
-/// `saturated` says the percentile pool is a prefix.
-public struct LatencyHistogram: Sendable {
-    public private(set) var count = 0
-    public private(set) var minValue: UInt64?
-    public private(set) var maxValue: UInt64?
-    /// True once the ring has wrapped: percentiles now describe the
-    /// most RECENT `capacity` samples, not the whole session.
-    public private(set) var saturated = false
-
-    private var samples: [UInt64] = []
-    private var writeIndex = 0
-    private let capacity: Int
-
-    /// A ROLLING window (owner ruling 2026-07-30): the pre-ring shape
-    /// kept the session's FIRST `capacity` samples and froze — an
-    /// overlay gauge that described the opening minute forever. The
-    /// ring keeps the newest; `count`/`minValue`/`maxValue` stay
-    /// session-cumulative (they are odometers, not gauges).
-    public init(capacity: Int = 1 << 16) {
-        precondition(capacity > 0)
-        self.capacity = capacity
-    }
-
-    public mutating func record(_ value: UInt64) {
-        count += 1
-        minValue = minValue.map { Swift.min($0, value) } ?? value
-        maxValue = maxValue.map { Swift.max($0, value) } ?? value
-        if samples.count < capacity {
-            samples.append(value)
-        } else {
-            samples[writeIndex] = value
-            saturated = true
-        }
-        writeIndex = (writeIndex + 1) % capacity
-    }
-
-    /// The exact q-quantile (0...1) over the retained samples by the
-    /// nearest-rank method; nil when nothing was recorded.
-    public func percentile(_ q: Double) -> UInt64? {
-        percentiles([q])[0]
-    }
-
-    /// Every requested quantile from ONE sort of the retained ring —
-    /// the overlay asks for p50 and p99 together, and each bare
-    /// `percentile` call re-sorted the whole ring (up to 65,536
-    /// elements, twice per overlay tick).
-    public func percentiles(_ qs: [Double]) -> [UInt64?] {
-        guard !samples.isEmpty else { return qs.map { _ in nil } }
-        let sorted = samples.sorted()
-        return qs.map { q in
-            let clamped = Swift.min(Swift.max(q, 0), 1)
-            let rank = Int((clamped * Double(sorted.count)).rounded(.up))
-            return sorted[Swift.max(rank, 1) - 1]
-        }
-    }
-
-    public var p50: UInt64? { percentile(0.50) }
-    public var p95: UInt64? { percentile(0.95) }
-    public var p99: UInt64? { percentile(0.99) }
-}
+// LatencyHistogram (HS-13's edge aggregator) lived here historically;
+// it moved to ConductorPrimitives.swift with the Conductor's shared
+// measurement machinery.
 
 /// One coherent snapshot of the sender's books.
 public struct InputSenderStats: Sendable {
