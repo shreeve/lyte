@@ -367,6 +367,25 @@ until NVENC hardware exists and `AudioSource` belongs to the Lyte OS track,
 exactly as chartered. **NEXT CLEANUP SLICE: Theme 3's cross-end composition
 gates land first, before any session-spine extraction.**
 
+**CLEANUP THEME 3 OPENED (#116, 2026-08-03): pairing is the first real
+cross-end composition gate.** The root package now admits `HostWire` only to
+`LyteTransportTests`; `LyteTransport` and every shipping client product remain
+Host-free. The existing client pairing gate still drives the real Noise
+initiator, demux, sealed sender, reliable CTRL endpoint, and
+`PairingInitiatorService` through the W-G4 loss/duplication/reorder storm, but
+its host transport shell now delegates every pairing message to the shipping
+`PairingResponderService`. The test-private `PairingPakeResponder` lifecycle,
+result state, rejection counters, and abort decoder were deleted. Correct PIN
+pins the exact Noise-authenticated static at both ends; wrong PIN produces the
+client's typed no-oracle abort and leaves both real services unpaired. The
+focused five-test composition gate passed after rebase. Canonical Mac passed
+Common 78, Wire 507, Host 286, client 262, analyzer 25, and both signed
+products; isolated pup passed Common 79, Wire 507, Host 287, the plain build,
+netio/pacing, and protected-state gates. No production source, wire byte,
+vector, or persisted format changed. **NEXT CLEANUP SLICE: compose the real
+NACK/repair peers and retire the largest remaining 1,303/1,301-line gate
+stand-ins before extracting any shared session ritual.**
+
 **THE TREE MIGRATION OPENED (#103 + #108 + #115, 2026-08-03): every move has
 a gate, and Common now speaks one filesystem grammar.** #103 recorded the
 owner-approved `Sources` / `Tests` / `TestKit` hierarchy and added the full
