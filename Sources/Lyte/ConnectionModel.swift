@@ -130,7 +130,7 @@ final class ConnectionModel {
     private(set) var linkHealth: LinkHealthAssessment?
     /// in-fps over the same ~1 s window shape as the delivery books'
     /// out-fps, so the overlay's in/out slash-pair compares honestly.
-    private let videoInMeter = RateMeter()
+    private var videoInMeter = RateMeter()
     private var videoRendererHandoff: VideoRendererHandoff?
 
     // F-5: roaming/reconnect. The policy exists for the whole

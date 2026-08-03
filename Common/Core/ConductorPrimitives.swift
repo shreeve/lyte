@@ -1,4 +1,4 @@
-// THE CONDUCTOR's shared primitives (tier 2 of the standardization,
+// THE CONDUCTOR's shared primitives (tier 3 of the standardization,
 // docs/20260803-050422-metronome-playout-design.md): the law-machinery
 // that is LITERALLY IDENTICAL across instruments lives here, spelled
 // once. Instruments keep their own verbs and constants — and their

@@ -137,6 +137,9 @@ when present.
   and randomness are injected. It must stay WASM-compilable — the future
   browser client imports the same core. The rule is lint-enforced, not
   trusted.
+- **LyteCore policy is single-threaded value state**: platform shells own
+  locks. The video conductor and delivery gauge carry no synchronization;
+  their client controllers/books are the cross-queue adapters.
 - **Test vectors are frozen wire contracts**, not fixtures
   (`Wire/Vectors/README.md`). A committed vector file never regenerates: if
   codec and vector disagree, that is a wire-contract break to investigate.

@@ -1,5 +1,5 @@
 import XCTest
-@testable import LyteTransport
+@testable import LyteCore
 
 // The Conductor's remaining shared primitive: the proof counter must be
 // exactly the law all three call sites already lived. Histogram retention
