@@ -168,12 +168,28 @@ JCT-VC conformance streams (IBC/palette/4:4:4, Apple's own HT
 contributions beside them) all fail on M5 VideoToolbox with -12909
 per access unit, and ffmpeg's software decoder doesn't implement SCC
 either; probe-both-ends-first saved the pens a wasted day.**
-Then: E6a NVENC productionize (lyte-nvenc probe banked; NVENC 4:4:4
-via best444 recipe when it lands), E4 packaging aimed at Lyte OS
-(first measured requirement banked 2026-08-03: no stop-the-world
-runtime in the display path — the shell's 10 s comb is the
-evidence). AV1 stays a 4:2:0 lane (no 4:4:4 hardware encoders
-exist anywhere, 2026-08).
+**E6a NVENC PARKED BEHIND HARDWARE (2026-08-03):** pup is verified
+no-MUX Optimus (the RTX 4050 owns zero connectors), the
+cross-adapter copy stays rejected, no NVIDIA-panel box exists →
+no gate is possible; the full productionize scoping is banked in
+TODO.md (encoder seam, zero-copy registration, recipe revival,
+scanout-CRTC ordinal mapping, topology doctor). **THE QUALITY
+BLOCK LANDED (#91 + #92, 2026-08-03):** the A/B measurement
+rewrote A-20 — Best tier reads 57.6 dB static / 56.8 dB motion
+min-channel (SSIM 0.99999+) at zero cadence cost, converged from
+the FIRST observation, so the explicit QP ratchet is obsolete for
+stills; #91 made the witness grade PER TIER (streamChroma in the
+benchmark sample, 4:4:4 floors 45/50 dB + SSIM 0.9995, pinned
+both directions, live Best run passed under its own floors), #92
+reshaped the overlay into the two-column ledger (owner's
+stats-for-nerds steal: dimmed right-aligned labels, ruled grammar
+intact, session row now says "hevc 4:4:4", glass row gains the
+conductor's cushion ms). Owed: owner's visual on the ledger
+overlay. Then: E4 packaging aimed at Lyte OS (first measured
+requirement banked 2026-08-03: no stop-the-world runtime in the
+display path — the shell's 10 s comb is the evidence). AV1 stays
+a 4:2:0 lane (no 4:4:4 hardware encoders exist anywhere,
+2026-08).
 
 **Suites at HEAD:** Wire 513, root client 284, host 300 on pup / 299
 Mac — all green (host grew the Rext pen pins and the E2 harness).
