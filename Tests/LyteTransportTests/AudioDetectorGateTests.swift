@@ -70,7 +70,7 @@ final class AudioDetectorGateTests: XCTestCase {
             config: config,
             now: { clock.now },
             onVideoRecoveryDemand: onVideoRecoveryDemand,
-            onSample: { _, _ in },
+            videoSink: HeadlessVideoSink(),
             onEvent: { events.append($0) })
     }
 

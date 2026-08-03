@@ -487,12 +487,13 @@ final class LyteUdpSessionGateTests: XCTestCase {
                 sender: sender,
                 config: coreConfig,
                 now: { ClientTimestamp(microseconds: clock.value) },
-                onSample: { [weak self] sample, unit in
+                videoSink: HeadlessVideoSink(receive: {
+                    [weak self] sample, unit in
                     self?.samples.append((sample, unit))
                     if unit.isIDR {
                         self?.core.noteVideoIrapEnqueued()
                     }
-                },
+                }),
                 onEvent: { [weak self] event in
                     self?.events.append(event)
                 })
@@ -985,7 +986,9 @@ final class LyteUdpSessionGateTests: XCTestCase {
         let collected = LockedDatagramPile()   // count via appends
         let pipeline = LyteVideoPipeline(
             nowNanoseconds: { 0 },
-            onSample: { _, _ in collected.append([]) })
+            sink: HeadlessVideoSink(receive: {
+                _, _ in collected.append([])
+            }))
         // A P-frame idle frame with no format description yet: the
         // present-ASAP chain never shows garbage — withheld, exactly
         // like the datagram path's pre-IDR withhold.

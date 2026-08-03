@@ -218,9 +218,7 @@ struct WireView: AsyncParsableCommand {
         let session = LyteUdpSession(
             crypto: crypto,
             config: sessionConfig,
-            onSample: { sample, _ in
-                renderer.enqueue(sample)
-            },
+            videoSink: AVSampleBufferRendererVideoSink(renderer: renderer),
             onEvent: { event in
                 switch event {
                 case .capabilitiesAgreed(let agreed):

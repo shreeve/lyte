@@ -425,10 +425,15 @@ final class ConnectionModel {
             books: videoDeliveryBooks,
             recorder: videoFlightRecorder,
             recoveryRequester: recoveryRequester,
+            onDimensionsChanged: { [weak self] width, height in
+                Task { @MainActor [weak self] in
+                    self?.lyteVideoSize = CGSize(
+                        width: CGFloat(width), height: CGFloat(height))
+                }
+            },
             playoutConfig: Self.playoutConfigFromSettings())
         appliedCushionMicroseconds = Self.cushionMicrosecondsFromSettings()
         videoRendererHandoff = handoff
-        let lastDims = VideoDimsCell()
         sessionEpoch += 1
         let epoch = sessionEpoch
         let session = LyteUdpSession(
@@ -445,23 +450,7 @@ final class ConnectionModel {
                     cause: event.cause,
                     isRandomAccess: event.isRandomAccess)
             },
-            onSample: {
-                [weak self, handoff] sample, unit in
-                handoff.submit(sample: sample, unit: unit)
-                // Teach the input capture its coordinate space — once
-                // per size, not per sample (dimension changes are a
-                // renegotiation-era event, but wired honestly now).
-                if let format = CMSampleBufferGetFormatDescription(sample) {
-                    let dims = CMVideoFormatDescriptionGetDimensions(format)
-                    if lastDims.update(width: dims.width, height: dims.height) {
-                        Task { @MainActor [weak self] in
-                            self?.lyteVideoSize = CGSize(
-                                width: CGFloat(dims.width),
-                                height: CGFloat(dims.height))
-                        }
-                    }
-                }
-            },
+            videoSink: handoff,
             onEvent: { [weak self] event in
                 Task { @MainActor [weak self] in
                     self?.handleLyteEvent(event, epoch: epoch)
@@ -1595,7 +1584,7 @@ private final class VideoDimsCell: @unchecked Sendable {
 /// worker and AVFoundation. `isReadyForMoreMediaData == false` queues the
 /// complete dependency chain; pressure discards the whole episode, flushes,
 /// and enters await-IDR instead of dropping an arbitrary P-frame.
-private final class VideoRendererHandoff: @unchecked Sendable {
+private final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     private struct Pending: @unchecked Sendable {
         var sample: CMSampleBuffer
         var unit: DecodeUnit
@@ -1613,6 +1602,8 @@ private final class VideoRendererHandoff: @unchecked Sendable {
     private let books: VideoDeliveryBooks
     private let recorder: VideoFlightRecorder
     private let recoveryRequester: VideoRecoveryRequester
+    private let dimensions = VideoDimsCell()
+    private let onDimensionsChanged: @Sendable (Int32, Int32) -> Void
     private var policy = BoundedRendererHandoff<Pending>()
     private var requesting = false
     private var stopped = false
@@ -1628,6 +1619,7 @@ private final class VideoRendererHandoff: @unchecked Sendable {
         books: VideoDeliveryBooks,
         recorder: VideoFlightRecorder,
         recoveryRequester: VideoRecoveryRequester,
+        onDimensionsChanged: @escaping @Sendable (Int32, Int32) -> Void,
         playoutConfig: VideoBeatConductor.Config = .init()
     ) {
         self.renderer = renderer
@@ -1636,6 +1628,7 @@ private final class VideoRendererHandoff: @unchecked Sendable {
         self.books = books
         self.recorder = recorder
         self.recoveryRequester = recoveryRequester
+        self.onDimensionsChanged = onDimensionsChanged
         self.playout = VideoBeatConductorController(
             config: playoutConfig)
     }
@@ -1681,6 +1674,14 @@ private final class VideoRendererHandoff: @unchecked Sendable {
             encounteredRendererBackpressure: false)
         queue.async { [weak self] in
             self?.accept(pending)
+        }
+        // Teach input capture its coordinate space once per size. Samples
+        // arrive on the sample worker; the owner decides how to hop actors.
+        if let format = CMSampleBufferGetFormatDescription(sample) {
+            let dims = CMVideoFormatDescriptionGetDimensions(format)
+            if dimensions.update(width: dims.width, height: dims.height) {
+                onDimensionsChanged(dims.width, dims.height)
+            }
         }
     }
 

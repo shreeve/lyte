@@ -4,13 +4,12 @@
 // assembler; this module owns the seam):
 //
 //   (envelope, payload) → VideoAssembler → DecodeUnit
-//       → VideoRenderFactory → CMSampleBuffer → onSample
+//       → VideoRenderFactory → CMSampleBuffer → VideoSink
 //
-// The display layer is deliberately absent: the pipeline emits sample
-// buffers through a callback so the CLI can point it at an
-// AVSampleBufferDisplayLayer's renderer while tests run the identical
-// path headless. Presentation timing is assigned by the app's adaptive
-// playout controller; frame order is the assembler's guarantee.
+// The display layer is deliberately absent: the pipeline submits samples to
+// one named sink, implemented by the app renderer handoff, wire-view's direct
+// AVFoundation adapter, or a headless test sink. Presentation timing is
+// assigned by the app's conductor; frame order is the assembler's guarantee.
 //
 // fecImpossible events surface through `onFecImpossible` — the seam
 // CL-3's IDR-request feedback hooks into; nothing is implemented behind
@@ -34,7 +33,7 @@ public struct VideoPipelineStats: Sendable {
     public var framesDecoded: UInt64 = 0
     /// Frames the assembler gave up on (holdback, stale, corrupt).
     public var framesSkipped: UInt64 = 0
-    /// Sample buffers delivered to `onSample`.
+    /// Sample buffers delivered to the sink.
     public var samplesDelivered: UInt64 = 0
     /// DecodeUnits withheld pre-bootstrap (P-frame before the first IDR).
     public var samplesWithheld: UInt64 = 0
@@ -98,7 +97,7 @@ public struct VideoQualitySnapshot: Sendable {
 
 /// What became of one reliable-channel frame handed to the pipeline.
 public enum ReliableFrameOutcome: Equatable, Sendable {
-    /// Rendered through the shared factory and delivered to `onSample`.
+    /// Rendered through the shared factory and delivered to the sink.
     case rendered
     /// The datagram path already delivered this frame number (or a
     /// newer one) — nothing to do; the screen is current.
@@ -134,7 +133,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     private var frameBuildTelemetry: [UInt32: VideoFrameBuildTelemetry] = [:]
     private var frameBuildOrder: [UInt32] = []
 
-    private let onSample: @Sendable (CMSampleBuffer, DecodeUnit) -> Void
+    private let sink: any VideoSink
     private let onFecImpossible: (@Sendable (FrameNumber, _ presumedLostDataShards: Int, _ bestCaseParityShards: Int) -> Void)?
     /// CL-12: the NackPolicy's feed — presumption pictures, accepted
     /// repairs, and frame fates, with the pipeline's clock alongside.
@@ -143,11 +142,8 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     private var evictionTimer: DispatchSourceTimer?
 
     /// - Parameters:
-    ///   - onSample: one ready sample per rendered frame, called on the
-    ///     ingest thread (enqueue to a display layer's renderer, or
-    ///     collect in tests). The owner assigns local presentation time.
-    ///     @Sendable because ingest threads call it — a MainActor-
-    ///     inferred closure here traps at runtime (dispatch_assert_queue).
+    ///   - sink: receives one ready sample per rendered frame on the sample
+    ///     worker. The owner assigns local presentation time.
     ///   - onFecImpossible: the CL-3 seam — fired once per frame the
     ///     assembler writes off as unrecoverable from plausible arrivals.
     ///   - onRepairSignal: the CL-12 seam — the NackPolicy's event feed.
@@ -158,7 +154,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         config: VideoAssemblerConfig = VideoAssemblerConfig(),
         asynchronousSampleBuild: Bool = false,
         nowNanoseconds: @escaping @Sendable () -> UInt64,
-        onSample: @escaping @Sendable (CMSampleBuffer, DecodeUnit) -> Void,
+        sink: any VideoSink,
         onFecImpossible: (@Sendable (FrameNumber, _ presumedLostDataShards: Int, _ bestCaseParityShards: Int) -> Void)? = nil,
         onRepairSignal: (@Sendable (VideoRepairSignal, ClientTimestamp) -> Void)? = nil
     ) {
@@ -166,7 +162,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         self.assembler = VideoAssembler(channel: channel, config: config)
         self.asynchronousSampleBuild = asynchronousSampleBuild
         self.nowNanoseconds = nowNanoseconds
-        self.onSample = onSample
+        self.sink = sink
         self.onFecImpossible = onFecImpossible
         self.onRepairSignal = onRepairSignal
     }
@@ -283,7 +279,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
                 sampleBuildMicroseconds:
                     telemetry?.sampleBuildMicroseconds ?? 0,
                 assemblyLockHoldMicroseconds: 0)
-            onSample(sample, unit)
+            sink.submit(sample: sample, unit: unit)
         }
         return outcome
     }
@@ -514,7 +510,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
                 to: sample,
                 sampleBuildMicroseconds: elapsed,
                 assemblyLockHoldMicroseconds: assemblyLockHoldMicroseconds)
-            onSample(sample, unit)
+            sink.submit(sample: sample, unit: unit)
         }
     }
 

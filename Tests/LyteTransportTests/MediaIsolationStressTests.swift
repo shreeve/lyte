@@ -37,10 +37,10 @@ final class MediaIsolationStressTests: XCTestCase {
         let pipeline = LyteVideoPipeline(
             asynchronousSampleBuild: true,
             nowNanoseconds: { 0 },
-            onSample: { _, _ in
+            sink: HeadlessVideoSink(receive: { _, _ in
                 enteredRendererSeam.signal()
                 releaseRendererSeam.wait()
-            })
+            }))
         defer { releaseRendererSeam.signal() }
         for shard in shards {
             pipeline.ingest(

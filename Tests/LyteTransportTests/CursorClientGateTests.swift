@@ -253,7 +253,7 @@ final class CursorClientGateTests: XCTestCase {
                 sender: sender,
                 config: LyteUdpSessionCoreConfig(),
                 now: { ClientTimestamp(microseconds: clock.value) },
-                onSample: { _, _ in },
+                videoSink: HeadlessVideoSink(),
                 onEvent: { [weak self] event in
                     self?.events.append(event)
                 })
