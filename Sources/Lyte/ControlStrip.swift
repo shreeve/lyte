@@ -1,3 +1,4 @@
+import LyteIO
 import SwiftUI
 import LyteTransport
 import LyteUI
@@ -208,7 +209,7 @@ struct StreamContainer: View {
                                  onMoveEdge: { moveEdge(to: $0) })
                         .padding(stripEdge == .top ? .top : .bottom, 16)
                         .onHover { hovering in
-                            reveal.policy.hoverChanged(hovering, now: .nowNS)
+                            reveal.policy.hoverChanged(hovering, now: SystemMonotonicClock.nowNanoseconds)
                             syncAndSchedule()
                         }
                         .transition(.opacity.combined(
@@ -233,7 +234,7 @@ struct StreamContainer: View {
                         distanceFromTop: point.y,
                         isFullscreen: false))
                 case .ended:
-                    reveal.policy.pointerExitedWindow(now: .nowNS)
+                    reveal.policy.pointerExitedWindow(now: SystemMonotonicClock.nowNanoseconds)
                     syncAndSchedule()
                 }
             }
@@ -268,7 +269,7 @@ struct StreamContainer: View {
         reveal.policy.pointerMoved(
             edgeDistance: distance,
             atSystemEdge: activity.isFullscreen,
-            now: .nowNS)
+            now: SystemMonotonicClock.nowNanoseconds)
         syncAndSchedule()
     }
 
@@ -277,7 +278,7 @@ struct StreamContainer: View {
     /// vanish mid-move — the pointer is at the OLD edge now.
     private func moveEdge(to edge: StripEdge) {
         stripEdgeRaw = edge.rawValue
-        reveal.policy.keepAlive(now: .nowNS)
+        reveal.policy.keepAlive(now: SystemMonotonicClock.nowNanoseconds)
         syncAndSchedule()
     }
 
@@ -298,7 +299,7 @@ struct StreamContainer: View {
             defer { reveal.task = nil }
             while !Task.isCancelled {
                 guard let deadline = reveal.policy.nextDeadline else { return }
-                let now = UInt64.nowNS
+                let now = SystemMonotonicClock.nowNanoseconds
                 if now < deadline {
                     try? await Task.sleep(nanoseconds: deadline - now)
                     continue
@@ -322,11 +323,6 @@ private final class StripRevealBooks {
     /// The container's live size (onGeometryChange) — the hover
     /// backup path's coordinate flip needs the height.
     var viewSize: CGSize = .zero
-}
-
-private extension UInt64 {
-    /// The policy's clock: monotonic uptime nanoseconds.
-    static var nowNS: UInt64 { DispatchTime.now().uptimeNanoseconds }
 }
 
 /// The strip itself: one translucent capsule of session verbs. Order:

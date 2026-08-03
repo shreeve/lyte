@@ -26,12 +26,14 @@ active cell plus live network telemetry, never frozen into a preset.
 
 ## Architecture
 
-Three SwiftPM packages:
+Four SwiftPM packages:
 
 ```
 Wire/     LyteWire — the sans-IO protocol core both ends import
             envelope codec · Noise IK + CPace PAKE · ARQ sublayer
             RS-FEC · capabilities · session state machine · frozen vectors
+Common/   LyteCommon — shared code beside the frozen wire contract
+            LyteCore sans-IO policy · LyteIO operating-system adapters
 Host/     LyteHost — the Linux host (lyte-host)
             direct KMS capture · our own HEVC bitstream pens on VAAPI
             Opus · congestion control · Avahi discovery

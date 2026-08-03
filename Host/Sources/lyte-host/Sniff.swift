@@ -6,6 +6,7 @@
 // unchanged once Noise (HS-7) seals payloads; payload decryption behind
 // a key flag is an explicitly deferred slice.
 
+import LyteIO
 import CNetIO // lyte_stdout_linebuf
 import CNetIO
 import Foundation
@@ -91,8 +92,8 @@ func sniffMain(_ args: [String]) -> Never {
 
     var seen = 0
     let deadline = seconds > 0
-        ? monotonicNS() + UInt64(seconds * 1e9) : UInt64.max
-    while monotonicNS() < deadline {
+        ? SystemMonotonicClock.nowNanoseconds + UInt64(seconds * 1e9) : UInt64.max
+    while SystemMonotonicClock.nowNanoseconds < deadline {
         let got = lyte_netio_recv_batch(rx, &slots, Int32(LYTE_NETIO_MAX_BATCH),
                                         &err, err.count)
         if got < 0 {

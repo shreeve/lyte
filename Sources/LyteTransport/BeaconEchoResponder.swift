@@ -13,6 +13,7 @@
 // ring: at 1 Hz, 256 samples is minutes of history, plenty for a model
 // that needs a ~30 s window.
 
+import LyteIO
 import Foundation
 import LyteWire
 
@@ -74,7 +75,7 @@ public final class BeaconEchoResponder: @unchecked Sendable {
     ///     stays regardless (the CLI's summary reads it).
     public init(
         now: @escaping @Sendable () -> ClientTimestamp = {
-            ClientTimestamp(microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
+            ClientTimestamp(microseconds: SystemMonotonicClock.nowMicroseconds)
         },
         onClockSample: (@Sendable (ClockSample) -> Void)? = nil,
         emit: @escaping @Sendable (BeaconEcho) -> Void

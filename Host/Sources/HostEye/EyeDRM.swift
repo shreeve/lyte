@@ -8,12 +8,6 @@ import CDRM
 import Foundation
 import Glibc
 
-public func nowSeconds() -> Double {
-    var ts = timespec()
-    clock_gettime(CLOCK_MONOTONIC, &ts)
-    return Double(ts.tv_sec) + Double(ts.tv_nsec) / 1e9
-}
-
 /// The DRM "type" property of a plane (primary / overlay / cursor).
 func planeType(fd: Int32, planeId: UInt32) -> UInt64? {
     guard let props = drmModeObjectGetProperties(

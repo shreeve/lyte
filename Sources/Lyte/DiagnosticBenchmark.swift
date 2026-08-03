@@ -2,6 +2,7 @@ import AppKit
 @preconcurrency import AVFoundation
 import CoreVideo
 import Foundation
+import LyteIO
 import LyteCorpus
 import LyteTransport
 
@@ -148,7 +149,7 @@ enum DiagnosticBenchmark {
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let started = ContinuousClock.now
+        let started = SystemMonotonicClock.nowNanoseconds
         var lastOrdinal: UInt64 = 0
         var everStreaming = false
         let qualityProbeAllowed =
@@ -172,7 +173,9 @@ enum DiagnosticBenchmark {
                 try? handle.close()
                 return
             }
-            let elapsed = started.duration(to: .now).seconds
+            let elapsed = Double(
+                SystemMonotonicClock.nowNanoseconds &- started
+            ) / 1_000_000_000
             var sample = model.diagnosticBenchmarkSample(
                 runID: runID,
                 workload: workload,
@@ -199,7 +202,9 @@ enum DiagnosticBenchmark {
         let final = model.diagnosticBenchmarkSample(
             runID: runID,
             workload: workload,
-            elapsedSeconds: started.duration(to: .now).seconds,
+            elapsedSeconds: Double(
+                SystemMonotonicClock.nowNanoseconds &- started
+            ) / 1_000_000_000,
             afterOrdinal: lastOrdinal)
         let failure: String?
         if case .failed(let reason) = model.phase {

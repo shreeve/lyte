@@ -1,3 +1,4 @@
+import LyteIO
 import Foundation
 
 /// Environment-gated per-packet/per-frame timing evidence for one bounded
@@ -20,7 +21,7 @@ public enum PipelineWitness {
         var object = fields
         object["event"] = event
         object["monotonicNanoseconds"] =
-            String(DispatchTime.now().uptimeNanoseconds)
+            String(SystemMonotonicClock.nowNanoseconds)
         guard let data = try? JSONSerialization.data(
             withJSONObject: object, options: [.sortedKeys])
         else { return }

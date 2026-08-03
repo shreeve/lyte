@@ -46,6 +46,7 @@
 // geometry on every channel); a chan-8 instance never sees non-ARQ
 // payloads (the whole channel is ARQ carriage by design).
 
+import LyteIO
 import Dispatch
 import Foundation
 import LyteWire
@@ -118,7 +119,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         channel: ChannelId = .ctrl,
         config: ArqConfig = ArqConfig(),
         now: @escaping @Sendable () -> ClientTimestamp = {
-            ClientTimestamp(microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
+            ClientTimestamp(microseconds: SystemMonotonicClock.nowMicroseconds)
         },
         onEvent: (@Sendable (ArqEvent) -> Void)? = nil
     ) {

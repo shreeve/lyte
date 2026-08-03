@@ -23,7 +23,8 @@ cp ".build/$CONFIG/lyte-helperd" "$APP/Contents/MacOS/lyte-helperd"
 # Exact source identity consumed by benchmark-app.sh. A signed bundle without
 # this matching fingerprint is not valid benchmark evidence.
 (
-  git ls-files --cached --others --exclude-standard -- Package.swift Sources \
+  git ls-files --cached --others --exclude-standard -- \
+    Package.swift Sources Common/Package.swift Common/Core Common/IO \
     | LC_ALL=C sort \
     | while IFS= read -r path; do
         if [ -f "$path" ]; then

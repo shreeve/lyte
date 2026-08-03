@@ -13,6 +13,7 @@
 
 #if os(Linux)
 
+import LyteIO
 import CDRM
 import Foundation
 import Glibc
@@ -121,10 +122,6 @@ final class DirectEyeLeg {
     private let serviceDone = DispatchSemaphore(value: 0)
     var lastError: String?
 
-    private func nowMicroseconds() -> UInt64 {
-        UInt64(nowSeconds() * 1_000_000)
-    }
-
     init(config: Config, wire: SessionWire?,
          file: UnsafeMutablePointer<FILE>?) {
         self.config = config
@@ -197,7 +194,7 @@ final class DirectEyeLeg {
         var targets444: [UInt32: AyuvTarget] = [:]
         var lastFB: UInt32 = 0
         var pendingCauses: [String] = []
-        let t0 = nowSeconds()
+        let t0 = SystemMonotonicClock.nowSeconds
         // The stillness clock: last damage (FB flip) or client input.
         var lastActivityWallSeconds = t0
 
@@ -220,9 +217,9 @@ final class DirectEyeLeg {
                     let stop = leg.serviceStopRequested
                     leg.serviceLock.unlock()
                     if stop { break }
-                    let start = leg.nowMicroseconds()
+                    let start = SystemMonotonicClock.nowMicroseconds
                     wire.service()
-                    let took = leg.nowMicroseconds() - start
+                    let took = SystemMonotonicClock.nowMicroseconds - start
                     leg.serviceLock.lock()
                     if took > leg.serviceMaxMicroseconds {
                         leg.serviceMaxMicroseconds = took
@@ -244,7 +241,7 @@ final class DirectEyeLeg {
             }
         }
 
-        while nowSeconds() - t0 < config.seconds {
+        while SystemMonotonicClock.nowSeconds - t0 < config.seconds {
             if wire?.sessionEnded == true { break }
             // HS-18: an interrupted run (SIGINT/SIGTERM) exits through
             // the same door as a completed one, so the audio-routing
@@ -255,9 +252,9 @@ final class DirectEyeLeg {
                 print("session: termination signal — closing cleanly")
                 break
             }
-            let cursorStart = nowMicroseconds()
+            let cursorStart = SystemMonotonicClock.nowMicroseconds
             pollCursor(cursorWatcher)
-            lastStages.cursorUs = nowMicroseconds() - cursorStart
+            lastStages.cursorUs = SystemMonotonicClock.nowMicroseconds - cursorStart
 
             // V-4: the agreed chroma is connect-time truth that
             // lands AFTER the leg opened its encoder (the declaration
@@ -324,7 +321,7 @@ final class DirectEyeLeg {
             }
 
             let fbRead = currentFB(fd: fd, planeId: planes.primary.id)
-            beatBook.notePoll(nowMicroseconds: nowMicroseconds())
+            beatBook.notePoll(nowMicroseconds: SystemMonotonicClock.nowMicroseconds)
             guard let fb = fbRead, fb != lastFB else {
                 if staticIdrWanted, let sid = lastEncodedSurface {
                     do {
@@ -338,7 +335,7 @@ final class DirectEyeLeg {
                                 captureUs: lastEncodedCaptureUs)
                         staticIdrWanted = false
                         staticIdrsServed += 1
-                        lastDeliveryWallSeconds = nowSeconds()
+                        lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
                         print("direct: static-screen IDR served "
                             + "(re-encoded retained surface \(sid))")
                     } catch {
@@ -362,7 +359,7 @@ final class DirectEyeLeg {
                     // the input packet IS the wake (postures design).
                     let inputSeconds =
                         Double(wire.lastInputActivityNS) / 1e9
-                    let idle = nowSeconds()
+                    let idle = SystemMonotonicClock.nowSeconds
                         - max(lastActivityWallSeconds, inputSeconds)
                     if wire.videoQuietPostureAgreed() {
                         let verdict = quietPacer.assess(idleSeconds: idle)
@@ -376,7 +373,7 @@ final class DirectEyeLeg {
                     }
                 }
                 if wire != nil, let sid = lastEncodedSurface,
-                   nowSeconds() - lastDeliveryWallSeconds
+                   SystemMonotonicClock.nowSeconds - lastDeliveryWallSeconds
                        >= keepaliveInterval {
                     do {
                         let packet = try encoder.encode(
@@ -386,7 +383,7 @@ final class DirectEyeLeg {
                                 causes: [],
                                 captureUs: lastEncodedCaptureUs)
                         keepalivesSent += 1
-                        lastDeliveryWallSeconds = nowSeconds()
+                        lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
                     } catch {
                         lastError = "direct: keepalive: \(error)"
                         return
@@ -397,12 +394,12 @@ final class DirectEyeLeg {
                 continue
             }
             lastFB = fb
-            lastActivityWallSeconds = nowSeconds()
+            lastActivityWallSeconds = SystemMonotonicClock.nowSeconds
             // The flip is judged at DETECTION (the honest doorbell
             // moment); the capture stamp below stays post-grab so the
             // wire's score is untouched by the bookkeeping.
             if let skip = beatBook.noteFlip(
-                nowMicroseconds: nowMicroseconds()) {
+                nowMicroseconds: SystemMonotonicClock.nowMicroseconds) {
                 beatSkipLinesPrinted += 1
                 if beatSkipLinesPrinted <= 40 {
                     print("direct: beat-skip gap="
@@ -413,7 +410,7 @@ final class DirectEyeLeg {
                         + " prev[\(lastStages.described())] ms")
                 }
             }
-            let grabStart = nowMicroseconds()
+            let grabStart = SystemMonotonicClock.nowMicroseconds
             guard let ticket = grabTicket(fd: fd, fbId: fb) else {
                 missedGrabs += 1
                 continue
@@ -435,7 +432,7 @@ final class DirectEyeLeg {
                 modeChangeEnded = true
                 return
             }
-            let captureUs = UInt64(nowSeconds() * 1_000_000)
+            let captureUs = UInt64(SystemMonotonicClock.nowSeconds * 1_000_000)
             lastStages.grabUs = captureUs - grabStart
 
             let forceIdr = frames == 0 || staticIdrWanted
@@ -510,17 +507,17 @@ final class DirectEyeLeg {
                 // to the IDR when it emerges.
                 let sid = encoder.inputSurfaces[
                     frames % encoder.inputSurfaces.count]
-                let blitStart = nowMicroseconds()
+                let blitStart = SystemMonotonicClock.nowMicroseconds
                 if chroma444Active {
                     try blit444Into(sid)
                 } else {
                     try blitInto(sid) { try encoder.exportSurface(sid) }
                 }
-                let encodeStart = nowMicroseconds()
+                let encodeStart = SystemMonotonicClock.nowMicroseconds
                 lastStages.blitUs = encodeStart - blitStart
                 let packet = try encoder.encode(
                     surface: sid, forceIDR: forceIdr)
-                let deliverStart = nowMicroseconds()
+                let deliverStart = SystemMonotonicClock.nowMicroseconds
                 lastStages.encodeUs = deliverStart - encodeStart
                 lastEncodedSurface = sid
                 lastEncodedCaptureUs = captureUs
@@ -528,10 +525,10 @@ final class DirectEyeLeg {
                 if packet.keyframe { pendingCauses.removeAll() }
                 deliver(Data(packet.data), keyframe: packet.keyframe,
                         causes: causes, captureUs: captureUs)
-                lastStages.deliverUs = nowMicroseconds() - deliverStart
+                lastStages.deliverUs = SystemMonotonicClock.nowMicroseconds - deliverStart
                 maxStages.formMax(lastStages)
                 frames += 1
-                lastDeliveryWallSeconds = nowSeconds()
+                lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
             } catch {
                 if !ticketReleased { ticket.release() }
                 lastError = "direct: frame \(frames): \(error)"
@@ -644,7 +641,7 @@ final class DirectEyeLeg {
               let sent = sentHotspot,
               let pointer = wire.lastAbsolutePointerInjection()
         else { return }
-        let nowMicros = UInt64(nowSeconds() * 1_000_000)
+        let nowMicros = UInt64(SystemMonotonicClock.nowSeconds * 1_000_000)
         guard nowMicros &- pointer.atMicros > 150_000 else { return }
         guard let plane = watcher.planeCrtcPosition(),
               plane.x != 0 || plane.y != 0 else {

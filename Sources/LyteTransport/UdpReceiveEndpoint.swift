@@ -18,6 +18,7 @@
 // traffic is control/input/feedback, including the Noise handshake, so
 // the socket rides the protected CS6 lane (0xC0) just like host control.
 
+import LyteIO
 import Foundation
 import LyteWire
 
@@ -270,8 +271,8 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
                 return   // socket closed by stop()
             }
 
-            let arrivalUs = kernelUs ?? (DispatchTime.now().uptimeNanoseconds / 1000)
-            let receivedAtNS = DispatchTime.now().uptimeNanoseconds
+            let arrivalUs = kernelUs ?? (SystemMonotonicClock.nowMicroseconds)
+            let receivedAtNS = SystemMonotonicClock.nowNanoseconds
             let witnessEnvelope = PipelineWitness.isEnabled
                 ? (try? Envelope.decode(buffer[0..<n]).0) : nil
             if let envelope = witnessEnvelope, envelope.channel.rawValue == 2 {
@@ -400,7 +401,7 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
 
     func sendToHost(_ datagram: [UInt8]) throws {
         var peer = hostSockaddr
-        let started = DispatchTime.now().uptimeNanoseconds
+        let started = SystemMonotonicClock.nowNanoseconds
         let sent = datagram.withUnsafeBufferPointer { buf -> Int in
             withUnsafePointer(to: &peer) { ptr in
                 ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
@@ -418,7 +419,7 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
             "remoteAddress": String(cString: inet_ntoa(peer.sin_addr)),
             "remotePort": String(UInt16(bigEndian: peer.sin_port)),
             "durationNanoseconds": String(
-                DispatchTime.now().uptimeNanoseconds &- started),
+                SystemMonotonicClock.nowNanoseconds &- started),
         ])
         guard sent == datagram.count else {
             throw TransportEndpointError.socketFailed(errno: errno)

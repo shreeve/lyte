@@ -8,6 +8,7 @@
 
 #if os(Linux)
 
+import LyteIO
 import CDRM
 import Foundation
 import Glibc
@@ -118,7 +119,7 @@ func runNativeCapture(
     var missedGrabs = 0
     var blitMs = 0.0
     var encodeMs = 0.0
-    let t0 = nowSeconds()
+    let t0 = SystemMonotonicClock.nowSeconds
     var nextReport = t0 + 1.0
     var framesThisSecond = 0
 
@@ -128,7 +129,7 @@ func runNativeCapture(
     var rateMoved = false
 
     while true {
-        let t = nowSeconds()
+        let t = SystemMonotonicClock.nowSeconds
         guard t - t0 < seconds else { break }
         if bitrateBitsPerSecond > 0, !rateMoved,
            t - t0 > seconds / 2 {
@@ -157,7 +158,7 @@ func runNativeCapture(
 
         var ticketReleased = false
         do {
-            let tBlit = nowSeconds()
+            let tBlit = SystemMonotonicClock.nowSeconds
             var source = try gl.importTexture(
                 width: Int32(ticket.width),
                 height: Int32(ticket.height),
@@ -208,12 +209,12 @@ func runNativeCapture(
             gl.destroy(&source)
             ticket.release()
             ticketReleased = true
-            blitMs += (nowSeconds() - tBlit) * 1e3
+            blitMs += (SystemMonotonicClock.nowSeconds - tBlit) * 1e3
 
-            let tEnc = nowSeconds()
+            let tEnc = SystemMonotonicClock.nowSeconds
             let (data, keyframe) = try encoder.encode(
                 surface: surface, forceIDR: false)
-            encodeMs += (nowSeconds() - tEnc) * 1e3
+            encodeMs += (SystemMonotonicClock.nowSeconds - tEnc) * 1e3
             file.write(Data(data))
             bytes += data.count
             if keyframe { keyframes += 1 }
@@ -235,7 +236,7 @@ func runNativeCapture(
     }
     try? file.close()
 
-    let duration = nowSeconds() - t0
+    let duration = SystemMonotonicClock.nowSeconds - t0
     print(String(
         format: "RESULT capture: %d frames in %.1fs = %.2f fps, "
             + "%d bytes (%.1f KB/frame), %d IDRs, missed_grabs=%d "

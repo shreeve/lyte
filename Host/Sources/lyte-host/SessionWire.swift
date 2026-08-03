@@ -55,24 +55,12 @@
 // socket) — the exact-tuple rule §6 demands. The live G7 roam run is
 // still owed when a second client address exists to roam to.
 
+import LyteIO
 import CNetIO
 import Foundation
 import HostCore
 import HostWire
 import LyteWire
-
-func monotonicNS() -> UInt64 {
-    var ts = timespec()
-    clock_gettime(CLOCK_MONOTONIC, &ts)
-    return UInt64(ts.tv_sec) * 1_000_000_000 + UInt64(ts.tv_nsec)
-}
-
-/// Host µs for envelope timestamps and beacon t1/t4: CLOCK_MONOTONIC —
-/// the same family capture.c's graph_us chain bottoms out in, so beacon
-/// offsets and capture stamps share a domain.
-func monotonicMicros() -> UInt64 {
-    monotonicNS() / 1_000
-}
 
 /// Best-effort realtime elevation for a latency-owning thread. The 1 ms
 /// pacing drain and the 5 ms audio cadence rode default CFS against
@@ -586,7 +574,7 @@ final class SessionWire {
         guard let handshakeWitness else { return }
         var object = fields
         object["event"] = event
-        object["monotonicNanoseconds"] = String(monotonicNS())
+        object["monotonicNanoseconds"] = String(SystemMonotonicClock.nowNanoseconds)
         guard let data = try? JSONSerialization.data(
             withJSONObject: object, options: [.sortedKeys])
         else { return }
@@ -630,7 +618,7 @@ final class SessionWire {
                 capabilities: capabilities
             ),
             clientTuple: clientTuple,
-            now: monotonicNS(),
+            now: SystemMonotonicClock.nowNanoseconds,
             sendAccounting: .socketConfirmed
         ) { [weak self] datagram in
             self?.appendOutbox(datagram)
@@ -645,10 +633,10 @@ final class SessionWire {
                     || $0.pacerClass == .refinement
             }
             audioOutboxTrace[datagram.seq.rawValue] = AudioOutboxTrace(
-                enqueuedAtNS: monotonicNS(), blockedByVideo: blockedByVideo)
+                enqueuedAtNS: SystemMonotonicClock.nowNanoseconds, blockedByVideo: blockedByVideo)
         }
         if datagram.pacerClass == .freshVideo {
-            freshVideoReleasedAtNS[datagramTraceKey(datagram)] = monotonicNS()
+            freshVideoReleasedAtNS[datagramTraceKey(datagram)] = SystemMonotonicClock.nowNanoseconds
         }
         outbox.append(datagram)
     }
@@ -741,7 +729,7 @@ final class SessionWire {
     }
 
     private func pumpForSocketState(_ session: Session) {
-        let now = monotonicNS()
+        let now = SystemMonotonicClock.nowNanoseconds
         let pressure = observeKernelPressure(session, now: now)
         if pressure.state == .latencyOnly {
             shedOldestStaleFreshVideo(
@@ -769,8 +757,8 @@ final class SessionWire {
             "latencySocketExists": String(latencyNetio != nil),
         ])
 
-        let deadline = monotonicNS() + UInt64(timeoutSeconds * 1e9)
-        while monotonicNS() < deadline {
+        let deadline = SystemMonotonicClock.nowNanoseconds + UInt64(timeoutSeconds * 1e9)
+        while SystemMonotonicClock.nowNanoseconds < deadline {
             var established = false
             lock.lock()
             do {
@@ -833,7 +821,7 @@ final class SessionWire {
                     }
                     let events = self.session.receive(
                         datagram, from: tuple,
-                        now: monotonicNS(), hostMicroseconds: monotonicMicros()
+                        now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
                     )
                     for event in events {
                         self.log(event)
@@ -913,7 +901,7 @@ final class SessionWire {
         guard let directive = vbvPolicy.note(
             frameByteCeiling: session.frameByteCeiling(
                 fps: vbvPolicy.config.fps),
-            now: monotonicNS()
+            now: SystemMonotonicClock.nowNanoseconds
         ) else { return nil }
         vbvDirectivesIssued += 1
         lastVbvDirective = directive
@@ -929,7 +917,7 @@ final class SessionWire {
         defer { lock.unlock() }
         guard let session, session.phase == .established else { return }
         for event in session.noteDamage(
-            now: monotonicNS(), hostMicroseconds: monotonicMicros()
+            now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
         ) {
             log(event)
         }
@@ -950,7 +938,7 @@ final class SessionWire {
         for event in session.noteRatchetConverged(
             finalFrame: finalFrame,
             captureTimestampMicroseconds: captureMicros,
-            now: monotonicNS(), hostMicroseconds: monotonicMicros()
+            now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
         ) {
             log(event)
         }
@@ -986,13 +974,13 @@ final class SessionWire {
         }
         for event in session.beginTeardown(
             reason: reason,
-            now: monotonicNS(), hostMicroseconds: monotonicMicros()
+            now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
         ) {
             log(event)
         }
         lock.unlock()
-        let deadline = monotonicNS() + UInt64(lingerSeconds * 1e9)
-        while monotonicNS() < deadline {
+        let deadline = SystemMonotonicClock.nowNanoseconds + UInt64(lingerSeconds * 1e9)
+        while SystemMonotonicClock.nowNanoseconds < deadline {
             lock.lock()
             if session.arqIsQuiescent || peerGone {
                 lock.unlock()
@@ -1022,7 +1010,7 @@ final class SessionWire {
         data: UnsafePointer<UInt8>, size: Int, isKeyframe: Bool,
         captureMicros: UInt64
     ) throws {
-        let ingestStart = monotonicNS()
+        let ingestStart = SystemMonotonicClock.nowNanoseconds
         let frame = UnsafeBufferPointer(start: data, count: size)
         borrowedFrameBytesIngested &+= UInt64(size)
 
@@ -1050,12 +1038,12 @@ final class SessionWire {
 
         let prepared: PreparedVideoFrame?
         if let context {
-            let prepareStart = monotonicNS()
+            let prepareStart = SystemMonotonicClock.nowNanoseconds
             prepared = try Session.prepareVideoFrame(
                 frame, isKeyframe: isKeyframe, context: context
             )
             videoPrepareMaxNS = max(
-                videoPrepareMaxNS, monotonicNS() - prepareStart
+                videoPrepareMaxNS, SystemMonotonicClock.nowNanoseconds - prepareStart
             )
         } else {
             prepared = nil
@@ -1063,12 +1051,12 @@ final class SessionWire {
 
         // Ordered commit: seq allocation, Noise sealing, pacer mutation,
         // and socket flush remain serialized with audio/control/feedback.
-        let commitWaitStart = monotonicNS()
+        let commitWaitStart = SystemMonotonicClock.nowNanoseconds
         lock.lock()
         videoCommitLockWaitMaxNS = max(
-            videoCommitLockWaitMaxNS, monotonicNS() - commitWaitStart
+            videoCommitLockWaitMaxNS, SystemMonotonicClock.nowNanoseconds - commitWaitStart
         )
-        let commitHoldStart = monotonicNS()
+        let commitHoldStart = SystemMonotonicClock.nowNanoseconds
         drainAudioMailboxLocked()
         do {
             if let context, let prepared {
@@ -1079,7 +1067,7 @@ final class SessionWire {
                     interleave: { [unowned self] in
                         self.drainAudioMailboxLocked()
                     },
-                    now: monotonicNS(),
+                    now: SystemMonotonicClock.nowNanoseconds,
                     isBorrowed: true
                 )
                 lastFrameForTelemetry = shards > 0
@@ -1104,10 +1092,10 @@ final class SessionWire {
             throw error
         }
         videoCommitLockHoldMaxNS = max(
-            videoCommitLockHoldMaxNS, monotonicNS() - commitHoldStart
+            videoCommitLockHoldMaxNS, SystemMonotonicClock.nowNanoseconds - commitHoldStart
         )
         lock.unlock()
-        lastFrameIngestNanos = monotonicNS() - ingestStart
+        lastFrameIngestNanos = SystemMonotonicClock.nowNanoseconds - ingestStart
         lastFrameDrainNanos = 0 // the capture thread no longer waits
         signalDrain()
     }
@@ -1145,7 +1133,7 @@ final class SessionWire {
             return (0, 50_000_000, .clean, .calm)
         }
         let pressure = observeKernelPressure(
-            session, now: monotonicNS())
+            session, now: SystemMonotonicClock.nowNanoseconds)
         return (
             pressure.totalVideoServiceDebtNS,
             pressure.admissionBudgetNS,
@@ -1163,7 +1151,7 @@ final class SessionWire {
     func sendAudioPacket(_ packet: [UInt8], captureMicros: UInt64) {
         let pending = PendingAudioPacket(
             bytes: packet, captureMicros: captureMicros,
-            offeredAtNS: monotonicNS()
+            offeredAtNS: SystemMonotonicClock.nowNanoseconds
         )
         audioMailboxLock.lock()
         if audioMailbox.count < Self.audioMailboxCapacity {
@@ -1212,7 +1200,7 @@ final class SessionWire {
                 audioPacketsDroppedPreSession += 1
                 continue
             }
-            let now = monotonicNS()
+            let now = SystemMonotonicClock.nowNanoseconds
             let dwell = now &- packet.offeredAtNS
             audioMailboxMaxDwellNS = max(audioMailboxMaxDwellNS, dwell)
             audioMailboxDwell.record(dwell)
@@ -1344,7 +1332,7 @@ final class SessionWire {
             do {
                 try session.sendBulk(
                     reply.encode(),
-                    now: monotonicNS(), hostMicroseconds: monotonicMicros()
+                    now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
                 )
             } catch {
                 lastSendError = String(describing: error)
@@ -1370,7 +1358,7 @@ final class SessionWire {
         standingCursorShape = shape
         guard let session, session.phase == .established else { return }
         for event in session.noteCursorShapeChanged(
-            shape, now: monotonicNS(), hostMicroseconds: monotonicMicros()
+            shape, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
         ) {
             log(event)
         }
@@ -1403,7 +1391,7 @@ final class SessionWire {
         defer { lock.unlock() }
         guard let session, session.phase == .established else { return }
         for event in session.noteHostClipboardChanged(
-            text, now: monotonicNS(), hostMicroseconds: monotonicMicros()
+            text, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
         ) {
             log(event)
         }
@@ -1425,7 +1413,7 @@ final class SessionWire {
         defer { lock.unlock() }
         guard let session, session.phase == .established else { return }
         for event in session.noteHostClipboardImageChanged(
-            data, now: monotonicNS(), hostMicroseconds: monotonicMicros()
+            data, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
         ) {
             log(event)
         }
@@ -1481,7 +1469,7 @@ final class SessionWire {
         defer { lock.unlock() }
         guard let session, session.phase == .established else { return }
         for event in session.noteAudioRoutingApplied(
-            mode, now: monotonicNS(), hostMicroseconds: monotonicMicros()
+            mode, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
         ) {
             log(event)
         }
@@ -1522,7 +1510,7 @@ final class SessionWire {
             posture: quiet ? .quiet : .active,
             keepaliveSeconds: keepaliveSeconds)
         for event in session.noteVideoPostureState(
-            state, now: monotonicNS(), hostMicroseconds: monotonicMicros()
+            state, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
         ) {
             log(event)
         }
@@ -1552,7 +1540,7 @@ final class SessionWire {
         defer { lock.unlock() }
         guard let session, session.phase == .established else { return }
         for event in session.noteAudioTrackState(
-            state, now: monotonicNS(), hostMicroseconds: monotonicMicros()
+            state, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
         ) {
             log(event)
         }
@@ -1658,7 +1646,7 @@ final class SessionWire {
                 throw error
             }
             let done = peerGone || (session.isIdle && outbox.isEmpty)
-            let now = monotonicNS()
+            let now = SystemMonotonicClock.nowNanoseconds
             let wake = session.nextWake(now: now)
             let socketRetry = !outbox.isEmpty
             lock.unlock()
@@ -1675,10 +1663,10 @@ final class SessionWire {
     }
 
     private func serviceOnce() throws {
-        let serviceStart = monotonicNS()
+        let serviceStart = SystemMonotonicClock.nowNanoseconds
         defer {
             serviceOnceMaxNS = max(
-                serviceOnceMaxNS, monotonicNS() - serviceStart
+                serviceOnceMaxNS, SystemMonotonicClock.nowNanoseconds - serviceStart
             )
         }
         // Always service the scheduling island before lower-frequency
@@ -1689,7 +1677,7 @@ final class SessionWire {
             guard let self, let session = self.session else { return }
             for event in session.receive(
                 datagram, from: tuple,
-                now: monotonicNS(), hostMicroseconds: monotonicMicros()
+                now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
             ) {
                 self.log(event)
             }
@@ -1702,7 +1690,7 @@ final class SessionWire {
             try receiveAll(from: latencyNetio, receive)
         }
         for event in session.advance(
-            now: monotonicNS(), hostMicroseconds: monotonicMicros()
+            now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
         ) {
             log(event)
         }
@@ -1718,10 +1706,10 @@ final class SessionWire {
         from socket: OpaquePointer,
         _ handle: ([UInt8], FourTuple) -> Void
     ) throws {
-        let receiveStart = monotonicNS()
+        let receiveStart = SystemMonotonicClock.nowNanoseconds
         defer {
             receiveAllMaxNS = max(
-                receiveAllMaxNS, monotonicNS() - receiveStart
+                receiveAllMaxNS, SystemMonotonicClock.nowNanoseconds - receiveStart
             )
         }
         while true {
@@ -1812,13 +1800,13 @@ final class SessionWire {
             // capabilities land with W7).
             if let pairing,
                let output = pairing.handleReliableCtrl(
-                   message, now: monotonicNS()
+                   message, now: SystemMonotonicClock.nowNanoseconds
                ) {
                 for reply in output.replies {
                     do {
                         try session.sendReliable(
-                            reply, now: monotonicNS(),
-                            hostMicroseconds: monotonicMicros()
+                            reply, now: SystemMonotonicClock.nowNanoseconds,
+                            hostMicroseconds: SystemMonotonicClock.nowMicroseconds
                         )
                     } catch {
                         emit("pairing: reply send failed: \(error)")
@@ -2109,7 +2097,7 @@ final class SessionWire {
     ) {
         // The video posture's wake signal — stamped whether or not an
         // injector is live (the user acted either way).
-        lastInputActivityNS = monotonicNS()
+        lastInputActivityNS = SystemMonotonicClock.nowNanoseconds
         guard let injector = inputInjector else {
             if !inputNoInjectorWarned {
                 inputNoInjectorWarned = true
@@ -2126,7 +2114,7 @@ final class SessionWire {
             emit("input: inject seq \(event.seq) failed: \(error)")
             return
         }
-        let injectMicros = monotonicMicros()
+        let injectMicros = SystemMonotonicClock.nowMicroseconds
         inputInjected += 1
         lastInputInjectedAt = injectMicros
         switch event.body {
@@ -2258,7 +2246,7 @@ final class SessionWire {
                     }
                     let unsent = staged + sentTotal
                     outbox.append(contentsOf: deliverable[unsent...])
-                    let now = monotonicNS()
+                    let now = SystemMonotonicClock.nowNanoseconds
                     _ = observeKernelPressure(session, now: now)
                     shedOldestStaleFreshVideo(
                         now: now, budgetNS: session.videoQueueBudgetNS)
@@ -2302,7 +2290,7 @@ final class SessionWire {
                     return
                 }
                 let accepted = batch.dropFirst(sentTotal).prefix(Int(sent))
-                let acceptedAt = monotonicNS()
+                let acceptedAt = SystemMonotonicClock.nowNanoseconds
                 for d in accepted {
                     if d.pacerClass == .freshVideo {
                         freshVideoFramesPartiallyAccepted.insert(

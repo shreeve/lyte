@@ -1,3 +1,4 @@
+import LyteIO
 import Foundation
 
 /// Bounded, per-frame timing ledger for the real app delivery path.
@@ -314,7 +315,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         recoveryLifecycle.append(.init(
             sequence: recoveryEventSequence,
             uptimeMicroseconds:
-                DispatchTime.now().uptimeNanoseconds / 1_000,
+                SystemMonotonicClock.nowMicroseconds,
             kind: kind,
             frame: frame,
             cause: cause?.rawValue,
@@ -347,7 +348,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         recoveryLifecycle.append(.init(
             sequence: recoveryEventSequence,
             uptimeMicroseconds:
-                DispatchTime.now().uptimeNanoseconds / 1_000,
+                SystemMonotonicClock.nowMicroseconds,
             kind: "rendererMetrics",
             frame: frame,
             cause: nil,

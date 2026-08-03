@@ -44,6 +44,7 @@
 // (ClipboardImageFlavor's rule). Off the images tier the leaf is
 // byte-identical to its v1 self.
 
+import LyteIO
 import Foundation
 import HostWire
 import LyteWire
@@ -177,8 +178,8 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
         // clipboards carry passwords, and whatever sat on the host
         // clipboard from before the session is not the session's to
         // narrate. Drain and discard the replay window.
-        let drainDeadline = monotonicNow() + 0.4
-        while monotonicNow() < drainDeadline {
+        let drainDeadline = SystemMonotonicClock.nowSeconds + 0.4
+        while SystemMonotonicClock.nowSeconds < drainDeadline {
             _ = dbus_connection_read_write(bus.conn, 50)
             while let msg = dbus_connection_pop_message(bus.conn) {
                 defer { dbus_message_unref(msg) }
@@ -330,7 +331,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             let fd = try SessionBus.unixFd(fromReply: reply)
             Self.setNonBlocking(fd)
             pendingRead = PendingRead(
-                fd: fd, kind: kind, startedAt: monotonicNow()
+                fd: fd, kind: kind, startedAt: SystemMonotonicClock.nowSeconds
             )
             pumpRead()
         } catch {
@@ -368,7 +369,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
                 return
             }
             if errno == EAGAIN || errno == EWOULDBLOCK {
-                if monotonicNow() - read.startedAt
+                if SystemMonotonicClock.nowSeconds - read.startedAt
                     > Self.transferTimeoutSeconds {
                     close(read.fd)
                     pendingRead = nil
@@ -427,7 +428,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             Self.setNonBlocking(fd)
             pendingWrites.append(PendingWrite(
                 serial: serial, fd: fd, data: owned.bytes,
-                startedAt: monotonicNow()))
+                startedAt: SystemMonotonicClock.nowSeconds))
             pumpWrites()
         } catch {
             transfersFailed += 1
@@ -450,7 +451,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
                 }
                 if errno == EINTR { continue }
                 if errno == EAGAIN || errno == EWOULDBLOCK {
-                    if monotonicNow() - write.startedAt
+                    if SystemMonotonicClock.nowSeconds - write.startedAt
                         > Self.transferTimeoutSeconds {
                         finished = true // requestor stalled: abandon
                     }

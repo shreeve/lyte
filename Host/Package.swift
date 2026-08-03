@@ -112,7 +112,10 @@ targets += [
     // reset — the two levers that retire the vendored no-reset patch.
     .executableTarget(
         name: "lyte-nvenc",
-        dependencies: ["CNvEnc", "CCuda"]
+        dependencies: [
+            "CNvEnc", "CCuda",
+            .product(name: "LyteIO", package: "Common"),
+        ]
     ),
     // The eye's organs as a LIBRARY (E1): the doorbell/ticket DRM
     // layer, the EGL/GL import+blit, and the hevc_vaapi encoder wrap —
@@ -131,7 +134,10 @@ targets += [
     // and capture mode (milestone 2: full loop → Annex-B file).
     .executableTarget(
         name: "lyte-eye",
-        dependencies: ["HostEye", "CDRM"],
+        dependencies: [
+            "HostEye", "CDRM",
+            .product(name: "LyteIO", package: "Common"),
+        ],
         linkerSettings: [
             .linkedLibrary("va"),
             .linkedLibrary("va-drm"),
@@ -159,7 +165,10 @@ targets += [
     // received-TOS readback, TX-timestamp drain. Exits nonzero on mismatch.
     .executableTarget(
         name: "lyte-netio-check",
-        dependencies: ["CNetIO"]
+        dependencies: [
+            "CNetIO",
+            .product(name: "LyteIO", package: "Common"),
+        ]
     ),
     // HS-6 verification harness: the pure Pacer schedule driving CNetIO
     // sendmmsg batches on loopback with per-class TOS; TX timestamps
@@ -167,7 +176,10 @@ targets += [
     // a gate bound is violated.
     .executableTarget(
         name: "lyte-pace-check",
-        dependencies: ["HostCore", "CNetIO"]
+        dependencies: [
+            "HostCore", "CNetIO",
+            .product(name: "LyteIO", package: "Common"),
+        ]
     ),
     // HS-14 verification harness: default-sink monitor → 5 ms Opus packets
     // → decode-back WAV; prints cadence/size/timestamp stats and exits
@@ -175,7 +187,10 @@ targets += [
     // decode) is violated.
     .executableTarget(
         name: "lyte-audio-check",
-        dependencies: ["CPipeWireAudio", "COpusEncode"],
+        dependencies: [
+            "CPipeWireAudio", "COpusEncode",
+            .product(name: "LyteIO", package: "Common"),
+        ],
         linkerSettings: [
             .linkedLibrary("pipewire-0.3"),
             .linkedLibrary("opus"),
@@ -196,6 +211,7 @@ targets += [
             // E5: the direct eye is THE capture organ — the portal
             // and mutter ScreenCast backends are demolished.
             "HostEye",
+            .product(name: "LyteIO", package: "Common"),
             .product(name: "LyteWire", package: "Wire"),
             // HS-10: one SHA-256 for the advertised identity hash
             // (IdentityHash.swift is the confined import site). Already
@@ -220,6 +236,7 @@ var dependencies: [Package.Dependency] = [
 ]
 
 #if os(Linux)
+dependencies.append(.package(path: "../Common"))
 // Only the Linux-only lyte-host target consumes this directly (HS-10's
 // identity hash), so macOS resolution stays exactly as before. Same
 // version pin as Wire's — one swift-crypto in the graph.

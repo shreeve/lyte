@@ -14,6 +14,7 @@
 // (--vbr is evidence mode: silence-vs-signal packet sizes prove the
 //  pipeline carries real audio; the dialect itself is hard CBR.)
 
+import LyteIO
 import COpusEncode
 import CPipeWireAudio
 import Foundation
@@ -71,7 +72,7 @@ final class Sink {
                  chans: UInt32, rate: UInt32, graphUS: UInt64) {
         if negotiated == nil {
             negotiated = (rate, chans)
-            firstBufferWall = monotonicNow()
+            firstBufferWall = SystemMonotonicClock.nowSeconds
             if rate != UInt32(sampleRate) || chans != UInt32(channels) {
                 negotiationError =
                     "negotiated \(rate) Hz \(chans)ch, need \(sampleRate)/\(channels)"
@@ -80,7 +81,7 @@ final class Sink {
             }
         }
         guard negotiationError == nil else { return }
-        lastBufferWall = monotonicNow()
+        lastBufferWall = SystemMonotonicClock.nowSeconds
 
         marks.append((startFrame: framesSeen, us: graphUS))
         framesSeen += Int(nFrames)
@@ -142,12 +143,6 @@ final class Sink {
         pending.removeFirst(packetFrames * channels)
         pendingStartFrame += packetFrames
     }
-}
-
-func monotonicNow() -> Double {
-    var ts = timespec()
-    clock_gettime(CLOCK_MONOTONIC, &ts)
-    return Double(ts.tv_sec) + Double(ts.tv_nsec) / 1e9
 }
 
 private func audioTrampoline(user: UnsafeMutableRawPointer?,

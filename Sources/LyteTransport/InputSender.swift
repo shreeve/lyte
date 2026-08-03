@@ -32,6 +32,7 @@
 // ReliableCtrlEndpoint.send), and tests drive the whole loop in virtual
 // time. One lock confines the pending books and the histograms.
 
+import LyteIO
 import Foundation
 import LyteWire
 import Synchronization
@@ -342,7 +343,7 @@ public final class OrderedInputSender: @unchecked Sendable {
     @discardableResult
     public func enqueue(
         _ body: InputEvent.Body,
-        capturedNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+        capturedNanoseconds: UInt64 = SystemMonotonicClock.nowNanoseconds
     ) -> Bool {
         lock.lock()
         guard accepting else {
@@ -359,7 +360,7 @@ public final class OrderedInputSender: @unchecked Sendable {
             let maySend = !cancelled
             lock.unlock()
             guard maySend else { return }
-            let started = DispatchTime.now().uptimeNanoseconds
+            let started = SystemMonotonicClock.nowNanoseconds
             do {
                 try send(
                     body,

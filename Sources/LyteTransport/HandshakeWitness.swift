@@ -1,3 +1,4 @@
+import LyteIO
 import Foundation
 
 /// Fail-closed, environment-gated JSONL evidence for bounded Noise dials.
@@ -14,7 +15,7 @@ public enum HandshakeWitness {
         var object = fields
         object["event"] = event
         object["monotonicNanoseconds"] =
-            String(DispatchTime.now().uptimeNanoseconds)
+            String(SystemMonotonicClock.nowNanoseconds)
         guard JSONSerialization.isValidJSONObject(object),
               let data = try? JSONSerialization.data(
                 withJSONObject: object, options: [.sortedKeys])

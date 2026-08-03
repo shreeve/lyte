@@ -34,6 +34,7 @@
 // while the ring (and everything upstream) survives untouched, so
 // playback resumes where the old device left it; counted.
 
+import LyteIO
 import AVFoundation
 import Dispatch
 import Foundation
@@ -201,7 +202,7 @@ final class AudioPcmRing: @unchecked Sendable {
         }
         if available < wanted {
             let last = lastWriteMicros.load(ordering: .relaxed)
-            let now = DispatchTime.now().uptimeNanoseconds / 1_000
+            let now = SystemMonotonicClock.nowMicroseconds
             if last != 0, now &- last < 200_000 {
                 _ = underrunFrames.add(
                     UInt64(wanted - available), ordering: .relaxed)
@@ -224,7 +225,7 @@ final class AudioPcmRing: @unchecked Sendable {
         }
         writeCounter.store(write + frames, ordering: .releasing)
         lastWriteMicros.store(
-            DispatchTime.now().uptimeNanoseconds / 1_000,
+            SystemMonotonicClock.nowMicroseconds,
             ordering: .relaxed)
     }
 }
@@ -467,7 +468,7 @@ public final class LyteAudioPlayer: @unchecked Sendable {
             let pipelineMicros = UInt64(heldFrames) * 1_000_000
                 / UInt64(AudioWire.sampleRate)
             let now = ClientTimestamp(
-                microseconds: DispatchTime.now().uptimeNanoseconds / 1_000)
+                microseconds: SystemMonotonicClock.nowMicroseconds)
             let decision = receiver.pullDecision(
                 now: now, urgent: urgent,
                 renderPipelineMicroseconds: pipelineMicros)

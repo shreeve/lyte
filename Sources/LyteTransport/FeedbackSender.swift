@@ -22,6 +22,7 @@
 // The timer is a DispatchSourceTimer for production; tests drive
 // `tick(now:)` with an injected clock and never start the timer.
 
+import LyteIO
 import Dispatch
 import Foundation
 import LyteWire
@@ -69,7 +70,7 @@ public final class FeedbackSender: @unchecked Sendable {
         sender: TransportSender,
         intervalMilliseconds: Int = 40,
         now: @escaping @Sendable () -> ClientTimestamp = {
-            ClientTimestamp(microseconds: DispatchTime.now().uptimeNanoseconds / 1000)
+            ClientTimestamp(microseconds: SystemMonotonicClock.nowMicroseconds)
         },
         onTick: (@Sendable (ClientTimestamp) -> Void)? = nil
     ) {
