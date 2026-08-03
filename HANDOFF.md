@@ -191,9 +191,9 @@ display path — the shell's 10 s comb is the evidence). AV1 stays
 a 4:2:0 lane (no 4:4:4 hardware encoders exist anywhere,
 2026-08).
 
-**CLEANUP THEME 1 IS RUNNING (#95–#99, 2026-08-03): one clock,
+**CLEANUP THEME 1 IS RUNNING (#95–#100, 2026-08-03): one clock,
 one histogram, one Annex-B walker, one HEVC bit vocabulary, one
-SHA-256 state.** The v2
+SHA-256 state, one hex vocabulary.** The v2
 `Common/` package now exists
 with sibling targets `LyteCore` (sans-IO shared policy) and `LyteIO`
 (shared OS adapters); `SystemMonotonicClock` is the one OS adapter for
@@ -242,11 +242,20 @@ million-`a` FIPS answers are exact on Mac and Linux; 15 streaming split
 geometries cross every block edge over a 200,001-byte seeded payload.
 The source ratchet refuses another table, SHA type, or digest wrapper;
 frozen vectors stayed byte-exact. The rebuilt pup service is active and
-both binaries were re-armed after the Linux gate. **NEXT: Theme 1 hex —
-give all six encoders one LyteCore spelling, then delete every private
-copy.**
+both binaries were re-armed after the Linux gate. #100 made
+`LyteCore.Hex` the one byte and integer spelling for the six chartered
+encoders and the equivalent copies found behind them. TestKit's public
+duplicate and the private Host/client/vector helpers were deleted with
+no transition alias. Lowercase, uppercase, width, prefix, every byte,
+and the permissive vector/CLI decode grammar are pinned in Common; the
+trust store deliberately retains its strict 64-character policy at its
+own boundary. A production-source ratchet rejects another Hex type,
+helper-shaped encoder, or `%02x` loop. Frozen vectors stayed byte-exact;
+the rebuilt pup service is active and both binaries were re-armed after
+the Linux gate. **NEXT: Theme 1 TOS/DSCP constants — consolidate the two
+spellings behind one shared vocabulary and retire both private copies.**
 
-**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 32 Mac / 33 pup;
+**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 36 Mac / 37 pup;
 root client 283; host 284 pup / 283 Mac — all green.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
