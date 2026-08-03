@@ -11,6 +11,7 @@
 // `noCommonChromaMode` failure; `ChromaFallbackPolicy` below is the
 // auto-re-dial-at-Good verdict the app executes, never silently.
 
+import LyteCore
 import LyteWire
 
 /// The three-tier Chroma control's vocabulary. Raw values are the
@@ -28,7 +29,8 @@ public enum ChromaTier: String, CaseIterable, Hashable, Sendable {
         switch self {
         case .good: return [CapabilityChroma.yuv420]
         case .better: return nil
-        case .best: return [CapabilityChroma.yuv444]
+        case .best:
+            return ChromaPairing.bestSingleton(CapabilityChroma.yuv444)
         }
     }
 
