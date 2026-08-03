@@ -74,18 +74,26 @@ marker, regenerate the authored frame from the client twin
 renderers (GTK canvas / numpy twin / Swift mirror) are pinned
 byte-identical by shared SHA-256 fixtures in both suites. Client
 exports hostAnnouncedAudioQuiet so the analyzer books tripwire
-stillness as announced_quiet_stillness, not blackout. NEXT =
-direct-leg quality refinement (ratchet's successor — owns A-20 and
-the witness's standing red cell + floors); its adopted design is THE
-CONDUCTOR (docs/20260803-050422-metronome-playout-design.md — owner
-naming, use verbatim): the score (host capture timeline) and six
-laws, cue/beat/late/hole/slip/chain — every played part lands on a
-beat, cushion quantized in beats and tail-sized, one scheduled
-re-cue instead of per-frame smear; rubato (audio time-bend of late
-parts) filed as future work; audio + video converge on the model in
-three tiers (vocabulary now, shared primitives in the PR, full
-LyteCore module in v2) by the direct-eye replacement playbook, never
-a big-bang rewrite. Then: E6a NVENC
+stillness as announced_quiet_stillness, not blackout. **THE
+CONDUCTOR's video part LANDED (#83, 2026-08-03)** — the model of
+record is docs/20260803-050422-metronome-playout-design.md (owner
+naming, use verbatim: the score, cue/beat/late/hole/slip/chain,
+rubato filed): VideoBeatConductor replaced AdaptiveVideoPlayout
+(retired outright; queue policies live on as RendererHandoffPolicy).
+The grid advances ordinally (round(sourceStep/period) beats), late
+parts keep their passed beat, holes re-cue whole beats once, the
+ceiling cuts with whole-beat hysteresis (a pinned slider chattered
+the grid — pinned by test), slip repays drift. Witness verdict PASS:
+gap p50=p95=p99 = 16.667 ms EXACTLY, lateness p99 0.4–4.6 ms (bar 8,
+was ~18), 30.76 dB / SSIM 0.9989, 29/29 phase-locked, 0 IDR — owner
+confirmed by eye ("ABSOLUTELY SOLVED"). NEXT = the host-side hunt
+the metronome exposed: ~20 skipped capture beats per 30 s under
+encode load (compositor/eye contention — also fails the presenter
+preflight when a client streams during warm-up), plus GNOME focus
+denial covering the witness marker after remote input (benchmark
+needs a focus story; owner's desktop-click is the workaround). Then:
+audio onto the Conductor primitives, E6a NVENC productionize, Rext
+4:4:4, E2 uinput-primary, E4 packaging aimed at Lyte OS. Then: E6a NVENC
 productionize (lyte-nvenc probe banked), Rext 4:4:4 in the native
 pens (returns the Best tier), E2 uinput-primary, E4 packaging aimed
 at Lyte OS.
@@ -204,10 +212,11 @@ raising them is the direct-leg quality refinement's work. Baseline
 row at `0410e16` (2026-08-02, panel at 60 Hz — REQUIRED for motion
 legs; at 120 Hz Mutter presents the 60 fps pattern unevenly and the
 preflight refuses): quality-static PASS (31.2 dB min-channel, SSIM
-0.9991, 29/29 phase-locked, announced-quiet audio); motion 30.8 dB /
-SSIM 0.999 / 60.2 fps decoded with ONE STANDING RED CELL —
-client presentation lateness p99 ~18 ms vs the 8 ms bar,
-reproducible across runs. The libav-era eight-row table with
+0.9991, 29/29 phase-locked, announced-quiet audio); motion PASS at
+`61fb56b` (#83's metronome): gap p50=p95=p99 16.667 ms exactly,
+lateness p99 1.68 ms, 30.76 dB / SSIM 0.9989, 59.5 fps, 0 IDR — the
+lateness red cell turned green. Standing finding now HOST-side:
+~20 skipped capture beats per 30 s under encode load. The libav-era eight-row table with
 footnotes: `git show 0753cbc:HANDOFF.md`; per-row forensics:
 `git show 4bb3e11:docs/20260730-103326-handoff-archive-h2-h4.md`.
 Never massage a red cell: a FAIL at HEAD is a finding.

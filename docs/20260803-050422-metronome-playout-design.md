@@ -6,8 +6,12 @@ medium-agnostic: audio already lives it (jitter buffer = cushion,
 lattice = score, recenter = re-cue); video adopts it via the metronome
 playout below, which owns the standing red cell (client presentation
 lateness p99 ~18 ms vs the 8 ms bar, measured by the #82 witness) and
-A-20's quality mandate. Implementation is the direct-leg quality
-refinement PR.**
+A-20's quality mandate. Video's part LANDED (#83, 2026-08-03,
+VideoBeatConductor): the witness's verdict went PASS with
+presentation gap p50 = p95 = p99 = 16.667 ms exactly and steady
+lateness p99 0.4–4.6 ms — the red cell is green. Remaining tiers:
+audio migrates onto the shared primitives; LyteCore convergence in
+v2; rubato stays filed.**
 
 ## The vocabulary
 
