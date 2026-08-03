@@ -122,9 +122,24 @@ Doctrine asymmetries KEPT and recorded: audio's clock = the DAC
 (lattice detrend, never HostClockModel); audio's cushion statistic
 = window spread, not p99 (p99 discarded exactly the late/PLC
 events). Root suite 293 with every pre-existing audio/video pin
-unchanged — nothing moved. Tier 3 = LyteCore module in v2.** Then:
+unchanged — nothing moved. Tier 3 = LyteCore module in v2.**
+**E2 LANDED (#87, 2026-08-03): kernel uinput is the PRIMARY AND
+SOLE input injector — MutterInputInjector deleted (~170 lines of
+D-Bus choreography; --input mutter fails loudly at parse),
+UinputInjector grew the release-all law (held-code set drained at
+stop — the ⌘Tab latch) plus a 150 ms device-settle, and the new
+lyte-uinput-check harness reads the three virtual devices back
+from evdev — routing, absolute scaling/clamping, v120 half-detent
+accumulation, ALL PASS on pup first run (run it under sudo). The
+client already spoke evdev codes and monitor pixels on the wire,
+so no translation layer anywhere; everything above the
+InputInjector seam untouched. The clipboard's OWN RemoteDesktop
+session survives by design (its Wayland helper stays filed —
+now the LAST Mutter-session tenant in the process). Owner
+feel-check (typing/⌘Tab/aim/scroll) owed after the standing loop
+respawns onto the new binary.** Then:
 E6a NVENC productionize (lyte-nvenc probe banked), Rext 4:4:4 in
-the native pens (returns the Best tier), E2 uinput-primary, E4
+the native pens (returns the Best tier), E4
 packaging aimed at Lyte OS (first measured requirement banked
 2026-08-03: no stop-the-world runtime in the display path — the
 shell's 10 s comb is the evidence).
