@@ -288,9 +288,10 @@ map. `lyte-cli` resolved Homebrew's `libopus.0.dylib`; pup's rebuilt
 `lyte-host` resolved the system `libopus.so.0`, its systemd service is active,
 and its identity files are unchanged.
 
-**CLEANUP THEME 2 IS RUNNING (#106, 2026-08-03): renderer handoff policy is
-sans-IO.** #106 moved `RendererFrameDescriptor`,
-`BoundedRendererHandoff`, and `RendererRecoveryFlushBarrier` into LyteCore.
+**CLEANUP THEME 2 IS RUNNING (#106–#107, 2026-08-03): renderer handoff policy
+is sans-IO and the video pipeline borrows time.** #106 moved
+`RendererFrameDescriptor`, `BoundedRendererHandoff`, and
+`RendererRecoveryFlushBarrier` into LyteCore.
 Policy now sees only random-access and submission facts; the client's
 `VideoSampleTiming` adapter alone sees `CMSampleBuffer`, attachments, and the
 CoreMedia timebase. All five queue/recovery verdict tests moved with the type,
@@ -298,12 +299,19 @@ the LyteCore lint passes on both platforms, and a production-source ratchet
 rejects another policy twin. The real renderer shell and media-isolation gate
 consume the descriptor with every previous verdict intact. Wire and frozen
 vectors were untouched; pup's rebuilt systemd host is active and its identity
-files are unchanged. **NEXT: inject the clock into `LyteVideoPipeline` — move
-its timing decisions off direct shell reads while leaving scheduling and
-sample construction byte/telemetry exact.**
+files are unchanged. #107 made the pipeline's clock seam explicit:
+`LyteVideoPipeline` now requires one injected nanosecond clock, the session
+forwards its existing virtualizable clock, and every convenience timestamp,
+lock duration, and sample-build duration derives from it. A stepping-clock
+test proves exact 1 µs telemetry and a source ratchet rejects another direct
+system-clock read; there is no default initializer or transition shim. Wire
+and frozen vectors were untouched; the standing pup service remained active
+and its identity files are unchanged. **NEXT: move the locks out of
+`VideoBeatConductor` and both `VideoDeliveryBooks` policy types — preserve
+their verdicts while making synchronization the shell's concern.**
 
-**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 49 Mac / 50 pup;
-root client 279; host 284 pup / 283 Mac — all green.
+**Suites at HEAD:** Wire 507 Mac / 507 pup; Common 50 Mac / 51 pup;
+root client 280; host 284 pup / 283 Mac — all green.
 
 # STANDING RULINGS (owner decisions of record — do not re-litigate)
 
