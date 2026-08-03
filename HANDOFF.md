@@ -492,13 +492,30 @@ production behavior stayed unchanged. **NEXT MIGRATION SLICE: earn
 equipment, move the 13-test NACK composition gate into SystemTests, then
 remove Client's final Host package dependency. Keep that move mechanical;
 the real-client-report → real-Host-Session consolidation follows in its own
-Theme 3 PR.**
+Theme 3 PR.** #124 completed that slice: `LyteClientTestKit` now owns the
+reusable `HeadlessVideoSink`, repository/corpus paths, and one
+`LockedBytePile` replacing three synchronized byte accumulators. All thirteen
+NACK test names and verdicts were conserved while ownership became honest:
+four pure `NackPolicy` gates remain in Client and nine real client/host repair
+compositions live in SystemTests. Client's final Host package dependency is
+gone; layout ratchets pin the empty role back-edges, both SystemTests gates
+importing both peers, and the TestKit product staying out of shipping sources.
+The production-source scanner now excludes only immediate SwiftPM `*TestKit`
+target roots, with a synthetic nested-name evasion pinned visible. Canonical
+Mac passed Common 80, Wire 508, Host 286, Client 250, SystemTests 17, analyzer
+25, benchmark safety, and both signed products; isolated pup passed Common 81,
+Wire 508, Host 287, the plain build, netio/pacing, and protected-state
+verification. Independent architecture and adversarial reviews found no
+blocker; frozen vectors and production behavior stayed unchanged. **NEXT
+CLEANUP SLICE: close Theme 3's other repair half by carrying the real client's
+NACK report into the real Host `Session` judgement, then remove the overlapping
+round-trip scaffolding from the two large suites.**
 
-**Suites at HEAD:** Wire 508 Mac / 508 pup; Common 78 Mac / 79 pup;
-client 259; SystemTests 8 Mac; host 287 pup / 286 Mac — all green. Eighteen conductor/gauge
+**Suites at HEAD:** Wire 508 Mac / 508 pup; Common 80 Mac / 81 pup;
+client 250; SystemTests 17 Mac; host 287 pup / 286 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
-screen doorbell adds three pins; SystemTests adds three boundary pins;
+screen doorbell adds three pins; SystemTests now owns both cross-role gates;
 benchmark safety adds one deterministic shell suite beside the 25 analyzer
 tests.
 
