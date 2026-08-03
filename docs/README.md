@@ -45,9 +45,11 @@ studies, and the Sunshine/Moonlight/moonshine reference reads).*
 - [20260802-013946 postures design](20260802-013946-postures-design.md) —
   announced quiet/wake postures, tripwire audio + pre-roll, the REWIND,
   Lyte OS north star. THE ACTIVE TRACK.
-- [20260803-050422 metronome playout design](20260803-050422-metronome-playout-design.md) —
-  the five laws of on-beat video presentation (anchor/display/late/
-  dry/drift); owns the #82 witness's red cell. NEXT UP.
+- [20260803-050422 THE CONDUCTOR](20260803-050422-metronome-playout-design.md) —
+  one clock, many instruments: the six laws of on-beat playout
+  (anchor/beat/miss/hole/drift/entanglement), audio + video on one
+  model, three-tier convergence into LyteCore. Video's metronome
+  playout owns the #82 witness's red cell. NEXT UP.
 - [20260728-165538 video supremacy plan](20260728-165538-lyte-video-supremacy-plan.md) —
   the HS-wave strategy source (§R3/§7).
 

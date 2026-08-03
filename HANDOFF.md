@@ -76,11 +76,14 @@ byte-identical by shared SHA-256 fixtures in both suites. Client
 exports hostAnnouncedAudioQuiet so the analyzer books tripwire
 stillness as announced_quiet_stillness, not blackout. NEXT =
 direct-leg quality refinement (ratchet's successor — owns A-20 and
-the witness's standing red cell + floors); its adopted design is the
-METRONOME PLAYOUT (docs/20260803-050422-metronome-playout-design.md:
-anchor/display/late/dry/drift — every displayed frame lands on a
-vsync beat, cushion quantized in frames, tail-sized, one scheduled
-re-anchor instead of per-frame smear). Then: E6a NVENC
+the witness's standing red cell + floors); its adopted design is THE
+CONDUCTOR (docs/20260803-050422-metronome-playout-design.md — owner
+naming): six laws, anchor/beat/miss/hole/drift/entanglement — every
+played part lands on a beat, cushion quantized in frames and
+tail-sized, one scheduled re-anchor instead of per-frame smear;
+audio + video converge on the model in three tiers (vocabulary now,
+shared primitives in the PR, full LyteCore module in v2) by the
+direct-eye replacement playbook, never a big-bang rewrite. Then: E6a NVENC
 productionize (lyte-nvenc probe banked), Rext 4:4:4 in the native
 pens (returns the Best tier), E2 uinput-primary, E4 packaging aimed
 at Lyte OS.
