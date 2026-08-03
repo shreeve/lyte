@@ -54,6 +54,7 @@ struct WireSend: AsyncParsableCommand {
     func run() async throws {
         setvbuf(stdout, nil, _IOLBF, 0)
         let fecRegime = FecRegime(rawValue: regime)!
+        let corpus = resolvedCorpusDirectory(corpus)
 
         // Sorted corpus files: frame-000-idr … frame-009-p sort ahead of
         // the frame-10x packetization fixtures, so the default N=10 is
@@ -158,6 +159,36 @@ struct WireSend: AsyncParsableCommand {
         }
         print(summary)
         print(standIn.finalSummary())
+    }
+
+    private func resolvedCorpusDirectory(_ requested: String) -> String {
+        let defaultCorpus = "Wire/Vectors/video-corpus-v1"
+        let fileManager = FileManager.default
+        guard requested == defaultCorpus,
+              !fileManager.fileExists(atPath: requested)
+        else { return requested }
+
+        var candidate = URL(
+            fileURLWithPath: fileManager.currentDirectoryPath,
+            isDirectory: true
+        )
+        while candidate.path != "/" {
+            let vectorPolicy = candidate
+                .appendingPathComponent("Wire/Vectors/README.md")
+            let corpus = candidate.appendingPathComponent(defaultCorpus)
+            var corpusIsDirectory = ObjCBool(false)
+            if fileManager.fileExists(atPath: vectorPolicy.path),
+               fileManager.fileExists(
+                   atPath: corpus.path,
+                   isDirectory: &corpusIsDirectory
+               ),
+               corpusIsDirectory.boolValue
+            {
+                return corpus.path
+            }
+            candidate.deleteLastPathComponent()
+        }
+        return requested
     }
 }
 

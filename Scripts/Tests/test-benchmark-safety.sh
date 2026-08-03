@@ -95,6 +95,13 @@ grep -Fq 'Client/Package.swift Client/Package.resolved Client/Sources' \
 grep -Fq 'run_package_tests "client" "$repo_root/Client" "$repo_root/.build"' \
     "$macos_gate"
 grep -Fq 'rsync -a --delete --exclude .build Client/' "$pup_gate"
+grep -Fq 'refuse_mounts_below' "$pup_gate"
+grep -Fq 'findmnt -rn -o TARGET' "$pup_gate"
+grep -Fq 'find "$directory" -xdev -depth -delete' "$pup_gate"
+if grep -Fq 'rm -rf -- "$gate_root/Sources"' "$pup_gate"; then
+    echo "pup gate regained an unbounded root-client deletion" >&2
+    exit 1
+fi
 grep -Fq 'Scripts/build-cli.sh debug' "$vscode_tasks"
 grep -Fq 'Scripts/build-cli.sh release' "$vscode_tasks"
 grep -Fq 'Scripts/make-app.sh debug' "$vscode_tasks"

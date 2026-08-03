@@ -97,8 +97,9 @@ Scripts/sign-dev.sh .build/debug/lyte-cli
 Scripts/sign-dev.sh .build/Lyte.app
 ```
 
-Prefer these over a direct SwiftPM build whenever the binary will talk to a host,
-so the signature (and thus the keychain grant) stays intact.
+Prefer these over `swift build --package-path Client --scratch-path "$PWD/.build"`
+whenever the binary will talk to a host, so the signature (and thus the
+keychain grant) stays intact.
 
 ## How `sign-dev.sh` picks the identifier
 

@@ -34,6 +34,36 @@ if [[ "$(readlink -f -- "$gate_root")" != "$HOME/src/lyte-gates/deterministic" ]
     echo "pup gate FAILED: fixed gate root resolved outside its namespace" >&2
     exit 1
 fi
+refuse_mounts_below() {
+    local root="$1"
+    local mounted
+    while IFS= read -r mounted; do
+        case "$mounted" in
+            "$root"|"$root"/*)
+                echo "pup gate FAILED: gate mirror contains a mount: $mounted" >&2
+                exit 1
+                ;;
+        esac
+    done < <(findmnt -rn -o TARGET)
+}
+
+for package in Client Common Wire Host; do
+    target="$gate_root/$package"
+    if [[ -L "$target" ]]; then
+        echo "pup gate FAILED: package mirror is a symlink: $target" >&2
+        exit 1
+    fi
+    if [[ -e "$target" && ! -d "$target" ]]; then
+        echo "pup gate FAILED: package mirror is not a directory: $target" >&2
+        exit 1
+    fi
+    if [[ -d "$target" && "$(readlink -f -- "$target")" != "$target" ]]; then
+        echo "pup gate FAILED: package mirror resolves elsewhere: $target" >&2
+        exit 1
+    fi
+    refuse_mounts_below "$target"
+    mkdir -p "$target"
+done
 if ! mkdir "$gate_lock"; then
     echo "pup gate FAILED: another deterministic gate holds the pup mirror" >&2
     exit 1
@@ -51,8 +81,24 @@ ssh "$pup" 'bash -se' <<'RETIRE_ROOT_CLIENT'
 set -euo pipefail
 gate_root="$HOME/src/lyte-gates/deterministic"
 [[ "$(readlink -f -- "$gate_root")" == "$gate_root" ]]
+while IFS= read -r mounted; do
+    case "$mounted" in
+        "$gate_root/Sources"|"$gate_root/Sources"/*|\
+        "$gate_root/Tests"|"$gate_root/Tests"/*)
+            echo "pup gate FAILED: stale root client tree contains a mount: $mounted" >&2
+            exit 1
+            ;;
+    esac
+done < <(findmnt -rn -o TARGET)
 rm -f -- "$gate_root/Package.swift" "$gate_root/Package.resolved"
-rm -rf -- "$gate_root/Sources" "$gate_root/Tests"
+for directory in "$gate_root/Sources" "$gate_root/Tests"; do
+    if [[ -d "$directory" ]]; then
+        find "$directory" -xdev -depth -delete
+    elif [[ -e "$directory" ]]; then
+        echo "pup gate FAILED: stale root client path is not a directory: $directory" >&2
+        exit 1
+    fi
+done
 RETIRE_ROOT_CLIENT
 rsync -a --delete --exclude .build Client/ "$pup:$pup_gate_root/Client/"
 rsync -a --delete --exclude .build Common/ "$pup:$pup_gate_root/Common/"
