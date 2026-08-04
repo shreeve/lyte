@@ -320,6 +320,45 @@ public final class InputSender: @unchecked Sendable {
     }
 }
 
+/// Queue-side timing owned by the ordered input hop.
+public final class InputSendTiming: @unchecked Sendable {
+    public struct Snapshot: Sendable {
+        public var queued: UInt64
+        public var sent: UInt64
+        public var failed: UInt64
+        public var queueWaitMicroseconds: Histogram<UInt64>
+    }
+
+    private let lock = NSLock()
+    private var queuedCount: UInt64 = 0
+    private var sentCount: UInt64 = 0
+    private var failedCount: UInt64 = 0
+    private var waits = Histogram<UInt64>(capacity: 360, retention: .rolling)
+
+    func queued() {
+        lock.lock(); queuedCount += 1; lock.unlock()
+    }
+
+    func sent(queueMicroseconds: UInt64) {
+        lock.lock()
+        sentCount += 1
+        waits.record(queueMicroseconds)
+        lock.unlock()
+    }
+
+    func failed() {
+        lock.lock(); failedCount += 1; lock.unlock()
+    }
+
+    public func snapshot() -> Snapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return Snapshot(
+            queued: queuedCount, sent: sentCount, failed: failedCount,
+            queueWaitMicroseconds: waits)
+    }
+}
+
 /// IO-side ordered hop used by the app capture path. The pure InputSender
 /// remains synchronous for virtual-time gates; production enqueues here so
 /// ARQ/seal/socket work never executes on MainActor.
