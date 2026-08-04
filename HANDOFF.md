@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 511,
-Host 327 Mac / 328 pup, Client 256,
+Host 328 Mac / 329 pup, Client 256,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -922,8 +922,27 @@ SLICE: inventory current cross-end ownership after the Host Session and
 capability-state tracks; prefer an existing owner absorbing duplicate state or
 policy, and reject wrapper-only extraction.**
 
+**That video-frame cursor cleanup completed as #142.** Host `Session` no
+longer mutates `nextVideoFrameNumber` beside
+`lastAdmittedVideoFrameNumber`; next is derived from the one public admitted
+frame owner, with nil still naming opening frame 0. Only a successful prepared
+frame commit moves that owner. Stale prepared contexts remain loud, while
+unprotectable and lifecycle-suppressed frames consume no number. Idle handoff
+now carries the owned last frame directly; its `last.next > 0` guard preserves
+the previous UInt32-wrap refusal exactly. Direct pins cover nil→0→1,
+old-context replay, unprotectable and frozen non-consumption, final-frame
+identity, and a source ratchet rejecting another stored cursor. No new book,
+wrapper, wire byte, frozen vector, persisted format, manifest, lock boundary,
+or product behavior changed. Production is one line smaller. Canonical Mac
+passed Common 81, Wire 511, Host 328, Client 256, SystemTests 17, analyzer 25,
+benchmark safety, and both signed products; isolated pup passed Common 82,
+Wire 511, Host 329, the plain build, netio/pacing (19.118 ms IDR drain against
+the 25 ms ceiling), and protected-state verification. Independent adversarial
+review found no blocker. **NEXT CLEANUP SLICE: re-inventory after this tiny
+deletion; keep choosing existing owners over wrapper-only extraction.**
+
 **Suites at HEAD:** Wire 511 Mac / 511 pup; Common 81 Mac / 82 pup;
-client 256; SystemTests 17 Mac; host 328 pup / 327 Mac — all green. Eighteen conductor/gauge
+client 256; SystemTests 17 Mac; host 329 pup / 328 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
