@@ -21,9 +21,9 @@
 // ~16.7 ms tick. All slicing/encoding state below is confined to that
 // audio loop thread; the only cross-thread touch is sendAudioPacket
 // (locked inside SessionWire) and the stop flag. The slicing and
-// graph-clock timestamp bookkeeping are lyte-audio-check's, verbatim in
-// spirit: a packet is stamped by the buffer its FIRST sample arrived
-// in, advanced by the sample offset within it — pure graph clock,
+// graph-clock timestamp bookkeeping have one sans-IO HostCore owner shared
+// with lyte-audio-check: a packet is stamped by the buffer its FIRST sample
+// arrived in, advanced by the sample offset within it — pure graph clock,
 // never wall clock (audio-continuity §4.3).
 
 import COpusEncode
@@ -58,10 +58,7 @@ final class AudioWire: @unchecked Sendable {
     private let sampleRate = Int(LYTE_OPUS_RATE)
 
     // Audio-loop-thread state (never touched from outside).
-    private var pending: [Float] = []
-    private var pendingStartFrame = 0
-    private var marks: [(startFrame: Int, us: UInt64)] = []
-    private var framesSeen = 0
+    private let slicer: InterleavedPcmSlicer
     private var packet = [UInt8]()
     /// The postures design's auto-quiet gate (audio-thread confined;
     /// counters read after join). Engages ONLY when the session agreed
@@ -90,7 +87,11 @@ final class AudioWire: @unchecked Sendable {
         }
         encoder = enc
         packet = [UInt8](repeating: 0, count: Int(LYTE_OPUS_MAX_PACKET))
-        pending.reserveCapacity(8_192)
+        slicer = InterleavedPcmSlicer(
+            sampleRate: sampleRate,
+            channels: channels,
+            packetFrames: packetFrames
+        )
         let user = Unmanaged.passUnretained(self).toOpaque()
         // From here on the throw paths free NOTHING: once `encoder` is
         // assigned every stored property is initialized, so a later
@@ -250,48 +251,34 @@ final class AudioWire: @unchecked Sendable {
         }
         guard negotiationError == nil else { return }
 
-        marks.append((startFrame: framesSeen, us: graphUS))
-        framesSeen += Int(nFrames)
-        pending.append(contentsOf: UnsafeBufferPointer(
-            start: samples, count: Int(nFrames) * channels))
-
-        while pending.count >= packetFrames * channels {
-            emitPacket()
+        slicer.ingest(
+            UnsafeBufferPointer(
+                start: samples, count: Int(nFrames) * channels
+            ),
+            graphStartMicroseconds: graphUS
+        ) { pcm, timestamp in
+            emitPacket(pcm: pcm, timestamp: timestamp)
         }
     }
 
-    private func emitPacket() {
-        // Timestamp: the mark of the buffer containing this packet's
-        // first sample, advanced by the sample offset within it.
-        let startFrame = pendingStartFrame
-        var ts: UInt64 = 0
-        while marks.count > 1, marks[1].startFrame <= startFrame {
-            marks.removeFirst()
-        }
-        if let m = marks.first {
-            ts = m.us + UInt64(startFrame - m.startFrame)
-                * 1_000_000 / UInt64(sampleRate)
-        }
-
+    private func emitPacket(
+        pcm: UnsafeBufferPointer<Float>, timestamp: UInt64
+    ) {
         // The tripwire's ear: RMS over this packet's PCM, taken
-        // before the slice leaves `pending`. ~480 floats at 200/s —
+        // before the borrowed slice returns. ~480 floats at 200/s —
         // noise next to the Opus encode beside it.
         let sampleCount = packetFrames * channels
         var sumSquares: Float = 0
-        pending.withUnsafeBufferPointer { pcm in
-            for i in 0..<sampleCount {
-                sumSquares += pcm[i] * pcm[i]
-            }
+        for i in 0..<sampleCount {
+            sumSquares += pcm[i] * pcm[i]
         }
         let rms = (sumSquares / Float(sampleCount)).squareRoot()
 
         var err = [CChar](repeating: 0, count: 256)
-        let n = pending.withUnsafeBufferPointer { pcm in
-            lyte_opus_enc_encode(encoder, pcm.baseAddress, &packet,
-                                 Int32(packet.count), &err, err.count)
-        }
-        pending.removeFirst(packetFrames * channels)
-        pendingStartFrame += packetFrames
+        let n = lyte_opus_enc_encode(
+            encoder, pcm.baseAddress, &packet,
+            Int32(packet.count), &err, err.count
+        )
 
         guard n > 0 else {
             encodeFailures += 1
@@ -307,14 +294,14 @@ final class AudioWire: @unchecked Sendable {
         // exists at all only under the key-15 agreement (per-packet
         // check: cheap locked read, and a fresh session re-decides).
         guard wire.audioQuietPostureAgreed() else {
-            wire.sendAudioPacket(encoded, captureMicros: ts)
+            wire.sendAudioPacket(encoded, captureMicros: timestamp)
             return
         }
         switch tripwire.ingest(
-            rms: rms, packet: encoded, captureMicroseconds: ts
+            rms: rms, packet: encoded, captureMicroseconds: timestamp
         ) {
         case .transmit:
-            wire.sendAudioPacket(encoded, captureMicros: ts)
+            wire.sendAudioPacket(encoded, captureMicros: timestamp)
         case .beginQuiet:
             wire.sendAudioTrackState(.quiet)
         case .stayQuiet(let checkIn):

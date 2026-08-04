@@ -196,7 +196,7 @@ targets += [
     .executableTarget(
         name: "lyte-audio-check",
         dependencies: [
-            "CPipeWireAudio", "COpusEncode",
+            "HostCore", "CPipeWireAudio", "COpusEncode",
             .product(name: "LyteIO", package: "Common"),
         ],
         linkerSettings: [
