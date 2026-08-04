@@ -102,16 +102,12 @@ warning at both ends), **A-27** → #79 (anchor and centering offset
 from the same sample; order-invariance pinned through a coprime
 scramble). A-20 also closed in #27: delivery evidence is segmented per
 channel and fresh-video frame, with audio and sparse repairs barred from
-capacity votes. The one residue below remains and belongs to the active
-architecture cleanup.*
-
-- **A-26 (final residue) host crypto seam** — the shared histogram and Annex-B
-  duplications closed in #96 and #97; #127 made LyteWire own ARQ carrier
-  packing and deleted the Host, Client, and test repackers. The host's crypto
-  carriage remains inline where the client has the named `TransportCrypto`
-  seam. Judge whether an equivalent host organ earns its weight during
-  session-spine extraction; do not manufacture symmetry without a concrete
-  policy or test boundary to own.
+capacity votes. A-26 is also closed: histogram/Annex-B duplication landed in
+#96/#97, ARQ packing converged in #127, and the final host crypto seam was
+inspected after #128 and deliberately not extracted. The Host has one
+single-threaded crypto owner and one implementation path; a client-shaped
+protocol would add indirection without removing duplication. Reconsider only
+if a future Host sender/receiver spine creates a second owner.*
 
 ## Browser client + Caddy bridge (`docs/20260720-184200-browser-client-caddy-bridge.md`)
 

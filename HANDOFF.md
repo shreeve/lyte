@@ -37,16 +37,18 @@ service except through an explicit, restoring live gate; test hosts use
 fresh 41xxx ports with `--no-advertise`.
 
 **Where the work lives now:** the v1-final ANALYSIS remainder is
-**ESSENTIALLY CLOSED** (2026-08-02): every Tier-2 item done (eight in
+**CLOSED** (2026-08-03): every Tier-2 item done (eight in
 the hardening waves #27/#30/#33/#38/#43, T2-10 → #75, T2-13 → #76)
 and the A-train batch landed as #77 (bounded audio roundtrips +
 atomic exit reason), #78 (init validation above allocations), #79
 (clock-model anchor pairing + pinned order-invariance, decoy stamp
-discarded by contract). Only A-26's host crypto-seam judgement remains
-in TODO.md: A-20's delivery trains have been channel- and fresh-video-frame
-isolated since #27, while A-26's histogram and Annex-B twins closed in
-#96/#97 and its duplicate ARQ carriage closed in #127. Suites at HEAD:
-Common 80 Mac / 81 pup, Wire 510, Host 285 Mac / 286 pup, Client 254,
+discarded by contract). A-20's delivery trains have been channel- and
+fresh-video-frame isolated since #27. A-26's histogram and Annex-B twins
+closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
+host-crypto-seam residue closed as inspected/not earned after #128: the Host
+has one single-threaded owner and one crypto path, unlike the Client's three
+concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 510,
+Host 285 Mac / 286 pup, Client 254,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -569,7 +571,32 @@ the named-host-crypto-seam judgement remains for the session-spine work.
 from `LyteUdpSessionCore` behind the existing `VideoSink` organ, with behavior
 held by the real cross-end SystemTests gates.**
 
-**Suites at HEAD:** Wire 510 Mac / 510 pup; Common 80 Mac / 81 pup;
+**That first Client session-spine cut completed as #128.** The native
+`SessionVideoSink` adapter moved from `LyteUdpSession.swift` into the owning
+`VideoSink.swift` leaf. `LyteUdpSessionCore` now gives a pure
+`admitVideoUnit(_:)` verdict over `DecodeUnit` and contains neither a
+CoreMedia import nor `CMSampleBuffer`; the adapter alone carries the native
+sample downstream. Recovery rejection, explicit renderer-enqueue recovery
+closure, input-to-photon accounting, IDR chroma audit ordering, and weak-owner
+teardown forwarding are unchanged. A Client lifecycle pin proves the chroma
+audit completes before native submission, and Common's `VideoSink` source
+ratchet prevents the native type or adapter definition from leaking back into
+the session core. No wire byte, frozen vector, persisted format, manifest, or
+product behavior changed. Production is +35/-34 (net +1); the stronger tests
+make the total +64/-36. Canonical Mac passed Common 81, Wire 510, Host 285,
+Client 254, SystemTests 17, analyzer 25, benchmark safety, and both signed
+products; isolated pup passed Common 82, Wire 510, Host 286, the plain build,
+netio/pacing, and protected-state verification. Independent adversarial review
+found no blocker. The final A-26 judgement is **do not manufacture a Host
+`TransportCrypto` twin**: all four seal callers and the one unseal caller
+already funnel through two private `Session` helpers, while the Client seam
+exists for three separate concurrent organs. Reconsider only when a real Host
+sender/receiver spine creates a second owner. **NEXT CLEANUP SLICE: finish the
+small Client shell-wrapper cleanup—move `InputSendTiming` beside
+`OrderedInputSender`, replace `SessionFlag` with `Atomic<Bool>`, and remove
+`SessionCoreBox` through the existing session-instance late-binding seam.**
+
+**Suites at HEAD:** Wire 510 Mac / 510 pup; Common 81 Mac / 82 pup;
 client 254; SystemTests 17 Mac; host 286 pup / 285 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
