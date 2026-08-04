@@ -724,10 +724,6 @@ public final class Session {
 
     /// Message-1 admissions, consulted before any handshake allocation.
     private var handshakeGate: HandshakeGate
-    /// The last require-cookie posture observed, so a flip surfaces as
-    /// exactly one `.handshakeCookieModeChanged` (HS-21).
-    private var lastCookieMode = false
-
     /// Whether the flood dial currently demands a retry cookie (HS-21) —
     /// surfaced for the shell's live log.
     public var handshakeCookieMode: Bool { handshakeGate.cookieMode }
@@ -1044,14 +1040,16 @@ public final class Session {
                 return events
             }
 
-            let admission = handshakeGate.admitMessage1(
+            let decision = handshakeGate.admitMessage1(
                 presentedCookie: presentedCookie,
                 clientTuple: Self.cookieTuple(tuple),
                 message1: message1,
                 now: now
             )
-            events += noteCookieModeTransition()
-            switch admission {
+            if let requireCookie = decision.cookieModeChangedTo {
+                events.append(.handshakeCookieModeChanged(requireCookie: requireCookie))
+            }
+            switch decision.admission {
             case .admit:
                 events += completeHandshake(
                     message1: message1,
@@ -1084,7 +1082,7 @@ public final class Session {
                 counters.handshakeCookiesRejected += 1
                 events.append(.dropped(.handshakeCookieInvalid))
             }
-            if presentedCookie != nil, case .admit = admission {
+            if presentedCookie != nil, case .admit = decision.admission {
                 counters.handshakeCookiesVerified += 1
             }
             return events
@@ -2895,16 +2893,6 @@ public final class Session {
     /// an IPv6 literal with a port comfortably under the ceiling.
     static func cookieTuple(_ tuple: FourTuple) -> [UInt8] {
         Array("\(tuple.remoteAddress):\(tuple.remotePort)".utf8)
-    }
-
-    /// Emits one `.handshakeCookieModeChanged` per genuine flip of the
-    /// require-cookie dial (HS-21). Called right after every
-    /// `admitMessage1`, whose flood-window update is what moves it.
-    private func noteCookieModeTransition() -> [SessionEvent] {
-        let mode = handshakeGate.cookieMode
-        guard mode != lastCookieMode else { return [] }
-        lastCookieMode = mode
-        return [.handshakeCookieModeChanged(requireCookie: mode)]
     }
 
     private func completeHandshake(
