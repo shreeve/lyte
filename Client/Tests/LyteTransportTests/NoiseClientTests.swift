@@ -13,6 +13,27 @@ import LyteWire
 
 final class NoiseClientTests: XCTestCase {
 
+    func testHandshakeHashAloneOwnsEstablishedPosture() throws {
+        var components = #filePath.split(
+            separator: "/", omittingEmptySubsequences: false
+        )
+        components.removeLast(3)
+        let packageRoot = components.joined(separator: "/")
+        let source = try String(
+            contentsOfFile:
+                packageRoot
+                    + "/Sources/LyteTransport/NoiseTransportCrypto.swift",
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(source.contains("private var established"))
+        XCTAssertFalse(source.contains("established ="))
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: "handshakeHash != nil").count - 1,
+            4
+        )
+    }
+
     /// The host's half, in-process: answers a carried message 1 from
     /// fresh responder state (the HS-7 rule) and exposes the transport it
     /// derives, so tests can seal/unseal as the host would.

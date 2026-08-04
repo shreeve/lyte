@@ -143,7 +143,6 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
     private let receiveLock = NSLock()
     private var sendTransport: NoiseTransport?
     private var receiveTransport: NoiseTransport?
-    private var established = false
     private var handshakeInProgress = false
     private var handshakeHash: [UInt8]?
     private var handshakeMilliseconds: Double?
@@ -256,7 +255,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
     public func open() throws {
         stateLock.lock()
         defer { stateLock.unlock() }
-        guard established else {
+        guard handshakeHash != nil else {
             throw TransportCryptoError.handshakeFailed(
                 "transport-open before the Noise handshake completed")
         }
@@ -266,10 +265,11 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
 
     public func performHandshake(io: any NoiseHandshakeIO) throws {
         stateLock.lock()
-        guard !established, !handshakeInProgress else {
+        let alreadyEstablished = handshakeHash != nil
+        guard !alreadyEstablished, !handshakeInProgress else {
             stateLock.unlock()
             throw TransportCryptoError.handshakeFailed(
-                established ? "Noise handshake already completed"
+                alreadyEstablished ? "Noise handshake already completed"
                     : "Noise handshake already in progress")
         }
         handshakeInProgress = true
@@ -362,9 +362,9 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
                 }
                 let made = try session.makeTransport()
                 // Lock order is state → send → receive everywhere a
-                // transition touches more than one domain. Publishing
-                // `established` last makes the two directional copies an
-                // atomic post-handshake state to every operation.
+                // transition touches more than one domain. The state lock
+                // publishes both directional copies and the handshake hash
+                // as one atomic post-handshake state to every operation.
                 stateLock.lock()
                 sendLock.lock()
                 receiveLock.lock()
@@ -373,7 +373,6 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
                 handshakeHash = made.handshakeHash
                 handshakeMilliseconds = Double(
                     SystemMonotonicClock.nowNanoseconds &- started) / 1e6
-                established = true
                 receiveLock.unlock()
                 sendLock.unlock()
                 stateLock.unlock()
@@ -437,7 +436,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         envelope: Envelope
     ) throws -> [UInt8] {
         stateLock.lock()
-        let ready = established
+        let ready = handshakeHash != nil
         stateLock.unlock()
         guard ready else {
             throw TransportCryptoError.handshakeFailed("unseal before handshake")
@@ -465,7 +464,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         envelope: Envelope
     ) throws -> [UInt8] {
         stateLock.lock()
-        let ready = established
+        let ready = handshakeHash != nil
         stateLock.unlock()
         guard ready else {
             throw TransportCryptoError.handshakeFailed("seal before handshake")
