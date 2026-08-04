@@ -36,11 +36,33 @@ public struct FreshKeyframeDemand: OptionSet, Sendable {
 /// The sans-IO, take-once owner of every Host fresh-keyframe demand.
 public struct SessionFreshKeyframeBook: Equatable, Sendable {
     public private(set) var pending: FreshKeyframeDemand = []
+    private var lastUnknownFrameArmAtNanoseconds: UInt64?
 
     public init() {}
 
     public mutating func arm(_ demand: FreshKeyframeDemand) {
         pending.formUnion(demand)
+    }
+
+    /// Arms the shared stale-NACK demand. Authenticated guesses naming an
+    /// unknown frame are rate-limited; verdicts tied to real frame history
+    /// remain unthrottled. Taking the pending demand does not reset this
+    /// peer-pressure window.
+    @discardableResult
+    public mutating func armStaleNack(
+        unknownFrame: Bool,
+        now: UInt64,
+        minimumUnknownFrameInterval: UInt64
+    ) -> Bool {
+        if unknownFrame {
+            let admitted = lastUnknownFrameArmAtNanoseconds.map {
+                now &- $0 >= minimumUnknownFrameInterval
+            } ?? true
+            guard admitted else { return false }
+            lastUnknownFrameArmAtNanoseconds = now
+        }
+        arm(.staleNackArm)
+        return true
     }
 
     /// Returns every coalesced cause and clears them as one encoder poll.
