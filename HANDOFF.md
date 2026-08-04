@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 510,
-Host 304 Mac / 305 pup, Client 255,
+Host 309 Mac / 310 pup, Client 255,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -727,8 +727,35 @@ events, counters, and transport errors in `Session`; pin fresh-damage abort,
 quiet-window release, refused-send retry, group wrap, foreign acknowledgment,
 and exact final-frame retirement directly.**
 
+**That idle-handoff extraction completed as #135.**
+`SessionIdleHandoffBook` now owns the retained `IdleFrame`, last-damage quiet
+clock, pending release deadline, exact in-flight group, and nonzero one-shot
+group allocation. Final-frame preparation is non-consuming: refused ARQ
+admission retries the same frame/group, and only a successful admission moves
+the allocator. Exact acknowledgment retires the episode; foreign or late
+groups cannot clear a newer handoff. Fresh damage now explicitly forgets both
+pending and in-flight handoffs, making the existing observable damage-abort
+law direct rather than leaving a dead group named until its late ack.
+`Session` retains ARQ admission/service, lifecycle-machine effects, counters,
+and transport errors. Direct pins cover exact `IdleFrame` bytes, refusal-safe
+reuse, quiet-boundary release, fresh-damage abort, foreign/late ack isolation,
+exact retirement, and UInt16 wrap skipping group zero; every existing HS-11/
+HS-22 idle, metronome, abort, and wake gate stays green. No wire byte, frozen
+vector, persisted format, or manifest changed. `Session.swift` is 29 lines
+smaller; total production is +61 after introducing the documented owner.
+Canonical Mac passed Common 81, Wire 510, Host 309, Client 255, SystemTests 17,
+analyzer 25, benchmark safety, and both signed products; isolated pup passed
+Common 82, Wire 510, Host 310, the plain build, netio/pacing, and
+protected-state verification. **NEXT CLEANUP SLICE: collapse the parallel CTRL
+and bulk reliable-carrier books behind one sans-IO `SessionArqLane` shape—one
+endpoint, PTO deadline, and envelope sequence per channel—then unify their
+duplicated poll/deadline/send loops without merging their message consumers or
+negotiation gates. Keep sealing, pacer selection, counters, decoded-message
+policy, and lifecycle effects in `Session`; pin lane isolation, group-0 versus
+one-shot behavior, refusal/PTO recovery, sequence wrap, and quiescence.**
+
 **Suites at HEAD:** Wire 510 Mac / 510 pup; Common 81 Mac / 82 pup;
-client 255; SystemTests 17 Mac; host 305 pup / 304 Mac — all green. Eighteen conductor/gauge
+client 255; SystemTests 17 Mac; host 310 pup / 309 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
