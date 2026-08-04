@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 83 Mac / 84 pup, Wire 511,
-Host 328 Mac / 329 pup, Client 258,
+Host 334 Mac / 335 pup, Client 258,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -1008,8 +1008,35 @@ HostCore owner. Keep Opus, PipeWire, tripwire, delivery, and harness verdicts
 in their role shells; preserve the one unavoidable input copy and add no PCM
 packet copy.**
 
+**That host audio-slicing cleanup completed as #146.** Production `AudioWire`
+and `lyte-audio-check` no longer carry parallel retained-PCM tails, graph-clock
+marks, frame cursors, exact 5 ms drain loops, or first-sample timestamp math.
+The synchronous, sans-IO `HostCore.InterleavedPcmSlicer` now owns that one
+mechanism: it makes the one unavoidable copy from PipeWire's expiring capture
+pointer, lends each exact packet-sized view without a second PCM copy, and
+multiplies before dividing to preserve 48 kHz timestamp rounding. A normal
+callback return consumes the packet, preserving production's historical
+encode-failure behavior; a throw retains the current head and stops, preserving
+the checker's fail-and-quit transaction. PipeWire, Opus, tripwire, delivery,
+decode evidence, and verifier verdicts remain in their role shells. Six direct
+pins cover fragmented and empty input, interleaved sample order, discontinuous
+graph marks, chunking invariance, exact rounding, transactional retry, and a
+source ratchet proving both real consumers have no second slicer state.
+Canonical Mac passed Common 83, Wire 511, Host 334, Client 258, SystemTests 17,
+analyzer 25, benchmark safety, and both signed products (one existing
+no-output-device client test skipped); isolated pup passed Common 84, Wire 511,
+Host 335, the plain build, netio/pacing (19.195 ms IDR drain against the 25 ms
+ceiling), and protected-state verification. The exact-tree live audio checker
+delivered 370 packets at 200.0 packets/s with exact 80-byte hard-CBR payloads,
+exact 5000 us graph-clock deltas, and clean decode-back. A fresh-port production
+smoke encoded 1,577 packets and sent/received 999 with zero encode, send, or
+mailbox failures; protected host identity files stayed byte-identical. Two
+independent reviews found no blocker. **NEXT CLEANUP SLICE: re-inventory the
+current tree after #146 and choose the smallest earned deletion or existing
+owner that removes a parallel truth; reject wrapper-only movement.**
+
 **Suites at HEAD:** Wire 511 Mac / 511 pup; Common 83 Mac / 84 pup;
-client 258; SystemTests 17 Mac; host 329 pup / 328 Mac — all green. Eighteen conductor/gauge
+client 258; SystemTests 17 Mac; host 335 pup / 334 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
