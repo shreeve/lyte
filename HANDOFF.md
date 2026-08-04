@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 510,
-Host 315 Mac / 316 pup, Client 255,
+Host 324 Mac / 325 pup, Client 255,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -812,8 +812,38 @@ traffic, and events in `Session`; pin the exact interval boundary, known-frame
 stale verdicts remaining unthrottled, demand-taking not resetting peer
 pressure, clock wrap, and the existing in-vivo NACK gates.**
 
+**That peer-pressure consolidation completed as #138.**
+`SessionFreshKeyframeBook` now owns the last admitted unknown-frame timestamp
+beside the coalesced `.staleNackArm` demand it governs. Unknown-frame guesses
+retain the exact wrapping interval law; a rejected guess neither arms nor moves
+the window. Stale verdicts tied to real retained-frame history remain
+unthrottled and do not move that window, and taking the pending encoder demand
+does not reset peer pressure. `Session` retains NACK classification, repair
+and refusal traffic, counters, and events. Direct pins cover the exact interval
+boundary, demand-taking persistence, clock wrap, known/unknown independence,
+and the ownership ratchet; the existing 40-guess in-vivo gate remains green.
+No wire byte, frozen vector, persisted format, manifest, or product behavior
+changed. `Session.swift` is 11 lines smaller; total production is net +11
+after moving the policy into its named owner. Canonical Mac passed Common 81,
+Wire 510, Host 324, Client 255, SystemTests 17, analyzer 25, benchmark safety,
+and both signed products; isolated pup passed Common 82, Wire 510, Host 325,
+the plain build, netio/pacing (19.364 ms IDR drain against the 25 ms ceiling),
+and protected-state verification. Independent adversarial review found no
+blocker. **NEXT CLEANUP SLICE: delete `Session`'s stored `phase` and derive the
+public compatibility view from `SessionLifecycleLane.isEstablished`. #137 left
+two mutable establishment truths initialized and advanced in parallel; this
+slice removes one outright with no new type or wrapper. Move lane establishment
+to the old `phase = .established` point so message-2/beacon sink callbacks still
+observe `.established`; keep CLOSED reporting established because the lane
+remains instantiated. Pin Noise/insecure initialization, hostile message-1
+non-establishment, callback-visible ordering, CLOSED compatibility, and a
+source ratchet rejecting stored phase or a second latch; then run lifecycle,
+session, cookie, pairing, and handshake-sequence focused gates before both full
+platform gates. Explicitly do not wrap `CapabilityNegotiator` or
+`HandshakeGate`: Wire and the existing gate already own those policies.**
+
 **Suites at HEAD:** Wire 510 Mac / 510 pup; Common 81 Mac / 82 pup;
-client 255; SystemTests 17 Mac; host 321 pup / 320 Mac — all green. Eighteen conductor/gauge
+client 255; SystemTests 17 Mac; host 325 pup / 324 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
