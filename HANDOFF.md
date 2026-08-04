@@ -42,11 +42,12 @@ the hardening waves #27/#30/#33/#38/#43, T2-10 → #75, T2-13 → #76)
 and the A-train batch landed as #77 (bounded audio roundtrips +
 atomic exit reason), #78 (init validation above allocations), #79
 (clock-model anchor pairing + pinned order-invariance, decoy stamp
-discarded by contract). Only A-26's host crypto/ARQ seam residue remains
+discarded by contract). Only A-26's host crypto-seam judgement remains
 in TODO.md: A-20's delivery trains have been channel- and fresh-video-frame
 isolated since #27, while A-26's histogram and Annex-B twins closed in
-#96/#97. Suites at HEAD: Wire 517, root 287, host
-290 pup / 289 Mac. docs/README.md is the doc catalog (twenty
+#96/#97 and its duplicate ARQ carriage closed in #127. Suites at HEAD:
+Common 80 Mac / 81 pup, Wire 510, Host 285 Mac / 286 pup, Client 254,
+SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
 
@@ -547,12 +548,29 @@ enforcement. Canonical Mac passed Common 80, Wire 508, Host 284, Client 253,
 SystemTests 16, analyzer 25, benchmark safety, and both signed products;
 isolated pup passed Common 81, Wire 508, Host 285, the plain build,
 netio/pacing, and protected-state verification. Two independent reviews found
-no blocker. **NEXT CLEANUP SLICE: make LyteWire ARQ pack once at the configured
-carrier ceiling, then delete the Host, Client, and test repackers before
-session-spine extraction.**
+no blocker. **The ARQ carriage cleanup completed as #127.** `ArqEndpoint` now
+packs once at its configured carrier ceiling, even after configuration is
+mutated post-init; `WireBudget.maxConnectionIdTaggedPlaintextByteCount` owns
+the one 1,101-byte connection-ID-tagged plaintext ceiling, and the Host and
+Client clamp caller budgets to it. The five downstream Host, Client, and test
+repackers and their duplicate budget arithmetic are deleted. Endpoint
+normalization also closes the latent zero-body enqueue loop while preserving
+the default 1,112-byte wire ceiling and every frozen vector. A SystemTests
+source ratchet requires the canonical configuration at both production
+carriers and rejects any returning production decode-and-repack path. The
+slice is +311/-319 overall (net -8) and +93/-149 across production Sources
+(net -56: Client -48, Host -52, Wire +44). Canonical Mac passed Common 80,
+Wire 510, Host 285, Client 254, SystemTests 17, analyzer 25, benchmark safety,
+and both signed products; isolated pup passed Common 81, Wire 510, Host 286,
+the plain build, netio/pacing, and protected-state verification. Three
+independent reviews found no blocker. A-26's ARQ duplication is closed; only
+the named-host-crypto-seam judgement remains for the session-spine work.
+**NEXT CLEANUP SLICE: begin the Client session spine by removing CoreMedia
+from `LyteUdpSessionCore` behind the existing `VideoSink` organ, with behavior
+held by the real cross-end SystemTests gates.**
 
-**Suites at HEAD:** Wire 508 Mac / 508 pup; Common 80 Mac / 81 pup;
-client 253; SystemTests 16 Mac; host 285 pup / 284 Mac — all green. Eighteen conductor/gauge
+**Suites at HEAD:** Wire 510 Mac / 510 pup; Common 80 Mac / 81 pup;
+client 254; SystemTests 17 Mac; host 286 pup / 285 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;

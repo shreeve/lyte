@@ -105,13 +105,13 @@ channel and fresh-video frame, with audio and sparse repairs barred from
 capacity votes. The one residue below remains and belongs to the active
 architecture cleanup.*
 
-- **A-26 (residue) host crypto/ARQ seams** — the shared histogram and Annex-B
-  duplications closed in #96 and #97. The host's crypto and ARQ carriage remain
-  inlined where the client has named seams (`TransportCrypto`,
-  `ReliableCtrlEndpoint`); the immediate duplicate is the Host/Client/test ARQ
-  repacking and budget calculation. Make LyteWire pack once at an injected
-  carrier ceiling, delete the downstream repackers, then judge whether a named
-  host seam still earns its weight during session-spine extraction.
+- **A-26 (final residue) host crypto seam** — the shared histogram and Annex-B
+  duplications closed in #96 and #97; #127 made LyteWire own ARQ carrier
+  packing and deleted the Host, Client, and test repackers. The host's crypto
+  carriage remains inline where the client has the named `TransportCrypto`
+  seam. Judge whether an equivalent host organ earns its weight during
+  session-spine extraction; do not manufacture symmetry without a concrete
+  policy or test boundary to own.
 
 ## Browser client + Caddy bridge (`docs/20260720-184200-browser-client-caddy-bridge.md`)
 
