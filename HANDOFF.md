@@ -785,8 +785,35 @@ apply-before-poll ordering, exact deadline conversion, ACTIVE/FROZEN/RECOVERY/
 CLOSED projections, the deliberate FROZEN-video-only suppression asymmetry,
 and one state-change verdict.**
 
+**That lifecycle extraction completed as #137.**
+`SessionLifecycleLane` now owns when the Host's W4b media-sender machine
+exists, its exact microsecond-to-nanosecond timer projection, the due-service
+verdict, and the local freeze/resume projection. `Session` retains reliable
+mode and teardown sends, estimator repricing, pacer changes, fresh-keyframe
+causes, counters, and events; it receives one final state-change verdict per
+apply-then-poll pass. FROZEN still suppresses video only while audio remains
+the path probe; CLOSED suppresses both. Direct pins cover dormant
+pre-establishment, exact deadline boundaries, apply-before-poll evidence at a
+coincident blackout edge, ACTIVE/FROZEN/RECOVERY/CLOSED projections, IDLE
+wake, and terminal quiescence. Every existing lifecycle/capability loopback
+gate stayed unchanged. No wire byte, frozen vector, persisted format,
+manifest, or product behavior changed. `Session.swift` is 12 lines smaller;
+the documented 120-line owner makes total production net +108—this slice
+names and seals an IO-free organ rather than chasing raw LOC. Canonical Mac
+passed Common 81, Wire 510, Host 320, Client 255, SystemTests 17, analyzer 25,
+benchmark safety, and both signed products; isolated pup passed Common 82,
+Wire 510, Host 321, the plain build, netio/pacing (19.206 ms IDR drain against
+the 25 ms ceiling), and protected-state verification. The merged source was
+rebuilt onto the standing systemd host; UDP 41151, Main444, Avahi, and the
+protected identity books are green. **NEXT CLEANUP SLICE: move the remaining
+unknown-frame stale-NACK admission clock into `SessionFreshKeyframeBook`,
+beside the demand it governs. Keep NACK classification, counters, refusal
+traffic, and events in `Session`; pin the exact interval boundary, known-frame
+stale verdicts remaining unthrottled, demand-taking not resetting peer
+pressure, clock wrap, and the existing in-vivo NACK gates.**
+
 **Suites at HEAD:** Wire 510 Mac / 510 pup; Common 81 Mac / 82 pup;
-client 255; SystemTests 17 Mac; host 316 pup / 315 Mac — all green. Eighteen conductor/gauge
+client 255; SystemTests 17 Mac; host 321 pup / 320 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
