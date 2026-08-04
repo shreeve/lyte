@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 510,
-Host 289 Mac / 290 pup, Client 255,
+Host 293 Mac / 294 pup, Client 255,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -639,8 +639,28 @@ sequence stamp and pending 0x17 tuples. Keep reliable transport, counters, and
 events in `Session`; pin 32-tuple batching and success-only dequeue so refused
 sends cannot lose input-to-photon evidence.**
 
+**That injected-input extraction completed as #131.**
+`SessionInputEchoBook` now owns the latest shell-confirmed input sequence and
+the ordered pending 0x17 tuples. Its next-message seam is nonmutating and
+wire-bounded at 32 tuples; `Session` commits that exact prefix only after
+reliable CTRL accepts it, so a refused admission cannot erase input-to-photon
+evidence. `Session` retains ARQ transport, counters, events, and the public
+last-input stamp view consumed by video preparation. Direct pins cover empty
+state, stamp/tuple ordering, 32+8 batching, refusal-safe retry, and the source
+ownership ratchet; the real 40-event lossy input storm still delivered,
+echoed, and stamped every event exactly once. No wire byte, frozen vector,
+persisted format, manifest, or product behavior changed. Canonical Mac passed
+Common 81, Wire 510, Host 293, Client 255, SystemTests 17, analyzer 25,
+benchmark safety, and both signed products; isolated pup passed Common 82,
+Wire 510, Host 294, the plain build, netio/pacing, and protected-state
+verification. **NEXT CLEANUP SLICE: collapse the Host session's five parallel
+fresh-keyframe latches into one sans-IO `SessionFreshKeyframeBook` backed by
+the existing `FreshKeyframeDemand` OptionSet. Move the demand vocabulary
+beside its owner; keep path polling, estimator rate application, counters, and
+events in `Session`; pin coalescence and take-once clearing directly.**
+
 **Suites at HEAD:** Wire 510 Mac / 510 pup; Common 81 Mac / 82 pup;
-client 255; SystemTests 17 Mac; host 290 pup / 289 Mac — all green. Eighteen conductor/gauge
+client 255; SystemTests 17 Mac; host 294 pup / 293 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
