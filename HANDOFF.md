@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 510,
-Host 324 Mac / 325 pup, Client 255,
+Host 326 Mac / 327 pup, Client 255,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -871,8 +871,37 @@ nil-secret immobility, and unchanged admission/counter verdicts in
 platform gates. `SessionCapabilityBook` remains explicitly rejected as a
 wrapper around Wire's existing `CapabilityNegotiator`.**
 
+**That cookie-transition cleanup completed as #140.**
+`HandshakeGate.admitMessage1` now returns one named `Decision`: the unchanged
+admission verdict beside the authoritative optional cookie-mode edge computed
+immediately after the flood-window update. Every path carries the same edge—
+token admit/throttle, challenge, verified cookie, and invalid cookie—before
+branch-specific counters or effects. `Session.lastCookieMode` and
+`noteCookieModeTransition()` are deleted; Session emits the returned edge
+before its handshake/challenge/drop event exactly as before. Direct pins cover
+disabled mode, exact enter/hold/exit, invalid-cookie entry, valid-cookie exit,
+Session event order, admission/counter invariance, and the ownership ratchet.
+No replacement mirror, wrapper, wire byte, frozen vector, persisted format,
+manifest, or product behavior changed. Production is two lines smaller.
+Canonical Mac passed Common 81, Wire 510, Host 326, Client 255, SystemTests 17,
+analyzer 25, benchmark safety, and both signed products; isolated pup passed
+Common 82, Wire 510, Host 327, the plain build, netio/pacing (19.185 ms IDR
+drain against the 25 ms ceiling), and protected-state verification.
+Independent adversarial review found no blocker. **HOST SESSION EXTRACTION IS
+EXHAUSTED FOR NOW—pivot rather than wrap the remaining real duties. NEXT
+CLEANUP SLICE: make Wire's existing `CapabilityNegotiator` the sole owner of
+declaration-once and agreed capability state on both ends. Make `start()`
+return `CapabilityDeclaration?` (first call returns and consumes it; later
+calls return nil), delete Host `capabilitiesDeclared`, and preserve Host's
+current consume-before-send/no-retry behavior. Delete Client's mirrored
+`agreed` and read `negotiator.agreed` under the existing lock everywhere.
+Pin first/second start, opening declaration order, every rule-3 gate, and
+source ownership across Wire/Host/Client; then run focused cross-end capability
+gates and every full platform gate. Add no `SessionCapabilityBook`: it remains
+explicitly rejected as wrapper-only.**
+
 **Suites at HEAD:** Wire 510 Mac / 510 pup; Common 81 Mac / 82 pup;
-client 255; SystemTests 17 Mac; host 325 pup / 324 Mac — all green. Eighteen conductor/gauge
+client 255; SystemTests 17 Mac; host 327 pup / 326 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
