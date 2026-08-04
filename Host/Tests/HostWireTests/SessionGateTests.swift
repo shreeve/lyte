@@ -23,17 +23,35 @@ import LyteWireTestKit
 final class SessionGateTests: XCTestCase {
 
     func testCapabilityNegotiatorAloneOwnsDeclarationOnceState() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false)
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let source = try String(
-            contentsOfFile: packageRoot + "/Sources/HostWire/Session.swift",
-            encoding: .utf8)
+        let source = try sessionSource()
 
         XCTAssertFalse(source.contains("capabilitiesDeclared"))
         XCTAssertTrue(source.contains(
             "guard let declaration = negotiator.start() else { return [] }"))
+    }
+
+    func testLastAdmittedFrameAloneOwnsTheVideoCursor() throws {
+        let source = try sessionSource()
+
+        XCTAssertFalse(source.contains(
+            "private var nextVideoFrameNumber ="))
+        XCTAssertFalse(source.contains("nextVideoFrameNumber ="))
+        XCTAssertTrue(source.contains(
+            "lastAdmittedVideoFrameNumber?.next ?? FrameNumber(rawValue: 0)"))
+        XCTAssertTrue(source.contains(
+            "lastAdmittedVideoFrameNumber.next.rawValue > 0"))
+        XCTAssertTrue(source.contains(
+            "frame: lastAdmittedVideoFrameNumber"))
+    }
+
+    private func sessionSource() throws -> String {
+        var components = #filePath.split(
+            separator: "/", omittingEmptySubsequences: false)
+        components.removeLast(3)
+        let packageRoot = components.joined(separator: "/")
+        return try String(
+            contentsOfFile: packageRoot + "/Sources/HostWire/Session.swift",
+            encoding: .utf8)
     }
 
     // MARK: Corpus plumbing (the HS-5 gate's, verbatim)
@@ -740,6 +758,7 @@ final class SessionGateTests: XCTestCase {
         let context = try XCTUnwrap(
             session.beginVideoFramePreparation(encodedByteCount: frame.count)
         )
+        XCTAssertNil(session.lastAdmittedVideoFrameNumber)
 
         let prepared = try Session.prepareVideoFrame(
             frame, isKeyframe: false, context: context
@@ -767,6 +786,9 @@ final class SessionGateTests: XCTestCase {
         XCTAssertEqual(shards, prepared.shardCount)
         XCTAssertEqual(session.videoCounters.framesIngested, 1)
         XCTAssertEqual(session.videoCounters.borrowedFramesIngested, 1)
+        XCTAssertEqual(
+            session.lastAdmittedVideoFrameNumber,
+            FrameNumber(rawValue: 0))
 
         XCTAssertThrowsError(try session.commitPreparedVideoFrame(
             prepared,
@@ -777,6 +799,19 @@ final class SessionGateTests: XCTestCase {
             XCTAssertEqual($0 as? SessionError, .staleVideoPreparation)
         }
         XCTAssertEqual(session.videoCounters.framesIngested, 1)
+
+        let nextContext = try XCTUnwrap(
+            session.beginVideoFramePreparation(encodedByteCount: frame.count)
+        )
+        _ = try session.commitPreparedVideoFrame(
+            prepared,
+            context: nextContext,
+            captureTimestampMicroseconds: 2,
+            now: 5_000_003
+        )
+        XCTAssertEqual(
+            session.lastAdmittedVideoFrameNumber,
+            FrameNumber(rawValue: 1))
     }
 
     func testShardBudgetLandsExactlyOnTheDatagramCeiling() throws {
