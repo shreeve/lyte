@@ -24,7 +24,6 @@ public final class InterleavedPcmSlicer {
     private var pending: [Float] = []
     private var pendingStartFrame = 0
     private var marks: [Mark] = []
-    private var framesSeen = 0
 
     public init(
         sampleRate: Int,
@@ -52,12 +51,12 @@ public final class InterleavedPcmSlicer {
         precondition(samples.count.isMultiple(of: channels))
 
         if !samples.isEmpty {
-            let frameCount = samples.count / channels
+            let startFrame = pendingStartFrame + pending.count / channels
+            precondition(startFrame <= Int.max - samples.count / channels)
             marks.append(Mark(
-                startFrame: framesSeen,
+                startFrame: startFrame,
                 microseconds: graphStartMicroseconds
             ))
-            framesSeen += frameCount
             pending.append(contentsOf: samples)
         }
 
