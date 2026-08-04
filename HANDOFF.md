@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 510,
-Host 285 Mac / 286 pup, Client 254,
+Host 285 Mac / 286 pup, Client 255,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -596,8 +596,31 @@ small Client shell-wrapper cleanup—move `InputSendTiming` beside
 `OrderedInputSender`, replace `SessionFlag` with `Atomic<Bool>`, and remove
 `SessionCoreBox` through the existing session-instance late-binding seam.**
 
+**That Client shell-wrapper cleanup completed as #129.** `InputSendTiming`
+now lives beside the `OrderedInputSender` that owns it. The private
+`SessionFlag` lock wrapper is deleted in favor of a relaxed `Atomic<Bool>`
+exchange—the same once-only claimant law, without implying that losing callers
+wait for teardown completion. `SessionCoreBox` is also deleted, but its
+synchronized startup publication was not weakened: `LyteUdpSession` owns
+`Mutex<LyteUdpSessionCore?>`, publishes and reads through the same mutex, and
+the endpoint callback captures the session weakly. Early datagrams still see
+either nil or a fully published core, the endpoint/session graph is acyclic,
+and stop order remains ordered input → queued audio stop → core timers →
+endpoint join. A Client source ratchet pins the Mutex publication and weak
+callback seam. No wire byte, frozen vector, persisted format, manifest, or
+product behavior changed. Production is +49/-79 (net -30); the complete slice
+is +62/-79 (net -17). Canonical Mac passed Common 81, Wire 510, Host 285,
+Client 255, SystemTests 17, analyzer 25, benchmark safety, and both signed
+products; isolated pup passed Common 82, Wire 510, Host 286, the plain build,
+netio/pacing, and protected-state verification. Independent concurrency review
+found no blocker. **NEXT CLEANUP SLICE: extract HostWire's sans-IO
+`SessionBeaconClock`—the one owner of 1 Hz cadence, successful-send sequence
+advance, echo mirroring, and offset/RTT/min-RTT statistics. Keep sealing,
+CTRL sequence, counters/events, and estimator policy in `Session`; pin failed
+send, no-drift late wake, and clock-sample laws directly.**
+
 **Suites at HEAD:** Wire 510 Mac / 510 pup; Common 81 Mac / 82 pup;
-client 254; SystemTests 17 Mac; host 286 pup / 285 Mac — all green. Eighteen conductor/gauge
+client 255; SystemTests 17 Mac; host 286 pup / 285 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
