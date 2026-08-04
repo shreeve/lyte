@@ -47,7 +47,7 @@ fresh-video-frame isolated since #27. A-26's histogram and Annex-B twins
 closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
-concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 511,
+concurrent consumers. Suites at HEAD: Common 83 Mac / 84 pup, Wire 511,
 Host 328 Mac / 329 pup, Client 258,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
@@ -987,7 +987,28 @@ not land it unless the API removes both real copies without moving Opus,
 PipeWire, tripwire, or harness verdict policy into HostCore; prefer a smaller
 deletion if that seam cannot stay allocation- and IO-free.**
 
-**Suites at HEAD:** Wire 511 Mac / 511 pup; Common 81 Mac / 82 pup;
+**That histogram saturation cleanup completed as #145.** `Histogram` no
+longer stores a `saturated` Boolean beside its cumulative `count`: saturation
+has always meant that the recording lifetime crossed the bounded retention
+capacity, so `count > capacity` is now the sole owner. The exact boundary is
+unchanged — false through the capacity-th sample, true at the first sample
+past capacity — and `removeAll()` restores false naturally by resetting count.
+Direct pins cover that edge and a source ratchet rejects another saturation
+assignment. No new type, wrapper, wire byte, frozen vector, persisted format,
+manifest, lock boundary, or product behavior changed. Production drops one
+stored field and two maintenance writes. Focused histogram/ratchet gates
+passed 12 tests and the full Common suite passed 83 on Mac. Canonical Mac
+passed Common 83, Wire 511, Host 328, Client 258, SystemTests 17, analyzer 25,
+benchmark safety, and both signed products; isolated pup passed Common 84,
+Wire 511, Host 329, the plain build, netio/pacing (19.308 ms IDR drain against
+the 25 ms ceiling), and protected-state verification. **NEXT CLEANUP SLICE:
+extract the duplicated production/audio-check PCM buffering, graph-clock mark,
+exact 5 ms slicing, and timestamp mechanism into one synchronous, sans-IO
+HostCore owner. Keep Opus, PipeWire, tripwire, delivery, and harness verdicts
+in their role shells; preserve the one unavoidable input copy and add no PCM
+packet copy.**
+
+**Suites at HEAD:** Wire 511 Mac / 511 pup; Common 83 Mac / 84 pup;
 client 258; SystemTests 17 Mac; host 329 pup / 328 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
