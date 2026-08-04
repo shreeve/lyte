@@ -47,7 +47,7 @@ fresh-video-frame isolated since #27. A-26's histogram and Annex-B twins
 closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
-concurrent consumers. Suites at HEAD: Common 83 Mac / 84 pup, Wire 511,
+concurrent consumers. Suites at HEAD: Common 83 Mac / 84 pup, Wire 513,
 Host 334 Mac / 335 pup, Client 258,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
@@ -1035,7 +1035,28 @@ independent reviews found no blocker. **NEXT CLEANUP SLICE: re-inventory the
 current tree after #146 and choose the smallest earned deletion or existing
 owner that removes a parallel truth; reject wrapper-only movement.**
 
-**Suites at HEAD:** Wire 511 Mac / 511 pup; Common 83 Mac / 84 pup;
+**That bulk-admission counter cleanup completed as #147.**
+`BulkReceiveEngine` no longer stores `admittedChunkCount` beside the two books
+that already own the answer: consumed chunks and stores awaiting durability.
+Every receiver transition maintained `admitted == consumed + pending`; the
+credit guard now derives that debt at its only use, and both synchronized
+counter mutations are gone. Resume under-claim tolerance, slow storage,
+monotonic credit refresh, duplicate refusal, aborts, and verification retain
+their exact transactions. A direct mixed-state pin consumes one tolerated
+resume chunk, holds two fresh stores at the refreshed grant, and refuses the
+next admission; a source ratchet rejects another parallel counter. No public
+API, wire byte, frozen vector, transfer state, storage policy, allocation,
+manifest, or shell behavior changed. Production loses one stored field and two
+writes. Canonical Mac passed Common 83, Wire 513, Host 334, Client 258,
+SystemTests 17, analyzer 25, benchmark safety, and both signed products (one
+existing no-output-device client test skipped); isolated pup passed Common 84,
+Wire 513, Host 335, the plain build, netio/pacing (19.189 ms IDR drain against
+the 25 ms ceiling), and protected-state verification. Independent transition
+and overflow review found no blocker. **NEXT CLEANUP SLICE: make Host
+`EncoderVbvPolicy.squeezeEngaged` a projection of its authoritative applied
+rung, deleting the synchronized posture bit while preserving its public API.**
+
+**Suites at HEAD:** Wire 513 Mac / 513 pup; Common 83 Mac / 84 pup;
 client 258; SystemTests 17 Mac; host 335 pup / 334 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
