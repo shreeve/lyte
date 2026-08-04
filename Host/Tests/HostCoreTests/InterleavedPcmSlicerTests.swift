@@ -148,6 +148,28 @@ final class InterleavedPcmSlicerTests: XCTestCase {
         }
     }
 
+    func testConsumedHeadAndRetainedFramesOwnTheTotal() throws {
+        let hostRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: hostRoot.appendingPathComponent(
+                "Sources/HostCore/InterleavedPcmSlicer.swift"
+            ),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains(
+            "let startFrame = pendingStartFrame + pending.count / channels"
+        ))
+        XCTAssertTrue(source.contains(
+            "precondition(startFrame <= Int.max - samples.count / channels)"
+        ))
+        XCTAssertFalse(source.contains("private var framesSeen"))
+        XCTAssertFalse(source.contains("framesSeen +="))
+    }
+
     private func slice(
         chunks: [([Float], UInt64)]
     ) -> (packets: [[Float]], timestamps: [UInt64]) {
