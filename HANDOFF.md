@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 83 Mac / 84 pup, Wire 513,
-Host 335 Mac / 336 pup, Client 260,
+Host 336 Mac / 337 pup, Client 260,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -1121,8 +1121,32 @@ review found no blocker. **NEXT CLEANUP SLICE: derive Host
 plus retained frame count, deleting `framesSeen` while preserving fragmented,
 discontinuous, and transactional-retry timestamp behavior.**
 
+**That PCM total-frame cleanup completed as #151.**
+`InterleavedPcmSlicer` now derives each new graph mark from the consumed head
+plus retained whole frames, the two books that already sum to cumulative
+ingest position. The mutable `framesSeen` field and its ingest write are gone.
+The first draft exposed a checked-overflow ordering difference under an
+`Int.max` adversarial review; it did not land. The corrected slice explicitly
+rejects a cumulative-frame overflow before appending the mark, retaining PCM,
+or invoking any callback, preserving the old fail-first boundary. Fragmented
+and continuous input, discontinuous graph marks, exact 48 kHz rounding,
+empty/partial input, multi-packet drains, throwing transactional retry, and
+both real consumers retain their exact bytes and timestamps. A source ratchet
+pins both the projection and overflow ordering. No public API, wire byte,
+frozen vector, manifest, allocation doctrine, copy boundary, or product
+behavior changed. Focused slicer gates passed 7 tests. Canonical Mac passed
+Common 83, Wire 513, Host 336, Client 260, SystemTests 17, analyzer 25,
+benchmark safety, and both signed products (one existing no-output-device
+client test skipped); isolated pup passed Common 84, Wire 513, Host 337, the
+plain build, netio/pacing (19.122 ms IDR drain against the 25 ms ceiling), and
+protected-state verification. Independent transition, retry, overflow-order,
+and source-ratchet review found no blocker after correction. **NEXT CLEANUP
+SLICE: derive Host `SessionLifecycleLane.videoSendsSuppressed` from the shared
+machine's authoritative state, deleting the synchronized `videoIsFrozen`
+projection while preserving local action consumption and audio asymmetry.**
+
 **Suites at HEAD:** Wire 513 Mac / 513 pup; Common 83 Mac / 84 pup;
-client 260; SystemTests 17 Mac; host 336 pup / 335 Mac — all green. Eighteen conductor/gauge
+client 260; SystemTests 17 Mac; host 337 pup / 336 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
