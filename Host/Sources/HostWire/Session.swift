@@ -587,19 +587,6 @@ public struct SessionVideoFramePreparationContext: Sendable {
     fileprivate let channelConfig: VideoFramePreparationConfig
 }
 
-/// Raw clock-mapping samples from the beacon/echo exchange.
-public struct SessionClockStats: Equatable, Sendable {
-    public var samples = 0
-    public var lastOffsetMicroseconds: Int64?
-    public var lastRttMicroseconds: Int64?
-    public var minRttMicroseconds: Int64?
-    /// The offset carried by the min-RTT sample — the least
-    /// queue-polluted estimate (the min-filter idea, one sample deep).
-    public var minRttOffsetMicroseconds: Int64?
-
-    public init() {}
-}
-
 public struct SessionCounters: Equatable, Sendable {
     public var datagramsReceived = 0
     public var dropped = 0
@@ -737,7 +724,7 @@ public final class Session {
     /// (primary tuple, send allowances) and the tests' state checks.
     public let validator: PathValidator
     public private(set) var phase: Phase
-    public private(set) var clock = SessionClockStats()
+    public var clock: SessionClockStats { beaconClock.stats }
     public private(set) var counters = SessionCounters()
 
     /// The completed Noise handshake's transcript hash — the sid the
@@ -786,9 +773,7 @@ public final class Session {
     /// surfaced for the shell's live log.
     public var handshakeCookieMode: Bool { handshakeGate.cookieMode }
 
-    private var beaconSeq: UInt32 = 0
-    private var nextBeaconAt: UInt64?
-    private var lastEcho: ClockBeacon.LastEcho?
+    private var beaconClock: SessionBeaconClock
     private var clientKeyframePending = false
 
     // MARK: HS-11 lifecycle + W7 capabilities state
@@ -1018,6 +1003,9 @@ public final class Session {
         self.pumpNowNS = now
         self.sendAccounting = sendAccounting
         self.handshakeGate = HandshakeGate(config: config.handshakeGate)
+        self.beaconClock = SessionBeaconClock(
+            intervalNanoseconds: config.beaconIntervalNS
+        )
         self.negotiator = CapabilityNegotiator(
             role: .host, local: config.capabilities
         )
@@ -1035,7 +1023,7 @@ public final class Session {
             // No handshake to wait for; the session-start beacon (and
             // the capability declaration) leave on the first `advance`.
             self.phase = .established
-            self.nextBeaconAt = now
+            self.beaconClock.armSessionStart(at: now)
             self.machine = SessionStateMachine(
                 role: .mediaSender,
                 config: config.lifecycle,
@@ -2947,13 +2935,12 @@ public final class Session {
                 now: now, hostMicroseconds: hostMicroseconds
             )
         }
-        if let due = nextBeaconAt, now >= due {
-            events += emitBeacon(now: now, hostMicroseconds: hostMicroseconds)
-            // Re-arm from the due instant so cadence does not drift; a
-            // stalled loop emits one catch-up beacon, never a burst.
-            var next = due + config.beaconIntervalNS
-            if next <= now { next = now + config.beaconIntervalNS }
-            nextBeaconAt = next
+        if let beacon = beaconClock.takeDueBeacon(
+            now: now, hostMicroseconds: hostMicroseconds
+        ) {
+            events += emitBeacon(
+                beacon, now: now, hostMicroseconds: hostMicroseconds
+            )
         }
         events += flushInputEchoes(now: now, hostMicroseconds: hostMicroseconds)
         // HS-22: a convergence that waited out the idle-flip quiet —
@@ -3026,7 +3013,8 @@ public final class Session {
     public func nextWake(now: UInt64) -> UInt64? {
         var wake = channel.nextWake(now: now)
         for candidate in [
-            nextBeaconAt, nextArqWakeNS, nextBulkArqWakeNS,
+            beaconClock.nextDeadlineNanoseconds,
+            nextArqWakeNS, nextBulkArqWakeNS,
             machineDeadlineNS, validator.nextDeadline, pendingIdleFlipAt,
         ] {
             guard let candidate else { continue }
@@ -3193,8 +3181,12 @@ public final class Session {
         // "1 Hz plus session start" (§4.6): message 2 is already queued
         // ahead of this beacon in the control FIFO, so the client can
         // derive its transport before the first sealed datagram lands.
-        events += emitBeacon(now: now, hostMicroseconds: hostMicroseconds)
-        nextBeaconAt = now + config.beaconIntervalNS
+        let beacon = beaconClock.makeSessionStartBeacon(
+            now: now, hostMicroseconds: hostMicroseconds
+        )
+        events += emitBeacon(
+            beacon, now: now, hostMicroseconds: hostMicroseconds
+        )
         // The machine begins at establishment, in ACTIVE (W4b), and the
         // capability declaration is the first ARQ-carried word (W7) —
         // beacons are ARQ-exempt, so it is first on the reliable stream
@@ -3270,21 +3262,8 @@ public final class Session {
     private func accept(
         echo: BeaconEcho, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        let hostReceive = HostTimestamp(microseconds: hostMicroseconds)
-        let sample = echo.clockSample(hostReceive: hostReceive)
-        clock.samples += 1
-        clock.lastOffsetMicroseconds = sample.offsetMicroseconds
-        clock.lastRttMicroseconds = sample.rttMicroseconds
-        if clock.minRttMicroseconds.map({ sample.rttMicroseconds < $0 }) ?? true {
-            clock.minRttMicroseconds = sample.rttMicroseconds
-            clock.minRttOffsetMicroseconds = sample.offsetMicroseconds
-        }
-        // W4a's mirror: the next beacon reports this echo's t3 verbatim
-        // and our locally measured t4.
-        lastEcho = ClockBeacon.LastEcho(
-            beaconSeq: echo.beaconSeq,
-            clientSend: echo.clientSend,
-            hostReceive: hostReceive
+        let sample = beaconClock.accept(
+            echo: echo, hostMicroseconds: hostMicroseconds
         )
         counters.beaconEchoes += 1
         // RTT evidence into the estimator (telemetry + the future
@@ -3300,24 +3279,20 @@ public final class Session {
     // MARK: Outbound plumbing
 
     private func emitBeacon(
-        now: UInt64, hostMicroseconds: UInt64
+        _ beacon: ClockBeacon,
+        now: UInt64,
+        hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        let beacon = ClockBeacon(
-            beaconSeq: beaconSeq,
-            hostSend: HostTimestamp(microseconds: hostMicroseconds),
-            lastEcho: lastEcho
-        )
         do {
             try sendCtrl(
                 body: beacon.encode(), sealed: true,
                 now: now, hostMicroseconds: hostMicroseconds
             )
         } catch {
-            return [.sendFailed("beacon \(beaconSeq): \(error)")]
+            return [.sendFailed("beacon \(beacon.beaconSeq): \(error)")]
         }
         counters.beaconsSent += 1
-        defer { beaconSeq &+= 1 }
-        return [.beaconSent(beaconSeq: beaconSeq)]
+        return [.beaconSent(beaconSeq: beaconClock.noteBeaconSent())]
     }
 
     /// Executes the validator's decisions (a challenge is a CTRL send on
