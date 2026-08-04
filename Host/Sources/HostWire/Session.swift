@@ -739,6 +739,7 @@ public final class Session {
 
     private var beaconClock: SessionBeaconClock
     private var freshKeyframes = SessionFreshKeyframeBook()
+    private var repairBudget = SessionRepairBudgetBook()
 
     // MARK: HS-11 lifecycle + W7 capabilities state
 
@@ -757,22 +758,6 @@ public final class Session {
     /// to real retained frames and remain unthrottled; only arbitrary
     /// unknown frame numbers can manufacture this pressure.
     private var lastUnknownFrameIdrArmAtNS: UInt64?
-    /// HS-32: EWMA (α = 1/8) of feedback-report inter-arrival, each
-    /// sample clamped to the wire-pinned 25–50 ms cadence range; nil
-    /// before the second parsed report (the derived budget then uses
-    /// the 50 ms documented worst case).
-    private var feedbackCadenceEwmaNS: UInt64?
-    private var lastFeedbackParsedAtNS: UInt64?
-    /// HS-32: sticky once a feedback report shows every video datagram
-    /// through the opening IDR's group delivered (missing 0, received
-    /// ≥ its shard count) — the host-visible proxy for "a frame
-    /// plausibly completed at the client". Conservative-armed: any
-    /// early loss keeps the opening exemption alive, which its
-    /// attempt/byte bounds make safe.
-    private var clientGlassEvidence = false
-    private var openingIdrShardTotal: Int?
-    private var openingExemptAttempts = 0
-    private var openingExemptBytes = 0
     /// The converged ratchet frame awaiting its one-shot ride.
     private var convergedFrame:
         (annexB: [UInt8], frame: FrameNumber, captureMicros: UInt64)?
@@ -1364,8 +1349,8 @@ public final class Session {
         // HS-32: the opening exemption's glass proxy needs the first
         // IDR's group size — "received everything through this group"
         // is the evidence that something plausibly decoded.
-        if prepared.isKeyframe, openingIdrShardTotal == nil {
-            openingIdrShardTotal = shards
+        if prepared.isKeyframe {
+            repairBudget.noteOpeningIdr(shardCount: shards)
         }
         lastAdmittedVideoFrameNumber = context.frameNumber
         nextVideoFrameNumber = nextVideoFrameNumber.next
@@ -2515,29 +2500,7 @@ public final class Session {
             return [.dropped(.malformedFeedback)]
         }
         counters.feedbackReportsParsed += 1
-        // HS-32: the derived freeze budget's cadence evidence — an
-        // EWMA of report inter-arrival, each sample clamped to the
-        // wire-pinned 25–50 ms cadence range so out-of-cadence NACK
-        // flushes and lost reports never masquerade as the cadence.
-        if let last = lastFeedbackParsedAtNS {
-            let sample = min(max(now &- last, 25_000_000), 50_000_000)
-            feedbackCadenceEwmaNS = feedbackCadenceEwmaNS.map {
-                ($0 * 7 &+ sample) / 8
-            } ?? sample
-        }
-        lastFeedbackParsedAtNS = now
-        // HS-32: the opening exemption's glass proxy — a report
-        // showing every video datagram through the opening IDR's
-        // group delivered means a frame plausibly completed; the
-        // exemption dies for good.
-        if !clientGlassEvidence, let total = openingIdrShardTotal {
-            for block in report.channels
-            where block.channel == .videoActive
-                && block.missing == 0
-                && block.received >= UInt32(total) {
-                clientGlassEvidence = true
-            }
-        }
+        repairBudget.noteFeedback(report, now: now)
         // The video-class backlog rides along (HS-22c): while the
         // pacer holds a standing queue, delivery trains measure our
         // own pacing — the estimator's self-reference gate needs to
@@ -2620,14 +2583,12 @@ public final class Session {
     /// `repairFreezeBudgetOverrideNS` (multiplier × observed cadence
     /// + jitter allowance; 50 ms worst-case cadence before evidence).
     public var repairFreezeBudgetNS: UInt64 {
-        if let override = config.repairFreezeBudgetOverrideNS {
-            return override
-        }
-        let cadenceNS = feedbackCadenceEwmaNS ?? 50_000_000
-        let scaled = UInt64(
-            config.repairBudgetCadenceMultiplier * Double(cadenceNS)
+        repairBudget.freezeBudgetNanoseconds(
+            override: config.repairFreezeBudgetOverrideNS,
+            cadenceMultiplier: config.repairBudgetCadenceMultiplier,
+            jitterAllowanceNanoseconds:
+                config.repairBudgetJitterAllowanceNS
         )
-        return scaled &+ config.repairBudgetJitterAllowanceNS
     }
 
     /// The HS-17 NACK responder: resiliency §1.1 rules 3–4 over the
@@ -2754,11 +2715,12 @@ public final class Session {
         // 1 s away): a black glass is the one case where a late
         // repair beats a re-minted IDR that starts even later.
         // Attempt/byte-bounded so it can never amplify congestion.
-        let openingExempt = !clientGlassEvidence
-            && channel.lastKeyframeNumber == nack.frame
-            && openingExemptAttempts < config.openingRepairMaxAttempts
-            && openingExemptBytes + repairBytes
-                <= config.openingRepairMaxBytes
+        let openingExempt = repairBudget.openingExemptionAvailable(
+            lastIdrMatches: channel.lastKeyframeNumber == nack.frame,
+            repairBytes: repairBytes,
+            maxAttempts: config.openingRepairMaxAttempts,
+            maxBytes: config.openingRepairMaxBytes
+        )
         if !openingExempt {
             // Rule 3's gate. The budget clock started when the frame's
             // flight completed (the client cannot judge it
@@ -2807,8 +2769,7 @@ public final class Session {
             return stale(.unavailable, armIdr: true)
         }
         if openingExempt {
-            openingExemptAttempts += 1
-            openingExemptBytes += repairBytes
+            repairBudget.commitOpeningExemptRepair(bytes: repairBytes)
             counters.openingExemptRepairsHonored += 1
         }
         counters.nacksHonored += 1
