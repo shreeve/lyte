@@ -1,4 +1,5 @@
 import XCTest
+import Foundation
 @testable import HostCore
 
 // The beat book's laws: a clean 60 Hz flip train books zero skips;
@@ -9,6 +10,21 @@ import XCTest
 final class CaptureBeatBookTests: XCTestCase {
 
     private let beat: UInt64 = 16_667
+
+    func testBeatBookCountAloneOwnsSkipDiagnosticLimit() throws {
+        let hostRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: hostRoot
+                .appendingPathComponent("Sources/lyte-host/DirectEyeLeg.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("if beatBook.skips <= 40"))
+        XCTAssertFalse(source.contains("beatSkipLinesPrinted"))
+    }
 
     /// Drives polls every millisecond from `from` up to `to`, then
     /// the flip-detecting poll at `to`.
