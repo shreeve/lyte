@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 83 Mac / 84 pup, Wire 513,
-Host 337 Mac / 338 pup, Client 260,
+Host 337 Mac / 338 pup, Client 261,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -1170,8 +1170,33 @@ smallest authoritative projection with a complete transition proof; the
 pairing-sheet completion latch and Noise transport established bit are
 candidates, not presumptions.**
 
+**That Noise transport-ready cleanup completed as #153.**
+`NoiseTransportCrypto` now derives its established posture from the
+handshake hash that is co-published with both directional transports under
+the existing state lock. The synchronized `established` Boolean and its
+success-path write are gone; duplicate-handshake posture is captured while
+the lock is still held. Pre-handshake open/seal/unseal still fail, rejected
+message 2 and exhausted retries never publish readiness, a concurrent second
+handshake still reports in-progress, and a post-success duplicate still
+reports already-completed. Success retains the state → send → receive lock
+order, publishes the complete tuple before releasing state, preserves
+same-direction nonce/replay serialization, and preserves opposite-direction
+overlap. A source ratchet pins the handshake hash as the one readiness book
+beside the real retry, tamper, replay, and concurrency gates. No public API,
+wire byte, frozen vector, manifest, allocation, lock boundary, or product
+behavior changed. Focused Noise gates passed 10 tests. Canonical Mac passed
+Common 83, Wire 513, Host 337, Client 261, SystemTests 17, analyzer 25,
+benchmark safety, and both signed products (one existing no-output-device
+client test skipped); isolated pup passed Common 84, Wire 513, Host 338, the
+plain build, netio/pacing (19.195 ms IDR drain against the 25 ms ceiling), and
+protected-state verification. Independent publication-order, concurrency,
+lock-order, failure-path, and source-ratchet review found no blocker. **NEXT
+CLEANUP SLICE: delete DirectEyeLeg's `beatSkipLinesPrinted` mirror and gate
+the first forty diagnostics from `CaptureBeatBook.skips`, the authoritative
+count already incremented before each returned skip event.**
+
 **Suites at HEAD:** Wire 513 Mac / 513 pup; Common 83 Mac / 84 pup;
-client 260; SystemTests 17 Mac; host 338 pup / 337 Mac — all green. Eighteen conductor/gauge
+client 261; SystemTests 17 Mac; host 338 pup / 337 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
