@@ -18,6 +18,7 @@ import LyteIO
 import COpusEncode
 import CPipeWireAudio
 import Foundation
+import HostCore
 
 struct CheckError: Error, CustomStringConvertible {
     let description: String
@@ -41,13 +42,11 @@ final class Sink {
     let encoder: OpaquePointer
     let decoder: OpaquePointer
 
-    // Pending PCM not yet sliced into a full 5 ms frame, and the graph-clock
-    // marks needed to timestamp a packet by the buffer its first sample
-    // arrived in: (global frame index of buffer start, graph µs of it).
-    var pending: [Float] = []
-    var pendingStartFrame = 0
-    var marks: [(startFrame: Int, us: UInt64)] = []
-    var framesSeen = 0
+    let slicer = InterleavedPcmSlicer(
+        sampleRate: sampleRate,
+        channels: channels,
+        packetFrames: packetFrames
+    )
 
     // Evidence.
     var packetSizes: [Int] = []
@@ -65,7 +64,6 @@ final class Sink {
     init(encoder: OpaquePointer, decoder: OpaquePointer) {
         self.encoder = encoder
         self.decoder = decoder
-        pending.reserveCapacity(8192)
     }
 
     func onAudio(samples: UnsafePointer<Float>, nFrames: UInt32,
@@ -83,65 +81,54 @@ final class Sink {
         guard negotiationError == nil else { return }
         lastBufferWall = SystemMonotonicClock.nowSeconds
 
-        marks.append((startFrame: framesSeen, us: graphUS))
-        framesSeen += Int(nFrames)
-        pending.append(contentsOf: UnsafeBufferPointer(
-            start: samples, count: Int(nFrames) * channels))
-
-        while pending.count >= packetFrames * channels {
-            emitPacket()
-            if callbackError != nil {
-                if let capture { lyte_pw_audio_quit(capture) }
-                return
+        do {
+            try slicer.ingest(
+                UnsafeBufferPointer(
+                    start: samples, count: Int(nFrames) * channels
+                ),
+                graphStartMicroseconds: graphUS
+            ) { pcm, timestamp in
+                try emitPacket(pcm: pcm, timestamp: timestamp)
             }
+        } catch {
+            if let capture { lyte_pw_audio_quit(capture) }
         }
     }
 
-    private func emitPacket() {
-        // Timestamp: the mark of the buffer containing this packet's first
-        // sample, advanced by the sample offset within it — pure graph clock.
-        let startFrame = pendingStartFrame
-        var ts: UInt64 = 0
-        while marks.count > 1, marks[1].startFrame <= startFrame {
-            marks.removeFirst()
-        }
-        if let m = marks.first {
-            ts = m.us + UInt64(startFrame - m.startFrame)
-                * 1_000_000 / UInt64(sampleRate)
-        }
-
+    private func emitPacket(
+        pcm: UnsafeBufferPointer<Float>, timestamp: UInt64
+    ) throws {
         var err = [CChar](repeating: 0, count: 256)
         var packet = [UInt8](repeating: 0, count: Int(LYTE_OPUS_MAX_PACKET))
-        let n = pending.withUnsafeBufferPointer { pcm in
-            lyte_opus_enc_encode(encoder, pcm.baseAddress, &packet,
-                                 Int32(packet.count), &err, err.count)
-        }
+        let n = lyte_opus_enc_encode(
+            encoder, pcm.baseAddress, &packet,
+            Int32(packet.count), &err, err.count
+        )
         guard n > 0 else {
-            callbackError = "encode failed at packet \(packetSizes.count): "
+            let message = "encode failed at packet \(packetSizes.count): "
                 + errString(err)
-            return
+            callbackError = message
+            throw CheckError(message)
         }
 
         var decoded = [Float](repeating: 0, count: packetFrames * channels)
         let frames = lyte_opus_dec_decode(decoder, packet, n, &decoded,
                                           Int32(packetFrames), &err, err.count)
         guard frames == Int32(packetFrames) else {
-            callbackError = "loop decode failed at packet \(packetSizes.count) "
+            let message = "loop decode failed at packet \(packetSizes.count) "
                 + "(\(frames) frames): " + errString(err)
-            return
+            callbackError = message
+            throw CheckError(message)
         }
 
         packetSizes.append(Int(n))
-        packetTS.append(ts)
+        packetTS.append(timestamp)
         var size32 = UInt32(n).littleEndian
-        var ts64 = ts.littleEndian
+        var ts64 = timestamp.littleEndian
         withUnsafeBytes(of: &size32) { packetData.append(contentsOf: $0) }
         withUnsafeBytes(of: &ts64) { packetData.append(contentsOf: $0) }
         packetData.append(contentsOf: packet.prefix(Int(n)))
         decodedPCM.append(contentsOf: decoded)
-
-        pending.removeFirst(packetFrames * channels)
-        pendingStartFrame += packetFrames
     }
 }
 
