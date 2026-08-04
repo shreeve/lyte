@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 510,
-Host 285 Mac / 286 pup, Client 255,
+Host 289 Mac / 290 pup, Client 255,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -619,8 +619,28 @@ advance, echo mirroring, and offset/RTT/min-RTT statistics. Keep sealing,
 CTRL sequence, counters/events, and estimator policy in `Session`; pin failed
 send, no-drift late wake, and clock-sample laws directly.**
 
+**That Host clock extraction completed as #130.** `SessionBeaconClock` is
+now the one sans-IO owner of the beacon deadline, successful-send sequence,
+last-echo mirror, and raw offset/RTT/min-RTT books. `Session` retains the
+transport boundary: it seals and schedules CTRL, reports send failures,
+increments counters, emits events, and feeds accepted samples into the
+congestion estimator. The direct pins prove that a refused send retries the
+same sequence on the next beat, a slightly late wake preserves cadence, a
+long stall schedules exactly one fresh interval rather than a burst, and the
+minimum-RTT sample supplies the retained offset while the newest echo is
+mirrored byte-for-byte. The Session source ratchet rejects the four retired
+owner spellings. No wire byte, frozen vector, persisted format, manifest, or
+product behavior changed. Canonical Mac passed Common 81, Wire 510, Host 289,
+Client 255, SystemTests 17, analyzer 25, benchmark safety, and both signed
+products; isolated pup passed Common 82, Wire 510, Host 290, the plain build,
+netio/pacing, and protected-state verification. **NEXT CLEANUP SLICE: extract
+HostWire's sans-IO `SessionInputEchoBook`—the one owner of the last injected
+sequence stamp and pending 0x17 tuples. Keep reliable transport, counters, and
+events in `Session`; pin 32-tuple batching and success-only dequeue so refused
+sends cannot lose input-to-photon evidence.**
+
 **Suites at HEAD:** Wire 510 Mac / 510 pup; Common 81 Mac / 82 pup;
-client 255; SystemTests 17 Mac; host 286 pup / 285 Mac — all green. Eighteen conductor/gauge
+client 255; SystemTests 17 Mac; host 290 pup / 289 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
