@@ -742,10 +742,6 @@ public final class Session {
     /// The W7 negotiation machine, host role.
     private var negotiator: CapabilityNegotiator
     private var capabilitiesDeclared = false
-    /// Last peer-driven `.unavailable` arm. Budget-stale NACKs are tied
-    /// to real retained frames and remain unthrottled; only arbitrary
-    /// unknown frame numbers can manufacture this pressure.
-    private var lastUnknownFrameIdrArmAtNS: UInt64?
     private var idleHandoff = SessionIdleHandoffBook()
     /// The HS-16 congestion estimator: send ledger + delivery-rate/
     /// queuing-delay/loss evidence → the pacer's setRate seam, W4b's
@@ -2494,20 +2490,13 @@ public final class Session {
         ) -> [SessionEvent] {
             counters.nacksJudgedStale += 1
             if armIdr {
-                let mayArm: Bool
-                if reason == .unavailable {
-                    mayArm = lastUnknownFrameIdrArmAtNS.map {
-                        now &- $0 >= config.unknownFrameIdrArmIntervalNS
-                    } ?? true
-                } else {
-                    mayArm = true
-                }
-                if mayArm {
-                    freshKeyframes.arm(.staleNackArm)
+                if freshKeyframes.armStaleNack(
+                    unknownFrame: reason == .unavailable,
+                    now: now,
+                    minimumUnknownFrameInterval:
+                        config.unknownFrameIdrArmIntervalNS
+                ) {
                     counters.idrArmedOnStaleNack += 1
-                    if reason == .unavailable {
-                        lastUnknownFrameIdrArmAtNS = now
-                    }
                 } else {
                     counters.unknownFrameIdrArmsThrottled += 1
                 }
