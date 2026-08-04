@@ -100,25 +100,18 @@ nothing may throw past thread.start(), stated at the site),
 **A-25** → #79 (compiler-enforced discard binding + the mixed-clock
 warning at both ends), **A-27** → #79 (anchor and centering offset
 from the same sample; order-invariance pinned through a coprime
-scramble). The TWO below remain — both design/migration-shaped,
-deliberately not batch work.*
+scramble). A-20 also closed in #27: delivery evidence is segmented per
+channel and fresh-video frame, with audio and sparse repairs barred from
+capacity votes. The one residue below remains and belongs to the active
+architecture cleanup.*
 
-- **A-20 Delivery trains are segmented channel-blind** —
-  `Host/Sources/HostWire/RateEstimator.swift`: trains mix fast-lane
-  audio (131 B) with video (1152 B) under DSCP, skewing the measured
-  rate that drives the honest/censored trichotomy — and at the 500 kbps
-  floor the rate-scaled gap (~55 ms) chains audio's 5 ms cadence into
-  every train. Consider single-channel trains or per-channel
-  classification. (Estimator design work — belongs with the direct-leg
-  quality refinement on the postures queue.)
-
-- **A-26 (residue) duplications + missing host-side seams** —
-  `LatencyHistogram` ≡ `HostCore.Histogram` and `AnnexBCheck` ≡
-  `HostCore.AnnexB` are documented-in-code duplications; the host's
-  crypto and ARQ carriage are inlined switches where the client has
-  named seams (`TransportCrypto`, `ReliableCtrlEndpoint`) — the missing
-  host-side seam is why the ARQ repack duplication exists. (The
-  evidence FOR the v2 Common/IO split — resolve there, not piecemeal.)
+- **A-26 (residue) host crypto/ARQ seams** — the shared histogram and Annex-B
+  duplications closed in #96 and #97. The host's crypto and ARQ carriage remain
+  inlined where the client has named seams (`TransportCrypto`,
+  `ReliableCtrlEndpoint`); the immediate duplicate is the Host/Client/test ARQ
+  repacking and budget calculation. Make LyteWire pack once at an injected
+  carrier ceiling, delete the downstream repackers, then judge whether a named
+  host seam still earns its weight during session-spine extraction.
 
 ## Browser client + Caddy bridge (`docs/20260720-184200-browser-client-caddy-bridge.md`)
 

@@ -42,10 +42,10 @@ the hardening waves #27/#30/#33/#38/#43, T2-10 → #75, T2-13 → #76)
 and the A-train batch landed as #77 (bounded audio roundtrips +
 atomic exit reason), #78 (init validation above allocations), #79
 (clock-model anchor pairing + pinned order-invariance, decoy stamp
-discarded by contract). Only TWO items remain in TODO.md, both
-deliberately deferred to their proper homes: A-20 (channel-blind
-trains → the direct-leg quality refinement) and A-26 (duplications →
-the v2 Common/IO split). Suites at HEAD: Wire 517, root 287, host
+discarded by contract). Only A-26's host crypto/ARQ seam residue remains
+in TODO.md: A-20's delivery trains have been channel- and fresh-video-frame
+isolated since #27, while A-26's histogram and Annex-B twins closed in
+#96/#97. Suites at HEAD: Wire 517, root 287, host
 290 pup / 289 Mac. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -367,8 +367,8 @@ until NVENC hardware exists and `AudioSource` belongs to the Lyte OS track,
 exactly as chartered. **NEXT CLEANUP SLICE: Theme 3's cross-end composition
 gates land first, before any session-spine extraction.**
 
-**CLEANUP THEME 3 OPENED (#116 + #118, 2026-08-03): pairing and targeted
-repair now meet real peers in the client gates.** #116 made the root package
+**CLEANUP THEME 3 OPENED (#116 + #118, 2026-08-03): pairing policy and
+targeted repair began meeting real peers in the client gates.** #116 made the root package
 admit `HostWire` only to
 `LyteTransportTests`; `LyteTransport` and every shipping client product remain
 Host-free. The existing client pairing gate still drives the real Noise
@@ -397,9 +397,10 @@ rebase; canonical Mac and pup repeated the same 78/507/286/262 and
 79/507/287 matrices above, including analyzer, signed products, Linux
 build/harnesses, and protected state. No production source, wire byte, vector,
 or persisted format changed. #125 closed the other repair half in the
-migration ledger below; Theme 3's pairing and targeted-repair doubles are now
-gone. **NEXT CLEANUP SLICE: inventory and design the session-spine extraction
-now that the cross-end composition gates exercise real peers.**
+migration ledger below. The shipping pairing services were real after #116,
+but the gate's private host transport shell still reconstructed Noise, ARQ,
+envelopes, startup control, and pacing; #126 closes that final carriage debt
+below.
 
 **THE TREE MIGRATION OPENED (#103 + #108 + #115 + #117 + #119 + #120 + #121, 2026-08-03): every move has
 a gate, and Common now speaks one filesystem grammar.** #103 recorded the
@@ -528,9 +529,27 @@ byte, or persisted format changed. Canonical Mac passed Common 80, Wire 508,
 Host 284, Client 253, SystemTests 16, analyzer 25, benchmark safety, and both
 signed products; isolated pup passed Common 81, Wire 508, Host 285, the plain
 build, netio/pacing, and protected-state verification. Independent architecture
-and adversarial reviews found no blocker. **NEXT CLEANUP SLICE: inventory and
-design the session-spine extraction before moving code; keep the real pairing
-and repair composition gates green throughout.**
+and adversarial reviews found no blocker. **That carriage cleanup completed as
+#126.** One shared `SystemHostSession` now backs both cross-end gates with the
+shipping `HostWire.Session`; only UDP release and monotonic time are virtual.
+Pairing binds `PairingResponderService` from the Session's actual
+`.handshakeCompleted` event and handshake hash, feeds actual `.reliableCtrl`
+events into the service, sends its answers through `Session.sendReliable`, and
+forwards the real startup beacon/capability flight before the client share.
+The old pairing `HostStandIn` and the NACK gate's second Session wrapper are
+deleted. A target-wide, Swift-aware ratchet now rejects relocated direct Noise,
+ARQ, connection-ID, envelope, beacon, feedback, repair, and control-sequence
+construction while requiring the real handshake and reliable-control seams.
+No production source, manifest, package edge, frozen vector, wire byte, or
+persisted format changed. The slice is +429/-408 (net +21 test lines): two
+rebuilt carriers became one production-Session harness plus stronger boundary
+enforcement. Canonical Mac passed Common 80, Wire 508, Host 284, Client 253,
+SystemTests 16, analyzer 25, benchmark safety, and both signed products;
+isolated pup passed Common 81, Wire 508, Host 285, the plain build,
+netio/pacing, and protected-state verification. Two independent reviews found
+no blocker. **NEXT CLEANUP SLICE: make LyteWire ARQ pack once at the configured
+carrier ceiling, then delete the Host, Client, and test repackers before
+session-spine extraction.**
 
 **Suites at HEAD:** Wire 508 Mac / 508 pup; Common 80 Mac / 81 pup;
 client 253; SystemTests 16 Mac; host 285 pup / 284 Mac — all green. Eighteen conductor/gauge
