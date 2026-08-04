@@ -433,6 +433,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
 
         var events: [LyteUdpSessionEvent] = []
         var samples: [(CMSampleBuffer, DecodeUnit)] = []
+        var chromaAtSubmission: [String] = []
 
         init(
             host: HostStandIn,
@@ -460,9 +461,14 @@ final class LyteUdpSessionGateTests: XCTestCase {
                 now: { ClientTimestamp(microseconds: clock.value) },
                 videoSink: HeadlessVideoSink(receive: {
                     [weak self] sample, unit in
-                    self?.samples.append((sample, unit))
+                    guard let self else { return }
+                    // The session verdict owns the SPS audit; it must finish
+                    // before the CoreMedia adapter submits downstream.
+                    chromaAtSubmission.append(
+                        core.streamChromaDescription ?? "unobserved")
+                    samples.append((sample, unit))
                     if unit.isIDR {
-                        self?.core.noteVideoIrapEnqueued()
+                        core.noteVideoIrapEnqueued()
                     }
                 }),
                 onEvent: { [weak self] event in
@@ -780,6 +786,9 @@ final class LyteUdpSessionGateTests: XCTestCase {
         XCTAssertEqual(datagramFrames.map(\.frameNumber.rawValue), [0, 1])
         XCTAssertEqual(datagramFrames[0].annexB, corpus[0])
         XCTAssertEqual(datagramFrames[1].annexB, corpus[1])
+        XCTAssertEqual(
+            harness.chromaAtSubmission.first, "4:2:0",
+            "the IDR audit must complete before native sample submission")
 
         // ── Idle cycle 1: the lost converged frame arrived reliably,
         // rendered through the shared factory, byte-exact; the ack

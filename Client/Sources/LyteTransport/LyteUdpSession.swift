@@ -45,7 +45,6 @@
 
 import LyteIO
 import LyteCore
-import CoreMedia
 import Dispatch
 import Foundation
 import LyteWire
@@ -376,32 +375,6 @@ public struct LyteUdpSessionCoreConfig: Sendable {
 
 // MARK: - The core (everything above the socket)
 
-/// Breaks the construction cycle between the session core and its pipeline.
-/// Binding finishes before the pipeline can receive a sample; the weak owner
-/// keeps the core → pipeline → sink graph acyclic.
-private final class SessionVideoSink: VideoSink, @unchecked Sendable {
-    private weak var owner: LyteUdpSessionCore?
-    private let downstream: any VideoSink
-
-    init(downstream: any VideoSink) {
-        self.downstream = downstream
-    }
-
-    func bind(_ owner: LyteUdpSessionCore) {
-        self.owner = owner
-    }
-
-    func submit(sample: CMSampleBuffer, unit: DecodeUnit) {
-        guard let owner else {
-            // Preserve the retired weak-self callback's teardown behavior:
-            // sample work already in flight still reaches its owned sink.
-            downstream.submit(sample: sample, unit: unit)
-            return
-        }
-        owner.submitVideoSample(sample, unit: unit, to: downstream)
-    }
-}
-
 public final class LyteUdpSessionCore: @unchecked Sendable {
     public let config: LyteUdpSessionCoreConfig
 
@@ -640,11 +613,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         sessionSink.bind(self)
     }
 
-    fileprivate func submitVideoSample(
-        _ sample: CMSampleBuffer,
-        unit: DecodeUnit,
-        to sink: any VideoSink
-    ) {
+    /// Pure session verdict at the native-media boundary. CoreMedia forwarding
+    /// stays in `SessionVideoSink`; the core sees only the decoded wire unit.
+    /// Returns true exactly when the adapter may submit downstream.
+    func admitVideoUnit(_ unit: DecodeUnit) -> Bool {
         // The input→photon seam (CL-9): a DELIVERED frame whose shards
         // carried the lastInputSeq TLV closes every pending event at or below
         // its stamp. Delivery — not shard arrival — is the honest instant.
@@ -656,7 +628,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 kind: "coreRejectedNonIrap",
                 frame: unit.frameNumber,
                 isRandomAccess: false))
-            return
+            return false
         }
         if unit.isIDR {
             onVideoRecoveryTrace(.init(
@@ -671,7 +643,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         if unit.isIDR {
             auditStreamChroma(annexB: unit.annexB)
         }
-        sink.submit(sample: sample, unit: unit)
+        return true
     }
 
     // MARK: Lifecycle
