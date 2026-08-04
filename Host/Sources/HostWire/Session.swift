@@ -786,12 +786,7 @@ public final class Session {
     /// the only truth).
     private var pumpNowNS: UInt64
     private let sendAccounting: SessionSendAccounting
-    /// Datagrams released by the pacer but not yet accepted by the socket.
-    /// Their release pace is retained for honest train classification;
-    /// video frames remain backlog/NACK-recused until confirmation.
-    private var socketPendingPaces: [UInt32: Int] = [:]
-    private var socketPendingVideo:
-        [UInt32: (datagrams: Int, bytes: Int)] = [:]
+    private var socketPending = SessionSocketPendingBook()
 
     // MARK: HS-13 input state
 
@@ -1451,7 +1446,7 @@ public final class Session {
     /// loop thread sat inside a synchronous drain).
     public var queuedVideoBytes: Int {
         channel.queuedBytes(.freshVideo) + channel.queuedBytes(.videoTail)
-            + socketPendingVideo.values.reduce(0) { $0 + $1.bytes }
+            + socketPending.videoByteCount
     }
 
     public func annotateVideoFrameTelemetry(
@@ -2369,31 +2364,11 @@ public final class Session {
     /// dispersion samples will name. Off-primary challenges are
     /// excluded (they travel an unvalidated tuple; their arrivals
     /// measure a different path).
-    private func datagramKey(_ datagram: VideoChannelDatagram) -> UInt32 {
-        let channel: ChannelId
-        switch datagram.pacerClass {
-        case .control: channel = .ctrl
-        case .audio: channel = .audio
-        case .bulk: channel = .bulkTransfer
-        case .freshVideo, .videoTail, .refinement, .telemetry:
-            channel = .videoActive
-        }
-        return UInt32(channel.rawValue) << 16 | UInt32(datagram.seq.rawValue)
-    }
-
     private func noteSocketPending(_ datagram: VideoChannelDatagram) {
-        guard datagram.destination == nil else { return }
-        socketPendingPaces[datagramKey(datagram)] =
-            estimator.rateBitsPerSecond
-        guard datagram.pacerClass == .freshVideo
-                || datagram.pacerClass == .videoTail
-                || datagram.pacerClass == .refinement
-        else { return }
-        let key = datagram.frameNumber.rawValue
-        var pending = socketPendingVideo[key] ?? (0, 0)
-        pending.datagrams += 1
-        pending.bytes += datagram.bytes.count
-        socketPendingVideo[key] = pending
+        socketPending.note(
+            datagram,
+            releaseRateBitsPerSecond: estimator.rateBitsPerSecond
+        )
     }
 
     /// Confirms that a pacer-released datagram was accepted by the kernel.
@@ -2405,24 +2380,8 @@ public final class Session {
     ) {
         guard sendAccounting == .socketConfirmed,
               datagram.destination == nil else { return }
-        let key = datagramKey(datagram)
-        let pace = socketPendingPaces.removeValue(forKey: key)
+        let pace = socketPending.remove(datagram)
         noteSent(datagram, now: now, paceBitsPerSecond: pace)
-        guard datagram.pacerClass == .freshVideo
-                || datagram.pacerClass == .videoTail
-                || datagram.pacerClass == .refinement
-        else { return }
-        guard var pending =
-                socketPendingVideo[datagram.frameNumber.rawValue]
-        else { return }
-        pending.datagrams -= 1
-        pending.bytes -= datagram.bytes.count
-        if pending.datagrams <= 0 {
-            socketPendingVideo.removeValue(
-                forKey: datagram.frameNumber.rawValue)
-        } else {
-            socketPendingVideo[datagram.frameNumber.rawValue] = pending
-        }
     }
 
     /// Removes one socket-pending datagram without presenting it as path
@@ -2431,22 +2390,7 @@ public final class Session {
     public func discardPendingDatagram(_ datagram: VideoChannelDatagram) {
         guard sendAccounting == .socketConfirmed,
               datagram.destination == nil else { return }
-        socketPendingPaces.removeValue(forKey: datagramKey(datagram))
-        guard datagram.pacerClass == .freshVideo
-                || datagram.pacerClass == .videoTail
-                || datagram.pacerClass == .refinement
-        else { return }
-        guard var pending =
-                socketPendingVideo[datagram.frameNumber.rawValue]
-        else { return }
-        pending.datagrams -= 1
-        pending.bytes -= datagram.bytes.count
-        if pending.datagrams <= 0 {
-            socketPendingVideo.removeValue(
-                forKey: datagram.frameNumber.rawValue)
-        } else {
-            socketPendingVideo[datagram.frameNumber.rawValue] = pending
-        }
+        socketPending.remove(datagram)
     }
 
     public func noteKernelPressureFreshVideoShed(
@@ -2465,19 +2409,11 @@ public final class Session {
         paceBitsPerSecond: Int? = nil
     ) {
         guard datagram.destination == nil else { return }
-        let channel: ChannelId
-        switch datagram.pacerClass {
-        case .control: channel = .ctrl
-        case .audio: channel = .audio
-        case .bulk: channel = .bulkTransfer
-        case .freshVideo, .videoTail, .refinement, .telemetry:
-            channel = .videoActive
-        }
         let deliveryFrame: FrameNumber? =
             datagram.pacerClass == .freshVideo
                 ? datagram.frameNumber : nil
         estimator.noteSent(
-            channel: channel, seq: datagram.seq,
+            channel: datagram.pacerClass.sessionChannel, seq: datagram.seq,
             bytes: datagram.bytes.count, now: now,
             deliveryFrame: deliveryFrame,
             paceBitsPerSecond: paceBitsPerSecond
@@ -2512,7 +2448,7 @@ public final class Session {
             // are the client's completion presumption expiring
             // mid-drain — self-inflicted, recused from path evidence.
             recusedNackFrames: channel.framesWithQueuedShards()
-                .union(socketPendingVideo.keys)
+                .union(socketPending.videoFrameNumbers)
         )
         var events: [SessionEvent] = []
         if let rate = verdict.newRateBitsPerSecond {
@@ -2540,12 +2476,8 @@ public final class Session {
                     Double(backlog) * 8e9 / Double(rate))
                 if staleWireNS > videoQueueBudgetNS {
                     let purged = channel.purgeQueuedVideo()
-                    let socketDatagrams = socketPendingVideo.values.reduce(0) {
-                        $0 + $1.datagrams
-                    }
-                    let socketBytes = socketPendingVideo.values.reduce(0) {
-                        $0 + $1.bytes
-                    }
+                    let socketDatagrams = socketPending.videoDatagramCount
+                    let socketBytes = socketPending.videoByteCount
                     freshKeyframes.arm(.fallPurge)
                     counters.fallPurges += 1
                     counters.fallPurgedVideoBytes += purged.bytes + socketBytes
