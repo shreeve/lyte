@@ -444,7 +444,7 @@ final class RoamingClientGateTests: XCTestCase {
             let message2 = try responder.writeMessage2()
             transport = try responder.makeTransport()
             try ctrlArq.send(
-                message: try negotiator.start().encode(),
+                message: try XCTUnwrap(negotiator.start()).encode(),
                 now: HostTimestamp(microseconds: 0)
             )
             let carriage = Envelope(

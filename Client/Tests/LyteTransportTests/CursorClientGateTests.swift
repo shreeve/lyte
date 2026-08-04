@@ -121,7 +121,7 @@ final class CursorClientGateTests: XCTestCase {
             let message2 = try responder.writeMessage2()
             transport = try responder.makeTransport()
             try arq.send(
-                message: try negotiator.start().encode(),
+                message: try XCTUnwrap(negotiator.start()).encode(),
                 now: HostTimestamp(microseconds: 0)
             )
             let carriage = Envelope(

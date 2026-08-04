@@ -348,7 +348,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
                 // sendReliable post-establishment.
                 capabilitiesDeclared = true
                 try arq.send(
-                    message: try negotiator.start().encode(),
+                    message: try XCTUnwrap(negotiator.start()).encode(),
                     now: HostTimestamp(microseconds: nowMicros)
                 )
             }

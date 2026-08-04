@@ -142,7 +142,7 @@ final class ClipboardClientGateTests: XCTestCase {
             // any client word could be consumed.
             capabilitiesDeclared = true
             try arq.send(
-                message: try negotiator.start().encode(),
+                message: try XCTUnwrap(negotiator.start()).encode(),
                 now: HostTimestamp(microseconds: 0)
             )
             let carriage = Envelope(

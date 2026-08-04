@@ -739,7 +739,6 @@ public final class Session {
     private var lifecycleLane: SessionLifecycleLane
     /// The W7 negotiation machine, host role.
     private var negotiator: CapabilityNegotiator
-    private var capabilitiesDeclared = false
     private var idleHandoff = SessionIdleHandoffBook()
     /// The HS-16 congestion estimator: send ledger + delivery-rate/
     /// queuing-delay/loss evidence → the pacer's setRate seam, W4b's
@@ -2267,11 +2266,10 @@ public final class Session {
     private func declareCapabilities(
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard !capabilitiesDeclared else { return [] }
-        capabilitiesDeclared = true
+        guard let declaration = negotiator.start() else { return [] }
         do {
             try sendReliable(
-                try negotiator.start().encode(),
+                try declaration.encode(),
                 now: now, hostMicroseconds: hostMicroseconds
             )
             return []
@@ -2693,11 +2691,9 @@ public final class Session {
         // Insecure mode reaches establishment without a handshake; the
         // declaration leaves on the first wake (Noise mode declared at
         // `completeHandshake`, so this is a no-op there).
-        if !capabilitiesDeclared {
-            events += declareCapabilities(
-                now: now, hostMicroseconds: hostMicroseconds
-            )
-        }
+        events += declareCapabilities(
+            now: now, hostMicroseconds: hostMicroseconds
+        )
         if let beacon = beaconClock.takeDueBeacon(
             now: now, hostMicroseconds: hostMicroseconds
         ) {

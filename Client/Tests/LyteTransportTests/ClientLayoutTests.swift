@@ -51,6 +51,17 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertFalse(source.contains("SessionCoreBox"))
     }
 
+    func testCapabilityNegotiatorAloneOwnsTheAgreedSet() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
+                "/Client/Sources/LyteTransport/LyteUdpSession.swift"),
+            encoding: .utf8)
+
+        XCTAssertFalse(source.contains("private var agreed:"))
+        XCTAssertTrue(source.contains("return negotiator.agreed"))
+        XCTAssertTrue(source.contains("negotiator.agreed?.chromaModes"))
+    }
+
     private func directoryNames(at root: URL) throws -> [String] {
         try FileManager.default.contentsOfDirectory(
             at: root,

@@ -217,7 +217,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
             // stream, and the client would (rightly) drop that loud.
             capabilitiesDeclared = true
             try arq.send(
-                message: try negotiator.start().encode(),
+                message: try XCTUnwrap(negotiator.start()).encode(),
                 now: HostTimestamp(microseconds: 0)
             )
             let carriage = Envelope(
@@ -341,7 +341,7 @@ final class AudioRoutingClientGateTests: XCTestCase {
             if !capabilitiesDeclared {
                 capabilitiesDeclared = true
                 try arq.send(
-                    message: try negotiator.start().encode(),
+                    message: try XCTUnwrap(negotiator.start()).encode(),
                     now: HostTimestamp(microseconds: nowMicros)
                 )
             }
