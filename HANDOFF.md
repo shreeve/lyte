@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 510,
-Host 300 Mac / 301 pup, Client 255,
+Host 304 Mac / 305 pup, Client 255,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -702,8 +702,33 @@ paths; keep kernel acceptance, estimator ingestion, fall-purge policy,
 counters, and events in `Session`; pin EAGAIN retry, confirmation, discard,
 frame recusal, and aggregate drain directly.**
 
+**That socket-pending extraction completed as #134.**
+`SessionSocketPendingBook` now owns the release-rate evidence, per-frame NACK
+recusal, and aggregate datagram/byte backlog for pacer-released datagrams still
+awaiting kernel acceptance. Confirmation and explicit discard share one
+idempotent removal path, so a repeated removal cannot underflow a frame or
+erase its sibling; off-primary challenges remain excluded. `PacerClass` has
+one channel mapping for both pending identity and estimator ingestion.
+`Session` retains kernel acceptance, estimator policy, fall-purge decisions,
+counters, and events. Direct pins cover every pacer-class mapping, exact
+rate/frame/byte accounting, off-primary exclusion, complete drain, repeated
+removal, and the ownership ratchet; the existing EAGAIN, confirmation,
+discard, frame-recusal, and fall-purge gates stay unchanged. No wire byte,
+frozen vector, persisted format, or manifest changed. `Session.swift` is 68
+lines smaller; total production is +10 after introducing the named owner.
+Canonical Mac passed Common 81, Wire 510, Host 304, Client 255, SystemTests 17,
+analyzer 25, benchmark safety, and both signed products; isolated pup passed
+Common 82, Wire 510, Host 305, the plain build, netio/pacing, and
+protected-state verification. **NEXT CLEANUP SLICE: extract HostWire's sans-IO
+`SessionIdleHandoffBook`—the one owner of the retained converged frame, damage
+quiet clock, pending idle-flip deadline, final-frame group, and nonzero
+one-shot group allocation. Keep ARQ admission/service, lifecycle-machine
+events, counters, and transport errors in `Session`; pin fresh-damage abort,
+quiet-window release, refused-send retry, group wrap, foreign acknowledgment,
+and exact final-frame retirement directly.**
+
 **Suites at HEAD:** Wire 510 Mac / 510 pup; Common 81 Mac / 82 pup;
-client 255; SystemTests 17 Mac; host 301 pup / 300 Mac — all green. Eighteen conductor/gauge
+client 255; SystemTests 17 Mac; host 305 pup / 304 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
