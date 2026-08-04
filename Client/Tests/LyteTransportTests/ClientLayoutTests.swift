@@ -84,6 +84,18 @@ final class ClientLayoutTests: XCTestCase {
             "guard observedIdc != idc else { return nil }"))
     }
 
+    func testPakeResultAloneOwnsThePairedHostKey() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
+                "/Client/Sources/LyteTransport/PairingInitiatorService.swift"),
+            encoding: .utf8)
+
+        XCTAssertFalse(source.contains("private var pairedKey"))
+        XCTAssertTrue(source.contains(
+            "return pake.result?.peerStaticPublicKeyToPin"))
+        XCTAssertFalse(source.contains("pairedKey ="))
+    }
+
     private func directoryNames(at root: URL) throws -> [String] {
         try FileManager.default.contentsOfDirectory(
             at: root,
