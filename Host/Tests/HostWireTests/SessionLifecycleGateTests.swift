@@ -889,6 +889,10 @@ final class SessionLifecycleGateTests: XCTestCase {
             now: t * 1_000, hostMicroseconds: t
         )
         XCTAssertEqual(loop.session.lifecycleState, .closed)
+        XCTAssertEqual(
+            loop.session.phase, .established,
+            "CLOSED is terminal lifecycle state, not handshake dormancy"
+        )
         XCTAssertTrue(loop.hostEvents.contains(
             .sessionClosed(.livenessTimeout)
         ))
