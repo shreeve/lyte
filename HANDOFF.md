@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 510,
-Host 293 Mac / 294 pup, Client 255,
+Host 296 Mac / 297 pup, Client 255,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -659,8 +659,28 @@ the existing `FreshKeyframeDemand` OptionSet. Move the demand vocabulary
 beside its owner; keep path polling, estimator rate application, counters, and
 events in `Session`; pin coalescence and take-once clearing directly.**
 
+**That fresh-keyframe consolidation completed as #132.**
+`SessionFreshKeyframeBook` now owns the one pending
+`FreshKeyframeDemand`: client requests, machine wake/recovery, stale NACKs,
+unprotectable drops, fall purges, and path promotion union into it and drain
+exactly once per encoder poll. The five parallel booleans/optionals and the
+hand-written merge/reset list are gone. `Session` retains path polling,
+estimator repricing, NACK throttling, counters, and events. Direct pins cover
+all-cause coalescence, stable names, duplicate arms, take-once clearing, and
+the source-ownership ratchet. No wire byte, frozen vector, persisted format,
+manifest, or product behavior changed. Production Host code is 15 lines
+smaller. Canonical Mac passed Common 81, Wire 510, Host 296, Client 255,
+SystemTests 17, analyzer 25, benchmark safety, and both signed products;
+isolated pup passed Common 82, Wire 510, Host 297, the plain build,
+netio/pacing, and protected-state verification. **NEXT CLEANUP SLICE: extract
+HostWire's sans-IO `SessionRepairBudgetBook`—the one owner of feedback-cadence
+EWMA, opening-IDR delivery evidence, and bounded opening repair exemptions.
+Keep report decoding, estimator ingestion, repair-store access, counters, and
+events in `Session`; pin cadence clamping/EWMA, sticky glass evidence, and
+attempt/byte exhaustion directly.**
+
 **Suites at HEAD:** Wire 510 Mac / 510 pup; Common 81 Mac / 82 pup;
-client 255; SystemTests 17 Mac; host 294 pup / 293 Mac — all green. Eighteen conductor/gauge
+client 255; SystemTests 17 Mac; host 297 pup / 296 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
