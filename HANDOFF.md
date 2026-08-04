@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 510,
-Host 309 Mac / 310 pup, Client 255,
+Host 315 Mac / 316 pup, Client 255,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -754,8 +754,39 @@ negotiation gates. Keep sealing, pacer selection, counters, decoded-message
 policy, and lifecycle effects in `Session`; pin lane isolation, group-0 versus
 one-shot behavior, refusal/PTO recovery, sequence wrap, and quiescence.**
 
+**That reliable-carrier extraction completed as #136.**
+`SessionArqLane` is now the one sans-IO shape for a reliable carrier's
+`ArqEndpoint`, PTO deadline, and channel-envelope sequence. `Session` owns one
+CTRL lane and, only when key 11 or 12 is locally declared, one independent
+bulk lane; their endpoint, clock, and sequence state never merge. The two
+parallel poll/deadline/emission loops are one service path while sealing,
+pacer selection, negotiation gates, decoded-message policy, counters, failure
+labels, and lifecycle effects remain in `Session`. Every CTRL shape—bare
+handshake message 2, beacon, path traffic, ordinary CTRL, and ARQ—borrows the
+same channel-wide sequence and commits it only after final encoding and pacer
+admission, preserving the Noise nonce law. Direct pins cover endpoint/lane
+isolation, ordered versus one-shot groups, exact PTO arming/backoff/clearing,
+refusal, quiescence, sequence wrap, and carrier geometry; integration pins
+make handshake/beacon/declaration sequences exactly 0/1/2 and a PTO retry the
+next fresh sequence. No wire byte, frozen vector, persisted format, or
+manifest changed. `Session.swift` is net +16 lines; the documented 62-line
+owner makes total production net +78—this slice removes duplicated state and
+control flow, not raw LOC. Canonical Mac passed Common 81, Wire 510, Host 315,
+Client 255, SystemTests 17, analyzer 25, benchmark safety, and both signed
+products; isolated pup passed Common 82, Wire 510, Host 316, the plain build,
+netio/pacing (19.185 ms IDR drain against the 25 ms ceiling), and
+protected-state verification. Independent adversarial review found no
+blocker. **NEXT CLEANUP SLICE: extract HostWire's sans-IO
+`SessionLifecycleLane`—the one owner of the W4b state machine, its projected
+timer deadline, and the local video-freeze projection. Keep reliable sends,
+estimator repricing, pacer changes, fresh-keyframe causes, counters, events,
+and every other external effect in `Session`; pin dormant-before-establishment,
+apply-before-poll ordering, exact deadline conversion, ACTIVE/FROZEN/RECOVERY/
+CLOSED projections, the deliberate FROZEN-video-only suppression asymmetry,
+and one state-change verdict.**
+
 **Suites at HEAD:** Wire 510 Mac / 510 pup; Common 81 Mac / 82 pup;
-client 255; SystemTests 17 Mac; host 310 pup / 309 Mac — all green. Eighteen conductor/gauge
+client 255; SystemTests 17 Mac; host 316 pup / 315 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
