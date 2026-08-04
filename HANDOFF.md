@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 83 Mac / 84 pup, Wire 513,
-Host 335 Mac / 336 pup, Client 259,
+Host 335 Mac / 336 pup, Client 260,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -1097,8 +1097,32 @@ make Client `PairingInitiatorService.pairedHostStaticPublicKey` read directly
 from the PAKE result under its existing lock, deleting the synchronized
 `pairedKey` copy while preserving every success and terminal-failure edge.**
 
+**That pairing-result key cleanup completed as #150.**
+`PairingInitiatorService.pairedHostStaticPublicKey` now reads the successful
+peer key directly from `PairingPakeInitiator.result` under the service's
+existing lock. The copied `pairedKey` field and its success-path write are
+gone. The PAKE publishes its result before returning success, so no concurrent
+getter can observe an intermediate posture; wrong PIN and invalid share leave
+the result nil, host reject leaves the still-awaiting PAKE nil, malformed input
+cannot set it, and late input preserves either nil or the successful key exactly
+as before. A Client owner-package source ratchet pins the result as the sole key
+book. The public optional-key getter, `isPaired`, terminal-state separation,
+event/reply order, reliable carriage, lock boundary, and Sendable posture are
+unchanged. No wire byte, frozen vector, manifest, allocation, persistence, or
+product behavior changed. Focused Client ownership gates passed 7 tests and all
+5 real client↔host pairing gates passed. Canonical Mac passed Common 83, Wire
+513, Host 335, Client 260, SystemTests 17, analyzer 25, benchmark safety, and
+both signed products (one existing no-output-device client test skipped);
+isolated pup passed Common 84, Wire 513, Host 336, the plain build,
+netio/pacing (19.335 ms IDR drain against the 25 ms ceiling), and protected-state
+verification. Independent PAKE-result, API, lock-order, and terminal-state
+review found no blocker. **NEXT CLEANUP SLICE: derive Host
+`InterleavedPcmSlicer`'s next mark frame from its authoritative consumed head
+plus retained frame count, deleting `framesSeen` while preserving fragmented,
+discontinuous, and transactional-retry timestamp behavior.**
+
 **Suites at HEAD:** Wire 513 Mac / 513 pup; Common 83 Mac / 84 pup;
-client 259; SystemTests 17 Mac; host 336 pup / 335 Mac — all green. Eighteen conductor/gauge
+client 260; SystemTests 17 Mac; host 336 pup / 335 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
