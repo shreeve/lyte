@@ -868,10 +868,10 @@ public final class Session {
     /// (the overview's "stamps lastInputSeq into the next frame"),
     /// which is what lets the client close per-keystroke
     /// input-to-photon. Nil until the first injection; never cleared.
-    public private(set) var lastInputSeq: UInt32?
-    /// Echo tuples awaiting their 0x17 ride; flushed on `advance` (and
-    /// eagerly once a full message accumulates).
-    private var pendingEchoTuples: [InputEchoTuple] = []
+    public var lastInputSeq: UInt32? { inputEchoBook.lastInjectedSequence }
+    /// Echo stamp and pending-tuples owner. `Session` retains reliable
+    /// transport, counters, and events.
+    private var inputEchoBook = SessionInputEchoBook()
 
     /// The lifecycle machine's state; nil before establishment.
     public var lifecycleState: SessionState? { machine?.state }
@@ -1618,12 +1618,11 @@ public final class Session {
         receivedAtMicroseconds: UInt64,
         injectedAtMicroseconds: UInt64
     ) {
-        lastInputSeq = seq
-        pendingEchoTuples.append(InputEchoTuple(
+        inputEchoBook.noteInjected(
             seq: seq,
-            receivedMicroseconds: receivedAtMicroseconds,
-            injectedMicroseconds: injectedAtMicroseconds
-        ))
+            receivedAtMicroseconds: receivedAtMicroseconds,
+            injectedAtMicroseconds: injectedAtMicroseconds
+        )
     }
 
     /// Pending tuples onto the reliable stream, ≤ maxTupleCount per
@@ -1632,25 +1631,21 @@ public final class Session {
     private func flushInputEchoes(
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard phase == .established, !pendingEchoTuples.isEmpty else {
+        guard phase == .established else {
             return []
         }
         var events: [SessionEvent] = []
-        while !pendingEchoTuples.isEmpty {
-            let batch = Array(
-                pendingEchoTuples.prefix(InputEcho.maxTupleCount)
-            )
+        while let message = inputEchoBook.nextMessage() {
             do {
                 try sendReliable(
-                    InputEcho(tuples: batch).encode(),
+                    message.encode(),
                     now: now, hostMicroseconds: hostMicroseconds
                 )
             } catch {
                 events.append(.sendFailed("input echo: \(error)"))
                 break
             }
-            pendingEchoTuples.removeFirst(batch.count)
-            counters.inputEchoTuplesSent += batch.count
+            counters.inputEchoTuplesSent += inputEchoBook.commitSent(message)
         }
         return events
     }
