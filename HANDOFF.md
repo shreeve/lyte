@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 511,
-Host 328 Mac / 329 pup, Client 256,
+Host 328 Mac / 329 pup, Client 257,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -941,8 +941,29 @@ the 25 ms ceiling), and protected-state verification. Independent adversarial
 review found no blocker. **NEXT CLEANUP SLICE: re-inventory after this tiny
 deletion; keep choosing existing owners over wrapper-only extraction.**
 
+**That audio-posture latch cleanup completed as #143.** Client
+`LyteUdpSessionCore` no longer maintains `sessionStartAudioAskDone` beside the
+confirmed `hostAudioPosture`: nil now directly names that no valid negotiated
+0x19 status has landed, and the first valid status consumes the session-start
+request seam by setting the posture before the lock opens. Decode and
+capability rejection still return before that assignment, so malformed and
+unnegotiated status words do not consume the seam; the counter, event, and
+optional follow-up request retain their previous ordering. A source ratchet
+rejects another startup latch and pins the authoritative optional-state check.
+No replacement book, wrapper, wire byte, frozen vector, persisted format,
+manifest, lock boundary, or product behavior changed. Production is three
+lines smaller. Focused audio-routing/layout gates passed 21 tests; the full
+Client suite passed 257 and SystemTests passed 17. Canonical Mac passed Common
+81, Wire 511, Host 328, Client 257, SystemTests 17, analyzer 25, benchmark
+safety, and both signed products; isolated pup passed Common 82, Wire 511,
+Host 329, the plain build, netio/pacing (19.246 ms IDR drain against the 25 ms
+ceiling), and protected-state verification. Independent adversarial review
+found no blocker. **NEXT CLEANUP SLICE: re-inventory current ownership across
+Client, Host, Common, and Wire; choose another existing owner that can delete a
+parallel truth, and reject wrapper-only or merely cosmetic movement.**
+
 **Suites at HEAD:** Wire 511 Mac / 511 pup; Common 81 Mac / 82 pup;
-client 256; SystemTests 17 Mac; host 329 pup / 328 Mac — all green. Eighteen conductor/gauge
+client 257; SystemTests 17 Mac; host 329 pup / 328 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
