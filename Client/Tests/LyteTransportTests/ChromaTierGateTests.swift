@@ -264,6 +264,10 @@ final class ChromaTierGateTests: XCTestCase {
         XCTAssertNil(audit.observe(
             chromaFormatIdc: 3,
             agreedChromaModes: [CapabilityChroma.yuv444]))
+        XCTAssertNil(audit.observe(
+            chromaFormatIdc: 3,
+            agreedChromaModes: [CapabilityChroma.yuv420]),
+            "agreement changes do not re-report an unchanged stream")
         XCTAssertEqual(audit.observedDescription, "4:4:4")
 
         // A mid-session flip to 4:2:0 is an EDGE: the doctor line
@@ -279,6 +283,16 @@ final class ChromaTierGateTests: XCTestCase {
             chromaFormatIdc: 1,
             agreedChromaModes: [CapabilityChroma.yuv444]))
         XCTAssertEqual(audit.observedDescription, "4:2:0")
+
+        // Returning to a previously observed idc is a fresh edge too;
+        // the observation itself, not a parallel latch, re-arms it.
+        XCTAssertEqual(audit.observe(
+            chromaFormatIdc: 3,
+            agreedChromaModes: [CapabilityChroma.yuv444]),
+            "stream chroma 4:4:4 — matches the negotiated posture")
+        XCTAssertNil(audit.observe(
+            chromaFormatIdc: 3,
+            agreedChromaModes: [CapabilityChroma.yuv444]))
     }
 
     func testAuditWithoutAnAgreedSingletonReportsWithoutJudging() {

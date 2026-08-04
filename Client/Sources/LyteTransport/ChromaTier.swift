@@ -135,9 +135,6 @@ public struct ChromaStreamAudit: Sendable {
     /// The last observed `chroma_format_idc`, nil before the first
     /// IDR with a parseable SPS.
     public private(set) var observedIdc: UInt32?
-    /// True once the current observation was reported (re-arms on an
-    /// idc change so a mid-session flip is an edge, not a repeat).
-    private var reported = false
 
     public init() {}
 
@@ -153,10 +150,8 @@ public struct ChromaStreamAudit: Sendable {
     public mutating func observe(
         chromaFormatIdc idc: UInt32, agreedChromaModes: [UInt64]?
     ) -> String? {
-        if observedIdc != idc { reported = false }
+        guard observedIdc != idc else { return nil }
         observedIdc = idc
-        guard !reported else { return nil }
-        reported = true
         let streamLabel = Self.describe(idc: idc)
         guard let agreed = agreedChromaModes, agreed.count == 1,
               let first = agreed.first else {
