@@ -1,4 +1,5 @@
 import XCTest
+import Foundation
 import HostCore
 import HostWire
 import LyteWire
@@ -38,16 +39,42 @@ final class CookieGateTests: XCTestCase {
 
     // MARK: Gate level
 
+    func testHandshakeGateAloneOwnsCookieModeTransitions() throws {
+        var components = #filePath.split(
+            separator: "/", omittingEmptySubsequences: false
+        )
+        components.removeLast(3)
+        let packageRoot = components.joined(separator: "/")
+        let session = try String(contentsOfFile:
+            packageRoot + "/Sources/HostWire/Session.swift",
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(session.contains("decision.cookieModeChangedTo"))
+        XCTAssertTrue(session.contains("switch decision.admission"))
+        XCTAssertFalse(session.contains("lastCookieMode"))
+        XCTAssertFalse(session.contains("noteCookieModeTransition"))
+
+        let gate = try String(contentsOfFile:
+            packageRoot + "/Sources/HostWire/HandshakeGate.swift",
+            encoding: .utf8
+        )
+        XCTAssertTrue(gate.contains("public struct Decision"))
+        XCTAssertTrue(gate.contains("let previousCookieMode = cookieMode"))
+    }
+
     /// No secret = the pure HS-9 posture: the token bucket admits the
     /// burst and throttles the rest; require-cookie never engages.
     func testDisabledWithoutSecretIsThePureTokenBucket() {
         var gate = HandshakeGate(config: .init(ratePerSecond: 10, burst: 10))
         var admits = 0, drops = 0
         for i in 0..<200 {
-            switch gate.admitMessage1(
+            let decision = gate.admitMessage1(
                 presentedCookie: nil, clientTuple: Self.tupleBytes,
                 message1: Self.msg1[...], now: 1_000 + UInt64(i)
-            ) {
+            )
+            XCTAssertNil(decision.cookieModeChangedTo)
+            switch decision.admission {
             case .admit: admits += 1
             case .drop(.throttled): drops += 1
             default: XCTFail("no cookie machinery without a secret")
@@ -69,29 +96,46 @@ final class CookieGateTests: XCTestCase {
         ))
         // Four arrivals in the window: still under the enter threshold.
         for i in 0..<4 {
-            _ = gate.admitMessage1(
+            let decision = gate.admitMessage1(
                 presentedCookie: nil, clientTuple: Self.tupleBytes,
                 message1: Self.msg1[...], now: UInt64(i) * 1_000_000
             )
             XCTAssertFalse(gate.cookieMode)
+            XCTAssertNil(decision.cookieModeChangedTo)
         }
         // The fifth crosses the enter threshold → engaged.
-        _ = gate.admitMessage1(
+        let engaged = gate.admitMessage1(
             presentedCookie: nil, clientTuple: Self.tupleBytes,
             message1: Self.msg1[...], now: 4_000_000
         )
         XCTAssertTrue(gate.cookieMode, "5 arrivals in 1 s engages the dial")
+        XCTAssertEqual(engaged.cookieModeChangedTo, true)
+
+        let held = gate.admitMessage1(
+            presentedCookie: nil, clientTuple: Self.tupleBytes,
+            message1: Self.msg1[...], now: 5_000_000
+        )
+        XCTAssertTrue(gate.cookieMode)
+        XCTAssertNil(held.cookieModeChangedTo,
+                     "remaining in the same posture emits no second edge")
 
         // Let the window drain: an arrival 2 s later sees only itself
         // in the window (1 ≤ exit threshold 2) → cleared.
-        let admission = gate.admitMessage1(
+        let cleared = gate.admitMessage1(
             presentedCookie: nil, clientTuple: Self.tupleBytes,
             message1: Self.msg1[...], now: 2_000_000_000
         )
         XCTAssertFalse(gate.cookieMode, "the window drained — pressure gone")
+        XCTAssertEqual(cleared.cookieModeChangedTo, false)
         // And with the dial cleared, that lone un-cookied msg1 falls to
         // the token bucket (admitted, not challenged).
-        XCTAssertEqual(admission, .admit)
+        XCTAssertEqual(cleared.admission, .admit)
+        let stayedClear = gate.admitMessage1(
+            presentedCookie: nil, clientTuple: Self.tupleBytes,
+            message1: Self.msg1[...], now: 2_100_000_000
+        )
+        XCTAssertNil(stayedClear.cookieModeChangedTo,
+                     "remaining clear emits no second exit edge")
     }
 
     /// Under flood, an un-cookied msg1 is challenged with a well-formed,
@@ -102,11 +146,12 @@ final class CookieGateTests: XCTestCase {
             cookieSecret: Self.secret,
             cookieEnterThreshold: 1, cookieExitThreshold: 0
         ))
-        let admission = gate.admitMessage1(
+        let decision = gate.admitMessage1(
             presentedCookie: nil, clientTuple: Self.tupleBytes,
             message1: Self.msg1[...], now: 10_000
         )
-        guard case .challenge(let cookie) = admission else {
+        XCTAssertEqual(decision.cookieModeChangedTo, true)
+        guard case .challenge(let cookie) = decision.admission else {
             return XCTFail("a flooded un-cookied msg1 must be challenged")
         }
         XCTAssertEqual(gate.challengesMinted, 1)
@@ -135,13 +180,13 @@ final class CookieGateTests: XCTestCase {
         guard case .challenge(let cookie) = gate.admitMessage1(
             presentedCookie: nil, clientTuple: Self.tupleBytes,
             message1: Self.msg1[...], now: 1_000
-        ) else { return XCTFail("expected a challenge") }
+        ).admission else { return XCTFail("expected a challenge") }
 
         // The echoed cookie admits.
         XCTAssertEqual(gate.admitMessage1(
             presentedCookie: cookie[...], clientTuple: Self.tupleBytes,
             message1: Self.msg1[...], now: 2_000
-        ), .admit)
+        ).admission, .admit)
         XCTAssertEqual(gate.cookiesVerified, 1)
 
         // A tampered cookie drops.
@@ -150,22 +195,55 @@ final class CookieGateTests: XCTestCase {
         XCTAssertEqual(gate.admitMessage1(
             presentedCookie: forged[...], clientTuple: Self.tupleBytes,
             message1: Self.msg1[...], now: 3_000
-        ), .drop(.cookieInvalid))
+        ).admission, .drop(.cookieInvalid))
 
         // The right cookie for the WRONG msg1 drops (the binding holds).
         let otherMsg1 = [UInt8](repeating: 0x11, count: 96)
         XCTAssertEqual(gate.admitMessage1(
             presentedCookie: cookie[...], clientTuple: Self.tupleBytes,
             message1: otherMsg1[...], now: 4_000
-        ), .drop(.cookieInvalid))
+        ).admission, .drop(.cookieInvalid))
 
         // The right cookie from the WRONG address drops.
         XCTAssertEqual(gate.admitMessage1(
             presentedCookie: cookie[...],
             clientTuple: Array("10.0.0.99:5000".utf8),
             message1: Self.msg1[...], now: 5_000
-        ), .drop(.cookieInvalid))
+        ).admission, .drop(.cookieInvalid))
         XCTAssertEqual(gate.cookiesRejected, 3)
+    }
+
+    func testPresentedCookieBranchesCarryTheSameExactModeEdge() throws {
+        var gate = HandshakeGate(config: .init(
+            cookieSecret: Self.secret,
+            cookieEnterThreshold: 2, cookieExitThreshold: 1,
+            floodWindowNS: 1_000_000_000
+        ))
+        let first = gate.admitMessage1(
+            presentedCookie: nil, clientTuple: Self.tupleBytes,
+            message1: Self.msg1[...], now: 0
+        )
+        XCTAssertNil(first.cookieModeChangedTo)
+
+        let forged = [UInt8](repeating: 0xEE, count: RetryCookie.byteCount)
+        let entered = gate.admitMessage1(
+            presentedCookie: forged[...], clientTuple: Self.tupleBytes,
+            message1: Self.msg1[...], now: 1
+        )
+        XCTAssertEqual(entered.admission, .drop(.cookieInvalid))
+        XCTAssertEqual(entered.cookieModeChangedTo, true)
+
+        let later = UInt64(2_000_000_000)
+        let cookie = try RetryCookie.mint(
+            clientTuple: Self.tupleBytes, message1: Self.msg1[...],
+            now: later, secret: Self.secret
+        )
+        let cleared = gate.admitMessage1(
+            presentedCookie: cookie[...], clientTuple: Self.tupleBytes,
+            message1: Self.msg1[...], now: later
+        )
+        XCTAssertEqual(cleared.admission, .admit)
+        XCTAssertEqual(cleared.cookieModeChangedTo, false)
     }
 
     // MARK: Session level — the whole host half, driven live-shaped
@@ -343,8 +421,15 @@ final class CookieGateTests: XCTestCase {
         }
         var engaged = false
         for i in 0..<6 {
-            for e in floodOne(now: 1_000 + UInt64(i) * 1_000) {
+            let events = floodOne(now: 1_000 + UInt64(i) * 1_000)
+            for e in events {
                 if case .handshakeCookieModeChanged(true) = e { engaged = true }
+            }
+            if events.contains(.handshakeCookieModeChanged(requireCookie: true)) {
+                XCTAssertEqual(
+                    events.first,
+                    .handshakeCookieModeChanged(requireCookie: true)
+                )
             }
         }
         XCTAssertTrue(engaged)
@@ -353,6 +438,10 @@ final class CookieGateTests: XCTestCase {
         // only itself and the dial clears (exactly one OFF event).
         let clearing = floodOne(now: 3_000_000_000)
         XCTAssertTrue(clearing.contains(.handshakeCookieModeChanged(requireCookie: false)))
+        XCTAssertEqual(
+            clearing.first,
+            .handshakeCookieModeChanged(requireCookie: false)
+        )
         XCTAssertFalse(session.handshakeCookieMode)
     }
 }

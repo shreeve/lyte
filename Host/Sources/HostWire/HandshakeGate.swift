@@ -102,6 +102,11 @@ public struct HandshakeGate: Sendable {
         }
     }
 
+    public struct Decision: Equatable, Sendable {
+        public var admission: Admission
+        public var cookieModeChangedTo: Bool?
+    }
+
     private let config: Config
     /// Nanosecond credit: refill accrues 1 ns per elapsed ns, one
     /// admission costs `costNS`.
@@ -155,10 +160,15 @@ public struct HandshakeGate: Sendable {
         clientTuple: [UInt8],
         message1: ArraySlice<UInt8>,
         now: UInt64
-    ) -> Admission {
+    ) -> Decision {
+        let previousCookieMode = cookieMode
         refill(now: now)
         noteArrival(now: now)
         updateCookieMode()
+        let cookieModeChangedTo = cookieMode == previousCookieMode ? nil : cookieMode
+        func decided(_ admission: Admission) -> Decision {
+            Decision(admission: admission, cookieModeChangedTo: cookieModeChangedTo)
+        }
 
         // A presented cookie is judged first, in EITHER posture: a
         // client that already holds a verifying cookie has proven its
@@ -179,11 +189,11 @@ public struct HandshakeGate: Sendable {
             else {
                 cookiesRejected += 1
                 refused += 1
-                return .drop(.cookieInvalid)
+                return decided(.drop(.cookieInvalid))
             }
             cookiesVerified += 1
             admitted += 1
-            return .admit
+            return decided(.admit)
         }
 
         // No cookie. In require-cookie mode, answer with a stateless
@@ -196,13 +206,13 @@ public struct HandshakeGate: Sendable {
            ) {
             challengesMinted += 1
             refused += 1
-            return .challenge(cookie: cookie)
+            return decided(.challenge(cookie: cookie))
         }
 
         // Normal posture (or cookie mode desired but the mint refused a
         // malformed tuple): the H1 token bucket.
-        if spendToken() { return .admit }
-        return .drop(.throttled)
+        if spendToken() { return decided(.admit) }
+        return decided(.drop(.throttled))
     }
 
     // MARK: - Internals
