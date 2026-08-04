@@ -425,11 +425,8 @@ final class RoamingClientGateTests: XCTestCase {
             var rng = SplitMix64(seed: seed)
             connectionId = ConnectionId.random(using: &rng)
             var config = ArqConfig()
-            config.maxSegmentBodyByteCount = min(
-                config.maxSegmentBodyByteCount,
-                ReliableCtrlEndpoint.ctrlPlaintextBudget
-                    - ArqBounds.segmentHeaderByteCount
-            )
+            config.maxDatagramPayloadByteCount =
+                WireBudget.maxConnectionIdTaggedPlaintextByteCount
             ctrlArq = ArqEndpoint(channel: .ctrl, config: config)
             bulkArq = ArqEndpoint(channel: .bulkTransfer, config: config)
             negotiator = CapabilityNegotiator(

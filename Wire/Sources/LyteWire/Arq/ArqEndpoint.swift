@@ -70,6 +70,11 @@ public struct ArqConfig: Hashable, Sendable {
     public var receiveWindowSegments: Int
     /// Segment body size ceiling; capped by ArqBounds.
     public var maxSegmentBodyByteCount: Int
+    /// Maximum encoded ARQ frame-sequence bytes in one emitted datagram.
+    /// Defaults to the bare Lyte-UDP plaintext shard ceiling. Carriers that
+    /// reserve envelope extensions inject their smaller ceiling here; the
+    /// endpoint then segments and packs once, at the owning boundary.
+    public var maxDatagramPayloadByteCount: Int
     /// Reassembled message ceiling — receiver protection against a
     /// hostile endless message.
     public var maxMessageByteCount: Int
@@ -98,6 +103,8 @@ public struct ArqConfig: Hashable, Sendable {
         sendWindowSegments: Int = 128,
         receiveWindowSegments: Int = ArqBounds.maxReceiveWindowSegments,
         maxSegmentBodyByteCount: Int = ArqBounds.maxSegmentBodyByteCount,
+        maxDatagramPayloadByteCount: Int =
+            WireBudget.maxPlaintextShardByteCount,
         maxMessageByteCount: Int = 262_144,
         maxActiveReceiveGroups: Int = 64,
         maxClosedGroupTombstones: Int = 256,
@@ -118,9 +125,8 @@ public struct ArqConfig: Hashable, Sendable {
             sendWindowSegments, clampedReceiveWindow
         )
         self.receiveWindowSegments = clampedReceiveWindow
-        self.maxSegmentBodyByteCount = min(
-            maxSegmentBodyByteCount, ArqBounds.maxSegmentBodyByteCount
-        )
+        self.maxDatagramPayloadByteCount = maxDatagramPayloadByteCount
+        self.maxSegmentBodyByteCount = maxSegmentBodyByteCount
         self.maxMessageByteCount = maxMessageByteCount
         self.maxActiveReceiveGroups = maxActiveReceiveGroups
         self.maxClosedGroupTombstones = maxClosedGroupTombstones
@@ -128,6 +134,29 @@ public struct ArqConfig: Hashable, Sendable {
             receiveGroupLifetimeMicroseconds, 1
         )
         self.initialSegmentSeq = initialSegmentSeq
+        normalizeDatagramBudget()
+    }
+
+    /// Public fields stay mutable for the established configuration style.
+    /// Normalize again when an endpoint takes ownership so a caller that
+    /// changes the carrier ceiling after init cannot leave segment geometry
+    /// larger than the datagram it must ride.
+    fileprivate mutating func normalizeDatagramBudget() {
+        maxDatagramPayloadByteCount = min(
+            max(
+                maxDatagramPayloadByteCount,
+                ArqBounds.maxAckFrameByteCount
+            ),
+            WireBudget.maxPlaintextShardByteCount
+        )
+        maxSegmentBodyByteCount = max(
+            1,
+            min(
+                maxSegmentBodyByteCount,
+                maxDatagramPayloadByteCount
+                    - ArqBounds.segmentHeaderByteCount
+            )
+        )
     }
 }
 
@@ -248,7 +277,9 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
 
     public init(channel: ChannelId, config: ArqConfig = ArqConfig()) {
         self.channel = channel
-        self.config = config
+        var normalized = config
+        normalized.normalizeDatagramBudget()
+        self.config = normalized
     }
 
     /// True when nothing remains to send, retransmit, or acknowledge.
@@ -567,10 +598,10 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
     // MARK: - Poll
 
     /// Advances timers and collects output. Returns datagram payloads
-    /// (each within the 1112 B shard budget, ready for an envelope with
-    /// a fresh channel seq) and the next instant `poll` must run again,
-    /// nil when no timer is armed. Call after every ingest/send and at
-    /// the returned deadline.
+    /// packed directly within `config.maxDatagramPayloadByteCount`, ready
+    /// for an envelope with a fresh channel seq, and the next instant `poll`
+    /// must run again, nil when no timer is armed. Call after every
+    /// ingest/send and at the returned deadline.
     public mutating func poll(
         now: Instant
     ) -> (datagrams: [[UInt8]], nextTimerDeadline: Instant?) {
@@ -586,7 +617,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         for frame in frames {
             if !current.isEmpty,
                current.count + frame.count
-                   > WireBudget.maxPlaintextShardByteCount {
+                   > config.maxDatagramPayloadByteCount {
                 datagrams.append(current)
                 current = []
             }

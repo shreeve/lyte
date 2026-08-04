@@ -446,11 +446,8 @@ final class InputPathGateTests: XCTestCase {
             var rng = SplitMix64(seed: 0xC1_09)
             connectionId = ConnectionId.random(using: &rng)
             var config = ArqConfig()
-            config.maxSegmentBodyByteCount = min(
-                config.maxSegmentBodyByteCount,
-                ReliableCtrlEndpoint.ctrlPlaintextBudget
-                    - ArqBounds.segmentHeaderByteCount
-            )
+            config.maxDatagramPayloadByteCount =
+                WireBudget.maxConnectionIdTaggedPlaintextByteCount
             arq = ArqEndpoint(channel: .ctrl, config: config)
         }
 
@@ -594,10 +591,8 @@ final class InputPathGateTests: XCTestCase {
             let (payloads, _) = arq.poll(
                 now: HostTimestamp(microseconds: hostMicros))
             for payload in payloads {
-                for repacked in try Self.repack(payload) {
-                    out.append(try sealedCtrl(
-                        body: repacked, hostMicros: hostMicros))
-                }
+                out.append(try sealedCtrl(
+                    body: payload, hostMicros: hostMicros))
             }
             return out
         }
@@ -655,24 +650,6 @@ final class InputPathGateTests: XCTestCase {
             return out
         }
 
-        /// The HS-8 repack (poll packs to the bare 1112 B table; the
-        /// real ceiling is 1101 B with TLV + tag).
-        static func repack(_ payload: [UInt8]) throws -> [[UInt8]] {
-            let budget = ReliableCtrlEndpoint.ctrlPlaintextBudget
-            if payload.count <= budget { return [payload] }
-            var out: [[UInt8]] = []
-            var current: [UInt8] = []
-            for frame in try ArqFrame.decodeAll(payload) {
-                let bytes = frame.encode()
-                if !current.isEmpty, current.count + bytes.count > budget {
-                    out.append(current)
-                    current = []
-                }
-                current.append(contentsOf: bytes)
-            }
-            if !current.isEmpty { out.append(current) }
-            return out
-        }
     }
 
     // MARK: - The client harness (the CL-8 shape: real core, no socket)

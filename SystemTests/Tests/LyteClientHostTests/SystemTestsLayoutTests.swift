@@ -238,6 +238,34 @@ final class SystemTestsLayoutTests: XCTestCase {
         )
     }
 
+    func testArqCarrierPackingLivesOnlyInWire() throws {
+        for path in [
+            "Client/Sources/LyteTransport/ReliableCtrlEndpoint.swift",
+            "Host/Sources/HostWire/Session.swift",
+        ] {
+            let tokens = swiftTokens(from: try source(at: path))
+            XCTAssertTrue(
+                contains(
+                    ["maxDatagramPayloadByteCount", "="],
+                    in: tokens
+                ),
+                "\(path) must inject its carrier ceiling into LyteWire"
+            )
+            XCTAssertTrue(
+                tokens.contains("maxConnectionIdTaggedPlaintextByteCount"),
+                "\(path) must consume the one connection-id budget"
+            )
+            XCTAssertFalse(
+                contains(["ArqFrame", ".", "decodeAll", "("], in: tokens),
+                "\(path) must not decode and re-cut LyteWire output"
+            )
+            XCTAssertFalse(
+                tokens.contains { $0.lowercased().contains("repack") },
+                "\(path) must not grow another downstream ARQ packer"
+            )
+        }
+    }
+
     private func importers(
         of role: ProductRole,
         below relativeRoot: String

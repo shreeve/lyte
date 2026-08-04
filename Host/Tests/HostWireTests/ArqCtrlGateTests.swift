@@ -114,7 +114,8 @@ final class ArqCtrlGateTests: XCTestCase {
             switch plaintext.first {
             case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
                 XCTAssertLessThanOrEqual(
-                    plaintext.count, 1_101,
+                    plaintext.count,
+                    WireBudget.maxConnectionIdTaggedPlaintextByteCount,
                     "ARQ payload over the session's TLV+tag-adjusted budget"
                 )
                 for event in arq.ingest(
@@ -512,12 +513,13 @@ final class ArqCtrlGateTests: XCTestCase {
                        "a quiescent endpoint emits no datagrams, forever")
     }
 
-    // MARK: Budget repack and the ACK piggyback
+    // MARK: Carrier-sized packing and the ACK piggyback
 
-    func testArqOutputRepacksToTheSessionBudgetAndKeepsThePiggyback() throws {
-        // 548 B bodies make poll pack two 556 B frames into one 1112 B
-        // payload — the bare-table budget, 11 B over the session's real
-        // 1101 B ceiling — so the session must re-cut, never burst. A
+    func testArqOutputPacksOnceAtTheSessionBudgetAndKeepsThePiggyback() throws {
+        // 548 B bodies make two 556 B frames. The endpoint receives the
+        // session's connection-id-tagged ceiling, so it must emit those as
+        // two payloads immediately — never form a bare-budget payload that
+        // a downstream layer must re-cut. A
         // 2-segment send window then stages the piggyback: the client
         // datagram that opens the window carries a segment of its own,
         // so the very next host poll owes an ACK AND has queued
@@ -548,14 +550,15 @@ final class ArqCtrlGateTests: XCTestCase {
                 wirePayload: payload, aad: aad, envelope: envelope
             )
             XCTAssertLessThanOrEqual(
-                plaintext.count, 1_101,
+                plaintext.count,
+                WireBudget.maxConnectionIdTaggedPlaintextByteCount,
                 "an ARQ datagram burst the session's plaintext budget"
             )
             return try ArqFrame.decodeAll(plaintext)
         }
 
-        // Four segments queued; the window lets two fly. Their 1112 B
-        // poll payload must arrive as two datagrams (the re-cut).
+        // Four segments queued; the window lets two fly. The endpoint must
+        // produce two carrier-sized datagrams in its first and only packing.
         let message = [UInt8](repeating: 0x77, count: 4 * 548)
         var t: UInt64 = 1_000_000
         try session.sendReliable(message, now: t * 1_000, hostMicroseconds: t)
@@ -563,7 +566,7 @@ final class ArqCtrlGateTests: XCTestCase {
         let firstFlight = Array(sent[cursor...])
         XCTAssertEqual(
             firstFlight.count, 2,
-            "one 1112 B poll payload re-cuts into two in-budget datagrams"
+            "the endpoint must pack directly at the carrier ceiling"
         )
         var frames: [ArqFrame] = []
         for datagram in firstFlight {
@@ -623,7 +626,7 @@ final class ArqCtrlGateTests: XCTestCase {
         XCTAssertEqual(segments.count, 4, "2192 B at 548 B bodies = 4 segments")
         XCTAssertEqual(
             segments.map(\.body).reduce([], +), message,
-            "re-cutting datagram boundaries must not touch the bytes"
+            "carrier-sized packing must not touch the message bytes"
         )
     }
 
@@ -638,16 +641,22 @@ final class ArqCtrlGateTests: XCTestCase {
         var client = established.client
         let cursor = sent.count
 
-        // A message one byte over the clamped body (1093) must split
-        // into two segments, each datagram within every budget.
+        let carrierBodyCeiling =
+            WireBudget.maxConnectionIdTaggedPlaintextByteCount
+                - ArqBounds.segmentHeaderByteCount
+        // A message one byte over the endpoint-normalized body ceiling must
+        // split into two segments, each datagram within every budget.
         let t: UInt64 = 1_000_000
         try session.sendReliable(
-            [UInt8](repeating: 0x55, count: 1_094),
+            [UInt8](repeating: 0x55, count: carrierBodyCeiling + 1),
             now: t * 1_000, hostMicroseconds: t
         )
         session.pump(now: t * 1_000)
         let fresh = sent[cursor...]
-        XCTAssertEqual(fresh.count, 2, "1094 B > one clamped 1093 B body")
+        XCTAssertEqual(
+            fresh.count, 2,
+            "one byte beyond the carrier body ceiling must split"
+        )
         for datagram in fresh {
             XCTAssertLessThanOrEqual(
                 datagram.bytes.count, WireBudget.maxDatagramByteCount
@@ -655,7 +664,33 @@ final class ArqCtrlGateTests: XCTestCase {
             try client.absorb(datagram.bytes, nowMicros: t)
         }
         XCTAssertEqual(client.received.count, 1)
-        XCTAssertEqual(client.received[0].bytes.count, 1_094)
+        XCTAssertEqual(
+            client.received[0].bytes.count, carrierBodyCeiling + 1
+        )
+    }
+
+    func testCallerSmallerCarrierCeilingIsPreserved() throws {
+        let callerCeiling = 900
+        var sent: [VideoChannelDatagram] = []
+        let established = try establish(
+            arqConfig: ArqConfig(
+                sendWindowSegments: 2,
+                maxSegmentBodyByteCount: 448,
+                maxDatagramPayloadByteCount: callerCeiling
+            ),
+            sent: { sent }, append: { sent.append($0) }
+        )
+        let cursor = sent.count
+        let t: UInt64 = 1_000_000
+        try established.session.sendReliable(
+            [UInt8](repeating: 0x66, count: 896),
+            now: t * 1_000, hostMicroseconds: t
+        )
+        established.session.pump(now: t * 1_000)
+        XCTAssertEqual(
+            sent[cursor...].count, 2,
+            "the Session must not widen a caller's smaller carrier ceiling"
+        )
     }
 
     // MARK: API guards

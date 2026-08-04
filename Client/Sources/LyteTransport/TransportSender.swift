@@ -66,7 +66,7 @@ public final class TransportSender: @unchecked Sendable {
         // (ARQ service, beacon echo, IDR requester). Sealing outside
         // the lock let a later-allocated seq commit first, so the
         // earlier one's seal threw sendSequenceNotMonotonic — and the
-        // ARQ pass that lost the race abandoned its whole repacked
+        // ARQ pass that lost the race abandoned its whole packed
         // batch for a PTO, exactly during the loss storms where all
         // three collide. Holding the lock across allocate→seal makes
         // allocation order the commit order by construction; only

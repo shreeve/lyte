@@ -100,11 +100,8 @@ final class CursorClientGateTests: XCTestCase {
             var rng = SplitMix64(seed: 0xE3_24)
             connectionId = ConnectionId.random(using: &rng)
             var config = ArqConfig()
-            config.maxSegmentBodyByteCount = min(
-                config.maxSegmentBodyByteCount,
-                ReliableCtrlEndpoint.ctrlPlaintextBudget
-                    - ArqBounds.segmentHeaderByteCount
-            )
+            config.maxDatagramPayloadByteCount =
+                WireBudget.maxConnectionIdTaggedPlaintextByteCount
             arq = ArqEndpoint(channel: .ctrl, config: config)
             negotiator = CapabilityNegotiator(
                 role: .host, local: localCapabilities)

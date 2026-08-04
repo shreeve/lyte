@@ -20,6 +20,15 @@ public enum WireBudget {
     /// here identically for insecure mode so gate results carry over.
     public static let maxPlaintextShardByteCount = 1112
 
+    /// Plaintext available when the mandatory connection-id TLV rides
+    /// beside the envelope. The TLV block contributes its count byte, the
+    /// extension's type/length bytes, and the eight-byte id; the AEAD tag is
+    /// already reserved by the plaintext shard ceiling above. Session ARQ
+    /// uses this value from its first datagram so packing never changes after
+    /// the peer id is learned.
+    public static let maxConnectionIdTaggedPlaintextByteCount =
+        maxPlaintextShardByteCount - 1 - 2 - ConnectionId.byteCount
+
     /// ChaCha20-Poly1305 tag; the gap between the two payload ceilings.
     public static let aeadTagByteCount = 16
 }

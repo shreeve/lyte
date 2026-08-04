@@ -129,17 +129,8 @@ final class ClipboardImageClientGateTests: XCTestCase {
             var rng = SplitMix64(seed: 0x0122)
             connectionId = ConnectionId.random(using: &rng)
             var config = ArqConfig()
-            // The extra 16: this stand-in's envelopes carry the
-            // connection-id extension, which ctrlPlaintextBudget does
-            // not account for — a FULL segment (the 64 KiB chunks of
-            // this gate, unlike the small answers of F-4's) would
-            // overflow the 1152 B datagram ceiling by the extension's
-            // width otherwise.
-            config.maxSegmentBodyByteCount = min(
-                config.maxSegmentBodyByteCount,
-                ReliableCtrlEndpoint.ctrlPlaintextBudget
-                    - ArqBounds.segmentHeaderByteCount - 16
-            )
+            config.maxDatagramPayloadByteCount =
+                WireBudget.maxConnectionIdTaggedPlaintextByteCount
             ctrlArq = ArqEndpoint(channel: .ctrl, config: config)
             bulkArq = ArqEndpoint(channel: .bulkTransfer, config: config)
             negotiator = CapabilityNegotiator(

@@ -62,6 +62,63 @@ final class ArqEndpointTests: XCTestCase {
         XCTAssertEqual(events, [.message(group: .orderedStream, bytes: message)])
     }
 
+    func testConfiguredCarrierCeilingSegmentsAndPacksOnce() throws {
+        let ceiling = WireBudget.maxConnectionIdTaggedPlaintextByteCount
+        var config = ArqConfig()
+        config.maxDatagramPayloadByteCount = ceiling
+        let endpointConfig = Endpoint(channel: .ctrl, config: config).config
+        XCTAssertEqual(endpointConfig.maxDatagramPayloadByteCount, ceiling)
+        XCTAssertEqual(
+            endpointConfig.maxSegmentBodyByteCount,
+            ceiling - ArqBounds.segmentHeaderByteCount
+        )
+
+        var endpoint = Endpoint(channel: .ctrl, config: config)
+        let body = [UInt8](repeating: 0xA5, count: 548)
+        try endpoint.send(message: body, now: at(0))
+        try endpoint.send(message: body, now: at(0))
+
+        let (datagrams, _) = endpoint.poll(now: at(1_000))
+        XCTAssertEqual(datagrams.count, 2)
+        XCTAssertTrue(datagrams.allSatisfy { $0.count <= ceiling })
+        XCTAssertEqual(
+            try datagrams.flatMap { try ArqFrame.decodeAll($0) }.count,
+            2
+        )
+    }
+
+    func testCarrierCeilingClampsToSafeWireBounds() {
+        var invalidBody = ArqConfig()
+        invalidBody.maxSegmentBodyByteCount = 0
+        XCTAssertEqual(
+            Endpoint(channel: .ctrl, config: invalidBody)
+                .config.maxSegmentBodyByteCount,
+            1,
+            "a zero body ceiling must not make enqueue loop forever"
+        )
+
+        let tooSmall = ArqConfig(maxDatagramPayloadByteCount: 1)
+        XCTAssertEqual(
+            tooSmall.maxDatagramPayloadByteCount,
+            ArqBounds.maxAckFrameByteCount
+        )
+        XCTAssertEqual(
+            tooSmall.maxSegmentBodyByteCount,
+            ArqBounds.maxAckFrameByteCount
+                - ArqBounds.segmentHeaderByteCount
+        )
+
+        let tooLarge = ArqConfig(maxDatagramPayloadByteCount: .max)
+        XCTAssertEqual(
+            tooLarge.maxDatagramPayloadByteCount,
+            WireBudget.maxPlaintextShardByteCount
+        )
+        XCTAssertEqual(
+            tooLarge.maxSegmentBodyByteCount,
+            ArqBounds.maxSegmentBodyByteCount
+        )
+    }
+
     func testOrderedDeliveryUnderReversedArrival() throws {
         var a = Endpoint(channel: .ctrl)
         var b = Endpoint(channel: .ctrl)

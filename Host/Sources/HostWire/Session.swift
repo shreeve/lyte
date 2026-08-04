@@ -36,10 +36,9 @@
 //     `ArqEndpoint.ingest` (the one-byte peek); delivered messages and
 //     one-shot acknowledgments surface as events. ARQ datagrams are
 //     sealed CTRL like everything else — conn-id TLV, header-as-AAD,
-//     the control pacer class — which is why the endpoint's output
-//     repacks to the session's real 1101 B plaintext budget (the HS-7
-//     accounting fix, applied to the reliable sublayer: poll packs to
-//     the bare 1112 B table, exact only without TLV + tag). The
+//     the control pacer class. The endpoint receives the session's
+//     connection-id-tagged carrier ceiling and packs once at that real
+//     plaintext budget; the session only seals and schedules its output. The
 //     deliberately ARQ-EXEMPT registry traffic is untouched: beacons
 //     and echoes are time-sensitive samples (a late beacon is a lie),
 //     path messages must travel on the exact unvalidated tuple
@@ -87,10 +86,9 @@ public struct SessionConfig: Sendable {
     /// §4.6: 1 Hz. A beacon also goes out at establishment.
     public var beaconIntervalNS: UInt64
     public var path: PathValidatorConfig
-    /// The reliable-CTRL sublayer's knobs (HS-8). The session clamps
-    /// `maxSegmentBodyByteCount` to its own CTRL plaintext budget
-    /// (1101 B with the conn-id TLV + AEAD tag) at init — a caller
-    /// cannot configure a segment that would burst a datagram.
+    /// The reliable-CTRL sublayer's knobs (HS-8). The session injects
+    /// its connection-id-tagged CTRL plaintext ceiling at init; the
+    /// endpoint couples segment geometry and datagram packing to it.
     public var arq: ArqConfig
     /// When set, a completing handshake whose authenticated client
     /// static is not in this set is rejected. Nil accepts any static —
@@ -767,11 +765,6 @@ public final class Session {
     private var arq: ArqEndpoint<HostClock>
     /// The endpoint's next PTO deadline, in the `now` ns domain.
     private var nextArqWakeNS: UInt64?
-    /// The session's CTRL plaintext ceiling: 1101 B with the conn-id
-    /// TLV block and the AEAD tag both on every datagram (the HS-7
-    /// accounting fix). ARQ poll output repacks to this.
-    private let arqPayloadBudget: Int
-
     /// F-3: the bulk channel's OWN reliable sublayer (design record
     /// 20260728-053300 §2 — chan 8 runs its own ArqEndpoint, never the
     /// CTRL stream, so a file can never head-of-line-block a
@@ -994,20 +987,13 @@ public final class Session {
         var rng = rng
         self.config = config
         self.connectionId = ConnectionId.random(using: &rng)
-        // Every session datagram carries the conn-id TLV (11 B) and
-        // reserves the AEAD tag (16 B) — insecure mode included, the
-        // §4.2 geometry rule — so the reliable sublayer's segments must
-        // fit 1101 B, not the bare table's 1112 B.
-        self.arqPayloadBudget = min(
-            WireBudget.maxPlaintextShardByteCount,
-            WireBudget.maxWirePayloadByteCount
-                - WireBudget.aeadTagByteCount
-                - (1 + 2 + ConnectionId.byteCount)
-        )
+        // Every session datagram carries the conn-id TLV. Give that carrier
+        // ceiling to the endpoint before it owns any segments, so ARQ packs
+        // once and the session never needs to re-cut its output.
         var arqConfig = config.arq
-        arqConfig.maxSegmentBodyByteCount = min(
-            arqConfig.maxSegmentBodyByteCount,
-            arqPayloadBudget - ArqBounds.segmentHeaderByteCount
+        arqConfig.maxDatagramPayloadByteCount = min(
+            arqConfig.maxDatagramPayloadByteCount,
+            WireBudget.maxConnectionIdTaggedPlaintextByteCount
         )
         self.arq = ArqEndpoint(channel: .ctrl, config: arqConfig)
         // F-3/P-1: the bulk endpoint exists exactly when something
@@ -2100,10 +2086,9 @@ public final class Session {
         return events
     }
 
-    /// Polls the bulk endpoint and puts its output on the wire —
-    /// `serviceArq`'s shape on chan 8: repack to the session's real
-    /// plaintext budget, seal with the exact header bytes as AAD, and
-    /// enqueue at the pacer's `.bulk` class, the ladder's tail.
+    /// Polls the bulk endpoint and puts its already carrier-sized output on
+    /// the wire — seal with the exact header bytes as AAD, then enqueue at
+    /// the pacer's `.bulk` class, the ladder's tail.
     private func serviceBulkArq(
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -2114,7 +2099,7 @@ public final class Session {
 
         var events: [SessionEvent] = []
         do {
-            for payload in try repackArq(payloads) {
+            for payload in payloads {
                 try sendBulkDatagram(
                     body: payload,
                     now: now, hostMicroseconds: hostMicroseconds
@@ -2914,12 +2899,9 @@ public final class Session {
         return [.repairEnqueued(frame: nack.frame, shards: enqueued)]
     }
 
-    /// Polls the endpoint and puts its output on the wire: repack to
-    /// the session's 1101 B plaintext budget (poll packs to the bare
-    /// 1112 B table — exact only without TLV + tag; frames are
-    /// self-delimiting, so re-cutting datagram boundaries is
-    /// protocol-neutral), then each datagram sealed through the
-    /// control class like every other CTRL send. Re-arms the PTO wake.
+    /// Polls the endpoint and puts its already carrier-sized output on the
+    /// wire through the control class like every other CTRL send. Re-arms
+    /// the PTO wake.
     private func serviceArq(
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -2930,7 +2912,7 @@ public final class Session {
 
         var events: [SessionEvent] = []
         do {
-            for payload in try repackArq(payloads) {
+            for payload in payloads {
                 try sendCtrl(
                     body: payload, sealed: true,
                     now: now, hostMicroseconds: hostMicroseconds
@@ -2943,40 +2925,6 @@ public final class Session {
             events.append(.sendFailed("arq: \(error)"))
         }
         return events
-    }
-
-    /// Re-cuts the endpoint's datagram payloads at the session's real
-    /// budget. Every frame fits alone by construction: segment bodies
-    /// were clamped at init (≤ budget − 8) and an ACK frame's ceiling
-    /// (3 + 16·38 B) is far below it.
-    private func repackArq(_ payloads: [[UInt8]]) throws -> [[UInt8]] {
-        var out: [[UInt8]] = []
-        var current: [UInt8] = []
-        for payload in payloads {
-            if payload.count <= arqPayloadBudget {
-                // Already within budget — keep the endpoint's packing
-                // (ACK piggybacked ahead of segments) byte-verbatim.
-                if !current.isEmpty {
-                    out.append(current)
-                    current = []
-                }
-                out.append(payload)
-                continue
-            }
-            for frame in try ArqFrame.decodeAll(payload) {
-                let bytes = frame.encode()
-                if !current.isEmpty,
-                   current.count + bytes.count > arqPayloadBudget {
-                    out.append(current)
-                    current = []
-                }
-                current.append(contentsOf: bytes)
-            }
-        }
-        if !current.isEmpty {
-            out.append(current)
-        }
-        return out
     }
 
     // MARK: Timers and pumping

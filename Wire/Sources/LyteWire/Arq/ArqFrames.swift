@@ -126,6 +126,10 @@ public enum ArqBounds {
     public static let maxAckBitmapByteCount = 32
     /// The widest receive window an ACK can describe.
     public static let maxReceiveWindowSegments = maxAckBitmapByteCount * 8
+    /// A maximally populated ACK frame must fit in every configured ARQ
+    /// datagram. This is the safe lower bound for the runtime pack ceiling.
+    public static let maxAckFrameByteCount = ackHeaderByteCount
+        + maxAckBlocks * (ackBlockFixedByteCount + maxAckBitmapByteCount)
 }
 
 /// One data segment: one slice of one message in one group.

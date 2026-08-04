@@ -149,6 +149,15 @@ final class BudgetTests: XCTestCase {
             WireBudget.maxPlaintextShardByteCount + WireBudget.aeadTagByteCount,
             WireBudget.maxWirePayloadByteCount
         )
+        XCTAssertEqual(
+            WireBudget.maxConnectionIdTaggedPlaintextByteCount,
+            1_101
+        )
+        XCTAssertEqual(
+            WireBudget.maxConnectionIdTaggedPlaintextByteCount
+                + 1 + 2 + ConnectionId.byteCount,
+            WireBudget.maxPlaintextShardByteCount
+        )
     }
 
     func testShardBudgetExactAt1112() throws {

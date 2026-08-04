@@ -16,14 +16,12 @@
 //     is tagged with the session's connection ID once the host's
 //     datagrams have taught it (the HS-12 every-packet rule; the client
 //     learns the id from the TLV the host mints, it never invents one).
-//   • the budget mirror of the host's accounting fix: poll packs to the
-//     bare 1112 B table, exact only without TLV + tag, so output
-//     repacks to the session's REAL plaintext ceiling — 1101 B with the
-//     conn-id TLV (11 B) and the AEAD tag (16 B) both on the datagram
-//     (24 + 11 + 1101 + 16 = 1152 exactly). Segment bodies are clamped
-//     at init to fit; the ceiling is reserved from the first datagram,
-//     before the conn-id is even learned, so geometry never depends on
-//     runtime state (the §4.2 rule's shape).
+//   • the ARQ endpoint packs once at the carrier's REAL plaintext
+//     ceiling — 1101 B with the conn-id TLV (11 B) and the AEAD tag
+//     (16 B) both on the datagram (24 + 11 + 1101 + 16 = 1152 exactly).
+//     The ceiling is configured before the first datagram, before the
+//     conn-id is even learned, so geometry never depends on runtime
+//     state and the transport shell never decodes/re-cuts ARQ output.
 //   • the PTO deadline rides the client's tick machinery: every
 //     send/ingest pass re-arms a timer at the endpoint's reported
 //     deadline (the client-side analogue of the host folding the ARQ
@@ -72,18 +70,6 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         public var sendFailures: UInt64 = 0
     }
 
-    /// The session's CTRL plaintext ceiling: 1101 B with the conn-id TLV
-    /// block and the AEAD tag both on every datagram — the HS-7
-    /// accounting fix, applied client-side. ARQ poll output repacks to
-    /// this whether or not the conn-id is known yet, so a datagram built
-    /// before the first host TLV arrives can never burst later geometry.
-    public static let ctrlPlaintextBudget = min(
-        WireBudget.maxPlaintextShardByteCount,
-        WireBudget.maxWirePayloadByteCount
-            - WireBudget.aeadTagByteCount
-            - (1 + 2 + ConnectionId.byteCount)
-    )
-
     private let sender: TransportSender
     /// The channel this endpoint's datagrams ride (`.ctrl` for the
     /// session's control stream, `.bulkTransfer` for chan 8).
@@ -123,15 +109,15 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         },
         onEvent: (@Sendable (ArqEvent) -> Void)? = nil
     ) {
-        // No caller-configured segment may burst the real datagram
-        // budget once the TLV and tag ride along (the host clamps its
-        // ArqConfig at Session init the same way).
-        var clamped = config
-        clamped.maxSegmentBodyByteCount = min(
-            clamped.maxSegmentBodyByteCount,
-            Self.ctrlPlaintextBudget - ArqBounds.segmentHeaderByteCount
+        // Pack once at the smallest ceiling: a caller may deliberately
+        // ask for less, but never more than the established carrier can
+        // hold once its connection-id extension and AEAD tag ride along.
+        var bounded = config
+        bounded.maxDatagramPayloadByteCount = min(
+            bounded.maxDatagramPayloadByteCount,
+            WireBudget.maxConnectionIdTaggedPlaintextByteCount
         )
-        self.arq = ArqEndpoint(channel: channel, config: clamped)
+        self.arq = ArqEndpoint(channel: channel, config: bounded)
         self.sender = sender
         self.channel = channel
         self.now = now
@@ -331,17 +317,16 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
 
     // MARK: Interior
 
-    /// Polls the endpoint and puts its output on the wire: repack to the
-    /// session's 1101 B plaintext budget, then each datagram sealed
-    /// through the TransportSender like every other CTRL send (fresh
-    /// channel seq, header-as-AAD, conn-id TLV once learned). Re-arms
-    /// the PTO wake. Runs under the lock.
+    /// Polls the endpoint and puts its already carrier-sized output on
+    /// the wire. Each datagram seals through the TransportSender like
+    /// every other CTRL send (fresh channel seq, header-as-AAD, conn-id
+    /// TLV once learned). Re-arms the PTO wake. Runs under the lock.
     private func serviceLocked(now: ClientTimestamp) {
         let (payloads, deadline) = arq.poll(now: now)
         if !payloads.isEmpty {
             let extensions = connectionId.map { [$0.wireExtension] } ?? []
             do {
-                for payload in try Self.repack(payloads) {
+                for payload in payloads {
                     let sent = try sender.send(
                         channel: channel,
                         timestamp: now,
@@ -385,37 +370,4 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         }
     }
 
-    /// Re-cuts the endpoint's datagram payloads at the session's real
-    /// budget (the host's repack, mirrored). Every frame fits alone by
-    /// construction: segment bodies were clamped at init (≤ budget − 8)
-    /// and an ACK frame's ceiling (3 + 16·38 B) is far below it.
-    static func repack(_ payloads: [[UInt8]]) throws -> [[UInt8]] {
-        var out: [[UInt8]] = []
-        var current: [UInt8] = []
-        for payload in payloads {
-            if payload.count <= ctrlPlaintextBudget {
-                // Already within budget — keep the endpoint's packing
-                // (ACK piggybacked ahead of segments) byte-verbatim.
-                if !current.isEmpty {
-                    out.append(current)
-                    current = []
-                }
-                out.append(payload)
-                continue
-            }
-            for frame in try ArqFrame.decodeAll(payload) {
-                let bytes = frame.encode()
-                if !current.isEmpty,
-                   current.count + bytes.count > ctrlPlaintextBudget {
-                    out.append(current)
-                    current = []
-                }
-                current.append(contentsOf: bytes)
-            }
-        }
-        if !current.isEmpty {
-            out.append(current)
-        }
-        return out
-    }
 }
