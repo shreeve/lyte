@@ -736,17 +736,12 @@ public final class Session {
 
     // MARK: HS-11 lifecycle + W7 capabilities state
 
-    /// The W4b machine, mediaSender role — nil until establishment
-    /// (the machine "begins at establishment, in ACTIVE").
-    private var machine: SessionStateMachine<HostClock>?
-    /// The machine's next poll deadline, in the `now` ns domain.
-    private var machineDeadlineNS: UInt64?
+    /// The W4b state machine, its projected timer, and FROZEN's local video
+    /// admission posture. External lifecycle effects stay in Session.
+    private var lifecycleLane: SessionLifecycleLane
     /// The W7 negotiation machine, host role.
     private var negotiator: CapabilityNegotiator
     private var capabilitiesDeclared = false
-    /// FROZEN's freezeDatagramSends: video ingest suppressed until
-    /// RECOVERY's resume.
-    private var videoFrozen = false
     /// Last peer-driven `.unavailable` arm. Budget-stale NACKs are tied
     /// to real retained frames and remain unthrottled; only arbitrary
     /// unknown frame numbers can manufacture this pressure.
@@ -777,11 +772,13 @@ public final class Session {
     private var inputEchoBook = SessionInputEchoBook()
 
     /// The lifecycle machine's state; nil before establishment.
-    public var lifecycleState: SessionState? { machine?.state }
+    public var lifecycleState: SessionState? { lifecycleLane.state }
     /// The wire mode beneath any overlay; nil before establishment.
-    public var wireMode: SessionWireMode? { machine?.wireMode }
+    public var wireMode: SessionWireMode? { lifecycleLane.wireMode }
     /// Why the session closed, once it has.
-    public var sessionCloseReason: SessionCloseReason? { machine?.closeReason }
+    public var sessionCloseReason: SessionCloseReason? {
+        lifecycleLane.closeReason
+    }
     /// The agreed capability set; nil until the client's declaration
     /// lands (the CL-7 client does not send one yet — nil is the
     /// grandfathered pre-W7 posture, not an error).
@@ -914,6 +911,15 @@ public final class Session {
         self.negotiator = CapabilityNegotiator(
             role: .host, local: config.capabilities
         )
+        let lifecycleEstablishedAt: UInt64?
+        switch config.crypto {
+        case .noise: lifecycleEstablishedAt = nil
+        case .insecure: lifecycleEstablishedAt = now
+        }
+        self.lifecycleLane = SessionLifecycleLane(
+            config: config.lifecycle,
+            establishedAtNanoseconds: lifecycleEstablishedAt
+        )
         self.validator = PathValidator(
             connectionId: connectionId,
             initialPath: clientTuple,
@@ -929,11 +935,6 @@ public final class Session {
             // the capability declaration) leave on the first `advance`.
             self.phase = .established
             self.beaconClock.armSessionStart(at: now)
-            self.machine = SessionStateMachine(
-                role: .mediaSender,
-                config: config.lifecycle,
-                now: HostTimestamp(microseconds: now / 1_000)
-            )
         }
         self.channel = VideoChannel(
             config: VideoChannelConfig(
@@ -1111,7 +1112,7 @@ public final class Session {
             // Any authenticated CTRL arrival is liveness/FROZEN-exit
             // evidence, but deliberately NOT the 350 ms detector's
             // (W4b: 1 Hz beacons cannot drive a 350 ms detector).
-            events += runMachine(
+            events += runLifecycle(
                 .ctrlEvidence, now: now, hostMicroseconds: hostMicroseconds
             )
             events += dispatchCtrl(
@@ -1123,7 +1124,7 @@ public final class Session {
             // The media-path proof stream: feeds the blackout detector
             // (any authenticated chan-3 arrival — a malformed interior
             // is still an arrival on the media path).
-            events += runMachine(
+            events += runLifecycle(
                 .mediaPathEvidence, now: now, hostMicroseconds: hostMicroseconds
             )
             events += ingestFeedback(
@@ -1132,7 +1133,7 @@ public final class Session {
         case .bulkTransfer:
             // Liveness evidence like CTRL (an authenticated arrival
             // proves the peer), deliberately NOT the 350 ms detector's.
-            events += runMachine(
+            events += runLifecycle(
                 .ctrlEvidence, now: now, hostMicroseconds: hostMicroseconds
             )
             // The W7 rule-3 gate (F-3/P-1): chan-8 traffic outside
@@ -1245,7 +1246,7 @@ public final class Session {
         // encoder may keep producing, the wire goes quiet. Suppressed
         // frames are counted, never thrown — the loop must not die
         // because the path did.
-        if videoFrozen || machine?.state == .closed {
+        if lifecycleLane.videoSendsSuppressed {
             counters.videoFramesSuppressed += 1
             return nil
         }
@@ -1304,7 +1305,7 @@ public final class Session {
         guard phase == .established else {
             throw SessionError.notEstablished
         }
-        if videoFrozen || machine?.state == .closed {
+        if lifecycleLane.videoSendsSuppressed {
             counters.videoFramesSuppressed += 1
             return 0
         }
@@ -1347,7 +1348,7 @@ public final class Session {
     /// beacon keep flowing". The continuous 5 ms cadence is what lets
     /// the client's blackout detector tighten to 350 ms (CL-8's
     /// deviation note) and is the always-on queue-delay sensor
-    /// (resiliency §2), so `videoFrozen` is consulted nowhere here.
+    /// (resiliency §2), so FROZEN's video projection is ignored here.
     /// Only `closed` suppresses (counted, never thrown — the audio
     /// thread must not die because the session did). Throws
     /// `SessionError.notEstablished` before the transport exists, and
@@ -1361,7 +1362,7 @@ public final class Session {
         guard phase == .established else {
             throw SessionError.notEstablished
         }
-        if machine?.state == .closed {
+        if lifecycleLane.audioSendsSuppressed {
             counters.audioPacketsSuppressed += 1
             return 0
         }
@@ -1478,7 +1479,9 @@ public final class Session {
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
         idleHandoff.noteDamage(now: now)
-        return runMachine(.damage, now: now, hostMicroseconds: hostMicroseconds)
+        return runLifecycle(
+            .damage, now: now, hostMicroseconds: hostMicroseconds
+        )
     }
 
     /// The HS-13 seam, now wired: an injected input event pre-arms the
@@ -1490,7 +1493,7 @@ public final class Session {
     public func notePreArmInput(
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        runMachine(.preArmInput, now: now, hostMicroseconds: hostMicroseconds)
+        runLifecycle(.preArmInput, now: now, hostMicroseconds: hostMicroseconds)
     }
 
     /// The shell's injection report (HS-13): the event with `seq` was
@@ -1749,7 +1752,7 @@ public final class Session {
             quietWindowNanoseconds: config.idleFlipQuietNS
         )
         guard ready else { return [] }
-        return runMachine(
+        return runLifecycle(
             .ratchetConverged, now: now, hostMicroseconds: hostMicroseconds
         )
     }
@@ -1761,7 +1764,7 @@ public final class Session {
     public func beginTeardown(
         reason: SessionTeardownReason, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        runMachine(
+        runLifecycle(
             .teardownRequest(reason),
             now: now, hostMicroseconds: hostMicroseconds
         )
@@ -1981,10 +1984,6 @@ public final class Session {
         bulkArqLane!.commitEnvelopeSent()
     }
 
-    private func hostInstant(_ now: UInt64) -> HostTimestamp {
-        HostTimestamp(microseconds: now / 1_000)
-    }
-
     /// Ingest events → session events, with the counters kept honest.
     /// Lifecycle (0x09/0x0A) and capability (0x0F/0x11/0x12) messages
     /// are consumed here — the session IS their registered consumer
@@ -2011,7 +2010,7 @@ public final class Session {
                 if idleHandoff.acknowledge(group) {
                     // The converged frame landed: this ack IS the
                     // idle-flip signal (W4b's ordering rule).
-                    events += runMachine(
+                    events += runLifecycle(
                         .finalFrameAcknowledged,
                         now: now, hostMicroseconds: hostMicroseconds
                     )
@@ -2036,7 +2035,7 @@ public final class Session {
                 counters.dropped += 1
                 return [.dropped(.malformedCtrl)]
             }
-            return runMachine(
+            return runLifecycle(
                 .teardownMessage(teardown.reason),
                 now: now, hostMicroseconds: hostMicroseconds
             )
@@ -2069,7 +2068,7 @@ public final class Session {
             // semantics belong to the event's arrival, not to the
             // injection call's success (W4b — a keypress during a
             // blackout must persist even if injection is deferred).
-            var events = runMachine(
+            var events = runLifecycle(
                 .preArmInput, now: now, hostMicroseconds: hostMicroseconds
             )
             events.append(.inputReceived(
@@ -2160,7 +2159,7 @@ public final class Session {
             var events: [SessionEvent] = [
                 .capabilitiesFailed(String(describing: failure))
             ]
-            events += runMachine(
+            events += runLifecycle(
                 .teardownRequest(.shuttingDown),
                 now: now, hostMicroseconds: hostMicroseconds
             )
@@ -2175,26 +2174,19 @@ public final class Session {
 
     // MARK: The lifecycle machine's runner (HS-11)
 
-    /// Applies one input (nil = timers only), polls, executes the
-    /// resulting actions, and surfaces state changes. The machine's own
-    /// doctrine: apply never fires timers, so poll always follows.
-    private func runMachine(
+    /// Delegates one apply-then-poll pass, executes its external actions, and
+    /// surfaces the lane's single state-change projection.
+    private func runLifecycle(
         _ input: SessionInput?, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard machine != nil else { return [] }
-        let before = machine!.state
-        var actions: [SessionAction] = []
-        if let input {
-            actions += machine!.apply(input, now: hostInstant(now))
-        }
-        let (polled, deadline) = machine!.poll(now: hostInstant(now))
-        actions += polled
-        machineDeadlineNS = deadline.map { $0.microseconds &* 1_000 }
+        let verdict = lifecycleLane.drive(input, now: now)
         var events: [SessionEvent] = []
-        if machine!.state != before {
-            events.append(.lifecycleChanged(machine!.state))
+        if let state = verdict.stateChangedTo {
+            events.append(.lifecycleChanged(state))
         }
-        events += execute(actions, now: now, hostMicroseconds: hostMicroseconds)
+        events += execute(
+            verdict.actions, now: now, hostMicroseconds: hostMicroseconds
+        )
         return events
     }
 
@@ -2247,10 +2239,11 @@ public final class Session {
                 events.append(.rateChanged(
                     bitsPerSecond: rate, reason: .idrPacing(pacing)
                 ))
-            case .freezeDatagramSends:
-                videoFrozen = true
-            case .resumeDatagramSends:
-                videoFrozen = false
+            case .freezeDatagramSends, .resumeDatagramSends:
+                // Consumed by SessionLifecycleLane into video admission before
+                // external effects execute. Kept exhaustive against Wire's
+                // action vocabulary; these never leave the lane.
+                break
             case .sessionClosed(let reason):
                 events.append(.sessionClosed(reason))
             }
@@ -2382,7 +2375,7 @@ public final class Session {
         // own pacing — the estimator's self-reference gate needs to
         // know when that is the case.
         let verdict = estimator.ingest(
-            report, now: now, inRecovery: machine?.state == .recovery,
+            report, now: now, inRecovery: lifecycleLane.isRecovering,
             pacerBacklogBytes: queuedVideoBytes,
             // HS-28: NACKs against frames we have not finished sending
             // are the client's completion presumption expiring
@@ -2442,7 +2435,7 @@ public final class Session {
             )
         }
         for clean in verdict.recoveryWindows {
-            events += runMachine(
+            events += runLifecycle(
                 .feedbackWindow(clean: clean),
                 now: now, hostMicroseconds: hostMicroseconds
             )
@@ -2547,7 +2540,7 @@ public final class Session {
             return events
         }
 
-        if videoFrozen || machine?.state == .closed {
+        if lifecycleLane.videoSendsSuppressed {
             return stale(.sendsSuppressed, armIdr: false)
         }
         // "The frame is newer than the last IDR": a frame BEHIND the
@@ -2731,7 +2724,7 @@ public final class Session {
         // HS-22: a convergence that waited out the idle-flip quiet —
         // damage stayed silent, the handoff may start now.
         if idleHandoff.takeDueHandoff(now: now) {
-            events += runMachine(
+            events += runLifecycle(
                 .ratchetConverged, now: now, hostMicroseconds: hostMicroseconds
             )
         }
@@ -2745,9 +2738,8 @@ public final class Session {
                 .bulk, now: now, hostMicroseconds: hostMicroseconds
             )
         }
-        if let machine, machine.state != .closed,
-           machineDeadlineNS.map({ now >= $0 }) ?? true {
-            events += runMachine(
+        if lifecycleLane.shouldService(at: now) {
+            events += runLifecycle(
                 nil, now: now, hostMicroseconds: hostMicroseconds
             )
         }
@@ -2802,7 +2794,7 @@ public final class Session {
             beaconClock.nextDeadlineNanoseconds,
             ctrlArqLane.nextDeadlineNanoseconds,
             bulkArqLane?.nextDeadlineNanoseconds,
-            machineDeadlineNS, validator.nextDeadline,
+            lifecycleLane.nextDeadlineNanoseconds, validator.nextDeadline,
             idleHandoff.nextDeadlineNanoseconds,
         ] {
             guard let candidate else { continue }
@@ -2979,15 +2971,11 @@ public final class Session {
         // capability declaration is the first ARQ-carried word (W7) —
         // beacons are ARQ-exempt, so it is first on the reliable stream
         // by construction.
-        machine = SessionStateMachine(
-            role: .mediaSender,
-            config: config.lifecycle,
-            now: hostInstant(now)
-        )
+        lifecycleLane.establish(at: now)
         events += declareCapabilities(
             now: now, hostMicroseconds: hostMicroseconds
         )
-        events += runMachine(nil, now: now, hostMicroseconds: hostMicroseconds)
+        events += runLifecycle(nil, now: now, hostMicroseconds: hostMicroseconds)
         return events
     }
 
