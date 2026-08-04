@@ -69,13 +69,12 @@ public final class PairingInitiatorService: @unchecked Sendable {
     private let lock = NSLock()
     private var pake: PairingPakeInitiator
     private var state: State = .idle
-    private var pairedKey: [UInt8]?
 
     /// Set once, on success — the static the shell pins.
     public var pairedHostStaticPublicKey: [UInt8]? {
         lock.lock()
         defer { lock.unlock() }
-        return pairedKey
+        return pake.result?.peerStaticPublicKeyToPin
     }
 
     public var isPaired: Bool { pairedHostStaticPublicKey != nil }
@@ -160,7 +159,6 @@ public final class PairingInitiatorService: @unchecked Sendable {
         do {
             let confirm = try pake.receiveShareB(shareB)
             let host = pake.result!.peerStaticPublicKeyToPin
-            pairedKey = host
             state = .complete
             return Output(
                 replies: [try confirm.encode()],
