@@ -504,8 +504,6 @@ public struct BulkReceiveEngine: Sendable {
     /// Possession as of this session's start — the under-claim
     /// duplicate tolerance boundary (design §5).
     private var sessionStartPossession: BulkPossession = .empty
-    /// Chunk messages admitted this session (credit enforcement).
-    private var admittedChunkCount: UInt64 = 0
     /// Chunks stored or tolerated this session (credit consumption).
     private var consumedChunkCount: UInt64 = 0
     private var pendingStores: Set<UInt64> = []
@@ -744,7 +742,8 @@ public struct BulkReceiveEngine: Sendable {
         guard chunk.transferId == offer.transferId else {
             return violate(.foreignTransfer(chunk.transferId))
         }
-        guard admittedChunkCount < grantedCreditTotal else {
+        let admissionDebt = consumedChunkCount + UInt64(pendingStores.count)
+        guard admissionDebt < grantedCreditTotal else {
             return violate(.creditExceeded)
         }
         guard let expected = offer.byteCount(ofChunk: chunk.chunkIndex)
@@ -767,11 +766,9 @@ public struct BulkReceiveEngine: Sendable {
             else {
                 return violate(.duplicateChunk(chunk.chunkIndex))
             }
-            admittedChunkCount += 1
             consumedChunkCount += 1
             return creditActions()
         }
-        admittedChunkCount += 1
         pendingStores.insert(chunk.chunkIndex)
         return [.store(index: chunk.chunkIndex, data: chunk.data)]
     }
