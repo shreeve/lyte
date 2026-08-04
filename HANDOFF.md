@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 83 Mac / 84 pup, Wire 513,
-Host 336 Mac / 337 pup, Client 260,
+Host 337 Mac / 338 pup, Client 260,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -1145,8 +1145,33 @@ SLICE: derive Host `SessionLifecycleLane.videoSendsSuppressed` from the shared
 machine's authoritative state, deleting the synchronized `videoIsFrozen`
 projection while preserving local action consumption and audio asymmetry.**
 
+**That lifecycle freeze-projection cleanup completed as #152.**
+`SessionLifecycleLane.videoSendsSuppressed` now reads the shared lifecycle
+machine's authoritative nil, frozen, or closed state. The synchronized
+`videoIsFrozen` field and its establish/freeze/resume writes are gone; the
+lane still consumes freeze and resume actions locally, and the machine still
+publishes each new state before returning its action. Dormant, active, idle,
+frozen, recovery, and closed postures retain their exact admission answers;
+frozen still suppresses video without suppressing audio, recovery resumes
+video before its forced IDR, and a zero-blackout resume followed immediately
+by another freeze remains suppressed at the same drive boundary. A source
+ratchet pins the lifecycle state as the sole freeze book beside the complete
+transition suite. No public API, wire byte, frozen vector, manifest,
+allocation, synchronization boundary, action ordering, or product behavior
+changed. Focused lifecycle gates passed 6 tests. Canonical Mac passed Common
+83, Wire 513, Host 337, Client 260, SystemTests 17, analyzer 25, benchmark
+safety, and both signed products (one existing no-output-device client test
+skipped); isolated pup passed Common 84, Wire 513, Host 338, the plain build,
+netio/pacing (19.200 ms IDR drain against the 25 ms ceiling), and
+protected-state verification. Independent state/action/timing, video/audio
+asymmetry, and source-ratchet review found no blocker. **NEXT CLEANUP SLICE:
+re-inventory current Client and Host ownership after #152, then take the
+smallest authoritative projection with a complete transition proof; the
+pairing-sheet completion latch and Noise transport established bit are
+candidates, not presumptions.**
+
 **Suites at HEAD:** Wire 513 Mac / 513 pup; Common 83 Mac / 84 pup;
-client 260; SystemTests 17 Mac; host 337 pup / 336 Mac — all green. Eighteen conductor/gauge
+client 260; SystemTests 17 Mac; host 338 pup / 337 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
