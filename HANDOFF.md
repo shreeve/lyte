@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 83 Mac / 84 pup, Wire 513,
-Host 338 Mac / 339 pup, Client 261,
+Host 338 Mac / 339 pup, Client 262,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -1218,8 +1218,31 @@ found no blocker. **NEXT CLEANUP SLICE: remove LytePairingSheet's dead
 remain false, while the successful paired phase already owns Done's true
 answer.**
 
+**That pairing-sheet completion cleanup completed as #155.**
+`LytePairingSheet` now reports false directly from its form and failure
+Cancel buttons, while the successful paired phase's Done button remains the
+sole true exit. The SwiftUI `paired` latch and its post-save write are gone.
+Form moves synchronously to running; every identity, PAKE, timeout, host,
+share, and persistence failure reaches failed without a successful answer;
+Try Again returns only to form; the paired phase remains reachable only after
+the pin store saves successfully. Late progress cannot overwrite a terminal
+phase, and parent dismissal/reload behavior is unchanged. A source ratchet
+pins two false exits and one true exit. No public API, wire byte, frozen
+vector, manifest, persistence transaction, async boundary, or product
+behavior changed. Focused Client layout gates passed 8 tests. Canonical Mac
+passed Common 83, Wire 513, Host 338, Client 262, SystemTests 17, analyzer 25,
+benchmark safety, and both signed products; isolated pup passed Common 84,
+Wire 513, Host 339, the plain build, netio/pacing (19.193 ms IDR drain against
+the 25 ms ceiling), and protected-state verification. Independent phase,
+async, persistence, dismissal, and source-ratchet review found no blocker.
+**CLEANUP FREEZE: #148–#155 closed the current authoritative-projection
+inventory. Remaining notions are diagnostics-only or moderate-risk
+consolidations rather than owed architecture debt. Freeze this tree and run
+the final deterministic, structural, live-quality, impairment, soak, and
+owner-feel commissioning campaign before reopening cleanup.**
+
 **Suites at HEAD:** Wire 513 Mac / 513 pup; Common 83 Mac / 84 pup;
-client 261; SystemTests 17 Mac; host 339 pup / 338 Mac — all green. Eighteen conductor/gauge
+client 262; SystemTests 17 Mac; host 339 pup / 338 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
