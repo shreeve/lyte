@@ -20,11 +20,19 @@ final class SessionLifecycleLaneTests: XCTestCase {
         XCTAssertTrue(session.contains(
             "private var lifecycleLane: SessionLifecycleLane"
         ))
+        XCTAssertTrue(session.contains("public var phase: Phase {"))
+        XCTAssertTrue(session.contains(
+            "lifecycleLane.isEstablished ? .established : .awaitingHandshake"
+        ))
         for retired in [
             "SessionStateMachine<HostClock>",
             "private var machineDeadlineNS",
             "private var videoFrozen",
             "SessionStateMachine(",
+            "public private(set) var phase",
+            "self.phase =",
+            "phase = .established",
+            "phase = .awaitingHandshake",
         ] {
             XCTAssertFalse(
                 session.contains(retired),
@@ -142,6 +150,10 @@ final class SessionLifecycleLaneTests: XCTestCase {
         ])
         XCTAssertNil(lane.nextDeadlineNanoseconds)
         XCTAssertFalse(lane.shouldService(at: .max))
+        XCTAssertTrue(
+            lane.isEstablished,
+            "CLOSED is a terminal established machine, not handshake dormancy"
+        )
         XCTAssertTrue(lane.videoSendsSuppressed)
         XCTAssertTrue(lane.audioSendsSuppressed)
     }

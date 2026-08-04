@@ -687,7 +687,9 @@ public final class Session {
     /// HS-12's decision machine; public for the loop's routing queries
     /// (primary tuple, send allowances) and the tests' state checks.
     public let validator: PathValidator
-    public private(set) var phase: Phase
+    public var phase: Phase {
+        lifecycleLane.isEstablished ? .established : .awaitingHandshake
+    }
     public var clock: SessionClockStats { beaconClock.stats }
     public private(set) var counters = SessionCounters()
 
@@ -923,13 +925,9 @@ public final class Session {
             config: config.path,
             rng: rng
         )
-        switch config.crypto {
-        case .noise:
-            self.phase = .awaitingHandshake
-        case .insecure:
+        if case .insecure = config.crypto {
             // No handshake to wait for; the session-start beacon (and
             // the capability declaration) leave on the first `advance`.
-            self.phase = .established
             self.beaconClock.armSessionStart(at: now)
         }
         self.channel = VideoChannel(
@@ -2943,7 +2941,7 @@ public final class Session {
         } catch {
             return [.dropped(.handshakeFailed(String(describing: error)))]
         }
-        phase = .established
+        lifecycleLane.establish(at: now)
         var events: [SessionEvent] = [.handshakeCompleted(
             remoteStaticPublicKey: responder.remoteStaticPublicKey ?? []
         )]
@@ -2960,7 +2958,6 @@ public final class Session {
         // capability declaration is the first ARQ-carried word (W7) —
         // beacons are ARQ-exempt, so it is first on the reliable stream
         // by construction.
-        lifecycleLane.establish(at: now)
         events += declareCapabilities(
             now: now, hostMicroseconds: hostMicroseconds
         )
