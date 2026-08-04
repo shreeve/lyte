@@ -38,6 +38,19 @@ final class ClientLayoutTests: XCTestCase {
         )
     }
 
+    func testSessionEndpointPublishesCoreThroughWeakSynchronizedSeam() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
+                "/Client/Sources/LyteTransport/LyteUdpSession.swift"),
+            encoding: .utf8)
+        XCTAssertTrue(source.contains(
+            "private let coreStorage = Mutex<LyteUdpSessionCore?>(nil)"))
+        XCTAssertTrue(source.contains("coreStorage.withLock { $0 = core }"))
+        XCTAssertTrue(source.contains("onDatagram: { [weak self]"))
+        XCTAssertTrue(source.contains("self?.core?.handleDatagram("))
+        XCTAssertFalse(source.contains("SessionCoreBox"))
+    }
+
     private func directoryNames(at root: URL) throws -> [String] {
         try FileManager.default.contentsOfDirectory(
             at: root,

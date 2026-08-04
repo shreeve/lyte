@@ -1797,7 +1797,10 @@ public final class LyteUdpSession: @unchecked Sendable {
     public let crypto: any TransportCrypto
     public let config: Config
     public private(set) var endpoint: UdpReceiveEndpoint?
-    public private(set) var core: LyteUdpSessionCore?
+    private let coreStorage = Mutex<LyteUdpSessionCore?>(nil)
+    public var core: LyteUdpSessionCore? {
+        coreStorage.withLock { $0 }
+    }
     /// The CL-11 playback unit, present when `config.audioPlayback`
     /// and the audio device came up.
     public private(set) var audioPlayer: LyteAudioPlayer?
@@ -1808,8 +1811,7 @@ public final class LyteUdpSession: @unchecked Sendable {
         @Sendable (VideoRecoveryCause, FrameNumber) -> Void
     private let onVideoRecoveryTrace:
         @Sendable (VideoRecoveryTraceEvent) -> Void
-    private let coreBox = SessionCoreBox()
-    private let closing = SessionFlag()
+    private let closing = Atomic<Bool>(false)
     public let clockModel: HostClockModel
     /// CoreAudio engine start/stop runs HERE, never on the caller's
     /// thread: AVAudioEngine.start() can block on HAL/device
@@ -1853,13 +1855,12 @@ public final class LyteUdpSession: @unchecked Sendable {
     /// Throws TransportCryptoError / TransportEndpointError on a dial
     /// that never became a session.
     public func start() throws {
-        let coreBox = coreBox
         let endpoint = UdpReceiveEndpoint(
             port: config.bindPort,
             bindAddress: config.bindAddress,
             crypto: crypto,
-            onDatagram: { outcome, arrivalMicroseconds in
-                coreBox.value?.handleDatagram(
+            onDatagram: { [weak self] outcome, arrivalMicroseconds in
+                self?.core?.handleDatagram(
                     outcome, arrivalMicroseconds: arrivalMicroseconds)
             })
         try endpoint.start()
@@ -1880,8 +1881,7 @@ public final class LyteUdpSession: @unchecked Sendable {
             videoSink: videoSink,
             onEvent: onEvent
         )
-        self.core = core
-        coreBox.value = core
+        coreStorage.withLock { $0 = core }
         try core.open()
         core.startTimers()
 
@@ -2002,7 +2002,7 @@ public final class LyteUdpSession: @unchecked Sendable {
     /// for its ACK (≤ the configured window), then teardown. Blocking —
     /// call off the main thread.
     public func close(reason: SessionTeardownReason = .shuttingDown) {
-        guard !closing.exchange(true) else { return }
+        guard !closing.exchange(true, ordering: .relaxed) else { return }
         orderedInput.finishAndDrain()
         if let core {
             core.beginTeardown(reason: reason)
@@ -2058,7 +2058,7 @@ public final class LyteUdpSession: @unchecked Sendable {
     /// liveness close (the machine is already closed; there is nothing
     /// to say and possibly nobody to say it to).
     public func stop() {
-        guard !closing.exchange(true) else { return }
+        guard !closing.exchange(true, ordering: .relaxed) else { return }
         stopParts()
     }
 
@@ -2071,74 +2071,5 @@ public final class LyteUdpSession: @unchecked Sendable {
         }
         core?.stopTimers()
         endpoint?.stop()
-        coreBox.value = nil
-    }
-}
-
-/// Late-binding box for the endpoint-hook ↔ core construction cycle
-/// (the file-private LockedCell pattern; types don't travel files).
-final class SessionCoreBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: LyteUdpSessionCore?
-    var value: LyteUdpSessionCore? {
-        get { lock.lock(); defer { lock.unlock() }; return stored }
-        set { lock.lock(); stored = newValue; lock.unlock() }
-    }
-}
-
-/// Once-only latch for the two stop paths.
-final class SessionFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var raised = false
-    func exchange(_ value: Bool) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        let was = raised
-        raised = value
-        return was
-    }
-
-    var value: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return raised
-    }
-}
-
-public final class InputSendTiming: @unchecked Sendable {
-    public struct Snapshot: Sendable {
-        public var queued: UInt64
-        public var sent: UInt64
-        public var failed: UInt64
-        public var queueWaitMicroseconds: Histogram<UInt64>
-    }
-
-    private let lock = NSLock()
-    private var queuedCount: UInt64 = 0
-    private var sentCount: UInt64 = 0
-    private var failedCount: UInt64 = 0
-    private var waits = Histogram<UInt64>(capacity: 360, retention: .rolling)
-
-    func queued() {
-        lock.lock(); queuedCount += 1; lock.unlock()
-    }
-
-    func sent(queueMicroseconds: UInt64) {
-        lock.lock()
-        sentCount += 1
-        waits.record(queueMicroseconds)
-        lock.unlock()
-    }
-
-    func failed() {
-        lock.lock(); failedCount += 1; lock.unlock()
-    }
-
-    public func snapshot() -> Snapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        return Snapshot(
-            queued: queuedCount, sent: sentCount, failed: failedCount,
-            queueWaitMicroseconds: waits)
     }
 }
