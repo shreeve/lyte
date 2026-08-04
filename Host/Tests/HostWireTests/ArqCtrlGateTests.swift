@@ -199,6 +199,13 @@ final class ArqCtrlGateTests: XCTestCase {
         let handshake = sent()
         XCTAssertEqual(handshake.count, 3,
                        "message 2, session-start beacon, capability declaration")
+        let handshakeEnvelopes = try handshake.map {
+            try Envelope.decode($0.bytes).0
+        }
+        XCTAssertEqual(
+            handshakeEnvelopes.map(\.seq.rawValue), [0, 1, 2],
+            "every CTRL shape shares one channel-wide sequence"
+        )
         try client.absorb(handshake[0].bytes, nowMicros: 600)
         try client.absorb(handshake[1].bytes, nowMicros: 700)
         try client.absorb(handshake[2].bytes, nowMicros: 800)
@@ -491,6 +498,9 @@ final class ArqCtrlGateTests: XCTestCase {
         XCTAssertEqual(sent.count, cursor + 1, "the PTO fired one retransmit")
         XCTAssertNotEqual(sent[cursor].bytes, sent[cursor - 1].bytes,
                           "a retransmit rides a FRESH datagram, never a replay")
+        let initialEnvelope = try Envelope.decode(sent[cursor - 1].bytes).0
+        let retryEnvelope = try Envelope.decode(sent[cursor].bytes).0
+        XCTAssertEqual(retryEnvelope.seq, initialEnvelope.seq.next)
 
         // Deliver the retransmit; the ACK completes the exchange.
         try client.absorb(sent[cursor].bytes, nowMicros: t)
