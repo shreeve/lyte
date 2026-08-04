@@ -259,7 +259,7 @@ public final class EncoderVbvPolicy {
     public private(set) var directivesIssued = 0
     /// True while the rung ladder owns the encoder posture; false while
     /// the opening recipe rides (the HS-22 clean path).
-    public private(set) var squeezeEngaged = false
+    public var squeezeEngaged: Bool { appliedRungIndex != nil }
     /// The rung the ladder currently sits on (nil while clean).
     public private(set) var appliedRungIndex: Int?
     /// HS-27 books: estimator moves (the polled ceiling changed) that
@@ -442,7 +442,6 @@ public final class EncoderVbvPolicy {
         // squeeze under a guarded live posture engages silently.
         if !clean, !squeezeEngaged {
             let required = rungIndex(for: ceilingRate)
-            squeezeEngaged = true
             appliedRungIndex = required
             looserWantedSince = nil
             return emit(
@@ -521,7 +520,6 @@ public final class EncoderVbvPolicy {
 
         if looserMinCeilingRate >= cleanPathRateBitsPerSecond {
             // Sustained clean: the one restore closes the episode.
-            squeezeEngaged = false
             appliedRungIndex = nil
             return emit(
                 baselinePosture, kind: .restore,
