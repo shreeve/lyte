@@ -109,11 +109,8 @@ final class LyteUdpSessionGateTests: XCTestCase {
             var rng = SplitMix64(seed: 0xC1_08)
             connectionId = ConnectionId.random(using: &rng)
             var config = ArqConfig()
-            config.maxSegmentBodyByteCount = min(
-                config.maxSegmentBodyByteCount,
-                ReliableCtrlEndpoint.ctrlPlaintextBudget
-                    - ArqBounds.segmentHeaderByteCount
-            )
+            config.maxDatagramPayloadByteCount =
+                WireBudget.maxConnectionIdTaggedPlaintextByteCount
             arq = ArqEndpoint(channel: .ctrl, config: config)
             negotiator = CapabilityNegotiator(
                 role: .host, local: localCapabilities)
@@ -341,8 +338,8 @@ final class LyteUdpSessionGateTests: XCTestCase {
         }
 
         /// One host beat: the first-word declaration, machine timers,
-        /// the 1 Hz beacon, and the ARQ's due output (repacked to the
-        /// 1101 B ceiling, sealed). Returns datagrams for the net.
+        /// the 1 Hz beacon, and the ARQ's carrier-sized output, sealed.
+        /// Returns datagrams for the net.
         func advance(nowMicros: UInt64) throws -> [[UInt8]] {
             guard transport != nil else { return [] }
             var out: [[UInt8]] = []
@@ -370,10 +367,8 @@ final class LyteUdpSessionGateTests: XCTestCase {
             let (payloads, _) = arq.poll(
                 now: HostTimestamp(microseconds: nowMicros))
             for payload in payloads {
-                for repacked in try ReliableRepack.cut(payload) {
-                    out.append(try sealedCtrl(
-                        body: repacked, hostMicros: nowMicros))
-                }
+                out.append(try sealedCtrl(
+                    body: payload, hostMicros: nowMicros))
             }
             return out
         }
@@ -419,28 +414,6 @@ final class LyteUdpSessionGateTests: XCTestCase {
                     break
                 }
             }
-        }
-    }
-
-    /// The HS-8 repack, shared shape (poll packs to the bare 1112 B
-    /// table; the session's real plaintext ceiling is 1101 B with the
-    /// conn-id TLV + AEAD tag on the datagram).
-    private enum ReliableRepack {
-        static func cut(_ payload: [UInt8]) throws -> [[UInt8]] {
-            let budget = ReliableCtrlEndpoint.ctrlPlaintextBudget
-            if payload.count <= budget { return [payload] }
-            var out: [[UInt8]] = []
-            var current: [UInt8] = []
-            for frame in try ArqFrame.decodeAll(payload) {
-                let bytes = frame.encode()
-                if !current.isEmpty, current.count + bytes.count > budget {
-                    out.append(current)
-                    current = []
-                }
-                current.append(contentsOf: bytes)
-            }
-            if !current.isEmpty { out.append(current) }
-            return out
         }
     }
 

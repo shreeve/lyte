@@ -16,9 +16,9 @@ import LyteWireTestKit
 // still lands mid-storm on its fire-and-forget path).
 //
 // The far end here is a host stand-in assembled from LyteWire parts:
-// NoiseSession responder plus its own ArqEndpoint<HostClock>, sealing
-// conn-id-tagged CTRL and repacking to the session's real 1101 B
-// plaintext ceiling — exactly the HS-8 Session's discipline, met
+// NoiseSession responder plus its own ArqEndpoint<HostClock>, configured
+// to pack conn-id-tagged CTRL at the session's real 1101 B plaintext
+// ceiling — exactly the HS-8 Session's discipline, met
 // through the same frame codecs the frozen arq-v1 vectors pin. The
 // host-side ArqCtrlGateTests runs the mirror-image pairing with the real
 // Session; this gate deliberately retains its isolated Wire peer.
@@ -28,7 +28,7 @@ final class ReliableCtrlGateTests: XCTestCase {
     // MARK: The host stand-in
 
     /// The host role, sans-IO: Noise responder, seal/unseal, a
-    /// host-clock ArqEndpoint, conn-id tagging, the 1101 B repack, and
+    /// host-clock ArqEndpoint, conn-id tagging, carrier-sized packing, and
     /// the bookkeeping the gate asserts against.
     private final class HostStandIn: NoiseHandshakeIO {
         let staticKeys = NoiseKeyPair.generate()
@@ -54,15 +54,12 @@ final class ReliableCtrlGateTests: XCTestCase {
         init(arqConfig: ArqConfig = ArqConfig()) {
             var rng = SplitMix64(seed: 0xC10_7)
             connectionId = ConnectionId.random(using: &rng)
-            // The HS-8 Session's init clamp: no segment may burst the
-            // TLV+tag-adjusted budget.
-            var clamped = arqConfig
-            clamped.maxSegmentBodyByteCount = min(
-                clamped.maxSegmentBodyByteCount,
-                ReliableCtrlEndpoint.ctrlPlaintextBudget
-                    - ArqBounds.segmentHeaderByteCount
+            var bounded = arqConfig
+            bounded.maxDatagramPayloadByteCount = min(
+                bounded.maxDatagramPayloadByteCount,
+                WireBudget.maxConnectionIdTaggedPlaintextByteCount
             )
-            arq = ArqEndpoint(channel: .ctrl, config: clamped)
+            arq = ArqEndpoint(channel: .ctrl, config: bounded)
         }
 
         // NoiseHandshakeIO — the client's pre-thread handshake window,
@@ -154,7 +151,8 @@ final class ReliableCtrlGateTests: XCTestCase {
             switch plaintext.first {
             case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
                 XCTAssertLessThanOrEqual(
-                    plaintext.count, ReliableCtrlEndpoint.ctrlPlaintextBudget,
+                    plaintext.count,
+                    WireBudget.maxConnectionIdTaggedPlaintextByteCount,
                     "client ARQ payload over the TLV+tag-adjusted budget"
                 )
                 // The every-packet rule, client-side: once the client
@@ -188,40 +186,13 @@ final class ReliableCtrlGateTests: XCTestCase {
             }
         }
 
-        /// Drains the host endpoint's due output into sealed CTRL
-        /// datagrams, repacked to the session's real 1101 B ceiling
-        /// (the HS-8 accounting fix — poll packs to the bare 1112 B
-        /// table, exact only without TLV + tag).
+        /// Drains the host endpoint's carrier-sized output into sealed
+        /// CTRL datagrams. ArqEndpoint owns the only packing pass.
         func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
             let (payloads, _) = arq.poll(
                 now: HostTimestamp(microseconds: nowMicros)
             )
-            var repacked: [[UInt8]] = []
-            var current: [UInt8] = []
-            for payload in payloads {
-                if payload.count <= ReliableCtrlEndpoint.ctrlPlaintextBudget {
-                    if !current.isEmpty {
-                        repacked.append(current)
-                        current = []
-                    }
-                    repacked.append(payload)
-                    continue
-                }
-                for frame in try ArqFrame.decodeAll(payload) {
-                    let bytes = frame.encode()
-                    if !current.isEmpty,
-                       current.count + bytes.count
-                           > ReliableCtrlEndpoint.ctrlPlaintextBudget {
-                        repacked.append(current)
-                        current = []
-                    }
-                    current.append(contentsOf: bytes)
-                }
-            }
-            if !current.isEmpty {
-                repacked.append(current)
-            }
-            return try repacked.map {
+            return try payloads.map {
                 try sealedCtrl(body: $0, hostMicros: nowMicros)
             }
         }
@@ -602,12 +573,12 @@ final class ReliableCtrlGateTests: XCTestCase {
                        "a quiescent endpoint emits no datagrams, forever")
     }
 
-    // MARK: Budget repack, conn-id tagging, and the ACK piggyback
+    // MARK: Carrier-sized packing, conn-id tagging, and ACK piggyback
 
-    func testArqOutputRepacksToTheSessionBudgetAndKeepsThePiggyback() throws {
-        // 548 B bodies make poll pack two 556 B frames into one 1112 B
-        // payload — the bare-table budget, 11 B over the session's real
-        // 1101 B ceiling — so the endpoint must re-cut, never burst. A
+    func testArqOutputPacksOnceAtTheSessionBudgetAndKeepsThePiggyback() throws {
+        // 548 B bodies make two 556 B frames exceed the session's real
+        // 1101 B ceiling. ArqEndpoint must emit two carrier-sized payloads
+        // directly; nothing downstream may decode and re-cut them. A
         // 2-segment send window then stages the piggyback: the host
         // datagram that opens the window carries a segment of its own,
         // so the very next client pass owes an ACK AND has queued
@@ -632,20 +603,21 @@ final class ReliableCtrlGateTests: XCTestCase {
             let plaintext = try host.transport!.unseal(
                 wirePayload: payload, aad: aad, envelope: envelope)
             XCTAssertLessThanOrEqual(
-                plaintext.count, ReliableCtrlEndpoint.ctrlPlaintextBudget,
+                plaintext.count,
+                WireBudget.maxConnectionIdTaggedPlaintextByteCount,
                 "an ARQ datagram burst the session's plaintext budget")
             return try ArqFrame.decodeAll(plaintext)
         }
 
-        // Four segments queued; the window lets two fly. Their 1112 B
-        // poll payload must arrive as two datagrams (the re-cut).
+        // Four segments queued; the window lets two fly. They leave the
+        // endpoint as two datagrams in its one and only packing pass.
         let message = [UInt8](repeating: 0x77, count: 4 * 548)
         var t: UInt64 = 1_000_000
         try harness.reliable.send(message, now: ClientTimestamp(microseconds: t))
         let firstFlight = Array(harness.outbound.all[cursor...])
         XCTAssertEqual(
             firstFlight.count, 2,
-            "one 1112 B poll payload re-cuts into two in-budget datagrams")
+            "the endpoint must pack two in-budget datagrams directly")
         var frames: [ArqFrame] = []
         for datagram in firstFlight {
             let decoded = try arqFrames(datagram)
@@ -696,32 +668,53 @@ final class ReliableCtrlGateTests: XCTestCase {
         XCTAssertEqual(segments.count, 4, "2192 B at 548 B bodies = 4 segments")
         XCTAssertEqual(
             segments.map(\.body).reduce([], +), message,
-            "re-cutting datagram boundaries must not touch the bytes")
+            "packing datagram boundaries must not touch the bytes")
     }
 
-    /// The default config clamps at init: no caller-provided segment
-    /// ceiling may burst the session's CTRL budget once the TLV and tag
-    /// ride along.
+    /// The default config is carrier-bounded at init: no caller-provided
+    /// payload or segment ceiling may burst the session's CTRL budget once
+    /// the TLV and tag ride along.
     func testDefaultSegmentBodiesAreClampedToTheSessionBudget() throws {
         let harness = try Harness()
         let host = harness.host
         harness.absorb(try host.beaconDatagram(hostMicros: 100), tMicros: 200)
         let cursor = harness.outbound.count
 
-        // A message one byte over the clamped body (1093) must split
+        // A message one byte over the carrier-sized body (1093) must split
         // into two segments, every datagram within every budget.
         let t: UInt64 = 1_000_000
         try harness.reliable.send(
             [UInt8](repeating: 0x55, count: 1_094),
             now: ClientTimestamp(microseconds: t))
         let fresh = Array(harness.outbound.all[cursor...])
-        XCTAssertEqual(fresh.count, 2, "1094 B > one clamped 1093 B body")
+        XCTAssertEqual(fresh.count, 2, "1094 B > one carrier-sized 1093 B body")
         for datagram in fresh {
             XCTAssertLessThanOrEqual(datagram.count, WireBudget.maxDatagramByteCount)
             try host.absorb(datagram, nowMicros: t)
         }
         XCTAssertEqual(host.received.count, 1)
         XCTAssertEqual(host.received[0].bytes.count, 1_094)
+    }
+
+    func testCallerSmallerCarrierCeilingIsPreserved() throws {
+        let callerCeiling = 900
+        let harness = try Harness(arqConfig: ArqConfig(
+            sendWindowSegments: 2,
+            maxSegmentBodyByteCount: 448,
+            maxDatagramPayloadByteCount: callerCeiling
+        ))
+        let host = harness.host
+        harness.absorb(try host.beaconDatagram(hostMicros: 100), tMicros: 200)
+        let cursor = harness.outbound.count
+
+        try harness.reliable.send(
+            [UInt8](repeating: 0x66, count: 896),
+            now: ClientTimestamp(microseconds: 1_000_000)
+        )
+        XCTAssertEqual(
+            harness.outbound.count - cursor, 2,
+            "the client carrier must not widen a caller's smaller ceiling"
+        )
     }
 
     /// Before the first host datagram there is no conn-id to echo; the
