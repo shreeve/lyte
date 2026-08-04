@@ -35,6 +35,24 @@ final class VideoSinkRatchetTests: XCTestCase {
         XCTAssertTrue(cli.contains("AVSampleBufferRendererVideoSink"))
     }
 
+    func testSessionPolicyStaysNativeMediaTypeFree() throws {
+        let core = try source(
+            "Client/Sources/LyteTransport/LyteUdpSession.swift")
+        let sink = try source(
+            "Client/Sources/LyteTransport/VideoSink.swift")
+
+        XCTAssertFalse(core.contains("import CoreMedia"))
+        XCTAssertFalse(core.contains("CMSampleBuffer"))
+        XCTAssertFalse(core.contains("class SessionVideoSink"))
+        XCTAssertTrue(core.contains("func admitVideoUnit(_ unit: DecodeUnit) -> Bool"))
+        XCTAssertTrue(core.contains("let sessionSink = SessionVideoSink"))
+        XCTAssertTrue(core.contains("sessionSink.bind(self)"))
+
+        XCTAssertTrue(sink.contains("final class SessionVideoSink"))
+        XCTAssertTrue(sink.contains("owner.admitVideoUnit(unit)"))
+        XCTAssertTrue(sink.contains("downstream.submit(sample: sample, unit: unit)"))
+    }
+
     private func swiftSources() throws -> [(path: String, source: String)] {
         var result: [(String, String)] = []
         for file in try sourceTree.productionSwiftFiles() {
