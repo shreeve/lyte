@@ -13,7 +13,7 @@ public struct RadioHoldPolicy: Sendable, Equatable {
     public private(set) var looseChecks = 0
     /// Latched while loose ≥ 3 consecutive checks; clears the moment
     /// the radio is seen held again.
-    public private(set) var alarm = false
+    public var alarm: Bool { looseChecks >= 3 }
 
     public enum Action: Equatable, Sendable {
         case none
@@ -27,11 +27,9 @@ public struct RadioHoldPolicy: Sendable, Equatable {
     public mutating func check(radioUp: Bool) -> Action {
         guard radioUp else {
             looseChecks = 0
-            alarm = false
             return .none
         }
         looseChecks += 1
-        if looseChecks >= 3 { alarm = true }
         return looseChecks == 1 ? .reengage : .none
     }
 
@@ -39,6 +37,5 @@ public struct RadioHoldPolicy: Sendable, Equatable {
     /// next stream's first check.
     public mutating func reset() {
         looseChecks = 0
-        alarm = false
     }
 }
