@@ -758,24 +758,7 @@ public final class Session {
     /// to real retained frames and remain unthrottled; only arbitrary
     /// unknown frame numbers can manufacture this pressure.
     private var lastUnknownFrameIdrArmAtNS: UInt64?
-    /// The converged ratchet frame awaiting its one-shot ride.
-    private var convergedFrame:
-        (annexB: [UInt8], frame: FrameNumber, captureMicros: UInt64)?
-    /// HS-22: when the last damage note arrived — the idle-flip quiet
-    /// clock. Nil until the first damage (convergence with no damage
-    /// history flips immediately, the pre-HS-22 shape).
-    private var lastDamageNoteAt: UInt64?
-    /// HS-22: a convergence waiting out `idleFlipQuietNS`. The machine
-    /// has NOT heard `.ratchetConverged` yet; `advance` feeds it once
-    /// damage stays quiet, and fresh damage simply drops it (the
-    /// session never leaves ACTIVE — no aborted handoff, no WAKE IDR
-    /// owed on the next tick of a desktop metronome).
-    private var pendingIdleFlipAt: UInt64?
-    /// The in-flight final-frame one-shot; its full acknowledgment is
-    /// the machine's `.finalFrameAcknowledged`.
-    private var finalFrameGroup: ArqGroupId?
-    /// One-shot group ids are session-allocated, serially ascending.
-    private var nextOneShotGroup: UInt16 = 1
+    private var idleHandoff = SessionIdleHandoffBook()
     /// The HS-16 congestion estimator: send ledger + delivery-rate/
     /// queuing-delay/loss evidence → the pacer's setRate seam, W4b's
     /// RECOVERY window verdicts, and the IdrPacing numbers.
@@ -1498,9 +1481,7 @@ public final class Session {
     public func noteDamage(
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        convergedFrame = nil
-        lastDamageNoteAt = now
-        pendingIdleFlipAt = nil
+        idleHandoff.noteDamage(now: now)
         return runMachine(.damage, now: now, hostMicroseconds: hostMicroseconds)
     }
 
@@ -1760,17 +1741,18 @@ public final class Session {
         guard !annexB.isEmpty, nextVideoFrameNumber.rawValue > 0 else {
             return []
         }
-        convergedFrame = (
-            annexB,
-            FrameNumber(rawValue: nextVideoFrameNumber.rawValue &- 1),
-            captureTimestampMicroseconds
+        let ready = idleHandoff.noteConverged(
+            IdleFrame(
+                frame: FrameNumber(
+                    rawValue: nextVideoFrameNumber.rawValue &- 1
+                ),
+                captureTimestampMicroseconds: captureTimestampMicroseconds,
+                annexB: annexB
+            ),
+            now: now,
+            quietWindowNanoseconds: config.idleFlipQuietNS
         )
-        if let damagedAt = lastDamageNoteAt,
-           now &- damagedAt < config.idleFlipQuietNS {
-            pendingIdleFlipAt = damagedAt &+ config.idleFlipQuietNS
-            return []
-        }
-        pendingIdleFlipAt = nil
+        guard ready else { return [] }
         return runMachine(
             .ratchetConverged, now: now, hostMicroseconds: hostMicroseconds
         )
@@ -2057,11 +2039,9 @@ public final class Session {
                 }
             case .oneShotAcknowledged(let group):
                 events.append(.reliableOneShotAcknowledged(group))
-                if group == finalFrameGroup {
+                if idleHandoff.acknowledge(group) {
                     // The converged frame landed: this ack IS the
                     // idle-flip signal (W4b's ordering rule).
-                    finalFrameGroup = nil
-                    convergedFrame = nil
                     events += runMachine(
                         .finalFrameAcknowledged,
                         now: now, hostMicroseconds: hostMicroseconds
@@ -2315,24 +2295,15 @@ public final class Session {
     private func sendFinalFrame(
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        guard let converged = convergedFrame else {
+        guard let send = idleHandoff.pendingFinalFrameSend() else {
             return [.sendFailed("final frame: no converged frame retained")]
         }
-        let message = IdleFrame(
-            frame: converged.frame,
-            captureTimestampMicroseconds: converged.captureMicros,
-            annexB: converged.annexB
-        ).encode()
-        let group = ArqGroupId(rawValue: nextOneShotGroup)
         do {
             try sendReliableOneShot(
-                message, group: group,
+                send.frame.encode(), group: send.group,
                 now: now, hostMicroseconds: hostMicroseconds
             )
-            nextOneShotGroup &+= 1
-            if nextOneShotGroup == 0 { nextOneShotGroup = 1 }
-            finalFrameGroup = group
-            return [.finalFrameSent(group)]
+            return [.finalFrameSent(idleHandoff.commitFinalFrameSent())]
         } catch {
             return [.sendFailed("final frame one-shot: \(error)")]
         }
@@ -2767,8 +2738,7 @@ public final class Session {
         events += flushInputEchoes(now: now, hostMicroseconds: hostMicroseconds)
         // HS-22: a convergence that waited out the idle-flip quiet —
         // damage stayed silent, the handoff may start now.
-        if let due = pendingIdleFlipAt, now >= due, convergedFrame != nil {
-            pendingIdleFlipAt = nil
+        if idleHandoff.takeDueHandoff(now: now) {
             events += runMachine(
                 .ratchetConverged, now: now, hostMicroseconds: hostMicroseconds
             )
@@ -2837,7 +2807,8 @@ public final class Session {
         for candidate in [
             beaconClock.nextDeadlineNanoseconds,
             nextArqWakeNS, nextBulkArqWakeNS,
-            machineDeadlineNS, validator.nextDeadline, pendingIdleFlipAt,
+            machineDeadlineNS, validator.nextDeadline,
+            idleHandoff.nextDeadlineNanoseconds,
         ] {
             guard let candidate else { continue }
             wake = wake.map { min($0, candidate) } ?? candidate
