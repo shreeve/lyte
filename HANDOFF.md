@@ -842,6 +842,35 @@ session, cookie, pairing, and handshake-sequence focused gates before both full
 platform gates. Explicitly do not wrap `CapabilityNegotiator` or
 `HandshakeGate`: Wire and the existing gate already own those policies.**
 
+**That establishment-truth cleanup completed as #139.** `Session.phase`
+is now a read-only compatibility view of
+`SessionLifecycleLane.isEstablished`; the independently stored phase and both
+of its initialization/handshake writes are gone. Insecure sessions still begin
+established, rejected or failed Noise attempts remain awaiting, and successful
+Noise creates the lifecycle machine at the exact old phase-flip point: after
+message 2 is queued and transport creation succeeds, before the opening beacon
+and capability word. CLOSED remains `.established` because its terminal machine
+still exists; it never regresses to handshake dormancy. Direct source ratchets
+reject a stored phase or assignment, the lane pins terminal establishment, and
+the liveness gate pins the public CLOSED compatibility view. No wire byte,
+frozen vector, persisted format, manifest, or product behavior changed.
+Production is three lines smaller with no new type or state. Canonical Mac
+passed Common 81, Wire 510, Host 324, Client 255, SystemTests 17, analyzer 25,
+benchmark safety, and both signed products; isolated pup passed Common 82,
+Wire 510, Host 325, the plain build, netio/pacing (19.210 ms IDR drain against
+the 25 ms ceiling), and protected-state verification. Independent adversarial
+review found no blocker. **NEXT CLEANUP SLICE: make the existing
+`HandshakeGate.admitMessage1` return its cookie-mode transition beside the
+admission, then delete `Session.lastCookieMode` and
+`noteCookieModeTransition()`. Snapshot the authoritative gate posture before
+its flood-window update and compute the optional transition immediately after,
+so admit/challenge/drop branches all carry the same at-most-once verdict. Add
+no wrapper and no replacement mirror. Pin stable nil, exact enter/exit once,
+nil-secret immobility, and unchanged admission/counter verdicts in
+`CookieGateTests`, then run Cookie/Pairing/Session focused gates and both full
+platform gates. `SessionCapabilityBook` remains explicitly rejected as a
+wrapper around Wire's existing `CapabilityNegotiator`.**
+
 **Suites at HEAD:** Wire 510 Mac / 510 pup; Common 81 Mac / 82 pup;
 client 255; SystemTests 17 Mac; host 325 pup / 324 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
