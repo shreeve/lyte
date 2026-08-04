@@ -552,6 +552,9 @@ final class SessionLifecycleGateTests: XCTestCase {
         XCTAssertEqual(decoded.annexB, converged,
                        "the converged frame must cross byte-exact")
         XCTAssertEqual(decoded.frame, FrameNumber(rawValue: 0))
+        XCTAssertEqual(
+            decoded.frame,
+            try XCTUnwrap(loop.session.lastAdmittedVideoFrameNumber))
         XCTAssertEqual(decoded.captureTimestampMicroseconds, 42_000)
 
         XCTAssertEqual(loop.session.wireMode, .idle, "the ack IS the flip")
@@ -788,6 +791,8 @@ final class SessionLifecycleGateTests: XCTestCase {
         )
         XCTAssertEqual(loop.session.lifecycleState, .frozen)
         XCTAssertTrue(loop.hostEvents.contains(.lifecycleChanged(.frozen)))
+        let admittedBeforeSuppression =
+            loop.session.lastAdmittedVideoFrameNumber
         let suppressed = try loop.session.ingestVideoFrame(
             syntheticFrame(byteCount: 500),
             captureTimestampMicroseconds: 1, isKeyframe: false,
@@ -795,6 +800,9 @@ final class SessionLifecycleGateTests: XCTestCase {
         )
         XCTAssertEqual(suppressed, 0, "FROZEN: the wire goes quiet")
         XCTAssertEqual(loop.session.counters.videoFramesSuppressed, 1)
+        XCTAssertEqual(
+            loop.session.lastAdmittedVideoFrameNumber,
+            admittedBeforeSuppression)
 
         // Evidence returns: RECOVERY — sends resume, a fresh IDR is
         // owed at the half-stale rate.

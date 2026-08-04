@@ -166,6 +166,7 @@ final class UnprotectableFrameGateTests: XCTestCase {
             "the unprotectable frame class must drop, never throw"
         )
         XCTAssertEqual(shards, 0)
+        XCTAssertNil(session.lastAdmittedVideoFrameNumber)
         drain(session, until: 100_000_000, now: &now)
         XCTAssertTrue(box.fresh().isEmpty,
                       "nothing of the dropped frame reaches the wire")
@@ -192,6 +193,9 @@ final class UnprotectableFrameGateTests: XCTestCase {
         for datagram in fresh {
             XCTAssertEqual(datagram.frameNumber.rawValue, 0)
         }
+        XCTAssertEqual(
+            session.lastAdmittedVideoFrameNumber,
+            FrameNumber(rawValue: 0))
     }
 
     func testSessionBorrowedIngressOwnsBytesBeforeReturn() throws {

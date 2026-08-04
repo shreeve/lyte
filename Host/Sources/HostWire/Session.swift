@@ -706,9 +706,11 @@ public final class Session {
     /// Nil until the handshake completes; always nil in insecure mode.
     private var transport: NoiseTransport?
 
-    private var nextVideoFrameNumber = FrameNumber(rawValue: 0)
     /// Last frame admitted to packetization (nil before the first).
     public private(set) var lastAdmittedVideoFrameNumber: FrameNumber?
+    private var nextVideoFrameNumber: FrameNumber {
+        lastAdmittedVideoFrameNumber?.next ?? FrameNumber(rawValue: 0)
+    }
 
     /// The reliable CTRL sublayer (HS-8). Host clock domain: the
     /// endpoint's instants derive from the loop's monotonic `now`
@@ -1319,7 +1321,6 @@ public final class Session {
             repairBudget.noteOpeningIdr(shardCount: shards)
         }
         lastAdmittedVideoFrameNumber = context.frameNumber
-        nextVideoFrameNumber = nextVideoFrameNumber.next
         return shards
     }
 
@@ -1728,14 +1729,12 @@ public final class Session {
         hostMicroseconds: UInt64
     ) -> [SessionEvent] {
         if let agreed = negotiator.agreed, !agreed.idleSilence { return [] }
-        guard !annexB.isEmpty, nextVideoFrameNumber.rawValue > 0 else {
-            return []
-        }
+        guard !annexB.isEmpty,
+              let lastAdmittedVideoFrameNumber,
+              lastAdmittedVideoFrameNumber.next.rawValue > 0 else { return [] }
         let ready = idleHandoff.noteConverged(
             IdleFrame(
-                frame: FrameNumber(
-                    rawValue: nextVideoFrameNumber.rawValue &- 1
-                ),
+                frame: lastAdmittedVideoFrameNumber,
                 captureTimestampMicroseconds: captureTimestampMicroseconds,
                 annexB: annexB
             ),
