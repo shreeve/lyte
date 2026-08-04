@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 510,
-Host 296 Mac / 297 pup, Client 255,
+Host 300 Mac / 301 pup, Client 255,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -679,8 +679,31 @@ Keep report decoding, estimator ingestion, repair-store access, counters, and
 events in `Session`; pin cadence clamping/EWMA, sticky glass evidence, and
 attempt/byte exhaustion directly.**
 
+**That repair-budget extraction completed as #133.**
+`SessionRepairBudgetBook` now owns the feedback-cadence EWMA, first opening-IDR
+geometry, sticky client-glass evidence, and bounded opening-exemption attempt/
+byte books. `Session` delegates the existing freeze-budget derivation and
+opening-exemption verdict while retaining report decoding, estimator and
+repair-store access, counters, events, and unknown-frame IDR throttling. Direct
+pins cover the 25–50 ms clamp, α=1/8 EWMA, override precedence, first-only
+opening geometry, sticky evidence, both exemption bounds, and the ownership
+ratchet; the 18-leg Host repair gate and the seven cross-end repair gates stay
+unchanged. No wire byte, frozen vector, persisted format, manifest, or product
+behavior changed. `Session.swift` is 39 lines smaller; total production is
++44 because the formerly implicit six-field policy now has a named documented
+API. Canonical Mac passed Common 81, Wire 510, Host 300, Client 255,
+SystemTests 17, analyzer 25, benchmark safety, and both signed products;
+isolated pup passed Common 82, Wire 510, Host 301, the plain build,
+netio/pacing, and protected-state verification. **NEXT CLEANUP SLICE: extract
+HostWire's sans-IO `SessionSocketPendingBook`—the one owner of pacer-released
+datagrams awaiting socket acceptance, their release-rate evidence, and their
+per-frame video totals. Collapse the duplicated confirm/discard decrement
+paths; keep kernel acceptance, estimator ingestion, fall-purge policy,
+counters, and events in `Session`; pin EAGAIN retry, confirmation, discard,
+frame recusal, and aggregate drain directly.**
+
 **Suites at HEAD:** Wire 510 Mac / 510 pup; Common 81 Mac / 82 pup;
-client 255; SystemTests 17 Mac; host 297 pup / 296 Mac — all green. Eighteen conductor/gauge
+client 255; SystemTests 17 Mac; host 301 pup / 300 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
