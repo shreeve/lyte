@@ -1,6 +1,6 @@
 # Lyte — Session Handoff
 
-*Current as of 2026-08-03 (post-E5, tag `self-hosted`). The session
+*Current as of 2026-08-04 (post-E5, tag `self-hosted`). The session
 ledger — update freely; commit updates in the ledger voice. This file
 carries ONLY what is live and actionable. Frozen history: the H2→H4
 wave ledger and Beauty Bar forensics are
@@ -47,8 +47,8 @@ fresh-video-frame isolated since #27. A-26's histogram and Annex-B twins
 closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
-concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 510,
-Host 326 Mac / 327 pup, Client 255,
+concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 511,
+Host 327 Mac / 328 pup, Client 256,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -900,8 +900,30 @@ source ownership across Wire/Host/Client; then run focused cross-end capability
 gates and every full platform gate. Add no `SessionCapabilityBook`: it remains
 explicitly rejected as wrapper-only.**
 
-**Suites at HEAD:** Wire 510 Mac / 510 pup; Common 81 Mac / 82 pup;
-client 255; SystemTests 17 Mac; host 327 pup / 326 Mac — all green. Eighteen conductor/gauge
+**That capability-ownership cleanup completed as #141.**
+`CapabilityNegotiator.start()` now returns and consumes the exact local
+declaration once; later calls return nil. Host deleted its parallel
+`capabilitiesDeclared` latch and asks the negotiator on every relevant wake,
+which becomes a no-op after the first declaration. Client deleted its mirrored
+`agreed` set and reads `negotiator.agreed` under the existing session lock at
+every rule-3 gate and snapshot. Both ends preserve the prior
+consume-before-send/no-retry posture, the declaration remains the first
+reliable word, and its encoded bytes are unchanged. Direct pins cover the
+first exact declaration, second-call nil, Host and Client source ownership,
+full Noise/insecure session establishment, capability intersection, and every
+existing feature gate. No replacement book, wrapper, wire byte, frozen vector,
+persisted format, manifest, or product behavior changed. Production is three
+lines smaller. Canonical Mac passed Common 81, Wire 511, Host 327, Client 256,
+SystemTests 17, analyzer 25, benchmark safety, and both signed products;
+isolated pup passed Common 82, Wire 511, Host 328, the plain build,
+netio/pacing (19.330 ms IDR drain against the 25 ms ceiling), and protected-state
+verification. Independent adversarial review found no blocker. **NEXT CLEANUP
+SLICE: inventory current cross-end ownership after the Host Session and
+capability-state tracks; prefer an existing owner absorbing duplicate state or
+policy, and reject wrapper-only extraction.**
+
+**Suites at HEAD:** Wire 511 Mac / 511 pup; Common 81 Mac / 82 pup;
+client 256; SystemTests 17 Mac; host 328 pup / 327 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
