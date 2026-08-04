@@ -36,6 +36,15 @@ final class HistogramTests: XCTestCase {
         XCTAssertEqual(histogram.p99, 42)
     }
 
+    func testSaturationBeginsAtTheFirstSamplePastCapacity() {
+        var histogram = Histogram<UInt64>(capacity: 2)
+        histogram.record(1)
+        histogram.record(2)
+        XCTAssertFalse(histogram.saturated)
+        histogram.record(3)
+        XCTAssertTrue(histogram.saturated)
+    }
+
     func testNearestRankMatchesTheRetiredTailRingAtEveryEdgeCount() {
         // The retired conductor formula was
         // sorted[min(count - 1, (count * 99 + 99) / 100 - 1)].

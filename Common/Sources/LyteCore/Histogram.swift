@@ -21,13 +21,13 @@ public enum PercentileRank: Sendable {
 ///
 /// The sample pool is bounded, while `count`, `minValue`, and `maxValue`
 /// describe the whole recording lifetime. `saturated` distinguishes a pool
-/// that has reached its retention boundary from one that still contains every
+/// that has crossed its retention boundary from one that still contains every
 /// sample recorded.
 public struct Histogram<Value: Comparable & Sendable>: Sendable {
     public private(set) var count = 0
     public private(set) var minValue: Value?
     public private(set) var maxValue: Value?
-    public private(set) var saturated = false
+    public var saturated: Bool { count > capacity }
 
     private var samples: [Value] = []
     private var writeIndex = 0
@@ -54,7 +54,6 @@ public struct Histogram<Value: Comparable & Sendable>: Sendable {
         if samples.count < capacity {
             samples.append(value)
         } else {
-            saturated = true
             if retention == .rolling {
                 samples[writeIndex] = value
             }
@@ -69,7 +68,6 @@ public struct Histogram<Value: Comparable & Sendable>: Sendable {
         count = 0
         minValue = nil
         maxValue = nil
-        saturated = false
     }
 
     public func percentile(
