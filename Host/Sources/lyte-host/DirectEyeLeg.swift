@@ -84,7 +84,6 @@ final class DirectEyeLeg {
     /// doorbell's poll cadence is the evidence; the stage clocks
     /// below say WHERE the loop spent a blind interval.
     private var beatBook = CaptureBeatBook()
-    private var beatSkipLinesPrinted = 0
     private struct StageClocks {
         var cursorUs: UInt64 = 0
         var grabUs: UInt64 = 0
@@ -398,8 +397,7 @@ final class DirectEyeLeg {
             // wire's score is untouched by the bookkeeping.
             if let skip = beatBook.noteFlip(
                 nowMicroseconds: SystemMonotonicClock.nowMicroseconds) {
-                beatSkipLinesPrinted += 1
-                if beatSkipLinesPrinted <= 40 {
+                if beatBook.skips <= 40 {
                     print("direct: beat-skip gap="
                         + StageClocks.ms(skip.gapMicroseconds)
                         + " ms blind="
