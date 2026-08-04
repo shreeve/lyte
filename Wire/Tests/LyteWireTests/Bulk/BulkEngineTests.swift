@@ -1,4 +1,5 @@
 import XCTest
+import Foundation
 import LyteCore
 import LyteWire
 import LyteWireTestKit
@@ -559,6 +560,70 @@ final class BulkEngineTests: XCTestCase {
             data: chunkData(offer, payload, 1)
         )))
         XCTAssertEqual(actions.first, .violated(.creditExceeded))
+    }
+
+    /// Admission debt has one owner: consumed chunks plus stores awaiting
+    /// durability. Exercise both terms together at the exact credit edge.
+    func testReceiverCreditCountsConsumedAndPendingChunksTogether() throws {
+        let (offer, payload) = makeFixture()
+        var receiver = BulkReceiveEngine(
+            config: BulkTransferConfig(receiveWindowChunks: 2),
+            resumeBook: [BulkResumeState(
+                transferId: offer.transferId,
+                totalByteCount: offer.totalByteCount,
+                chunkByteCount: offer.chunkByteCount,
+                sha256: offer.sha256,
+                name: offer.name,
+                possession: BulkPossession(contiguousCount: 1)
+            )]
+        )
+        _ = receiver.ingest(.offer(offer))
+        _ = try receiver.accept() // grant = 2
+
+        // A session-start chunk is tolerated and immediately consumed.
+        let tolerated = receiver.ingest(.chunk(try BulkChunk(
+            transferId: offer.transferId, chunkIndex: 0,
+            data: chunkData(offer, payload, 0)
+        )))
+        XCTAssertTrue(stores(tolerated).isEmpty)
+
+        // Consumption refreshes credit to 3. Two fresh chunks occupy both
+        // remaining slots while their stores wait.
+        let firstPending = receiver.ingest(.chunk(try BulkChunk(
+            transferId: offer.transferId, chunkIndex: 1,
+            data: chunkData(offer, payload, 1)
+        )))
+        XCTAssertEqual(stores(firstPending).map(\.index), [1])
+        let secondPending = receiver.ingest(.chunk(try BulkChunk(
+            transferId: offer.transferId, chunkIndex: 2,
+            data: chunkData(offer, payload, 2)
+        )))
+        XCTAssertEqual(stores(secondPending).map(\.index), [2])
+
+        let exceeded = receiver.ingest(.chunk(try BulkChunk(
+            transferId: offer.transferId, chunkIndex: 3,
+            data: chunkData(offer, payload, 3)
+        )))
+        XCTAssertEqual(exceeded.first, .violated(.creditExceeded))
+    }
+
+    func testReceiverCarriesNoParallelAdmissionCounter() throws {
+        var components = #filePath.split(
+            separator: "/", omittingEmptySubsequences: false
+        )
+        components.removeLast(4)
+        let packageRoot = components.joined(separator: "/")
+        let source = try String(
+            contentsOfFile:
+                packageRoot + "/Sources/LyteWire/Bulk/BulkEngines.swift",
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(source.contains("admittedChunkCount"))
+        XCTAssertTrue(source.contains(
+            "let admissionDebt = consumedChunkCount "
+                + "+ UInt64(pendingStores.count)"
+        ))
     }
 
     func testReceiverViolationForeignTransferAndRoleReversal() throws {
