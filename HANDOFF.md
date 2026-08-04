@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 81 Mac / 82 pup, Wire 511,
-Host 328 Mac / 329 pup, Client 257,
+Host 328 Mac / 329 pup, Client 258,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -962,8 +962,33 @@ found no blocker. **NEXT CLEANUP SLICE: re-inventory current ownership across
 Client, Host, Common, and Wire; choose another existing owner that can delete a
 parallel truth, and reject wrapper-only or merely cosmetic movement.**
 
+**That chroma-audit edge cleanup completed as #144.**
+`ChromaStreamAudit.observedIdc` now owns both the last parsed stream posture and
+whether that posture has been reported; the synchronized `reported` Boolean,
+its re-arm, and its consume writes are gone. Nil still makes the first sighting
+report, equal idc repeats stay silent even if the agreed set changes, every idc
+change reports once, and A→B→A naturally re-arms from the observation itself.
+The exact confirmation/DOCTOR/no-singleton wording, SPS parser, session lock,
+capability judgment, and UI surface are unchanged. Direct pins cover all those
+edges and a source ratchet rejects another report latch. No new type, helper,
+wrapper, wire byte, frozen vector, persisted format, manifest, lock boundary,
+or product behavior changed. Production is five lines smaller. Focused
+chroma/layout/session gates passed 25 tests, the adversarial agreement-change
+pin passed in the 19-test focused rerun, the full Client suite passed 258, and
+SystemTests passed 17. Canonical Mac passed Common 81, Wire 511, Host 328,
+Client 258, SystemTests 17, analyzer 25, benchmark safety, and both signed
+products; isolated pup passed Common 82, Wire 511, Host 329, the plain build,
+netio/pacing (19.239 ms IDR drain against the 25 ms ceiling), and
+protected-state verification. Independent adversarial review found no blocker.
+**NEXT CLEANUP SLICE: assess whether production `AudioWire` and
+`lyte-audio-check` can share one zero-extra-copy, sans-IO HostCore owner for PCM
+buffering, graph-clock marks, exact 5 ms slicing, and timestamp derivation. Do
+not land it unless the API removes both real copies without moving Opus,
+PipeWire, tripwire, or harness verdict policy into HostCore; prefer a smaller
+deletion if that seam cannot stay allocation- and IO-free.**
+
 **Suites at HEAD:** Wire 511 Mac / 511 pup; Common 81 Mac / 82 pup;
-client 257; SystemTests 17 Mac; host 329 pup / 328 Mac — all green. Eighteen conductor/gauge
+client 258; SystemTests 17 Mac; host 329 pup / 328 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
