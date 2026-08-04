@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 83 Mac / 84 pup, Wire 513,
-Host 337 Mac / 338 pup, Client 261,
+Host 338 Mac / 339 pup, Client 261,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -1195,8 +1195,31 @@ CLEANUP SLICE: delete DirectEyeLeg's `beatSkipLinesPrinted` mirror and gate
 the first forty diagnostics from `CaptureBeatBook.skips`, the authoritative
 count already incremented before each returned skip event.**
 
+**That direct-eye skip-counter cleanup completed as #154.**
+`DirectEyeLeg` now gates its first forty beat-skip diagnostic lines from
+`CaptureBeatBook.skips`, the authoritative count that `noteFlip` increments
+before returning each skip event. The shell's `beatSkipLinesPrinted` field and
+its per-event write are gone. Skip 1 through 40 still print, skip 41 and later
+stay quiet, and first-flip, non-increasing-time, on-time, and stillness paths
+still return nil before the diagnostic condition is reached. Source/loop
+classification and the closing beat-book totals are untouched; checked
+overflow still traps in the book before any shell-side effect. A source
+ratchet pins the one count beside the complete beat-book behavior suite. No
+public API, wire byte, frozen vector, manifest, allocation, hardware path,
+poll cadence, or product behavior changed. Focused beat-book gates passed 8
+tests. Canonical Mac passed Common 83, Wire 513, Host 338, Client 261,
+SystemTests 17, analyzer 25, benchmark safety, and both signed products (one
+existing no-output-device client test skipped); isolated pup passed Common
+84, Wire 513, Host 339, the plain build, netio/pacing (19.160 ms IDR drain
+against the 25 ms ceiling), and protected-state verification. Independent
+boundary, mutation/overflow-order, Linux-surface, and source-ratchet review
+found no blocker. **NEXT CLEANUP SLICE: remove LytePairingSheet's dead
+`paired` completion latch; Cancel is reachable only from form/failed and must
+remain false, while the successful paired phase already owns Done's true
+answer.**
+
 **Suites at HEAD:** Wire 513 Mac / 513 pup; Common 83 Mac / 84 pup;
-client 261; SystemTests 17 Mac; host 338 pup / 337 Mac — all green. Eighteen conductor/gauge
+client 261; SystemTests 17 Mac; host 339 pup / 338 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
