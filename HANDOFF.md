@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 83 Mac / 84 pup, Wire 513,
-Host 334 Mac / 335 pup, Client 258,
+Host 335 Mac / 336 pup, Client 258,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -1056,8 +1056,28 @@ and overflow review found no blocker. **NEXT CLEANUP SLICE: make Host
 `EncoderVbvPolicy.squeezeEngaged` a projection of its authoritative applied
 rung, deleting the synchronized posture bit while preserving its public API.**
 
+**That encoder-squeeze posture cleanup completed as #148.**
+`EncoderVbvPolicy.squeezeEngaged` is now the read-only projection of
+`appliedRungIndex` that its full transition matrix already enforced. The
+stored Boolean and its engage/restore writes are gone; clean, first squeeze,
+silent rung zero, tighten, loosen, sustained restore, and exact mode retain
+their prior answers, directives, rates, VBV sizes, and IDR posture. A source
+ratchet pins the one owner and rejects another assignment while the existing
+gate matrix covers every transition. No public read surface, wire byte, frozen
+vector, manifest, allocation, lock boundary, or product behavior changed.
+Focused encoder gates passed 34 tests and the full Host suite passed 335 on
+Mac. Canonical Mac passed Common 83, Wire 513, Host 335, Client 258,
+SystemTests 17, analyzer 25, benchmark safety, and both signed products (one
+existing no-output-device client test skipped); isolated pup passed Common 84,
+Wire 513, Host 336, the plain build, netio/pacing (19.759 ms IDR drain against
+the 25 ms ceiling), and protected-state verification. Independent transition
+and source-ratchet review found no blocker. **NEXT CLEANUP SLICE: make Client
+`RadioHoldPolicy.alarm` a projection of the authoritative consecutive-loose
+check count, deleting the synchronized alarm bit while preserving the exact
+third-strike and recovery edges.**
+
 **Suites at HEAD:** Wire 513 Mac / 513 pup; Common 83 Mac / 84 pup;
-client 258; SystemTests 17 Mac; host 335 pup / 334 Mac — all green. Eighteen conductor/gauge
+client 258; SystemTests 17 Mac; host 336 pup / 335 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
