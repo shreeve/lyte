@@ -40,193 +40,10 @@ final class NackRepairClientGateTests: XCTestCase {
         }
     }
 
-    // MARK: - The real host session, with only its socket replaced
-
-    /// A Noise-backed shipping Session with an in-memory datagram sink.
-    /// Loss and reordering happen only after this sink, exactly where a
-    /// UDP socket would have released the bytes.
-    private final class SessionRepairHost: NoiseHandshakeIO {
-        private static let tuple = FourTuple(
-            localAddress: "10.0.0.249", localPort: 41_081,
-            remoteAddress: "10.0.0.23", remotePort: 61_000
-        )
-
-        private final class Outbox {
-            var datagrams: [VideoChannelDatagram] = []
-        }
-
-        let staticKeys = NoiseKeyPair.generate()
-        private let outbox = Outbox()
-        private let config: SessionConfig
-        private var nowNS: UInt64 = 0
-        private var nextFrameNumber: UInt32 = 0
-        private var repairsTaken = 0
-        private(set) var events: [SessionEvent] = []
-
-        private(set) lazy var session = Session(
-            config: config,
-            clientTuple: Self.tuple,
-            now: 0,
-            rng: SplitMix64(seed: 0xC1_12),
-            send: { [outbox] datagram in
-                outbox.datagrams.append(datagram)
-            }
-        )
-
-        init(tweak: (inout SessionConfig) -> Void = { _ in }) {
-            var config = SessionConfig(
-                crypto: .noise(hostStatic: staticKeys),
-                rateBitsPerSecond: 1_000_000_000
-            )
-            tweak(&config)
-            self.config = config
-        }
-
-        var nowMicroseconds: UInt64 {
-            (nowNS &+ 999) / 1_000
-        }
-
-        func sendToHost(_ datagram: [UInt8]) throws {
-            events += session.receive(
-                datagram,
-                from: Self.tuple,
-                now: nowNS,
-                hostMicroseconds: nowNS / 1_000
-            )
-            session.pump(now: nowNS)
-        }
-
-        func receiveDatagram(timeoutMilliseconds: Int) throws -> [UInt8]? {
-            serviceUntil(
-                maxAdvanceNS: UInt64(timeoutMilliseconds) * 1_000_000
-            ) { !outbox.datagrams.isEmpty }
-            guard !outbox.datagrams.isEmpty else { return nil }
-            return outbox.datagrams.removeFirst().bytes
-        }
-
-        func absorb(_ bytes: [UInt8], clientMicros: UInt64) throws {
-            let arrivalNS = clientMicros * 1_000
-            guard arrivalNS >= nowNS else {
-                throw NSError(
-                    domain: "NackRepairClientGateTests.hostClockRetreat",
-                    code: 1,
-                    userInfo: [
-                        "hostNowNS": nowNS,
-                        "clientArrivalNS": arrivalNS,
-                    ]
-                )
-            }
-            nowNS = arrivalNS
-            events += session.receive(
-                bytes,
-                from: Self.tuple,
-                now: nowNS,
-                hostMicroseconds: nowNS / 1_000
-            )
-            session.pump(now: nowNS)
-        }
-
-        func videoDatagrams(
-            annexB: [UInt8], frameNumber: UInt32, hostMicros: UInt64
-        ) throws -> [[UInt8]] {
-            XCTAssertEqual(
-                frameNumber, nextFrameNumber,
-                "the shipping Session owns one ascending frame sequence"
-            )
-            nextFrameNumber &+= 1
-            nowNS = max(nowNS, hostMicros * 1_000)
-            let count = try session.ingestVideoFrame(
-                annexB,
-                captureTimestampMicroseconds: hostMicros,
-                isKeyframe: AnnexBCheck.containsIrap(annexB),
-                now: nowNS
-            )
-            serviceUntil(maxAdvanceNS: 20_000_000) {
-                self.outbox.datagrams.filter {
-                    $0.pacerClass == .freshVideo
-                        && $0.frameNumber.rawValue == frameNumber
-                }.count >= count
-            }
-            let datagrams = take {
-                $0.pacerClass == .freshVideo
-                    && $0.frameNumber.rawValue == frameNumber
-            }
-            XCTAssertEqual(datagrams.count, count)
-            return datagrams.map(\.bytes)
-        }
-
-        func takeControlDatagrams(
-            maxAdvanceNS: UInt64 = 1_000_000
-        ) -> [[UInt8]] {
-            serviceFor(maxAdvanceNS: maxAdvanceNS)
-            return take { $0.pacerClass == .control }.map(\.bytes)
-        }
-
-        func takeRepairDatagrams() -> [[UInt8]] {
-            let expected = session.counters.repairDatagramsEnqueued
-                - repairsTaken
-            serviceUntil(maxAdvanceNS: 20_000_000) {
-                self.outbox.datagrams.filter {
-                    $0.pacerClass == .videoTail
-                }.count >= expected
-            }
-            let datagrams = take { $0.pacerClass == .videoTail }
-            repairsTaken += datagrams.count
-            return datagrams.map(\.bytes)
-        }
-
-        private func take(
-            where selectedBy: (VideoChannelDatagram) -> Bool
-        ) -> [VideoChannelDatagram] {
-            var selected: [VideoChannelDatagram] = []
-            var kept: [VideoChannelDatagram] = []
-            for datagram in outbox.datagrams {
-                if selectedBy(datagram) {
-                    selected.append(datagram)
-                } else {
-                    kept.append(datagram)
-                }
-            }
-            outbox.datagrams = kept
-            return selected
-        }
-
-        private func serviceFor(maxAdvanceNS: UInt64) {
-            let horizon = nowNS &+ maxAdvanceNS
-            session.pump(now: nowNS)
-            while let wake = session.nextWake(now: nowNS), wake <= horizon {
-                nowNS = max(nowNS &+ 1, wake)
-                events += session.advance(
-                    now: nowNS,
-                    hostMicroseconds: nowNS / 1_000
-                )
-                session.pump(now: nowNS)
-            }
-        }
-
-        private func serviceUntil(
-            maxAdvanceNS: UInt64,
-            _ done: () -> Bool
-        ) {
-            let horizon = nowNS &+ maxAdvanceNS
-            session.pump(now: nowNS)
-            while !done(),
-                  let wake = session.nextWake(now: nowNS),
-                  wake <= horizon {
-                nowNS = max(nowNS &+ 1, wake)
-                events += session.advance(
-                    now: nowNS,
-                    hostMicroseconds: nowNS / 1_000
-                )
-                session.pump(now: nowNS)
-            }
-        }
-    }
-
     // MARK: - The client harness (the real core, virtual clock)
 
     private final class Harness: @unchecked Sendable {
-        let host: SessionRepairHost
+        let host: SystemHostSession
         let crypto: NoiseTransportCrypto
         let demux: ReceiveDemux
         var core: LyteUdpSessionCore!
@@ -238,7 +55,7 @@ final class NackRepairClientGateTests: XCTestCase {
         var recoveryTrace: [VideoRecoveryTraceEvent] = []
 
         init(
-            host: SessionRepairHost,
+            host: SystemHostSession,
             coreConfig: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig()
         ) throws {
             self.host = host
@@ -368,7 +185,7 @@ final class NackRepairClientGateTests: XCTestCase {
     /// client. The beacon echo returns through the same encrypted CTRL
     /// path and seeds the host's actual SRTT estimator.
     private func settleStartup(
-        host: SessionRepairHost,
+        host: SystemHostSession,
         harness: Harness,
         forwarded: inout Int,
         at t: UInt64
@@ -390,7 +207,7 @@ final class NackRepairClientGateTests: XCTestCase {
 
     func testNackDrawsRepairAndFrameCompletesByteExact() throws {
         let corpus = try loadCorpus(4)
-        let host = SessionRepairHost()
+        let host = SystemHostSession()
         let harness = try Harness(host: host)
 
         var t: UInt64 = 1_000
@@ -539,7 +356,7 @@ final class NackRepairClientGateTests: XCTestCase {
 
     func testStaleFrameDrawsNoNackAndFallsBackToIdr() throws {
         let corpus = try loadCorpus(4)
-        let host = SessionRepairHost()
+        let host = SystemHostSession()
         // A tightened budget stands in for a slow path: with the frame
         // 150 ms old at verdict time, the 100 ms budget refuses the ask.
         var config = LyteUdpSessionCoreConfig()
@@ -598,7 +415,7 @@ final class NackRepairClientGateTests: XCTestCase {
 
     func testAcceptedIrapClosesOutstandingRecoveryEpisode() throws {
         let corpus = try loadCorpus(2)
-        let host = SessionRepairHost()
+        let host = SystemHostSession()
         let harness = try Harness(host: host)
         var forwarded = 0
         let base: UInt64 = 1_000
@@ -681,7 +498,7 @@ final class NackRepairClientGateTests: XCTestCase {
 
     func testStormLossHealsThroughNackRepairLoop() throws {
         let corpus = try loadCorpus(5)
-        let host = SessionRepairHost()
+        let host = SystemHostSession()
         let harness = try Harness(host: host)
         var net = SimNet(
             config: SimNetConfig(
@@ -740,7 +557,7 @@ final class NackRepairClientGateTests: XCTestCase {
             // lossy host→client network as fresh video.
             try harness.pumpOutboundToHost(forwarded: &forwardedToHost)
             for datagram in host.takeRepairDatagrams()
-                + host.takeControlDatagrams() {
+                + host.takeControlDatagrams(maxAdvanceNS: 1_000_000) {
                 net.send(from: 1, bytes: datagram, now: t)
             }
 
@@ -781,7 +598,7 @@ final class NackRepairClientGateTests: XCTestCase {
     /// repair-acceptance bookkeeping.
     func testAnswersAfterStragglerHealAreCountedLateAndChangeNothing() throws {
         let corpus = try loadCorpus(3)
-        let host = SessionRepairHost()
+        let host = SystemHostSession()
         let harness = try Harness(host: host)
 
         var t: UInt64 = 1_000
@@ -875,7 +692,7 @@ final class NackRepairClientGateTests: XCTestCase {
     /// counted no-op — SUPERSEDED, never rendered, never corrupting.
     func testAnswersForSupersededFrameCountAndAsksStop() throws {
         let corpus = try loadCorpus(5)
-        let host = SessionRepairHost()
+        let host = SystemHostSession()
         let harness = try Harness(host: host)
 
         var t: UInt64 = 1_000
@@ -967,7 +784,7 @@ final class NackRepairClientGateTests: XCTestCase {
 
     func testHostRefusalEndsRepairWaitImmediately() throws {
         let corpus = try loadCorpus(4)
-        let host = SessionRepairHost {
+        let host = SystemHostSession {
             $0.repairFreezeBudgetOverrideNS = 1_000_000
         }
         let harness = try Harness(host: host)
@@ -1029,7 +846,9 @@ final class NackRepairClientGateTests: XCTestCase {
         // The Session's real sealed 0x23 lands 5 ms later, far inside
         // the 250 ms deadline the client used to burn whole.
         t += 5_000; harness.clock.advance(to: t)
-        let controlFlight = host.takeControlDatagrams()
+        let controlFlight = host.takeControlDatagrams(
+            maxAdvanceNS: 1_000_000
+        )
         XCTAssertGreaterThanOrEqual(controlFlight.count, refusalCount)
         for datagram in controlFlight {
             harness.absorb(datagram, tMicros: t)
