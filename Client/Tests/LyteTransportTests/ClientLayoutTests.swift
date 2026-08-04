@@ -96,6 +96,22 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertFalse(source.contains("pairedKey ="))
     }
 
+    func testPairingPhaseAloneOwnsTheCompletionAnswer() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
+                "/Client/Sources/Lyte/LytePairingSheet.swift"),
+            encoding: .utf8)
+
+        XCTAssertFalse(source.contains("@State private var paired"))
+        XCTAssertFalse(source.contains("paired = true"))
+        XCTAssertEqual(
+            source.components(separatedBy: "onDone(false)").count - 1,
+            2)
+        XCTAssertEqual(
+            source.components(separatedBy: "onDone(true)").count - 1,
+            1)
+    }
+
     private func directoryNames(at root: URL) throws -> [String] {
         try FileManager.default.contentsOfDirectory(
             at: root,

@@ -31,8 +31,6 @@ struct LytePairingSheet: View {
     @State private var hostKeyHex = ""
     @State private var pin = ""
     @State private var phase: Phase = .form
-    /// Progress lines stream from worker threads; latest one shows.
-    @State private var paired = false
 
     /// A pinned key matching this host's advertised identity — the
     /// re-pair path needs no paste.
@@ -109,7 +107,7 @@ struct LytePairingSheet: View {
                 HStack {
                     Button("Try Again") { phase = .form }
                         .buttonStyle(.borderedProminent)
-                    Button("Cancel") { onDone(paired) }
+                    Button("Cancel") { onDone(false) }
                 }
             }
         }
@@ -168,7 +166,7 @@ struct LytePairingSheet: View {
             }
             HStack {
                 Spacer()
-                Button("Cancel") { onDone(paired) }
+                Button("Cancel") { onDone(false) }
                 Button("Pair") { startPairing() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
@@ -220,7 +218,6 @@ struct LytePairingSheet: View {
                     pairedAt: ISO8601DateFormatter().string(from: Date()))
                 do {
                     try store.save()
-                    paired = true
                     phase = .paired
                 } catch {
                     phase = .failed(
