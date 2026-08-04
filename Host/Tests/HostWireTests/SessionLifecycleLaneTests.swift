@@ -4,6 +4,28 @@ import Foundation
 import LyteWire
 
 final class SessionLifecycleLaneTests: XCTestCase {
+    func testMachineStateAloneOwnsVideoFreezeProjection() throws {
+        var components = #filePath.split(
+            separator: "/", omittingEmptySubsequences: false
+        )
+        components.removeLast(3)
+        let packageRoot = components.joined(separator: "/")
+        let source = try String(contentsOfFile:
+            packageRoot + "/Sources/HostWire/SessionLifecycleLane.swift",
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(source.contains("private(set) var videoIsFrozen"))
+        XCTAssertTrue(source.contains(
+            "machine == nil || machine?.state == .frozen || " +
+            "machine?.state == .closed"
+        ))
+        XCTAssertFalse(source.contains("videoIsFrozen ="))
+        XCTAssertTrue(source.contains(
+            "case .freezeDatagramSends, .resumeDatagramSends:"
+        ))
+    }
+
     func testSessionDelegatesLifecycleStateDeadlineAndFreezeProjection()
         throws
     {

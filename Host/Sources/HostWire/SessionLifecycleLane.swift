@@ -22,7 +22,6 @@ struct SessionLifecycleLane: Sendable {
     private var machine: SessionStateMachine<HostClock>?
 
     private(set) var nextDeadlineNanoseconds: UInt64?
-    private(set) var videoIsFrozen = false
 
     init(
         config: SessionMachineConfig,
@@ -55,7 +54,7 @@ struct SessionLifecycleLane: Sendable {
     /// Before establishment neither media lane exists. FROZEN then blocks
     /// only video; CLOSED blocks both.
     var videoSendsSuppressed: Bool {
-        machine == nil || videoIsFrozen || machine?.state == .closed
+        machine == nil || machine?.state == .frozen || machine?.state == .closed
     }
 
     var audioSendsSuppressed: Bool {
@@ -73,7 +72,6 @@ struct SessionLifecycleLane: Sendable {
             now: Self.instant(now)
         )
         nextDeadlineNanoseconds = nil
-        videoIsFrozen = false
     }
 
     /// Applies one input first, then polls timers at the same injected instant.
@@ -100,10 +98,8 @@ struct SessionLifecycleLane: Sendable {
         external.reserveCapacity(actions.count)
         for action in actions {
             switch action {
-            case .freezeDatagramSends:
-                videoIsFrozen = true
-            case .resumeDatagramSends:
-                videoIsFrozen = false
+            case .freezeDatagramSends, .resumeDatagramSends:
+                break
             default:
                 external.append(action)
             }
