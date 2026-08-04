@@ -62,6 +62,17 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertTrue(source.contains("negotiator.agreed?.chromaModes"))
     }
 
+    func testConfirmedAudioPostureAloneOwnsTheFirstStatusSeam() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
+                "/Client/Sources/LyteTransport/LyteUdpSession.swift"),
+            encoding: .utf8)
+
+        XCTAssertFalse(source.contains("sessionStartAudioAskDone"))
+        XCTAssertTrue(source.contains(
+            "let firstStatus = hostAudioPosture == nil"))
+    }
+
     private func directoryNames(at root: URL) throws -> [String] {
         try FileManager.default.contentsOfDirectory(
             at: root,

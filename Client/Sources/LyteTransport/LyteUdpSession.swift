@@ -413,8 +413,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// nil until the first status lands. Never set optimistically —
     /// the strip renders exactly this.
     private var hostAudioPosture: HostAudioRoutingMode?
-    /// The session-start ask fires at most once (config comment).
-    private var sessionStartAudioAskDone = false
     /// CL-15: the live clipboard-sharing toggle (seeded from the
     /// config's per-host default; the strip flips it). Gates BOTH
     /// directions — nothing leaves, nothing lands, while off.
@@ -1692,9 +1690,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             return
         }
         counters.audioRoutingStatusesReceived += 1
+        let firstStatus = hostAudioPosture == nil
         hostAudioPosture = status.mode
-        let firstStatus = !sessionStartAudioAskDone
-        sessionStartAudioAskDone = true
         let desired = config.desiredHostAudioRouting
         lock.unlock()
         onEvent(.hostAudioRoutingStatus(status.mode))
