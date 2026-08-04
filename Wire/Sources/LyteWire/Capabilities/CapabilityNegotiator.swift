@@ -107,10 +107,9 @@ public struct CapabilityNegotiator: Sendable {
 
     // MARK: - Declaration exchange
 
-    /// The local declaration to send, once, immediately after
-    /// establishment. Idempotent accessor for the message; the shell
-    /// sends it on the ARQ ordered stream.
-    public mutating func start() -> CapabilityDeclaration {
+    /// The local declaration to send exactly once after establishment.
+    public mutating func start() -> CapabilityDeclaration? {
+        guard !declarationSent else { return nil }
         declarationSent = true
         return CapabilityDeclaration(capabilities: local)
     }

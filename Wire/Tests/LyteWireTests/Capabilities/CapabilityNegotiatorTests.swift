@@ -40,8 +40,8 @@ final class CapabilityNegotiatorTests: XCTestCase {
         var client = CapabilityNegotiator(
             role: .client, local: Self.clientSet
         )
-        let hostDeclaration = host.start()
-        let clientDeclaration = client.start()
+        let hostDeclaration = try XCTUnwrap(host.start())
+        let clientDeclaration = try XCTUnwrap(client.start())
         let hostView = try host.receive(clientDeclaration)
         let clientView = try client.receive(hostDeclaration)
         XCTAssertEqual(hostView, clientView)
@@ -49,6 +49,16 @@ final class CapabilityNegotiatorTests: XCTestCase {
     }
 
     // MARK: - Declaration exchange
+
+    func testStartReturnsTheExactDeclarationOnce() throws {
+        var host = CapabilityNegotiator(role: .host, local: Self.hostSet)
+
+        XCTAssertEqual(
+            try XCTUnwrap(host.start()),
+            CapabilityDeclaration(capabilities: Self.hostSet)
+        )
+        XCTAssertNil(host.start())
+    }
 
     func testBothEndsSettleOnTheSameAgreedSet() throws {
         let (host, client) = try establish()
@@ -302,8 +312,8 @@ final class CapabilityNegotiatorTests: XCTestCase {
         var client = CapabilityNegotiator(
             role: .client, local: Self.clientSet
         )
-        let hostBytes = try host.start().encode()
-        let clientBytes = try client.start().encode()
+        let hostBytes = try XCTUnwrap(host.start()).encode()
+        let clientBytes = try XCTUnwrap(client.start()).encode()
         _ = try host.receive(CapabilityDeclaration.decode(clientBytes))
         _ = try client.receive(CapabilityDeclaration.decode(hostBytes))
         let updateBytes = try host.proposeMaxDatagramBytes(1399).encode()

@@ -22,6 +22,20 @@ import LyteWireTestKit
 
 final class SessionGateTests: XCTestCase {
 
+    func testCapabilityNegotiatorAloneOwnsDeclarationOnceState() throws {
+        var components = #filePath.split(
+            separator: "/", omittingEmptySubsequences: false)
+        components.removeLast(3)
+        let packageRoot = components.joined(separator: "/")
+        let source = try String(
+            contentsOfFile: packageRoot + "/Sources/HostWire/Session.swift",
+            encoding: .utf8)
+
+        XCTAssertFalse(source.contains("capabilitiesDeclared"))
+        XCTAssertTrue(source.contains(
+            "guard let declaration = negotiator.start() else { return [] }"))
+    }
+
     // MARK: Corpus plumbing (the HS-5 gate's, verbatim)
 
     private static var corpusDirectory: String {

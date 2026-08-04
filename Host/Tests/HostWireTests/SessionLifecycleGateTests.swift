@@ -289,7 +289,7 @@ final class SessionLifecycleGateTests: XCTestCase {
                 role: .client, local: clientCapabilities
             )
             try loop.client.arq.send(
-                message: try negotiator.start().encode(),
+                message: try XCTUnwrap(negotiator.start()).encode(),
                 now: ClientTimestamp(microseconds: t)
             )
         }

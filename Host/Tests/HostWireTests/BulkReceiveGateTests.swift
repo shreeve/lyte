@@ -795,7 +795,7 @@ final class BulkReceiveGateTests: XCTestCase {
             role: .client, local: clientCapabilities
         )
         try client.arq.send(
-            message: try negotiator.start().encode(),
+            message: try XCTUnwrap(negotiator.start()).encode(),
             now: ClientTimestamp(microseconds: 1_000)
         )
         return (session, client, box)
