@@ -48,7 +48,7 @@ closed in #96/#97, its duplicate ARQ carriage closed in #127, and its final
 host-crypto-seam residue closed as inspected/not earned after #128: the Host
 has one single-threaded owner and one crypto path, unlike the Client's three
 concurrent consumers. Suites at HEAD: Common 83 Mac / 84 pup, Wire 513,
-Host 335 Mac / 336 pup, Client 258,
+Host 335 Mac / 336 pup, Client 259,
 SystemTests 17, and analyzer 25. docs/README.md is the doc catalog (twenty
 finished records retired to git history 2026-08-02;
 `git show 4bb3e11:docs/<name>`).
@@ -1076,8 +1076,29 @@ and source-ratchet review found no blocker. **NEXT CLEANUP SLICE: make Client
 check count, deleting the synchronized alarm bit while preserving the exact
 third-strike and recovery edges.**
 
+**That radio-alarm posture cleanup completed as #149.**
+`RadioHoldPolicy.alarm` is now the read-only projection of `looseChecks >= 3`
+that its debounce transitions already enforced. The stored latch and its
+threshold, held-radio recovery, and stream-reset writes are gone; zero, first,
+second, third, and later loose checks preserve their exact verdicts, the first
+sighting still requests one re-engage, and either recovery door clears the
+alarm by clearing the one counter. A source ratchet pins that ownership beside
+the existing boundary tests. The public getter, synthesized equality,
+Sendable posture, watchdog cadence, overlay grammar, and helper behavior are
+unchanged. No wire byte, frozen vector, manifest, allocation, lock boundary,
+or product behavior changed. Focused radio gates passed 6 tests. Canonical Mac
+passed Common 83, Wire 513, Host 335, Client 259, SystemTests 17, analyzer 25,
+benchmark safety, and both signed products (one existing no-output-device
+client test skipped); isolated pup passed Common 84, Wire 513, Host 336, the
+plain build, netio/pacing (19.203 ms IDR drain against the 25 ms ceiling), and
+protected-state verification. Independent API, transition, equality,
+Sendable, and source-ratchet review found no blocker. **NEXT CLEANUP SLICE:
+make Client `PairingInitiatorService.pairedHostStaticPublicKey` read directly
+from the PAKE result under its existing lock, deleting the synchronized
+`pairedKey` copy while preserving every success and terminal-failure edge.**
+
 **Suites at HEAD:** Wire 513 Mac / 513 pup; Common 83 Mac / 84 pup;
-client 258; SystemTests 17 Mac; host 336 pup / 335 Mac — all green. Eighteen conductor/gauge
+client 259; SystemTests 17 Mac; host 336 pup / 335 Mac — all green. Eighteen conductor/gauge
 tests moved from root to Common; LyteTestKit adds three fail-closed scanner
 pins; the VideoSink and ScreenSource ratchets add four more; HostCore's pure
 screen doorbell adds three pins; SystemTests now owns both cross-role gates;
