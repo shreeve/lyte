@@ -247,42 +247,6 @@ public struct SessionConfig: Sendable {
     }
 }
 
-/// Why a fresh keyframe is owed (the estimator-ramp hunt's IDR books):
-/// every source `takeFreshKeyframeRequest` merges, named. An OptionSet
-/// because demands coalesce — one frame can answer several at once.
-public struct FreshKeyframeDemand: OptionSet, Sendable {
-    public let rawValue: Int
-    public init(rawValue: Int) { self.rawValue = rawValue }
-
-    /// HS-12: a path promotion re-anchors the new primary.
-    public static let pathPromotion = FreshKeyframeDemand(rawValue: 1 << 0)
-    /// A client 0x10 IDR request.
-    public static let clientRequest = FreshKeyframeDemand(rawValue: 1 << 1)
-    /// The lifecycle machine's WAKE (armNextDamageAsIdr, .lastGoodRate).
-    public static let machineWake = FreshKeyframeDemand(rawValue: 1 << 2)
-    /// The lifecycle machine's RECOVERY (forceIdr, .halfStaleEstimate).
-    public static let machineRecovery = FreshKeyframeDemand(rawValue: 1 << 3)
-    /// HS-17: a stale NACK verdict left the client stuck — re-anchor.
-    public static let staleNackArm = FreshKeyframeDemand(rawValue: 1 << 4)
-    /// HS-25: an unprotectable frame was dropped — re-anchor references.
-    public static let unprotectableDrop = FreshKeyframeDemand(rawValue: 1 << 5)
-    /// A rate fall purged queued video mid-flight — re-anchor.
-    public static let fallPurge = FreshKeyframeDemand(rawValue: 1 << 6)
-
-    /// The books' short names, in bit order.
-    public var names: [String] {
-        var out: [String] = []
-        if contains(.pathPromotion) { out.append("path-promotion") }
-        if contains(.clientRequest) { out.append("client-request") }
-        if contains(.machineWake) { out.append("wake") }
-        if contains(.machineRecovery) { out.append("recovery") }
-        if contains(.staleNackArm) { out.append("stale-nack") }
-        if contains(.unprotectableDrop) { out.append("unprotectable") }
-        if contains(.fallPurge) { out.append("fall-purge") }
-        return out
-    }
-}
-
 /// What the caller must know about. Values, not callbacks — the loop
 /// executes/logs them in order (the PathValidator precedent).
 public enum SessionEvent: Equatable, Sendable {
@@ -774,7 +738,7 @@ public final class Session {
     public var handshakeCookieMode: Bool { handshakeGate.cookieMode }
 
     private var beaconClock: SessionBeaconClock
-    private var clientKeyframePending = false
+    private var freshKeyframes = SessionFreshKeyframeBook()
 
     // MARK: HS-11 lifecycle + W7 capabilities state
 
@@ -789,27 +753,10 @@ public final class Session {
     /// FROZEN's freezeDatagramSends: video ingest suppressed until
     /// RECOVERY's resume.
     private var videoFrozen = false
-    /// A machine-demanded IDR (WAKE's arm or RECOVERY's force), merged
-    /// into `takeFreshKeyframeRequest`. The estimator turned the
-    /// policy into a number and re-paced the wire the moment the
-    /// machine demanded it (HS-16).
-    private var machineIdrPacing: IdrPacing?
-    /// HS-25: an unprotectable frame was dropped at ingest — the next
-    /// encoder poll owes a fresh IDR (merged into
-    /// `takeFreshKeyframeRequest`) so the reference chain re-anchors.
-    private var unprotectableKeyframePending = false
-    /// HS-17's stale-NACK arm, split from the client-0x10 latch so the
-    /// IDR books (the estimator-ramp hunt) can name which one minted a
-    /// keyframe. Merged into the same poll; behavior unchanged.
-    private var staleNackKeyframePending = false
     /// Last peer-driven `.unavailable` arm. Budget-stale NACKs are tied
     /// to real retained frames and remain unthrottled; only arbitrary
     /// unknown frame numbers can manufacture this pressure.
     private var lastUnknownFrameIdrArmAtNS: UInt64?
-    /// The fall-repricing purge's arm: queued video was dropped
-    /// mid-flight at a fall, so the next encoder poll owes a fresh
-    /// IDR (merged into `takeFreshKeyframeRequest`).
-    private var fallPurgeKeyframePending = false
     /// HS-32: EWMA (α = 1/8) of feedback-report inter-arrival, each
     /// sample clamped to the wire-pinned 25–50 ms cadence range; nil
     /// before the second parsed report (the derived budget then uses
@@ -1358,7 +1305,7 @@ public final class Session {
         )
         guard encodedByteCount <= ceiling else {
             counters.videoFramesUnprotectable += 1
-            unprotectableKeyframePending = true
+            freshKeyframes.arm(.unprotectableDrop)
             return nil
         }
         return SessionVideoFramePreparationContext(
@@ -1553,27 +1500,10 @@ public final class Session {
     /// just that one was owed. Clears every source; a demand may carry
     /// several causes (they coalesced into the one frame).
     public func takeFreshKeyframeDemand() -> FreshKeyframeDemand {
-        var demand: FreshKeyframeDemand = []
         if validator.takeFreshKeyframeRequest() {
-            demand.insert(.pathPromotion)
+            freshKeyframes.arm(.pathPromotion)
         }
-        if clientKeyframePending { demand.insert(.clientRequest) }
-        switch machineIdrPacing {
-        case .lastGoodRate: demand.insert(.machineWake)
-        case .halfStaleEstimate: demand.insert(.machineRecovery)
-        case nil: break
-        }
-        if staleNackKeyframePending { demand.insert(.staleNackArm) }
-        if unprotectableKeyframePending {
-            demand.insert(.unprotectableDrop)
-        }
-        if fallPurgeKeyframePending { demand.insert(.fallPurge) }
-        clientKeyframePending = false
-        machineIdrPacing = nil
-        staleNackKeyframePending = false
-        unprotectableKeyframePending = false
-        fallPurgeKeyframePending = false
-        return demand
+        return freshKeyframes.take()
     }
 
     // MARK: Lifecycle inputs (HS-11)
@@ -2372,7 +2302,11 @@ public final class Session {
                     now: now, hostMicroseconds: hostMicroseconds
                 )
             case .armNextDamageAsIdr(let pacing), .forceIdr(let pacing):
-                machineIdrPacing = pacing
+                switch pacing {
+                case .lastGoodRate: freshKeyframes.arm(.machineWake)
+                case .halfStaleEstimate:
+                    freshKeyframes.arm(.machineRecovery)
+                }
                 // The machine names the policy; the estimator owns the
                 // numbers (HS-16): min(btlRate, lastGoodRate) for a
                 // WAKE, max(floor, 0.5 × stale estimate) for RECOVERY.
@@ -2537,7 +2471,7 @@ public final class Session {
         counters.kernelPressureShedFrames += 1
         counters.kernelPressureShedDatagrams += datagrams
         counters.kernelPressureShedBytes += bytes
-        fallPurgeKeyframePending = true
+        freshKeyframes.arm(.fallPurge)
     }
 
     private func noteSent(
@@ -2649,7 +2583,7 @@ public final class Session {
                     let socketBytes = socketPendingVideo.values.reduce(0) {
                         $0 + $1.bytes
                     }
-                    fallPurgeKeyframePending = true
+                    freshKeyframes.arm(.fallPurge)
                     counters.fallPurges += 1
                     counters.fallPurgedVideoBytes += purged.bytes + socketBytes
                     events.append(.videoBacklogPurged(
@@ -2743,7 +2677,7 @@ public final class Session {
                     mayArm = true
                 }
                 if mayArm {
-                    staleNackKeyframePending = true
+                    freshKeyframes.arm(.staleNackArm)
                     counters.idrArmedOnStaleNack += 1
                     if reason == .unavailable {
                         lastUnknownFrameIdrArmAtNS = now
@@ -3245,7 +3179,7 @@ public final class Session {
                 counters.dropped += 1
                 return [.dropped(.malformedCtrl)]
             }
-            clientKeyframePending = true
+            freshKeyframes.arm(.clientRequest)
             counters.idrRequests += 1
             return [.idrRequested(request)]
         default:
