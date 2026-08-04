@@ -73,6 +73,17 @@ final class ClientLayoutTests: XCTestCase {
             "let firstStatus = hostAudioPosture == nil"))
     }
 
+    func testObservedChromaAloneOwnsTheAuditReportEdge() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
+                "/Client/Sources/LyteTransport/ChromaTier.swift"),
+            encoding: .utf8)
+
+        XCTAssertFalse(source.contains("private var reported"))
+        XCTAssertTrue(source.contains(
+            "guard observedIdc != idc else { return nil }"))
+    }
+
     private func directoryNames(at root: URL) throws -> [String] {
         try FileManager.default.contentsOfDirectory(
             at: root,
