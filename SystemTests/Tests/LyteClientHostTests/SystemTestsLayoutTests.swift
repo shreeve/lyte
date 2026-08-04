@@ -19,6 +19,7 @@ final class SystemTestsLayoutTests: XCTestCase {
             [
                 "SystemTests/Tests/LyteClientHostTests/NackRepairClientGateTests.swift",
                 "SystemTests/Tests/LyteClientHostTests/PairingGateTests.swift",
+                "SystemTests/Tests/LyteClientHostTests/SystemHostSession.swift",
             ]
         )
         XCTAssertEqual(
@@ -29,6 +30,7 @@ final class SystemTestsLayoutTests: XCTestCase {
             [
                 "SystemTests/Tests/LyteClientHostTests/NackRepairClientGateTests.swift",
                 "SystemTests/Tests/LyteClientHostTests/PairingGateTests.swift",
+                "SystemTests/Tests/LyteClientHostTests/SystemHostSession.swift",
             ]
         )
         XCTAssertEqual(
@@ -60,7 +62,7 @@ final class SystemTestsLayoutTests: XCTestCase {
         XCTAssertTrue(nackImports.contains("HostWire"))
         XCTAssertTrue(nackImports.contains("LyteTransport"))
         XCTAssertEqual(
-            try repairBoundaryViolations(
+            try sessionBoundaryViolations(
                 in: swiftSources(below: "SystemTests/Tests")
             ),
             []
@@ -81,16 +83,22 @@ final class SystemTestsLayoutTests: XCTestCase {
         )
     }
 
-    func testRepairBoundaryScannerRejectsDeadTokensAndRelocatedFakes() {
+    func testSessionBoundaryScannerRejectsDeadTokensAndRelocatedFakes() {
         let nackPath =
             "SystemTests/Tests/LyteClientHostTests/NackRepairClientGateTests.swift"
+        let pairingPath =
+            "SystemTests/Tests/LyteClientHostTests/PairingGateTests.swift"
+        let hostPath =
+            "SystemTests/Tests/LyteClientHostTests/SystemHostSession.swift"
         let deadTokens = [
+            hostPath: "// session = Session( session.receive(",
             nackPath: """
-            // SessionRepairHost session = Session( session.receive(
+            // SystemHostSession( NoiseTransportCrypto(
             let decoy = "NoiseTransportCrypto("
             """,
+            pairingPath: "// SystemHostSession( PairingResponderService(",
         ]
-        let deadViolations = repairBoundaryViolations(in: deadTokens)
+        let deadViolations = sessionBoundaryViolations(in: deadTokens)
         XCTAssertTrue(deadViolations.contains {
             $0.contains("missing real Session construction")
         })
@@ -100,37 +108,68 @@ final class SystemTestsLayoutTests: XCTestCase {
         XCTAssertTrue(deadViolations.contains {
             $0.contains("missing real client Noise transport")
         })
+        XCTAssertTrue(deadViolations.contains {
+            $0.contains("pairing missing shared real Session host")
+        })
+        for label in [
+            "pairing missing handshake binding",
+            "pairing missing reliable CTRL dispatch",
+            "pairing missing responder-service dispatch",
+            "pairing missing Session reply carriage",
+        ] {
+            XCTAssertTrue(deadViolations.contains { $0.contains(label) })
+        }
 
         let relocatedFake = [
-            nackPath: """
-            final class SessionRepairHost {
+            hostPath: """
+            final class SystemHostSession {
                 lazy var session = Session(config: config)
                 func absorb() { session.receive(bytes) }
             }
+            """,
+            nackPath: """
+            let host = SystemHostSession()
             let crypto = NoiseTransportCrypto(hostAddress: "")
             """,
-            "SystemTests/Tests/LyteClientHostTests/PairingGateTests.swift": """
+            pairingPath: """
+            let host = SystemHostSession()
+            let crypto = NoiseTransportCrypto(hostAddress: "")
+            let service = PairingResponderService(pin: [])
             let channel = HostWire.VideoChannel /* whitespace evasion */ (
                 config: config
             )
             channel.enqueueRepair (frame: frame, shardIndices: [])
             let report = FeedbackReport . decode (bytes)
             let refusal = RepairRefusal /* moved fake */ (frame: frame)
+            var noise = NoiseSession(role: .responder)
+            var arq = ArqEndpoint (channel: .ctrl)
+            let id = ConnectionId . random (using: &rng)
+            var transport: NoiseTransport?
+            let sealed = try transport . seal (plaintext)
+            let envelope = Envelope (channel: .ctrl)
+            let beacon = ClockBeacon (beaconSeq: 0)
+            var ctrlSeq = 0
+            final class HostStandIn {}
             """,
         ]
-        let relocatedViolations = repairBoundaryViolations(in: relocatedFake)
-        XCTAssertTrue(relocatedViolations.contains {
-            $0.contains("direct VideoChannel construction")
-        })
-        XCTAssertTrue(relocatedViolations.contains {
-            $0.contains("direct enqueueRepair")
-        })
-        XCTAssertTrue(relocatedViolations.contains {
-            $0.contains("manual FeedbackReport decode")
-        })
-        XCTAssertTrue(relocatedViolations.contains {
-            $0.contains("manual RepairRefusal construction")
-        })
+        let relocatedViolations = sessionBoundaryViolations(in: relocatedFake)
+        for label in [
+            "direct VideoChannel construction",
+            "direct enqueueRepair",
+            "manual FeedbackReport decode",
+            "manual RepairRefusal construction",
+            "rebuilt Noise responder",
+            "direct Noise transport",
+            "direct ArqEndpoint construction",
+            "manual connection-id mint",
+            "manual transport seal",
+            "manual Envelope construction",
+            "manual beacon construction",
+            "manual CTRL sequence",
+            "legacy host stand-in",
+        ] {
+            XCTAssertTrue(relocatedViolations.contains { $0.contains(label) })
+        }
 
         let multilineSource = [
             "let prose = " + String(repeating: "\"", count: 3),
@@ -139,11 +178,11 @@ final class SystemTestsLayoutTests: XCTestCase {
             "let decoy = #\"enqueueRepair(\"#",
             "let channel = VideoChannel(config: config)",
         ].joined(separator: "\n")
-        let multilineViolations = repairBoundaryViolations(in: [
-            nackPath: relocatedFake[nackPath]!,
-            "SystemTests/Tests/LyteClientHostTests/PairingGateTests.swift":
-                multilineSource,
-        ])
+        var multilineSources = relocatedFake
+        multilineSources[pairingPath] = multilineSource
+        let multilineViolations = sessionBoundaryViolations(
+            in: multilineSources
+        )
         XCTAssertTrue(multilineViolations.contains {
             $0.contains("direct VideoChannel construction")
         })
@@ -260,16 +299,29 @@ final class SystemTestsLayoutTests: XCTestCase {
         return result
     }
 
-    private func repairBoundaryViolations(
+    private func sessionBoundaryViolations(
         in sources: [String: String]
     ) -> [String] {
         let nackPath =
             "SystemTests/Tests/LyteClientHostTests/NackRepairClientGateTests.swift"
+        let pairingPath =
+            "SystemTests/Tests/LyteClientHostTests/PairingGateTests.swift"
+        let hostPath =
+            "SystemTests/Tests/LyteClientHostTests/SystemHostSession.swift"
         let forbidden: [(label: String, tokens: [String])] = [
             ("direct VideoChannel construction", ["VideoChannel", "("]),
             ("direct enqueueRepair", ["enqueueRepair", "("]),
             ("manual FeedbackReport decode", ["FeedbackReport", ".", "decode", "("]),
             ("manual RepairRefusal construction", ["RepairRefusal", "("]),
+            ("rebuilt Noise responder", ["NoiseSession"]),
+            ("direct Noise transport", ["NoiseTransport"]),
+            ("direct ArqEndpoint construction", ["ArqEndpoint"]),
+            ("manual connection-id mint", ["ConnectionId", ".", "random", "("]),
+            ("manual transport seal", ["seal", "("]),
+            ("manual Envelope construction", ["Envelope", "("]),
+            ("manual beacon construction", ["ClockBeacon", "("]),
+            ("manual CTRL sequence", ["ctrlSeq"]),
+            ("legacy host stand-in", ["HostStandIn"]),
         ]
         var violations: [String] = []
         for (path, source) in sources {
@@ -277,19 +329,37 @@ final class SystemTestsLayoutTests: XCTestCase {
             for rule in forbidden where contains(rule.tokens, in: tokens) {
                 violations.append("\(path): \(rule.label)")
             }
-            if path == nackPath, tokens.contains("NoiseSession") {
-                violations.append("\(path): rebuilt Noise responder")
-            }
         }
 
-        let nackTokens = sources[nackPath].map(swiftTokens(from:)) ?? []
-        let required: [(label: String, tokens: [String])] = [
-            ("missing real Session construction", ["session", "=", "Session", "("]),
-            ("missing Session.receive ingress", ["session", ".", "receive", "("]),
-            ("missing real client Noise transport", ["NoiseTransportCrypto", "("]),
+        let required: [(path: String, label: String, tokens: [String])] = [
+            (hostPath, "missing real Session construction",
+             ["session", "=", "Session", "("]),
+            (hostPath, "missing Session.receive ingress",
+             ["session", ".", "receive", "("]),
+            (nackPath, "repair missing shared real Session host",
+             ["SystemHostSession", "("]),
+            (nackPath, "missing real client Noise transport",
+             ["NoiseTransportCrypto", "("]),
+            (pairingPath, "pairing missing shared real Session host",
+             ["SystemHostSession", "("]),
+            (pairingPath, "pairing missing real client Noise transport",
+             ["NoiseTransportCrypto", "("]),
+            (pairingPath, "pairing missing real responder service",
+             ["PairingResponderService", "("]),
+            (pairingPath, "pairing missing handshake binding",
+             ["handshakeCompleted", "("]),
+            (pairingPath, "pairing missing reliable CTRL dispatch",
+             ["reliableCtrl", "("]),
+            (pairingPath, "pairing missing responder-service dispatch",
+             ["hostService", ".", "handleReliableCtrl", "("]),
+            (pairingPath, "pairing missing Session reply carriage",
+             ["host", ".", "session", ".", "sendReliable", "("]),
         ]
-        for rule in required where !contains(rule.tokens, in: nackTokens) {
-            violations.append("\(nackPath): \(rule.label)")
+        for rule in required {
+            let tokens = sources[rule.path].map(swiftTokens(from:)) ?? []
+            if !contains(rule.tokens, in: tokens) {
+                violations.append("\(rule.path): \(rule.label)")
+            }
         }
         return violations.sorted()
     }

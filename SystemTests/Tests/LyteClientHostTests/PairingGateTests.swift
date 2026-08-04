@@ -10,177 +10,16 @@ import LyteWireTestKit
 // stack — NoiseTransportCrypto initiator with a PERSISTENT static,
 // ReceiveDemux unseal, TransportSender seal, ReliableCtrlEndpoint, and
 // PairingInitiatorService driving LyteWire's PairingPakeInitiator —
-// completes the W6 CPace exchange against the real HostWire
+// completes the W6 CPace exchange through the real HostWire Session and
 // PairingResponderService, through the W-G4 fault model (SimNet loss,
 // duplication, jitter-reorder): exactly-once pairing, both ends pinning
 // the statics the Noise session authenticated, equal ISKs. Wrong PIN is
 // learned client-side from the host's tag one message early, answered
 // with the typed no-oracle reject, and leaves nothing pinned. This is the
 // first cross-end composition gate: neither end reimplements the other's
-// pairing policy.
+// session carriage or pairing policy.
 
 final class PairingGateTests: XCTestCase {
-
-    // MARK: The host transport shell
-
-    /// Noise responder, host-clock ARQ endpoint, and conn-id tagging around
-    /// HostWire's real PairingResponderService. Only the socket/session
-    /// carriage is built here; pairing policy belongs to the product type.
-    private final class HostStandIn: NoiseHandshakeIO {
-        let staticKeys: NoiseKeyPair
-        let service: PairingResponderService
-        let connectionId: ConnectionId
-        var transport: NoiseTransport?
-        var handshakeHash: [UInt8] = []
-        var clientStatic: [UInt8] = []
-        var ctrlSeq: UInt16 = 0
-        var arq: ArqEndpoint<HostClock>
-        private var handshakeOutbox: [[UInt8]] = []
-        var events: [PairingResponderService.Event] = []
-
-        init(pin: [UInt8]) {
-            let staticKeys = NoiseKeyPair.generate()
-            self.staticKeys = staticKeys
-            service = PairingResponderService(
-                pin: pin,
-                hostStaticPublicKey: staticKeys.publicKey
-            )
-            var rng = SplitMix64(seed: 0xC1_06)
-            connectionId = ConnectionId.random(using: &rng)
-            var config = ArqConfig()
-            config.maxSegmentBodyByteCount = min(
-                config.maxSegmentBodyByteCount,
-                ReliableCtrlEndpoint.ctrlPlaintextBudget
-                    - ArqBounds.segmentHeaderByteCount
-            )
-            arq = ArqEndpoint(channel: .ctrl, config: config)
-        }
-
-        // NoiseHandshakeIO — the pre-thread handshake window, answered
-        // in-process. The responder learns the client static from
-        // message 1 (what HS-9 binds the PAKE to).
-
-        func sendToHost(_ datagram: [UInt8]) throws {
-            guard let (envelope, payload) = try? Envelope.decode(datagram[...]),
-                  envelope.channel == .ctrl,
-                  payload.first == CtrlMessageType.noiseHandshake1
-            else { return }
-            var session = try NoiseSession(
-                role: .responder, staticKeys: staticKeys)
-            _ = try session.readMessage1(payload.dropFirst())
-            let message2 = try session.writeMessage2()
-            clientStatic = session.remoteStaticPublicKey ?? []
-            handshakeHash = session.handshakeHash
-            transport = try session.makeTransport()
-            service.sessionEstablished(
-                clientStaticPublicKey: clientStatic,
-                noiseHandshakeHash: handshakeHash
-            )
-            let carriage = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: 0,
-                fec: 0,
-                extensions: [connectionId.wireExtension]
-            )
-            ctrlSeq &+= 1
-            handshakeOutbox.append(try carriage.encode(
-                payload: [CtrlMessageType.noiseHandshake2] + message2))
-        }
-
-        func receiveDatagram(timeoutMilliseconds: Int) throws -> [UInt8]? {
-            handshakeOutbox.isEmpty ? nil : handshakeOutbox.removeFirst()
-        }
-
-        func sealedCtrl(body: [UInt8], hostMicros: UInt64) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: hostMicros,
-                fec: 0,
-                extensions: [connectionId.wireExtension]
-            )
-            ctrlSeq &+= 1
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
-        }
-
-        func beaconDatagram(hostMicros: UInt64) throws -> [UInt8] {
-            try sealedCtrl(
-                body: ClockBeacon(
-                    beaconSeq: 0,
-                    hostSend: HostTimestamp(microseconds: hostMicros),
-                    lastEcho: nil
-                ).encode(),
-                hostMicros: hostMicros)
-        }
-
-        /// One client datagram: unseal → one-byte peek → the ARQ, whose
-        /// deliveries feed HS-9's message discipline.
-        func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
-                return
-            }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: HostTimestamp(microseconds: nowMicros)
-                ) {
-                    guard case .message(_, let message) = event else {
-                        continue
-                    }
-                    try pairingMessage(message, nowMicros: nowMicros)
-                }
-            case CtrlMessageType.beaconEcho:
-                break   // clock hygiene, not this gate's subject
-            default:
-                XCTFail("unexpected client CTRL type \(plaintext.first ?? 0)")
-            }
-        }
-
-        /// The real HS-9 service owns fresh-run, tag, throttle, and budget
-        /// policy. This shell only carries its replies over the host ARQ.
-        private func pairingMessage(
-            _ message: [UInt8], nowMicros: UInt64
-        ) throws {
-            guard let output = service.handleReliableCtrl(
-                message, now: nowMicros * 1_000
-            ) else {
-                XCTFail("unexpected reliable message type \(message.first ?? 0)")
-                return
-            }
-            for reply in output.replies {
-                try arq.send(
-                    message: reply,
-                    now: HostTimestamp(microseconds: nowMicros)
-                )
-            }
-            events.append(contentsOf: output.events)
-        }
-
-        /// Due ARQ output, sealed (single-frame payloads here — pairing
-        /// messages are far under the segment clamp).
-        func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
-            let (payloads, _) = arq.poll(
-                now: HostTimestamp(microseconds: nowMicros))
-            return try payloads.map {
-                try sealedCtrl(body: $0, hostMicros: nowMicros)
-            }
-        }
-    }
 
     // MARK: The client harness
 
@@ -190,7 +29,8 @@ final class PairingGateTests: XCTestCase {
     /// the endpoint's @Sendable onEvent hook; the whole gate runs on
     /// one thread of virtual time.)
     private final class Harness: @unchecked Sendable {
-        let host: HostStandIn
+        let host: SystemHostSession
+        let hostService: PairingResponderService
         let clientStatic = NoiseKeyPair.generate()
         let crypto: NoiseTransportCrypto
         let demux: ReceiveDemux
@@ -199,9 +39,14 @@ final class PairingGateTests: XCTestCase {
         var service: PairingInitiatorService!
         let outbound = LockedBytePile()
         var events: [PairingInitiatorService.Event] = []
+        var hostEvents: [PairingResponderService.Event] = []
 
         init(hostPin: [UInt8], clientPin: [UInt8]) throws {
-            let host = HostStandIn(pin: hostPin)
+            let host = SystemHostSession()
+            let hostService = PairingResponderService(
+                pin: hostPin,
+                hostStaticPublicKey: host.staticKeys.publicKey
+            )
             let crypto = try NoiseTransportCrypto(
                 hostAddress: "10.0.0.249", hostPort: 41_007,
                 hostStaticPublicKey: host.staticKeys.publicKey,
@@ -209,8 +54,25 @@ final class PairingGateTests: XCTestCase {
                 attempts: 2, attemptTimeoutMilliseconds: 200)
             try crypto.performHandshake(io: host)
             self.host = host
+            self.hostService = hostService
             self.crypto = crypto
             self.demux = ReceiveDemux(crypto: crypto)
+            guard let remote = host.events.compactMap({ event -> [UInt8]? in
+                guard case .handshakeCompleted(let key) = event else {
+                    return nil
+                }
+                return key
+            }).last,
+            let handshakeHash = host.session.handshakeHash else {
+                throw NSError(
+                    domain: "PairingGateTests.realHostHandshake",
+                    code: 1
+                )
+            }
+            hostService.sessionEstablished(
+                clientStaticPublicKey: remote,
+                noiseHandshakeHash: handshakeHash
+            )
             let outbound = self.outbound
             self.sender = TransportSender(crypto: crypto, transmit: {
                 outbound.append($0)
@@ -233,6 +95,41 @@ final class PairingGateTests: XCTestCase {
                     }
                     self.events.append(contentsOf: output.events)
                 })
+        }
+
+        func handleHost(
+            _ sessionEvents: [SessionEvent], nowMicros: UInt64
+        ) throws {
+            for event in sessionEvents {
+                guard case .reliableCtrl(_, let message) = event else {
+                    continue
+                }
+                guard let output = hostService.handleReliableCtrl(
+                    message, now: nowMicros * 1_000
+                ) else {
+                    XCTFail(
+                        "unexpected reliable message type "
+                            + "\(message.first ?? 0)"
+                    )
+                    continue
+                }
+                for reply in output.replies {
+                    try host.session.sendReliable(
+                        reply,
+                        now: nowMicros * 1_000,
+                        hostMicroseconds: nowMicros
+                    )
+                }
+                hostEvents.append(contentsOf: output.events)
+            }
+        }
+
+        func pollHost(nowMicros: UInt64) throws -> [[UInt8]] {
+            try handleHost(
+                host.advance(to: nowMicros),
+                nowMicros: nowMicros
+            )
+            return host.takeReadyControlDatagrams()
         }
 
         func absorb(_ bytes: [UInt8], tMicros: UInt64) {
@@ -258,10 +155,11 @@ final class PairingGateTests: XCTestCase {
     ) throws {
         var t: UInt64 = 1_000
         var forwarded = 0
-        // The session-start beacon teaches the conn-id first (the real
-        // host's control FIFO order), then share A opens the run.
-        harness.absorb(
-            try harness.host.beaconDatagram(hostMicros: 100), tMicros: t)
+        // The real Session's startup flight teaches the conn-id first;
+        // then share A opens the pairing run on the same ARQ lane.
+        for datagram in try harness.pollHost(nowMicros: t) {
+            harness.absorb(datagram, tMicros: t)
+        }
         try harness.reliable.send(
             harness.service.start(), now: ClientTimestamp(microseconds: t))
         while t < horizon {
@@ -269,7 +167,12 @@ final class PairingGateTests: XCTestCase {
                 if delivery.destination == 0 {
                     harness.absorb(delivery.bytes, tMicros: t)
                 } else {
-                    try harness.host.absorb(delivery.bytes, nowMicros: t)
+                    try harness.handleHost(
+                        harness.host.absorb(
+                            delivery.bytes, clientMicros: t
+                        ),
+                        nowMicros: t
+                    )
                 }
             }
             harness.reliable.tick(now: ClientTimestamp(microseconds: t))
@@ -277,11 +180,12 @@ final class PairingGateTests: XCTestCase {
                 net.send(from: 0, bytes: harness.outbound.all[forwarded], now: t)
                 forwarded += 1
             }
-            for datagram in try harness.host.pollOut(nowMicros: t) {
+            for datagram in try harness.pollHost(nowMicros: t) {
                 net.send(from: 1, bytes: datagram, now: t)
             }
             if harness.service.isTerminal,
-               harness.reliable.isQuiescent, harness.host.arq.isQuiescent,
+               harness.reliable.isQuiescent,
+               harness.host.session.arqIsQuiescent,
                net.nextArrivalTime == nil {
                 return
             }
@@ -325,10 +229,14 @@ final class PairingGateTests: XCTestCase {
         // Host verdict: confirm verified, and it pins the SAME client
         // static the Noise session authenticated — the promotion rule.
         XCTAssertEqual(
-            harness.host.service.pairedClientStaticPublicKey,
+            harness.hostService.pairedClientStaticPublicKey,
             harness.clientStatic.publicKey)
-        XCTAssertEqual(harness.host.clientStatic, harness.clientStatic.publicKey)
-        XCTAssertEqual(harness.host.events, [
+        XCTAssertEqual(harness.host.session.phase, .established)
+        XCTAssertEqual(
+            harness.host.session.handshakeHash,
+            harness.crypto.handshakeHashSnapshot
+        )
+        XCTAssertEqual(harness.hostEvents, [
             .attemptOpened(attempt: 1, of: 3),
             .paired(clientStaticPublicKey: harness.clientStatic.publicKey),
         ])
@@ -352,9 +260,9 @@ final class PairingGateTests: XCTestCase {
         XCTAssertEqual(harness.events, [.pinMismatch])
         XCTAssertNil(harness.service.pairedHostStaticPublicKey)
         XCTAssertNil(
-            harness.host.service.pairedClientStaticPublicKey,
+            harness.hostService.pairedClientStaticPublicKey,
             "nothing must pin on either end")
-        XCTAssertEqual(harness.host.events, [
+        XCTAssertEqual(harness.hostEvents, [
             .attemptOpened(attempt: 1, of: 3),
             .clientAborted(.confirmationFailed),
         ], "the host saw the client's typed abort, never a confirm")
