@@ -407,8 +407,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     // IO-free session policy + transport-owned feature state, one lock.
     private let lock = NSLock()
-    private var lifecycle: ClientSessionLifecycle
-    private var capabilitySession: ClientCapabilitySession
+    private var controlSession: ClientControlSession
     /// The 0x19-confirmed posture of the host's own speakers (CL-13);
     /// nil until the first status lands. Never set optimistically —
     /// the strip renders exactly this.
@@ -501,12 +500,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         self.clipboardImagesOn = config.shareClipboardImages
         // The machine begins at establishment (the shell constructs the
         // core only after the Noise handshake), streaming: ACTIVE.
-        self.lifecycle = ClientSessionLifecycle(
-            config: config.machineConfig,
+        self.controlSession = ClientControlSession(
+            localCapabilities: config.capabilities,
+            machineConfig: config.machineConfig,
             now: now()
         )
-        self.capabilitySession = ClientCapabilitySession(
-            local: config.capabilities)
 
         self.pipeline = LyteVideoPipeline(
             asynchronousSampleBuild: asynchronousVideoBuild,
@@ -651,7 +649,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         lock.lock()
         let declaration: [UInt8]?
         do {
-            declaration = try capabilitySession.start()
+            declaration = try controlSession.start()
         } catch {
             lock.unlock()
             throw error
@@ -819,7 +817,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         _ mode: HostAudioRoutingMode, now: ClientTimestamp
     ) throws {
         lock.lock()
-        guard capabilitySession.agreed?.hostAudioRouting == true else {
+        guard controlSession.agreedCapabilities?.hostAudioRouting == true else {
             lock.unlock()
             throw AudioRoutingAskError.notNegotiated
         }
@@ -827,7 +825,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         // host would reject the byte as a protocol break, so the
         // refusal happens HERE, typed, before anything leaves.
         if mode == .streamOff,
-           capabilitySession.agreed?.audioStreamOff != true
+           controlSession.agreedCapabilities?.audioStreamOff != true
         {
             lock.unlock()
             throw AudioRoutingAskError.streamOffNotNegotiated
@@ -848,7 +846,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public var clipboardNegotiated: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return capabilitySession.agreed?.clipboardText == true
+        return controlSession.agreedCapabilities?.clipboardText == true
     }
 
     /// The live sharing toggle's state (seeded from the per-host
@@ -878,7 +876,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         _ text: String, now: ClientTimestamp
     ) -> ClipboardShareOutcome {
         lock.lock()
-        guard capabilitySession.agreed?.clipboardText == true else {
+        guard controlSession.agreedCapabilities?.clipboardText == true else {
             lock.unlock()
             return .notNegotiated
         }
@@ -932,7 +930,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public var clipboardImagesNegotiated: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return capabilitySession.agreed?.clipboardImagesAgreed == true
+        return controlSession.agreedCapabilities?.clipboardImagesAgreed == true
     }
 
     /// The images rung's live state: images move only when sharing
@@ -971,7 +969,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         _ data: [UInt8], now: ClientTimestamp
     ) -> ClipboardShareOutcome {
         lock.lock()
-        guard capabilitySession.agreed?.clipboardImagesAgreed == true else {
+        guard controlSession.agreedCapabilities?.clipboardImagesAgreed == true else {
             lock.unlock()
             return .notNegotiated
         }
@@ -1057,7 +1055,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public var bulkTransferNegotiated: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return capabilitySession.agreed?.bulkTransfer == true
+        return controlSession.agreedCapabilities?.bulkTransfer == true
     }
 
     /// Queues one encoded bulk message on chan 8's ARQ ordered stream.
@@ -1067,7 +1065,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         _ message: [UInt8], now: ClientTimestamp
     ) throws {
         lock.lock()
-        guard capabilitySession.agreed?.bulkTransfer == true else {
+        guard controlSession.agreedCapabilities?.bulkTransfer == true else {
             lock.unlock()
             throw BulkChannelError.notNegotiated
         }
@@ -1193,7 +1191,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             return
         }
         lock.lock()
-        guard capabilitySession.agreed?.audioQuietPosture == true else {
+        guard controlSession.agreedCapabilities?.audioQuietPosture == true else {
             lock.unlock()
             onEvent(.protocolNote(
                 "audio track-state 0x25 without negotiated key 15 — dropped"))
@@ -1225,7 +1223,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             return
         }
         lock.lock()
-        guard capabilitySession.agreed?.videoQuietPosture == true else {
+        guard controlSession.agreedCapabilities?.videoQuietPosture == true else {
             lock.unlock()
             onEvent(.protocolNote(
                 "video posture 0x26 without negotiated key 16 — dropped"))
@@ -1249,12 +1247,12 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// already relaxed (check-ins repeat every ~5 s by design).
     private func relaxDetectorForAnnouncedQuiet(now: ClientTimestamp) {
         lock.lock()
-        guard detectorTightened, lifecycle.state != .closed else {
+        guard detectorTightened, controlSession.state != .closed else {
             lock.unlock()
             return
         }
         detectorTightened = false
-        _ = lifecycle.reconfigure(config.machineConfig, now: now)
+        _ = controlSession.reconfigure(config.machineConfig, now: now)
         lock.unlock()
         onEvent(.protocolNote(String(
             format: "audio quiet announced — blackout detector relaxed "
@@ -1271,14 +1269,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         guard let tightened = config.tightenedBlackoutSilenceMicroseconds
         else { return }
         lock.lock()
-        guard !detectorTightened, lifecycle.state != .closed else {
+        guard !detectorTightened, controlSession.state != .closed else {
             lock.unlock()
             return
         }
         detectorTightened = true
         var machineConfig = config.machineConfig
         machineConfig.blackoutSilenceMicroseconds = tightened
-        _ = lifecycle.reconfigure(machineConfig, now: now)
+        _ = controlSession.reconfigure(machineConfig, now: now)
         // Edge reporting stays untouched: the next applyMachine
         // pass surfaces any edge this rebuild caused (e.g. a FROZEN
         // pill clearing on this very evidence).
@@ -1298,7 +1296,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         lock.lock()
         let line = chromaAudit.observe(
             chromaFormatIdc: idc,
-            agreedChromaModes: capabilitySession.agreed?.chromaModes)
+            agreedChromaModes: controlSession.agreedCapabilities?.chromaModes)
         lock.unlock()
         if let line { onEvent(.protocolNote(line)) }
     }
@@ -1317,13 +1315,13 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public var state: SessionState {
         lock.lock()
         defer { lock.unlock() }
-        return lifecycle.state
+        return controlSession.state
     }
 
     public var wireMode: SessionWireMode {
         lock.lock()
         defer { lock.unlock() }
-        return lifecycle.wireMode
+        return controlSession.wireMode
     }
 
     /// The CL-8 pill: true while the local overlay says the path is
@@ -1333,7 +1331,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public var agreedCapabilities: Capabilities? {
         lock.lock()
         defer { lock.unlock() }
-        return capabilitySession.agreed
+        return controlSession.agreedCapabilities
     }
 
     /// True when capability key 9 survived intersection — the strip's
@@ -1341,7 +1339,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public var hostAudioRoutingNegotiated: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return capabilitySession.agreed?.hostAudioRouting == true
+        return controlSession.agreedCapabilities?.hostAudioRouting == true
     }
 
     /// The 0x19-confirmed posture of the host's own speakers; nil
@@ -1370,7 +1368,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         _ input: SessionInput?, now: ClientTimestamp
     ) {
         lock.lock()
-        let decision = lifecycle.advance(input, now: now)
+        let decision = controlSession.advance(input, now: now)
         machineFrozen.store(decision.state == .frozen, ordering: .relaxed)
         lock.unlock()
 
@@ -1419,12 +1417,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         let now = now()
         switch bytes.first {
         case CtrlMessageType.modeTransition,
-             CtrlMessageType.sessionTeardown:
-            receiveLifecycleWord(bytes, now: now)
-
-        case CtrlMessageType.capabilityDeclaration,
+             CtrlMessageType.sessionTeardown,
+             CtrlMessageType.capabilityDeclaration,
              CtrlMessageType.capabilityUpdate:
-            receiveCapabilityWord(bytes, now: now)
+            receiveControlWord(bytes, now: now)
 
         case CtrlMessageType.idleFrame:
             receiveIdleFrame(bytes)
@@ -1485,31 +1481,70 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         }
     }
 
-    /// The lifecycle organ owns decoding and transition judgment for its two
-    /// reliable words. The shell keeps only counters and external effects.
-    private func receiveLifecycleWord(
+    /// The composed IO-free control session owns routing, decoding, and
+    /// cross-organ judgment. The shell keeps counters and external effects.
+    private func receiveControlWord(
         _ bytes: [UInt8], now: ClientTimestamp
     ) {
         lock.lock()
-        let ingress = lifecycle.receiveReliable(bytes, now: now)
-        if case .applied(.modeTransition, _) = ingress {
+        let decision: ClientControlSessionDecision?
+        do {
+            decision = try controlSession.receiveReliable(bytes, now: now)
+        } catch {
+            lock.unlock()
+            onEvent(.protocolNote(
+                "control response encoding refused: \(error)"))
+            return
+        }
+        if case .lifecycle(.modeTransition) = decision?.event {
             counters.modeTransitionsReceived += 1
         }
-        if case .applied(_, let decision) = ingress {
+        if case .capability(.updateAnswered) = decision?.event {
+            counters.capabilityUpdatesAnswered += 1
+        }
+        if let lifecycle = decision?.lifecycle {
             machineFrozen.store(
-                decision.state == .frozen, ordering: .relaxed)
+                lifecycle.state == .frozen, ordering: .relaxed)
         }
         lock.unlock()
+        guard let decision else { return }
 
-        switch ingress {
-        case .applied(_, let decision):
-            executeLifecycle(decision, now: now)
-        case .malformed(.modeTransition):
-            noteMalformed("mode transition")
-        case .malformed(.sessionTeardown):
-            noteMalformed("session teardown")
-        case nil:
+        for outbound in decision.outboundReliable {
+            do {
+                try reliable.send(outbound, now: now)
+            } catch {
+                onEvent(.protocolNote(
+                    "control response send refused: \(error)"))
+                return
+            }
+        }
+
+        switch decision.event {
+        case .lifecycle:
             break
+        case .malformedLifecycle(.modeTransition):
+            noteMalformed("mode transition")
+        case .malformedLifecycle(.sessionTeardown):
+            noteMalformed("session teardown")
+        case .capability(.agreed(let intersection)):
+            onEvent(.capabilitiesAgreed(intersection))
+        case .capability(.failed(let failure)):
+            onEvent(.capabilitiesFailed(failure))
+        case .capability(.updateAnswered(let accepted)):
+            onEvent(.capabilityUpdateAnswered(accepted: accepted))
+        case .capability(.malformed(.declaration)):
+            noteMalformed("capability declaration")
+        case .capability(.malformed(.update)):
+            noteMalformed("capability update")
+        case .capability(.refused(.declaration, let failure)):
+            onEvent(.protocolNote(
+                "capability declaration refused: \(failure)"))
+        case .capability(.refused(.update, let failure)):
+            onEvent(.protocolNote(
+                "capability update refused: \(failure)"))
+        }
+        if let lifecycle = decision.lifecycle {
+            executeLifecycle(lifecycle, now: now)
         }
     }
 
@@ -1547,7 +1582,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             processImageEvents(events, now: now)
             return
         }
-        guard capabilitySession.agreed?.bulkTransfer == true else {
+        guard controlSession.agreedCapabilities?.bulkTransfer == true else {
             counters.bulkDropsLoud += 1
             lock.unlock()
             onEvent(.protocolNote(
@@ -1577,7 +1612,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             return
         }
         lock.lock()
-        guard capabilitySession.agreed?.clipboardImagesAgreed == true else {
+        guard controlSession.agreedCapabilities?.clipboardImagesAgreed == true else {
             counters.clipboardDropsLoud += 1
             lock.unlock()
             onEvent(.protocolNote(
@@ -1595,60 +1630,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         }
         lock.unlock()
         processImageEvents(events, now: now)
-    }
-
-    /// The IO-free client capability organ decodes and judges both words. This
-    /// synchronized shell only sends returned bytes and surfaces typed edges.
-    private func receiveCapabilityWord(
-        _ bytes: [UInt8], now: ClientTimestamp
-    ) {
-        lock.lock()
-        let decision: ClientCapabilitySessionDecision?
-        do {
-            decision = try capabilitySession.receive(bytes)
-        } catch {
-            lock.unlock()
-            onEvent(.protocolNote(
-                "capability response encoding refused: \(error)"))
-            return
-        }
-        if case .updateAnswered = decision?.event {
-            counters.capabilityUpdatesAnswered += 1
-        }
-        lock.unlock()
-        guard let decision else { return }
-
-        for outbound in decision.outboundReliable {
-            do {
-                try reliable.send(outbound, now: now)
-            } catch {
-                onEvent(.protocolNote(
-                    "update ack send refused: \(error)"))
-                return
-            }
-        }
-
-        switch decision.event {
-        case .agreed(let intersection):
-            onEvent(.capabilitiesAgreed(intersection))
-        case .failed(let failure):
-            onEvent(.capabilitiesFailed(failure))
-        case .updateAnswered(let accepted):
-            onEvent(.capabilityUpdateAnswered(accepted: accepted))
-        case .malformed(.declaration):
-            noteMalformed("capability declaration")
-        case .malformed(.update):
-            noteMalformed("capability update")
-        case .refused(.declaration, let failure):
-            onEvent(.protocolNote(
-                "capability declaration refused: \(failure)"))
-        case .refused(.update, let failure):
-            onEvent(.protocolNote(
-                "capability update refused: \(failure)"))
-        }
-        if let reason = decision.teardownReason {
-            beginTeardown(reason: reason, now: now)
-        }
     }
 
     /// The 0x15 idle frame: decode, render through the shared factory
@@ -1687,7 +1668,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             return
         }
         lock.lock()
-        guard capabilitySession.agreed?.hostAudioRouting == true else {
+        guard controlSession.agreedCapabilities?.hostAudioRouting == true else {
             counters.audioRoutingDropsLoud += 1
             lock.unlock()
             onEvent(.protocolNote(
@@ -1727,7 +1708,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             return
         }
         lock.lock()
-        guard capabilitySession.agreed?.clipboardText == true else {
+        guard controlSession.agreedCapabilities?.clipboardText == true else {
             counters.clipboardDropsLoud += 1
             lock.unlock()
             onEvent(.protocolNote(
@@ -1754,7 +1735,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             return
         }
         lock.lock()
-        guard capabilitySession.agreed?.cursorShape == true else {
+        guard controlSession.agreedCapabilities?.cursorShape == true else {
             counters.unknownReliableTypes += 1
             lock.unlock()
             onEvent(.protocolNote(
