@@ -4,13 +4,13 @@
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #183. Resume `agent/host-session-core`
-  from its committed extraction after incorporating current `main`.
-- **GitHub:** PR #183 gives stats telemetry two stable semantic rows: `glass`
-  owns path timing, while `playout` owns renderer and Conductor state.
+- **Branch:** clean `main` through PR #184; no other local or remote branches
+  remain and GitHub has no open pull requests.
+- **GitHub:** PR #184 extracts handshake admission, lifecycle projection, and
+  path migration into the pure `HostSession` target. `HostWire` injects time
+  and randomness and continues to own sockets, queues, persistence, and IO.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** extract pure host session policy behind injected time
-  and randomness without moving sockets, queues, persistence, or Linux IO.
+- **Current objective:** make the application composition roots explicit.
 
 ## Last green gates
 
@@ -163,6 +163,16 @@ debug and release builds, linkage, socket and pacing harnesses, and protected-
 state verification. No metric or telemetry source changed; only the stable
 presentation boundary changed. Frozen vectors were unchanged.
 
+The host-session extraction passed 8 focused pure-policy tests and the full
+warning-enforced macOS gate: Common 93, Wire 513, Host 342, Client 300, and
+SystemTests 17 plus benchmark safety, signing, 25 analyzers, app identity, the
+signed CLI, packaging, hermetic linkage, and double signed release-app
+assembly. Pup passed Common 94, Wire 513, and Host 343 plus warning-enforced
+debug and release builds, linkage, socket and pacing harnesses, and protected-
+state verification. `HostSession` now owns handshake admission, lifecycle
+projection, and path migration as injected-input value policy. Frozen vectors
+and live protocol behavior were unchanged.
+
 ## Current live rig
 
 ### Client
@@ -241,11 +251,10 @@ automatic response; no policy change was earned.
 
 Keep every landing small and green. The remaining order is:
 
-1. Extract pure host session policy behind injected time and randomness.
-2. Make application composition roots explicit.
-3. Remove executable insecure/plaintext production paths while preserving
+1. Make application composition roots explicit.
+2. Remove executable insecure/plaintext production paths while preserving
    test-only frozen-vector equipment.
-4. Finish documentation and architectural ratchets, then repeat clean macOS,
+3. Finish documentation and architectural ratchets, then repeat clean macOS,
    pup, WASM, and live-rig commissioning.
 
 ## Recovery pointers
