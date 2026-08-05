@@ -4,13 +4,13 @@
 
 ## Resume here
 
-- **Branch:** resume on clean `main` at the #171 landing; do not continue on
+- **Branch:** resume on clean `main` after the #173 landing; do not continue on
   its merged feature branch.
-- **GitHub:** PR #171 is merged; it repaired the stats-overlay beachball and
-  shipped the owner-approved warning copy.
+- **GitHub:** PR #173 is landing the automatic-Conductor cleanup with complete
+  Mac, pup, and signed live-app proof.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** reconcile the playout setting and `docs/CUSHION.md`
-  with the Conductor's one-beat minimum.
+- **Current objective:** authenticate every privileged helper XPC client with
+  an exact signing requirement.
 
 ## Last green gates
 
@@ -51,11 +51,20 @@ hermetic linkage, connected to pup, and kept its main thread idle for 11,994 of
 `TimelineView`, `statsRows`, or stats-overlay stack appeared; the menu remained
 responsive through two stats toggles.
 
+The automatic-Conductor cleanup passed macOS Common 86, Wire 513, Host 338,
+Client 286, and SystemTests 17 plus benchmark safety, signing, app identity,
+packaging, and hermetic linkage. Pup passed Common 87, Wire 513, and Host 339;
+warning-enforced debug and release builds; hermetic linkage; socket and pacing
+harnesses; and protected-state verification. The focused law proof pins a
+one-beat shipping floor, hole-driven whole-beat growth, and proof-driven
+whole-beat return. The signed release app connected to pup with video and audio
+while its application menu correctly exposed no Settings item.
+
 ## Current live rig
 
 ### Client
 
-- `.build/Lyte.app` is running and connected to pup. The previous app's
+- `.build/Lyte.app` (PID 47586) is running and connected to pup. The previous app's
   beachball was a main-thread `StatsOverlay` feedback loop: its `TimelineView`
   repeatedly invoked `ConnectionModel.statsRows()` and percentile sorting from
   SwiftUI layout while media queues kept playing. The repaired overlay renders
@@ -63,10 +72,10 @@ responsive through two stats toggles.
   proof is recorded under the focused gate above.
 - It is signed by `Apple Development: Steve Shreeve (8FHNN4RZ9Q)` with team
   identifier `SD6N7Z8P9P` and bundle identifier `dev.shreeve.lyte`.
-- The current candidate bundle is source `a16f93e0153b+`, build `1785904418`,
-  with client-source hash
-  `8147584f679bb83f98044fdb38b04c753d35d75c46e85ebc170bb8038fd47590`;
-  its packaging, hermetic-linkage, and strict deep-signature checks pass.
+- The current candidate bundle is source `32746ef83199+`, build `1785907165`;
+  its Lyte executable SHA-256 is
+  `c2c231ab037334dc8bdc0186f9958784487f1d9ddd5b747f32cf7edcb86da384`.
+  Packaging, hermetic-linkage, and strict deep-signature checks pass.
 - LaunchServices resolves the exact candidate path, build version, signing
   identity, and Mach-O UUID. After the completed reboot and an owner-controlled
   Lyte Local Network off/on cycle, the signed GUI still browses and resolves
@@ -110,11 +119,9 @@ and `--no-advertise`.
 
 ## Commissioning findings still open
 
-1. Reconcile the playout setting and `docs/CUSHION.md` with the Conductor's
-   actual one-beat minimum, then pin the settings-to-config mapping.
-2. Authenticate every privileged `lyte-helperd` XPC client with an exact code
+1. Authenticate every privileged `lyte-helperd` XPC client with an exact code
    signing requirement; pin signed-client acceptance and foreign rejection.
-3. Run the owner-visible two-column stats-ledger check during a sustained live
+2. Run the owner-visible two-column stats-ledger check during a sustained live
    stream and investigate the reported network stalls. GNOME Shell's known
    ten-second source-stall comb on pup remains an environment limitation, not
    a Lyte host-loop defect.

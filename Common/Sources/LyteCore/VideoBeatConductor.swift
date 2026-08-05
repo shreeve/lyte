@@ -33,11 +33,10 @@ public struct VideoBeatConductor: Sendable {
         /// to end (see the Conductor doc); the value is config, not
         /// law, so a future score can retune it.
         public var beatPeriodMicroseconds: UInt64
-        /// Beats held in reserve — the user's dial (1 fast, 2 smooth,
-        /// 3 silk). The cue aspires to tail + cushion×period and the
-        /// ceiling below has the last word.
+        /// The automatic reserve floor. A hole adds whole beats; sustained
+        /// clean proof returns them one at a time, never below this floor.
         public var cushionBeats: Int
-        /// Hard ceiling on the cue (the Settings slider, live).
+        /// Hard safety ceiling on the automatic cue.
         public var maximumCueMicroseconds: UInt64
         /// Fresh frames of sustained surplus required before one slip.
         public var slipProofFrames: Int
@@ -49,8 +48,8 @@ public struct VideoBeatConductor: Sendable {
 
         public init(
             beatPeriodMicroseconds: UInt64 = 16_667,
-            cushionBeats: Int = 2,
-            maximumCueMicroseconds: UInt64 = 50_000,
+            cushionBeats: Int = 1,
+            maximumCueMicroseconds: UInt64 = 150_000,
             slipProofFrames: Int = 600,
             maximumFreshBurstDebtMicroseconds: UInt64 = 200_000,
             freshDebtRearmStableFrames: Int = 30
@@ -128,14 +127,6 @@ public struct VideoBeatConductor: Sendable {
         freshBurstDebtMicroseconds = 0
         debtRecoveryArmed = true
         stableFreshFramesAfterDebtRecovery = 0
-    }
-
-    /// The Settings slider is live: the next fresh parts cut whole
-    /// beats until the measured cue fits (phase preserved; the cut's
-    /// transitional collision is its one artifact).
-    public mutating func updateCueCeiling(maximumCueMicroseconds: UInt64) {
-        config.maximumCueMicroseconds = max(
-            maximumCueMicroseconds, config.beatPeriodMicroseconds)
     }
 
     /// A decoder reset starts a new dependency episode, not a new

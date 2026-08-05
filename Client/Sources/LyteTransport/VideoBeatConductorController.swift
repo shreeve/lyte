@@ -31,13 +31,6 @@ public final class VideoBeatConductorController: @unchecked Sendable {
         lock.lock(); policy.reset(); lock.unlock()
     }
 
-    public func updateCueCeiling(maximumCueMicroseconds: UInt64) {
-        lock.lock()
-        policy.updateCueCeiling(
-            maximumCueMicroseconds: maximumCueMicroseconds)
-        lock.unlock()
-    }
-
     public func noteRandomAccessEnqueued() {
         lock.lock(); policy.noteRandomAccessEnqueued(); lock.unlock()
     }

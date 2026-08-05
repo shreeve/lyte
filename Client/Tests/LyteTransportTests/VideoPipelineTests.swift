@@ -362,7 +362,7 @@ final class VideoPipelineTests: XCTestCase {
         XCTAssertEqual(dimensions.width, 2048)
         XCTAssertEqual(dimensions.height, 1280)
 
-        // Adaptive playout owns timing; DisplayImmediately must not bypass it.
+        // The Conductor owns timing; DisplayImmediately must not bypass it.
         let attachments = try XCTUnwrap(
             CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true)
                 as? [[CFString: Any]])

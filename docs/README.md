@@ -23,8 +23,6 @@ existed when they were authored. Recover its final form with
   helper-registration reference for the Mac app.
 - [THIRD-PARTY.md](THIRD-PARTY.md) — dependency licenses, pinned source
   provenance, and binary-notice obligations.
-- [CUSHION.md](CUSHION.md) — the playout-cushion field manual (how the
-  adaptive delay grows, shrinks, and what the slider's ceiling means).
 - [COMPARISON.md](COMPARISON.md) — where Lyte stands against
   conferencing share, remote desktop, and its game-streaming lineage.
 
@@ -60,8 +58,9 @@ existed when they were authored. Recover its final form with
 - [20260803-050422 THE CONDUCTOR](20260803-050422-metronome-playout-design.md) —
   one score, one clock, many instruments: the six laws of on-beat
   playout (cue/beat/late/hole/slip/chain), audio + video on one
-  model, rubato filed, three-tier convergence into LyteCore. Video's
-  metronome playout owns the #82 witness's red cell. NEXT UP.
+  model, the automatic cushion law, rubato filed, and three-tier
+  convergence into LyteCore. Video's metronome playout turned the #82
+  witness's red cell green in #83.
 - [20260728-165538 video supremacy plan](20260728-165538-lyte-video-supremacy-plan.md) —
   the HS-wave strategy source (§R3/§7).
 

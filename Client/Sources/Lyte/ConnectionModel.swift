@@ -139,10 +139,6 @@ final class ConnectionModel {
     /// mark makes overlapping scans idempotent, and a recorder reset
     /// (ordinals restart) clears it implicitly.
     private let linkHealthMeter = LinkHealthMeter()
-    /// Last cushion ceiling pushed into the live playout — the 1 Hz
-    /// tick compares the slider against this to apply changes
-    /// mid-stream.
-    private var appliedCushionMicroseconds: UInt64 = 0
     /// nil until streaming produces a verdict; .good renders nothing —
     /// a clean link needs no announcement.
     private(set) var linkHealth: LinkHealthAssessment?
@@ -459,9 +455,7 @@ final class ConnectionModel {
                     self?.lyteVideoSize = CGSize(
                         width: CGFloat(width), height: CGFloat(height))
                 }
-            },
-            playoutConfig: Self.playoutConfigFromSettings())
-        appliedCushionMicroseconds = Self.cushionMicrosecondsFromSettings()
+            })
         videoRendererHandoff = handoff
         sessionEpoch += 1
         let epoch = sessionEpoch
@@ -657,53 +651,10 @@ final class ConnectionModel {
         endLyteSession(reason: reason)
     }
 
-    /// The stall-cushion setting (Settings → Video): the playout's
-    /// delay CEILING. The adaptive machinery still starts at ~20 ms
-    /// and only grows on measured lateness, decaying slowly after —
-    /// this knob decides how much it is ALLOWED to grow. 50 ms
-    /// absorbs ordinary jitter; ~120 swallows a full Wi-Fi roam-scan
-    /// deaf-window (the measured 75–115 ms class) at the cost of that
-    /// much video delay while the link misbehaves. 0 disables the
-    /// cushion entirely: the floor and starting delay collapse with
-    /// the ceiling and frames present the moment they arrive. Read at
-    /// session start; new connections pick up changes.
-    static let playoutCushionKey = "playoutCushionMilliseconds"
-    static let playoutCushionDefault = 50
-    static let playoutCushionRange = 0...150
-
-    private static func cushionMicrosecondsFromSettings() -> UInt64 {
-        // 0 is a legal setting now, so "never set" must be the absent
-        // key, not the integer default.
-        let defaults = UserDefaults.standard
-        let ms = defaults.object(forKey: playoutCushionKey) == nil
-            ? playoutCushionDefault
-            : min(max(defaults.integer(forKey: playoutCushionKey),
-                      playoutCushionRange.lowerBound),
-                  playoutCushionRange.upperBound)
-        return UInt64(ms) * 1_000
-    }
-
-    private static func playoutConfigFromSettings()
-        -> VideoBeatConductor.Config
-    {
-        // The slider is the cue's ceiling. The conductor needs at
-        // least one beat to hold the grid; Config clamps below that.
-        VideoBeatConductor.Config(
-            maximumCueMicroseconds: cushionMicrosecondsFromSettings())
-    }
-
     /// The 1 Hz link-health tick (driven by the stream container's task
     /// loop): fold new recorder frames into their event-second buckets,
     /// then publish the exact sum of the live 60-bucket window.
     func tickLinkHealth() {
-        // The cushion slider is live: the same 1 Hz heartbeat that
-        // folds link health pushes ceiling changes into the playout.
-        let cushion = Self.cushionMicrosecondsFromSettings()
-        if cushion != appliedCushionMicroseconds {
-            videoRendererHandoff?.updateCushionCeiling(
-                microseconds: cushion)
-            appliedCushionMicroseconds = cushion
-        }
         for f in videoFlightRecorder.recentFrames() {
             linkHealthMeter.observe(
                 ordinal: f.ordinal,
@@ -1661,13 +1612,6 @@ private final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
         self.onDimensionsChanged = onDimensionsChanged
         self.playout = VideoBeatConductorController(
             config: playoutConfig)
-    }
-
-    /// The Settings slider is live — the model's 1 Hz tick pushes
-    /// ceiling changes here mid-stream.
-    func updateCushionCeiling(microseconds: UInt64) {
-        playout.updateCueCeiling(
-            maximumCueMicroseconds: microseconds)
     }
 
     func submit(sample: CMSampleBuffer, unit: DecodeUnit) {

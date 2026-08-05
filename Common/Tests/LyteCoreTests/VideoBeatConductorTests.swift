@@ -21,6 +21,13 @@ final class VideoBeatConductorTests: XCTestCase {
             slipProofFrames: slipProofFrames))
     }
 
+    func testShippingConfigStartsAutomaticAtOneBeat() {
+        let config = VideoBeatConductor.Config()
+        XCTAssertEqual(config.cushionBeats, 1)
+        XCTAssertEqual(config.maximumCueMicroseconds, 150_000)
+        XCTAssertEqual(config.slipProofFrames, 600)
+    }
+
     /// beat: perfectly authored captures with jittered arrivals still
     /// present on an exact beat grid — every delta is one period.
     func testEveryFreshFramePresentsOnTheBeatGrid() {
@@ -268,43 +275,7 @@ final class VideoBeatConductorTests: XCTestCase {
         XCTAssertEqual(flushes, 2, "a fresh episode may recover again")
     }
 
-    /// The Settings slider is live: lowering the ceiling cuts the cue
-    /// by whole beats, and the phase survives.
-    func testLiveCeilingUpdateCutsWholeBeats() {
-        var policy = conductor(cushionBeats: 3,
-                               maximumCueMicroseconds: 120_000)
-        var anchor: UInt64 = 0
-        for index in 0..<3 {
-            let capture = 1_000_000 &+ UInt64(index) &* period
-            let decision = policy.schedule(
-                mappedCaptureMicroseconds: capture,
-                arrivalMicroseconds: capture &+ 9_000,
-                sourceCaptureMicroseconds: capture)
-            if index == 0 { anchor = decision.presentationMicroseconds }
-        }
-        policy.updateCueCeiling(maximumCueMicroseconds: 25_000)
-        // The cut pulls the grid below stamps already handed out; the
-        // monotonic floor clamps for a few frames, then the beat grid
-        // catches up and the phase is intact.
-        var last = VideoBeatConductor.Decision(
-            presentationMicroseconds: 0, targetDelayMicroseconds: 0,
-            latenessMicroseconds: 0, shouldFlush: false)
-        for index in 3..<8 {
-            let capture = 1_000_000 &+ UInt64(index) &* period
-            last = policy.schedule(
-                mappedCaptureMicroseconds: capture,
-                arrivalMicroseconds: capture &+ 9_000,
-                sourceCaptureMicroseconds: capture)
-        }
-        // Whole-beat hysteresis: the ceiling is honored to within one
-        // beat (a tighter bound would chatter at a pinned ceiling).
-        XCTAssertLessThanOrEqual(last.targetDelayMicroseconds,
-                                 25_000 &+ period)
-        XCTAssertEqual(
-            (last.presentationMicroseconds - anchor) % period, 0)
-    }
-
-    /// The rig's regression, pinned: a slider ceiling BELOW the cue's
+    /// The rig's regression, pinned: a safety ceiling below the cue's
     /// aspiration pins the measured cue at the ceiling, and clock-map
     /// residual wobble must not cut or collide the grid — every gap
     /// stays exactly one beat.
