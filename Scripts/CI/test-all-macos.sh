@@ -148,6 +148,7 @@ codesign --verify --strict .build/debug/lyte-cli
 
 echo "==> signed release app"
 Scripts/make-app.sh release
+Scripts/Tests/test-app-packaging.sh .build/Lyte.app
 codesign --verify --strict .build/Lyte.app/Contents/MacOS/Lyte
 codesign --verify --strict .build/Lyte.app/Contents/MacOS/lyte-helperd
 codesign --verify --strict .build/Lyte.app
