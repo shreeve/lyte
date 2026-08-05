@@ -35,6 +35,12 @@ func die(_ msg: String) -> Never {
     exit(1)
 }
 
+func decodeCStringBuffer(_ buffer: [CChar]) -> String {
+    String(
+        decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+        as: UTF8.self)
+}
+
 func findNode(named want: String) -> String? {
     let base = "/sys/class/input"
     guard let entries = try? FileManager.default
@@ -113,7 +119,7 @@ final class Reader {
 var err = [CChar](repeating: 0, count: 256)
 
 guard let handle = lyte_uinput_open(&err, err.count) else {
-    die("open: \(String(cString: err)) — is the udev rule installed?")
+    die("open: \(decodeCStringBuffer(err)) — is the udev rule installed?")
 }
 
 // Loud-failure law: absolute motion before the extent must refuse.
@@ -129,7 +135,7 @@ usleep(200_000)
 kbd.drain(); mouse.drain(); tablet.drain()
 
 guard lyte_uinput_set_extent(handle, 2048, 1280, &err, err.count) == 0
-else { die("set_extent: \(String(cString: err))") }
+else { die("set_extent: \(decodeCStringBuffer(err))") }
 
 // Keys route to the keyboard device.
 _ = lyte_uinput_key(handle, KEY_A, 1, &err, err.count)

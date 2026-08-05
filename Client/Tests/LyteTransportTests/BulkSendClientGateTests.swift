@@ -624,7 +624,7 @@ final class BulkSendClientGateTests: XCTestCase {
         let persisted = try XCTUnwrap(receiver1.engine.resumeState)
         XCTAssertEqual(persisted.possession.contiguousCount, 2)
         rig.coordinator.sessionEnded()
-        var snap = rig.coordinator.snapshot()
+        let snap = rig.coordinator.snapshot()
         XCTAssertEqual(snap.phase, .awaitingReconnect)
         XCTAssertEqual(snap.activeName, "resume.bin")
 

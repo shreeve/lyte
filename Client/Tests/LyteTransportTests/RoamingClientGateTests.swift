@@ -183,7 +183,7 @@ final class RoamingClientGateTests: XCTestCase {
         var policy = makePolicy()
         _ = policy.sessionEstablished(
             address: "10.0.0.60", port: 41_161, now: 0)
-        var actions = policy.sessionClosed(now: 10_000_000)
+        let actions = policy.sessionClosed(now: 10_000_000)
         XCTAssertTrue(actions.contains(.beginScan))
         XCTAssertTrue(actions.contains(
             .dial(address: "10.0.0.60", port: 41_161, discovered: false)))

@@ -108,7 +108,7 @@ func runNativeCapture(
         exit(1)
     }
 
-    FileManager.default.createFile(atPath: output, contents: nil)
+    _ = FileManager.default.createFile(atPath: output, contents: nil)
     guard let file = FileHandle(forWritingAtPath: output) else {
         FileHandle.standardError.write(
             Data("cannot open \(output)\n".utf8))
