@@ -92,6 +92,75 @@ final class ClientSessionLifecycleTests: XCTestCase {
         ))
     }
 
+    func testReliableModeWordIsDecodedAndApplied() throws {
+        var lifecycle = ClientSessionLifecycle(
+            config: SessionMachineConfig(),
+            now: at(0)
+        )
+        let ingress = try XCTUnwrap(lifecycle.receiveReliable(
+            ModeTransition(mode: .idle).encode(),
+            now: at(10)
+        ))
+
+        guard case .applied(.modeTransition, let decision) = ingress else {
+            return XCTFail("expected an applied mode transition")
+        }
+        XCTAssertEqual(decision.state, .idle)
+        XCTAssertEqual(decision.wireMode, .idle)
+        XCTAssertEqual(decision.stateChange, .idle)
+        XCTAssertEqual(decision.wireModeChange, .idle)
+    }
+
+    func testReliableTeardownWordIsDecodedAndApplied() throws {
+        var lifecycle = ClientSessionLifecycle(
+            config: SessionMachineConfig(),
+            now: at(0)
+        )
+        let ingress = try XCTUnwrap(lifecycle.receiveReliable(
+            SessionTeardown(reason: .shuttingDown).encode(),
+            now: at(10)
+        ))
+
+        guard case .applied(.sessionTeardown, let decision) = ingress else {
+            return XCTFail("expected an applied session teardown")
+        }
+        XCTAssertEqual(decision.state, .closed)
+        XCTAssertEqual(decision.actions, [
+            .sessionClosed(.peerTeardown(.shuttingDown)),
+        ])
+    }
+
+    func testMalformedLifecycleWordsAreTypedAndDoNotMutateState() throws {
+        var lifecycle = ClientSessionLifecycle(
+            config: SessionMachineConfig(),
+            now: at(0)
+        )
+
+        XCTAssertEqual(
+            lifecycle.receiveReliable(
+                [CtrlMessageType.modeTransition], now: at(10)),
+            .malformed(.modeTransition)
+        )
+        XCTAssertEqual(
+            lifecycle.receiveReliable(
+                [CtrlMessageType.sessionTeardown], now: at(11)),
+            .malformed(.sessionTeardown)
+        )
+        XCTAssertEqual(lifecycle.state, .active)
+        XCTAssertEqual(lifecycle.wireMode, .active)
+    }
+
+    func testUnrelatedReliableWordIsNotClaimed() {
+        var lifecycle = ClientSessionLifecycle(
+            config: SessionMachineConfig(),
+            now: at(0)
+        )
+        XCTAssertNil(lifecycle.receiveReliable(
+            [CtrlMessageType.capabilityDeclaration],
+            now: at(10)
+        ))
+    }
+
     private func at(_ microseconds: UInt64) -> ClientTimestamp {
         ClientTimestamp(microseconds: microseconds)
     }

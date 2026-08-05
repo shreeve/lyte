@@ -94,11 +94,17 @@ final class ClientLayoutTests: XCTestCase {
             "private var lifecycle: ClientSessionLifecycle"))
         XCTAssertTrue(transport.contains(
             "let decision = lifecycle.advance(input, now: now)"))
+        XCTAssertTrue(transport.contains(
+            "let ingress = lifecycle.receiveReliable(bytes, now: now)"))
+        XCTAssertFalse(transport.contains("ModeTransition.decode"))
+        XCTAssertFalse(transport.contains("SessionTeardown.decode"))
         XCTAssertFalse(transport.contains("SessionStateMachine<"))
         XCTAssertFalse(transport.contains("private var lastState"))
         XCTAssertFalse(transport.contains("private var lastWireMode"))
         XCTAssertTrue(lifecycle.contains(
             "private var machine: SessionStateMachine<ClientClock>"))
+        XCTAssertTrue(lifecycle.contains("ModeTransition.decode"))
+        XCTAssertTrue(lifecycle.contains("SessionTeardown.decode"))
     }
 
     func testClientCapabilitySessionAloneOwnsTheAgreedSet() throws {

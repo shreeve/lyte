@@ -1,5 +1,11 @@
 import LyteWire
 
+/// A reliable control word owned by the client lifecycle organ.
+public enum ClientLifecycleMessage: Hashable, Sendable {
+    case modeTransition
+    case sessionTeardown
+}
+
 /// One pure client-side lifecycle decision. The session shell executes the
 /// wire actions and surfaces the optional state/mode edges after releasing
 /// its synchronization boundary.
@@ -23,6 +29,16 @@ public struct ClientSessionLifecycleDecision: Hashable, Sendable {
         self.stateChange = stateChange
         self.wireModeChange = wireModeChange
     }
+}
+
+/// The result of offering one reliable word to the lifecycle organ. `nil`
+/// means another client-session organ owns that control type.
+public enum ClientLifecycleIngress: Hashable, Sendable {
+    case applied(
+        ClientLifecycleMessage,
+        ClientSessionLifecycleDecision
+    )
+    case malformed(ClientLifecycleMessage)
 }
 
 /// IO-free initiator-side lifecycle orchestration over LyteWire.
@@ -52,6 +68,36 @@ public struct ClientSessionLifecycle: Sendable {
     public var state: SessionState { machine.state }
     public var wireMode: SessionWireMode { machine.wireMode }
     public var isFrozen: Bool { machine.state == .frozen }
+
+    /// Decodes and applies the two reliable words that mutate client lifecycle
+    /// state. Other control words remain unclaimed for their owning organ.
+    public mutating func receiveReliable(
+        _ bytes: [UInt8],
+        now: ClientTimestamp
+    ) -> ClientLifecycleIngress? {
+        switch bytes.first {
+        case CtrlMessageType.modeTransition:
+            guard let transition = try? ModeTransition.decode(bytes) else {
+                return .malformed(.modeTransition)
+            }
+            return .applied(
+                .modeTransition,
+                advance(.modeMessage(transition.mode), now: now)
+            )
+
+        case CtrlMessageType.sessionTeardown:
+            guard let teardown = try? SessionTeardown.decode(bytes) else {
+                return .malformed(.sessionTeardown)
+            }
+            return .applied(
+                .sessionTeardown,
+                advance(.teardownMessage(teardown.reason), now: now)
+            )
+
+        default:
+            return nil
+        }
+    }
 
     /// Applies at most one input, fires every deadline due at `now`, and
     /// reports each resulting edge exactly once.

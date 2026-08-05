@@ -1374,6 +1374,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         machineFrozen.store(decision.state == .frozen, ordering: .relaxed)
         lock.unlock()
 
+        executeLifecycle(decision, now: now)
+    }
+
+    /// Executes a pure lifecycle decision after the session lock is released.
+    private func executeLifecycle(
+        _ decision: ClientSessionLifecycleDecision,
+        now: ClientTimestamp
+    ) {
         for action in decision.actions {
             switch action {
             case .sendTeardownMessage(let reason):
@@ -1410,22 +1418,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         guard case .message(_, let bytes) = event else { return }
         let now = now()
         switch bytes.first {
-        case CtrlMessageType.modeTransition:
-            guard let transition = try? ModeTransition.decode(bytes) else {
-                noteMalformed("mode transition")
-                return
-            }
-            lock.lock()
-            counters.modeTransitionsReceived += 1
-            lock.unlock()
-            applyMachine(.modeMessage(transition.mode), now: now)
-
-        case CtrlMessageType.sessionTeardown:
-            guard let teardown = try? SessionTeardown.decode(bytes) else {
-                noteMalformed("session teardown")
-                return
-            }
-            applyMachine(.teardownMessage(teardown.reason), now: now)
+        case CtrlMessageType.modeTransition,
+             CtrlMessageType.sessionTeardown:
+            receiveLifecycleWord(bytes, now: now)
 
         case CtrlMessageType.capabilityDeclaration,
              CtrlMessageType.capabilityUpdate:
@@ -1487,6 +1482,34 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 "unregistered reliable CTRL type "
                     + Hex.string(bytes.first ?? 0, width: 2, prefix: true)
                     + " (\(bytes.count) B)"))
+        }
+    }
+
+    /// The lifecycle organ owns decoding and transition judgment for its two
+    /// reliable words. The shell keeps only counters and external effects.
+    private func receiveLifecycleWord(
+        _ bytes: [UInt8], now: ClientTimestamp
+    ) {
+        lock.lock()
+        let ingress = lifecycle.receiveReliable(bytes, now: now)
+        if case .applied(.modeTransition, _) = ingress {
+            counters.modeTransitionsReceived += 1
+        }
+        if case .applied(_, let decision) = ingress {
+            machineFrozen.store(
+                decision.state == .frozen, ordering: .relaxed)
+        }
+        lock.unlock()
+
+        switch ingress {
+        case .applied(_, let decision):
+            executeLifecycle(decision, now: now)
+        case .malformed(.modeTransition):
+            noteMalformed("mode transition")
+        case .malformed(.sessionTeardown):
+            noteMalformed("session teardown")
+        case nil:
+            break
         }
     }
 
