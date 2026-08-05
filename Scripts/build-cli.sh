@@ -12,6 +12,7 @@ swift build \
   --package-path Client \
   --scratch-path .build \
   -c "$CONFIG" \
+  -Xswiftc -warnings-as-errors \
   --product lyte-cli
 "$(dirname "$0")/normalize-macos-rpaths.sh" ".build/$CONFIG/lyte-cli"
 "$(dirname "$0")/sign-dev.sh" ".build/$CONFIG/lyte-cli"

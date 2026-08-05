@@ -242,7 +242,8 @@ run_package_tests() {
         echo "    package or source-path graph changed; invalidating stale SwiftPM build state"
         (cd "$path" && swift package clean)
     fi
-    (cd "$path" && swift package resolve && swift test)
+    (cd "$path" && swift package resolve \
+        && swift test -Xswiftc -warnings-as-errors)
     mkdir -p "$path/.build"
     printf '%s\n' "$build_graph_hash" > "$marker"
 }
@@ -252,10 +253,11 @@ run_package_tests "Wire" "$gate_root/Wire"
 run_package_tests "Host" "$gate_root/Host"
 
 echo "==> plain Host build"
-(cd "$gate_root/Host" && swift build)
+(cd "$gate_root/Host" && swift build -Xswiftc -warnings-as-errors)
 
 echo "==> release Host build"
-(cd "$gate_root/Host" && swift build -c release)
+(cd "$gate_root/Host" \
+    && swift build -c release -Xswiftc -warnings-as-errors)
 
 host_binary="$gate_root/Host/.build/release/lyte-host"
 audio_check_binary="$gate_root/Host/.build/release/lyte-audio-check"

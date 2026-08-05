@@ -40,7 +40,8 @@ run_package_tests() {
         resolve
     swift test \
         --package-path "$package_path" \
-        --scratch-path "$scratch_path"
+        --scratch-path "$scratch_path" \
+        -Xswiftc -warnings-as-errors
     mkdir -p "$scratch_path"
     printf '%s\n' "$build_graph_hash" > "$marker"
 }
