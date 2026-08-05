@@ -193,7 +193,7 @@ final class VideoBeatConductorTests: XCTestCase {
                 mappedCaptureMicroseconds: capture,
                 arrivalMicroseconds: capture &+ 9_000,
                 sourceCaptureMicroseconds: capture)
-            cues.append(decision.targetDelayMicroseconds)
+            cues.append(decision.cueMicroseconds)
             let phase = (decision.presentationMicroseconds - anchor) % period
             if phase != 0 { offBeatFrames += 1 }
             if index >= 290 { finalPhases.append(phase) }
@@ -227,6 +227,21 @@ final class VideoBeatConductorTests: XCTestCase {
         XCTAssertGreaterThan(
             crowded.presentationMicroseconds,
             first.presentationMicroseconds)
+    }
+
+    func testDecisionSeparatesTotalCueFromPathAndReserve() {
+        var policy = conductor(cushionBeats: 3)
+        let decision = policy.schedule(
+            mappedCaptureMicroseconds: 1_000_000,
+            arrivalMicroseconds: 1_009_000,
+            sourceCaptureMicroseconds: 1_000_000)
+
+        XCTAssertEqual(decision.pathDelayMicroseconds, 9_000)
+        XCTAssertEqual(decision.cueMicroseconds, 9_000 + 3 * period)
+        XCTAssertEqual(decision.reserveMicroseconds, 3 * period)
+        XCTAssertEqual(
+            decision.cueMicroseconds,
+            decision.pathDelayMicroseconds + decision.reserveMicroseconds)
     }
 
     /// Debt (ported pin): a genuinely compressed blackout burst

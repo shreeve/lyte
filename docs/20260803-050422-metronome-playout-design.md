@@ -47,6 +47,14 @@ chain = parts may depend on parts — chained parts are always
 The cue in one sentence: *the score, plus the time it takes the parts
 to reach us, plus the cushion we hold in reserve.*
 
+The live ledger keeps those quantities distinct. **Cue** is the total
+score-to-glass interval. **Path** is this part's measured mapped-capture to
+client-arrival interval. **Reserve** is `cue - path`, including beat-grid
+alignment. A displayed 73 ms cue therefore does not mean 73 ms of reserve.
+Renderer totals remain session history; current bottleneck attribution uses
+only the flight recorder's rolling frame window, so an old drop cannot keep
+blaming the renderer after it has recovered.
+
 Every part that ever reaches the glass or the speaker lands on a
 beat. Nothing is ever played off-grid. The cushion breathes; the
 cadence never does.

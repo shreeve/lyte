@@ -76,31 +76,42 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         public var sampleBuildP99Milliseconds: Double?
         public var assemblyLockHoldP99Milliseconds: Double?
         public var presentationLatenessP99Milliseconds: Double?
-        public var targetDelayMilliseconds: Double?
+        public var cueMilliseconds: Double?
+        public var pathDelayMilliseconds: Double?
+        public var reserveMilliseconds: Double?
         public var cadenceStalls: UInt64
         public var rendererNotReady: UInt64
         public var rendererDrops: UInt64
         public var rendererFailures: UInt64
         public var rendererRecoveries: UInt64
+        public var recentMaximumPending: Int
+        public var recentRendererNotReady: UInt64
+        public var recentRendererDrops: UInt64
+        public var recentRendererFailures: UInt64
         public var recoveryCauses: [String: UInt64]
         public var recoveryLifecycle: [RecoveryLifecycleEvent]
         public var rendererMetrics: RendererMetrics?
+        /// Delta between the oldest and newest Apple metrics samples still
+        /// inside the recorder's rolling frame window.
+        public var recentRendererMetrics: RendererMetrics?
 
         public var bottleneck: String {
-            if rendererFailures > 0
-                || (rendererMetrics?.corruptedFrames ?? 0) > 0 {
+            if recentRendererFailures > 0
+                || (recentRendererMetrics?.corruptedFrames ?? 0) > 0 {
                 return "renderer failure"
             }
-            if (rendererMetrics?.droppedFrames ?? 0) > 0 {
+            if recentRendererDrops > 0
+                || (recentRendererMetrics?.droppedFrames ?? 0) > 0 {
                 return "renderer dropped frames"
             }
-            if rendererNotReady > 0 {
+            if recentRendererNotReady > 0 {
                 return "renderer backpressure"
             }
             if (enqueueP99Milliseconds ?? 0) > 8 {
                 return "renderer enqueue"
             }
-            if (queueWaitP99Milliseconds ?? 0) > 8 || maximumPending > 2 {
+            if (queueWaitP99Milliseconds ?? 0) > 8
+                || recentMaximumPending > 2 {
                 return "app delivery queue"
             }
             if (transitStretchP99Milliseconds ?? 0) > 8 {
@@ -132,7 +143,9 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         public var rendererFailed: Bool
         public var enqueueMilliseconds: Double
         public var scheduledPresentationMicroseconds: UInt64?
-        public var targetDelayMilliseconds: Double?
+        public var cueMilliseconds: Double?
+        public var pathDelayMilliseconds: Double?
+        public var reserveMilliseconds: Double?
         public var presentationLatenessMilliseconds: Double?
         public var rendererRecovery: Bool
     }
@@ -154,6 +167,11 @@ public final class VideoFlightRecorder: @unchecked Sendable {
     private var recoveryEventSequence: UInt64 = 0
     private var cadenceStalls: UInt64 = 0
     private var rendererMetrics: RendererMetrics?
+    private struct RendererMetricSample {
+        var ordinal: UInt64
+        var metrics: RendererMetrics
+    }
+    private var rendererMetricSamples: [RendererMetricSample] = []
     private var freshCaptureFrames: UInt64 = 0
     private var retainedRefinementFrames: UInt64 = 0
     private var previousSubmittedHostMicroseconds: UInt64?
@@ -213,7 +231,9 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         sampleBuildMicroseconds: UInt64? = nil,
         assemblyLockHoldMicroseconds: UInt64? = nil,
         scheduledPresentationMicroseconds: UInt64? = nil,
-        targetDelayMicroseconds: UInt64? = nil,
+        cueMicroseconds: UInt64? = nil,
+        pathDelayMicroseconds: UInt64? = nil,
+        reserveMicroseconds: UInt64? = nil,
         presentationLatenessMicroseconds: UInt64? = nil,
         rendererRecovery: Bool = false
     ) {
@@ -261,7 +281,13 @@ public final class VideoFlightRecorder: @unchecked Sendable {
             enqueueMilliseconds:
                 Double(enqueueFinishedNanoseconds &- enqueueStartedNanoseconds) / 1e6,
             scheduledPresentationMicroseconds: scheduledPresentationMicroseconds,
-            targetDelayMilliseconds: targetDelayMicroseconds.map {
+            cueMilliseconds: cueMicroseconds.map {
+                Double($0) / 1_000
+            },
+            pathDelayMilliseconds: pathDelayMicroseconds.map {
+                Double($0) / 1_000
+            },
+            reserveMilliseconds: reserveMicroseconds.map {
                 Double($0) / 1_000
             },
             presentationLatenessMilliseconds:
@@ -284,6 +310,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
     public func recordRendererMetrics(_ metrics: RendererMetrics) {
         lock.lock()
         rendererMetrics = metrics
+        appendRendererMetricSample(metrics, ordinal: ordinal)
         lock.unlock()
     }
 
@@ -343,6 +370,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
 
     public func recordRendererMetrics(
         _ metrics: RendererMetrics,
+        sampledAfter token: Token,
         sampledAfterFrame frame: UInt32,
         sampledAfterIsRandomAccess: Bool
     ) {
@@ -350,6 +378,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         let delta = metrics.corruptedFrames
             - (rendererMetrics?.corruptedFrames ?? 0)
         rendererMetrics = metrics
+        appendRendererMetricSample(metrics, ordinal: token.ordinal)
         recoveryEventSequence &+= 1
         recoveryLifecycle.append(.init(
             sequence: recoveryEventSequence,
@@ -403,15 +432,25 @@ public final class VideoFlightRecorder: @unchecked Sendable {
                 percentile(\.assemblyLockHoldMilliseconds),
             presentationLatenessP99Milliseconds:
                 percentile(\.presentationLatenessMilliseconds),
-            targetDelayMilliseconds: ring.last?.targetDelayMilliseconds,
+            cueMilliseconds: latestObservation?.cueMilliseconds,
+            pathDelayMilliseconds: latestObservation?.pathDelayMilliseconds,
+            reserveMilliseconds: latestObservation?.reserveMilliseconds,
             cadenceStalls: cadenceStalls,
             rendererNotReady: rendererNotReady,
             rendererDrops: rendererDrops,
             rendererFailures: rendererFailures,
             rendererRecoveries: rendererRecoveries,
+            recentMaximumPending: ring.map(\.queueDepth).max() ?? 0,
+            recentRendererNotReady: UInt64(
+                ring.lazy.filter { !$0.rendererReady }.count),
+            recentRendererDrops: UInt64(
+                ring.lazy.filter(\.rendererDropped).count),
+            recentRendererFailures: UInt64(
+                ring.lazy.filter(\.rendererFailed).count),
             recoveryCauses: recoveryCauses,
             recoveryLifecycle: recoveryLifecycle,
-            rendererMetrics: rendererMetrics)
+            rendererMetrics: rendererMetrics,
+            recentRendererMetrics: recentRendererMetricDelta())
     }
 
     public func recentFrames() -> [FrameObservation] {
@@ -443,6 +482,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         recoveryEventSequence = 0
         cadenceStalls = 0
         rendererMetrics = nil
+        rendererMetricSamples.removeAll(keepingCapacity: true)
         freshCaptureFrames = 0
         retainedRefinementFrames = 0
         previousSubmittedHostMicroseconds = nil
@@ -458,6 +498,42 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         Histogram<Double>.percentile(
             of: ring.compactMap { $0[keyPath: keyPath] },
             Double(rank) / 100)
+    }
+
+    private var latestObservation: FrameObservation? {
+        guard !ring.isEmpty else { return nil }
+        if ring.count < capacity || ringIndex == 0 { return ring.last }
+        return ring[(ringIndex + capacity - 1) % capacity]
+    }
+
+    private func appendRendererMetricSample(
+        _ metrics: RendererMetrics,
+        ordinal: UInt64
+    ) {
+        rendererMetricSamples.append(.init(ordinal: ordinal, metrics: metrics))
+        rendererMetricSamples.sort { $0.ordinal < $1.ordinal }
+        guard let oldest = recentFramesLocked().first?.ordinal else { return }
+        rendererMetricSamples.removeAll { $0.ordinal < oldest }
+    }
+
+    private func recentRendererMetricDelta() -> RendererMetrics? {
+        guard let first = rendererMetricSamples.first?.metrics,
+              let last = rendererMetricSamples.last?.metrics,
+              rendererMetricSamples.count > 1
+        else { return nil }
+        return RendererMetrics(
+            totalFrames: max(0, last.totalFrames - first.totalFrames),
+            droppedFrames: max(0, last.droppedFrames - first.droppedFrames),
+            corruptedFrames: max(
+                0, last.corruptedFrames - first.corruptedFrames),
+            accumulatedDelayMilliseconds: max(
+                0, last.accumulatedDelayMilliseconds
+                    - first.accumulatedDelayMilliseconds))
+    }
+
+    private func recentFramesLocked() -> [FrameObservation] {
+        guard ring.count == capacity, ringIndex != 0 else { return ring }
+        return Array(ring[ringIndex...]) + Array(ring[..<ringIndex])
     }
 
     private func percentile(

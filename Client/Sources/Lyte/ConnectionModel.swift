@@ -1426,16 +1426,28 @@ final class ConnectionModel {
                 flight.enqueueP99Milliseconds ?? 0)
             if let renderer = flight.rendererMetrics {
                 glass += " · render \(renderer.totalFrames)"
-                    + " drop \(renderer.droppedFrames)"
-                    + " corrupt \(renderer.corruptedFrames)"
+                if let recent = flight.recentRendererMetrics {
+                    glass += " · drop total/recent "
+                        + "\(renderer.droppedFrames)/\(recent.droppedFrames)"
+                    glass += " · corrupt total/recent "
+                        + "\(renderer.corruptedFrames)"
+                        + "/\(recent.corruptedFrames)"
+                } else {
+                    glass += " · drop \(renderer.droppedFrames)"
+                        + " · corrupt \(renderer.corruptedFrames)"
+                }
                 glass += String(
-                    format: " delay %.1f ms",
+                    format: " · delay %.1f ms",
                     renderer.accumulatedDelayMilliseconds)
             }
-            // The conductor's standing cushion — YouTube's "buffer
-            // health" steal, in the grid's own beats-to-glass terms.
-            if let cushion = flight.targetDelayMilliseconds {
-                glass += String(format: " · cushion %.0f ms", cushion)
+            // The Conductor's score-to-glass cue and the portion left after
+            // this frame's measured path time. These are deliberately named
+            // separately: the cue is not all reserve.
+            if let cue = flight.cueMilliseconds {
+                glass += String(format: " · cue %.0f ms", cue)
+            }
+            if let reserve = flight.reserveMilliseconds {
+                glass += String(format: " · reserve %.0f ms", reserve)
             }
             glass += " · \(flight.bottleneck)"
             row("glass", glass)
@@ -1631,8 +1643,10 @@ private final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
             "readyMonotonicNanoseconds": String(dispatched),
             "scheduledPresentationMicroseconds": String(
                 decision.presentationMicroseconds),
-            "targetDelayMicroseconds": String(
-                decision.targetDelayMicroseconds),
+            "cueMicroseconds": String(decision.cueMicroseconds),
+            "pathDelayMicroseconds": String(
+                decision.pathDelayMicroseconds),
+            "reserveMicroseconds": String(decision.reserveMicroseconds),
             "latenessMicroseconds": String(decision.latenessMicroseconds),
         ])
         let pending = Pending(
@@ -1985,8 +1999,10 @@ private final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
                 pending.build?.assemblyLockHoldMicroseconds,
             scheduledPresentationMicroseconds:
                 pending.decision.presentationMicroseconds,
-            targetDelayMicroseconds:
-                pending.decision.targetDelayMicroseconds,
+            cueMicroseconds: pending.decision.cueMicroseconds,
+            pathDelayMicroseconds:
+                pending.decision.pathDelayMicroseconds,
+            reserveMicroseconds: pending.decision.reserveMicroseconds,
             presentationLatenessMicroseconds:
                 pending.decision.latenessMicroseconds,
             rendererRecovery: recovery)
@@ -2014,6 +2030,7 @@ private final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
                     corruptedFrames: metrics.numberOfCorruptedFrames,
                     accumulatedDelayMilliseconds:
                         metrics.totalAccumulatedFrameDelay * 1_000),
+                    sampledAfter: token,
                     sampledAfterFrame: frame,
                     sampledAfterIsRandomAccess: isRandomAccess)
             }

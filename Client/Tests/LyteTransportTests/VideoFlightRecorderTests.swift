@@ -82,15 +82,74 @@ final class VideoFlightRecorderTests: XCTestCase {
             renderer.snapshot().bottleneck, "renderer backpressure")
     }
 
-    func testRendererMetricsOverrideUpstreamTiming() {
+    func testRendererMetricsUseRecentDeltaNotHistoricalTotal() {
         let recorder = makeRecorder()
+        let first = recorder.frameReady(
+            frame: 1, hostMicroseconds: 1_000, nowNanoseconds: 1_000_000)
+        recorder.frameEnqueued(
+            first,
+            enqueueStartedNanoseconds: 1_100_000,
+            enqueueFinishedNanoseconds: 1_200_000,
+            rendererReady: true,
+            rendererFailed: false)
         recorder.recordRendererMetrics(.init(
             totalFrames: 120,
             droppedFrames: 7,
             corruptedFrames: 0,
             accumulatedDelayMilliseconds: 42))
+
+        let second = recorder.frameReady(
+            frame: 2, hostMicroseconds: 17_667,
+            nowNanoseconds: 17_667_000)
+        recorder.frameEnqueued(
+            second,
+            enqueueStartedNanoseconds: 17_767_000,
+            enqueueFinishedNanoseconds: 17_867_000,
+            rendererReady: true,
+            rendererFailed: false)
+        recorder.recordRendererMetrics(.init(
+            totalFrames: 180,
+            droppedFrames: 7,
+            corruptedFrames: 0,
+            accumulatedDelayMilliseconds: 42))
+
+        XCTAssertEqual(
+            recorder.snapshot().bottleneck, "no measured stall")
+        XCTAssertEqual(
+            recorder.snapshot().recentRendererMetrics?.droppedFrames, 0)
+
+        recorder.recordRendererMetrics(.init(
+            totalFrames: 181,
+            droppedFrames: 8,
+            corruptedFrames: 0,
+            accumulatedDelayMilliseconds: 43))
         XCTAssertEqual(
             recorder.snapshot().bottleneck, "renderer dropped frames")
+    }
+
+    func testHistoricalHandoffFailureAgesOutOfCurrentVerdict() {
+        let recorder = makeRecorder(capacity: 2)
+        for i: UInt32 in 1...3 {
+            let now = UInt64(i) * 16_667_000
+            let token = recorder.frameReady(
+                frame: i,
+                hostMicroseconds: UInt64(i) * 16_667,
+                nowNanoseconds: now)
+            recorder.frameEnqueued(
+                token,
+                enqueueStartedNanoseconds: now + 100_000,
+                enqueueFinishedNanoseconds: now + 200_000,
+                rendererReady: i != 1,
+                rendererFailed: i == 1,
+                rendererDropped: i == 1)
+        }
+
+        let snapshot = recorder.snapshot()
+        XCTAssertEqual(snapshot.rendererFailures, 1)
+        XCTAssertEqual(snapshot.rendererDrops, 1)
+        XCTAssertEqual(snapshot.recentRendererFailures, 0)
+        XCTAssertEqual(snapshot.recentRendererDrops, 0)
+        XCTAssertEqual(snapshot.bottleneck, "no measured stall")
     }
 
     func testRecoveryCausesAreCountedSeparately() {
@@ -109,6 +168,9 @@ final class VideoFlightRecorderTests: XCTestCase {
     func testRecoveryLifecycleCorrelatesResetAndCorruptionDelta() {
         let clock = StepClock(start: 1_000_000, step: 250_000)
         let recorder = makeRecorder(nowMicroseconds: clock.now)
+        let token = recorder.frameReady(
+            frame: 42, hostMicroseconds: 1_000,
+            nowNanoseconds: 1_000_000)
         recorder.recordRecoveryLifecycle(
             kind: "rendererEnqueueIrap",
             frame: 42,
@@ -125,6 +187,7 @@ final class VideoFlightRecorderTests: XCTestCase {
                 droppedFrames: 2,
                 corruptedFrames: 7,
                 accumulatedDelayMilliseconds: 0),
+            sampledAfter: token,
             sampledAfterFrame: 42,
             sampledAfterIsRandomAccess: true)
 
@@ -177,7 +240,9 @@ final class VideoFlightRecorderTests: XCTestCase {
             sampleBuildMicroseconds: 900,
             assemblyLockHoldMicroseconds: 40,
             scheduledPresentationMicroseconds: 45_000,
-            targetDelayMicroseconds: 25_000,
+            cueMicroseconds: 25_000,
+            pathDelayMicroseconds: 9_000,
+            reserveMicroseconds: 16_000,
             presentationLatenessMicroseconds: 2_000,
             rendererRecovery: true)
 
@@ -185,6 +250,9 @@ final class VideoFlightRecorderTests: XCTestCase {
         XCTAssertEqual(frame.frame, 7)
         XCTAssertEqual(frame.queueDepth, 1)
         XCTAssertEqual(frame.sampleBuildMilliseconds ?? 0, 0.9)
+        XCTAssertEqual(frame.cueMilliseconds, 25)
+        XCTAssertEqual(frame.pathDelayMilliseconds, 9)
+        XCTAssertEqual(frame.reserveMilliseconds, 16)
         XCTAssertTrue(frame.rendererDropped)
         XCTAssertTrue(
             try recorder.summaryJSONLine().contains("\"rendererDrops\":1"))
@@ -192,6 +260,26 @@ final class VideoFlightRecorderTests: XCTestCase {
         recorder.reset()
         XCTAssertEqual(recorder.snapshot().frames, 0)
         XCTAssertTrue(recorder.recentFrames().isEmpty)
+    }
+
+    func testWrappedRingReportsNewestCue() {
+        let recorder = makeRecorder(capacity: 2)
+        for i: UInt32 in 1...3 {
+            let now = UInt64(i) * 10_000_000
+            let token = recorder.frameReady(
+                frame: i,
+                hostMicroseconds: UInt64(i) * 10_000,
+                nowNanoseconds: now)
+            recorder.frameEnqueued(
+                token,
+                enqueueStartedNanoseconds: now,
+                enqueueFinishedNanoseconds: now,
+                rendererReady: true,
+                rendererFailed: false,
+                cueMicroseconds: UInt64(i) * 10_000)
+        }
+
+        XCTAssertEqual(recorder.snapshot().cueMilliseconds, 30)
     }
 
     func testRepeatedCaptureTimestampIsRetainedProvenanceNotTransitStall() {
