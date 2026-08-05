@@ -6,11 +6,13 @@ action changes. Completed detail belongs in Git history.*
 
 ## Resume here
 
-- **Branch:** `fix/link-health-recent-warning`, based on `origin/main`;
+- **Branch:** `commissioning/packaging-history`, based on `origin/main`;
   temporary PR branches are deleted after landing so the repository returns
   to one local and one remote branch.
-- **GitHub:** no open PRs; #162 landed atomic app packaging and metadata.
-- **Repository:** one worktree; `main` plus the temporary current PR branch.
+- **GitHub:** #164 is the only open PR; #163 landed the recent-only owner
+  warning and #162 landed atomic app packaging and metadata.
+- **Repository:** one temporary packaging worktree beside the clean `main`
+  checkout; remove it and both temporary packaging branches after #164 lands.
   Stale migration, cleanup, ledger, and agent pointers were audited and
   retired after their merged or superseding work was confirmed present.
 - **Documents:** README, AGENTS, HANDOFF, and TODO have one responsibility
@@ -49,7 +51,9 @@ designated requirement; an injected staging failure preserved the published
 bundle byte-for-byte. Its gate also pins the Local Network explanation and
 exact `_lyte._udp` Bonjour declaration. The focused packaging test and the
 complete macOS and pup deterministic gates are green; pup again finished 339
-Host tests and preserved protected state.
+Host tests and preserved protected state. PR #164 additionally refuses to
+mint that numeric version from shallow history and pins the full-clone commit
+count; its focused packaging test passed again after rebasing onto #163.
 
 The current warning slice removes sitting-wide totals from the owner alarm and
 uses the rolling window's own worst value. Focused LinkHealth tests passed
@@ -98,7 +102,8 @@ commissioning follow-ups rather than wire failures.
 
 ## Next action
 
-1. Land the recent-only warning, package it, and launch the new app once.
+1. Land #164, remove its temporary worktree/branches, package current `main`,
+   and launch that app once through LaunchServices.
 2. Make LaunchServices Local Network authorization comprehensible and durable.
 3. Replace the Homebrew libopus runtime dependency with a pinned shared leaf.
 
