@@ -4,7 +4,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/.build/Lyte.app"
+APP_EXECUTABLE="$APP/Contents/MacOS/Lyte"
 ANALYZER="$ROOT/Scripts/analyze-app-benchmark.py"
+source "$ROOT/Scripts/lib/benchmark-process.sh"
 PUP="${PUP:-pup}"
 # The standing host advertises on the ethernet leg (enxf8e43b7ede7c =
 # 10.0.0.232); the wifi address answers ICMP but replies can source
@@ -61,7 +63,29 @@ minimum_seconds=5
   || { echo "quality probe must be 0 or 1" >&2; exit 2; }
 [[ "$FREEZE_FRAME_ID" =~ ^[0-9]+$ ]] \
   || { echo "freeze frame must be a non-negative integer" >&2; exit 2; }
+
+refuse_if_lyte_is_running() {
+  local pids status
+  if pids="$(lyte_benchmark_app_pids 2>/dev/null)"; then
+    echo "benchmark refused: Lyte is already running (PID(s):" \
+      "$(printf '%s' "$pids" | tr '\n' ' ' | sed 's/ $//'))" >&2
+    echo "quit the interactive client before running diagnostics" >&2
+    exit 1
+  else
+    status=$?
+  fi
+  (( status == 1 )) || {
+    echo "benchmark refused: cannot inspect running Lyte processes" >&2
+    exit 1
+  }
+}
+
+# This must precede directory creation, builds, remote inspection, capture,
+# workload setup, and service restart. A second check guards each leg against
+# an app launched while the deterministic preflight was running.
+refuse_if_lyte_is_running
 mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
 if (( ! NO_BUILD )); then
   "$ROOT/Scripts/make-app.sh" release
 fi
@@ -231,8 +255,10 @@ REMOTE_QUALITY_IMAGE=""
 REMOTE_QUALITY_PRESENTER=""
 REMOTE_QUALITY_WORK=""
 APP_PID=""
-FALLBACK_APP_PID=""
+APP_RUN_ID=""
+APP_PIDFILE=""
 OPEN_PID=""
+CLEANUP_STARTED=0
 HANDSHAKE_RUN_ID=""
 HANDSHAKE_LOCAL_TCPDUMP_PID=""
 HANDSHAKE_REMOTE_TCPDUMP_PID=""
@@ -298,12 +324,30 @@ ss -u -a -n -p; ip -s link show" \
 }
 
 cleanup() {
-  if [[ -n "$APP_PID" ]] && kill -0 "$APP_PID" 2>/dev/null; then
-    kill "$APP_PID" 2>/dev/null || true
-  fi
-  if [[ -n "$FALLBACK_APP_PID" ]] \
-      && kill -0 "$FALLBACK_APP_PID" 2>/dev/null; then
-    kill "$FALLBACK_APP_PID" 2>/dev/null || true
+  (( CLEANUP_STARTED == 0 )) || return 0
+  CLEANUP_STARTED=1
+  trap '' INT TERM
+  local claimed_pid="" claimed_run_id="" extra="" candidate_pid=""
+  if [[ -n "$APP_RUN_ID" && -n "$APP_PIDFILE" ]]; then
+    # An interrupt may arrive between `open` and the normal PID-file read.
+    # Initialization publishes immediately, so give that exact claim a short
+    # chance to appear; never guess a process by name or recency.
+    for _ in {1..40}; do
+      [[ -s "$APP_PIDFILE" ]] && break
+      sleep 0.05
+    done
+    if [[ -s "$APP_PIDFILE" ]]; then
+      read -r claimed_pid claimed_run_id extra < "$APP_PIDFILE" || true
+    fi
+    candidate_pid="${APP_PID:-$claimed_pid}"
+    if [[ -n "$extra" || -z "$candidate_pid" ]]; then
+      echo "WARNING: refusing to terminate a benchmark with a stale claim" >&2
+    elif kill -0 "$candidate_pid" 2>/dev/null \
+        && ! lyte_benchmark_terminate_claimed \
+          "$APP_PIDFILE" "$candidate_pid" "$APP_EXECUTABLE" "$APP_RUN_ID"
+    then
+      echo "WARNING: refusing to terminate unattested PID $candidate_pid" >&2
+    fi
   fi
   if [[ -n "$OPEN_PID" ]] && kill -0 "$OPEN_PID" 2>/dev/null; then
     kill "$OPEN_PID" 2>/dev/null || true
@@ -332,7 +376,18 @@ systemctl is-active --quiet lyte-host" || {
     FRESH_HOST_RECOVERY_NEEDED=0
   fi
 }
-trap cleanup EXIT INT TERM
+
+handle_signal() {
+  local status="$1"
+  trap - EXIT
+  trap '' INT TERM
+  cleanup
+  exit "$status"
+}
+
+trap cleanup EXIT
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 
 start_motion() {
   local run_id="$1"
@@ -340,6 +395,7 @@ start_motion() {
   local monitor_state discovered refresh scale summary
   local presenter="$ROOT/Scripts/motion-presenter.py"
   local definition="$ROOT/Scripts/motion-definition.json"
+  refuse_if_lyte_is_running
   monitor_state="$(ssh -o ConnectTimeout=10 "$PUP" \
     'XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 \
 gdbus call --session --dest org.gnome.Mutter.DisplayConfig \
@@ -580,6 +636,8 @@ start_fresh_host() {
   local run_id="$1"
   local restart_result before_pid after_pid
 
+  refuse_if_lyte_is_running
+
   ssh -o ConnectTimeout=10 "$PUP" \
     "systemctl is-active --quiet lyte-host" || {
     echo "handshake-only requires active lyte-host.service" >&2
@@ -654,12 +712,18 @@ finish_fresh_host() {
 
 run_leg() {
   local workload="$1"
-  local stamp run_id jsonl pidfile stderr_file provenance_file readback_file
+  local stamp nonce run_id jsonl pidfile stderr_file provenance_file readback_file
   local quality_reference_sha readback_sha build_badge benchmark_chroma
   local benchmark_reference_name motion_leg synthetic_motion
   local client_pipeline_witness
+  refuse_if_lyte_is_running
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-  run_id="${workload}-${stamp}-$$"
+  nonce="$(uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-')"
+  run_id="${workload}-${stamp}-$$-${nonce:0:12}"
+  [[ "$run_id" =~ ^[A-Za-z0-9._:-]+$ && ${#run_id} -le 128 ]] || {
+    echo "benchmark refused: generated an invalid run identity" >&2
+    exit 1
+  }
   jsonl="$OUT_DIR/$run_id.jsonl"
   pidfile="$OUT_DIR/$run_id.pid"
   stderr_file="$OUT_DIR/$run_id.stderr"
@@ -695,6 +759,7 @@ EOF
   if [[ "$workload" == handshake-only ]]; then
     QUALITY_WIDTH=2048
     QUALITY_HEIGHT=1280
+    refuse_if_lyte_is_running
     start_handshake_evidence "$run_id"
     start_fresh_host "$run_id"
   fi
@@ -716,6 +781,9 @@ path.write_text(json.dumps(record, separators=(",", ":")) + "\n")
 PY
   fi
   build_badge="build $APP_BUILD_UTC · C ${CLIENT_SOURCE_SHA256:0:12}/${APP_SHA256:0:12} · H ${HOST_SOURCE_SHA256:0:12}/${HOST_SHA256:0:12} · $run_id"
+  refuse_if_lyte_is_running
+  APP_RUN_ID="$run_id"
+  APP_PIDFILE="$pidfile"
   open -n -F -W \
     --env "LYTE_AUTOCONNECT=$HOST" \
     --env "LYTE_BENCHMARK_JSONL=$jsonl" \
@@ -736,10 +804,9 @@ PY
     --env "LYTE_PIPELINE_WITNESS_JSONL=$client_pipeline_witness" \
     --env "LYTE_BENCHMARK_CHROMA_TIER=$benchmark_chroma" \
     --env "LYTE_DIAGNOSTIC_BUILD_BADGE=$build_badge" \
-    --stderr "$stderr_file" "$APP" &
+    --stderr "$stderr_file" "$APP" \
+    --args --lyte-benchmark-run-id "$run_id" &
   OPEN_PID=$!
-  sleep 0.2
-  FALLBACK_APP_PID="$(pgrep -n -f "$APP/Contents/MacOS/Lyte" || true)"
 
   for _ in {1..600}; do
     [[ -s "$pidfile" ]] && break
@@ -750,9 +817,16 @@ PY
     echo "Lyte.app did not publish its benchmark PID" >&2
     exit 1
   }
-  read -r APP_PID published_run_id < "$pidfile"
-  [[ "$published_run_id" == "$run_id" && "$APP_PID" =~ ^[0-9]+$ ]] || {
+  local published_run_id="" published_extra=""
+  read -r APP_PID published_run_id published_extra < "$pidfile"
+  [[ -z "$published_extra" && "$published_run_id" == "$run_id" \
+      && "$APP_PID" =~ ^[0-9]+$ ]] || {
     echo "benchmark PID/run identity mismatch" >&2
+    exit 1
+  }
+  lyte_benchmark_claim_matches \
+    "$APP_PID" "$APP_EXECUTABLE" "$APP_RUN_ID" || {
+    echo "benchmark process did not attest its PID/run identity" >&2
     exit 1
   }
 
@@ -767,7 +841,8 @@ PY
   wait "$OPEN_PID" || true
   OPEN_PID=""
   APP_PID=""
-  FALLBACK_APP_PID=""
+  APP_RUN_ID=""
+  APP_PIDFILE=""
   [[ "$workload" != handshake-only ]] || collect_handshake_evidence
   [[ "$workload" != motion && "$workload" != quality-static ]] || stop_motion
   [[ "$workload" != handshake-only ]] || finish_fresh_host "$run_id"

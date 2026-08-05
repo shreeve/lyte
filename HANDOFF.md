@@ -6,10 +6,10 @@ action changes. Completed detail belongs in Git history.*
 
 ## Resume here
 
-- **Branch:** `commissioning/truthful-stall-stage`, based on `origin/main`;
+- **Branch:** `commissioning/benchmark-run-identity`, based on `origin/main`;
   temporary PR branches are deleted after landing so the repository returns
   to one local and one remote branch.
-- **GitHub:** no open PRs; #159 landed the explicit link-health epoch seam.
+- **GitHub:** no open PRs; #160 landed truthful pre-render stall naming.
 - **Repository:** one worktree; `main` plus the temporary current PR branch.
   Stale migration, cleanup, ledger, and agent pointers were audited and
   retired after their merged or superseding work was confirmed present.
@@ -23,7 +23,7 @@ reopening structural cleanup.
 
 ## Last green gates
 
-At committed HEAD before this documentation-only work:
+Last fully commissioned baseline:
 
 | Suite | macOS | pup/Linux |
 |---|---:|---:|
@@ -37,9 +37,10 @@ At committed HEAD before this documentation-only work:
 Benchmark safety and both signed products also passed. The pup build was
 plain—no ffmpeg environment—and protected identity state survived.
 
-For this root-document pass, the required gates are dangling-reference and
-Markdown-link inspection, `git diff --check`, and the repository's structural
-checks. Source comments may change, but executable behavior must not.
+The current benchmark-safety slice has passed its executable shell gate, a
+clean Lyte app build, Client 267/267, SystemTests 17/17, and both complete
+macOS and pup deterministic gates. Pup finished 339 Host tests plus its kernel
+socket and pacing harnesses with protected state unchanged.
 
 ## Current live result
 
@@ -70,11 +71,11 @@ Two launch problems were distinguished:
    denial and fail UDP with `socketFailed(errno: 65)` even while the app is
    enabled in Privacy settings. Cycling Wi-Fi did not reliably clear it.
    Directly launching the signed executable from a shell worked.
-2. `Scripts/benchmark-app.sh handshake-only` launches a diagnostic app with
-   the same bundle identity. Running it alongside the owner's client can
-   replace the interactive instance; the banner
-   `handshake-only-20260804T233542Z-23925` identified that event. Do not run
-   benchmark app modes while the owner is using Lyte.
+2. `Scripts/benchmark-app.sh handshake-only` uses the ordinary bundle identity.
+   The current slice refuses before any build or pup access while Lyte is
+   running, publishes a nonce-bearing PID claim during app initialization,
+   re-attests that exact claim before cleanup, and suppresses diagnostic helper
+   registration refresh. The dangerous `pgrep -n` fallback is gone.
 
 The re-sign performed during diagnosis affected only the ignored
 `.build/Lyte.app` artifact; there is no tracked signing change. Packaging,

@@ -8,6 +8,11 @@ import LyteHelperProtocol
 /// depends on the helper; it just sounds better with it.
 @MainActor
 final class HelperClient {
+    enum RegistrationPosture: Equatable {
+        case ensure
+        case existingOnly
+    }
+
     static let shared = HelperClient()
 
     private let service = SMAppService.daemon(plistName: LyteHelper.plistName)
@@ -90,14 +95,19 @@ final class HelperClient {
 
     /// Called when a stream starts. Returns a user-facing hint when the
     /// helper needs approval, nil otherwise.
-    func streamBegan() -> String? {
-        registerIfNeeded()
+    func streamBegan(
+        registration: RegistrationPosture = .ensure
+    ) -> String? {
+        if registration == .ensure {
+            registerIfNeeded()
+        }
         switch service.status {
         case .enabled:
             proxy()?.streamBegan()
             engaged = true
             return nil
         case .requiresApproval:
+            guard registration == .ensure else { return nil }
             if !promptedThisRun {
                 promptedThisRun = true
                 SMAppService.openSystemSettingsLoginItems()

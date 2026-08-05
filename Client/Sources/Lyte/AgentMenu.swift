@@ -58,6 +58,10 @@ final class AgentState {
     private var radioWatchdog: Task<Void, Never>?
     private var radioPolicy = RadioHoldPolicy()
 
+    private var helperRegistration: HelperClient.RegistrationPosture {
+        DiagnosticRunIdentity.isRequested ? .existingOnly : .ensure
+    }
+
     func streamBegan() {
         activeStreams += 1
         // The AWDL hold rides the stream lifecycle: engage on the first
@@ -66,7 +70,8 @@ final class AgentState {
         // 100–220 ms delay bursts, zero loss. Both ends existed since
         // M6; THIS call is what makes them meet).
         if activeStreams == 1 {
-            helperHint = HelperClient.shared.streamBegan()
+            helperHint = HelperClient.shared.streamBegan(
+                registration: helperRegistration)
             if let helperHint { NSLog("lyte helper: \(helperHint)") }
             startRadioWatchdog()
         }
@@ -105,7 +110,8 @@ final class AgentState {
                     // this mints a fresh connection and launchd respawns.
                     NSLog("lyte helper: awdl0 UP while streaming — re-engaging")
                     if !HelperClient.shared.engaged {
-                        self.helperHint = HelperClient.shared.streamBegan()
+                        self.helperHint = HelperClient.shared.streamBegan(
+                            registration: self.helperRegistration)
                     }
                 }
                 self.radioAlarm = self.radioPolicy.alarm

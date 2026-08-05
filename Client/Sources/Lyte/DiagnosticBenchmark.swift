@@ -127,26 +127,20 @@ enum DiagnosticBenchmark {
     static func run(model: ConnectionModel) async {
         let environment = ProcessInfo.processInfo.environment
         let workload = environment["LYTE_BENCHMARK_WORKLOAD"] ?? "unknown"
-        guard let outputPath = environment["LYTE_BENCHMARK_JSONL"],
+        guard let runID = environment["LYTE_BENCHMARK_RUN_ID"],
+              let outputPath = environment["LYTE_BENCHMARK_JSONL"],
               let durationText = environment["LYTE_BENCHMARK_SECONDS"],
               let duration = Double(durationText),
               duration >= (workload == "handshake-only" ? 1 : 5),
               duration <= 3_600
         else { return }
 
-        let runID = environment["LYTE_BENCHMARK_RUN_ID"] ?? UUID().uuidString
-        let pidPath = environment["LYTE_BENCHMARK_PIDFILE"]
         FileManager.default.createFile(atPath: outputPath, contents: nil)
         guard let handle = FileHandle(forWritingAtPath: outputPath) else {
             NSLog("lyte benchmark: cannot open %@", outputPath)
             NSApp.terminate(nil)
             return
         }
-        if let pidPath {
-            try? "\(ProcessInfo.processInfo.processIdentifier) \(runID)\n"
-                .write(toFile: pidPath, atomically: true, encoding: .utf8)
-        }
-
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let started = SystemMonotonicClock.nowNanoseconds
