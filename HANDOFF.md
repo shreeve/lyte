@@ -5,28 +5,30 @@ history.*
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #189. There are no auxiliary worktrees,
+- **Branch:** clean `main` through PR #190. There are no auxiliary worktrees,
   other local or remote branches, or open pull requests.
-- **Current objective:** continuously compile the IO-free client policy targets
-  on Linux, closing the remaining deterministic cross-platform gate gap.
+- **Current objective:** select the first native-packaging slice without
+  weakening the clean Mac/Linux/WASM/live commissioning baseline.
 - **Recent landings:** PR #186 made shipping transport Noise-only and removed
   513 net lines; PR #187 made `HostApplication` the native Swift `@main` entry;
   PR #188 aligned every living architecture document with those landings and
   the automatic Conductor; PR #189 made the Noise-only law scan every shipping
-  host source. Frozen dated records and vectors did not change.
+  host source; PR #190 made pup continuously compile the IO-free client policy
+  with warnings as errors. Frozen dated records and vectors did not change.
 
 ## Last green gates
 
-The exact PR #188 commit passed the complete warning-enforced macOS gate:
+The exact PR #190 source commit passed the complete warning-enforced macOS gate:
 Common 93, Wire 513, Host 345, Client 301, and SystemTests 17. Benchmark and
 host-release safety, signing policy, 25 analyzer tests, app identity, the
 signed CLI, hermetic linkage, packaging, and double signed release-app
 assembly all passed.
 
 The same commit passed pup's deterministic gate: Common 94, Wire 513, and Host
-346; warning-enforced debug and release builds; hermetic linkage; pinned Opus
-symbol proof; socket/TOS and pacing harnesses; and protected-state
-verification. The gate did not deploy or restart the standing service.
+346; warning-enforced `LyteClientCore` and `LyteClientSession` Linux builds;
+warning-enforced debug and release builds; hermetic linkage; pinned Opus symbol
+proof; socket/TOS and pacing harnesses; and protected-state verification. The
+gate did not deploy or restart the standing service.
 
 Focused architecture proof on the composed main branch passes all three host
 composition/security laws: one native `@main` doorway, injected argument
@@ -86,10 +88,10 @@ stay diagnostic and silent.
 
 ## Next commissioning order
 
-1. Make pup's deterministic gate build `LyteClientCore` and
-   `LyteClientSession` with warnings as errors, then land that ratchet alone.
-2. Keep the clean Mac/Linux/WASM/live commissioning baseline green while the
-   next product slice is selected from `TODO.md`.
+1. Define the smallest native Linux packaging slice that turns the proven host
+   build into a coherent installation without changing protocol or policy.
+2. Keep the clean Mac/Linux/WASM/live commissioning baseline green; add new
+   platform shells only at the existing IO-free session boundaries.
 
 ## Recovery pointers
 
