@@ -4,15 +4,13 @@
 
 ## Resume here
 
-- **Branch:** `commissioning/local-network-identity`; local identity commit
-  `85242c9` is based on `33ed995` (`main`, #168), with review hardening in the
-  worktree.
-- **GitHub:** no open pull requests.
+- **Branch:** resume on `main` after the current landing; do not continue on
+  the merged feature branch.
+- **GitHub:** PR #169 is the local-network identity landing, based on #168.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** make every rebuilt app a fresh, explicitly registered
-  LaunchServices artifact; serialize scripted build/launch, check external app
-  state before live publication, and make Bonjour-resolution denial visible as
-  a permission/route problem instead of an empty-network result.
+- **Current objective:** reboot macOS to clear its confirmed stuck Local Network
+  privacy state, publish the landed app while Lyte is stopped, launch it through
+  `Scripts/launch-app.sh`, and verify discovery plus sustained streaming.
 
 ## Last green gates
 
