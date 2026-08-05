@@ -1,5 +1,6 @@
 import Foundation
 import LyteHelperProtocol
+import LyteHelperSecurity
 
 /// Lyte's privileged helper: a launchd daemon (root) that holds awdl0 down
 /// while streams are active. AWDL re-raises itself whenever Continuity
@@ -8,8 +9,6 @@ import LyteHelperProtocol
 /// connection dies, so a crashed app can never leave AirDrop broken.
 ///
 /// Registered via SMAppService from Lyte.app (Contents/Library/LaunchDaemons).
-/// TODO(M6 hardening): setCodeSigningRequirement on connections once the app
-/// has a stable signing identity (ad-hoc dev builds can't be pinned).
 
 final class AwdlController: @unchecked Sendable {
     static let shared = AwdlController()
@@ -160,9 +159,23 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
     }
 }
 
+let listener = NSXPCListener(machServiceName: LyteHelper.machServiceName)
+do {
+    let requirement = try HelperClientRequirement.forCurrentProcess()
+    if CommandLine.arguments.contains("--print-client-requirement") {
+        print(requirement)
+        exit(0)
+    }
+    // Foundation asks XPC to reject a foreign peer before the delegate sees
+    // it. The exported root operations are never reachable without this DR.
+    listener.setConnectionCodeSigningRequirement(requirement)
+} catch {
+    NSLog("lyte-helperd: client requirement unavailable — refusing to start: \(error)")
+    exit(EX_CONFIG)
+}
+
 NSLog("lyte-helperd: starting (v\(LyteHelper.version))")
 let delegate = ListenerDelegate()
-let listener = NSXPCListener(machServiceName: LyteHelper.machServiceName)
 listener.delegate = delegate
 listener.resume()
 RunLoop.main.run()

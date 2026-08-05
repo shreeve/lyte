@@ -44,6 +44,10 @@ let package = Package(
         .target(name: "LyteUI"),
         .target(name: "LyteHelperProtocol"),
         .target(
+            name: "LyteHelperSecurity",
+            linkerSettings: [.linkedFramework("Security")]
+        ),
+        .target(
             name: "LyteClientTestKit",
             dependencies: [
                 "LyteTransport",
@@ -53,7 +57,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "lyte-helperd",
-            dependencies: ["LyteHelperProtocol"]
+            dependencies: ["LyteHelperProtocol", "LyteHelperSecurity"]
         ),
         .executableTarget(
             name: "lyte-cli",
@@ -87,6 +91,10 @@ let package = Package(
         .testTarget(
             name: "LyteUITests",
             dependencies: ["LyteUI"]
+        ),
+        .testTarget(
+            name: "LyteHelperSecurityTests",
+            dependencies: ["LyteHelperSecurity"]
         ),
         .testTarget(
             name: "LyteTransportTests",
