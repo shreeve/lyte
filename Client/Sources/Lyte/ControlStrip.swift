@@ -47,9 +47,9 @@ struct StreamContainer: View {
         StripEdge(rawValue: stripEdgeRaw) ?? .bottom
     }
 
-    /// "Network stalls — 1 per min, 43 total, worst 115 ms": the rate
-    /// says how often right now, the total quantifies the sitting,
-    /// the worst gives the ceiling, the stage says whose fault.
+    /// "Network stalls — last 60 s: 1, 43 total, worst 115 ms": the ring
+    /// says how often right now, the total quantifies the sitting, the worst
+    /// gives the ceiling, and the stage says where delay was measured.
     private func linkHealthLine(
         _ health: LinkHealthAssessment
     ) -> String {
@@ -59,11 +59,10 @@ struct StreamContainer: View {
         case "renderer": stage = "Render stalls"
         default: stage = "Delivery stalls"
         }
-        let rate = health.stallsPerMinute
-            .formatted(.number.precision(.fractionLength(0)))
+        let recent = health.stallsLastMinute.formatted()
         let worst = health.sessionWorstMilliseconds
             .formatted(.number.precision(.fractionLength(0)))
-        return "\(stage) — \(rate) per min, "
+        return "\(stage) — last 60 s: \(recent), "
             + "\(health.sessionStallCount) total, worst \(worst) ms"
     }
 

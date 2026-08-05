@@ -6,7 +6,8 @@ action changes. Completed detail belongs in Git history.*
 
 ## Resume here
 
-- **Branch:** `main`, aligned with `origin/main`.
+- **Branch:** `main` is canonical; temporary PR branches are deleted after
+  landing so the repository returns to one local and one remote branch.
 - **GitHub:** no open PRs; #156 landed the root-document normalization.
 - **Repository:** one worktree, one local branch, and one remote branch—all
   `main`. Stale migration, cleanup, ledger, and agent pointers were audited
@@ -45,6 +46,15 @@ The ordinary Lyte client is streaming successfully from pup. A direct launch
 of the signed bundle executable with `LYTE_AUTOCONNECT=10.0.0.232` sustained
 video beyond the earlier two-second failure point and continued receiving
 frames without a transport error.
+
+The commissioning client now computes the warning pill from an exact ring of
+60 tagged one-second buckets using client-monotonic event times. The 1 Hz UI
+heartbeat ages the window even when damage-driven capture emits no frames.
+Focused LinkHealth tests passed 14/14, the full Client suite passed 265/265,
+SystemTests passed 17/17, and the complete macOS and pup deterministic gates
+passed. The signed release is live against pup; replacing the prior client
+ended the one-session host cleanly and systemd restarted it successfully
+(`Result=success`, not a crash).
 
 Two launch problems were distinguished:
 
