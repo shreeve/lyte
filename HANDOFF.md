@@ -4,14 +4,13 @@
 
 ## Resume here
 
-- **Branch:** `cleanup/playout-setting-truth`, based directly on clean `main` at
-  the #170 landing.
-- **GitHub:** PR #171 is the stats-overlay beachball repair, based directly on
-  the #170 landing.
+- **Branch:** resume on clean `main` at the #171 landing; do not continue on
+  its merged feature branch.
+- **GitHub:** PR #171 is merged; it repaired the stats-overlay beachball and
+  shipped the owner-approved warning copy.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** land PR #171 and return to clean `main`, then
-  reconcile the playout setting and
-  `docs/CUSHION.md` with the Conductor's one-beat minimum.
+- **Current objective:** reconcile the playout setting and `docs/CUSHION.md`
+  with the Conductor's one-beat minimum.
 
 ## Last green gates
 
