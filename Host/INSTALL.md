@@ -16,6 +16,27 @@ cd Host && swift build -c release
 The binary lands at `.build/release/lyte-host`. No setcap needed when
 running under the service (step 2) — the capability rides the unit.
 
+### Stage the release image
+
+Turn the release binary into the exact root filesystem image that packaging
+and installation consume:
+
+```sh
+Host/Scripts/stage-host-image.sh /tmp/lyte-host-image
+Scripts/Tests/test-host-package-image.sh /tmp/lyte-host-image
+```
+
+The image owns stable paths under `usr/local/bin`, `etc/lyte`, and
+`lib/systemd/system`. It also carries Lyte's license, every applicable
+third-party notice, and `MANIFEST.sha256`, which authenticates every other
+file in the image. Staging is rootless and inert: it does not install files,
+change capabilities, contact systemd, or touch host identity.
+
+For this first packaging slice, `install-host.sh` below remains the fast
+checkout-coupled development installer. The next slice changes that installer
+to consume this image; until then, staging and installation are deliberately
+separate operations.
+
 ## 1. Machine prerequisites
 
 ```sh
