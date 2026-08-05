@@ -5,15 +5,15 @@ history.*
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #188. There are no auxiliary worktrees,
+- **Branch:** clean `main` through PR #189. There are no auxiliary worktrees,
   other local or remote branches, or open pull requests.
-- **Current objective:** make the Noise-only host ratchet scan the complete
-  shipping executable target, then repeat WASM and owner-visible live-rig
-  commissioning.
+- **Current objective:** continuously compile the IO-free client policy targets
+  on Linux, closing the remaining deterministic cross-platform gate gap.
 - **Recent landings:** PR #186 made shipping transport Noise-only and removed
   513 net lines; PR #187 made `HostApplication` the native Swift `@main` entry;
   PR #188 aligned every living architecture document with those landings and
-  the automatic Conductor. Frozen dated records and vectors did not change.
+  the automatic Conductor; PR #189 made the Noise-only law scan every shipping
+  host source. Frozen dated records and vectors did not change.
 
 ## Last green gates
 
@@ -30,22 +30,23 @@ verification. The gate did not deploy or restart the standing service.
 
 Focused architecture proof on the composed main branch passes all three host
 composition/security laws: one native `@main` doorway, injected argument
-composition, and no plaintext selector in the named host seams. The next slice
-widens that last scan to every Swift file in `Host/Sources/lyte-host`.
+composition, and an executable-wide Noise-only scan over all 12 shipping host
+Swift files. Wire's full WebAssembly leg also passed 511 tests under wasmtime
+47.0.2 on `wasm32-unknown-wasip1` with zero failures.
 
 ## Current live rig
 
 ### Client
 
-- `.build/Lyte.app` PID 64483 is running and responsive. Do not launch a
+- `.build/Lyte.app` PID 86190 is running and connected to pup. Do not launch a
   benchmark or second ordinary Lyte app while it is open; both use the same
   bundle identity.
 - Bundle identifier `dev.shreeve.lyte`, team `SD6N7Z8P9P`, signed by
-  `Apple Development: Steve Shreeve (8FHNN4RZ9Q)`, build `1785919825`.
+  `Apple Development: Steve Shreeve (8FHNN4RZ9Q)`, build `1785923981`.
 - Lyte executable SHA-256:
-  `aa5b63f5acfbc30e559e5c398d047b3db7e9a1a517a71397a0dbf4267b59d48f`.
+  `f21a45da5797b7eb57e86009a8db711ac21d78809dcca84a458f2dccc8ef3170`.
   Helper SHA-256:
-  `eae3cff51bbe689f4e82e755edc49ef9b2d5c320286bd452dd33148a92e1fe2e`.
+  `f0c31df74085fa61ebc28b330cc61ebe44cd723c0ca44d3ea578048c66df5720`.
 - The beachball was resolved in PR #181: the old gate removed the live bundle
   while the process was running, then helper registration crashed inside
   bundle plist loading. Client tests now use `Client/.build`, gates assemble
@@ -65,7 +66,7 @@ widens that last scan to every Swift file in `Host/Sources/lyte-host`.
   no-client-handshake timeout can exercise systemd restart policy; a changing
   PID alone is not a host crash.
 - Deployed release binary: `~/src/lyte-host/.build/release/lyte-host`, SHA-256
-  `9eb92ad911225e84d7c4dd0e0a40a04af15a33a39102f25933045d11bacb03e3`.
+  `0e00b24f66124d63bf1a2b83dbff3c363b50c92d1869c37a1be7f6151d3abb07`.
 - Session log: `/tmp/lyte-host-session.log`.
 
 Never touch pup's
@@ -75,20 +76,20 @@ and `--no-advertise`.
 
 ## Latest owner-visible evidence
 
-Lyte connected to pup with video, audio, keyboard, and mouse. The automatic
-Conductor decomposed observed delay into measured path plus whole-beat reserve,
-grew after genuine holes, and returned through proof-driven clean beats. The
-user warning now counts only terminal renderer misses/failures; disturbances
-that the reserve successfully absorbs remain diagnostic evidence and do not
-raise a warning pill. No manual cushion setting is present or scheduled.
+The clean PR #189 artifacts completed a Noise handshake and negotiated HEVC,
+4:2:0, idle silence, host-audio routing, and a 1152-byte datagram ceiling. The
+native VAAPI direct eye opened at 2048×1280; video/IDR, 5 ms Opus audio, cursor,
+input, and beacon traffic were live, with recent beacon RTT converging around
+6–10 ms. The automatic Conductor remains the only video-reserve owner. The user
+warning counts only terminal renderer misses/failures; absorbed disturbances
+stay diagnostic and silent.
 
 ## Next commissioning order
 
-1. Land the executable-wide Noise-only host ratchet as its own PR.
-2. Run the Wire WASM suite on the landed tree.
-3. Build/deploy a clean release host on pup without altering identity state,
-   build/launch the exact signed Mac app, and repeat the owner-visible stream
-   proof.
+1. Make pup's deterministic gate build `LyteClientCore` and
+   `LyteClientSession` with warnings as errors, then land that ratchet alone.
+2. Keep the clean Mac/Linux/WASM/live commissioning baseline green while the
+   next product slice is selected from `TODO.md`.
 
 ## Recovery pointers
 
