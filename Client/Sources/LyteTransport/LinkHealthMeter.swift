@@ -14,34 +14,28 @@ public struct LinkHealthAssessment: Equatable, Sendable {
     public enum Level: String, Sendable {
         case good, degraded, poor
     }
-    /// Which stage the recent stalls blame — "network" (transit
-    /// stretch: host stamp → client-ready), "renderer" (queue/
-    /// enqueue). Source-capture gaps are deliberately NOT evidence:
-    /// portal capture is damage-driven, so an idle desktop whose only
-    /// motion is a seconds clock delivers one frame per second and
-    /// 1000 ms gaps BY DESIGN (the 2026-08-01 false alarm: "Host
-    /// capture stalls — worst 1,002 ms" on a perfectly healthy idle
-    /// stream). A real capture stall is indistinguishable from quiet
-    /// content client-side; naming the host needs a host-side signal
-    /// (damage-pending-but-undelivered), which is filed, not faked.
+
+    /// Which stage the recent stalls blame — "network" (transit stretch:
+    /// host stamp → client-ready), or "renderer" (queue/enqueue). Source
+    /// capture gaps are deliberately not evidence because damage-driven
+    /// capture is allowed to be quiet.
     public var level: Level
-    /// Rate and level grade the rolling window — the pill relaxes
-    /// when the link recovers. Total and worst are SESSION books —
-    /// "43 total, worst 115 ms" quantifies the whole sitting even
-    /// after the window forgets.
-    public var stallsPerMinute: Double
+    /// Exact number of stall episodes in the current second and the
+    /// preceding 59 one-second buckets.
+    public var stallsLastMinute: Int
     public var worstStallMilliseconds: Double
     public var dominantStage: String
+    /// Session books survive the rolling window and roaming reconnects.
     public var sessionStallCount: Int
     public var sessionWorstMilliseconds: Double
 
     public init(
-        level: Level, stallsPerMinute: Double,
+        level: Level, stallsLastMinute: Int,
         worstStallMilliseconds: Double, dominantStage: String,
         sessionStallCount: Int, sessionWorstMilliseconds: Double
     ) {
         self.level = level
-        self.stallsPerMinute = stallsPerMinute
+        self.stallsLastMinute = stallsLastMinute
         self.worstStallMilliseconds = worstStallMilliseconds
         self.dominantStage = dominantStage
         self.sessionStallCount = sessionStallCount
@@ -50,89 +44,70 @@ public struct LinkHealthAssessment: Equatable, Sendable {
 }
 
 public final class LinkHealthMeter {
-    /// One stall episode: consecutive spiking frames coalesce (a
-    /// single radio deaf-window smears lateness across several frames
-    /// but is ONE event to the user).
+    private struct Bucket {
+        var second: UInt64?
+        var count = 0
+        var worstMilliseconds = 0.0
+        var networkCount = 0
+        var rendererCount = 0
+    }
+
+    /// Consecutive spiking frames coalesce into one user-visible episode.
+    /// The episode retains its first bucket while its tail moves forward.
     private struct Episode {
-        var at: TimeInterval
+        var bucketSecond: UInt64
+        var lastEventMicroseconds: UInt64
         var worstMilliseconds: Double
         var stage: String
     }
 
-    /// A frame is an event when its stage exceeds these (ms). The
-    /// transit bar is set above dispatch jitter but below anything an
-    /// eye can see (and transit stretch is already source-gap
-    /// normalized, so idle cadence cannot inflate it); renderer far
-    /// above its measured µs baseline.
     public static let transitStallMilliseconds = 25.0
     public static let rendererStallMilliseconds = 8.0
-    /// Events closer than this are the same episode.
-    public static let coalesceSeconds = 0.5
-    /// The grading window; episodes age out past it.
-    public static let windowSeconds = 60.0
-    /// Connect-ramp grace: the first seconds of every connection
-    /// epoch (fresh connect AND roam re-dial) always spike while the
-    /// pipeline fills — measured at session starts, not link news.
-    /// Nothing in this span mints an episode or touches the books.
-    public static let warmupSeconds = 10.0
+    public static let coalesceMicroseconds: UInt64 = 500_000
+    public static let windowBucketCount = 60
+    public static let warmupMicroseconds: UInt64 = 10_000_000
 
-    private var episodes: [Episode] = []
+    private var buckets = Array(
+        repeating: Bucket(), count: LinkHealthMeter.windowBucketCount)
+    private var lastEpisode: Episode?
     private var highWaterOrdinal: UInt64 = 0
-    private var highWaterFrameSeconds: TimeInterval = 0
-    private var epochFirstFrameSeconds: TimeInterval?
+    private var epochFirstEventMicroseconds: UInt64?
     private var sessionStallCount = 0
     private var sessionWorstMilliseconds = 0.0
-    /// LYTE_LINK_HEALTH_DEBUG=1: every episode append and every book
-    /// reset prints — the owner's "total equals rate" hunt needs the
-    /// live path to confess, not the unit tests to pass again.
     private let debugTrace = ProcessInfo.processInfo
         .environment["LYTE_LINK_HEALTH_DEBUG"] == "1"
 
     public init() {}
 
-    /// Feed one recorded frame (primitives, so tests need no
-    /// recorder). `frameSeconds` is the FRAME'S OWN clock (the
-    /// recorder's host timestamp) — the 1 Hz fold hands whole batches
-    /// in at once, so coalescing on feed time would collapse distinct
-    /// stalls within a batch into one episode (the owner caught the
-    /// undercount live: "1 total" under a visibly hiccuping link).
-    /// Ordinals gate re-feeding — a lower ordinal than seen means the
-    /// recorder was reset (reconnect), and the meter starts fresh.
+    /// Feed one recorded frame. `eventMicroseconds` is the client's
+    /// monotonic ready timestamp, so recorder batches still put an episode
+    /// in the second when it actually happened. Ordinals make overlapping
+    /// recorder scans idempotent.
     public func observe(
         ordinal: UInt64,
         transitStretchMilliseconds: Double?,
         queueWaitMilliseconds: Double,
         enqueueMilliseconds: Double,
-        frameSeconds: TimeInterval
+        eventMicroseconds: UInt64
     ) {
         if ordinal < highWaterOrdinal {
-            // Ordinals ran backwards: the recorder was reset. That
-            // happens on ROAMING RE-DIALS too — and the stalls big
-            // enough to matter are exactly the ones that trigger
-            // re-dials, so wiping the totals here erased the count
-            // right as it earned its keep (the owner's "total equals
-            // rate, every time"). The WINDOW belongs to the frame
-            // clock and must restart with it; the session books
-            // belong to the SITTING and only resetSessionBooks()
-            // (a real disconnect) clears them.
             if debugTrace {
                 print("link-health: window reset — ordinal \(ordinal) "
                     + "< high-water \(highWaterOrdinal) "
                     + "(keeping \(sessionStallCount) total)")
                 fflush(stdout)
             }
-            episodes.removeAll()
-            highWaterFrameSeconds = 0
-            epochFirstFrameSeconds = nil
+            resetWindow()
         } else if ordinal == highWaterOrdinal {
-            return // already folded
+            return
         }
         highWaterOrdinal = ordinal
-        highWaterFrameSeconds = max(highWaterFrameSeconds, frameSeconds)
-        let epochStart = epochFirstFrameSeconds ?? frameSeconds
-        epochFirstFrameSeconds = epochStart
-        // Connect-ramp grace — see warmupSeconds.
-        if frameSeconds - epochStart < Self.warmupSeconds { return }
+
+        let epochStart = epochFirstEventMicroseconds ?? eventMicroseconds
+        epochFirstEventMicroseconds = epochStart
+        guard eventMicroseconds >= epochStart,
+              eventMicroseconds - epochStart >= Self.warmupMicroseconds
+        else { return }
 
         var worst = 0.0
         var stage = ""
@@ -148,23 +123,38 @@ public final class LinkHealthMeter {
         }
         guard worst > 0 else { return }
 
-        if var last = episodes.last,
-           frameSeconds - last.at <= Self.coalesceSeconds {
-            last.at = frameSeconds
+        let eventSecond = eventMicroseconds / 1_000_000
+        if var last = lastEpisode,
+           eventMicroseconds >= last.lastEventMicroseconds,
+           eventMicroseconds - last.lastEventMicroseconds
+                <= Self.coalesceMicroseconds {
+            last.lastEventMicroseconds = eventMicroseconds
             if worst > last.worstMilliseconds {
+                updateEpisodePeak(
+                    bucketSecond: last.bucketSecond,
+                    oldStage: last.stage,
+                    newStage: stage,
+                    worstMilliseconds: worst)
                 last.worstMilliseconds = worst
                 last.stage = stage
             }
-            episodes[episodes.count - 1] = last
+            lastEpisode = last
         } else {
-            episodes.append(Episode(
-                at: frameSeconds, worstMilliseconds: worst,
-                stage: stage))
+            incrementBucket(
+                second: eventSecond,
+                stage: stage,
+                worstMilliseconds: worst)
+            lastEpisode = Episode(
+                bucketSecond: eventSecond,
+                lastEventMicroseconds: eventMicroseconds,
+                worstMilliseconds: worst,
+                stage: stage)
             sessionStallCount += 1
             if debugTrace {
                 print(String(format: "link-health: episode #%d %@ "
-                    + "%.0f ms at frame-t %.3f (ordinal %d)",
-                    sessionStallCount, stage, worst, frameSeconds,
+                    + "%.0f ms at client-t %.3f (ordinal %d)",
+                    sessionStallCount, stage, worst,
+                    Double(eventMicroseconds) / 1_000_000,
                     ordinal))
                 fflush(stdout)
             }
@@ -172,34 +162,41 @@ public final class LinkHealthMeter {
         sessionWorstMilliseconds = max(sessionWorstMilliseconds, worst)
     }
 
-    /// The rolling verdict. Poor: stalls are frequent (3+ in the
-    /// window) or deep (≥100 ms — a full visible freeze). Degraded:
-    /// any stall in the window. Good: quiet — and the UI shows
-    /// nothing, because a clean link needs no announcement.
-    /// The sitting is over (a real disconnect, not a roam re-dial):
-    /// the cumulative books go with it.
     public func resetSessionBooks() {
-        episodes.removeAll()
+        resetWindow()
         highWaterOrdinal = 0
-        highWaterFrameSeconds = 0
-        epochFirstFrameSeconds = nil
         sessionStallCount = 0
         sessionWorstMilliseconds = 0
     }
 
-    /// The verdict windows against the FRAME clock's high-water mark:
-    /// "the last minute of delivered frames." A fully frozen stream
-    /// stops aging the window — and is the FROZEN pill's business,
-    /// not this one's.
-    public func assessment() -> LinkHealthAssessment {
-        let now = highWaterFrameSeconds
-        episodes.removeAll { now - $0.at > Self.windowSeconds }
-        let count = episodes.count
-        let worst = episodes.map(\.worstMilliseconds).max() ?? 0
-        let perMinute = Double(count) * 60.0 / Self.windowSeconds
-        var stages: [String: Int] = [:]
-        for e in episodes { stages[e.stage, default: 0] += 1 }
-        let dominant = stages.max { $0.value < $1.value }?.key ?? "none"
+    /// Sum the current one-second bucket and the preceding 59 buckets.
+    /// The caller supplies its live monotonic tick, so old events age out
+    /// even when a damage-driven desktop emits no new frames.
+    public func assessment(nowMicroseconds: UInt64) -> LinkHealthAssessment {
+        let nowSecond = nowMicroseconds / 1_000_000
+        var count = 0
+        var worst = 0.0
+        var networkCount = 0
+        var rendererCount = 0
+        for bucket in buckets {
+            guard let second = bucket.second,
+                  second <= nowSecond,
+                  nowSecond - second < UInt64(Self.windowBucketCount)
+            else { continue }
+            count += bucket.count
+            worst = max(worst, bucket.worstMilliseconds)
+            networkCount += bucket.networkCount
+            rendererCount += bucket.rendererCount
+        }
+
+        let dominant: String
+        if networkCount == 0, rendererCount == 0 {
+            dominant = "none"
+        } else if rendererCount > networkCount {
+            dominant = "renderer"
+        } else {
+            dominant = "network"
+        }
         let level: LinkHealthAssessment.Level
         if count >= 3 || worst >= 100 {
             level = .poor
@@ -209,9 +206,58 @@ public final class LinkHealthMeter {
             level = .good
         }
         return LinkHealthAssessment(
-            level: level, stallsPerMinute: perMinute,
+            level: level, stallsLastMinute: count,
             worstStallMilliseconds: worst, dominantStage: dominant,
             sessionStallCount: sessionStallCount,
             sessionWorstMilliseconds: sessionWorstMilliseconds)
+    }
+
+    private func resetWindow() {
+        buckets = Array(repeating: Bucket(), count: Self.windowBucketCount)
+        lastEpisode = nil
+        epochFirstEventMicroseconds = nil
+    }
+
+    private func bucketIndex(for second: UInt64) -> Int {
+        Int(second % UInt64(Self.windowBucketCount))
+    }
+
+    private func incrementBucket(
+        second: UInt64,
+        stage: String,
+        worstMilliseconds: Double
+    ) {
+        let index = bucketIndex(for: second)
+        if buckets[index].second != second {
+            buckets[index] = Bucket(second: second)
+        }
+        buckets[index].count += 1
+        buckets[index].worstMilliseconds = max(
+            buckets[index].worstMilliseconds, worstMilliseconds)
+        if stage == "renderer" {
+            buckets[index].rendererCount += 1
+        } else {
+            buckets[index].networkCount += 1
+        }
+    }
+
+    private func updateEpisodePeak(
+        bucketSecond: UInt64,
+        oldStage: String,
+        newStage: String,
+        worstMilliseconds: Double
+    ) {
+        let index = bucketIndex(for: bucketSecond)
+        guard buckets[index].second == bucketSecond else { return }
+        buckets[index].worstMilliseconds = max(
+            buckets[index].worstMilliseconds, worstMilliseconds)
+        guard oldStage != newStage else { return }
+        if oldStage == "renderer" {
+            buckets[index].rendererCount -= 1
+            buckets[index].networkCount += 1
+        } else {
+            buckets[index].networkCount -= 1
+            buckets[index].rendererCount += 1
+        }
     }
 }

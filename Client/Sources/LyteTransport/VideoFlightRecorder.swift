@@ -117,6 +117,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         public var ordinal: UInt64
         public var frame: UInt32
         public var hostMicroseconds: UInt64
+        public var readyMicroseconds: UInt64
         public var provenance: Provenance
         public var sourceGapMilliseconds: Double?
         public var readyGapMilliseconds: Double?
@@ -239,6 +240,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
             ordinal: token.ordinal,
             frame: token.frame,
             hostMicroseconds: token.hostMicroseconds,
+            readyMicroseconds: token.readyNanoseconds / 1_000,
             provenance: token.provenance,
             sourceGapMilliseconds: sourceGap,
             readyGapMilliseconds: readyGap,

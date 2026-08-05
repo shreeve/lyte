@@ -663,9 +663,9 @@ final class ConnectionModel {
             maximumCueMicroseconds: cushionMicrosecondsFromSettings())
     }
 
-    /// The 1 Hz link-health tick (driven by the stream container's
-    /// task loop): fold the recorder's ring — the meter's high-water
-    /// mark skips frames already folded — and publish the verdict.
+    /// The 1 Hz link-health tick (driven by the stream container's task
+    /// loop): fold new recorder frames into their event-second buckets,
+    /// then publish the exact sum of the live 60-bucket window.
     func tickLinkHealth() {
         // The cushion slider is live: the same 1 Hz heartbeat that
         // folds link health pushes ceiling changes into the playout.
@@ -681,9 +681,10 @@ final class ConnectionModel {
                 transitStretchMilliseconds: f.transitStretchMilliseconds,
                 queueWaitMilliseconds: f.queueWaitMilliseconds,
                 enqueueMilliseconds: f.enqueueMilliseconds,
-                frameSeconds: Double(f.hostMicroseconds) / 1_000_000)
+                eventMicroseconds: f.readyMicroseconds)
         }
-        linkHealth = linkHealthMeter.assessment()
+        linkHealth = linkHealthMeter.assessment(
+            nowMicroseconds: SystemMonotonicClock.nowMicroseconds)
     }
 
     func disconnect() {
