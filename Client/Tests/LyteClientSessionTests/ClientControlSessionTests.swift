@@ -134,6 +134,27 @@ final class ClientControlSessionTests: XCTestCase {
                 event: .clipboard(.textChanged("remote"))))
     }
 
+    func testCursorShapeSharesTheComposedBoundary() throws {
+        let cursor = local.declaringCursorShape()
+        let shape = CursorShape(
+            width: 1,
+            height: 1,
+            hotspotX: 0,
+            hotspotY: 0,
+            pixels: [0x10, 0x20, 0x30, 0xFF])
+        var session = makeSession(localCapabilities: cursor)
+        _ = try session.receiveReliable(
+            try CapabilityDeclaration(capabilities: cursor).encode(),
+            now: at(10))
+
+        XCTAssertTrue(session.cursorNegotiated)
+        XCTAssertEqual(
+            try session.receiveReliable(
+                try shape.encode(), now: at(11)),
+            ClientControlSessionDecision(
+                event: .cursor(.shape(shape))))
+    }
+
     func testUnrelatedReliableWordIsNotClaimed() throws {
         var session = makeSession()
         XCTAssertNil(try session.receiveReliable(

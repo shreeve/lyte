@@ -8,6 +8,7 @@ public enum ClientControlSessionEvent: Hashable, Sendable {
     case capability(ClientCapabilitySessionEvent)
     case audioRouting(ClientAudioRoutingSessionEvent)
     case clipboard(ClientClipboardSessionEvent)
+    case cursor(ClientCursorSessionEvent)
 }
 
 /// One composed client-control decision. The shell sends the returned bytes,
@@ -37,6 +38,7 @@ public struct ClientControlSession: Sendable {
     private var capabilities: ClientCapabilitySession
     private var audioRouting: ClientAudioRoutingSession
     private var clipboard: ClientClipboardSession
+    private var cursor: ClientCursorSession
 
     public init(
         localCapabilities: Capabilities,
@@ -53,6 +55,7 @@ public struct ClientControlSession: Sendable {
         clipboard = ClientClipboardSession(
             textSharingAtStart: clipboardSharingAtStart,
             imageSharingAtStart: clipboardImageSharingAtStart)
+        cursor = ClientCursorSession()
     }
 
     public var state: SessionState { lifecycle.state }
@@ -79,6 +82,9 @@ public struct ClientControlSession: Sendable {
     }
     public var clipboardImageCounters: ClipboardImageChannelCounters {
         clipboard.imageCounters
+    }
+    public var cursorNegotiated: Bool {
+        capabilities.agreed?.cursorShape == true
     }
     public var operativeMaxDatagramBytes: UInt32 {
         capabilities.operativeMaxDatagramBytes
@@ -181,7 +187,13 @@ public struct ClientControlSession: Sendable {
                 guard let event = clipboard.receiveReliable(
                     bytes, agreed: capabilities.agreed)
                 else {
-                    return nil
+                    guard let event = cursor.receiveReliable(
+                        bytes, agreed: capabilities.agreed)
+                    else {
+                        return nil
+                    }
+                    return ClientControlSessionDecision(
+                        event: .cursor(event))
                 }
                 return ClientControlSessionDecision(
                     event: .clipboard(event))

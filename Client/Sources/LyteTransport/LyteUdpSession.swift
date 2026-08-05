@@ -1335,7 +1335,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
              CtrlMessageType.audioRoutingRequest,
              CtrlMessageType.audioRoutingStatus,
              CtrlMessageType.clipboardSet,
-             CtrlMessageType.clipboardAnnounce:
+             CtrlMessageType.clipboardAnnounce,
+             CtrlMessageType.cursorShape:
             receiveControlWord(bytes, now: now)
 
         case CtrlMessageType.idleFrame:
@@ -1356,9 +1357,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
         case CtrlMessageType.videoPostureState:
             receiveVideoPostureState(bytes)
-
-        case CtrlMessageType.cursorShape:
-            receiveCursorShape(bytes)
 
         default:
             lock.lock()
@@ -1408,6 +1406,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         case .clipboard(.unnegotiatedTextAnnounce),
              .clipboard(.roleConfusedTextSet):
             counters.clipboardDropsLoud += 1
+        case .cursor(.shape):
+            counters.cursorShapesReceived += 1
+        case .cursor(.unnegotiatedShape):
+            counters.unknownReliableTypes += 1
         default:
             break
         }
@@ -1503,6 +1505,13 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
              .clipboard(.unnegotiatedImageCargo),
              .clipboard(.image):
             break   // Image words ride the bulk channel, not this seam.
+        case .cursor(.shape(let shape)):
+            onEvent(.hostCursorShapeChanged(shape))
+        case .cursor(.malformedShape):
+            noteMalformed("cursor shape")
+        case .cursor(.unnegotiatedShape):
+            onEvent(.protocolNote(
+                "cursor 0x24 without negotiated key 13 — dropped"))
         }
         if let lifecycle = decision.lifecycle {
             executeLifecycle(lifecycle, now: now)
@@ -1609,24 +1618,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         )
         onEvent(.idleFrameReceived(
             frame: idle.frame.rawValue, outcome: outcome))
-    }
-
-    private func receiveCursorShape(_ bytes: [UInt8]) {
-        guard let shape = try? CursorShape.decode(bytes) else {
-            noteMalformed("cursor shape")
-            return
-        }
-        lock.lock()
-        guard controlSession.agreedCapabilities?.cursorShape == true else {
-            counters.unknownReliableTypes += 1
-            lock.unlock()
-            onEvent(.protocolNote(
-                "cursor 0x24 without negotiated key 13 — dropped"))
-            return
-        }
-        counters.cursorShapesReceived += 1
-        lock.unlock()
-        onEvent(.hostCursorShapeChanged(shape))
     }
 
     private func noteMalformed(_ what: String) {
