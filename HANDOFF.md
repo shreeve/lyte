@@ -4,13 +4,14 @@
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #184; no other local or remote branches
+- **Branch:** clean `main` through PR #185; no other local or remote branches
   remain and GitHub has no open pull requests.
-- **GitHub:** PR #184 extracts handshake admission, lifecycle projection, and
-  path migration into the pure `HostSession` target. `HostWire` injects time
-  and randomness and continues to own sockets, queues, persistence, and IO.
+- **GitHub:** PR #185 makes `HostApplication` the explicit Linux executable
+  composition root. `main.swift` is a one-line delegate; construction,
+  command dispatch, and process-level failure now have one named owner.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** make the application composition roots explicit.
+- **Current objective:** remove executable insecure/plaintext production paths
+  while preserving test-only frozen-vector equipment.
 
 ## Last green gates
 
@@ -173,6 +174,15 @@ state verification. `HostSession` now owns handshake admission, lifecycle
 projection, and path migration as injected-input value policy. Frozen vectors
 and live protocol behavior were unchanged.
 
+The explicit-host-composition slice passed 2 focused layout tests and the
+complete warning-enforced macOS and pup gates, including safety, signing,
+analyzers, app identity, packaging, hermetic linkage, Linux socket and pacing
+harnesses, and protected-state verification. `main.swift` now delegates in one
+line to `HostApplication`, which owns argument injection, command dispatch,
+dependency construction, and process-level failure. The change moved the
+existing production wiring without changing runtime or protocol behavior;
+frozen vectors were unchanged.
+
 ## Current live rig
 
 ### Client
@@ -251,10 +261,9 @@ automatic response; no policy change was earned.
 
 Keep every landing small and green. The remaining order is:
 
-1. Make application composition roots explicit.
-2. Remove executable insecure/plaintext production paths while preserving
+1. Remove executable insecure/plaintext production paths while preserving
    test-only frozen-vector equipment.
-3. Finish documentation and architectural ratchets, then repeat clean macOS,
+2. Finish documentation and architectural ratchets, then repeat clean macOS,
    pup, WASM, and live-rig commissioning.
 
 ## Recovery pointers
