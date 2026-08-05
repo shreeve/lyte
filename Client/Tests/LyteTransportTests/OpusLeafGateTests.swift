@@ -6,7 +6,7 @@ import LyteWire
 // THE GATE (CL-11, decode leaf): the client's libopus wrapper decodes
 // real Opus packets — generated here with libopus' own encoder in the
 // host's mode (48 kHz stereo RESTRICTED_LOWDELAY, 5 ms frames; the
-// loop-decode discipline Host/'s COpusEncode harness established) —
+// loop-decode discipline the HostAudio harness established) —
 // and its PLC entry point conceals without crashing or going hard
 // silent mid-stream. This is the capability the system AudioConverter
 // never had, which is why the leaf exists.

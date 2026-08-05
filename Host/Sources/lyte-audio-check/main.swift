@@ -1,7 +1,8 @@
 // HS-14 verification harness: desktop-monitor audio → 5 ms Opus packets,
 // with a decode-back path so verification is trivial. Captures the default
 // sink's monitor via CPipeWireAudio, slices to exact 240-sample frames,
-// encodes with COpusEncode (CELT restricted-lowdelay, DTX off), and writes
+// encodes with HostAudio's Swift codec policy (CELT restricted-lowdelay,
+// DTX off), and writes
 //   /tmp/lyte-audio-check.pkts — length-prefixed packets:
 //                                 [u32le size][u64le graph-ts µs][bytes]
 //   /tmp/lyte-audio-check.wav  — the packets decoded straight back to
@@ -15,9 +16,9 @@
 //  pipeline carries real audio; the dialect itself is hard CBR.)
 
 import LyteIO
-import COpusEncode
 import CPipeWireAudio
 import Foundation
+import HostAudio
 import HostCore
 
 struct CheckError: Error, CustomStringConvertible {
@@ -31,16 +32,16 @@ func errString(_ buf: [CChar]) -> String {
     return String(decoding: bytes, as: UTF8.self)
 }
 
-let packetFrames = Int(LYTE_OPUS_FRAME)   // 240 samples/ch = 5 ms
-let channels = Int(LYTE_OPUS_CHANNELS)
-let sampleRate = Int(LYTE_OPUS_RATE)
+let packetFrames = HostOpus.framesPerPacket // 240 samples/ch = 5 ms
+let channels = HostOpus.channels
+let sampleRate = HostOpus.sampleRate
 let packetUS = UInt64(packetFrames * 1_000_000 / sampleRate) // 5000
 
 // MARK: - Sink (all state lives on the capture loop thread)
 
 final class Sink {
-    let encoder: OpaquePointer
-    let decoder: OpaquePointer
+    let encoder: HostOpusEncoder
+    let decoder: HostOpusDecoder
 
     let slicer = InterleavedPcmSlicer(
         sampleRate: sampleRate,
@@ -61,7 +62,7 @@ final class Sink {
 
     var capture: OpaquePointer?
 
-    init(encoder: OpaquePointer, decoder: OpaquePointer) {
+    init(encoder: HostOpusEncoder, decoder: HostOpusDecoder) {
         self.encoder = encoder
         self.decoder = decoder
     }
@@ -91,6 +92,7 @@ final class Sink {
                 try emitPacket(pcm: pcm, timestamp: timestamp)
             }
         } catch {
+            callbackError = String(describing: error)
             if let capture { lyte_pw_audio_quit(capture) }
         }
     }
@@ -98,36 +100,26 @@ final class Sink {
     private func emitPacket(
         pcm: UnsafeBufferPointer<Float>, timestamp: UInt64
     ) throws {
-        var err = [CChar](repeating: 0, count: 256)
-        var packet = [UInt8](repeating: 0, count: Int(LYTE_OPUS_MAX_PACKET))
-        let n = lyte_opus_enc_encode(
-            encoder, pcm.baseAddress, &packet,
-            Int32(packet.count), &err, err.count
-        )
-        guard n > 0 else {
-            let message = "encode failed at packet \(packetSizes.count): "
-                + errString(err)
-            callbackError = message
-            throw CheckError(message)
-        }
+        var packet = [UInt8](repeating: 0, count: HostOpus.maxPacketBytes)
+        let n = try encoder.encode(pcm, into: &packet)
 
         var decoded = [Float](repeating: 0, count: packetFrames * channels)
-        let frames = lyte_opus_dec_decode(decoder, packet, n, &decoded,
-                                          Int32(packetFrames), &err, err.count)
-        guard frames == Int32(packetFrames) else {
+        let frames = try decoder.decode(
+            packet, byteCount: n, into: &decoded)
+        guard frames == packetFrames else {
             let message = "loop decode failed at packet \(packetSizes.count) "
-                + "(\(frames) frames): " + errString(err)
+                + "(\(frames) frames)"
             callbackError = message
             throw CheckError(message)
         }
 
-        packetSizes.append(Int(n))
+        packetSizes.append(n)
         packetTS.append(timestamp)
         var size32 = UInt32(n).littleEndian
         var ts64 = timestamp.littleEndian
         withUnsafeBytes(of: &size32) { packetData.append(contentsOf: $0) }
         withUnsafeBytes(of: &ts64) { packetData.append(contentsOf: $0) }
-        packetData.append(contentsOf: packet.prefix(Int(n)))
+        packetData.append(contentsOf: packet.prefix(n))
         decodedPCM.append(contentsOf: decoded)
     }
 }
@@ -188,19 +180,12 @@ func run() throws {
     let pktsPath = "/tmp/lyte-audio-check.pkts"
     let wavPath = "/tmp/lyte-audio-check.wav"
 
-    var err = [CChar](repeating: 0, count: 256)
-    guard let encoder = lyte_opus_enc_new(bitrate, useVBR ? 1 : 0,
-                                          &err, err.count) else {
-        throw CheckError("opus encoder: \(errString(err))")
-    }
-    defer { lyte_opus_enc_free(encoder) }
-    guard let decoder = lyte_opus_dec_new(&err, err.count) else {
-        throw CheckError("opus decoder: \(errString(err))")
-    }
-    defer { lyte_opus_dec_free(decoder) }
+    let encoder = try HostOpusEncoder(bitrate: bitrate, useVBR: useVBR)
+    let decoder = try HostOpusDecoder()
 
     let sink = Sink(encoder: encoder, decoder: decoder)
     let user = Unmanaged.passUnretained(sink).toOpaque()
+    var err = [CChar](repeating: 0, count: 256)
     guard let capture = lyte_pw_audio_new(audioTrampoline, user, 0,
                                           &err, err.count) else {
         throw CheckError("pipewire audio setup failed: \(errString(err))")

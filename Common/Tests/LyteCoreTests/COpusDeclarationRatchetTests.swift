@@ -175,6 +175,39 @@ final class COpusDeclarationRatchetTests: XCTestCase {
         )
     }
 
+    func testHostCodecPolicyIsSwiftAndTheDuplicateCWrapperIsGone() throws {
+        let tree = RepositorySourceTree()
+        let hostManifest = try String(
+            contentsOf: tree.repositoryRoot.appendingPathComponent(
+                "Host/Package.swift"),
+            encoding: .utf8
+        )
+        let hostAudio = try String(
+            contentsOf: tree.repositoryRoot.appendingPathComponent(
+                "Host/Sources/HostAudio/HostOpusCodec.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(hostManifest.contains("COpusEncode"))
+        let retiredRoot = tree.repositoryRoot.appendingPathComponent(
+            "Host/Sources/COpusEncode")
+        let retiredFiles = FileManager.default.enumerator(
+            at: retiredRoot,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        )?.compactMap { item -> URL? in
+            guard let file = item as? URL,
+                  (try? file.resourceValues(
+                    forKeys: [.isRegularFileKey]).isRegularFile) == true
+            else { return nil }
+            return file
+        } ?? []
+        XCTAssertTrue(retiredFiles.isEmpty)
+        XCTAssertTrue(hostManifest.contains(#"name: "HostAudio""#))
+        XCTAssertTrue(hostAudio.contains("import COpus"))
+        XCTAssertTrue(hostAudio.contains("public final class HostOpusEncoder"))
+        XCTAssertFalse(hostAudio.contains("import Foundation"))
+    }
+
     private func relative(_ file: URL, to root: URL) -> String {
         String(file.path.dropFirst(root.path.count + 1))
     }

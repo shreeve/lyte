@@ -26,9 +26,9 @@ closed 2026-07-22 (gate report in git history); the portal era ended
   `CNvEnc`, `CCuda` — pkg-config/systemLibrary module maps (Linux only).
 - `Sources/CPipeWireAudio` — C leaf: default-sink monitor audio capture
   at the 5 ms quantum (PipeWire survives E5 for AUDIO only).
-- `Sources/COpusEncode` — C leaf: libopus 5 ms hard-CBR encode (+ decode
-  for loop verification), importing the one pinned static `COpus` source
-  leaf from `Common/`.
+- `Sources/HostAudio` — Swift host-side Opus policy: 5 ms hard-CBR encode
+  (+ decode for loop verification) over the one pinned static `COpus` source
+  leaf in `Common/`.
 - `Sources/CNetIO` — C leaf: the UDP socket (sendmmsg/recvmmsg, per-packet
   TOS cmsgs, kernel TX timestamps, line-buffered stdout).
 - `Sources/CInputUinput` — C leaf: virtual evdev devices, the sole input
