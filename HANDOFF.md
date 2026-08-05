@@ -5,10 +5,11 @@ history.*
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #195. There are no auxiliary worktrees,
+- **Branch:** clean `main` through PR #196. There are no auxiliary worktrees,
   other local or remote branches, or open pull requests.
-- **Current objective:** extract the next reliable-control/session-policy organ
-  from `LyteTransport` into the IO-free `LyteClientSession` boundary.
+- **Current objective:** compose lifecycle and capabilities behind one IO-free
+  `ClientControlSession` façade, then move the remaining feature-control
+  judgment behind that same platform-shell boundary.
 - **Recent landings:** PR #186 made shipping transport Noise-only and removed
   513 net lines; PR #187 made `HostApplication` the native Swift `@main` entry;
   PR #188 aligned every living architecture document with those landings and
@@ -24,12 +25,14 @@ history.*
   configuration and identity, and made uninstall symmetric; PR #195 moved
   capability startup, intersection, update answers, and failure judgment into
   one IO-free client-session owner that builds unchanged on macOS, Linux, and
-  WebAssembly. Frozen dated records and vectors did not change.
+  WebAssembly; PR #196 moved mode-transition and session-teardown decoding into
+  the lifecycle organ, leaving transport only synchronization, counters, sends,
+  and event delivery. Frozen dated records and vectors did not change.
 
 ## Last green gates
 
-The exact PR #195 source commit `a3edad1` passed the complete warning-enforced
-macOS gate: Common 93, Wire 513, Host 345, Client 308, and SystemTests 17.
+The exact PR #196 source commit `bf713fe` passed the complete warning-enforced
+macOS gate: Common 93, Wire 513, Host 345, Client 312, and SystemTests 17.
 Benchmark and
 host-release safety, signing policy, 25 analyzer tests, app identity, the
 signed CLI, hermetic linkage, packaging, and double signed release-app
