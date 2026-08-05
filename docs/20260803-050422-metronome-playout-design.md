@@ -199,16 +199,21 @@ therefore owns the latency/resilience decision:
 | automatic contract | value |
 |---|---:|
 | reserve floor | 1 beat (~17 ms) |
-| growth | whole-beat re-cue only after a real hole |
-| return | 1 beat after 600 fresh frames of surplus proof |
+| reserve ceiling | 4 beats (~67 ms) |
+| growth | whole-beat re-cue only after a real hole, never past 4 beats |
+| return | 1 beat after 120 fresh frames (~2 s) of surplus proof |
 | internal cue safety ceiling | 150 ms |
 
 The cue starts at the measured path delay plus the one-beat floor. A repaired
 packet loss does not move it. When delivery proves the reserve insufficient,
 the hole law adds only the whole beats required to land the newest part back
-on the score. When calm air proves a full beat is surplus, the slip law returns
-exactly one beat. There is no persisted cushion preference, no alternate
-adaptive-delay controller, and no Settings surface.
+on the score, capped at the four-beat resilient posture; a worse hole remains
+honestly late instead of becoming hidden latency. When calm air proves a full
+beat is surplus for two seconds, the slip law returns exactly one beat. The
+150 ms total-cue ceiling remains a final failsafe for path delay and clock
+mapping; it does not authorize reserve beyond four beats. There is no persisted
+cushion preference, no alternate adaptive-delay controller, and no Settings
+surface.
 
 ## Acceptance (the witness proves it)
 

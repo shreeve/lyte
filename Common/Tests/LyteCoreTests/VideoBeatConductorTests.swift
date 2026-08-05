@@ -11,12 +11,14 @@ final class VideoBeatConductorTests: XCTestCase {
 
     private func conductor(
         cushionBeats: Int = 2,
+        maximumCushionBeats: Int = 8,
         maximumCueMicroseconds: UInt64 = 120_000,
         slipProofFrames: Int = 4
     ) -> VideoBeatConductor {
         VideoBeatConductor(config: .init(
             beatPeriodMicroseconds: period,
             cushionBeats: cushionBeats,
+            maximumCushionBeats: maximumCushionBeats,
             maximumCueMicroseconds: maximumCueMicroseconds,
             slipProofFrames: slipProofFrames))
     }
@@ -24,8 +26,80 @@ final class VideoBeatConductorTests: XCTestCase {
     func testShippingConfigStartsAutomaticAtOneBeat() {
         let config = VideoBeatConductor.Config()
         XCTAssertEqual(config.cushionBeats, 1)
+        XCTAssertEqual(config.maximumCushionBeats, 4)
         XCTAssertEqual(config.maximumCueMicroseconds, 150_000)
-        XCTAssertEqual(config.slipProofFrames, 600)
+        XCTAssertEqual(config.slipProofFrames, 120)
+    }
+
+    func testShippingCushionGrowsFromOneBeatToFourAndNoFurther() {
+        var policy = conductor(
+            cushionBeats: 1,
+            maximumCushionBeats: 4,
+            maximumCueMicroseconds: 150_000,
+            slipProofFrames: 120)
+        var capture: UInt64 = 1_000_000
+        let first = policy.schedule(
+            mappedCaptureMicroseconds: capture,
+            arrivalMicroseconds: capture &+ 9_000,
+            sourceCaptureMicroseconds: capture)
+        XCTAssertEqual(first.reserveMicroseconds, period)
+
+        // A hole large enough to ask for far more than the allowed range
+        // consumes the three remaining beats and stays honestly late.
+        capture &+= period
+        let hole = policy.schedule(
+            mappedCaptureMicroseconds: capture,
+            arrivalMicroseconds: capture &+ 200_000,
+            sourceCaptureMicroseconds: capture)
+        XCTAssertEqual(hole.cueMicroseconds, 9_000 + 4 * period)
+        XCTAssertGreaterThan(hole.latenessMicroseconds, 0)
+
+        // Another hole cannot mint a fifth reserve beat. Once ordinary air
+        // returns, the decision exposes exactly the four-beat posture.
+        capture &+= period
+        let secondHole = policy.schedule(
+            mappedCaptureMicroseconds: capture,
+            arrivalMicroseconds: capture &+ 200_000,
+            sourceCaptureMicroseconds: capture)
+        XCTAssertEqual(secondHole.cueMicroseconds, 9_000 + 4 * period)
+        capture &+= period
+        let calm = policy.schedule(
+            mappedCaptureMicroseconds: capture,
+            arrivalMicroseconds: capture &+ 9_000,
+            sourceCaptureMicroseconds: capture)
+        XCTAssertEqual(calm.reserveMicroseconds, 4 * period)
+    }
+
+    func testShippingCushionReturnsTowardOneBeatOnlyAfterCleanProof() {
+        var policy = conductor(
+            cushionBeats: 1,
+            maximumCushionBeats: 4,
+            maximumCueMicroseconds: 150_000,
+            slipProofFrames: 120)
+        var capture: UInt64 = 1_000_000
+        _ = policy.schedule(
+            mappedCaptureMicroseconds: capture,
+            arrivalMicroseconds: capture &+ 9_000,
+            sourceCaptureMicroseconds: capture)
+
+        capture &+= period
+        _ = policy.schedule(
+            mappedCaptureMicroseconds: capture,
+            arrivalMicroseconds: capture &+ 200_000,
+            sourceCaptureMicroseconds: capture)
+
+        var finalReserve: UInt64 = 0
+        // The one bad path sample must age out of the p99 evidence before
+        // clean proof can return the three extra beats one at a time.
+        for _ in 0..<600 {
+            capture &+= period
+            let decision = policy.schedule(
+                mappedCaptureMicroseconds: capture,
+                arrivalMicroseconds: capture &+ 9_000,
+                sourceCaptureMicroseconds: capture)
+            finalReserve = decision.reserveMicroseconds
+        }
+        XCTAssertEqual(finalReserve, period)
     }
 
     /// beat: perfectly authored captures with jittered arrivals still
