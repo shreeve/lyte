@@ -17,6 +17,9 @@ existed when they were authored. Recover its final form with
 
 ## Living
 
+- [BROWSER.md](BROWSER.md) — current browser-client direction: the proven
+  WASM boundary, WebTransport carrier, WebCodecs/WebGPU canvas path,
+  Conductor ownership, and the commissioning ladder.
 - [DESIGN.md](DESIGN.md) — product design decisions (the 2×2
   intent×network grid, D1–D6ff); update as decisions land.
 - [MACOS-SIGNING.md](MACOS-SIGNING.md) — signing, bundling, and
