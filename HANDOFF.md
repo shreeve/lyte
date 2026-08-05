@@ -4,14 +4,14 @@
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #185; no other local or remote branches
+- **Branch:** clean `main` through PR #187; no other local or remote branches
   remain and GitHub has no open pull requests.
-- **GitHub:** PR #185 makes `HostApplication` the explicit Linux executable
-  composition root. `main.swift` is a one-line delegate; construction,
-  command dispatch, and process-level failure now have one named owner.
+- **GitHub:** PR #186 makes every shipping transport Noise-only and confines
+  passthrough crypto to test equipment. PR #187 makes `HostApplication` the
+  native Swift `@main` entry and deletes the one-line `main.swift`.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** remove executable insecure/plaintext production paths
-  while preserving test-only frozen-vector equipment.
+- **Current objective:** finish documentation and architectural ratchets, then
+  repeat clean macOS, pup, WASM, and live-rig commissioning.
 
 ## Last green gates
 
@@ -183,6 +183,25 @@ dependency construction, and process-level failure. The change moved the
 existing production wiring without changing runtime or protocol behavior;
 frozen vectors were unchanged.
 
+The Noise-only shipping slice passed Client's 14 focused layout tests, all
+`LyteTransportTests`, Host's 3 focused composition tests, and all
+`HostWireTests`. The complete macOS gate passed Common 93, Wire 513, Host 345,
+Client 301, and SystemTests 17 plus every safety, signing, analyzer, identity,
+packaging, and linkage check. Pup passed Common 94, Wire 513, and Host 346 plus
+warning-enforced debug and release builds, hermetic linkage, Opus symbol proof,
+socket/TOS and pacing harnesses, and protected-state verification. Shipping
+executables now expose only authenticated Noise transport; passthrough crypto
+is test-only, the obsolete `wire-send` stand-in is gone, 513 net lines were
+removed, and frozen vectors remained byte-for-byte unchanged.
+
+The native-host-entry slice passed 2 focused layout tests and the complete
+macOS and pup gates. Pup compiled and linked `lyte-host` in debug and release,
+then passed its socket and pacing harnesses with protected host state unchanged.
+`HostApplication` is now the Swift `@main` type, its zero-argument process
+doorway delegates to the injected argument composition root, and the one-line
+`main.swift` is deleted. After PRs #186 and #187 composed on `main`, all 3 host
+composition/security laws passed together.
+
 ## Current live rig
 
 ### Client
@@ -261,9 +280,7 @@ automatic response; no policy change was earned.
 
 Keep every landing small and green. The remaining order is:
 
-1. Remove executable insecure/plaintext production paths while preserving
-   test-only frozen-vector equipment.
-2. Finish documentation and architectural ratchets, then repeat clean macOS,
+1. Finish documentation and architectural ratchets, then repeat clean macOS,
    pup, WASM, and live-rig commissioning.
 
 ## Recovery pointers
