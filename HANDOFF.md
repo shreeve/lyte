@@ -4,13 +4,15 @@
 
 ## Resume here
 
-- **Branch:** resume on clean `main` after the #175 landing; do not continue on
+- **Branch:** resume on clean `main` after the #176 landing; do not continue on
   its merged feature branch.
-- **GitHub:** PR #175 landed truthful cue/reserve telemetry and rolling-window
-  renderer attribution with full Mac, pup, and signed live proof.
+- **GitHub:** PR #176 landed the shared source scanner and fail-closed sans-IO
+  registry with full Mac and pup proof.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** the three-slice commissioning train (#173–#175) is
-  complete; resume the architecture train below with one small green landing.
+- **Current objective:** extract roaming policy as the first pure
+  `LyteClientCore` organ, register the new target in the landed boundary
+  ratchet, and preserve every F-5 behavior through the existing virtual-time
+  gate.
 
 ## Last green gates
 
@@ -78,6 +80,15 @@ linkage, socket and pacing harnesses, and protected-state verification. The
 focused laws separate total cue, measured path, and reserve; expire historical
 renderer blame from the rolling window; and select the newest cue after the
 six-second frame ring wraps.
+
+The architecture-boundary ratchet passed macOS Common 92, Wire 513, Host 338,
+Client 293, and SystemTests 17 plus benchmark safety, signing, 25 analyzers,
+app identity, signed CLI, hermetic linkage, and double signed release-app
+assembly. Pup passed Common 93, Wire 513, and Host 339 plus warning-enforced
+debug and release builds, linkage, socket and pacing harnesses, and protected-
+state verification. One reusable lexer now owns structural source scans;
+registered pure targets fail closed on missing roots, outward imports, OS
+clocks, synchronization, and IO vocabulary. Frozen vectors were unchanged.
 
 ## Current live rig
 
@@ -153,19 +164,18 @@ automatic response; no policy change was earned.
 
 ## Architecture train after commissioning
 
-Keep every landing small and green. The intended order is:
+Keep every landing small and green. The remaining order is:
 
-1. Strengthen one sans-IO/dependency ratchet before creating more targets.
-2. Extract pure `LyteClientCore` policy one organ at a time, starting with
+1. Extract pure `LyteClientCore` policy one organ at a time, starting with
    roaming policy.
-3. Extract the client session vertical without moving platform IO.
-4. Replace `COpusEncode` with the pinned `COpus` Swift-facing leaf and delete
+2. Extract the client session vertical without moving platform IO.
+3. Replace `COpusEncode` with the pinned `COpus` Swift-facing leaf and delete
    the duplicate C codec-policy wrapper.
-5. Extract pure host session policy behind injected time and randomness.
-6. Make application composition roots explicit.
-7. Remove executable insecure/plaintext production paths while preserving
+4. Extract pure host session policy behind injected time and randomness.
+5. Make application composition roots explicit.
+6. Remove executable insecure/plaintext production paths while preserving
    test-only frozen-vector equipment.
-8. Finish documentation and architectural ratchets, then repeat clean macOS,
+7. Finish documentation and architectural ratchets, then repeat clean macOS,
    pup, WASM, and live-rig commissioning.
 
 ## Recovery pointers
