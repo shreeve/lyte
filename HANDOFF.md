@@ -4,13 +4,13 @@
 
 ## Resume here
 
-- **Branch:** `agent/helper-client-auth`, based on clean `main` at the #173
-  landing.
-- **GitHub:** the exact helper-client authentication slice is ready for its
-  focused PR.
+- **Branch:** resume on clean `main` after the #174 landing; do not continue on
+  its merged feature branch.
+- **GitHub:** PR #174 is landing exact helper-client authentication with full
+  signed acceptance, foreign rejection, Mac, pup, and live proof.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** land exact helper-client authentication, then run the
-  sustained owner-visible stats-ledger investigation.
+- **Current objective:** run the sustained owner-visible stats-ledger
+  investigation and fix only defects supported by its attribution evidence.
 
 ## Last green gates
 
