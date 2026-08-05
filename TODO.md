@@ -49,10 +49,11 @@ The closed 2026-07-30 analysis ledger is available at
 - **Native packaging:** make Linux installation a single coherent product
   experience, then add the macOS host role. Windows/Linux role shells follow
   only after the shared session boundaries are IO-free.
-- **Browser client:** after native commissioning, compile the shared client
-  protocol core to WASM and use WebCodecs through an untrusted
-  WebTransport-datagram-to-UDP bridge. Design:
-  `docs/20260720-184200-browser-client-caddy-bridge.md`.
+- **Browser client:** after native commissioning, bring the IO-free client
+  session boundary into the already-attested WASM path, then use WebTransport,
+  WebCodecs, WebGPU, and AudioWorklet through an untrusted browser carrier.
+  Current direction: `docs/BROWSER.md`; the dated studies linked there retain
+  the original research and measurements.
 
 ## Diagnostic backlog
 
