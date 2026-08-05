@@ -131,6 +131,29 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertFalse(overlaySource.contains("ForEach(model.statsRows())"))
     }
 
+    func testConductorOwnsCushionWithoutAUserSetting() throws {
+        let root = URL(fileURLWithPath: ClientTestPaths.repositoryRoot)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root
+            .appendingPathComponent("Client/Sources/Lyte/LyteSettings.swift")
+            .path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root
+            .appendingPathComponent(
+                "Client/Sources/LyteTransport/PlayoutCushionPreference.swift")
+            .path))
+
+        let app = try String(
+            contentsOf: root.appendingPathComponent(
+                "Client/Sources/Lyte/LyteApp.swift"),
+            encoding: .utf8)
+        let model = try String(
+            contentsOf: root.appendingPathComponent(
+                "Client/Sources/Lyte/ConnectionModel.swift"),
+            encoding: .utf8)
+        XCTAssertFalse(app.contains("Settings {"))
+        XCTAssertFalse(model.contains("playoutCushion"))
+        XCTAssertFalse(model.contains("PlayoutCushionPreference"))
+    }
+
     private func directoryNames(at root: URL) throws -> [String] {
         try FileManager.default.contentsOfDirectory(
             at: root,

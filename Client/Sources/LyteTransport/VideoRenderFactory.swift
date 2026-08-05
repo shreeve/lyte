@@ -16,8 +16,8 @@
 //     over the recovered Annex-B bytes, not typed buffer chains;
 //   - HEVC only — Lyte's wire carries hevc_nvenc output; the H.264 leg
 //     died with the GameStream stack;
-//   - pts begins as the host capture timestamp (µs); the app's adaptive
-//     playout seam re-stamps it into the local CM host-clock domain.
+//   - pts begins as the host capture timestamp (µs); the Conductor
+//     re-stamps it onto the local CM host-clock beat grid.
 
 import CoreMedia
 import Foundation

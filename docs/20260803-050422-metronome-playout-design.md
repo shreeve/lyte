@@ -169,18 +169,38 @@ the precedent) applied to timing:
    and profile — then retire the old code path by path. The effect of
    a rewrite, without ever performing one.
 
-## The cushion is the user's dial
+## The automatic cushion
 
-Depth is quantized in beats — every setting stays perfectly on-beat;
-only latency changes:
+Depth is quantized in beats — every posture stays perfectly on-beat;
+only latency changes. These are the Conductor's possible reserve depths, not
+user-selectable postures:
 
 | cushion | added latency | posture |
 |---|---|---|
-| 1 beat | ~17 ms | fast (interactive default candidate) |
+| 1 beat | ~17 ms | floor |
 | 2 beats | ~33 ms | smooth |
 | 3 beats | ~50 ms | silk (movie-watching) |
+| 4 beats | ~67 ms | resilient |
 
 Today's measured tail (~1 beat) is covered by 1–2 beats.
+
+Lyte sees the evidence the user cannot: measured path-delay tail, late
+delivery, healed loss, real holes, and sustained clean runs. The Conductor
+therefore owns the latency/resilience decision:
+
+| automatic contract | value |
+|---|---:|
+| reserve floor | 1 beat (~17 ms) |
+| growth | whole-beat re-cue only after a real hole |
+| return | 1 beat after 600 fresh frames of surplus proof |
+| internal cue safety ceiling | 150 ms |
+
+The cue starts at the measured path delay plus the one-beat floor. A repaired
+packet loss does not move it. When delivery proves the reserve insufficient,
+the hole law adds only the whole beats required to land the newest part back
+on the score. When calm air proves a full beat is surplus, the slip law returns
+exactly one beat. There is no persisted cushion preference, no alternate
+adaptive-delay controller, and no Settings surface.
 
 ## Acceptance (the witness proves it)
 
