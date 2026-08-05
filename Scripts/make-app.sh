@@ -18,6 +18,11 @@ swift build \
 
 # LaunchServices requires a numeric bundle build. Source identity is separate
 # because a Git hash is provenance, not a valid CFBundleVersion.
+if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+  echo "error: bundle version requires full Git history" >&2
+  echo "       fetch --unshallow before assembling Lyte.app" >&2
+  exit 1
+fi
 BUNDLE_VERSION="$(git rev-list --count HEAD)"
 SOURCE_REVISION="$(git rev-parse --short=12 HEAD)"
 [ -n "$(git status --porcelain)" ] \

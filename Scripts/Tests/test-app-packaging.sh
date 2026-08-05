@@ -23,6 +23,7 @@ bonjour_service="$(
 )"
 
 [[ "$bundle_version" =~ ^[0-9]+$ ]]
+[[ "$bundle_version" == "$(git -C "$repo_root" rev-list --count HEAD)" ]]
 [[ "$short_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 expected_revision="$(git -C "$repo_root" rev-parse --short=12 HEAD)"
 [[ -z "$(git -C "$repo_root" status --porcelain)" ]] \
@@ -45,6 +46,7 @@ grep -Fq 'RENAME_SWAP' "$make_app"
 grep -Fq 'STAGED_APP' "$make_app"
 grep -Fq '<key>LyteSourceRevision</key>' "$make_app"
 grep -Fq '<string>0.5.0</string>' "$make_app"
+grep -Fq -- '--is-shallow-repository' "$make_app"
 
 leftovers="$(
     find "$repo_root/.build" -mindepth 1 -maxdepth 1 -type d \
