@@ -354,10 +354,10 @@ def quality_analysis(samples, elapsed):
         "p50RGBPSNRDB": percentile(psnrs, 50),
         "minLumaSSIM": min(ssims) if ssims else None,
         "p50LumaSSIM": percentile(ssims, 50),
-        # Vacuously true when the probe has no clean warm-up frame: probe
-        # errors surface through the phase gate and a missing steady
-        # window through the readback-gap gate, so an empty warm-up is
-        # not itself a failure.
+        # Vacuously true when the probe has no clean warm-up frame: an
+        # unavailable warm-up readback is retained as telemetry, while a
+        # missing steady window fails the exact readback-gap gate. An empty
+        # warm-up is therefore not itself a failure.
         "warmupPass": all(
             item["psnrMinDB"] >= floors["active"] for item in warmup
         ),
@@ -534,10 +534,18 @@ def analyze(path):
             hard_failures.append("quality_readback_gap")
         if not quality["dimensionsExact"]:
             hard_failures.append("quality_dimension_or_scaling_mismatch")
+        # A readback may race the first displayed buffer during the
+        # explicitly excluded three-second warm-up. That is neither an
+        # ambiguous corpus phase nor a steady-state gap. Once pixels exist,
+        # however, every warm-up and steady observation must still name and
+        # match the authored frame; steady readback errors remain covered by
+        # the exact expectedSteadyObservations count above.
         if any(
-            item.get("error") is not None
-            or item.get("phaseMatched") is not True
-            or item.get("syntheticFrameID") is None
+            item.get("error") is None
+            and (
+                item.get("phaseMatched") is not True
+                or item.get("syntheticFrameID") is None
+            )
             for item in quality["timeSeries"]
         ):
             hard_failures.append("quality_phase_ambiguous")
