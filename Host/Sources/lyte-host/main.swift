@@ -78,7 +78,7 @@ struct Options {
     /// and capability key 10 is declared only when the leaf actually
     /// came up (the key-9/--no-audio precedent).
     var clipboard = false
-    /// P-1: the images rung of the consent tier (LYTE-PLAN §8's
+    /// P-1: the images rung of the consent tier (the clipboard design's
     /// Off / Text only / Text + images). `--clipboard=images` sets
     /// both flags; key 12 is declared only when the leaf came up
     /// with images enabled — a text-only run truthfully never

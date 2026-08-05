@@ -119,7 +119,7 @@ public enum CapabilityKey {
     /// survived — the feature (clipboard) and the dialect (image
     /// cargo). Key 11 is deliberately NOT in the gate: its
     /// declaration is the standing FILE-DROP consent (F-2 §6), and
-    /// the Off / Text only / Text + images tier (LYTE-PLAN §8) must
+    /// the Off / Text only / Text + images tier (clipboard design §6) must
     /// not couple image sync to file consent — an images-tier end
     /// runs the chan-8 bulk vocabulary for clipboard cargo whenever
     /// key 12 agreed. A text-only HOST truthfully never declares

@@ -308,7 +308,7 @@ public struct LyteUdpSessionCoreConfig: Sendable {
     /// lands.
     public var shareClipboard: Bool
     /// P-1: the images rung of the consent tier (Off / Text only /
-    /// Text + images — LYTE-PLAN §8). Images move only when THIS and
+    /// Text + images; clipboard design §6). Images move only when THIS and
     /// `shareClipboard` are both on; default OFF like text. Declaration
     /// is unaffected — key 12 is always declared (dialect, not consent,
     /// the key-9/10/11 rule) — but an unwelcome inbound marker draws
@@ -932,7 +932,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     }
 
     /// The images rung's live state: images move only when sharing
-    /// is on AND the rung is on (Text + images, LYTE-PLAN §8).
+    /// is on AND the rung is on (the clipboard design's Text + images tier).
     public var clipboardImageSharingEnabled: Bool {
         lock.lock()
         defer { lock.unlock() }

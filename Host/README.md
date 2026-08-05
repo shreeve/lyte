@@ -1,8 +1,8 @@
 # Lyte Host (Linux)
 
-The Swift Linux host (LYTE-PLAN §6): a full Lyte-UDP session host — the
+The Swift Linux host: a full Lyte-UDP session host — the
 direct eye's KMS capture → native VAAPI HEVC (our own bitstream pens),
-5 ms Opus audio, Mutter/uinput input injection, Noise-sealed datagrams,
+5 ms Opus audio, uinput injection, Noise-sealed datagrams,
 congestion control and targeted repair, Avahi discovery. H2 parity
 closed 2026-07-22 (gate report in git history); the portal era ended
 2026-08-02 at the `self-hosted` tag.
@@ -31,18 +31,19 @@ closed 2026-07-22 (gate report in git history); the portal era ended
   `Common/`.
 - `Sources/CNetIO` — C leaf: the UDP socket (sendmmsg/recvmmsg, per-packet
   TOS cmsgs, kernel TX timestamps, line-buffered stdout).
-- `Sources/CInputUinput` — C leaf: virtual evdev devices, the input
-  fallback behind Mutter RemoteDesktop.
+- `Sources/CInputUinput` — C leaf: virtual evdev devices, the sole input
+  backend.
 - `Sources/lyte-host` — the executable: direct-eye capture, session
   wiring, Avahi advertisement, pairing (`--pair`), input backends
-  (`--input auto|mutter|uinput|off`).
+  (`--input auto|uinput|off`).
 - `Sources/lyte-eye` / `lyte-nvenc` — the standalone direct-eye probe and
   the banked NVENC-native probe (E6a).
 - `Sources/lyte-netio-check`, `lyte-pace-check`, `lyte-audio-check` —
   on-host verification harnesses.
 
 C lives only at the hardware/OS leaves (DRM/EGL/VAAPI module maps,
-PipeWire audio, D-Bus, libopus, the socket, uinput), per LYTE-PLAN §4 —
+PipeWire audio, D-Bus, libopus, the socket, uinput), per the repository
+architecture doctrine in `AGENTS.md` —
 since E5 that includes no media library: the HEVC bitstream itself is
 Swift (HostCore's pens).
 

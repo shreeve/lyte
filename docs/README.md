@@ -9,6 +9,12 @@ them: the H-era build plans, HOST-PLAN, the H1/H2 gate reports, the
 H3/H4 plans, the HANDOFF archive, the estimator/squeeze/Rext/wifi
 studies, and the Sunshine/Moonlight/moonshine reference reads).*
 
+The former root `LYTE-PLAN.md` was retired after its durable product
+direction moved to `README.md` and its engineering law to `AGENTS.md`.
+Historical references inside frozen records still name the plan as it
+existed when they were authored. Recover its final form with
+`git show 59e8bb4:LYTE-PLAN.md`.
+
 ## Living
 
 - [DESIGN.md](DESIGN.md) — product design decisions (the 2×2
