@@ -5,11 +5,11 @@ history.*
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #196. There are no auxiliary worktrees,
+- **Branch:** clean `main` through PR #197. There are no auxiliary worktrees,
   other local or remote branches, or open pull requests.
-- **Current objective:** compose lifecycle and capabilities behind one IO-free
-  `ClientControlSession` façade, then move the remaining feature-control
-  judgment behind that same platform-shell boundary.
+- **Current objective:** move the remaining feature-control judgment behind
+  the new IO-free `ClientControlSession` platform-shell boundary, beginning
+  with host-audio routing and then clipboard/cursor control.
 - **Recent landings:** PR #186 made shipping transport Noise-only and removed
   513 net lines; PR #187 made `HostApplication` the native Swift `@main` entry;
   PR #188 aligned every living architecture document with those landings and
@@ -27,12 +27,15 @@ history.*
   one IO-free client-session owner that builds unchanged on macOS, Linux, and
   WebAssembly; PR #196 moved mode-transition and session-teardown decoding into
   the lifecycle organ, leaving transport only synchronization, counters, sends,
-  and event delivery. Frozen dated records and vectors did not change.
+  and event delivery; PR #197 composed both organs behind one
+  `ClientControlSession`, made capability-failure teardown one cross-organ value
+  decision, and reduced the macOS transport by another 19 lines. Frozen dated
+  records and vectors did not change.
 
 ## Last green gates
 
-The exact PR #196 source commit `bf713fe` passed the complete warning-enforced
-macOS gate: Common 93, Wire 513, Host 345, Client 312, and SystemTests 17.
+The exact PR #197 source commit `6e43e37` passed the complete warning-enforced
+macOS gate: Common 93, Wire 513, Host 345, Client 318, and SystemTests 17.
 Benchmark and
 host-release safety, signing policy, 25 analyzer tests, app identity, the
 signed CLI, hermetic linkage, packaging, and double signed release-app
