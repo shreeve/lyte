@@ -97,7 +97,11 @@ build_graph_hash="$({
 run_package_tests "Common" "$repo_root/Common" "$repo_root/Common/.build"
 run_package_tests "Wire" "$repo_root/Wire" "$repo_root/Wire/.build"
 run_package_tests "Host" "$repo_root/Host" "$repo_root/Host/.build"
-run_package_tests "client" "$repo_root/Client" "$repo_root/.build"
+# `.build/Lyte.app` is the published owner app and may be running while this
+# read-only gate executes. SwiftPM `clean` removes the entire scratch root, so
+# Client verification must have a package-local scratch directory and must
+# never erase the live bundle out from under its process.
+run_package_tests "client" "$repo_root/Client" "$repo_root/Client/.build"
 run_package_tests \
     "SystemTests" "$repo_root/SystemTests" "$repo_root/SystemTests/.build"
 
