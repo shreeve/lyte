@@ -5,11 +5,11 @@ history.*
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #197. There are no auxiliary worktrees,
+- **Branch:** clean `main` through PR #198. There are no auxiliary worktrees,
   other local or remote branches, or open pull requests.
 - **Current objective:** move the remaining feature-control judgment behind
-  the new IO-free `ClientControlSession` platform-shell boundary, beginning
-  with host-audio routing and then clipboard/cursor control.
+  the IO-free `ClientControlSession` platform-shell boundary. Host-audio
+  routing is complete; clipboard control is next, followed by cursor control.
 - **Recent landings:** PR #186 made shipping transport Noise-only and removed
   513 net lines; PR #187 made `HostApplication` the native Swift `@main` entry;
   PR #188 aligned every living architecture document with those landings and
@@ -29,13 +29,17 @@ history.*
   the lifecycle organ, leaving transport only synchronization, counters, sends,
   and event delivery; PR #197 composed both organs behind one
   `ClientControlSession`, made capability-failure teardown one cross-organ value
-  decision, and reduced the macOS transport by another 19 lines. Frozen dated
-  records and vectors did not change.
+  decision, and reduced the macOS transport by another 19 lines; PR #198 moved
+  host-audio negotiation gates, confirmed posture, one-time startup
+  reconciliation, malformed-status handling, role-confusion judgment, and
+  outbound request bytes into one IO-free `ClientAudioRoutingSession`, leaving
+  macOS transport to synchronize counters, execute sends, and project events.
+  Frozen dated records and vectors did not change.
 
 ## Last green gates
 
-The exact PR #197 source commit `6e43e37` passed the complete warning-enforced
-macOS gate: Common 93, Wire 513, Host 345, Client 318, and SystemTests 17.
+The exact PR #198 source commit `b46df52` passed the complete warning-enforced
+macOS gate: Common 93, Wire 513, Host 345, Client 329, and SystemTests 17.
 Benchmark and
 host-release safety, signing policy, 25 analyzer tests, app identity, the
 signed CLI, hermetic linkage, packaging, and double signed release-app
@@ -50,7 +54,7 @@ warning-enforced debug and release builds; hermetic linkage; pinned Opus symbol
 proof; a real release host image plus packaged-binary linkage proof; the full
 installer lifecycle in an isolated root; socket/TOS and pacing harnesses; and
 protected-state verification. The gate did not deploy or restart the standing
-service. The extracted `LyteClientSession` target also cross-built directly for
+service. The expanded `LyteClientSession` target also cross-built directly for
 `wasm32-unknown-wasip1` with the pinned Swift 6.3.3 WebAssembly SDK.
 
 Focused architecture proof on the composed main branch passes all three host
@@ -111,8 +115,9 @@ stay diagnostic and silent.
 
 ## Next commissioning order
 
-1. Extract the remaining concrete client-session orchestration into the
-   IO-free `LyteClientSession` boundary.
+1. Move clipboard control judgment behind `ClientControlSession`, preserving
+   consent, capability, origin/echo, size, and role-confusion laws as typed
+   IO-free decisions; then do the same for cursor control.
 2. Keep the clean Mac/Linux/WASM/live commissioning baseline green, then add
    thin macOS/Linux/Windows/browser shells at that shared boundary.
 
