@@ -53,6 +53,7 @@
 // first flight; zero new wire bytes.
 
 import HostCore
+import HostSession
 import LyteCore
 import LyteWire
 

@@ -1,5 +1,6 @@
 import XCTest
 import HostCore
+import HostSession
 import HostWire
 import LyteCore
 import LyteWire

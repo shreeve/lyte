@@ -146,7 +146,7 @@ instrumentation; `LyteClientTestKit` owns test-only client equipment.
 
 ### Host
 
-`LyteHostCore` owns pure host-role policy. `LyteHostSession` owns the IO-free
+`HostCore` owns pure host-role policy. `HostSession` owns the IO-free
 responder/session orchestration over LyteWire. The platform targets
 `LyteHostMacOS`, `LyteHostLinux`, and `LyteHostWindows` implement their ports.
 Hardware and OS C leaves remain targets under `Host/Sources` and use the

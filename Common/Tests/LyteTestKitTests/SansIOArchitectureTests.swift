@@ -34,6 +34,10 @@ final class SansIOArchitectureTests: XCTestCase {
             path: "Host/Sources/HostCore",
             allowedImports: ["LyteCore"]
         ),
+        Boundary(
+            path: "Host/Sources/HostSession",
+            allowedImports: ["LyteWire"]
+        ),
     ]
 
     func testRegisteredSansIOBoundariesPointOnlyInward() throws {

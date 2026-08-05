@@ -4,11 +4,10 @@
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #182. Resume `agent/host-session-core`
+- **Branch:** clean `main` through PR #183. Resume `agent/host-session-core`
   from its committed extraction after incorporating current `main`.
-- **GitHub:** PR #182 makes video warnings terminal verdicts: preserved
-  lateness remains diagnostic evidence, while only an uncorrectable frame miss
-  or renderer failure can notify the user.
+- **GitHub:** PR #183 gives stats telemetry two stable semantic rows: `glass`
+  owns path timing, while `playout` owns renderer and Conductor state.
 - **Workspace:** one checkout and no auxiliary worktrees.
 - **Current objective:** extract pure host session policy behind injected time
   and randomness without moving sockets, queues, persistence, or Linux IO.
@@ -155,11 +154,20 @@ pacing harnesses, and protected-state verification. Preserved frames remain
 silent at measured lateness from 0.999 through 400 ms; terminal misses retain
 their measured lateness only as context. Frozen vectors were unchanged.
 
+The two-row stats slice passed its focused 13-test layout proof and the full
+warning-enforced macOS gate: Common 93, Wire 513, Host 340, Client 300, and
+SystemTests 17 plus benchmark safety, signing, 25 analyzers, app identity, the
+signed CLI, packaging, hermetic linkage, and double signed release-app
+assembly. Pup passed Common 94, Wire 513, and Host 341 plus warning-enforced
+debug and release builds, linkage, socket and pacing harnesses, and protected-
+state verification. No metric or telemetry source changed; only the stable
+presentation boundary changed. Frozen vectors were unchanged.
+
 ## Current live rig
 
 ### Client
 
-- `.build/Lyte.app` (PID 21298) is running; the helper is demand-launched when
+- `.build/Lyte.app` (PID 64483) is running; the helper is demand-launched when
   a stream needs it. The previous app's
   beachball was a main-thread `StatsOverlay` feedback loop: its `TimelineView`
   repeatedly invoked `ConnectionModel.statsRows()` and percentile sorting from
@@ -168,11 +176,11 @@ their measured lateness only as context. Frozen vectors were unchanged.
   proof is recorded under the focused gate above.
 - It is signed by `Apple Development: Steve Shreeve (8FHNN4RZ9Q)` with team
   identifier `SD6N7Z8P9P` and bundle identifier `dev.shreeve.lyte`.
-- The current landed bundle is clean source `e3a3024f5c9a`, build
-  `1785919244`.
+- The current landed bundle is clean source `ad1512c3206b`, build
+  `1785919825`.
   Its Lyte and helper executable SHA-256 values are respectively
-  `6a7574f4f37ed018f8f132b52ecd6a6e3d28c546e11c0040e7957db577fba1b1`
-  and `a5c13374615df574e3294dd24f2d3c6515763bd124d9d34a4586342f161f0c0c`.
+  `aa5b63f5acfbc30e559e5c398d047b3db7e9a1a517a71397a0dbf4267b59d48f`
+  and `eae3cff51bbe689f4e82e755edc49ef9b2d5c320286bd452dd33148a92e1fe2e`.
   Packaging, hermetic-linkage, and strict deep-signature checks pass.
 - LaunchServices resolves the exact candidate path, build version, signing
   identity, and Mach-O UUID. After the completed reboot and an owner-controlled

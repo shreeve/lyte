@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import HostSession
 import HostWire
 import LyteWire
 import LyteWireTestKit
@@ -71,7 +72,7 @@ final class PathMigrationGateTests: XCTestCase {
         let connId = makeConnectionId()
         let millisecond: UInt64 = 1_000_000 // ns
 
-        let validator = PathValidator(
+        var validator = PathValidator(
             connectionId: connId,
             initialPath: Self.tupleA,
             now: 0,
@@ -243,7 +244,7 @@ final class PathMigrationGateTests: XCTestCase {
     func testSpoofedConnIdNeverPromotes() throws {
         let connId = makeConnectionId()
         let millisecond: UInt64 = 1_000_000
-        let validator = PathValidator(
+        var validator = PathValidator(
             connectionId: connId,
             initialPath: Self.tupleA,
             now: 0,
@@ -320,7 +321,7 @@ final class PathMigrationGateTests: XCTestCase {
 
     func testRuntDatagramWithholdsChallengeUntilBudgetAffordsIt() throws {
         let connId = makeConnectionId()
-        let validator = PathValidator(
+        var validator = PathValidator(
             connectionId: connId,
             initialPath: Self.tupleA,
             now: 0,
@@ -369,7 +370,7 @@ final class PathMigrationGateTests: XCTestCase {
 
     func testUnknownConnIdAndBareDatagramsNeverProbe() throws {
         let connId = makeConnectionId()
-        let validator = PathValidator(
+        var validator = PathValidator(
             connectionId: connId,
             initialPath: Self.tupleA,
             now: 0,

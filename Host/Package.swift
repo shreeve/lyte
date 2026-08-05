@@ -2,15 +2,17 @@
 import Foundation
 import PackageDescription
 
-// HostCore (pure Swift bitstream helpers), HostAudio (Swift codec policy),
-// HostWire (the wiring layer that marries HostCore mechanisms to LyteWire
-// codecs — HS-5), and their tests build everywhere, including macOS. The
+// HostCore (pure Swift role policy), HostSession (pure session policy),
+// HostAudio (Swift codec policy), HostWire (the wiring layer that marries
+// those mechanisms to LyteWire codecs — HS-5), and their tests build
+// everywhere, including macOS. The
 // capture/encode leaves exist only on Linux: they bind PipeWire, D-Bus,
 // DRM/GBM/EGL/VAAPI, CUDA/NVENC, uinput, and UDP through narrow C or
 // system-library targets.
 
 var products: [Product] = [
     .library(name: "HostCore", targets: ["HostCore"]),
+    .library(name: "HostSession", targets: ["HostSession"]),
     .library(name: "HostAudio", targets: ["HostAudio"]),
     .library(name: "HostWire", targets: ["HostWire"]),
 ]
@@ -25,6 +27,17 @@ var targets: [Target] = [
         dependencies: [
             "HostCore",
             .product(name: "LyteCore", package: "Common"),
+        ]
+    ),
+    .target(
+        name: "HostSession",
+        dependencies: [.product(name: "LyteWire", package: "Wire")]
+    ),
+    .testTarget(
+        name: "HostSessionTests",
+        dependencies: [
+            "HostSession",
+            .product(name: "LyteWire", package: "Wire"),
         ]
     ),
     // Host audio codec policy in Swift over the one pinned COpus mechanism.
@@ -44,6 +57,7 @@ var targets: [Target] = [
         name: "HostWire",
         dependencies: [
             "HostCore",
+            "HostSession",
             .product(name: "LyteCore", package: "Common"),
             .product(name: "LyteWire", package: "Wire"),
         ]
@@ -52,6 +66,7 @@ var targets: [Target] = [
         name: "HostWireTests",
         dependencies: [
             "HostWire",
+            "HostSession",
             "HostCore",
             .product(name: "LyteCore", package: "Common"),
             .product(name: "LyteWire", package: "Wire"),
@@ -212,6 +227,7 @@ targets += [
         name: "lyte-host",
         dependencies: [
             "HostCore",
+            "HostSession",
             "HostWire",
             "CDBus",
             // HS-15: the audio leg — monitor capture + Opus encode

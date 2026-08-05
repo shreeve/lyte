@@ -1,4 +1,5 @@
 import Foundation
+import HostSession
 import HostWire
 import LyteCore
 import LyteTransport

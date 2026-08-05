@@ -60,6 +60,7 @@ import LyteCore
 import CNetIO
 import Foundation
 import HostCore
+import HostSession
 import HostWire
 import LyteWire
 
