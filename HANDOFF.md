@@ -5,11 +5,12 @@ history.*
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #198. There are no auxiliary worktrees,
-  other local or remote branches, or open pull requests.
-- **Current objective:** move the remaining feature-control judgment behind
-  the IO-free `ClientControlSession` platform-shell boundary. Host-audio
-  routing is complete; clipboard control is next, followed by cursor control.
+- **Branch:** `fix/direct-eye-same-fb-damage` from clean `main` through PR #198.
+  There is one checkout, no auxiliary worktree, and no open pull request yet.
+- **Current objective:** land the Direct Eye correction that observes pixels
+  at 60 Hz, treats KMS framebuffer identity only as an import-cache key, and
+  encodes only actual changes. Then resume the IO-free client-control sequence
+  with clipboard followed by cursor.
 - **Recent landings:** PR #186 made shipping transport Noise-only and removed
   513 net lines; PR #187 made `HostApplication` the native Swift `@main` entry;
   PR #188 aligned every living architecture document with those landings and
@@ -34,28 +35,24 @@ history.*
   reconciliation, malformed-status handling, role-confusion judgment, and
   outbound request bytes into one IO-free `ClientAudioRoutingSession`, leaving
   macOS transport to synchronize counters, execute sends, and project events.
-  Frozen dated records and vectors did not change.
+  This branch corrects the Direct Eye's false damage premise, replaces FB-flip
+  gating with a compact full-screen GPU fingerprint, and retires the obsolete
+  flip-gap ledger. Frozen wire vectors did not change.
 
 ## Last green gates
 
-The exact PR #198 source commit `b46df52` passed the complete warning-enforced
-macOS gate: Common 93, Wire 513, Host 345, Client 329, and SystemTests 17.
-Benchmark and
+The exact current source passed the complete warning-enforced macOS gate:
+Common 93, Wire 513, Host 340, Client 329, and SystemTests 17. Benchmark and
 host-release safety, signing policy, 25 analyzer tests, app identity, the
 signed CLI, hermetic linkage, packaging, and double signed release-app
-assembly all passed. The isolated host-image lifecycle also proved exact
-inventory, permissions, stable service path, manifest and corruption rejection;
-install/reinstall preservation; explicit service lifecycle; symmetric
-uninstall/purge; and identity preservation.
+assembly all passed. The isolated host-image lifecycle also passed.
 
-The same commit passed pup's deterministic gate: Common 94, Wire 513, and Host
-346; warning-enforced `LyteClientCore` and `LyteClientSession` Linux builds;
-warning-enforced debug and release builds; hermetic linkage; pinned Opus symbol
-proof; a real release host image plus packaged-binary linkage proof; the full
-installer lifecycle in an isolated root; socket/TOS and pacing harnesses; and
-protected-state verification. The gate did not deploy or restart the standing
-service. The expanded `LyteClientSession` target also cross-built directly for
-`wasm32-unknown-wasip1` with the pinned Swift 6.3.3 WebAssembly SDK.
+The same source passed pup's deterministic gate: Common 94, Wire 513, and Host
+341; warning-enforced portable-client builds; warning-enforced host debug and
+release builds; hermetic linkage; pinned Opus proof; the release image and
+installer lifecycle; kernel socket/TOS and pacing harnesses; and protected-state
+verification. A standalone six-second GPU run made 360 observations with zero
+skipped beats and zero missed grabs; fingerprint readback averaged 1.69 ms.
 
 Focused architecture proof on the composed main branch passes all three host
 composition/security laws: one native `@main` doorway, injected argument
@@ -67,7 +64,7 @@ Swift files. Wire's full WebAssembly leg also passed 511 tests under wasmtime
 
 ### Client
 
-- `.build/Lyte.app` PID 86190 is running and connected to pup. Do not launch a
+- `.build/Lyte.app` PID 60433 is running and connected to pup. Do not launch a
   benchmark or second ordinary Lyte app while it is open; both use the same
   bundle identity.
 - Bundle identifier `dev.shreeve.lyte`, team `SD6N7Z8P9P`, signed by
@@ -90,13 +87,17 @@ Swift files. Wire's full WebAssembly leg also passed 511 tests under wasmtime
 
 ### Host
 
-- `pup` is wired at `10.0.0.232`; Wi-Fi backup is `10.0.0.249`.
-- `lyte-host.service` is active on UDP 41151. Its configured 120-second
+- `pup` is currently on Wi-Fi at `10.0.0.249`; wired address `10.0.0.232` is
+  unplugged. The active advertisement interface is `wlp0s20f3`.
+- `lyte-host.service` PID 90865 is active on UDP 41151. Its configured 120-second
   no-client-handshake timeout can exercise systemd restart policy; a changing
   PID alone is not a host crash.
 - Deployed release binary: `~/src/lyte-host/.build/release/lyte-host`, SHA-256
-  `0e00b24f66124d63bf1a2b83dbff3c363b50c92d1869c37a1be7f6151d3abb07`.
+  `d6dc2db577045477d6f458fe428f0ceadab6dba35d1b3f25fe720bc35b93b33b`.
 - Session log: `/tmp/lyte-host-session.log`.
+- A pre-session process can ignore SIGTERM while blocked in handshake receive;
+  this commissioning restart required a scoped systemd SIGKILL. The service
+  immediately restarted under PID 90865; the product fix is filed in `TODO.md`.
 
 Never touch pup's
 `~/.config/lyte-host/{portal_token,noise_static.key,paired_clients}` and never
@@ -105,20 +106,22 @@ and `--no-advertise`.
 
 ## Latest owner-visible evidence
 
-The clean PR #189 artifacts completed a Noise handshake and negotiated HEVC,
-4:2:0, idle silence, host-audio routing, and a 1152-byte datagram ceiling. The
-native VAAPI direct eye opened at 2048×1280; video/IDR, 5 ms Opus audio, cursor,
-input, and beacon traffic were live, with recent beacon RTT converging around
-6–10 ms. The automatic Conductor remains the only video-reserve owner. The user
-warning counts only terminal renderer misses/failures; absorbed disturbances
-stay diagnostic and silent.
+The deployed corrected host and exact signed app completed Noise and opened the
+native VAAPI Direct Eye at 2048×1280 in Best 4:4:4. The first live run observed
+17,171 screen beats, encoded only 1,369 changes, skipped one beat, and missed
+zero grabs. The final cleaned build reconnected successfully; on pup's Wi-Fi
+the estimator recovered from its opening loss dip to 27.6 Mbps and beacon RTT
+settled near 10 ms. Normal 30 fps content no longer emits false 60 Hz capture-
+skip diagnostics. The automatic Conductor remains the only presentation and
+video-reserve owner.
 
 ## Next commissioning order
 
-1. Move clipboard control judgment behind `ClientControlSession`, preserving
+1. Land this Direct Eye correction through the PR train and record its commit.
+2. Move clipboard control judgment behind `ClientControlSession`, preserving
    consent, capability, origin/echo, size, and role-confusion laws as typed
    IO-free decisions; then do the same for cursor control.
-2. Keep the clean Mac/Linux/WASM/live commissioning baseline green, then add
+3. Keep the clean Mac/Linux/WASM/live commissioning baseline green, then add
    thin macOS/Linux/Windows/browser shells at that shared boundary.
 
 ## Recovery pointers
@@ -126,4 +129,5 @@ stay diagnostic and silent.
 - Repository law and canonical commands: `AGENTS.md`
 - Deferred actionable work: `TODO.md`
 - Source-layout decision: `docs/20260803-084328-source-layout-and-migration.md`
+- Direct Eye correction: `docs/20260805-084033-direct-eye-pixel-observation.md`
 - Retired strategy: `git show 59e8bb4:LYTE-PLAN.md`

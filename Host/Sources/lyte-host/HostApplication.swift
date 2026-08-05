@@ -1,4 +1,4 @@
-// lyte-host: the direct eye (KMS doorbell + EGL blit + native VAAPI
+// lyte-host: the direct eye (60 Hz pixel observation + EGL blit + native VAAPI
 // encode — HostEye) → Annex-B file, or the Lyte-UDP session (HS-7):
 // `--wire-out HOST:PORT` (or `--wire-listen PORT`) runs
 // HostWire.Session — Noise IK responder handshake against a connecting
@@ -250,8 +250,8 @@ struct Options {
                 print("""
                 usage: lyte-host [--out PATH] [--seconds N]
                                  [--wire-out HOST:PORT] [--wire-rate-mbps N]
-                Captures the desktop with the direct eye (KMS doorbell +
-                EGL blit, needs CAP_SYS_ADMIN) and encodes native VAAPI
+                Captures the desktop with the direct eye (GPU pixel observation
+                + EGL blit, needs CAP_SYS_ADMIN) and encodes native VAAPI
                 HEVC — to Annex-B PATH (default /tmp/lyte-h0a.hevc) or a
                 Lyte-UDP session.
                   --backend direct  accepted no-op: the direct eye is the
@@ -449,7 +449,7 @@ static func run(arguments: [String]) throws {
                 ?? "listen :\(opts.wireListen!)")
             + ", noise)"
         : opts.outputPath
-    print("lyte-host — direct eye (KMS doorbell + EGL blit) → "
+    print("lyte-host — direct eye (GPU pixel observation + EGL blit) → "
         + "native VAAPI (our pens) → \(destination)")
     // E6b: libavcodec is out of the video path entirely — rate
     // moves are RC misc buffers on the next frame, by construction.

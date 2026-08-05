@@ -54,6 +54,10 @@ existed when they were authored. Recover its final form with
 - [20260801-105800 direct-eye plan](20260801-105800-direct-eye-plan.md) —
   the capture rearchitecture, phases E0–E5. **COMPLETE** (see banner):
   the portal demolition landed 2026-08-02, tag `self-hosted`.
+- [20260805-084033 direct-eye pixel observation](20260805-084033-direct-eye-pixel-observation.md) —
+  the correction record: KMS framebuffer identity is an import-cache key,
+  while a 60 Hz full-screen GPU fingerprint owns damage truth and preserves
+  encode-on-change silence.
 - [20260802-004559 E5 readiness audit](20260802-004559-e5-readiness-audit.md) —
   the flip-day capability matrix and punch list. CLOSED (see banner).
 - [20260802-013946 postures design](20260802-013946-postures-design.md) —

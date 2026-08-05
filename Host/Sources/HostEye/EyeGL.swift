@@ -68,6 +68,16 @@ public struct AyuvTarget {
     public var height: Int32
 }
 
+/// GPU-resident destination for one 64-bit signature per 16x16 source tile.
+/// Reading these signatures costs 80 KiB/beat at 2048x1280 instead of the
+/// 10 MiB scanout, while every source pixel still participates.
+private struct FingerprintTarget {
+    var texture: GLuint
+    var fbo: GLuint
+    var tilesWide: Int32
+    var tilesHigh: Int32
+}
+
 public final class EyeGL {
     private var nodeFd: Int32 = -1
     private var gbm: OpaquePointer?
@@ -77,9 +87,13 @@ public final class EyeGL {
     private var progY: GLuint = 0
     private var progUV: GLuint = 0
     private var prog444: GLuint = 0
+    private var progFingerprint: GLuint = 0
     private var srcSizeLocY: GLint = -1
     private var srcSizeLocUV: GLint = -1
     private var srcSizeLoc444: GLint = -1
+    private var srcSizeLocFingerprint: GLint = -1
+    private var fingerprintTarget: FingerprintTarget?
+    private var previousFingerprint: [UInt32]?
 
     public init(renderNode: String) throws {
         nodeFd = open(renderNode, O_RDWR)
@@ -114,9 +128,12 @@ public final class EyeGL {
         progY = try buildProgram(fragment: Self.fragY)
         progUV = try buildProgram(fragment: Self.fragUV)
         prog444 = try buildProgram(fragment: Self.frag444)
+        progFingerprint = try buildProgram(fragment: Self.fragFingerprint)
         srcSizeLocY = glGetUniformLocation(progY, "srcSize")
         srcSizeLocUV = glGetUniformLocation(progUV, "srcSize")
         srcSizeLoc444 = glGetUniformLocation(prog444, "srcSize")
+        srcSizeLocFingerprint = glGetUniformLocation(
+            progFingerprint, "srcSize")
     }
 
     // MARK: - Shaders
@@ -176,6 +193,37 @@ public final class EyeGL {
         gl_FragColor = vec4(16.0 / 255.0 + y * (219.0 / 255.0),
                             128.0 / 255.0 + u * (224.0 / 255.0),
                             128.0 / 255.0 + v * (224.0 / 255.0), 1.0);
+    }
+    """
+
+    // One independent pair of 32-bit hashes for every 16x16 tile. Unlike a
+    // thumbnail, every 8-bit output-significant source component enters the
+    // signature, so a one-pixel caret cannot vanish between sample points.
+    // Two differently mixed words make accidental equality a 64-bit event.
+    private static let fragFingerprint = """
+    #version 130
+    uniform sampler2D src;
+    uniform ivec2 srcSize;
+    out uvec2 signature;
+    void main() {
+        ivec2 origin = ivec2(gl_FragCoord.xy) * 16;
+        uint a = 2166136261u;
+        uint b = 2246822519u;
+        for (int y = 0; y < 16; ++y) {
+            for (int x = 0; x < 16; ++x) {
+                ivec2 p = origin + ivec2(x, y);
+                if (p.x >= srcSize.x || p.y >= srcSize.y) { continue; }
+                uvec4 q = uvec4(round(clamp(
+                    texelFetch(src, p, 0), 0.0, 1.0) * 255.0));
+                uint word = q.r | (q.g << 8) | (q.b << 16)
+                    | (q.a << 24);
+                uint ordinal = uint(y * 16 + x + 1);
+                a = (a ^ (word + ordinal * 374761393u)) * 16777619u;
+                b = (b + (word ^ (ordinal * 3266489917u))) * 668265263u;
+                b = (b << 13) | (b >> 19);
+            }
+        }
+        signature = uvec2(a, b);
     }
     """
 
@@ -299,6 +347,89 @@ public final class EyeGL {
         var fbo = target.fbo
         glDeleteFramebuffers(1, &fbo)
         destroy(&target.plane)
+    }
+
+    // MARK: - Scanout fingerprint
+
+    private func makeFingerprintTarget(
+        width: Int32, height: Int32
+    ) throws -> FingerprintTarget {
+        let tilesWide = (width + 15) / 16
+        let tilesHigh = (height + 15) / 16
+        var texture: GLuint = 0
+        glGenTextures(1, &texture)
+        glBindTexture(GLenum(GL_TEXTURE_2D), texture)
+        glTexParameteri(
+            GLenum(GL_TEXTURE_2D), GLenum(GL_TEXTURE_MIN_FILTER), GL_NEAREST)
+        glTexParameteri(
+            GLenum(GL_TEXTURE_2D), GLenum(GL_TEXTURE_MAG_FILTER), GL_NEAREST)
+        glTexImage2D(
+            GLenum(GL_TEXTURE_2D), 0, GLint(GL_RG32UI),
+            tilesWide, tilesHigh, 0, GLenum(GL_RG_INTEGER),
+            GLenum(GL_UNSIGNED_INT), nil)
+        let fbo = try attach(texture)
+        return FingerprintTarget(
+            texture: texture, fbo: fbo,
+            tilesWide: tilesWide, tilesHigh: tilesHigh)
+    }
+
+    /// Reads the whole imported scanout on the GPU and returns whether any
+    /// output-significant pixel differs from the preceding observation.
+    /// The first observation after construction/reset is always fresh.
+    public func scanoutChanged(
+        source: ImportedTexture, width: Int32, height: Int32
+    ) throws -> Bool {
+        let requiredWide = (width + 15) / 16
+        let requiredHigh = (height + 15) / 16
+        if fingerprintTarget?.tilesWide != requiredWide
+            || fingerprintTarget?.tilesHigh != requiredHigh {
+            if let old = fingerprintTarget {
+                var fbo = old.fbo
+                var texture = old.texture
+                glDeleteFramebuffers(1, &fbo)
+                glDeleteTextures(1, &texture)
+                fingerprintTarget = nil
+            }
+            fingerprintTarget = try makeFingerprintTarget(
+                width: width, height: height)
+            previousFingerprint = nil
+        }
+        guard let target = fingerprintTarget else {
+            throw EyeGLError("fingerprint target unavailable")
+        }
+
+        glActiveTexture(GLenum(GL_TEXTURE0))
+        glBindTexture(GLenum(GL_TEXTURE_2D), source.texture)
+        glUseProgram(progFingerprint)
+        glUniform2i(srcSizeLocFingerprint, width, height)
+        glBindFramebuffer(GLenum(GL_FRAMEBUFFER), target.fbo)
+        glViewport(0, 0, target.tilesWide, target.tilesHigh)
+        glDisable(GLenum(GL_BLEND))
+        glDisable(GLenum(GL_FRAMEBUFFER_SRGB))
+        glDrawArrays(GLenum(GL_TRIANGLES), 0, 3)
+
+        var words = [UInt32](
+            repeating: 0,
+            count: Int(target.tilesWide * target.tilesHigh) * 2)
+        words.withUnsafeMutableBytes { storage in
+            glReadPixels(
+                0, 0, target.tilesWide, target.tilesHigh,
+                GLenum(GL_RG_INTEGER), GLenum(GL_UNSIGNED_INT),
+                storage.baseAddress)
+        }
+        let error = glGetError()
+        guard error == GLenum(GL_NO_ERROR) else {
+            throw EyeGLError(
+                "fingerprint read failed: 0x\(String(error, radix: 16))")
+        }
+        let changed = previousFingerprint != words
+        previousFingerprint = words
+        return changed
+    }
+
+    /// Reconfiguration and recovery make the current scanout fresh again.
+    public func resetFingerprint() {
+        previousFingerprint = nil
     }
 
     // MARK: - NV12 render target

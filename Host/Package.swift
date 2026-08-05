@@ -109,7 +109,7 @@ targets += [
     ),
     // The direct eye (docs/20260801-105800-direct-eye-plan.md, E0): libdrm
     // imported straight into Swift — a module map, no .c files. The
-    // KMS doorbell/capture organ is Swift-first; CNetIO-style shims
+    // KMS identity/capture organ is Swift-first; CNetIO-style shims
     // appear only if a macro wall does.
     .systemLibrary(
         name: "CDRM",
@@ -149,8 +149,8 @@ targets += [
             .product(name: "LyteIO", package: "Common"),
         ]
     ),
-    // The eye's organs as a LIBRARY (E1): the doorbell/ticket DRM
-    // layer, the EGL/GL import+blit, and the hevc_vaapi encoder wrap —
+    // The eye's organs as a LIBRARY (E1): the identity/ticket DRM layer,
+    // whole-screen GPU observation, EGL/GL import+blit, and VAAPI pens —
     // shared by the standalone lyte-eye and the host's direct backend.
     .target(
         name: "HostEye",

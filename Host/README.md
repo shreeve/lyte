@@ -24,9 +24,10 @@ closed 2026-07-22 (gate report in git history); the portal era ended
   (packetize/FEC/pace/repair store), AudioFramer, RateEstimator, pairing
   responder, and client keystore. It executes `HostSession` decisions but does
   not own their policy.
-- `Sources/HostEye` — the direct eye (Linux): KMS doorbell + GETFB2/dmabuf
-  export, EGL import + RGB→NV12 blit, the native VAAPI encoder seat fed
-  by HostCore's pens, cursor-plane tracking.
+- `Sources/HostEye` — the direct eye (Linux): phase-stable GPU pixel
+  observation, KMS identity + GETFB2/dmabuf import caching, RGB→NV12 EGL
+  blit, the native VAAPI encoder seat fed by HostCore's pens, and cursor-plane
+  tracking.
 - `Sources/CDBus`, `CPipeWire`, `CDRM`, `CGBM`, `CEGL`, `CVA`,
   `CNvEnc`, `CCuda` — pkg-config/systemLibrary module maps (Linux only).
 - `Sources/CPipeWireAudio` — C leaf: default-sink monitor audio capture

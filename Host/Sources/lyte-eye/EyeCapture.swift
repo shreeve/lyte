@@ -1,16 +1,17 @@
-// EyeCapture: milestone 2's conductor — the doorbell paces the loop,
-// each flip becomes a scanout ticket, the 3D engine blits it into an
-// exported VAAPI surface, the native VAAPI pens emit Annex-B, bytes
-// hit the file. Cadence is a consequence of content: an idle desktop
-// encodes ~1 fps, motion encodes at panel rate, a blank screen
-// encodes zero. The libav seat was demolished after first-light;
-// native is the only encoder (--native is accepted as a no-op).
+// EyeCapture: milestone 2's conductor — a stable 60 Hz beat observes the
+// whole scanout through a compact GPU fingerprint. Changed pixels are blitted
+// into an exported VAAPI surface, the native VAAPI pens emit Annex-B, and the
+// bytes hit the file. An idle desktop is observed but not encoded; motion is
+// encoded at panel cadence. Framebuffer identity only invalidates the cached
+// dmabuf import. The libav seat was demolished after first-light; native is
+// the only encoder (--native is accepted as a no-op).
 
 #if os(Linux)
 
 import LyteIO
 import Foundation
 import Glibc
+import HostCore
 import HostEye
 
 func runCapture(_ rawArgs: [String]) -> Never {
@@ -59,7 +60,7 @@ func runCapture(_ rawArgs: [String]) -> Never {
 // MARK: - E6b: the native leg — same eye, libva spoken directly
 
 /// The capture loop with EyeVaapiEncoder in the encoder seat: zero
-/// libavcodec. Everything else — doorbell, GETFB2, EGL import, the
+/// libavcodec. Everything else — screen beat, GETFB2, EGL import, the
 /// NV12 blit into exported surfaces — is E1's machinery verbatim.
 /// Gates: the file decode-probes on the Mac; the books print the
 /// same shape as the libav leg for A/B reading.
@@ -117,10 +118,18 @@ func runNativeCapture(
 
     var targets: [UInt32: NV12Target] = [:]
     var targets444: [UInt32: AyuvTarget] = [:]
+    var scanoutSource: ImportedTexture?
+    var scanoutIdentity: UInt32?
+    var samplingCadence = ScreenSamplingCadence()
+    var observations: UInt64 = 0
+    var framebufferTransitions: UInt64 = 0
+    var changedObservations: UInt64 = 0
+    var skippedObservationBeats: UInt64 = 0
     var frames = 0
     var bytes = 0
     var keyframes = 0
     var missedGrabs = 0
+    var fingerprintMs = 0.0
     var blitMs = 0.0
     var encodeMs = 0.0
     let t0 = SystemMonotonicClock.nowSeconds
@@ -143,7 +152,10 @@ func runNativeCapture(
                 + "\(bitrateBitsPerSecond / 2_000_000) Mbps at midpoint "
                 + "(no reset, no IDR expected)")
         }
-        guard let change = screen.poll() else {
+        let observationClock = SystemMonotonicClock.nowMicroseconds
+        guard case .sample(let skippedBeats) = samplingCadence.poll(
+            nowMicroseconds: observationClock)
+        else {
             usleep(1000)
             if t >= nextReport {
                 print("  t=\(String(format: "%2.0f", t - t0))s "
@@ -153,19 +165,55 @@ func runNativeCapture(
             }
             continue
         }
-        guard let ticket = screen.capture(change) else {
-            missedGrabs += 1
+        observations += 1
+        skippedObservationBeats += skippedBeats
+        guard let observation = screen.observe() else {
             continue
         }
+        if observation.identityChanged { framebufferTransitions += 1 }
 
-        var ticketReleased = false
+        if scanoutSource == nil
+            || scanoutIdentity != observation.framebufferIdentity {
+            guard let ticket = screen.capture(observation) else {
+                missedGrabs += 1
+                continue
+            }
+            guard Int32(ticket.width) == width,
+                  Int32(ticket.height) == height else {
+                FileHandle.standardError.write(Data(
+                    "display geometry changed during capture\n".utf8))
+                ticket.release()
+                exit(1)
+            }
+            do {
+                let imported = try gl.importTexture(
+                    width: Int32(ticket.width),
+                    height: Int32(ticket.height),
+                    fourcc: ticket.fourcc,
+                    modifier: ticket.modifier,
+                    planes: ticket.planes)
+                ticket.release()
+                if var old = scanoutSource { gl.destroy(&old) }
+                scanoutSource = imported
+                scanoutIdentity = observation.framebufferIdentity
+                gl.resetFingerprint()
+            } catch {
+                ticket.release()
+                FileHandle.standardError.write(
+                    Data("scanout import: \(error)\n".utf8))
+                exit(1)
+            }
+        }
+        guard let source = scanoutSource else { continue }
         do {
+            let tFingerprint = SystemMonotonicClock.nowSeconds
+            let changed = try gl.scanoutChanged(
+                source: source, width: width, height: height)
+            fingerprintMs +=
+                (SystemMonotonicClock.nowSeconds - tFingerprint) * 1e3
+            guard changed else { continue }
+            changedObservations += 1
             let tBlit = SystemMonotonicClock.nowSeconds
-            var source = try gl.importTexture(
-                width: Int32(ticket.width),
-                height: Int32(ticket.height),
-                fourcc: ticket.fourcc, modifier: ticket.modifier,
-                planes: ticket.planes)
             let surface = encoder.inputSurfaces[
                 frames % encoder.inputSurfaces.count]
             if chroma444 {
@@ -180,8 +228,8 @@ func runNativeCapture(
                 }
                 gl.blit444(
                     source: source,
-                    srcWidth: Int32(ticket.width),
-                    srcHeight: Int32(ticket.height),
+                    srcWidth: width,
+                    srcHeight: height,
                     into: targets444[surface]!)
             } else {
                 if targets[surface] == nil {
@@ -204,13 +252,10 @@ func runNativeCapture(
                 }
                 gl.blit(
                     source: source,
-                    srcWidth: Int32(ticket.width),
-                    srcHeight: Int32(ticket.height),
+                    srcWidth: width,
+                    srcHeight: height,
                     into: targets[surface]!)
             }
-            gl.destroy(&source)
-            ticket.release()
-            ticketReleased = true
             blitMs += (SystemMonotonicClock.nowSeconds - tBlit) * 1e3
 
             let tEnc = SystemMonotonicClock.nowSeconds
@@ -225,7 +270,6 @@ func runNativeCapture(
         } catch {
             FileHandle.standardError.write(
                 Data("frame \(frames): \(error)\n".utf8))
-            if !ticketReleased { ticket.release() }
             exit(1)
         }
 
@@ -237,6 +281,7 @@ func runNativeCapture(
         }
     }
     try? file.close()
+    if var source = scanoutSource { gl.destroy(&source) }
 
     let duration = SystemMonotonicClock.nowSeconds - t0
     print(String(
@@ -246,6 +291,15 @@ func runNativeCapture(
         frames, duration, Double(frames) / duration, bytes,
         frames > 0 ? Double(bytes) / Double(frames) / 1024 : 0,
         keyframes, missedGrabs))
+    print("RESULT observation: beats=\(observations), "
+        + "framebuffer_transitions=\(framebufferTransitions), "
+        + "pixel_changes=\(changedObservations), "
+        + "skipped_beats=\(skippedObservationBeats)")
+    if observations > 0 {
+        print(String(
+            format: "RESULT fingerprint: %.2f ms/observation",
+            fingerprintMs / Double(observations)))
+    }
     if frames > 0 {
         print(String(
             format: "RESULT timing: blit %.2f ms/frame, "

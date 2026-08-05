@@ -20,6 +20,9 @@ final class ScreenSourceRatchetTests: XCTestCase {
         for path in paths {
             let body = try source(path)
             XCTAssertTrue(body.contains("DirectScreenSource"), path)
+            XCTAssertTrue(body.contains("ScreenSamplingCadence()"), path)
+            XCTAssertTrue(body.contains("scanoutChanged("), path)
+            XCTAssertFalse(body.contains("screen.poll()"), path)
             for call in retiredCalls {
                 XCTAssertFalse(
                     body.contains(call),

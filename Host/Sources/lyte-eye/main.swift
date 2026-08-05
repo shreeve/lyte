@@ -6,7 +6,7 @@
 //     line-comparable with the retired fbid-poll.c probe.
 //   lyte-eye capture [--device D] [--render R] [--seconds N]
 //            [--out PATH] [--qp N]                   — the full loop
-//     (milestone 2): doorbell → GETFB2/dmabuf → EGL import → GL blit
+//     (milestone 2): screen beat → GPU change detection → GL blit
 //     RGB→NV12 into exported VAAPI surfaces → hevc_vaapi (vendored
 //     libavcodec) → Annex-B file. Needs privileges (GETFB2).
 //
