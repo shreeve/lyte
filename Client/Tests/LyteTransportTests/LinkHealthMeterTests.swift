@@ -2,9 +2,10 @@ import XCTest
 @testable import LyteTransport
 
 /// The user-facing video-health law: successful correction is silent. Only a
-/// presentation beat that was actually missed or a renderer loss enters the
-/// rolling warning window. Episodes still coalesce, age out, and survive the
-/// same session/roaming boundaries as before.
+/// full presentation beat that was actually missed or a renderer loss enters
+/// the rolling warning window. Sub-beat scheduler crossings remain diagnostic
+/// only. Episodes still coalesce, age out, and survive the same session/roaming
+/// boundaries as before.
 final class LinkHealthMeterTests: XCTestCase {
     private func micros(_ seconds: TimeInterval) -> UInt64 {
         UInt64(seconds * 1_000_000)
@@ -62,15 +63,35 @@ final class LinkHealthMeterTests: XCTestCase {
         XCTAssertEqual(verdict.sessionStallCount, 1)
     }
 
-    func testLatePresentationIsReportedWithItsMagnitude() {
+    func testSubBeatSchedulerCrossingsStaySilentAtAnyFrequency() {
         let meter = LinkHealthMeter()
         anchor(meter)
-        observe(meter, ordinal: 2, at: 15, lateness: 7.25)
+        for index in 0..<39 {
+            observe(
+                meter, ordinal: UInt64(index + 2),
+                at: 15 + Double(index), lateness: 0.999)
+        }
+
+        let verdict = assessment(meter, at: 53)
+        XCTAssertEqual(verdict.level, .good)
+        XCTAssertEqual(verdict.stallsLastMinute, 0)
+        XCTAssertEqual(verdict.sessionStallCount, 0)
+        XCTAssertEqual(verdict.dominantStage, "none")
+    }
+
+    func testOneFullBeatOfLatenessIsReportedWithItsMagnitude() {
+        let meter = LinkHealthMeter()
+        anchor(meter)
+        observe(
+            meter, ordinal: 2, at: 15,
+            lateness: LinkHealthMeter.presentationBeatMilliseconds)
 
         let verdict = assessment(meter, at: 15)
         XCTAssertEqual(verdict.level, .degraded)
         XCTAssertEqual(verdict.stallsLastMinute, 1)
-        XCTAssertEqual(verdict.worstStallMilliseconds, 7.25)
+        XCTAssertEqual(
+            verdict.worstStallMilliseconds,
+            LinkHealthMeter.presentationBeatMilliseconds)
         XCTAssertEqual(verdict.dominantStage, "late")
     }
 
@@ -102,7 +123,7 @@ final class LinkHealthMeterTests: XCTestCase {
         for (index, time) in [15.0, 25.0, 35.0].enumerated() {
             observe(
                 frequent, ordinal: UInt64(index + 2),
-                at: time, lateness: 3)
+                at: time, lateness: 20)
         }
         let verdict = assessment(frequent, at: 35)
         XCTAssertEqual(verdict.level, .poor)
@@ -112,15 +133,29 @@ final class LinkHealthMeterTests: XCTestCase {
     func testConsecutiveFailedFramesCoalesceAndPeakWins() {
         let meter = LinkHealthMeter()
         anchor(meter)
-        observe(meter, ordinal: 2, at: 15.00, lateness: 4)
+        observe(meter, ordinal: 2, at: 15.00, lateness: 20)
         observe(meter, ordinal: 3, at: 15.02, lateness: 19)
         observe(meter, ordinal: 4, at: 15.04, dropped: true)
 
         let verdict = assessment(meter, at: 15.04)
         XCTAssertEqual(verdict.stallsLastMinute, 1)
         XCTAssertEqual(verdict.sessionStallCount, 1)
-        XCTAssertEqual(verdict.worstStallMilliseconds, 19)
+        XCTAssertEqual(verdict.worstStallMilliseconds, 20)
         XCTAssertEqual(verdict.dominantStage, "late")
+    }
+
+    func testRendererLossOutranksMicroscopicHandoffLateness() {
+        let meter = LinkHealthMeter()
+        anchor(meter)
+        observe(
+            meter, ordinal: 2, at: 15,
+            lateness: 0.8, dropped: true)
+
+        let verdict = assessment(meter, at: 15)
+        XCTAssertEqual(verdict.level, .degraded)
+        XCTAssertEqual(verdict.stallsLastMinute, 1)
+        XCTAssertEqual(verdict.worstStallMilliseconds, 0)
+        XCTAssertEqual(verdict.dominantStage, "renderer")
     }
 
     func testRendererEpisodeCanBecomeMeasuredLateWithoutDoubleCounting() {
@@ -163,7 +198,7 @@ final class LinkHealthMeterTests: XCTestCase {
         XCTAssertEqual(ramp.stallsLastMinute, 0)
         XCTAssertEqual(ramp.sessionStallCount, 1)
 
-        observe(meter, ordinal: 2, at: 115, lateness: 9)
+        observe(meter, ordinal: 2, at: 115, lateness: 20)
         XCTAssertEqual(assessment(meter, at: 115).sessionStallCount, 2)
     }
 
@@ -183,31 +218,31 @@ final class LinkHealthMeterTests: XCTestCase {
         let meter = LinkHealthMeter()
         anchor(meter)
         for _ in 0..<5 {
-            observe(meter, ordinal: 7, at: 15, lateness: 8)
+            observe(meter, ordinal: 7, at: 15, lateness: 20)
         }
         XCTAssertEqual(assessment(meter, at: 15).stallsLastMinute, 1)
 
-        observe(meter, ordinal: 8, at: 17, lateness: 8)
+        observe(meter, ordinal: 8, at: 17, lateness: 20)
         XCTAssertEqual(assessment(meter, at: 17).stallsLastMinute, 2)
     }
 
     func testOneSecondBucketCountsDistinctEpisodes() {
         let meter = LinkHealthMeter()
         anchor(meter)
-        observe(meter, ordinal: 2, at: 15.00, lateness: 4)
+        observe(meter, ordinal: 2, at: 15.00, lateness: 20)
         observe(meter, ordinal: 3, at: 15.75, dropped: true)
 
         let verdict = assessment(meter, at: 15.99)
         XCTAssertEqual(verdict.stallsLastMinute, 2)
         XCTAssertEqual(verdict.sessionStallCount, 2)
-        XCTAssertEqual(verdict.worstStallMilliseconds, 4)
+        XCTAssertEqual(verdict.worstStallMilliseconds, 20)
     }
 
     func testExactlySixtyOneSecondBucketsRollAtTheBoundary() {
         let meter = LinkHealthMeter()
         anchor(meter)
-        observe(meter, ordinal: 2, at: 15, lateness: 4)
-        observe(meter, ordinal: 3, at: 16, lateness: 5)
+        observe(meter, ordinal: 2, at: 15, lateness: 20)
+        observe(meter, ordinal: 3, at: 16, lateness: 21)
 
         XCTAssertEqual(assessment(meter, at: 74.999).stallsLastMinute, 2)
         XCTAssertEqual(assessment(meter, at: 75).stallsLastMinute, 1)
@@ -217,12 +252,12 @@ final class LinkHealthMeterTests: XCTestCase {
     func testRingSlotReuseCannotResurrectOldFailure() {
         let meter = LinkHealthMeter()
         anchor(meter)
-        observe(meter, ordinal: 2, at: 15, lateness: 4)
-        observe(meter, ordinal: 3, at: 75, lateness: 5)
+        observe(meter, ordinal: 2, at: 15, lateness: 20)
+        observe(meter, ordinal: 3, at: 75, lateness: 21)
 
         let verdict = assessment(meter, at: 75)
         XCTAssertEqual(verdict.stallsLastMinute, 1)
         XCTAssertEqual(verdict.sessionStallCount, 2)
-        XCTAssertEqual(verdict.worstStallMilliseconds, 5)
+        XCTAssertEqual(verdict.worstStallMilliseconds, 21)
     }
 }

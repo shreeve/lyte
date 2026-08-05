@@ -3,8 +3,8 @@ import Foundation
 /// The delivery path's user-visible failure verdict. The flight recorder
 /// retains every internal disturbance for diagnosis, but this meter is
 /// deliberately narrower: a recovered transit or queue delay is success and
-/// stays silent. Only a frame that missed its presentation beat or was lost by
-/// the renderer enters the warning window.
+/// stays silent. Measured lateness is diagnostic evidence, not failure. Only a
+/// terminal, uncorrectable miss or renderer failure enters the warning window.
 ///
 /// Cost model: fed once a second with only the frames recorded since
 /// the last feed (ordinal high-water mark); each frame is a handful
@@ -14,9 +14,8 @@ public struct LinkHealthAssessment: Equatable, Sendable {
         case good, degraded, poor
     }
 
-    /// Where the recent failures became conclusive: "late" means the frame
-    /// reached renderer handoff after its presentation beat; "renderer" means
-    /// it was explicitly dropped or the renderer failed.
+    /// Where the recent failures became conclusive: "miss" means Lyte had to
+    /// discard a frame; "renderer" means the renderer itself failed.
     public var level: Level
     /// Exact number of failure episodes in the current second and the
     /// preceding 59 one-second buckets.
@@ -42,11 +41,19 @@ public struct LinkHealthAssessment: Equatable, Sendable {
 }
 
 public final class LinkHealthMeter {
+    /// The terminal presentation verdict. Internal delay can influence the
+    /// diagnostic magnitude, but it cannot mint a warning by itself.
+    public enum Outcome: Equatable, Sendable {
+        case preserved
+        case uncorrectableMiss
+        case rendererFailure
+    }
+
     private struct Bucket {
         var second: UInt64?
         var count = 0
         var worstMilliseconds = 0.0
-        var lateCount = 0
+        var missCount = 0
         var rendererCount = 0
     }
 
@@ -82,8 +89,7 @@ public final class LinkHealthMeter {
     public func observe(
         ordinal: UInt64,
         presentationLatenessMilliseconds: Double?,
-        rendererDropped: Bool,
-        rendererFailed: Bool,
+        outcome: Outcome,
         eventMicroseconds: UInt64
     ) {
         guard ordinal > highWaterOrdinal else { return }
@@ -97,15 +103,15 @@ public final class LinkHealthMeter {
 
         let lateness = max(presentationLatenessMilliseconds ?? 0, 0)
         let stage: String
-        if lateness > 0 {
-            stage = "late"
-        } else if rendererDropped || rendererFailed {
-            stage = "renderer"
-        } else {
-            // Internal jitter, queueing, repair, and re-cue evidence remains
-            // in the flight recorder. The mechanism worked, so the UI says
-            // nothing.
+        switch outcome {
+        case .preserved:
+            // The Conductor and renderer preserved presentation. Any measured
+            // lateness remains in the flight recorder and stays silent here.
             return
+        case .uncorrectableMiss:
+            stage = "miss"
+        case .rendererFailure:
+            stage = "renderer"
         }
         let worst = lateness
 
@@ -170,7 +176,7 @@ public final class LinkHealthMeter {
         let nowSecond = nowMicroseconds / 1_000_000
         var count = 0
         var worst = 0.0
-        var lateCount = 0
+        var missCount = 0
         var rendererCount = 0
         for bucket in buckets {
             guard let second = bucket.second,
@@ -179,17 +185,17 @@ public final class LinkHealthMeter {
             else { continue }
             count += bucket.count
             worst = max(worst, bucket.worstMilliseconds)
-            lateCount += bucket.lateCount
+            missCount += bucket.missCount
             rendererCount += bucket.rendererCount
         }
 
         let dominant: String
-        if lateCount == 0, rendererCount == 0 {
+        if missCount == 0, rendererCount == 0 {
             dominant = "none"
-        } else if rendererCount > lateCount {
+        } else if rendererCount > missCount {
             dominant = "renderer"
         } else {
-            dominant = "late"
+            dominant = "miss"
         }
         let level: LinkHealthAssessment.Level
         if count >= 3 || worst >= 100 {
@@ -231,7 +237,7 @@ public final class LinkHealthMeter {
         if stage == "renderer" {
             buckets[index].rendererCount += 1
         } else {
-            buckets[index].lateCount += 1
+            buckets[index].missCount += 1
         }
     }
 
@@ -248,9 +254,9 @@ public final class LinkHealthMeter {
         guard oldStage != newStage else { return }
         if oldStage == "renderer" {
             buckets[index].rendererCount -= 1
-            buckets[index].lateCount += 1
+            buckets[index].missCount += 1
         } else {
-            buckets[index].lateCount -= 1
+            buckets[index].missCount -= 1
             buckets[index].rendererCount += 1
         }
     }

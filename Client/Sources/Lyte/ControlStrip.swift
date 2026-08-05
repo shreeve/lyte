@@ -107,10 +107,10 @@ struct StreamContainer: View {
                             .foregroundStyle(.orange)
                             .transition(.opacity)
                     }
-                    // The link-health pill: actual late or lost frames,
-                    // folded to a verdict at 1 Hz. Repaired wire damage,
-                    // absorbed jitter, re-cues, and successful reserve use
-                    // remain diagnostic evidence and stay silent.
+                    // The link-health pill: only terminal, uncorrectable
+                    // presentation misses or renderer failures, folded to a
+                    // verdict at 1 Hz. Delay, repair, re-cues, and successful
+                    // reserve use remain diagnostic evidence and stay silent.
                     // Owner ruling 2026-08-03: the warning pill FILLS
                     // with its color and the text goes bold white
                     // (black on amber — white washes out there), so a
@@ -130,10 +130,10 @@ struct StreamContainer: View {
                                 health.level == .poor
                                     ? Color.white : Color.black)
                             .transition(.opacity)
-                            .help("Frames that reached their presentation "
-                                + "beat too late or were lost by the renderer "
-                                + "during the last minute. Recovered network "
-                                + "and delivery disturbances are not shown.")
+                            .help("Frames Lyte could not preserve or the "
+                                + "renderer failed during the last minute. "
+                                + "Corrected delivery disturbances are not "
+                                + "shown.")
                     }
                 }
                 .padding(stripEdge == .top ? .bottom : .top, 10)
