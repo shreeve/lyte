@@ -5,7 +5,7 @@ history.*
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #190. There are no auxiliary worktrees,
+- **Branch:** clean `main` through PR #191. There are no auxiliary worktrees,
   other local or remote branches, or open pull requests.
 - **Current objective:** select the first native-packaging slice without
   weakening the clean Mac/Linux/WASM/live commissioning baseline.
@@ -14,7 +14,9 @@ history.*
   PR #188 aligned every living architecture document with those landings and
   the automatic Conductor; PR #189 made the Noise-only law scan every shipping
   host source; PR #190 made pup continuously compile the IO-free client policy
-  with warnings as errors. Frozen dated records and vectors did not change.
+  with warnings as errors; PR #191 recorded the living browser direction and
+  its WASM/WebTransport/WebCodecs/WebGPU commissioning boundary. Frozen dated
+  records and vectors did not change.
 
 ## Last green gates
 
