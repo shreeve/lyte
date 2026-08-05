@@ -5,13 +5,12 @@ history.*
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #202. There is one checkout, no auxiliary
+- **Branch:** clean `main` through PR #203. There is one checkout, no auxiliary
   worktree, no topic branch, and no open pull request.
-- **Current objective:** make pre-session host shutdown prompt and typed, then
-  grow thin platform shells against the completed portable client boundary.
-  Capability, lifecycle, audio routing, clipboard, cursor, audio-quiet, and
-  video-posture judgment now share one IO-free composition boundary; the
-  Direct Eye same-framebuffer freeze remains corrected and commissioned.
+- **Current objective:** commission the freshly published client against the
+  exact PR #203 host, then measure the owner's Wi-Fi/lid-closed performance
+  baseline before changing transport policy. The portable client-control
+  boundary and prompt pre-session host shutdown are complete.
 - **Recent landings:** PR #186 made shipping transport Noise-only and removed
   513 net lines; PR #187 made `HostApplication` the native Swift `@main` entry;
   PR #188 aligned every living architecture document with those landings and
@@ -45,31 +44,32 @@ history.*
   capability judgment behind the same portable session; AppKit now only
   projects accepted shapes. PR #202 moved audio-track and video-posture
   decoding, capability gates, and durable posture state behind that boundary;
-  transport now only executes synchronized effects. Frozen wire vectors did
-  not change.
+  transport now only executes synchronized effects. PR #203 made the
+  nonblocking Noise await loop observe the existing termination flag, return a
+  typed cancellation, stop its sender thread, clean pre-session leaves, and
+  exit zero. Frozen wire vectors did not change.
 
 ## Last green gates
 
-The exact PR #202 source commit `d7e5bf1` (landed as `d2907c1`) passed the
+The exact PR #203 source commit `2dda9d5` (landed as `40916a4`) passed the
 complete warning-enforced macOS gate:
-Common 93, Wire 513, Host 340, Client 347, and SystemTests 17. Benchmark and
+Common 93, Wire 513, Host 341, Client 347, and SystemTests 17. Benchmark and
 host-release safety, signing policy, 25 analyzer tests, app identity, the
 signed CLI, hermetic linkage, packaging, and double signed release-app
 assembly all passed. The isolated host-image lifecycle also passed.
 
 The same source passed pup's deterministic gate: Common 94, Wire 513, and Host
-341; warning-enforced portable-client builds; warning-enforced host debug and
+343; warning-enforced portable-client builds; warning-enforced host debug and
 release builds; hermetic linkage; pinned Opus proof; the release image and
 installer lifecycle; kernel socket/TOS and pacing harnesses; and protected-state
 verification. A standalone six-second GPU run made 360 observations with zero
 skipped beats and zero missed grabs; that retained PR #199 hardware evidence
 averaged 1.69 ms per fingerprint observation and was not repeated for this
-policy-only PR.
+shutdown-only PR.
 
-Focused proof passed 80 session, layout, and in-vivo posture tests; the complete
-Client suite passed all 347 tests. Existing detector relaxation, audio wake,
-video-posture edge, malformed-input, and unnegotiated-drop behavior remained
-unchanged.
+Focused PR #203 proof passed a real Linux ephemeral-socket integration in 3 ms.
+An isolated unadvertised pup host on UDP 41983 received SIGTERM and exited zero
+in 6 ms; all protected identity hashes remained byte-identical.
 
 The composed `LyteClientSession` target also cross-built with warnings as
 errors for `wasm32-unknown-wasip1` under the official Swift 6.3.3 WASI SDK.
@@ -84,16 +84,17 @@ Swift files. Wire's full WebAssembly leg also passed 511 tests under wasmtime
 
 ### Client
 
-- `.build/Lyte.app` PID 60433 is running. Pup's service is currently awaiting a
-  handshake, so do not describe this old published app as a commissioned PR
-  #202 connection. Do not launch a benchmark or second ordinary Lyte app while
-  it is open; both use the same bundle identity.
+- `.build/Lyte.app` PID 21143 is running. It was freshly release-built, signed,
+  published, and launched from product source revision `40916a4837ac`, bundle
+  build `1785951699`. Pup is still awaiting a handshake, so do not describe it
+  as a commissioned connection yet. Do not launch a benchmark or second
+  ordinary Lyte app while it is open; both use the same bundle identity.
 - Bundle identifier `dev.shreeve.lyte`, team `SD6N7Z8P9P`, signed by
-  `Apple Development: Steve Shreeve (8FHNN4RZ9Q)`, build `1785923981`.
+  `Apple Development: Steve Shreeve (8FHNN4RZ9Q)`, build `1785951699`.
 - Lyte executable SHA-256:
-  `f21a45da5797b7eb57e86009a8db711ac21d78809dcca84a458f2dccc8ef3170`.
+  `7056d09b8dd2a16cd91fba8363bea00d3201c9148d8bf6ee6f4f8ff55c00048f`.
   Helper SHA-256:
-  `f0c31df74085fa61ebc28b330cc61ebe44cd723c0ca44d3ea578048c66df5720`.
+  `a78b4eef7cb15b476aedda0772f1dbadf895b3f39be837824217d538198175ec`.
 - The beachball was resolved in PR #181: the old gate removed the live bundle
   while the process was running, then helper registration crashed inside
   bundle plist loading. Client tests now use `Client/.build`, gates assemble
@@ -110,15 +111,16 @@ Swift files. Wire's full WebAssembly leg also passed 511 tests under wasmtime
 
 - `pup` is currently on Wi-Fi at `10.0.0.249`; wired address `10.0.0.232` is
   unplugged. The active advertisement interface is `wlp0s20f3`.
-- `lyte-host.service` PID 217123 is active on UDP 41151. Its configured 120-second
+- `lyte-host.service` PID 237010 is active on UDP 41151. Its configured 120-second
   no-client-handshake timeout can exercise systemd restart policy; a changing
   PID alone is not a host crash.
 - Deployed release binary: `~/src/lyte-host/.build/release/lyte-host`, SHA-256
-  `d6dc2db577045477d6f458fe428f0ceadab6dba35d1b3f25fe720bc35b93b33b`.
+  `7f0be45e971e2a63b8f2aa74d155febe39b195d821511460cf37f4287da4d9a6`.
 - Session log: `/tmp/lyte-host-session.log`.
-- A pre-session process can ignore SIGTERM while blocked in handshake receive;
-  this commissioning restart required a scoped systemd SIGKILL. The service
-  immediately restarted under PID 90865; the product fix is filed in `TODO.md`.
+- PR #203 is commissioned: after the one-time old-binary SIGKILL, an ordinary
+  `systemctl restart` of the new pre-session process completed in 438 ms,
+  logged `termination requested before handshake — clean stop`, and exited
+  through systemd normally. Future no-client restarts need no force or reboot.
 
 Never touch pup's
 `~/.config/lyte-host/{portal_token,noise_static.key,paired_clients}` and never
@@ -138,10 +140,12 @@ video-reserve owner.
 
 ## Next commissioning order
 
-1. Make the blocking pre-session Noise receive observe SIGTERM promptly so a
-   no-client systemd stop/restart never needs timeout escalation or SIGKILL.
-2. Keep the clean Mac/Linux/WASM/live commissioning baseline green, then add
-   thin macOS/Linux/Windows/browser shells at the shared client boundary.
+1. In the freshly launched Lyte app, select pup (or Search Again) and confirm
+   that the exact client and host complete Noise and open the Direct Eye.
+2. Capture a controlled performance trace on pup's current Wi-Fi, lid-closed
+   setup; diagnose frozen video/audio choppiness from current-build evidence.
+3. Keep that baseline green while adding thin macOS/Linux/Windows/browser
+   shells at the shared client boundary.
 
 ## Recovery pointers
 
