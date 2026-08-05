@@ -13,5 +13,6 @@ swift build \
   --scratch-path .build \
   -c "$CONFIG" \
   --product lyte-cli
+"$(dirname "$0")/normalize-macos-rpaths.sh" ".build/$CONFIG/lyte-cli"
 "$(dirname "$0")/sign-dev.sh" ".build/$CONFIG/lyte-cli"
 echo "built + signed .build/$CONFIG/lyte-cli"

@@ -7,13 +7,13 @@ scanout). Everything below is idempotent — re-run any step freely.
 ## 0. Build
 
 ```sh
-# Dependencies (Ubuntu): the Swift toolchain, plus
-sudo apt-get install -y libva-dev libdrm-dev libgbm-dev libegl-dev \
-    libavahi-client-dev libopus-dev
-cd Host && swift build
+# Dependencies (Ubuntu): the Swift toolchain, plus the narrow OS leaves
+sudo apt-get install -y pkg-config libdbus-1-dev libpipewire-0.3-dev \
+    libva-dev libdrm-dev libgbm-dev libegl-dev libgl-dev avahi-daemon
+cd Host && swift build -c release
 ```
 
-The binary lands at `.build/debug/lyte-host`. No setcap needed when
+The binary lands at `.build/release/lyte-host`. No setcap needed when
 running under the service (step 2) — the capability rides the unit.
 
 ## 1. Machine prerequisites
@@ -55,8 +55,8 @@ service, run one pairing host by hand, then return to the service:
 
 ```sh
 sudo systemctl stop lyte-host
-sudo setcap cap_sys_admin+ep .build/debug/lyte-host   # hand-run only
-.build/debug/lyte-host --wire-listen 41151 --pair     # prints the PIN
+sudo setcap cap_sys_admin+ep .build/release/lyte-host   # hand-run only
+.build/release/lyte-host --wire-listen 41151 --pair     # prints the PIN
 # … client connects, enters the PIN; ctrl-C the host …
 sudo systemctl start lyte-host
 ```
@@ -69,7 +69,7 @@ first run and survive reinstalls and uninstalls.
 
 | task | command |
 |---|---|
-| deploy a rebuild | `swift build && sudo systemctl restart lyte-host` |
+| deploy a rebuild | `swift build -c release && sudo systemctl restart lyte-host` |
 | status | `systemctl is-active lyte-host` |
 | host log | `/tmp/lyte-host-session.log` |
 | unit lifecycle | `sudo journalctl -u lyte-host` |

@@ -142,6 +142,11 @@ rsync -a --delete --exclude .build Wire/ "$pup:$pup_gate_root/Wire/"
 rsync -a --delete --exclude .build Host/ "$pup:$pup_gate_root/Host/"
 rsync -a --delete --exclude .build \
     SystemTests/ "$pup:$pup_gate_root/SystemTests/"
+rsync -a Scripts/Tests/test-hermetic-linkage.sh \
+    "$pup:$pup_gate_root/test-hermetic-linkage.sh"
+ssh "$pup" mkdir -p -- "$pup_gate_root/Scripts"
+rsync -a Scripts/verify-opus-upstream.sh \
+    "$pup:$pup_gate_root/Scripts/verify-opus-upstream.sh"
 
 ssh "$pup" 'bash -se' <<'REMOTE'
 set -euo pipefail
@@ -249,8 +254,13 @@ run_package_tests "Host" "$gate_root/Host"
 echo "==> plain Host build"
 (cd "$gate_root/Host" && swift build)
 
-host_binary="$gate_root/Host/.build/debug/lyte-host"
+echo "==> release Host build"
+(cd "$gate_root/Host" && swift build -c release)
+
+host_binary="$gate_root/Host/.build/release/lyte-host"
+audio_check_binary="$gate_root/Host/.build/release/lyte-audio-check"
 test -x "$host_binary"
+test -x "$audio_check_binary"
 
 if ldd "$host_binary" \
     | grep -Eiq 'libav(codec|device|filter|format|util)|libswresample|libswscale'
@@ -258,6 +268,15 @@ then
     echo "pup gate FAILED: lyte-host regained a media-library dependency" >&2
     exit 1
 fi
+
+"$gate_root/test-hermetic-linkage.sh" "$host_binary" "$audio_check_binary"
+for binary in "$host_binary" "$audio_check_binary"; do
+    symbols="$(nm -g --defined-only "$binary")"
+    if ! grep -Eq ' opus_encode_float$' <<< "$symbols"; then
+        echo "pup gate FAILED: pinned Opus encoder absent from $binary" >&2
+        exit 1
+    fi
+done
 
 echo "==> Linux socket and pacing harnesses"
 "$gate_root/Host/.build/debug/lyte-netio-check"

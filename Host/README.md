@@ -27,8 +27,8 @@ closed 2026-07-22 (gate report in git history); the portal era ended
 - `Sources/CPipeWireAudio` — C leaf: default-sink monitor audio capture
   at the 5 ms quantum (PipeWire survives E5 for AUDIO only).
 - `Sources/COpusEncode` — C leaf: libopus 5 ms hard-CBR encode (+ decode
-  for loop verification), importing the one `COpus` system module from
-  `Common/`.
+  for loop verification), importing the one pinned static `COpus` source
+  leaf from `Common/`.
 - `Sources/CNetIO` — C leaf: the UDP socket (sendmmsg/recvmmsg, per-packet
   TOS cmsgs, kernel TX timestamps, line-buffered stdout).
 - `Sources/CInputUinput` — C leaf: virtual evdev devices, the sole input
@@ -67,7 +67,7 @@ Host/Scripts/setup-host.sh
 
 1. **CAP_SYS_ADMIN on the binary** — the direct eye reads the KMS
    scanout, which needs the DRM ticket. After EVERY rebuild:
-   `sudo -n setcap cap_sys_admin+ep .build/debug/lyte-host` (and
+   `sudo -n setcap cap_sys_admin+ep .build/release/lyte-host` (and
    `lyte-eye` when used). A capless binary fails loudly at startup —
    never silently. The script checks with `getcap` and prints the
    exact command. (The portal era's
@@ -98,20 +98,23 @@ Host/Scripts/setup-host.sh
 ## Build and run on the Linux host (`pup`)
 
 Source lives in this repo; sync it to the host and build there. This package
-depends on the sibling `Wire/` package (`.package(path: "../Wire")`), so both
-must be synced as siblings on the host:
+depends on the sibling `Wire/` and `Common/` packages, so all three must be
+synced as siblings on the host:
 
 ```
 rsync -a --delete --exclude .build Wire/ pup:src/Wire/
+rsync -a --delete --exclude .build Common/ pup:src/Common/
 rsync -a --delete --exclude .build Host/ pup:src/lyte-host/
 ssh pup 'cd ~/src/lyte-host && \
-  LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build'
-ssh pup 'cd ~/src/lyte-host && sudo -n setcap cap_sys_admin+ep .build/debug/lyte-host'
+  LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build -c release'
+ssh pup 'cd ~/src/lyte-host && sudo -n setcap cap_sys_admin+ep .build/release/lyte-host'
 ```
 
-No media-library env exists anymore: E5 demolished the vendored FFmpeg,
-and a plain `swift build` succeeding (with `ldd` showing zero libav) is
-itself a gate. Rate moves apply with zero reset and zero IDR by
+No media-library env exists anymore: E5 demolished the vendored FFmpeg and
+Opus is built from Common's pinned source leaf. A release build succeeding
+(with `ldd` showing zero libav and zero libopus) is itself a gate. Debug builds
+remain for tests and harness development, never for the standing service.
+Rate moves apply with zero reset and zero IDR by
 construction — our own pens never emit a reset. The setcap line is the
 DRM ticket for the direct eye; re-arm it after every rebuild.
 
@@ -130,19 +133,19 @@ fallback.)
 
 ```
 # File mode — capture the live scanout to an Annex-B file.
-./.build/debug/lyte-host --out /tmp/lyte-eye.hevc --seconds 5
+./.build/release/lyte-host --out /tmp/lyte-eye.hevc --seconds 5
 
 # The real thing — a Lyte-UDP session host (prints its Noise static pubkey;
 # audio + Avahi advertisement default-on; --pair for PIN pairing;
 # --require-paired to enforce the keystore). 41000-range ports by
 # convention; test hosts take fresh 41xxx ports with --no-advertise.
-./.build/debug/lyte-host --wire-listen 41000 --seconds 330
+./.build/release/lyte-host --wire-listen 41000 --seconds 330
 
 # HS-18: mute the host's own speakers for the session — desktop audio is
 # routed to a session-owned "Lyte Audio" virtual sink (its monitor feeds
 # the wire) and the original default sink is restored at teardown; a
 # crashed run is swept on the next start.
-./.build/debug/lyte-host --wire-listen 41000 --host-audio muted --seconds 330
+./.build/release/lyte-host --wire-listen 41000 --host-audio muted --seconds 330
 ```
 
 (`--backend direct`, `--encoder native`, and `--ratchet` are accepted

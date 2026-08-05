@@ -11,12 +11,40 @@ let package = Package(
         .library(name: "LyteTestKit", targets: ["LyteTestKit"]),
     ],
     targets: [
-        // One libopus module for both products. pkg-config supplies the
-        // platform-specific include directory; policy stays out of this leaf.
-        .systemLibrary(
+        // One pinned, statically propagated Opus leaf for every product.
+        // Generic upstream C keeps the build offline and platform-neutral;
+        // codec policy remains in the Swift role layers above it.
+        .target(
             name: "COpus",
-            pkgConfig: "opus",
-            providers: [.brew(["opus"]), .apt(["libopus-dev"])]
+            path: "Sources/COpus",
+            exclude: [
+                "UPSTREAM.md",
+                "Upstream/opus-1.6.1/COPYING",
+            ],
+            sources: [
+                "Upstream/opus-1.6.1/celt",
+                "Upstream/opus-1.6.1/silk",
+                "Upstream/opus-1.6.1/src",
+            ],
+            publicHeadersPath: "include",
+            cSettings: [
+                .headerSearchPath("include/opus"),
+                .headerSearchPath("Upstream/opus-1.6.1"),
+                .headerSearchPath("Upstream/opus-1.6.1/celt"),
+                .headerSearchPath("Upstream/opus-1.6.1/silk"),
+                .headerSearchPath("Upstream/opus-1.6.1/silk/float"),
+                .define("OPUS_BUILD"),
+                .define("USE_ALLOCA"),
+                .define("DISABLE_DEBUG_FLOAT"),
+                .define("PACKAGE_VERSION", to: "\"1.6.1\""),
+                .define(
+                    "OPUS_WILL_BE_SLOW",
+                    .when(configuration: .debug)
+                ),
+            ],
+            linkerSettings: [
+                .linkedLibrary("m", .when(platforms: [.linux])),
+            ]
         ),
         // Shared policy stays sans-IO and WASM-buildable. The lint moves
         // here with the first extracted policy utility.
@@ -40,5 +68,6 @@ let package = Package(
             name: "LyteTestKitTests",
             dependencies: ["LyteTestKit"]
         ),
+        .testTarget(name: "COpusTests", dependencies: ["COpus"]),
     ]
 )

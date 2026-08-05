@@ -4,51 +4,43 @@
 
 ## Resume here
 
-- **Branch:** resume from `main`; the Apple Development signing slice follows
-  the Local Network recovery landed in #166.
+- **Branch:** `commissioning/hermetic-opus`, based on `ddedf1c` (`main`, #167).
 - **GitHub:** no open pull requests.
 - **Workspace:** one clean checkout and no auxiliary worktrees.
-- **Current objective:** replace the Homebrew libopus runtime dependency with a
-  pinned hermetic leaf.
+- **Current objective:** land the hermetic Opus slice, then migrate pup's
+  standing host from its existing debug binary to the release binary and
+  verify the live rig without changing identity state.
 
 ## Last green gates
 
-The #166 baseline passed the complete deterministic macOS gate: all five Swift
-packages, benchmark safety, analyzer tests, signed CLI, and signed app. It also
-passed the complete pup gate: Common, Wire, Host, plain `swift build`, kernel
-socket checks, and pacing checks. Pup's protected identity state was unchanged.
+The #167 baseline passed the complete deterministic macOS and pup gates.
 
-Focused Local Network coverage passed 9 policy tests and 8 discovery tests.
-The client now distinguishes a definitive policy denial from an ambiguous
-route-or-permission failure, preflights direct autoconnect, offers the supported
-System Settings recovery path, and rescans after the owner returns.
+The hermetic Opus slice has passed its focused macOS checks: Common's 86 tests,
+the host release-posture ratchet, signed app assembly, exact third-party notice
+hashes, deployment target checks, positive Opus and nanors symbol checks, and
+the complete Mach-O dependency/RPATH allowlist. A separately downloaded
+official Opus 1.6.1 archive matched all 240 pinned files byte-for-byte.
 
-The pending signing slice passed its isolated executable signer test. It covers
-automatic and explicit Apple Development selection, duplicate and ambiguous
-identities, SHA-1 overrides, self-signed fallback, absent or invalid identities,
-app and CLI identifiers, team consistency, and malformed designated
-requirements. Two consecutive release rebuilds retained identical authority,
-team, and designated requirements for the app and helper; strict deep signing
-verification and both Mach-O UUID checks passed.
+The complete pup gate passed Common 87, Wire 513, and Host 339 tests; the debug
+and release builds; release host/audio linkage checks; positive Opus symbol
+proof; and the netio and pacing harnesses. The release Opus leaf compiled with
+`-O2`. Pup's protected identity state was unchanged.
 
-The final complete macOS gate passed all five packages, benchmark safety, 25
-analyzer tests, signing-policy tests, signed CLI, and enhanced signed-app
-packaging checks. The complete pup gate passed Common 84, Wire 513, Host 339,
-the plain build, and both kernel harnesses with protected identity state
-unchanged.
+The final complete macOS gate passed all five packages, benchmark and host
+release safety, signing policy, 25 analyzer tests, the signed CLI, and signed
+app packaging. The app's hermetic linkage checks passed both before publication
+and after the atomic bundle swap.
 
 ## Current live rig
 
 ### Client
 
-- `.build/Lyte.app` is running from the intended bundle path.
+- `.build/Lyte.app` is running from the intended bundle path as PID 38415.
 - It is signed by `Apple Development: Steve Shreeve (8FHNN4RZ9Q)` with team
   identifier `SD6N7Z8P9P` and bundle identifier `dev.shreeve.lyte`.
-- macOS is showing the one-time Keychain prompt for `Lyte Client Noise
-  Identity`. The owner must choose whether to grant it; automation must not
-  enter the password or click a security decision.
-- Live LaunchServices proof is incomplete until that prompt is resolved and
-  the ordinary app sustains a stream for at least 30 seconds.
+- The owner confirmed that ordinary streaming works. The current visible
+  commissioning issue is the existing network-stall ledger, not app launch or
+  host discovery.
 - Do not launch a benchmark or second ordinary Lyte app while this process is
   open; both use the same bundle identity.
 
@@ -59,6 +51,8 @@ unchanged.
   120-second no-client-handshake timeout can trigger the existing systemd
   restart policy; that event is not evidence of a host crash.
 - Unit binary: `~/src/lyte-host/.build/debug/lyte-host`.
+- The repository now specifies `.build/release/lyte-host`; the live config has
+  intentionally not been changed or restarted before the branch lands.
 - Session log: `/tmp/lyte-host-session.log`.
 
 Never touch pup's
@@ -68,15 +62,16 @@ and `--no-advertise`.
 
 ## Commissioning findings still open
 
-1. The release app links Homebrew's
-   `/opt/homebrew/opt/opus/lib/libopus.0.dylib`; replace it with a pinned,
-   hermetic shared leaf and prove the bundle has no Homebrew runtime path.
-2. Resolve the `VideoReadbackTap` Swift concurrency/pointer warnings, the
+1. Resolve the `VideoReadbackTap` Swift concurrency/pointer warnings, the
    unnecessary mutable test variables, and Linux `String(cString:)`
    deprecations; then add a warning ratchet.
-3. Run the owner-visible two-column stats-ledger check after live streaming is
-   restored. GNOME Shell's known ten-second source-stall comb on pup remains an
-   environment limitation, not a Lyte host-loop defect.
+2. Run the owner-visible two-column stats-ledger check during a sustained live
+   stream and investigate the reported network stalls. GNOME Shell's known
+   ten-second source-stall comb on pup remains an environment limitation, not
+   a Lyte host-loop defect.
+3. After this branch lands, perform the one-time live-host move to the release
+   binary and prove service health, binary identity, and protected-state
+   stability.
 
 ## Architecture train after commissioning
 
