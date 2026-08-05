@@ -6,11 +6,12 @@
 
 - **Branch:** resume on `main` after the current landing; do not continue on
   the merged feature branch.
-- **GitHub:** PR #169 is the local-network identity landing, based on #168.
+- **GitHub:** PR #170 is the warning-zero landing, based on #169.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** reboot macOS to clear its confirmed stuck Local Network
-  privacy state, publish the landed app while Lyte is stopped, launch it through
-  `Scripts/launch-app.sh`, and verify discovery plus sustained streaming.
+- **Current objective:** land PR #170, return to clean `main`, then reconcile the
+  playout setting and `docs/CUSHION.md` with the Conductor's one-beat minimum.
+  The owner-visible sustained-stream ledger remains blocked by the confirmed
+  macOS Local Network privacy-state defect described below.
 
 ## Last green gates
 
@@ -32,7 +33,15 @@ the signed CLI, packaging, and hermetic linkage. The isolated release app was
 assembled twice at one path; the second build advanced `CFBundleVersion` and
 exercised the atomic bundle-swap path without touching `.build/Lyte.app`.
 Focused discovery/access coverage is 24 tests. `git diff --check` and shell
-syntax are clean. The known `VideoReadbackTap` warnings remain queued below.
+syntax are clean.
+
+The warning-zero gate passed macOS Common 86, Wire 513, Host 338, Client 284,
+and SystemTests 17 with Swift warnings promoted to errors. Signing, analyzers,
+the signed CLI, hermetic linkage, packaging, and double signed app assembly
+also passed. Pup passed Common 87, Wire 513, and Host 339; warning-enforced
+debug and release builds; hermetic linkage; socket and pacing harnesses; and
+protected-state verification. Clean independent audits found no remaining
+repo-source Swift warnings.
 
 ## Current live rig
 
@@ -41,19 +50,17 @@ syntax are clean. The known `VideoReadbackTap` warnings remain queued below.
 - `.build/Lyte.app` is not currently running.
 - It is signed by `Apple Development: Steve Shreeve (8FHNN4RZ9Q)` with team
   identifier `SD6N7Z8P9P` and bundle identifier `dev.shreeve.lyte`.
-- The current candidate bundle is source `33ed995f62e7+`, build `1785898737`;
+- The current candidate bundle is source `d2bb60773721`, build `1785901215`;
   its packaging, hermetic-linkage, and strict deep-signature checks pass.
 - LaunchServices resolves the exact candidate path, build version, signing
-  identity, and Mach-O UUID. Bonjour discovers pup and its UDP 41151 endpoint,
-  but macOS 26.6 marks every resolved child path `Local network prohibited`
-  even while Lyte's Local Network switch is enabled. Apple DTS reproduces this
-  enabled-but-denied state as an OS bug (FB21858319/FB21858436). No system-wide
-  CIDR privacy exception has been installed.
-- Next live step: reboot macOS to clear the stuck in-memory privacy state, leave
-  Lyte enabled, rebuild while the app is stopped, launch through
-  `Scripts/launch-app.sh`, and verify discovery/streaming. A normal permission
-  toggle or code change does not inherently require a reboot; this restart is
-  recovery for the confirmed OS-state mismatch.
+  identity, and Mach-O UUID. After the completed reboot and an owner-controlled
+  Lyte Local Network off/on cycle, the signed GUI still browses and resolves
+  pup but Network.framework marks every IPv4 and IPv6 child path `Local network
+  prohibited`. The signed CLI discovers `10.0.0.232:41151`, and route, ping,
+  and direct UDP checks succeed. Apple DTS reproduces this enabled-but-denied
+  state as an OS bug (FB21858319/FB21858436). No privacy database reset or
+  system-wide CIDR exception has been attempted; another reboot has no current
+  evidence behind it.
 - Do not launch a benchmark or second ordinary Lyte app while this process is
   open; both use the same bundle identity.
 
@@ -80,14 +87,11 @@ and `--no-advertise`.
 
 ## Commissioning findings still open
 
-1. Resolve the `VideoReadbackTap` Swift concurrency/pointer warnings, the
-   unnecessary mutable test variables, and Linux `String(cString:)`
-   deprecations; then add a warning ratchet.
-2. Reconcile the playout setting and `docs/CUSHION.md` with the Conductor's
+1. Reconcile the playout setting and `docs/CUSHION.md` with the Conductor's
    actual one-beat minimum, then pin the settings-to-config mapping.
-3. Authenticate every privileged `lyte-helperd` XPC client with an exact code
+2. Authenticate every privileged `lyte-helperd` XPC client with an exact code
    signing requirement; pin signed-client acceptance and foreign rejection.
-4. Run the owner-visible two-column stats-ledger check during a sustained live
+3. Run the owner-visible two-column stats-ledger check during a sustained live
    stream and investigate the reported network stalls. GNOME Shell's known
    ten-second source-stall comb on pup remains an environment limitation, not
    a Lyte host-loop defect.

@@ -32,12 +32,15 @@ final class SocketLaneLinuxTests: XCTestCase {
                 &error, error.count), 0)
         }
         var byte: UInt8 = 0xA5
-        var packet = lyte_netio_pkt(data: &byte, len: 1, tos: 0xC0)
-        XCTAssertEqual(lyte_netio_send_batch(
-            video, &packet, 1, nil, &error, error.count), 1)
-        byte = 0x5A
-        XCTAssertEqual(lyte_netio_send_batch(
-            latency, &packet, 1, nil, &error, error.count), 1)
+        withUnsafeMutablePointer(to: &byte) { bytePointer in
+            var packet = lyte_netio_pkt(
+                data: bytePointer, len: 1, tos: 0xC0)
+            XCTAssertEqual(lyte_netio_send_batch(
+                video, &packet, 1, nil, &error, error.count), 1)
+            bytePointer.pointee = 0x5A
+            XCTAssertEqual(lyte_netio_send_batch(
+                latency, &packet, 1, nil, &error, error.count), 1)
+        }
 
         var storage = [UInt8](repeating: 0, count: 8)
         var slots = [lyte_netio_slot()]

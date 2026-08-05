@@ -1,10 +1,43 @@
+import CoreMedia
 import CoreVideo
+import Foundation
+import LyteClientTestKit
 import VideoToolbox
 import LyteCorpus
+import LyteWire
 import XCTest
 @testable import LyteTransport
 
 final class VideoQualityReadbackTests: XCTestCase {
+    func testSynchronousDecodeOwnsImageBeyondCallbackAndSession() throws {
+        let expectedPTS = CMTime(value: 16_667, timescale: 1_000_000)
+        let decoded = try autoreleasepool {
+            let annexB = [UInt8](try Data(contentsOf: URL(fileURLWithPath:
+                ClientTestPaths.videoCorpus + "/frame-000-idr.annexb")))
+            let factory = VideoRenderFactory()
+            let sample = try XCTUnwrap(factory.makeSampleBuffer(from: DecodeUnit(
+                frameNumber: FrameNumber(rawValue: 0),
+                timestamp: HostTimestamp(microseconds: 16_667),
+                isIDR: true,
+                annexB: annexB)))
+            XCTAssertEqual(
+                CMSampleBufferGetPresentationTimeStamp(sample), expectedPTS)
+
+            let tap = VideoReadbackTap()
+            return try tap.decode(sample)
+        }
+
+        XCTAssertEqual(decoded.presentationTimeStamp, expectedPTS)
+        XCTAssertEqual(CVPixelBufferGetWidth(decoded.imageBuffer), 2_048)
+        XCTAssertEqual(CVPixelBufferGetHeight(decoded.imageBuffer), 1_280)
+        XCTAssertEqual(
+            CVPixelBufferLockBaseAddress(decoded.imageBuffer, [.readOnly]),
+            kCVReturnSuccess)
+        XCTAssertEqual(
+            CVPixelBufferUnlockBaseAddress(decoded.imageBuffer, [.readOnly]),
+            kCVReturnSuccess)
+    }
+
     func testBGRAReadbackPreservesRowsAndScoresCorpusPixels() throws {
         let width = 8
         let height = 8

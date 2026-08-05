@@ -87,11 +87,13 @@ swift build \
   --package-path Client \
   --scratch-path .build \
   -c "$CONFIG" \
+  -Xswiftc -warnings-as-errors \
   --product Lyte
 swift build \
   --package-path Client \
   --scratch-path .build \
   -c "$CONFIG" \
+  -Xswiftc -warnings-as-errors \
   --product lyte-helperd
 
 STAGE_ROOT="$(mktemp -d ".build/.lyte-app-stage.XXXXXX")"

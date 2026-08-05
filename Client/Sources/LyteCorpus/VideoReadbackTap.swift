@@ -21,6 +21,18 @@ import CoreMedia
 import CoreVideo
 import VideoToolbox
 
+/// Bridges VideoToolbox's imported `@Sendable` callback to its synchronous
+/// caller. Decode flags never request asynchronous work, so VideoToolbox
+/// completes the callback before `VTDecompressionSessionDecodeFrame` returns.
+/// `VideoReadbackTap` is single-thread confined; callback writes and caller
+/// reads are therefore ordered and never concurrent. The strong pixel-buffer
+/// property also keeps the callback-owned image alive through the return.
+private final class SynchronousDecodeResult: @unchecked Sendable {
+    var status: OSStatus = noErr
+    var imageBuffer: CVPixelBuffer?
+    var presentationTimeStamp = CMTime.invalid
+}
+
 public enum VideoReadbackError: Error, Sendable {
     /// The sample buffer carries no format description.
     case missingFormatDescription
@@ -77,26 +89,24 @@ public final class VideoReadbackTap {
             throw VideoReadbackError.sessionCreateFailed(-1)
         }
 
-        var output: CVPixelBuffer?
-        var outputPts = CMTime.invalid
-        var decodeStatus = noErr
+        let result = SynchronousDecodeResult()
         let status = VTDecompressionSessionDecodeFrame(
             session, sampleBuffer: sample, flags: [], infoFlagsOut: nil
         ) { frameStatus, _, imageBuffer, pts, _ in
-            decodeStatus = frameStatus
-            output = imageBuffer
-            outputPts = pts
+            result.status = frameStatus
+            result.imageBuffer = imageBuffer
+            result.presentationTimeStamp = pts
         }
         guard status == noErr else {
             throw VideoReadbackError.decodeFailed(status)
         }
-        guard decodeStatus == noErr else {
-            throw VideoReadbackError.decodeFailed(decodeStatus)
+        guard result.status == noErr else {
+            throw VideoReadbackError.decodeFailed(result.status)
         }
-        guard let output else {
+        guard let output = result.imageBuffer else {
             throw VideoReadbackError.noImageBuffer
         }
-        return (output, outputPts)
+        return (output, result.presentationTimeStamp)
     }
 
     // MARK: - Session lifecycle
@@ -144,12 +154,14 @@ public final class VideoReadbackTap {
         session = created
         sessionFormat = format
 
-        var value: CFTypeRef?
-        if VTSessionCopyProperty(
+        var rawValue: Unmanaged<CFTypeRef>?
+        let propertyStatus = VTSessionCopyProperty(
             created,
             key: kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder,
             allocator: kCFAllocatorDefault,
-            valueOut: &value) == noErr,
+            valueOut: &rawValue)
+        let value = rawValue?.takeRetainedValue()
+        if propertyStatus == noErr,
            let flag = value as? Bool {
             isHardwareAccelerated = flag
         } else {

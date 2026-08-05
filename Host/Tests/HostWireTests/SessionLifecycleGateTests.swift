@@ -329,7 +329,7 @@ final class SessionLifecycleGateTests: XCTestCase {
             maxDatagramBytes: 1_400
         )
         let (loopValue, _) = try establish(clientCapabilities: clientSet)
-        var loop = loopValue
+        let loop = loopValue
 
         let agreements = loop.events { event -> Capabilities? in
             if case .capabilitiesAgreed(let agreed) = event { return agreed }
@@ -371,7 +371,7 @@ final class SessionLifecycleGateTests: XCTestCase {
         let (loopValue, _) = try establish(
             clientCapabilities: clientSet, hostCapabilities: hostSet
         )
-        var loop = loopValue
+        let loop = loopValue
 
         let agreements = loop.events { event -> Capabilities? in
             if case .capabilitiesAgreed(let agreed) = event { return agreed }
@@ -404,7 +404,7 @@ final class SessionLifecycleGateTests: XCTestCase {
         let (loopValue, _) = try establish(
             clientCapabilities: .wireDefault, hostCapabilities: hostSet
         )
-        var loop = loopValue
+        let loop = loopValue
 
         let agreements = loop.events { event -> Capabilities? in
             if case .capabilitiesAgreed(let agreed) = event { return agreed }
@@ -428,7 +428,7 @@ final class SessionLifecycleGateTests: XCTestCase {
         var clientSet = Capabilities.wireDefault
         clientSet.chromaModes = [CapabilityChroma.yuv444]
         let (loopValue, _) = try establish(clientCapabilities: clientSet)
-        var loop = loopValue
+        let loop = loopValue
 
         XCTAssertTrue(loop.hostEvents.contains(
             .capabilitiesFailed("noCommonChromaMode")
