@@ -108,6 +108,11 @@ final class ClientLayoutTests: XCTestCase {
                 "Client/Sources/LyteClientSession/"
                     + "ClientCursorSession.swift"),
             encoding: .utf8)
+        let mediaPosture = try String(
+            contentsOf: root.appendingPathComponent(
+                "Client/Sources/LyteClientSession/"
+                    + "ClientMediaPostureSession.swift"),
+            encoding: .utf8)
 
         XCTAssertTrue(transport.contains(
             "private var controlSession: ClientControlSession"))
@@ -127,6 +132,8 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertFalse(transport.contains("ClipboardSyncBook"))
         XCTAssertFalse(transport.contains("ClipboardImageChannel("))
         XCTAssertFalse(transport.contains("CursorShape.decode"))
+        XCTAssertFalse(transport.contains("AudioTrackState.decode"))
+        XCTAssertFalse(transport.contains("VideoPostureState.decode"))
         XCTAssertFalse(transport.contains("private var clipboardSharingOn"))
         XCTAssertFalse(transport.contains("private var clipboardImagesOn"))
         XCTAssertFalse(transport.contains("private var hostAudioPosture"))
@@ -146,11 +153,15 @@ final class ClientLayoutTests: XCTestCase {
             "private var clipboard: ClientClipboardSession"))
         XCTAssertTrue(control.contains(
             "private var cursor: ClientCursorSession"))
+        XCTAssertTrue(control.contains(
+            "private var mediaPosture: ClientMediaPostureSession"))
         XCTAssertTrue(audioRouting.contains("AudioRoutingStatus.decode"))
         XCTAssertTrue(clipboard.contains("ClipboardAnnounce.decode"))
         XCTAssertTrue(clipboard.contains("ClipboardSyncBook"))
         XCTAssertTrue(clipboard.contains("ClipboardImageChannel("))
         XCTAssertTrue(cursor.contains("CursorShape.decode"))
+        XCTAssertTrue(mediaPosture.contains("AudioTrackState.decode"))
+        XCTAssertTrue(mediaPosture.contains("VideoPostureState.decode"))
     }
 
     func testClientCapabilitySessionAloneOwnsTheAgreedSet() throws {

@@ -155,6 +155,34 @@ final class ClientControlSessionTests: XCTestCase {
                 event: .cursor(.shape(shape))))
     }
 
+    func testMediaPostureSharesTheComposedBoundary() throws {
+        let posture = local
+            .declaringAudioQuietPosture()
+            .declaringVideoQuietPosture()
+        let quietAudio = AudioTrackState(state: .quiet)
+        let quietVideo = VideoPostureState(
+            posture: .quiet, keepaliveSeconds: 5)
+        var session = makeSession(localCapabilities: posture)
+        _ = try session.receiveReliable(
+            try CapabilityDeclaration(capabilities: posture).encode(),
+            now: at(10))
+
+        XCTAssertEqual(
+            try session.receiveReliable(
+                quietAudio.encode(), now: at(11)),
+            ClientControlSessionDecision(
+                event: .mediaPosture(.audioState(quietAudio))))
+        XCTAssertTrue(session.hostAnnouncedAudioQuiet)
+
+        XCTAssertEqual(
+            try session.receiveReliable(
+                quietVideo.encode(), now: at(12)),
+            ClientControlSessionDecision(
+                event: .mediaPosture(
+                    .videoState(quietVideo, changed: true))))
+        XCTAssertEqual(session.announcedVideoPosture, quietVideo)
+    }
+
     func testUnrelatedReliableWordIsNotClaimed() throws {
         var session = makeSession()
         XCTAssertNil(try session.receiveReliable(
