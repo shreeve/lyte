@@ -4,14 +4,13 @@
 
 ## Resume here
 
-- **Branch:** resume on clean `main` after the #177 landing; do not continue on
+- **Branch:** resume on clean `main` after the #178 landing; do not continue on
   its merged feature branch.
-- **GitHub:** PR #177 landed the first dependency-free `LyteClientCore` organ
-  with full Mac and pup proof.
+- **GitHub:** PR #178 landed the first IO-free `LyteClientSession` organ with
+  full Mac, pup, and standalone Linux-target proof.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** extract the client session vertical into pure policy
-  without moving Network.framework, media frameworks, clocks, queues, or
-  sockets across the `LyteClientCore` boundary.
+- **Current objective:** replace `COpusEncode` with the pinned `COpus`
+  Swift-facing leaf and delete the duplicate C codec-policy wrapper.
 
 ## Last green gates
 
@@ -99,6 +98,18 @@ dependencies or allowed imports; pure virtual-time roaming proof lives in
 `LyteClientCoreTests`, while persistence, Network.framework, and real-session
 resume proof remain at the transport edge. Frozen vectors were unchanged.
 
+The client-session lifecycle extraction passed macOS Common 92, Wire 513,
+Host 338, Client 299, and SystemTests 17 plus benchmark safety, signing, 25
+analyzers, app identity, the signed CLI, hermetic linkage, and double signed
+release-app assembly. Pup passed Common 93, Wire 513, and Host 339 plus
+warning-enforced debug and release builds, linkage, socket and pacing
+harnesses, and protected-state verification. The new `LyteClientSession`
+target also built directly on Linux with warnings as errors. Receiver
+lifecycle ownership, detector reconfiguration, and state/mode edge reporting
+are now IO-free value policy; locks, clocks, timers, wire sends, callbacks,
+media handling, and platform IO remain in `LyteTransport`. Frozen vectors were
+unchanged.
+
 ## Current live rig
 
 ### Client
@@ -175,14 +186,13 @@ automatic response; no policy change was earned.
 
 Keep every landing small and green. The remaining order is:
 
-1. Extract the client session vertical without moving platform IO.
-2. Replace `COpusEncode` with the pinned `COpus` Swift-facing leaf and delete
+1. Replace `COpusEncode` with the pinned `COpus` Swift-facing leaf and delete
    the duplicate C codec-policy wrapper.
-3. Extract pure host session policy behind injected time and randomness.
-4. Make application composition roots explicit.
-5. Remove executable insecure/plaintext production paths while preserving
+2. Extract pure host session policy behind injected time and randomness.
+3. Make application composition roots explicit.
+4. Remove executable insecure/plaintext production paths while preserving
    test-only frozen-vector equipment.
-6. Finish documentation and architectural ratchets, then repeat clean macOS,
+5. Finish documentation and architectural ratchets, then repeat clean macOS,
    pup, WASM, and live-rig commissioning.
 
 ## Recovery pointers
