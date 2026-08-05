@@ -109,6 +109,9 @@ echo "==> benchmark safety tests"
 Scripts/Tests/test-benchmark-safety.sh
 Scripts/Tests/test-host-release-posture.sh
 
+echo "==> rootless Linux host image tests"
+Scripts/Tests/test-host-package-image.sh --self-test
+
 echo "==> signing policy tests"
 Scripts/Tests/test-sign-dev.sh
 

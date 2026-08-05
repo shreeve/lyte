@@ -13,8 +13,8 @@ relicenses them.
 | Swift Argument Parser | Client CLI parsing | Apache 2.0; exact revision is pinned in `Client/Package.resolved` |
 
 The development app bundle carries verbatim license and notice files for
-Opus, nanors, Swift Crypto, and Swift ASN.1 in `Contents/Resources/`. Its
-packaging gate pins every file byte-for-byte before atomic publication. Any
-future distributable CLI or host archive must likewise carry the notices for
-every component it contains; a raw local development executable is not such
-an archive.
+Opus, nanors, Swift Crypto, and Swift ASN.1 in `Contents/Resources/`. The
+staged Linux host image carries the same applicable notices under
+`usr/local/share/doc/lyte/third-party/`. Their packaging gates pin the exact
+file set and verify every byte before publication. A raw local development
+executable is not a distributable archive.

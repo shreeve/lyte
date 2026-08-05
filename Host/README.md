@@ -122,6 +122,12 @@ No media-library env exists anymore: E5 demolished the vendored FFmpeg and
 Opus is built from Common's pinned source leaf. A release build succeeding
 (with `ldd` showing zero libav and zero libopus) is itself a gate. Debug builds
 remain for tests and harness development, never for the standing service.
+After a release build, `Host/Scripts/stage-host-image.sh DESTINATION` creates
+the rootless Linux package image: one stable `/usr/local/bin/lyte-host` path,
+the service/configuration templates, Lyte and dependency notices, and a
+SHA-256 manifest. `Scripts/Tests/test-host-package-image.sh DESTINATION`
+verifies the complete image contract. Staging is inert and does not deploy or
+restart the host; see `INSTALL.md` for the current development-install boundary.
 Rate moves apply with zero reset and zero IDR by
 construction — our own pens never emit a reset. The setcap line is the
 DRM ticket for the direct eye; re-arm it after every rebuild.

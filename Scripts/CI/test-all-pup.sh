@@ -144,15 +144,21 @@ rsync -a --delete --exclude .build \
     SystemTests/ "$pup:$pup_gate_root/SystemTests/"
 rsync -a Scripts/Tests/test-hermetic-linkage.sh \
     "$pup:$pup_gate_root/test-hermetic-linkage.sh"
-ssh "$pup" mkdir -p -- "$pup_gate_root/Scripts"
+rsync -a LICENSE "$pup:$pup_gate_root/LICENSE"
+ssh "$pup" mkdir -p -- "$pup_gate_root/docs" "$pup_gate_root/Scripts/Tests"
+rsync -a docs/THIRD-PARTY.md \
+    "$pup:$pup_gate_root/docs/THIRD-PARTY.md"
 rsync -a Scripts/verify-opus-upstream.sh \
     "$pup:$pup_gate_root/Scripts/verify-opus-upstream.sh"
+rsync -a Scripts/Tests/test-host-package-image.sh \
+    "$pup:$pup_gate_root/Scripts/Tests/test-host-package-image.sh"
 
 ssh "$pup" 'bash -se' <<'REMOTE'
 set -euo pipefail
 
 export LD_LIBRARY_PATH="$HOME/.local/lib/swift-compat${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 gate_root="$HOME/src/lyte-gates/deterministic"
+package_image_parent=""
 
 protected_state_fingerprint() {
     local config="$HOME/.config/lyte-host"
@@ -188,6 +194,17 @@ verify_protected_state() {
 on_remote_exit() {
     local status=$?
     trap - EXIT
+    if [[ -n "$package_image_parent" && -d "$package_image_parent" ]]; then
+        case "$(readlink -f -- "$package_image_parent")" in
+            /tmp/lyte-host-image.*)
+                find "$package_image_parent" -xdev -depth -delete
+                ;;
+            *)
+                echo "pup gate FAILED: package-image cleanup escaped /tmp" >&2
+                status=1
+                ;;
+        esac
+    fi
     if ! verify_protected_state; then
         exit 1
     fi
@@ -282,6 +299,17 @@ host_binary="$gate_root/Host/.build/release/lyte-host"
 audio_check_binary="$gate_root/Host/.build/release/lyte-audio-check"
 test -x "$host_binary"
 test -x "$audio_check_binary"
+
+echo "==> rootless Linux host release image"
+package_image_parent="$(mktemp -d -t lyte-host-image.XXXXXX)"
+package_image="$package_image_parent/root"
+LYTE_REPOSITORY_ROOT="$gate_root" \
+    "$gate_root/Host/Scripts/stage-host-image.sh" "$package_image"
+"$gate_root/Scripts/Tests/test-host-package-image.sh" "$package_image"
+"$gate_root/test-hermetic-linkage.sh" \
+    "$package_image/usr/local/bin/lyte-host"
+find "$package_image_parent" -xdev -depth -delete
+package_image_parent=""
 
 if ldd "$host_binary" \
     | grep -Eiq 'libav(codec|device|filter|format|util)|libswresample|libswscale'
