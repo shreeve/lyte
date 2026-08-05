@@ -1,16 +1,16 @@
 # Lyte — session handoff
 
-*Current as of 2026-08-04. This is the live resume point, not a history log.*
+*Current as of 2026-08-05. This is the live resume point, not a history log.*
 
 ## Resume here
 
-- **Branch:** resume on clean `main` after the #174 landing; do not continue on
+- **Branch:** resume on clean `main` after the #175 landing; do not continue on
   its merged feature branch.
-- **GitHub:** PR #174 is landing exact helper-client authentication with full
-  signed acceptance, foreign rejection, Mac, pup, and live proof.
+- **GitHub:** PR #175 landed truthful cue/reserve telemetry and rolling-window
+  renderer attribution with full Mac, pup, and signed live proof.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** run the sustained owner-visible stats-ledger
-  investigation and fix only defects supported by its attribution evidence.
+- **Current objective:** the three-slice commissioning train (#173–#175) is
+  complete; resume the architecture train below with one small green landing.
 
 ## Last green gates
 
@@ -70,11 +70,20 @@ same-signed helper and `/bin/ls` are rejected. Live helper PID 98023 installed
 the exact app DR before delegate activation, accepted app PID 96213, held AWDL
 down, and emitted no Security performance diagnostic.
 
+The truthful-flight-ledger slice passed macOS Common 87, Wire 513, Host 338,
+Client 293, and SystemTests 17 plus benchmark safety, signing, analyzer,
+packaging, hermetic-linkage, and double app-assembly checks. Pup passed Common
+88, Wire 513, and Host 339 plus warning-enforced debug and release builds,
+linkage, socket and pacing harnesses, and protected-state verification. The
+focused laws separate total cue, measured path, and reserve; expire historical
+renderer blame from the rolling window; and select the newest cue after the
+six-second frame ring wraps.
+
 ## Current live rig
 
 ### Client
 
-- `.build/Lyte.app` (PID 96213) is running and connected to pup. The previous app's
+- `.build/Lyte.app` (PID 59509) is running and connected to pup. The previous app's
   beachball was a main-thread `StatsOverlay` feedback loop: its `TimelineView`
   repeatedly invoked `ConnectionModel.statsRows()` and percentile sorting from
   SwiftUI layout while media queues kept playing. The repaired overlay renders
@@ -82,10 +91,10 @@ down, and emitted no Security performance diagnostic.
   proof is recorded under the focused gate above.
 - It is signed by `Apple Development: Steve Shreeve (8FHNN4RZ9Q)` with team
   identifier `SD6N7Z8P9P` and bundle identifier `dev.shreeve.lyte`.
-- The current candidate bundle is source `34026759f9f3+`, build `1785908343`.
+- The current candidate bundle is source `ceee74dba7b1`, build `1785909980`.
   Its Lyte and helper executable SHA-256 values are respectively
-  `b859dff80bdf42c9240bbbb302599c2307ebaef6ba001998d84b32dd4dbcd15c`
-  and `7d9ac31cc84ea845bfb214c6e51bf56cb73f6dd619adbbe800f7923ab828648f`.
+  `cc580fbccae153ac92df169c45bf16f8020e76d8111788d3e96f1c6685ab96c6`
+  and `9f906eeeab860dd754a7fdfe7e88cfb17570053fc97aa76780b0c949a408f90d`.
   Packaging, hermetic-linkage, and strict deep-signature checks pass.
 - LaunchServices resolves the exact candidate path, build version, signing
   identity, and Mach-O UUID. After the completed reboot and an owner-controlled
@@ -128,16 +137,19 @@ Never touch pup's
 displace its standing UDP 41151 service. Test hosts require a fresh 41xxx port
 and `--no-advertise`.
 
-## Commissioning findings still open
+## Latest commissioning evidence
 
-1. Run the owner-visible two-column stats-ledger check during a sustained live
-   stream and investigate the reported stalls. The first owner snapshot saw 6
-   delays (63 ms worst) while loss was 12/184.3k (0.007%), delivery p99 was
-   1.8 ms, jitter 6.0 ms, RTT 6.7 ms, source/ready p99 33.6/35.7 ms, cadence
-   56/56 fps, renderer drops 9, and the automatic cue had grown to 73 ms. This
-   points away from network delivery and toward pup's known GNOME Shell
-   ten-second source-cadence comb and/or client rendering; prove attribution in
-   the sustained run before changing code.
+The sustained owner-visible run resolved the ledger ambiguity without changing
+playout policy. A 63 ms cue decomposed into about 10 ms of current path and 53
+ms of reserve. Four historical Apple renderer drops with zero recent drops no
+longer blamed the renderer; the live verdict named pre-render delivery. Later
+59 fps motion caught one genuinely recent Apple drop and an 8.1 ms enqueue p99,
+and the verdict correctly changed to renderer dropped frames. A 104 ms episode
+raised the automatic cue near 132 ms; clean active frames returned it through
+107 ms in whole-beat steps. The exact landed app then reconnected with zero
+loss over its first 35.1k host packets, one total/zero recent renderer drops,
+and current pre-render attribution. The evidence supports the Conductor's
+automatic response; no policy change was earned.
 
 ## Architecture train after commissioning
 
