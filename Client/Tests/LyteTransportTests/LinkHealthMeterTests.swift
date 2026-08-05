@@ -111,7 +111,7 @@ final class LinkHealthMeterTests: XCTestCase {
         let verdict = assessment(meter, at: 15)
         XCTAssertEqual(verdict.level, .degraded)
         XCTAssertEqual(verdict.worstStallMilliseconds, 88)
-        XCTAssertEqual(verdict.dominantStage, "network")
+        XCTAssertEqual(verdict.dominantStage, "delivery")
         XCTAssertEqual(verdict.stallsLastMinute, 1)
     }
 
@@ -161,9 +161,9 @@ final class LinkHealthMeterTests: XCTestCase {
     }
 
     func testStageAttributionPicksTheGuiltyParty() {
-        // Source-capture gaps are deliberately NOT a stage: portal
-        // capture is damage-driven, so an idle desktop with a seconds
-        // clock produces 1000 ms gaps by design (the 2026-08-01
+        // Source-capture gaps are deliberately NOT a stage: capture is
+        // damage-driven, so an idle desktop with a seconds clock produces
+        // 1000 ms gaps by design (the 2026-08-01
         // "Host capture stalls — worst 1,002 ms" false alarm). The
         // meter no longer accepts them as evidence at all — clean
         // transit on a quiet desktop stays good however sparse the
@@ -184,6 +184,33 @@ final class LinkHealthMeterTests: XCTestCase {
             eventMicroseconds: micros(15))
         XCTAssertEqual(
             assessment(renderer, at: 15).dominantStage, "renderer")
+    }
+
+    func testCoalescedEpisodePeakMovesItsStageWithoutDoubleCounting() {
+        for reverse in [false, true] {
+            let meter = LinkHealthMeter()
+            feedClean(meter, ordinals: 1..<2, at: 0)
+            meter.observe(
+                ordinal: 2,
+                transitStretchMilliseconds: reverse ? 0 : 40,
+                queueWaitMilliseconds: reverse ? 35 : 0,
+                enqueueMilliseconds: reverse ? 5 : 0,
+                eventMicroseconds: micros(15))
+            meter.observe(
+                ordinal: 3,
+                transitStretchMilliseconds: reverse ? 60 : 0,
+                queueWaitMilliseconds: reverse ? 0 : 55,
+                enqueueMilliseconds: reverse ? 0 : 5,
+                eventMicroseconds: micros(15.1))
+
+            let verdict = assessment(meter, at: 15.1)
+            XCTAssertEqual(verdict.stallsLastMinute, 1)
+            XCTAssertEqual(verdict.sessionStallCount, 1)
+            XCTAssertEqual(verdict.worstStallMilliseconds, 60)
+            XCTAssertEqual(
+                verdict.dominantStage,
+                reverse ? "delivery" : "renderer")
+        }
     }
 
     func testRecorderResetRestartsTheWindowButKeepsTheBooks() {

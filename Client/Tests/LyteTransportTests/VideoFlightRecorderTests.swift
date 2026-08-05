@@ -55,7 +55,8 @@ final class VideoFlightRecorderTests: XCTestCase {
 
         let transit = makeRecorder()
         recordPair(transit, hostGapMS: 16, readyGapMS: 40)
-        XCTAssertEqual(transit.snapshot().bottleneck, "network/assembly")
+        XCTAssertEqual(
+            transit.snapshot().bottleneck, "pre-render delivery")
 
         let queue = makeRecorder()
         let token = queue.frameReady(

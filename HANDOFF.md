@@ -6,13 +6,13 @@ action changes. Completed detail belongs in Git history.*
 
 ## Resume here
 
-- **Branch:** `fix/link-health-epoch`, based on `origin/main`; temporary PR
-  branches are deleted after landing so the repository returns to one local
-  and one remote branch.
-- **GitHub:** no open PRs; #156 landed the root-document normalization.
-- **Repository:** one worktree, one local branch, and one remote branch—all
-  `main`. Stale migration, cleanup, ledger, and agent pointers were audited
-  and retired after their merged or superseding work was confirmed present.
+- **Branch:** `commissioning/truthful-stall-stage`, based on `origin/main`;
+  temporary PR branches are deleted after landing so the repository returns
+  to one local and one remote branch.
+- **GitHub:** no open PRs; #159 landed the explicit link-health epoch seam.
+- **Repository:** one worktree; `main` plus the temporary current PR branch.
+  Stale migration, cleanup, ledger, and agent pointers were audited and
+  retired after their merged or superseding work was confirmed present.
 - **Documents:** README, AGENTS, HANDOFF, and TODO have one responsibility
   each; `CLEANUP.md` and `LYTE-PLAN.md` are retired to Git history.
 
@@ -55,9 +55,14 @@ An explicit epoch seam resets that window and its warm-up on every reconnect,
 including equal or leapfrogged frame ordinals, while preserving sitting-wide
 totals. Focused LinkHealth tests passed 15/15, the full Client suite passed
 266/266, SystemTests passed 17/17, and the complete macOS and pup deterministic
-gates passed for the underlying ring. The signed release is live against pup;
-replacing the prior client ended the one-session host cleanly and systemd
-restarted it successfully (`Result=success`, not a crash).
+gates passed for the underlying ring. The current slice renames the unproven
+"network" cause to its measured boundary, **pre-render delivery**, and pins
+stage migration within a coalesced episode; focused tests passed 24/24, Client
+267/267, and SystemTests 17/17. The complete macOS and pup deterministic gates
+also passed; pup finished 339 Host tests plus the kernel socket and pacing
+harnesses with protected state unchanged. The signed #158 release is live
+against pup; replacing the prior client ended the one-session host cleanly
+and systemd restarted it successfully (`Result=success`, not a crash).
 
 Two launch problems were distinguished:
 

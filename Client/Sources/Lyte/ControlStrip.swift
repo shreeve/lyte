@@ -47,16 +47,16 @@ struct StreamContainer: View {
         StripEdge(rawValue: stripEdgeRaw) ?? .bottom
     }
 
-    /// "Network stalls — last 60 s: 1, 43 total, worst 115 ms": the ring
-    /// says how often right now, the total quantifies the sitting, the worst
-    /// gives the ceiling, and the stage says where delay was measured.
+    /// "Pre-render delivery stalls — last 60 s: 1, 43 total, worst 115 ms":
+    /// the ring says how often right now, the total quantifies the sitting,
+    /// the worst gives the ceiling, and the stage says where delay was seen.
     private func linkHealthLine(
         _ health: LinkHealthAssessment
     ) -> String {
         let stage: String
         switch health.dominantStage {
-        case "network": stage = "Network stalls"
-        case "renderer": stage = "Render stalls"
+        case "delivery": stage = "Pre-render delivery stalls"
+        case "renderer": stage = "Renderer handoff stalls"
         default: stage = "Delivery stalls"
         }
         let recent = health.stallsLastMinute.formatted()
@@ -112,7 +112,7 @@ struct StreamContainer: View {
                     // 1 Hz. Appears ONLY when stalls are measured —
                     // the software confesses before the user has to
                     // heisenbug (the 2026-08-01 Wi-Fi hunt) — and
-                    // names the guilty stage with the numbers.
+                    // names the measured stage without inventing a cause.
                     // Owner ruling 2026-08-03: the warning pill FILLS
                     // with its color and the text goes bold white
                     // (black on amber — white washes out there), so a
@@ -132,11 +132,12 @@ struct StreamContainer: View {
                                 health.level == .poor
                                     ? Color.white : Color.black)
                             .transition(.opacity)
-                            .help("Measured delivery stalls in the "
-                                + "last minute; the stage named is "
-                                + "where the delay was measured. "
-                                + "\"network\" with clean host books "
-                                + "usually means Wi-Fi.")
+                            .help("Measured stall episodes in the last "
+                                + "minute. Pre-render delivery spans host "
+                                + "encode and pacing, the wire and repair, "
+                                + "client assembly, and sample construction; "
+                                + "renderer handoff covers the app queue and "
+                                + "enqueue only.")
                     }
                 }
                 .padding(stripEdge == .top ? .bottom : .top, 10)

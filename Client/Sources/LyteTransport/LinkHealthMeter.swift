@@ -15,10 +15,11 @@ public struct LinkHealthAssessment: Equatable, Sendable {
         case good, degraded, poor
     }
 
-    /// Which stage the recent stalls blame — "network" (transit stretch:
-    /// host stamp → client-ready), or "renderer" (queue/enqueue). Source
-    /// capture gaps are deliberately not evidence because damage-driven
-    /// capture is allowed to be quiet.
+    /// Where the recent stalls were measured: "delivery" spans capture-stamp
+    /// to client-ready work before renderer handoff; "renderer" spans the
+    /// queue and enqueue handoff itself. Delivery deliberately makes no
+    /// narrower causal claim about encoding, pacing, wire, repair, assembly,
+    /// or sample construction.
     public var level: Level
     /// Exact number of stall episodes in the current second and the
     /// preceding 59 one-second buckets.
@@ -48,7 +49,7 @@ public final class LinkHealthMeter {
         var second: UInt64?
         var count = 0
         var worstMilliseconds = 0.0
-        var networkCount = 0
+        var deliveryCount = 0
         var rendererCount = 0
     }
 
@@ -104,7 +105,7 @@ public final class LinkHealthMeter {
         if let transit = transitStretchMilliseconds,
            transit >= Self.transitStallMilliseconds, transit > worst {
             worst = transit
-            stage = "network"
+            stage = "delivery"
         }
         let renderer = queueWaitMilliseconds + enqueueMilliseconds
         if renderer >= Self.rendererStallMilliseconds, renderer > worst {
@@ -174,7 +175,7 @@ public final class LinkHealthMeter {
         let nowSecond = nowMicroseconds / 1_000_000
         var count = 0
         var worst = 0.0
-        var networkCount = 0
+        var deliveryCount = 0
         var rendererCount = 0
         for bucket in buckets {
             guard let second = bucket.second,
@@ -183,17 +184,17 @@ public final class LinkHealthMeter {
             else { continue }
             count += bucket.count
             worst = max(worst, bucket.worstMilliseconds)
-            networkCount += bucket.networkCount
+            deliveryCount += bucket.deliveryCount
             rendererCount += bucket.rendererCount
         }
 
         let dominant: String
-        if networkCount == 0, rendererCount == 0 {
+        if deliveryCount == 0, rendererCount == 0 {
             dominant = "none"
-        } else if rendererCount > networkCount {
+        } else if rendererCount > deliveryCount {
             dominant = "renderer"
         } else {
-            dominant = "network"
+            dominant = "delivery"
         }
         let level: LinkHealthAssessment.Level
         if count >= 3 || worst >= 100 {
@@ -235,7 +236,7 @@ public final class LinkHealthMeter {
         if stage == "renderer" {
             buckets[index].rendererCount += 1
         } else {
-            buckets[index].networkCount += 1
+            buckets[index].deliveryCount += 1
         }
     }
 
@@ -252,9 +253,9 @@ public final class LinkHealthMeter {
         guard oldStage != newStage else { return }
         if oldStage == "renderer" {
             buckets[index].rendererCount -= 1
-            buckets[index].networkCount += 1
+            buckets[index].deliveryCount += 1
         } else {
-            buckets[index].networkCount -= 1
+            buckets[index].deliveryCount -= 1
             buckets[index].rendererCount += 1
         }
     }

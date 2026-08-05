@@ -104,7 +104,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
                 return "app delivery queue"
             }
             if (transitStretchP99Milliseconds ?? 0) > 8 {
-                return "network/assembly"
+                return "pre-render delivery"
             }
             if (sourceGapP99Milliseconds ?? 0) > 25 {
                 return "host capture/encode"
