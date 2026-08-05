@@ -5,10 +5,10 @@ history.*
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #194. There are no auxiliary worktrees,
+- **Branch:** clean `main` through PR #195. There are no auxiliary worktrees,
   other local or remote branches, or open pull requests.
-- **Current objective:** extract the next concrete session-policy organ from
-  `LyteTransport` into the IO-free `LyteClientSession` boundary.
+- **Current objective:** extract the next reliable-control/session-policy organ
+  from `LyteTransport` into the IO-free `LyteClientSession` boundary.
 - **Recent landings:** PR #186 made shipping transport Noise-only and removed
   513 net lines; PR #187 made `HostApplication` the native Swift `@main` entry;
   PR #188 aligned every living architecture document with those landings and
@@ -21,13 +21,16 @@ history.*
   with stable paths, complete notices, an exact inventory, and a SHA-256
   manifest; PR #194 made installation consume only that verified image,
   retired `LYTE_HOST_BIN` and every installed checkout path, preserved operator
-  configuration and identity, and made uninstall symmetric. Frozen dated
-  records and vectors did not change.
+  configuration and identity, and made uninstall symmetric; PR #195 moved
+  capability startup, intersection, update answers, and failure judgment into
+  one IO-free client-session owner that builds unchanged on macOS, Linux, and
+  WebAssembly. Frozen dated records and vectors did not change.
 
 ## Last green gates
 
-The exact PR #194 source commit passed the complete warning-enforced macOS gate:
-Common 93, Wire 513, Host 345, Client 301, and SystemTests 17. Benchmark and
+The exact PR #195 source commit `a3edad1` passed the complete warning-enforced
+macOS gate: Common 93, Wire 513, Host 345, Client 308, and SystemTests 17.
+Benchmark and
 host-release safety, signing policy, 25 analyzer tests, app identity, the
 signed CLI, hermetic linkage, packaging, and double signed release-app
 assembly all passed. The isolated host-image lifecycle also proved exact
@@ -41,7 +44,8 @@ warning-enforced debug and release builds; hermetic linkage; pinned Opus symbol
 proof; a real release host image plus packaged-binary linkage proof; the full
 installer lifecycle in an isolated root; socket/TOS and pacing harnesses; and
 protected-state verification. The gate did not deploy or restart the standing
-service.
+service. The extracted `LyteClientSession` target also cross-built directly for
+`wasm32-unknown-wasip1` with the pinned Swift 6.3.3 WebAssembly SDK.
 
 Focused architecture proof on the composed main branch passes all three host
 composition/security laws: one native `@main` doorway, injected argument
