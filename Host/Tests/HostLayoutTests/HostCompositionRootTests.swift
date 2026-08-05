@@ -43,6 +43,18 @@ final class HostCompositionRootTests: XCTestCase {
         }
     }
 
+    func testPreSessionWaitSharesTheProcessTerminationFlag() throws {
+        let root = try source("HostApplication.swift")
+        let wire = try source("SessionWire.swift")
+
+        XCTAssertTrue(root.contains(
+            "stopRequested: { lyteTerminationRequested != 0 }"))
+        XCTAssertTrue(root.contains(
+            "if awaitOutcome == .terminationRequested"))
+        XCTAssertTrue(wire.contains("if stopRequested()"))
+        XCTAssertTrue(wire.contains("return .terminationRequested"))
+    }
+
     func testShippingHostHasNoPlaintextTransportMode() throws {
         let tree = RepositorySourceTree()
         let files = try tree.swiftFiles(below: "Host/Sources/lyte-host")

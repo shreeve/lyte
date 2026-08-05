@@ -256,6 +256,13 @@ targets += [
             .linkedLibrary("va-drm"),
         ]
     ),
+    .testTarget(
+        name: "LyteHostIntegrationTests",
+        dependencies: [
+            "lyte-host",
+            .product(name: "LyteWire", package: "Wire"),
+        ]
+    ),
 ]
 #endif
 

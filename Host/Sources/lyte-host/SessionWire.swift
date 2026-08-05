@@ -92,6 +92,11 @@ func elevateCurrentThread(_ label: String, rtPriority: Int32) {
 }
 
 final class SessionWire {
+    enum ClientAwaitOutcome: Equatable {
+        case established
+        case terminationRequested
+    }
+
     private let netio: OpaquePointer
     private var latencyNetio: OpaquePointer?
     private let handshakeWitness: FileHandle? = {
@@ -723,7 +728,11 @@ final class SessionWire {
     /// establishes inside `receive`), up to `timeoutSeconds`. Prints the
     /// static public key the client must hold. Call before capture opens
     /// so no video is encoded for nobody.
-    func awaitClient(hostStatic: NoiseKeyPair, timeoutSeconds: Double) throws {
+    func awaitClient(
+        hostStatic: NoiseKeyPair,
+        timeoutSeconds: Double,
+        stopRequested: () -> Bool = { false }
+    ) throws -> ClientAwaitOutcome {
         print("noise: host static public key "
             + Hex.string(hostStatic.publicKey))
         print("noise: awaiting client handshake on port "
@@ -736,6 +745,9 @@ final class SessionWire {
 
         let deadline = SystemMonotonicClock.nowNanoseconds + UInt64(timeoutSeconds * 1e9)
         while SystemMonotonicClock.nowNanoseconds < deadline {
+            if stopRequested() {
+                return .terminationRequested
+            }
             var established = false
             lock.lock()
             do {
@@ -825,9 +837,12 @@ final class SessionWire {
             flushLogLines()
             if done {
                 try drainToIdle()
-                return
+                return .established
             }
             usleep(2_000)
+        }
+        if stopRequested() {
+            return .terminationRequested
         }
         throw HostError("no client handshake within \(Int(timeoutSeconds))s "
             + "— is lyte-cli wire-view pointed at this host and holding "

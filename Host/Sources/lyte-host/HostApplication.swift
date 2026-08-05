@@ -660,7 +660,25 @@ static func run(arguments: [String]) throws {
                     + "manual host:port still works")
             }
         }
-        try w.awaitClient(hostStatic: hostStatic, timeoutSeconds: 120)
+        let awaitOutcome: SessionWire.ClientAwaitOutcome
+        do {
+            awaitOutcome = try w.awaitClient(
+                hostStatic: hostStatic,
+                timeoutSeconds: 120,
+                stopRequested: { lyteTerminationRequested != 0 })
+        } catch {
+            w.shutdown(reason: .shuttingDown, lingerSeconds: 0)
+            throw error
+        }
+        if awaitOutcome == .terminationRequested {
+            print("session: termination requested before handshake — "
+                + "clean stop")
+            w.shutdown(reason: .shuttingDown, lingerSeconds: 0)
+            clipboardLeaf?.stop()
+            bulkShell?.teardown()
+            withExtendedLifetime(advertiser) {}
+            return
+        }
         wire = w
         print("session: up — pacer \(opts.wireRateMbps) Mbps, per-packet "
             + "TOS (video 0xA0 / ctrl+audio+repairs 0xC0), 1 Hz beacon "
