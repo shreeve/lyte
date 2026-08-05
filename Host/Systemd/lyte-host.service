@@ -4,9 +4,8 @@
 # capabilities are granted by the service manager, and only pid 1
 # has them to give — a user manager cannot confer CAP_SYS_ADMIN.
 # AmbientCapabilities makes the direct eye's DRM ticket a property
-# of the SERVICE, not of the binary file, which ends the setcap-
-# after-every-rebuild trap for good: rebuild, `systemctl restart
-# lyte-host`, done.
+# of the SERVICE, not of the binary file. Installed upgrades therefore
+# need no file capability mutation.
 #
 # The seat user's session environment (XDG_RUNTIME_DIR + the session
 # bus) rides along because two organs still need it: the clipboard
@@ -35,7 +34,7 @@ EnvironmentFile=/etc/lyte/lyte-host.conf
 User=lyte-seat-user-set-by-installer
 Environment=XDG_RUNTIME_DIR=/run/user/lyte-seat-uid-set-by-installer
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/lyte-seat-uid-set-by-installer/bus
-ExecStart=/bin/sh -c 'exec "$LYTE_HOST_BIN" $LYTE_HOST_ARGS >> /tmp/lyte-host-session.log 2>&1'
+ExecStart=/bin/sh -c 'exec /usr/local/bin/lyte-host $LYTE_HOST_ARGS >> /tmp/lyte-host-session.log 2>&1'
 AmbientCapabilities=CAP_SYS_ADMIN
 CapabilityBoundingSet=CAP_SYS_ADMIN
 # The 2 h leg ends by design (--seconds in LYTE_HOST_ARGS) and a

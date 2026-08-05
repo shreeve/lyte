@@ -10,10 +10,10 @@ scanout). Everything below is idempotent — re-run any step freely.
 # Dependencies (Ubuntu): the Swift toolchain, plus the narrow OS leaves
 sudo apt-get install -y pkg-config libdbus-1-dev libpipewire-0.3-dev \
     libva-dev libdrm-dev libgbm-dev libegl-dev libgl-dev avahi-daemon
-cd Host && swift build -c release
+swift build --package-path Host -c release
 ```
 
-The binary lands at `.build/release/lyte-host`. No setcap needed when
+The binary lands at `Host/.build/release/lyte-host`. No setcap needed when
 running under the service (step 2) — the capability rides the unit.
 
 ### Stage the release image
@@ -32,11 +32,6 @@ third-party notice, and `MANIFEST.sha256`, which authenticates every other
 file in the image. Staging is rootless and inert: it does not install files,
 change capabilities, contact systemd, or touch host identity.
 
-For this first packaging slice, `install-host.sh` below remains the fast
-checkout-coupled development installer. The next slice changes that installer
-to consume this image; until then, staging and installation are deliberately
-separate operations.
-
 ## 1. Machine prerequisites
 
 ```sh
@@ -54,11 +49,22 @@ itself; run the `sudo` lines it prints.
 Host/Scripts/install-host.sh
 ```
 
+With no argument, the installer stages and verifies the current release build
+before its first privileged action. To install an already-staged or unpacked
+release image instead:
+
+```sh
+Host/Scripts/install-host.sh /path/to/lyte-host-image
+```
+
 What it does, idempotently:
-- Seeds `/etc/lyte/lyte-host.conf` **once** (first install only —
-  after that the conf is yours and reinstalls never touch it). Two
-  knobs: `LYTE_HOST_BIN` (defaults to this checkout's build tree)
-  and `LYTE_HOST_ARGS` (listen port, advertised NIC, session flags).
+- Verifies the image's exact inventory, modes, stable service path, and every
+  SHA-256 manifest entry before invoking `sudo`.
+- Refreshes `/usr/local/bin/lyte-host` and the complete legal payload from that
+  one verified image.
+- Seeds `/etc/lyte/lyte-host.conf` **once** (first install only — after that
+  the conf is yours and reinstalls preserve both its bytes and mode). Its one
+  knob is `LYTE_HOST_ARGS` (listen port, advertised NIC, session flags).
 - Installs `/etc/systemd/system/lyte-host.service` with your user
   and uid baked in (`User=`, the session bus, `XDG_RUNTIME_DIR`),
   `AmbientCapabilities=CAP_SYS_ADMIN`, `Restart=always`.
@@ -76,8 +82,8 @@ service, run one pairing host by hand, then return to the service:
 
 ```sh
 sudo systemctl stop lyte-host
-sudo setcap cap_sys_admin+ep .build/release/lyte-host   # hand-run only
-.build/release/lyte-host --wire-listen 41151 --pair     # prints the PIN
+sudo setcap cap_sys_admin+ep /usr/local/bin/lyte-host   # hand-run only
+/usr/local/bin/lyte-host --wire-listen 41151 --pair     # prints the PIN
 # … client connects, enters the PIN; ctrl-C the host …
 sudo systemctl start lyte-host
 ```
@@ -90,7 +96,7 @@ first run and survive reinstalls and uninstalls.
 
 | task | command |
 |---|---|
-| deploy a rebuild | `swift build -c release && sudo systemctl restart lyte-host` |
+| deploy a rebuild | `swift build --package-path Host -c release && Host/Scripts/install-host.sh && sudo systemctl restart lyte-host` |
 | status | `systemctl is-active lyte-host` |
 | host log | `/tmp/lyte-host-session.log` |
 | unit lifecycle | `sudo journalctl -u lyte-host` |
@@ -99,7 +105,7 @@ first run and survive reinstalls and uninstalls.
 ## Uninstall
 
 ```sh
-Host/Scripts/uninstall-host.sh          # stop + disable + remove unit
+Host/Scripts/uninstall-host.sh          # remove product files; keep the conf
 Host/Scripts/uninstall-host.sh --purge  # …and /etc/lyte (the conf)
 ```
 
