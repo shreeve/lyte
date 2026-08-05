@@ -47,6 +47,13 @@ Apple Developer account is required for local development.
 | CLI build+sign | `Scripts/build-cli.sh` | build `Client/` into root `.build`, then sign |
 | App build+sign | `Scripts/make-app.sh` | assembles `Lyte.app`, signs helper + app |
 
+`make-app.sh` builds the bundle completely in a private staging directory,
+validates its property list, signs it, and then publishes it with one macOS
+rename-swap. A failed build or signature therefore leaves the previously
+published `.build/Lyte.app` intact. `CFBundleVersion` is the numeric Git commit
+count expected by LaunchServices; `LyteSourceRevision` separately records the
+short commit hash and a trailing `+` for a dirty source tree.
+
 The identity is kept in its **own** keychain rather than the login keychain so
 `codesign` can use the key non-interactively (via a known keychain password +
 partition list) without changing the login keychain's security posture.

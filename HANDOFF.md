@@ -6,10 +6,10 @@ action changes. Completed detail belongs in Git history.*
 
 ## Resume here
 
-- **Branch:** `commissioning/benchmark-run-identity`, based on `origin/main`;
+- **Branch:** `commissioning/macos-bundle-metadata`, based on `origin/main`;
   temporary PR branches are deleted after landing so the repository returns
   to one local and one remote branch.
-- **GitHub:** no open PRs; #160 landed truthful pre-render stall naming.
+- **GitHub:** no open PRs; #161 landed benchmark process isolation.
 - **Repository:** one worktree; `main` plus the temporary current PR branch.
   Stale migration, cleanup, ledger, and agent pointers were audited and
   retired after their merged or superseding work was confirmed present.
@@ -42,12 +42,21 @@ clean Lyte app build, Client 267/267, SystemTests 17/17, and both complete
 macOS and pup deterministic gates. Pup finished 339 Host tests plus its kernel
 socket and pacing harnesses with protected state unchanged.
 
+The current packaging slice gives LaunchServices a numeric build version,
+stores the Git revision separately, and publishes only a complete validated,
+signed app via rename-swap. Two consecutive rebuilds retained an identical
+designated requirement; an injected staging failure preserved the published
+bundle byte-for-byte. Its gate also pins the Local Network explanation and
+exact `_lyte._udp` Bonjour declaration. The focused packaging test and the
+complete macOS and pup deterministic gates are green; pup again finished 339
+Host tests and preserved protected state.
+
 ## Current live result
 
-The ordinary Lyte client is streaming successfully from pup. A direct launch
-of the signed bundle executable with `LYTE_AUTOCONNECT=10.0.0.232` sustained
-video beyond the earlier two-second failure point and continued receiving
-frames without a transport error.
+No ordinary Lyte client is presently detected. The most recent live session
+streamed successfully from pup: a direct launch of the signed bundle executable
+with `LYTE_AUTOCONNECT=10.0.0.232` sustained video beyond the earlier two-second
+failure point and continued receiving frames without a transport error.
 
 The commissioning client now computes the warning pill from an exact ring of
 60 tagged one-second buckets using client-monotonic event times. The 1 Hz UI
@@ -61,9 +70,9 @@ gates passed for the underlying ring. The current slice renames the unproven
 stage migration within a coalesced episode; focused tests passed 24/24, Client
 267/267, and SystemTests 17/17. The complete macOS and pup deterministic gates
 also passed; pup finished 339 Host tests plus the kernel socket and pacing
-harnesses with protected state unchanged. The signed #158 release is live
-against pup; replacing the prior client ended the one-session host cleanly
-and systemd restarted it successfully (`Result=success`, not a crash).
+harnesses with protected state unchanged. The most recent owner process still
+carried the pre-#160 wording in memory; it has exited. The next launch must use
+the newly packaged app before judging the visible label.
 
 Two launch problems were distinguished:
 
@@ -72,23 +81,24 @@ Two launch problems were distinguished:
    enabled in Privacy settings. Cycling Wi-Fi did not reliably clear it.
    Directly launching the signed executable from a shell worked.
 2. `Scripts/benchmark-app.sh handshake-only` uses the ordinary bundle identity.
-   The current slice refuses before any build or pup access while Lyte is
+   The landed #161 path refuses before any build or pup access while Lyte is
    running, publishes a nonce-bearing PID claim during app initialization,
    re-attests that exact claim before cleanup, and suppresses diagnostic helper
    registration refresh. The dangerous `pgrep -n` fallback is gone.
 
-The re-sign performed during diagnosis affected only the ignored
-`.build/Lyte.app` artifact; there is no tracked signing change. Packaging,
-Local Network permission messaging/recovery, and benchmark-instance isolation
-remain product follow-ups rather than a wire failure.
+The bundle metadata and publication fix is now in progress. Local Network
+permission messaging/recovery and the Homebrew libopus dependency remain
+commissioning follow-ups rather than wire failures.
 
 ## Next action
 
-1. Run the final commissioning campaign against the frozen code tree:
-   deterministic/structural gates, live quality, scoped impairment, soak,
-   and owner feel.
-2. Reopen cleanup only for a concrete commissioning finding or a clearly
-   earned shared owner.
+1. Land the bundle metadata/publication slice (complete Mac and pup gates are
+   green).
+2. Keep the warning internally consistent: recent stage, exact 60-second
+   count, and 60-second worst; retain sitting totals only in diagnostics. Then
+   package and launch the new app once.
+3. Make LaunchServices Local Network authorization comprehensible and durable.
+4. Replace the Homebrew libopus runtime dependency with a pinned shared leaf.
 
 The remaining owner-visible quality check is the two-column stats ledger
 overlay. The GNOME Shell 10-second source-stall comb is an established pup
