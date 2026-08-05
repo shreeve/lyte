@@ -78,16 +78,22 @@ final class HelperClient {
         }
     }
 
-    /// Try to register at app launch; no-op when already enabled.
+    /// Explicit registration entry point used by the headless maintenance
+    /// command. Normal app launches use `refreshRegistration()` instead.
+    /// A missing service means the app bundle is incomplete or disappeared;
+    /// asking ServiceManagement to register that state crashes inside
+    /// `_load_plist_from_bundle` on macOS 26.6, so it must fail soft here.
     func registerIfNeeded() {
         switch service.status {
-        case .notRegistered, .notFound:
+        case .notRegistered:
             do {
                 try service.register()   // may flip straight to enabled or requiresApproval
                 NSLog("lyte helper: registered, status now \(service.status.rawValue)")
             } catch {
                 NSLog("lyte helper: register FAILED — \(error.localizedDescription)")
             }
+        case .notFound:
+            NSLog("lyte helper: unavailable — embedded service is missing")
         default:
             NSLog("lyte helper: status \(service.status.rawValue) (0=notReg 1=enabled 2=requiresApproval 3=notFound)")
         }
@@ -98,9 +104,9 @@ final class HelperClient {
     func streamBegan(
         registration: RegistrationPosture = .ensure
     ) -> String? {
-        if registration == .ensure {
-            registerIfNeeded()
-        }
+        // Registration is app-lifecycle work, never stream-lifecycle work.
+        // A stream may begin after an external build has removed the running
+        // bundle from disk; querying status is safe, but registration is not.
         switch service.status {
         case .enabled:
             proxy()?.streamBegan()

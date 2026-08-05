@@ -151,9 +151,9 @@ bash -n "$benchmark" "$benchmark_netem" "$pup_gate"
 sh -n "$benchmark_process"
 sh -n "$netem" "$build_cli" "$make_app"
 
-# The Client package lives under Client/, but every user-facing artifact stays
-# in the repository-root .build directory. Keep build, provenance, and both
-# deterministic gates on that same contract.
+# User-facing artifacts stay in the repository-root .build directory. The
+# deterministic test gate deliberately does not: SwiftPM `clean` owns its
+# whole scratch root, while `.build/Lyte.app` may be the owner's live app.
 grep -Fq -- '--package-path Client' "$build_cli"
 grep -Fq -- '--scratch-path .build' "$build_cli"
 grep -Fq -- '--package-path Client' "$make_app"
@@ -162,8 +162,16 @@ grep -Fq 'Client/Package.swift Client/Package.resolved Client/Sources' \
     "$make_app"
 grep -Fq 'Client/Package.swift Client/Package.resolved Client/Sources' \
     "$benchmark"
-grep -Fq 'run_package_tests "client" "$repo_root/Client" "$repo_root/.build"' \
+grep -Fq 'run_package_tests "client" "$repo_root/Client" "$repo_root/Client/.build"' \
     "$macos_gate"
+if grep -Fq 'case .notRegistered, .notFound:' \
+    "$repo_root/Client/Sources/Lyte/HelperClient.swift"
+then
+    echo "missing helper regained unsafe SMAppService registration" >&2
+    exit 1
+fi
+[[ "$(grep -Fc 'registerIfNeeded()' \
+    "$repo_root/Client/Sources/Lyte/HelperClient.swift")" -eq 1 ]]
 grep -Fq '"SystemTests" "$repo_root/SystemTests" "$repo_root/SystemTests/.build"' \
     "$macos_gate"
 grep -Fq 'rsync -a --delete --exclude .build Client/' "$pup_gate"
