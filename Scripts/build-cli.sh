@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build lyte-cli and sign it with the stable "Lyte Dev" identity so the
+# Build lyte-cli and sign it with the stable development identity so the
 # Keychain pairing-key grant survives the rebuild. Use this instead of a bare
 # `swift build` whenever you'll run lyte-cli against a host.
 #

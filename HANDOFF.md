@@ -1,218 +1,99 @@
 # Lyte — session handoff
 
-*Current as of 2026-08-04. This is the live resume point, not a historical
-ledger. Update it whenever the branch, verification state, live rig, or next
-action changes. Completed detail belongs in Git history.*
+*Current as of 2026-08-04. This is the live resume point, not a history log.*
 
 ## Resume here
 
-- **Branch:** `commissioning/packaging-history`, based on `origin/main`;
-  temporary PR branches are deleted after landing so the repository returns
-  to one local and one remote branch.
-- **GitHub:** #164 is the only open PR; #163 landed the recent-only owner
-  warning and #162 landed atomic app packaging and metadata.
-- **Repository:** one temporary packaging worktree beside the clean `main`
-  checkout; remove it and both temporary packaging branches after #164 lands.
-  Stale migration, cleanup, ledger, and agent pointers were audited and
-  retired after their merged or superseding work was confirmed present.
-- **Documents:** README, AGENTS, HANDOFF, and TODO have one responsibility
-  each; `CLEANUP.md` and `LYTE-PLAN.md` are retired to Git history.
-
-The architecture-cleanup train is frozen after #155. The authoritative
-projection inventory is closed; remaining candidates are diagnostic-only or
-moderate-risk abstractions, not owed debt. Commission the current tree before
-reopening structural cleanup.
+- **Branch:** resume from `main`; the Apple Development signing slice follows
+  the Local Network recovery landed in #166.
+- **GitHub:** no open pull requests.
+- **Workspace:** one clean checkout and no auxiliary worktrees.
+- **Current objective:** replace the Homebrew libopus runtime dependency with a
+  pinned hermetic leaf.
 
 ## Last green gates
 
-Last fully commissioned baseline:
+The #166 baseline passed the complete deterministic macOS gate: all five Swift
+packages, benchmark safety, analyzer tests, signed CLI, and signed app. It also
+passed the complete pup gate: Common, Wire, Host, plain `swift build`, kernel
+socket checks, and pacing checks. Pup's protected identity state was unchanged.
 
-| Suite | macOS | pup/Linux |
-|---|---:|---:|
-| Wire | 513 | 513 |
-| Common | 83 | 84 |
-| Host | 338 | 339 |
-| Client | 262 | — |
-| SystemTests | 17 | — |
-| Analyzer | 25 | — |
+Focused Local Network coverage passed 9 policy tests and 8 discovery tests.
+The client now distinguishes a definitive policy denial from an ambiguous
+route-or-permission failure, preflights direct autoconnect, offers the supported
+System Settings recovery path, and rescans after the owner returns.
 
-Benchmark safety and both signed products also passed. The pup build was
-plain—no ffmpeg environment—and protected identity state survived.
+The pending signing slice passed its isolated executable signer test. It covers
+automatic and explicit Apple Development selection, duplicate and ambiguous
+identities, SHA-1 overrides, self-signed fallback, absent or invalid identities,
+app and CLI identifiers, team consistency, and malformed designated
+requirements. Two consecutive release rebuilds retained identical authority,
+team, and designated requirements for the app and helper; strict deep signing
+verification and both Mach-O UUID checks passed.
 
-The current benchmark-safety slice has passed its executable shell gate, a
-clean Lyte app build, Client 267/267, SystemTests 17/17, and both complete
-macOS and pup deterministic gates. Pup finished 339 Host tests plus its kernel
-socket and pacing harnesses with protected state unchanged.
+The final complete macOS gate passed all five packages, benchmark safety, 25
+analyzer tests, signing-policy tests, signed CLI, and enhanced signed-app
+packaging checks. The complete pup gate passed Common 84, Wire 513, Host 339,
+the plain build, and both kernel harnesses with protected identity state
+unchanged.
 
-The current packaging slice gives LaunchServices a numeric build version,
-stores the Git revision separately, and publishes only a complete validated,
-signed app via rename-swap. Two consecutive rebuilds retained an identical
-designated requirement; an injected staging failure preserved the published
-bundle byte-for-byte. Its gate also pins the Local Network explanation and
-exact `_lyte._udp` Bonjour declaration. The focused packaging test and the
-complete macOS and pup deterministic gates are green; pup again finished 339
-Host tests and preserved protected state. PR #164 additionally refuses to
-mint that numeric version from shallow history and pins the full-clone commit
-count; its focused packaging test passed again after rebasing onto #163.
-
-The current warning slice removes sitting-wide totals from the owner alarm and
-uses the rolling window's own worst value. Focused LinkHealth tests passed
-16/16, including an explicit pin that recent count/worst expire together while
-diagnostic session books survive. Both complete macOS and pup deterministic
-gates passed; pup again finished 339 Host tests with protected state unchanged.
-
-## Current live result
-
-No ordinary Lyte client is presently detected. The most recent live session
-streamed successfully from pup: a direct launch of the signed bundle executable
-with `LYTE_AUTOCONNECT=10.0.0.232` sustained video beyond the earlier two-second
-failure point and continued receiving frames without a transport error.
-
-The commissioning client now computes the warning pill from an exact ring of
-60 tagged one-second buckets using client-monotonic event times. The 1 Hz UI
-heartbeat ages the window even when damage-driven capture emits no frames.
-An explicit epoch seam resets that window and its warm-up on every reconnect,
-including equal or leapfrogged frame ordinals, while preserving sitting-wide
-totals. Focused LinkHealth tests passed 15/15, the full Client suite passed
-266/266, SystemTests passed 17/17, and the complete macOS and pup deterministic
-gates passed for the underlying ring. The current slice renames the unproven
-"network" cause to its measured boundary, **pre-render delivery**, and pins
-stage migration within a coalesced episode; focused tests passed 24/24, Client
-267/267, and SystemTests 17/17. The complete macOS and pup deterministic gates
-also passed; pup finished 339 Host tests plus the kernel socket and pacing
-harnesses with protected state unchanged. The most recent owner process still
-carried the pre-#160 wording in memory; it has exited. The next launch must use
-the newly packaged app before judging the visible label.
-
-Two launch problems were distinguished:
-
-1. LaunchServices (`open .build/Lyte.app`) can receive macOS's Local Network
-   denial and fail UDP with `socketFailed(errno: 65)` even while the app is
-   enabled in Privacy settings. Cycling Wi-Fi did not reliably clear it.
-   Directly launching the signed executable from a shell worked.
-2. `Scripts/benchmark-app.sh handshake-only` uses the ordinary bundle identity.
-   The landed #161 path refuses before any build or pup access while Lyte is
-   running, publishes a nonce-bearing PID claim during app initialization,
-   re-attests that exact claim before cleanup, and suppresses diagnostic helper
-   registration refresh. The dangerous `pgrep -n` fallback is gone.
-
-The bundle metadata and publication fix landed in #162. Local Network
-permission messaging/recovery and the Homebrew libopus dependency remain
-commissioning follow-ups rather than wire failures.
-
-## Next action
-
-1. Land #164, remove its temporary worktree/branches, package current `main`,
-   and launch that app once through LaunchServices.
-2. Make LaunchServices Local Network authorization comprehensible and durable.
-3. Replace the Homebrew libopus runtime dependency with a pinned shared leaf.
-
-The remaining owner-visible quality check is the two-column stats ledger
-overlay. The GNOME Shell 10-second source-stall comb is an established pup
-environment limitation, not a Lyte host-loop defect.
-
-## Live rig
-
-### Host
-
-- `pup` is wired at `10.0.0.232` and advertises the standing system service
-  on UDP **41151**.
-- Unit: `lyte-host.service`, `User=shreeve`,
-  `AmbientCapabilities=CAP_SYS_ADMIN`, `Restart=always`.
-- Binary: `~/src/lyte-host/.build/debug/lyte-host`.
-- Operator config: `/etc/lyte/lyte-host.conf`.
-- Session log: `/tmp/lyte-host-session.log`.
-- Effective posture: direct KMS eye, native VAAPI, 4:4:4 Best supported,
-  Opus audio, image clipboard, ratchet flag accepted as a legacy no-op.
-
-Deploy with a build followed by:
-
-```sh
-sudo -n systemctl restart lyte-host
-systemctl is-active lyte-host
-```
-
-The system service receives DRM privilege through its ambient capability;
-do not apply file capabilities to the service binary. Hand-run hardware
-probes still need an exact-path `setcap`.
+## Current live rig
 
 ### Client
 
-- Bundle: `.build/Lyte.app`
-- Host and client are paired; a healthy reconnect shows no PIN.
-- The currently proven fallback launch is the bundle executable from a shell
-  with `LYTE_AUTOCONNECT=10.0.0.232`.
-- `open .build/Lyte.app` remains the intended product launch, but its Local
-  Network authorization is not presently reliable on this Mac.
+- `.build/Lyte.app` is running from the intended bundle path.
+- It is signed by `Apple Development: Steve Shreeve (8FHNN4RZ9Q)` with team
+  identifier `SD6N7Z8P9P` and bundle identifier `dev.shreeve.lyte`.
+- macOS is showing the one-time Keychain prompt for `Lyte Client Noise
+  Identity`. The owner must choose whether to grant it; automation must not
+  enter the password or click a security decision.
+- Live LaunchServices proof is incomplete until that prompt is resolved and
+  the ordinary app sustains a stream for at least 30 seconds.
+- Do not launch a benchmark or second ordinary Lyte app while this process is
+  open; both use the same bundle identity.
 
-If a six-digit pairing sheet appears, temporarily add `--pair` to the
-operator-owned host arguments, restart the service, pair once, then remove
-the flag and restart again. Three wrong guesses consume the PIN.
+### Host
 
-### Safety
+- `pup` is wired at `10.0.0.232`; Wi-Fi backup is `10.0.0.249`.
+- The standing `lyte-host.service` owns UDP 41151 and is active. Its configured
+  120-second no-client-handshake timeout can trigger the existing systemd
+  restart policy; that event is not evidence of a host crash.
+- Unit binary: `~/src/lyte-host/.build/debug/lyte-host`.
+- Session log: `/tmp/lyte-host-session.log`.
 
-- Never touch pup's
-  `~/.config/lyte-host/{portal_token,noise_static.key,paired_clients}`.
-- Never stop or replace the owner's 41151 service for a test. Use a fresh
-  41xxx port plus `--no-advertise`.
-- Warn the owner before any live test host captures the physical screen.
-- Scope every netem rule to the exact test port and remove it after the leg.
+Never touch pup's
+`~/.config/lyte-host/{portal_token,noise_static.key,paired_clients}` and never
+displace its standing UDP 41151 service. Test hosts require a fresh 41xxx port
+and `--no-advertise`.
 
-## Build and deployment recipe
+## Commissioning findings still open
 
-Mac tests require the full Xcode toolchain:
+1. The release app links Homebrew's
+   `/opt/homebrew/opt/opus/lib/libopus.0.dylib`; replace it with a pinned,
+   hermetic shared leaf and prove the bundle has no Homebrew runtime path.
+2. Resolve the `VideoReadbackTap` Swift concurrency/pointer warnings, the
+   unnecessary mutable test variables, and Linux `String(cString:)`
+   deprecations; then add a warning ratchet.
+3. Run the owner-visible two-column stats-ledger check after live streaming is
+   restored. GNOME Shell's known ten-second source-stall comb on pup remains an
+   environment limitation, not a Lyte host-loop defect.
 
-```sh
-cd Wire && DEVELOPER_DIR=/Applications/Xcode.app swift test
-cd Common && DEVELOPER_DIR=/Applications/Xcode.app swift test
-cd Host && DEVELOPER_DIR=/Applications/Xcode.app swift test
-DEVELOPER_DIR=/Applications/Xcode.app swift test \
-  --package-path Client --scratch-path .build
-cd SystemTests && DEVELOPER_DIR=/Applications/Xcode.app swift test
-```
+## Architecture train after commissioning
 
-Sync and build pup:
+Keep every landing small and green. The intended order is:
 
-```sh
-rsync -a --delete --exclude .build Wire/ pup:src/Wire/
-rsync -a --delete --exclude .build Common/ pup:src/Common/
-rsync -a --delete --exclude .build Host/ pup:src/lyte-host/
-ssh pup 'cd ~/src/lyte-host && \
-  LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift test'
-ssh pup 'cd ~/src/lyte-host && \
-  LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build'
-```
-
-Do not pipe `swift test` into `grep`; it masks the exit code. Capture the
-status after redirection. `status` is read-only in zsh, so use another name.
-
-## Quality gate
-
-`Scripts/benchmark-app.sh` is the current glass-quality instrument. Run
-motion legs with the panel at 60 Hz and pin the requested tier with
-`LYTE_BENCHMARK_CHROMA_TIER=good|best`.
-
-| Tier | Active floor | Converged floor | SSIM floor |
-|---|---:|---:|---:|
-| 4:2:0 | 28 dB | 30 dB | 0.995 |
-| 4:4:4 | 45 dB | 50 dB | 0.9995 |
-
-Best-tier baseline from 2026-08-03:
-
-- static: 57.6 dB minimum channel, SSIM 0.999994;
-- motion: 56.8 dB, SSIM 0.99999, 59.97 fps;
-- gap p50/p95/p99: exactly 16.667 ms;
-- lateness p99: 1.92 ms.
-
-An AWDL re-engage can create an environmental ~100 ms audio window. Check
-stderr for `awdl0 UP while streaming` before attributing that failure to the
-wire. Never soften a red threshold at HEAD; a failure is a finding.
+1. Extract pure `LyteClientCore` policy with a sans-IO import lint.
+2. Extract pure host session policy behind injected time and randomness.
+3. Extract the client ingress/session vertical without moving platform IO.
+4. Make application composition roots explicit.
+5. Remove executable insecure/plaintext production paths while preserving
+   test-only frozen-vector equipment.
+6. Finish documentation and architectural ratchets, then repeat clean macOS,
+   pup, WASM, and live-rig commissioning.
 
 ## Recovery pointers
 
-- Pre-normalization handoff: `git show 59e8bb4:HANDOFF.md`
-- H2–H4 wave ledger and historical Beauty Bar:
-  `git show 4bb3e11:docs/20260730-103326-handoff-archive-h2-h4.md`
-- Pre-slim portal-era operations: `git show 0753cbc:HANDOFF.md`
-- Retired analysis ledger: `git show 860369a:ANALYSIS.md`
-- Retired overall strategy: `git show 59e8bb4:LYTE-PLAN.md`
+- Repository law and canonical commands: `AGENTS.md`
+- Deferred actionable work: `TODO.md`
+- Source-layout decision: `docs/20260803-084328-source-layout-and-migration.md`
+- Retired strategy: `git show 59e8bb4:LYTE-PLAN.md`
