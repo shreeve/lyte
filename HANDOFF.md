@@ -5,11 +5,11 @@ history.*
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #199. There is one checkout, no auxiliary
+- **Branch:** clean `main` through PR #200. There is one checkout, no auxiliary
   worktree, no topic branch, and no open pull request.
-- **Current objective:** resume the IO-free client-control sequence with
-  clipboard followed by cursor. The Direct Eye same-framebuffer freeze is
-  corrected and commissioned.
+- **Current objective:** finish the IO-free client-control sequence with cursor
+  policy. Clipboard text and image judgment now share the portable boundary;
+  the Direct Eye same-framebuffer freeze remains corrected and commissioned.
 - **Recent landings:** PR #186 made shipping transport Noise-only and removed
   513 net lines; PR #187 made `HostApplication` the native Swift `@main` entry;
   PR #188 aligned every living architecture document with those landings and
@@ -36,13 +36,16 @@ history.*
   macOS transport to synchronize counters, execute sends, and project events.
   PR #199 corrected the Direct Eye's false damage premise, replaced FB-flip
   gating with a compact full-screen GPU fingerprint, and retired the obsolete
-  flip-gap ledger. Frozen wire vectors did not change.
+  flip-gap ledger. PR #200 moved clipboard text and image consent, capability
+  gates, direction judgment, echo suppression, bounded lane state, and wire
+  encoding behind `ClientControlSession`; macOS now executes typed decisions.
+  Frozen wire vectors did not change.
 
 ## Last green gates
 
-The exact PR #199 source commit `8ea13c4` (landed as `aede741`) passed the
+The exact PR #200 source commit `89342b1` (landed as `0cb21a4`) passed the
 complete warning-enforced macOS gate:
-Common 93, Wire 513, Host 340, Client 329, and SystemTests 17. Benchmark and
+Common 93, Wire 513, Host 340, Client 336, and SystemTests 17. Benchmark and
 host-release safety, signing policy, 25 analyzer tests, app identity, the
 signed CLI, hermetic linkage, packaging, and double signed release-app
 assembly all passed. The isolated host-image lifecycle also passed.
@@ -52,7 +55,12 @@ The same source passed pup's deterministic gate: Common 94, Wire 513, and Host
 release builds; hermetic linkage; pinned Opus proof; the release image and
 installer lifecycle; kernel socket/TOS and pacing harnesses; and protected-state
 verification. A standalone six-second GPU run made 360 observations with zero
-skipped beats and zero missed grabs; fingerprint readback averaged 1.69 ms.
+skipped beats and zero missed grabs; that retained PR #199 hardware evidence
+averaged 1.69 ms per fingerprint observation and was not repeated for this
+policy-only PR.
+
+The composed `LyteClientSession` target also cross-built with warnings as
+errors for `wasm32-unknown-wasip1` under the official Swift 6.3.3 WASI SDK.
 
 Focused architecture proof on the composed main branch passes all three host
 composition/security laws: one native `@main` doorway, injected argument
@@ -64,9 +72,10 @@ Swift files. Wire's full WebAssembly leg also passed 511 tests under wasmtime
 
 ### Client
 
-- `.build/Lyte.app` PID 60433 is running and connected to pup. Do not launch a
-  benchmark or second ordinary Lyte app while it is open; both use the same
-  bundle identity.
+- `.build/Lyte.app` PID 60433 is running. Pup's service is currently awaiting a
+  handshake, so do not describe this old published app as a commissioned PR
+  #200 connection. Do not launch a benchmark or second ordinary Lyte app while
+  it is open; both use the same bundle identity.
 - Bundle identifier `dev.shreeve.lyte`, team `SD6N7Z8P9P`, signed by
   `Apple Development: Steve Shreeve (8FHNN4RZ9Q)`, build `1785923981`.
 - Lyte executable SHA-256:
@@ -89,7 +98,7 @@ Swift files. Wire's full WebAssembly leg also passed 511 tests under wasmtime
 
 - `pup` is currently on Wi-Fi at `10.0.0.249`; wired address `10.0.0.232` is
   unplugged. The active advertisement interface is `wlp0s20f3`.
-- `lyte-host.service` PID 90865 is active on UDP 41151. Its configured 120-second
+- `lyte-host.service` PID 187712 is active on UDP 41151. Its configured 120-second
   no-client-handshake timeout can exercise systemd restart policy; a changing
   PID alone is not a host crash.
 - Deployed release binary: `~/src/lyte-host/.build/release/lyte-host`, SHA-256
@@ -117,9 +126,9 @@ video-reserve owner.
 
 ## Next commissioning order
 
-1. Move clipboard control judgment behind `ClientControlSession`, preserving
-   consent, capability, origin/echo, size, and role-confusion laws as typed
-   IO-free decisions; then do the same for cursor control.
+1. Move cursor control judgment behind `ClientControlSession`, preserving
+   negotiation, malformed-input, and wrong-capability laws as typed IO-free
+   decisions while AppKit retains only `NSCursor` projection.
 2. Keep the clean Mac/Linux/WASM/live commissioning baseline green, then add
    thin macOS/Linux/Windows/browser shells at that shared boundary.
 
