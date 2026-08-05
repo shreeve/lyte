@@ -380,15 +380,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// True once the first authenticated chan-1 datagram landed and
     /// (config permitting) the detector re-armed at 350 ms.
     public private(set) var detectorTightened = false
-    /// Video posture: the last 0x26 the host announced (nil = never
-    /// announced — the always-on contract). Read by the UI's pill.
-    public private(set) var announcedVideoPosture: VideoPostureState?
-    /// Audio posture: true between a 0x25 quiet announcement and the
-    /// next evidence of life (a 0x25 active or an audio datagram).
-    /// Read by the benchmark witness so intentional stillness is not
-    /// booked as an audio blackout.
-    public private(set) var hostAnnouncedAudioQuiet = false
-
     /// The production machine-poll wake; nil until `startTimers()`.
     private var machineTimer: DispatchSourceTimer?
 
@@ -1048,8 +1039,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             // total silence honestly means the path is dark.
             lock.lock()
             counters.audioDatagramsReceived += 1
+            controlSession.noteAudioEvidence()
             lock.unlock()
-            if hostAnnouncedAudioQuiet { hostAnnouncedAudioQuiet = false }
             audio.ingest(envelope: envelope, payload: payload, now: now)
             tightenDetectorIfNeeded(now: now)
         }
@@ -1084,73 +1075,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             "nack: frame \(refusal.frame.rawValue) repair refused "
             + "by host (\(refusal.reason)) — IDR now"))
         nackPolicy.handleRefusal(frame: refusal.frame, now: now)
-    }
-
-    /// Tripwire (0x25): the host's audio track-state announcement —
-    /// silence with a signed IOU. Quiet relaxes the audio-fed
-    /// blackout detector back to the beacon-bounded threshold (gated
-    /// silence is CONTRACT, not evidence of a dark path — without
-    /// this, 350 ms into the first announced quiet the session would
-    /// false-FROZEN) and rests the jitter adaptation across the gap.
-    /// Active precedes the wake's pre-roll burst; the burst's first
-    /// authenticated datagram re-tightens the detector through the
-    /// existing evidence rule (`detectorTightened` was reset).
-    private func receiveAudioTrackState(
-        _ bytes: [UInt8], now: ClientTimestamp
-    ) {
-        guard let message = try? AudioTrackState.decode(bytes) else {
-            noteMalformed("audio track state")
-            return
-        }
-        lock.lock()
-        guard controlSession.agreedCapabilities?.audioQuietPosture == true else {
-            lock.unlock()
-            onEvent(.protocolNote(
-                "audio track-state 0x25 without negotiated key 15 — dropped"))
-            return
-        }
-        counters.audioTrackStatesReceived += 1
-        lock.unlock()
-        switch message.state {
-        case .quiet:
-            hostAnnouncedAudioQuiet = true
-            audio.noteAnnouncedQuiet()
-            relaxDetectorForAnnouncedQuiet(now: now)
-        case .active:
-            // The resumed packets are the evidence; nothing to arm
-            // here — the tighten path owns the transition.
-            hostAnnouncedAudioQuiet = false
-        }
-    }
-
-    /// Video posture (0x26): the host's keepalive ladder announcement.
-    /// v1 consumers: the counter, the note, and the stored posture the
-    /// UI's pill can render as calm idle — video freshness alarms were
-    /// already gap-normalized (#66), so no detector rebuild is needed
-    /// on this axis; the announcement makes the slow heartbeat HONEST
-    /// rather than survivable.
-    private func receiveVideoPostureState(_ bytes: [UInt8]) {
-        guard let message = try? VideoPostureState.decode(bytes) else {
-            noteMalformed("video posture state")
-            return
-        }
-        lock.lock()
-        guard controlSession.agreedCapabilities?.videoQuietPosture == true else {
-            lock.unlock()
-            onEvent(.protocolNote(
-                "video posture 0x26 without negotiated key 16 — dropped"))
-            return
-        }
-        counters.videoPostureStatesReceived += 1
-        let changed = announcedVideoPosture != message
-        announcedVideoPosture = message
-        lock.unlock()
-        if changed {
-            onEvent(.protocolNote(message.posture == .quiet
-                ? "video quiet — keepalive \(message.keepaliveSeconds)s "
-                    + "announced"
-                : "video active — keepalive 1 s"))
-        }
     }
 
     /// The tighten's mirror: rebuilds the receiver machine at the
@@ -1214,6 +1138,23 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     }
 
     // MARK: Snapshots
+
+    /// The last negotiated video posture, or nil before the first accepted
+    /// announcement. Portable state lives in `ClientControlSession`; this is
+    /// the synchronized transport snapshot consumed by the UI.
+    public var announcedVideoPosture: VideoPostureState? {
+        lock.lock()
+        defer { lock.unlock() }
+        return controlSession.announcedVideoPosture
+    }
+
+    /// True between an accepted quiet announcement and the next accepted
+    /// active announcement or authenticated audio datagram.
+    public var hostAnnouncedAudioQuiet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return controlSession.hostAnnouncedAudioQuiet
+    }
 
     /// V-5: the stream's observed chroma ("4:2:0"/"4:4:4"), nil
     /// before the first IDR with in-band parameter sets — the stats
@@ -1336,7 +1277,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
              CtrlMessageType.audioRoutingStatus,
              CtrlMessageType.clipboardSet,
              CtrlMessageType.clipboardAnnounce,
-             CtrlMessageType.cursorShape:
+             CtrlMessageType.cursorShape,
+             CtrlMessageType.audioTrackState,
+             CtrlMessageType.videoPostureState:
             receiveControlWord(bytes, now: now)
 
         case CtrlMessageType.idleFrame:
@@ -1351,12 +1294,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             counters.inputEchoMessagesReceived += 1
             lock.unlock()
             input.handleEcho(echo, now: now)
-
-        case CtrlMessageType.audioTrackState:
-            receiveAudioTrackState(bytes, now: now)
-
-        case CtrlMessageType.videoPostureState:
-            receiveVideoPostureState(bytes)
 
         default:
             lock.lock()
@@ -1410,6 +1347,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             counters.cursorShapesReceived += 1
         case .cursor(.unnegotiatedShape):
             counters.unknownReliableTypes += 1
+        case .mediaPosture(.audioState):
+            counters.audioTrackStatesReceived += 1
+        case .mediaPosture(.videoState):
+            counters.videoPostureStatesReceived += 1
         default:
             break
         }
@@ -1512,6 +1453,28 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         case .cursor(.unnegotiatedShape):
             onEvent(.protocolNote(
                 "cursor 0x24 without negotiated key 13 — dropped"))
+        case .mediaPosture(.audioState(let state)):
+            if state.state == .quiet {
+                audio.noteAnnouncedQuiet()
+                relaxDetectorForAnnouncedQuiet(now: now)
+            }
+        case .mediaPosture(.videoState(let state, changed: let changed)):
+            if changed {
+                onEvent(.protocolNote(state.posture == .quiet
+                    ? "video quiet — keepalive \(state.keepaliveSeconds)s "
+                        + "announced"
+                    : "video active — keepalive 1 s"))
+            }
+        case .mediaPosture(.malformedAudioState):
+            noteMalformed("audio track state")
+        case .mediaPosture(.malformedVideoState):
+            noteMalformed("video posture state")
+        case .mediaPosture(.unnegotiatedAudioState):
+            onEvent(.protocolNote(
+                "audio track-state 0x25 without negotiated key 15 — dropped"))
+        case .mediaPosture(.unnegotiatedVideoState):
+            onEvent(.protocolNote(
+                "video posture 0x26 without negotiated key 16 — dropped"))
         }
         if let lifecycle = decision.lifecycle {
             executeLifecycle(lifecycle, now: now)

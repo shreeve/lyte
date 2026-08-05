@@ -9,6 +9,7 @@ public enum ClientControlSessionEvent: Hashable, Sendable {
     case audioRouting(ClientAudioRoutingSessionEvent)
     case clipboard(ClientClipboardSessionEvent)
     case cursor(ClientCursorSessionEvent)
+    case mediaPosture(ClientMediaPostureSessionEvent)
 }
 
 /// One composed client-control decision. The shell sends the returned bytes,
@@ -39,6 +40,7 @@ public struct ClientControlSession: Sendable {
     private var audioRouting: ClientAudioRoutingSession
     private var clipboard: ClientClipboardSession
     private var cursor: ClientCursorSession
+    private var mediaPosture: ClientMediaPostureSession
 
     public init(
         localCapabilities: Capabilities,
@@ -56,6 +58,7 @@ public struct ClientControlSession: Sendable {
             textSharingAtStart: clipboardSharingAtStart,
             imageSharingAtStart: clipboardImageSharingAtStart)
         cursor = ClientCursorSession()
+        mediaPosture = ClientMediaPostureSession()
     }
 
     public var state: SessionState { lifecycle.state }
@@ -85,6 +88,12 @@ public struct ClientControlSession: Sendable {
     }
     public var cursorNegotiated: Bool {
         capabilities.agreed?.cursorShape == true
+    }
+    public var hostAnnouncedAudioQuiet: Bool {
+        mediaPosture.hostAnnouncedAudioQuiet
+    }
+    public var announcedVideoPosture: VideoPostureState? {
+        mediaPosture.announcedVideoPosture
     }
     public var operativeMaxDatagramBytes: UInt32 {
         capabilities.operativeMaxDatagramBytes
@@ -146,6 +155,10 @@ public struct ClientControlSession: Sendable {
         clipboard.receiveBulk(message, sha256: sha256)
     }
 
+    public mutating func noteAudioEvidence() {
+        mediaPosture.noteAudioEvidence()
+    }
+
     /// Advances injected time or applies a local lifecycle input.
     public mutating func advance(
         _ input: SessionInput? = nil,
@@ -181,26 +194,31 @@ public struct ClientControlSession: Sendable {
         }
 
         guard let decision = try capabilities.receive(bytes) else {
-            guard let decision = audioRouting.receiveReliable(
-                bytes, agreed: capabilities.agreed)
-            else {
-                guard let event = clipboard.receiveReliable(
-                    bytes, agreed: capabilities.agreed)
-                else {
-                    guard let event = cursor.receiveReliable(
-                        bytes, agreed: capabilities.agreed)
-                    else {
-                        return nil
-                    }
-                    return ClientControlSessionDecision(
-                        event: .cursor(event))
-                }
+            if let decision = audioRouting.receiveReliable(
+                bytes, agreed: capabilities.agreed
+            ) {
+                return ClientControlSessionDecision(
+                    outboundReliable: decision.outboundReliable,
+                    event: .audioRouting(decision.event))
+            }
+            if let event = clipboard.receiveReliable(
+                bytes, agreed: capabilities.agreed
+            ) {
                 return ClientControlSessionDecision(
                     event: .clipboard(event))
             }
-            return ClientControlSessionDecision(
-                outboundReliable: decision.outboundReliable,
-                event: .audioRouting(decision.event))
+            if let event = cursor.receiveReliable(
+                bytes, agreed: capabilities.agreed
+            ) {
+                return ClientControlSessionDecision(event: .cursor(event))
+            }
+            if let event = mediaPosture.receiveReliable(
+                bytes, agreed: capabilities.agreed
+            ) {
+                return ClientControlSessionDecision(
+                    event: .mediaPosture(event))
+            }
+            return nil
         }
         let lifecycleDecision = decision.teardownReason.map {
             lifecycle.advance(.teardownRequest($0), now: now)
