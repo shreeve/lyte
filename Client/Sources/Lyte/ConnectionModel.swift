@@ -1423,7 +1423,7 @@ final class ConnectionModel {
         }
         let flight = videoFlightRecorder.snapshot()
         if flight.frames > 0 {
-            var glass = String(
+            let glass = String(
                 format: "source/ready p99 %.1f/%.1f ms"
                     + " · transit %.1f ms · sample %.1f ms"
                     + " · queue/enqueue %.1f/%.1f ms",
@@ -1433,33 +1433,40 @@ final class ConnectionModel {
                 Double(pipelineStats.sampleBuildMicroseconds.p99 ?? 0) / 1_000,
                 flight.queueWaitP99Milliseconds ?? 0,
                 flight.enqueueP99Milliseconds ?? 0)
+            row("glass", glass)
+
+            // The physical renderer and the Conductor describe one playout
+            // verdict, but they are distinct from the path timings above.
+            // Keeping them on their own stable row prevents the glass ledger
+            // from turning into one viewport-dependent wrapped sentence.
+            var playout: [String] = []
             if let renderer = flight.rendererMetrics {
-                glass += " · render \(renderer.totalFrames)"
+                playout.append("render \(renderer.totalFrames)")
                 if let recent = flight.recentRendererMetrics {
-                    glass += " · drop total/recent "
-                        + "\(renderer.droppedFrames)/\(recent.droppedFrames)"
-                    glass += " · corrupt total/recent "
+                    playout.append("drop total/recent "
+                        + "\(renderer.droppedFrames)/\(recent.droppedFrames)")
+                    playout.append("corrupt total/recent "
                         + "\(renderer.corruptedFrames)"
-                        + "/\(recent.corruptedFrames)"
+                        + "/\(recent.corruptedFrames)")
                 } else {
-                    glass += " · drop \(renderer.droppedFrames)"
-                        + " · corrupt \(renderer.corruptedFrames)"
+                    playout.append("drop \(renderer.droppedFrames)")
+                    playout.append("corrupt \(renderer.corruptedFrames)")
                 }
-                glass += String(
-                    format: " · delay %.1f ms",
-                    renderer.accumulatedDelayMilliseconds)
+                playout.append(String(
+                    format: "delay %.1f ms",
+                    renderer.accumulatedDelayMilliseconds))
             }
             // The Conductor's score-to-glass cue and the portion left after
             // this frame's measured path time. These are deliberately named
             // separately: the cue is not all reserve.
             if let cue = flight.cueMilliseconds {
-                glass += String(format: " · cue %.0f ms", cue)
+                playout.append(String(format: "cue %.0f ms", cue))
             }
             if let reserve = flight.reserveMilliseconds {
-                glass += String(format: " · reserve %.0f ms", reserve)
+                playout.append(String(format: "reserve %.0f ms", reserve))
             }
-            glass += " · \(flight.bottleneck)"
-            row("glass", glass)
+            playout.append(flight.bottleneck)
+            row("playout", playout.joined(separator: " · "))
         }
 
         let clipboard = core.snapshotCounters()
