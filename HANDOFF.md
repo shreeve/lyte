@@ -4,11 +4,11 @@
 
 ## Resume here
 
-- **Branch:** resume `agent/host-session-core` from its committed extraction
-  after incorporating clean `main` through PR #181.
-- **GitHub:** PR #181 prevents clean verification from deleting the owner's
-  running app and makes a missing optional helper fail soft instead of entering
-  the crashing `SMAppService.register()` path.
+- **Branch:** clean `main` through PR #182. Resume `agent/host-session-core`
+  from its committed extraction after incorporating current `main`.
+- **GitHub:** PR #182 makes video warnings terminal verdicts: preserved
+  lateness remains diagnostic evidence, while only an uncorrectable frame miss
+  or renderer failure can notify the user.
 - **Workspace:** one checkout and no auxiliary worktrees.
 - **Current objective:** extract pure host session policy behind injected time
   and randomness without moving sockets, queues, persistence, or Linux IO.
@@ -144,11 +144,23 @@ gate erased `.build/Lyte.app` and stream start tried to register its now-
 missing helper. Client tests now use `Client/.build`; stream start never owns
 registration; `.notFound` fails soft. PR #181 landed the fix.
 
+The terminal-video-verdict slice passed 16 focused warning-contract tests and
+the complete warning-enforced macOS gate: Common 93, Wire 513, Host 340,
+Client 299, and SystemTests 17 plus benchmark safety, signing, 25 analyzers,
+app identity, the signed CLI, packaging, hermetic linkage, and double signed
+release-app assembly. The gate left the owner's running app PID, bundle
+version, and executable hash unchanged. Pup passed Common 94, Wire 513, and
+Host 341 plus warning-enforced debug and release builds, linkage, socket and
+pacing harnesses, and protected-state verification. Preserved frames remain
+silent at measured lateness from 0.999 through 400 ms; terminal misses retain
+their measured lateness only as context. Frozen vectors were unchanged.
+
 ## Current live rig
 
 ### Client
 
-- `.build/Lyte.app` (PID 77688) is running; helper PID 77929 is active. The previous app's
+- `.build/Lyte.app` (PID 21298) is running; the helper is demand-launched when
+  a stream needs it. The previous app's
   beachball was a main-thread `StatsOverlay` feedback loop: its `TimelineView`
   repeatedly invoked `ConnectionModel.statsRows()` and percentile sorting from
   SwiftUI layout while media queues kept playing. The repaired overlay renders
@@ -156,11 +168,11 @@ registration; `.notFound` fails soft. PR #181 landed the fix.
   proof is recorded under the focused gate above.
 - It is signed by `Apple Development: Steve Shreeve (8FHNN4RZ9Q)` with team
   identifier `SD6N7Z8P9P` and bundle identifier `dev.shreeve.lyte`.
-- The current candidate bundle is clean source `39638567a097`, build
-  `1785918461`.
+- The current landed bundle is clean source `e3a3024f5c9a`, build
+  `1785919244`.
   Its Lyte and helper executable SHA-256 values are respectively
-  `676c817ca64c5260daa704b2a6ea0152cffd5c43adfa9df6b520e43604976352`
-  and `ca926cb3c27673b718f6d13db830a20e6bdd543bb0429cbfff20d22e033423b0`.
+  `6a7574f4f37ed018f8f132b52ecd6a6e3d28c546e11c0040e7957db577fba1b1`
+  and `a5c13374615df574e3294dd24f2d3c6515763bd124d9d34a4586342f161f0c0c`.
   Packaging, hermetic-linkage, and strict deep-signature checks pass.
 - LaunchServices resolves the exact candidate path, build version, signing
   identity, and Mach-O UUID. After the completed reboot and an owner-controlled
