@@ -47,9 +47,9 @@ struct StreamContainer: View {
         StripEdge(rawValue: stripEdgeRaw) ?? .bottom
     }
 
-    /// "Pre-render delivery stalls — last 60 s: 1, 43 total, worst 115 ms":
-    /// the ring says how often right now, the total quantifies the sitting,
-    /// the worst gives the ceiling, and the stage says where delay was seen.
+    /// "Pre-render delivery stalls — last 60 s: 1, worst 49 ms": every
+    /// number in the warning describes the same live 60-second window.
+    /// Sitting-wide books remain diagnostic evidence, not alarm copy.
     private func linkHealthLine(
         _ health: LinkHealthAssessment
     ) -> String {
@@ -60,10 +60,9 @@ struct StreamContainer: View {
         default: stage = "Delivery stalls"
         }
         let recent = health.stallsLastMinute.formatted()
-        let worst = health.sessionWorstMilliseconds
+        let worst = health.worstStallMilliseconds
             .formatted(.number.precision(.fractionLength(0)))
-        return "\(stage) — last 60 s: \(recent), "
-            + "\(health.sessionStallCount) total, worst \(worst) ms"
+        return "\(stage) — last 60 s: \(recent), worst \(worst) ms"
     }
 
     var body: some View {
