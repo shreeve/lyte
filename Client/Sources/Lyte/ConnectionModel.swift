@@ -657,12 +657,19 @@ final class ConnectionModel {
     /// then publish the exact sum of the live 60-bucket window.
     func tickLinkHealth() {
         for f in videoFlightRecorder.recentFrames() {
+            let outcome: LinkHealthMeter.Outcome
+            if f.rendererFailed {
+                outcome = .rendererFailure
+            } else if f.rendererDropped {
+                outcome = .uncorrectableMiss
+            } else {
+                outcome = .preserved
+            }
             linkHealthMeter.observe(
                 ordinal: f.ordinal,
                 presentationLatenessMilliseconds:
                     f.presentationLatenessMilliseconds,
-                rendererDropped: f.rendererDropped,
-                rendererFailed: f.rendererFailed,
+                outcome: outcome,
                 eventMicroseconds: f.readyMicroseconds)
         }
         linkHealth = linkHealthMeter.assessment(
