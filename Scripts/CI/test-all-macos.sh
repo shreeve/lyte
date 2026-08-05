@@ -145,6 +145,7 @@ if [[ ! -x "$python_env/bin/python3" || "$installed_hash" != "$required_hash" ]]
 fi
 
 "$python_env/bin/python3" Scripts/Tests/test_analyze_app_benchmark.py
+Scripts/Tests/test-app-identity.sh
 
 echo "==> signed debug CLI"
 Scripts/build-cli.sh debug

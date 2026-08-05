@@ -7,6 +7,15 @@ set -e
 cd "$(dirname "$0")/.."
 
 CONFIG="${1:-release}"
+APP=".build/Lyte.app"
+
+RUNNING_PIDS="$(pgrep -x Lyte 2>/dev/null || true)"
+if [ -n "$RUNNING_PIDS" ]; then
+  echo "error: refusing to replace Lyte.app while Lyte is running" >&2
+  echo "       PID(s): $(printf '%s' "$RUNNING_PIDS" | tr '\n' ' ')" >&2
+  exit 1
+fi
+
 swift build \
   --package-path Client \
   --scratch-path .build \
@@ -25,18 +34,29 @@ if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
   echo "       fetch --unshallow before assembling Lyte.app" >&2
   exit 1
 fi
-BUNDLE_VERSION="$(git rev-list --count HEAD)"
+SOURCE_VERSION_FLOOR="$(git rev-list --count HEAD)"
 SOURCE_REVISION="$(git rev-parse --short=12 HEAD)"
 [ -n "$(git status --porcelain)" ] \
   && SOURCE_REVISION="${SOURCE_REVISION}+"
-case "$BUNDLE_VERSION" in
+case "$SOURCE_VERSION_FLOOR" in
   ''|*[!0-9]*)
     echo "error: Git produced a non-numeric bundle version" >&2
     exit 1
     ;;
 esac
 
-APP=".build/Lyte.app"
+PREVIOUS_BUNDLE_VERSION=0
+if [ -f "$APP/Contents/Info.plist" ]; then
+  PREVIOUS_BUNDLE_VERSION="$(
+    plutil -extract CFBundleVersion raw -o - "$APP/Contents/Info.plist" \
+      2>/dev/null || printf '0\n'
+  )"
+fi
+BUNDLE_VERSION="$(
+  Scripts/next-bundle-version.sh \
+    "$PREVIOUS_BUNDLE_VERSION" "$SOURCE_VERSION_FLOOR"
+)"
+
 STAGE_ROOT="$(mktemp -d ".build/.lyte-app-stage.XXXXXX")"
 STAGED_APP="$STAGE_ROOT/Lyte.app"
 cleanup() { rm -rf "$STAGE_ROOT"; }
@@ -146,6 +166,15 @@ Scripts/Tests/test-app-packaging.sh "$STAGED_APP" "$STAGE_ROOT"
 Scripts/Tests/test-hermetic-linkage.sh \
   "$STAGED_APP/Contents/MacOS/Lyte" \
   "$STAGED_APP/Contents/MacOS/lyte-helperd"
+
+# Recheck immediately before publication to catch a process started during the
+# build before its executable inode could be replaced beneath it.
+RUNNING_PIDS="$(pgrep -x Lyte 2>/dev/null || true)"
+if [ -n "$RUNNING_PIDS" ]; then
+  echo "error: Lyte started during assembly; signed app was not published" >&2
+  echo "       PID(s): $(printf '%s' "$RUNNING_PIDS" | tr '\n' ' ')" >&2
+  exit 1
+fi
 
 # macOS rename-swap publishes the complete signed directory in one filesystem
 # operation. The old app moves into the private stage and the EXIT trap removes

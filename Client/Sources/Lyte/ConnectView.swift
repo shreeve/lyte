@@ -73,9 +73,8 @@ struct ConnectView: View {
                 if lyteHosts.isEmpty && browsing {
                     ProgressView("Looking for hosts…")
                         .controlSize(.small)
-                } else if lyteHosts.isEmpty,
-                          accessProblem == .permissionRequired {
-                    localNetworkPermissionView
+                } else if lyteHosts.isEmpty, let accessProblem {
+                    localNetworkAccessView(accessProblem)
                 } else if lyteHosts.isEmpty {
                     Text("No hosts found on this network")
                         .foregroundStyle(.secondary)
@@ -112,13 +111,15 @@ struct ConnectView: View {
         }
     }
 
-    private var localNetworkPermissionView: some View {
+    private func localNetworkAccessView(
+        _ problem: LocalNetworkAccessProblem
+    ) -> some View {
         VStack(spacing: 8) {
-            Text("Local Network access is required")
+            Text(problem == .permissionRequired
+                ? "Local Network access is required"
+                : "Lyte found a host but couldn’t reach it")
                 .fontWeight(.medium)
-            Text("Allow Lyte in the macOS prompt. If you previously chose "
-                + "Don’t Allow, enable Lyte in System Settings → Privacy & "
-                + "Security → Local Network.")
+            Text(localNetworkRecovery(problem))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 460)

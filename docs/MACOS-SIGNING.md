@@ -65,15 +65,25 @@ make the bundle suitable for Gatekeeper distribution.
 | Signer | `Scripts/sign-dev.sh` | signs a binary or `.app` |
 | CLI build+sign | `Scripts/build-cli.sh` | build `Client/` into root `.build`, then sign |
 | App build+sign | `Scripts/make-app.sh` | assembles `Lyte.app`, signs helper + app |
+| App launch | `Scripts/launch-app.sh` | force-registers the signed artifact, then opens it |
 
 `make-app.sh` builds the bundle completely in a private staging directory,
 validates its property list, signs it, and then publishes it with one macOS
 rename-swap. APFS supports that publication primitive; an unsupported swap,
 failed build, or failed signature leaves the previously published
 `.build/Lyte.app` intact. LaunchServices requires a valid numeric
-`CFBundleVersion`; Lyte uses the reachable Git commit count from a full clone.
-`LyteSourceRevision` separately records the short commit hash and a trailing
-`+` for a dirty source tree.
+`CFBundleVersion`. Every assembly receives a monotonically fresh version whose
+floor is the reachable Git commit count; rebuilding the same source can never
+publish a new Mach-O UUID under the previous version. `LyteSourceRevision`
+separately records the short commit hash and a trailing `+` for a dirty source
+tree.
+
+`launch-app.sh` force-registers the finished bundle before opening it. This is
+important because atomic publication changes the app inode and every link
+produces a new executable UUID. TN3179 says that UUID participates in macOS
+Local Network privacy and must be present and unique. Registering only after
+publication is Lyte's additional precaution: LaunchServices sees the exact
+signed artifact that the next command opens; it is not a privacy-state reset.
 
 The fallback identity is kept in its **own** keychain so `codesign` can use it
 non-interactively without changing the login keychain's security posture.
@@ -122,7 +132,21 @@ Build a signed app bundle:
 
 ```sh
 Scripts/make-app.sh             # release (default)
+Scripts/launch-app.sh
 ```
+
+`make-app.sh` refuses to replace the bundle while any `Lyte` process is
+running. Quit the existing app first, build it completely, and use the launch
+script rather than opening a newly replaced bundle by hand.
+
+If System Settings shows duplicated Lyte rows or an enabled row still produces
+`Local network prohibited`, do not use `tccutil`: macOS Local Network privacy
+does not provide a supported reset through that tool. Quit Lyte, retain only
+one physical app copy, rebuild, and run `Scripts/launch-app.sh`; after changing
+the **Lyte** switch in Privacy & Security → Local Network, use Search Again so
+the app recreates its browser and sockets. Apple tracks the remaining
+multiple-version pathology as a macOS bug; capture a sysdiagnose and file
+Feedback if the registered current build is still denied.
 
 Sign an arbitrary already-built target:
 
