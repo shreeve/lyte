@@ -6,6 +6,7 @@ public enum ClientControlSessionEvent: Hashable, Sendable {
     case lifecycle(ClientLifecycleMessage)
     case malformedLifecycle(ClientLifecycleMessage)
     case capability(ClientCapabilitySessionEvent)
+    case audioRouting(ClientAudioRoutingSessionEvent)
 }
 
 /// One composed client-control decision. The shell sends the returned bytes,
@@ -33,20 +34,30 @@ public struct ClientControlSessionDecision: Hashable, Sendable {
 public struct ClientControlSession: Sendable {
     private var lifecycle: ClientSessionLifecycle
     private var capabilities: ClientCapabilitySession
+    private var audioRouting: ClientAudioRoutingSession
 
     public init(
         localCapabilities: Capabilities,
         machineConfig: SessionMachineConfig,
+        desiredHostAudioRouting: HostAudioRoutingMode?,
         now: ClientTimestamp
     ) {
         lifecycle = ClientSessionLifecycle(config: machineConfig, now: now)
         capabilities = ClientCapabilitySession(local: localCapabilities)
+        audioRouting = ClientAudioRoutingSession(
+            desiredAtStart: desiredHostAudioRouting)
     }
 
     public var state: SessionState { lifecycle.state }
     public var wireMode: SessionWireMode { lifecycle.wireMode }
     public var isFrozen: Bool { lifecycle.isFrozen }
     public var agreedCapabilities: Capabilities? { capabilities.agreed }
+    public var hostAudioRoutingPosture: HostAudioRoutingMode? {
+        audioRouting.posture
+    }
+    public var hostAudioRoutingNegotiated: Bool {
+        capabilities.agreed?.hostAudioRouting == true
+    }
     public var operativeMaxDatagramBytes: UInt32 {
         capabilities.operativeMaxDatagramBytes
     }
@@ -55,6 +66,12 @@ public struct ClientControlSession: Sendable {
     /// its first post-establishment reliable word.
     public mutating func start() throws -> [UInt8]? {
         try capabilities.start()
+    }
+
+    public func requestHostAudioRouting(
+        _ mode: HostAudioRoutingMode
+    ) throws -> [UInt8] {
+        try audioRouting.request(mode, agreed: capabilities.agreed)
     }
 
     /// Advances injected time or applies a local lifecycle input.
@@ -92,7 +109,14 @@ public struct ClientControlSession: Sendable {
         }
 
         guard let decision = try capabilities.receive(bytes) else {
-            return nil
+            guard let decision = audioRouting.receiveReliable(
+                bytes, agreed: capabilities.agreed)
+            else {
+                return nil
+            }
+            return ClientControlSessionDecision(
+                outboundReliable: decision.outboundReliable,
+                event: .audioRouting(decision.event))
         }
         let lifecycleDecision = decision.teardownReason.map {
             lifecycle.advance(.teardownRequest($0), now: now)
