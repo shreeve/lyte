@@ -19,7 +19,12 @@ clipboard (text and images, both ways), drag-and-drop file transfer, and
 4:4:4 chroma now measured and landed, and the remaining gaps (WAN
 traversal, browser client) scheduled work, not open questions.
 
-## Our measured baseline (gate evidence, encrypted, live)
+## Measured gate baseline (encrypted, live)
+
+These are dated end-to-end gate measurements, not a synthetic current-release
+benchmark. The cited quality runs used the reference host's former NVENC seat;
+the shipping direct-eye host now uses native Intel VAAPI while preserving the
+same Lyte-owned capture, bitstream, transport, and glass contracts.
 
 - **Bandwidth**: ~4.1 Mbps average for a working 2048×1280@60 desktop
   (169 MB over 330 s); near-zero between damage events on a static screen.
@@ -35,7 +40,8 @@ traversal, browser client) scheduled work, not open questions.
   through IDR bursts and a 90 s video squeeze (receiver concealment
   0.037% through the squeeze). Audio keeps flowing through idle and
   frozen states as the always-on path probe.
-- **Quality**: damage-driven 60 fps HEVC (NVENC); the quality ratchet
+- **Quality**: damage-driven 60 fps HEVC (NVENC in the cited gate; native VAAPI
+  on the current reference host); the quality ratchet
   converges static content to **52 dB luma PSNR** (visually lossless
   text) then goes silent; sustained heavy motion decodes at **61 fps
   p50 at the glass** with **0 frames lost in 150 s** (Beauty Bar row 4,
@@ -116,7 +122,7 @@ while both ran side by side, and what the lineage never had.
   averaged **~4 Mbps for the same desktop** — a ~5× saving that grows the
   more idle the desktop is — and goes near-silent between damage events.
 - **Latency**: same class (~5–20 ms LAN glass-to-glass). Neither side has
-  a meaningful edge here; both are NVENC-fed UDP with FEC.
+  a meaningful edge here; both use hardware-encoded UDP video with FEC.
 - **Input and audio**: at parity, measured (input→photon p50 29–49 ms;
   5 ms audio cadence held at p99 under load) — on the sealed wire, which
   GameStream's never were.
@@ -156,8 +162,8 @@ column:
   (client→host v1), and connection roaming, all riding the sealed ARQ
   sublayer. Files-over-the-streaming-wire with E2E crypto is territory
   none of the compared products occupy cleanly.
-- **H4 — LANDED** (joint-gate eyeball pending): 4:4:4 chroma served
-  live behind a three-tier client control, clipboard images (PNG,
+- **H4 — LANDED**: 4:4:4 chroma served
+  live as a three-tier negotiated session posture, clipboard images (PNG,
   byte-exact both directions, measured), and the estimator-honesty
   reform that took the Beauty Bar to five-of-six green.
 - **H5**: **printing** and file features — the classic "corporate RDP"

@@ -1,10 +1,13 @@
 # Lyte — Design Decisions
 
-Decisions settled 2026-07-14/15, motivated by a real diagnosis session (see Case Study).
+This living document records Lyte's current product decisions. The original
+direction came from the diagnosis session summarized in the case study; later
+commissioning replaced the bootstrap implementation details with the owned
+architecture described here.
 
 ## D1. Two axes, one question
 
-Settings are resolved from a 2×2 grid: **intent × network**.
+Streaming policy is resolved from a 2×2 grid: **intent × network**.
 
 - **Intent — Work or Play.** The only choice the user makes, one visible toggle.
 - **Network — Local or Remote.** Detected: host address in a private range *and*
@@ -29,13 +32,19 @@ Same cell, different network conditions ⇒ different numbers. That is the point
 
 - Auto-select intent when possible: launching "Desktop" ⇒ Work; a game/Big Picture ⇒ Play.
   Show the choice as a dismissible pill, never a dialog.
-- At most one user-visible dial: quality ⇄ latency bias within the active cell.
+- The Conductor derives playout reserve from observed holes and clean beats.
+  Cushion is not a user setting and is never stored as milliseconds or frames.
 
-## D3. Expert profiles are forks of policies
+## D3. Declarations are not tuning knobs
 
-- Clone any cell ⇒ named profile; override individual knobs; save/share as JSON.
-- Overridden values render next to the policy-derived value; one-click reset.
-- Profiles are per-host-per-cell selectable.
+- Users declare intent and, where the hardware offers a real choice, a named
+  posture such as chroma quality. Lyte derives bitrate, resolution, pacing,
+  repair, and reserve from those declarations plus live evidence.
+- Diagnostic surfaces may expose derived values and the evidence behind them,
+  but the primary product does not offer an encoder-knob farm or expert
+  profiles that override automatic policy.
+- Chroma changes are session postures and therefore reconnect cleanly; they
+  are not mid-stream encoder controls.
 
 ## D4. Network doctor is a first-class subsystem
 
@@ -55,20 +64,23 @@ Prior art: moonlight clients ship AWDL helpers on macOS — validates the concep
 
 - **License: MIT for all Lyte-authored code.** Bundled third-party leaves retain
   their upstream licenses and notices.
-- **LyteWire, LyteCore, LyteIO, HostCore, HostWire, and LyteTransport** are
-  independently owned Swift implementations of Lyte's protocol and policy.
+- **LyteWire** owns the sans-IO protocol. **LyteCore** owns shared sans-IO
+  policy and **LyteIO** owns shared OS adapters. **LyteClientCore** and
+  **LyteClientSession** own pure client policy; **HostCore**, **HostSession**,
+  and **HostAudio** own pure host policy. **LyteTransport** and **HostWire**
+  execute those decisions at the role boundaries.
   The system speaks only Lyte-UDP; no GameStream, Sunshine, or Moonlight source
   remains in the product.
 - Bootstrap-era compatibility code and reference studies were retired to git
   history at the H2 exit. They are not dependencies of the current system.
-- Framework map (extracted from the shipping client binary): SwiftUI/Combine,
-  VideoToolbox, CoreMedia/CoreVideo, Metal(+FX/Kit), CoreHID, GameController,
-  CoreHaptics, CoreWLAN (Wi-Fi introspection for the doctor), ServiceManagement
-  (privileged helper), Security. Lyte uses CryptoKit/Security instead of bundling
-  OpenSSL, and drops SDL2 entirely.
-- VideoToolbox decode (H.264/HEVC/AV1) → `CAMetalLayer`, zero-copy.
-- AudioUnit + Opus; buffer depth is policy-derived.
-- CoreHID mouse path (relative + absolute), GameController for pads.
+- The shipping client uses SwiftUI/AppKit for its shell and input forwarding,
+  CoreMedia/VideoToolbox through `AVSampleBufferDisplayLayer` for HEVC glass,
+  AudioUnit plus pinned Opus for audio, Network.framework for UDP, and a
+  narrowly authenticated ServiceManagement helper for radio posture.
+- Swift Crypto is LyteWire's sole external Swift dependency and is confined
+  to its crypto leaf; Keychain and code-signing operations use Security.
+- The Linux host uses native KMS/DRM capture, GPU color conversion, VAAPI HEVC,
+  PipeWire audio, uinput, and the narrow UDP syscall leaf.
 
 ## D6. Interaction model: the window is the app (decided 2026-07-15)
 
@@ -77,8 +89,7 @@ is the unit of everything; the M5 "Hosts/Apps/Stream" screens collapse into
 *states of one window type*.
 
 - **Launch → window.** ⌘N makes another. Each window is one connection to one
-  host. Multiple windows = multiple hosts (Sunshine allows one streaming
-  session per host; the UI should make that constraint feel natural).
+  host. Multiple windows can represent multiple independent host sessions.
 - **The gate is the empty state.** A new window shows a quiet connect state
   inside itself: Bonjour-discovered hosts, recents first, then the chosen
   host's app list. Pick an app → the picker melts away and the window becomes
@@ -89,8 +100,8 @@ is the unit of everything; the M5 "Hosts/Apps/Stream" screens collapse into
   M5 "<60 s cold start" metric by an order of magnitude.
 - **Toolbar as a whisper.** Slim title-bar accessory, hidden by default while
   streaming (chrome-less look is the default), toggleable. Carries only live
-  state: host name, Work/Play toggle, network-health dot, mute. Choices live
-  in menus; derived numbers stay invisible (D2).
+  state such as host identity, intent, health, and mute. Derived transport and
+  playout numbers stay out of the primary interaction (D2).
 - **Menus stay minimal** (shipped in M4): app menu = identity + housekeeping
   only; a single Actions menu = every command with its shortcut, doubling as
   the shortcut cheat-sheet.
