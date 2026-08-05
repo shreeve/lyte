@@ -39,9 +39,11 @@ closed 2026-07-22 (gate report in git history); the portal era ended
 - `Sources/CInputUinput` — C leaf: virtual evdev devices, the sole input
   backend.
 - `Sources/lyte-host` — the Linux application composition root:
-  `main.swift` only delegates, while `HostApplication` selects direct-eye
+  `HostApplication` is the native Swift `@main` type and selects direct-eye
   capture, session wiring, Avahi advertisement, pairing (`--pair`), audio,
-  clipboard, files, and input backends (`--input auto|uinput|off`).
+  clipboard, files, and input backends (`--input auto|uinput|off`). Its
+  injected argument doorway keeps composition testable without a second entry
+  file.
 - `Sources/lyte-eye` / `lyte-nvenc` — the standalone direct-eye probe and
   the banked NVENC-native probe (E6a).
 - `Sources/lyte-netio-check`, `lyte-pace-check`, `lyte-audio-check` —

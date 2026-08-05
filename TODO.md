@@ -43,8 +43,9 @@ The closed 2026-07-30 analysis ledger is available at
   native print flow, with its own negotiated capability and consent.
 - **Wayland clipboard leaf:** replace the remaining Mutter session-bus
   dependency; capture and input are already compositor-independent.
-- **Posture refinements:** settings dials, an Opus DTX warm rung, DSP fades,
-  and the 2–5 second instant-replay ring remain demand-gated.
+- **Posture refinements:** an Opus DTX warm rung, DSP fades, and the 2–5 second
+  instant-replay ring remain demand-gated. Video cushion stays automatic under
+  the Conductor; it is not deferred UI work.
 - **Native packaging:** make Linux installation a single coherent product
   experience, then add the macOS host role. Windows/Linux role shells follow
   only after the shared session boundaries are IO-free.
