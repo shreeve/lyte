@@ -250,6 +250,25 @@ run_package_tests() {
 
 run_package_tests "Common" "$gate_root/Common"
 run_package_tests "Wire" "$gate_root/Wire"
+
+echo "==> IO-free client policy builds"
+client_path="$gate_root/Client"
+client_marker="$client_path/.build/.lyte-build-graph-sha256"
+client_installed_hash=""
+if [[ -f "$client_marker" ]]; then
+    client_installed_hash="$(<"$client_marker")"
+fi
+if [[ "$client_installed_hash" != "$build_graph_hash" ]]; then
+    echo "    package or source-path graph changed; invalidating stale SwiftPM build state"
+    (cd "$client_path" && swift package clean)
+fi
+(cd "$client_path" \
+    && swift package resolve \
+    && swift build --target LyteClientCore -Xswiftc -warnings-as-errors \
+    && swift build --target LyteClientSession -Xswiftc -warnings-as-errors)
+mkdir -p "$client_path/.build"
+printf '%s\n' "$build_graph_hash" > "$client_marker"
+
 run_package_tests "Host" "$gate_root/Host"
 
 echo "==> plain Host build"
