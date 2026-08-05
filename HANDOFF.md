@@ -6,10 +6,10 @@ action changes. Completed detail belongs in Git history.*
 
 ## Resume here
 
-- **Branch:** `commissioning/macos-bundle-metadata`, based on `origin/main`;
+- **Branch:** `fix/link-health-recent-warning`, based on `origin/main`;
   temporary PR branches are deleted after landing so the repository returns
   to one local and one remote branch.
-- **GitHub:** no open PRs; #161 landed benchmark process isolation.
+- **GitHub:** no open PRs; #162 landed atomic app packaging and metadata.
 - **Repository:** one worktree; `main` plus the temporary current PR branch.
   Stale migration, cleanup, ledger, and agent pointers were audited and
   retired after their merged or superseding work was confirmed present.
@@ -51,6 +51,12 @@ exact `_lyte._udp` Bonjour declaration. The focused packaging test and the
 complete macOS and pup deterministic gates are green; pup again finished 339
 Host tests and preserved protected state.
 
+The current warning slice removes sitting-wide totals from the owner alarm and
+uses the rolling window's own worst value. Focused LinkHealth tests passed
+16/16, including an explicit pin that recent count/worst expire together while
+diagnostic session books survive. Both complete macOS and pup deterministic
+gates passed; pup again finished 339 Host tests with protected state unchanged.
+
 ## Current live result
 
 No ordinary Lyte client is presently detected. The most recent live session
@@ -86,19 +92,15 @@ Two launch problems were distinguished:
    re-attests that exact claim before cleanup, and suppresses diagnostic helper
    registration refresh. The dangerous `pgrep -n` fallback is gone.
 
-The bundle metadata and publication fix is now in progress. Local Network
+The bundle metadata and publication fix landed in #162. Local Network
 permission messaging/recovery and the Homebrew libopus dependency remain
 commissioning follow-ups rather than wire failures.
 
 ## Next action
 
-1. Land the bundle metadata/publication slice (complete Mac and pup gates are
-   green).
-2. Keep the warning internally consistent: recent stage, exact 60-second
-   count, and 60-second worst; retain sitting totals only in diagnostics. Then
-   package and launch the new app once.
-3. Make LaunchServices Local Network authorization comprehensible and durable.
-4. Replace the Homebrew libopus runtime dependency with a pinned shared leaf.
+1. Land the recent-only warning, package it, and launch the new app once.
+2. Make LaunchServices Local Network authorization comprehensible and durable.
+3. Replace the Homebrew libopus runtime dependency with a pinned shared leaf.
 
 The remaining owner-visible quality check is the two-column stats ledger
 overlay. The GNOME Shell 10-second source-stall comb is an established pup

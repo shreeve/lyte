@@ -157,7 +157,12 @@ final class LinkHealthMeterTests: XCTestCase {
         XCTAssertEqual(assessment(meter, at: 15).level, .degraded)
         // The live verdict clock moves it past the stall even if a quiet,
         // damage-driven desktop emits no more frames.
-        XCTAssertEqual(assessment(meter, at: 75).level, .good)
+        let aged = assessment(meter, at: 75)
+        XCTAssertEqual(aged.level, .good)
+        XCTAssertEqual(aged.stallsLastMinute, 0)
+        XCTAssertEqual(aged.worstStallMilliseconds, 0)
+        XCTAssertEqual(aged.sessionStallCount, 1)
+        XCTAssertEqual(aged.sessionWorstMilliseconds, 90)
     }
 
     func testStageAttributionPicksTheGuiltyParty() {
