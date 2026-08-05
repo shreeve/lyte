@@ -45,11 +45,11 @@ SystemTests/  cross-role composition tests; no production ownership
 ```
 
 Swift owns everything above hardware and operating-system boundaries. C is
-limited to narrow leaves such as DRM/EGL/VAAPI, PipeWire, libopus, UDP
-syscalls, uinput, and the vendored Reed-Solomon implementation. `LyteWire`
-and `LyteCore` are sans-IO and lint-guarded; committed vectors under
-`Wire/Vectors/` are append-only wire contracts tested byte-for-byte on
-macOS and Linux.
+limited to narrow leaves such as DRM/EGL/VAAPI, PipeWire, the pinned Opus
+codec, UDP syscalls, uinput, and the vendored Reed-Solomon implementation.
+`LyteWire` and `LyteCore` are sans-IO and lint-guarded; committed vectors
+under `Wire/Vectors/` are append-only wire contracts tested byte-for-byte
+on macOS and Linux.
 
 The direct media path avoids general-purpose transcoding stacks. The Linux
 host reads KMS scanout, performs its color conversion on the GPU, and drives
@@ -133,4 +133,5 @@ state are in [`HANDOFF.md`](HANDOFF.md); deliberately deferred work is in
 ## License
 
 Lyte-authored code is MIT-licensed. Bundled third-party leaves retain their
-upstream licenses and notices. See [`LICENSE`](LICENSE).
+upstream licenses and notices. See [`LICENSE`](LICENSE) and the
+[`docs/THIRD-PARTY.md`](docs/THIRD-PARTY.md) catalog.

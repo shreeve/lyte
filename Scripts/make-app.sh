@@ -50,6 +50,22 @@ mkdir -p "$STAGED_APP/Contents/MacOS" \
   "$STAGED_APP/Contents/Library/LaunchDaemons"
 cp ".build/$CONFIG/Lyte" "$STAGED_APP/Contents/MacOS/Lyte"
 cp ".build/$CONFIG/lyte-helperd" "$STAGED_APP/Contents/MacOS/lyte-helperd"
+cp Common/Sources/COpus/Upstream/opus-1.6.1/COPYING \
+  "$STAGED_APP/Contents/Resources/Opus-COPYING.txt"
+cp Wire/Sources/CNanorsWire/LICENSE \
+  "$STAGED_APP/Contents/Resources/nanors-LICENSE.txt"
+cp .build/checkouts/swift-crypto/LICENSE.txt \
+  "$STAGED_APP/Contents/Resources/SwiftCrypto-LICENSE.txt"
+cp .build/checkouts/swift-crypto/NOTICE.txt \
+  "$STAGED_APP/Contents/Resources/SwiftCrypto-NOTICE.txt"
+cp .build/checkouts/swift-asn1/LICENSE.txt \
+  "$STAGED_APP/Contents/Resources/SwiftASN1-LICENSE.txt"
+cp .build/checkouts/swift-asn1/NOTICE.txt \
+  "$STAGED_APP/Contents/Resources/SwiftASN1-NOTICE.txt"
+
+Scripts/normalize-macos-rpaths.sh \
+  "$STAGED_APP/Contents/MacOS/Lyte" \
+  "$STAGED_APP/Contents/MacOS/lyte-helperd"
 
 # Exact source identity consumed by benchmark-app.sh. A signed bundle without
 # this matching fingerprint is not valid benchmark evidence.
@@ -123,6 +139,13 @@ EOF
 plutil -lint "$STAGED_APP/Contents/Info.plist" >/dev/null
 "$(dirname "$0")/sign-dev.sh" \
   "$STAGED_APP/Contents/MacOS/lyte-helperd" "$STAGED_APP"
+
+# Validate the exact staged artifact before the rename-swap can replace the
+# last known-good app. The CI gate repeats these checks after publication.
+Scripts/Tests/test-app-packaging.sh "$STAGED_APP" "$STAGE_ROOT"
+Scripts/Tests/test-hermetic-linkage.sh \
+  "$STAGED_APP/Contents/MacOS/Lyte" \
+  "$STAGED_APP/Contents/MacOS/lyte-helperd"
 
 # macOS rename-swap publishes the complete signed directory in one filesystem
 # operation. The old app moves into the private stage and the EXIT trap removes

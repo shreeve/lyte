@@ -21,6 +21,8 @@ existed when they were authored. Recover its final form with
   intent×network grid, D1–D6ff); update as decisions land.
 - [MACOS-SIGNING.md](MACOS-SIGNING.md) — signing, bundling, and
   helper-registration reference for the Mac app.
+- [THIRD-PARTY.md](THIRD-PARTY.md) — dependency licenses, pinned source
+  provenance, and binary-notice obligations.
 - [CUSHION.md](CUSHION.md) — the playout-cushion field manual (how the
   adaptive delay grows, shrinks, and what the slider's ceiling means).
 - [COMPARISON.md](COMPARISON.md) — where Lyte stands against

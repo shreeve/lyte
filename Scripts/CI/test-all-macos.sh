@@ -102,6 +102,7 @@ run_package_tests \
 
 echo "==> benchmark safety tests"
 Scripts/Tests/test-benchmark-safety.sh
+Scripts/Tests/test-host-release-posture.sh
 
 echo "==> signing policy tests"
 Scripts/Tests/test-sign-dev.sh
@@ -148,6 +149,7 @@ fi
 echo "==> signed debug CLI"
 Scripts/build-cli.sh debug
 codesign --verify --strict .build/debug/lyte-cli
+Scripts/Tests/test-hermetic-linkage.sh .build/debug/lyte-cli
 
 echo "==> signed release app"
 Scripts/make-app.sh release
@@ -155,5 +157,8 @@ Scripts/Tests/test-app-packaging.sh .build/Lyte.app
 codesign --verify --strict .build/Lyte.app/Contents/MacOS/Lyte
 codesign --verify --strict .build/Lyte.app/Contents/MacOS/lyte-helperd
 codesign --verify --strict .build/Lyte.app
+Scripts/Tests/test-hermetic-linkage.sh \
+    .build/Lyte.app/Contents/MacOS/Lyte \
+    .build/Lyte.app/Contents/MacOS/lyte-helperd
 
 echo "macOS gate PASSED"

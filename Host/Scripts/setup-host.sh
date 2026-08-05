@@ -11,7 +11,7 @@
 #     service and no file cap is needed, ever. File caps on the
 #     binary are only for HAND-RUN hosts (probes, test ports) — and
 #     those don't survive a rebuild, so re-arm after EVERY
-#     `swift build`. Needs root; this script prints the exact
+#     `swift build -c release`. Needs root; this script prints the exact
 #     command and reports current state.
 #
 #  2. /dev/uinput seat access for the CInputUinput input backend —
@@ -37,7 +37,7 @@ todo() { printf '  \033[33m→\033[0m %s\n' "$1"; }
 echo "lyte-host machine setup"
 
 # --- 1. CAP_SYS_ADMIN on the binary (the direct eye's DRM ticket) ----
-BIN="${LYTE_HOST_BIN:-$HOME/src/lyte-host/.build/debug/lyte-host}"
+BIN="${LYTE_HOST_BIN:-$HOME/src/lyte-host/.build/release/lyte-host}"
 if [ ! -x "$BIN" ]; then
     todo "no binary at $BIN (set LYTE_HOST_BIN or build first) — after building:"
     printf '    sudo setcap cap_sys_admin+ep %s\n' "$BIN"

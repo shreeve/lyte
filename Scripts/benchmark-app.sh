@@ -187,7 +187,7 @@ deployed_delta="$(
 stale_host_source="$(
   ssh -o ConnectTimeout=10 "$PUP" \
     "python3 -c 'import os
-b = os.path.expanduser(\"~/src/lyte-host/.build/debug/lyte-host\")
+b = os.path.expanduser(\"~/src/lyte-host/.build/release/lyte-host\")
 bm = os.path.getmtime(b)
 roots = [
     (os.path.expanduser(\"~/src/lyte-host\"), \"Host\", [\"Sources\"]),
@@ -234,7 +234,7 @@ host_hashes="$(
     "{ sha256sum /proc/$HOST_PID/exe 2>/dev/null \
        || sudo -n sha256sum /proc/$HOST_PID/exe; } \
        | head -1; \
-     sha256sum ~/src/lyte-host/.build/debug/lyte-host"
+     sha256sum ~/src/lyte-host/.build/release/lyte-host"
 )"
 host_hashes="$(printf '%s\n' "$host_hashes" | awk '{print $1}')"
 running_host_sha="$(printf '%s\n' "$host_hashes" | awk 'NR == 1 {print}')"
@@ -282,7 +282,7 @@ sudo -n nohup tcpdump -i any -nn -U -w '/tmp/$run_id-host.pcap' \
 p=\$(systemctl show lyte-host --property MainPID --value); \
 ps -o pid,lstart,args -p \"\$p\"; \
 { sha256sum /proc/\$p/exe 2>/dev/null || sudo -n sha256sum /proc/\$p/exe; }; \
-sha256sum ~/src/lyte-host/.build/debug/lyte-host; \
+sha256sum ~/src/lyte-host/.build/release/lyte-host; \
 ss -u -a -n -p; ip -s link show" \
     > "$OUT_DIR/$run_id-host-before.txt"
 }
@@ -660,7 +660,7 @@ while [ "$i" -lt 100 ]; do
           | grep -q "pid=$after,"; then
     set -- $(sudo -n sha256sum "/proc/$after/exe")
     running=$1
-    set -- $(sha256sum "$HOME/src/lyte-host/.build/debug/lyte-host")
+    set -- $(sha256sum "$HOME/src/lyte-host/.build/release/lyte-host")
     built=$1
     [ "$running" = "$built" ] || {
       echo "fresh service process is not the built host" >&2

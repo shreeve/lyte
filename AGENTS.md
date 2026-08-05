@@ -29,7 +29,8 @@ in `docs/20260803-084328-source-layout-and-migration.md`.
 - **`Common/` — `LyteCommon`:** `LyteCore` owns shared sans-IO policy and
   injected-time utilities; `LyteIO` owns shared OS adapters;
   `LyteTestKit` owns reusable shared test equipment. Adapters never own
-  policy. `COpus` is the one shared libopus system-library module.
+  policy. `COpus` is the one pinned, statically propagated libopus source
+  leaf; its upstream BSD license remains separate from Lyte's MIT license.
 - **`Host/` — `LyteHost`:** `HostCore` owns pure host policy and bitstream
   helpers; `HostWire` owns packetization, FEC, pacing, and host-side session
   wiring. Linux-only executables and hardware/OS C leaves stay behind
@@ -129,14 +130,15 @@ rsync -a --delete --exclude .build Wire/ pup:src/Wire/
 rsync -a --delete --exclude .build Common/ pup:src/Common/
 rsync -a --delete --exclude .build Host/ pup:src/lyte-host/
 ssh pup 'cd ~/src/lyte-host && \
-  LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build'
+  LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build -c release'
 ```
 
 The `LD_LIBRARY_PATH` shim is specific to pup: Swift's build tools request
 `libxml2.so.2`, while Ubuntu provides `.so.16`. It is not a product
 dependency. No ffmpeg environment exists; a plain build is a gate.
 
-The standing host is the system service `lyte-host.service` on UDP 41151.
+The standing host is the release-built system service `lyte-host.service` on
+UDP 41151.
 After a deployed rebuild, run `sudo -n systemctl restart lyte-host`; its
 ambient capability grants direct-eye DRM access. Hand-run `lyte-eye` or
 host binaries need `sudo -n setcap cap_sys_admin+ep <exact-binary>`.

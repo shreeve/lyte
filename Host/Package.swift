@@ -6,8 +6,8 @@ import PackageDescription
 // marries HostCore mechanisms to LyteWire codecs — HS-5), and their tests
 // build everywhere, including macOS, so the Annex-B contract and the video
 // channel pipeline are testable without a Linux GUI. The capture/encode
-// leaves exist only on Linux: they bind PipeWire, D-Bus, and libavcodec
-// through pkg-config system libraries.
+// leaves exist only on Linux: they bind PipeWire, D-Bus, DRM/GBM/EGL/VAAPI,
+// CUDA/NVENC, uinput, and UDP through narrow C or system-library targets.
 
 var products: [Product] = [
     .library(name: "HostCore", targets: ["HostCore"]),
@@ -201,7 +201,6 @@ targets += [
         ],
         linkerSettings: [
             .linkedLibrary("pipewire-0.3"),
-            .linkedLibrary("opus"),
         ]
     ),
     .executableTarget(
@@ -226,7 +225,6 @@ targets += [
         linkerSettings: [
             .linkedLibrary("dbus-1"),
             .linkedLibrary("pipewire-0.3"),
-            .linkedLibrary("opus"),
             .linkedLibrary("va"),
             .linkedLibrary("va-drm"),
         ]

@@ -13,7 +13,7 @@
 #   3. daemon-reload + enable. Start is left to the operator (it will
 #      contend for the listen port with any hand-run loop).
 #
-# After this, the dev loop is: swift build && sudo systemctl restart
+# After this, the dev loop is: swift build -c release && sudo systemctl restart
 # lyte-host — NO setcap step: AmbientCapabilities carries the DRM
 # ticket on the service itself.
 set -euo pipefail
