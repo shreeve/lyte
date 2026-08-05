@@ -9,11 +9,12 @@
 // not drift). Those asymmetries are decisions of record; nothing in
 // this file may flatten them.
 //
-//   ProofCounter     — the proof-before-shed law: cushion is easy to
-//                      raise and slow to hand back; evidence must
-//                      accumulate before one scheduled give-back
-//                      (video's slip proof, audio's decay hold/step,
-//                      audio's retarget cadence).
+//   ProofCounter     — audio's sample-cadenced proof-before-shed law:
+//                      cushion is easy to raise and slow to hand back;
+//                      packet evidence must accumulate before one
+//                      scheduled give-back (decay hold/step and
+//                      retarget cadence). Video uses elapsed injected
+//                      time because its source cadence is content-driven.
 
 /// The proof-before-shed law's counter: evidence accumulates one
 /// sample at a time, any contrary event resets it, and the shed may

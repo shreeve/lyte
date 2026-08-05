@@ -3,7 +3,7 @@
 //
 // The six laws, as this instrument plays them:
 //
-//   cue   = score + path_delay_p99 + cushion × beat_period
+//   cue   = score + measured_path_delay + cushion × beat_period
 //   beat  = every fresh frame presents ON the beat grid — its mapped
 //           capture (the score) plus the cue, rounded to the nearest
 //           beat. Rounding IS the half-beat bias: capture stamp
@@ -15,8 +15,8 @@
 //   hole  = a blackout re-cues by WHOLE beats, once per episode:
 //           the grid phase is preserved, the newest part lands on
 //           the next beat, one scheduled hiccup instead of a smear.
-//   slip  = when the measured path-delay tail proves a full beat of
-//           surplus for a sustained window, the cue slips back one
+//   slip  = when every fresh sample across an elapsed clean window
+//           proves a full beat of surplus, the cue slips back one
 //           beat — at most one per proof, phase preserved.
 //   chain = retained refinements (same source capture re-encoded)
 //           ride one microsecond behind their predecessor; stillness
@@ -42,8 +42,10 @@ public struct VideoBeatConductor: Sendable {
         public var maximumCushionBeats: Int
         /// Hard safety ceiling on the automatic cue.
         public var maximumCueMicroseconds: UInt64
-        /// Fresh frames of sustained surplus required before one slip.
-        public var slipProofFrames: Int
+        /// Elapsed clean surplus required before one slip. Time, rather than
+        /// frame count, keeps the return law identical for 60 Hz motion,
+        /// 30 Hz video, and sparse/static content.
+        public var slipProofMicroseconds: UInt64
         /// A compressed catch-up train beyond this is a blackout
         /// worth an IDR, not a playout problem.
         public var maximumFreshBurstDebtMicroseconds: UInt64
@@ -55,7 +57,7 @@ public struct VideoBeatConductor: Sendable {
             cushionBeats: Int = 1,
             maximumCushionBeats: Int = 4,
             maximumCueMicroseconds: UInt64 = 150_000,
-            slipProofFrames: Int = 120,
+            slipProofMicroseconds: UInt64 = 2_000_000,
             maximumFreshBurstDebtMicroseconds: UInt64 = 200_000,
             freshDebtRearmStableFrames: Int = 30
         ) {
@@ -65,7 +67,7 @@ public struct VideoBeatConductor: Sendable {
                 maximumCushionBeats, self.cushionBeats)
             self.maximumCueMicroseconds = max(
                 maximumCueMicroseconds, self.beatPeriodMicroseconds)
-            self.slipProofFrames = max(slipProofFrames, 1)
+            self.slipProofMicroseconds = max(slipProofMicroseconds, 1_000)
             self.maximumFreshBurstDebtMicroseconds =
                 maximumFreshBurstDebtMicroseconds
             self.freshDebtRearmStableFrames = freshDebtRearmStableFrames
@@ -109,14 +111,14 @@ public struct VideoBeatConductor: Sendable {
     /// beat at a time through ceiling cuts or sustained slip proof.
     private var cushionBeatsInForce: Int
 
-    // Tail estimation: the Conductor's shared ring (the cue's
-    // evidence — path-delay p99 over the recent window).
-    private var pathDelayTailRing = Histogram<UInt64>(
-        capacity: 600, retention: .rolling)
-
-    // Slip proof: consecutive fresh frames with ≥1 beat of surplus
-    // (the shared proof-before-shed law).
-    private var slipProof = ProofCounter()
+    // Video's slip proof is elapsed-time policy, not sample-count policy:
+    // Direct Eye intentionally emits fewer frames when pixels stay still.
+    // Every fresh sample in the window must retain a full beat of surplus;
+    // any contrary evidence resets the window. The maximum observed path
+    // delay keeps the final verdict at least as strict as every constituent
+    // sample without retaining stale evidence past the named duration.
+    private var slipProofStartMicroseconds: UInt64?
+    private var slipProofMaximumPathDelayMicroseconds: UInt64 = 0
 
     // Debt (ported): a genuinely compressed catch-up train.
     private var lastFreshSourceMicroseconds: UInt64?
@@ -141,8 +143,7 @@ public struct VideoBeatConductor: Sendable {
         lastSourceCaptureMicroseconds = nil
         lastFrameWasRetained = false
         cushionBeatsInForce = config.cushionBeats
-        pathDelayTailRing.removeAll()
-        slipProof.reset()
+        resetSlipProof()
         lastFreshSourceMicroseconds = nil
         lastFreshArrivalMicroseconds = nil
         freshBurstDebtMicroseconds = 0
@@ -229,10 +230,10 @@ public struct VideoBeatConductor: Sendable {
         let shouldFlush = excessiveDebt && debtRecoveryArmed
         if shouldFlush { debtRecoveryArmed = false }
 
-        // Path delay feeds the tail estimator.
+        // The measured path delay is injected evidence; no OS clock enters
+        // this sans-IO policy.
         let pathDelay = arrivalMicroseconds >= mappedCaptureMicroseconds
             ? arrivalMicroseconds - mappedCaptureMicroseconds : 0
-        pathDelayTailRing.record(pathDelay)
 
         // beat: the grid advances ORDINALLY — each fresh part steps
         // round(sourceStep / period) beats (never less than one) from
@@ -298,29 +299,59 @@ public struct VideoBeatConductor: Sendable {
             beatsBehind = min(beatsBehind, room, cushionRoom)
             presentation &+= beatsBehind &* period
             cushionBeatsInForce += Int(beatsBehind)
-            slipProof.reset()
+            resetSlipProof()
         }
 
-        // slip: sustained proof of a full beat of surplus hands one
-        // beat back. The evidence is the MEASURED cue (grid minus
-        // score) against the path-delay tail — so the slow drift of
-        // a fixed period against the score's crystal surfaces here
-        // and is repaid one scheduled beat at a time.
+        // slip: two elapsed seconds in which EVERY fresh sample proves a
+        // full beat of surplus hands one beat back. Time owns the duration,
+        // so 60 Hz motion, 30 Hz video, and one-Hz static keepalives all
+        // return cushion on the same schedule. The maximum path delay seen
+        // inside this exact proof window replaces the old sample-count p99;
+        // no stale outlier can survive merely because content is sparse.
         let measuredCue = presentation > mappedCaptureMicroseconds
             ? presentation - mappedCaptureMicroseconds : 0
         let cushionFloor = UInt64(config.cushionBeats) &* period
         if measuredCue >= pathDelay &+ cushionFloor &+ period {
-            slipProof.advance()
-            if slipProof.reached(config.slipProofFrames),
-               measuredCue >= (pathDelayTailRing.p99 ?? 0)
-                   &+ cushionFloor &+ period {
-                presentation -= period
-                cushionBeatsInForce = max(
-                    cushionBeatsInForce - 1, config.cushionBeats)
-                slipProof.reset()
+            if let proofStart = slipProofStartMicroseconds,
+               arrivalMicroseconds >= proofStart {
+                slipProofMaximumPathDelayMicroseconds = max(
+                    slipProofMaximumPathDelayMicroseconds, pathDelay)
+            } else {
+                startSlipProof(
+                    at: arrivalMicroseconds, pathDelay: pathDelay)
+            }
+            if let proofStart = slipProofStartMicroseconds,
+               arrivalMicroseconds >= proofStart,
+               arrivalMicroseconds - proofStart
+                   >= config.slipProofMicroseconds {
+                if measuredCue >= slipProofMaximumPathDelayMicroseconds
+                    &+ cushionFloor &+ period {
+                    presentation -= period
+                    cushionBeatsInForce = max(
+                        cushionBeatsInForce - 1, config.cushionBeats)
+                    resetSlipProof()
+
+                    // This same fresh sample may begin the next proof after
+                    // the one-beat return. Reusing the boundary sample makes
+                    // "one beat every two seconds" literal even at one Hz;
+                    // it never authorizes a second return in this call.
+                    let slippedCue = presentation > mappedCaptureMicroseconds
+                        ? presentation - mappedCaptureMicroseconds : 0
+                    if slippedCue >= pathDelay &+ cushionFloor &+ period {
+                        startSlipProof(
+                            at: arrivalMicroseconds, pathDelay: pathDelay)
+                    }
+                } else {
+                    // The window's earlier worst path sample still refutes
+                    // the return. Begin a new exact-duration proof with the
+                    // current qualifying sample; old evidence cannot linger
+                    // by sample count.
+                    startSlipProof(
+                        at: arrivalMicroseconds, pathDelay: pathDelay)
+                }
             }
         } else {
-            slipProof.reset()
+            resetSlipProof()
         }
 
         // late: the beat stands even when it has passed — report the
@@ -352,6 +383,19 @@ public struct VideoBeatConductor: Sendable {
             reserveMicroseconds: reserve,
             latenessMicroseconds: lateness,
             shouldFlush: shouldFlush)
+    }
+
+    private mutating func resetSlipProof() {
+        slipProofStartMicroseconds = nil
+        slipProofMaximumPathDelayMicroseconds = 0
+    }
+
+    private mutating func startSlipProof(
+        at arrivalMicroseconds: UInt64,
+        pathDelay: UInt64
+    ) {
+        slipProofStartMicroseconds = arrivalMicroseconds
+        slipProofMaximumPathDelayMicroseconds = pathDelay
     }
 
 }

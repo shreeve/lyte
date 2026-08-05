@@ -13,14 +13,14 @@ final class VideoBeatConductorTests: XCTestCase {
         cushionBeats: Int = 2,
         maximumCushionBeats: Int = 8,
         maximumCueMicroseconds: UInt64 = 120_000,
-        slipProofFrames: Int = 4
+        slipProofMicroseconds: UInt64 = 4 * 16_667
     ) -> VideoBeatConductor {
         VideoBeatConductor(config: .init(
             beatPeriodMicroseconds: period,
             cushionBeats: cushionBeats,
             maximumCushionBeats: maximumCushionBeats,
             maximumCueMicroseconds: maximumCueMicroseconds,
-            slipProofFrames: slipProofFrames))
+            slipProofMicroseconds: slipProofMicroseconds))
     }
 
     func testShippingConfigStartsAutomaticAtOneBeat() {
@@ -28,7 +28,7 @@ final class VideoBeatConductorTests: XCTestCase {
         XCTAssertEqual(config.cushionBeats, 1)
         XCTAssertEqual(config.maximumCushionBeats, 4)
         XCTAssertEqual(config.maximumCueMicroseconds, 150_000)
-        XCTAssertEqual(config.slipProofFrames, 120)
+        XCTAssertEqual(config.slipProofMicroseconds, 2_000_000)
     }
 
     func testShippingCushionGrowsFromOneBeatToFourAndNoFurther() {
@@ -36,7 +36,7 @@ final class VideoBeatConductorTests: XCTestCase {
             cushionBeats: 1,
             maximumCushionBeats: 4,
             maximumCueMicroseconds: 150_000,
-            slipProofFrames: 120)
+            slipProofMicroseconds: 2_000_000)
         var capture: UInt64 = 1_000_000
         let first = policy.schedule(
             mappedCaptureMicroseconds: capture,
@@ -70,36 +70,146 @@ final class VideoBeatConductorTests: XCTestCase {
         XCTAssertEqual(calm.reserveMicroseconds, 4 * period)
     }
 
-    func testShippingCushionReturnsTowardOneBeatOnlyAfterCleanProof() {
+    func testTwoSecondSlipIsIndependentOfSourceCadence() {
+        // 60 Hz motion, ordinary 30 Hz video, and one-Hz static keepalives
+        // must all hand one surplus beat back after the same elapsed time.
+        for cadence in [period, 2 * period, 60 * period] {
+            var policy = conductor(
+                cushionBeats: 1,
+                maximumCushionBeats: 4,
+                maximumCueMicroseconds: 150_000,
+                slipProofMicroseconds: 2_000_000)
+            var capture: UInt64 = 1_000_000
+            _ = policy.schedule(
+                mappedCaptureMicroseconds: capture,
+                arrivalMicroseconds: capture &+ 9_000,
+                sourceCaptureMicroseconds: capture)
+
+            // One real hole earns exactly one additional beat.
+            capture &+= period
+            _ = policy.schedule(
+                mappedCaptureMicroseconds: capture,
+                arrivalMicroseconds: capture &+ 42_334,
+                sourceCaptureMicroseconds: capture)
+
+            // The first calm sample opens the elapsed-time proof.
+            capture &+= cadence
+            var decision = policy.schedule(
+                mappedCaptureMicroseconds: capture,
+                arrivalMicroseconds: capture &+ 9_000,
+                sourceCaptureMicroseconds: capture)
+            XCTAssertEqual(decision.reserveMicroseconds, 2 * period)
+            let proofStart = capture &+ 9_000
+
+            while (capture &+ cadence &+ 9_000) - proofStart < 2_000_000 {
+                capture &+= cadence
+                decision = policy.schedule(
+                    mappedCaptureMicroseconds: capture,
+                    arrivalMicroseconds: capture &+ 9_000,
+                    sourceCaptureMicroseconds: capture)
+                XCTAssertEqual(
+                    decision.reserveMicroseconds, 2 * period,
+                    "cadence \(cadence) returned before two seconds")
+            }
+
+            capture &+= cadence
+            decision = policy.schedule(
+                mappedCaptureMicroseconds: capture,
+                arrivalMicroseconds: capture &+ 9_000,
+                sourceCaptureMicroseconds: capture)
+            XCTAssertLessThanOrEqual(
+                decision.reserveMicroseconds, period + 1,
+                "cadence \(cadence) retained the beat past two seconds")
+
+            // The 60 Hz controlled slip has one monotonic +1 µs transition;
+            // the following sample is exactly back at the floor.
+            capture &+= cadence
+            decision = policy.schedule(
+                mappedCaptureMicroseconds: capture,
+                arrivalMicroseconds: capture &+ 9_000,
+                sourceCaptureMicroseconds: capture)
+            XCTAssertEqual(decision.reserveMicroseconds, period)
+        }
+    }
+
+    func testOneHzCleanProofReturnsFourBeatsToOneInSixSeconds() {
         var policy = conductor(
             cushionBeats: 1,
             maximumCushionBeats: 4,
             maximumCueMicroseconds: 150_000,
-            slipProofFrames: 120)
+            slipProofMicroseconds: 2_000_000)
         var capture: UInt64 = 1_000_000
         _ = policy.schedule(
             mappedCaptureMicroseconds: capture,
             arrivalMicroseconds: capture &+ 9_000,
             sourceCaptureMicroseconds: capture)
-
         capture &+= period
         _ = policy.schedule(
             mappedCaptureMicroseconds: capture,
             arrivalMicroseconds: capture &+ 200_000,
             sourceCaptureMicroseconds: capture)
 
-        var finalReserve: UInt64 = 0
-        // The one bad path sample must age out of the p99 evidence before
-        // clean proof can return the three extra beats one at a time.
-        for _ in 0..<600 {
-            capture &+= period
+        let oneSecond = 60 * period
+        var reserves: [UInt64] = []
+        for _ in 0..<7 {
+            capture &+= oneSecond
+            reserves.append(policy.schedule(
+                mappedCaptureMicroseconds: capture,
+                arrivalMicroseconds: capture &+ 9_000,
+                sourceCaptureMicroseconds: capture
+            ).reserveMicroseconds)
+        }
+        XCTAssertEqual(
+            reserves,
+            [4, 4, 3, 3, 2, 2, 1].map { UInt64($0) * period })
+    }
+
+    func testContraryPathEvidenceRestartsTheTwoSecondProof() {
+        var policy = conductor(
+            cushionBeats: 1,
+            maximumCushionBeats: 4,
+            slipProofMicroseconds: 2_000_000)
+        var capture: UInt64 = 1_000_000
+        _ = policy.schedule(
+            mappedCaptureMicroseconds: capture,
+            arrivalMicroseconds: capture &+ 9_000,
+            sourceCaptureMicroseconds: capture)
+        capture &+= period
+        _ = policy.schedule(
+            mappedCaptureMicroseconds: capture,
+            arrivalMicroseconds: capture &+ 42_334,
+            sourceCaptureMicroseconds: capture)
+
+        let oneSecond = 60 * period
+        capture &+= oneSecond
+        _ = policy.schedule(
+            mappedCaptureMicroseconds: capture,
+            arrivalMicroseconds: capture &+ 9_000,
+            sourceCaptureMicroseconds: capture)
+        capture &+= oneSecond
+        let contrary = policy.schedule(
+            mappedCaptureMicroseconds: capture,
+            arrivalMicroseconds: capture &+ 30_000,
+            sourceCaptureMicroseconds: capture)
+        XCTAssertEqual(
+            contrary.reserveMicroseconds,
+            2 * period - 21_000,
+            "the contrary sample is observed without returning a beat")
+
+        for _ in 0..<2 {
+            capture &+= oneSecond
             let decision = policy.schedule(
                 mappedCaptureMicroseconds: capture,
                 arrivalMicroseconds: capture &+ 9_000,
                 sourceCaptureMicroseconds: capture)
-            finalReserve = decision.reserveMicroseconds
+            XCTAssertEqual(decision.reserveMicroseconds, 2 * period)
         }
-        XCTAssertEqual(finalReserve, period)
+        capture &+= oneSecond
+        XCTAssertEqual(policy.schedule(
+            mappedCaptureMicroseconds: capture,
+            arrivalMicroseconds: capture &+ 9_000,
+            sourceCaptureMicroseconds: capture
+        ).reserveMicroseconds, period)
     }
 
     /// beat: perfectly authored captures with jittered arrivals still
@@ -239,7 +349,7 @@ final class VideoBeatConductorTests: XCTestCase {
     /// slip: sustained proof of a beat of surplus hands exactly one
     /// beat back, phase preserved.
     func testSlipComesBackOneBeatAfterProof() {
-        var policy = conductor(slipProofFrames: 4)
+        var policy = conductor(slipProofMicroseconds: 4 * period)
         var anchor: UInt64 = 0
         for index in 0..<3 {
             let capture = 1_000_000 &+ UInt64(index) &* period
@@ -255,9 +365,8 @@ final class VideoBeatConductorTests: XCTestCase {
             mappedCaptureMicroseconds: lateCapture,
             arrivalMicroseconds: lateCapture &+ 61_001,
             sourceCaptureMicroseconds: lateCapture)
-        // …then calm air proves the surplus. Slip is tail-gated: the
-        // excursion's sample must age past the p99 index (~200 fresh
-        // frames) before the first beat returns, then the second.
+        // …then calm air proves the surplus for the configured elapsed
+        // window before each beat returns.
         var cues: [UInt64] = []
         var offBeatFrames = 0
         var finalPhases: [UInt64] = []
