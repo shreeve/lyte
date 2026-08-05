@@ -202,7 +202,7 @@ enum DiagnosticBenchmark {
             afterOrdinal: lastOrdinal)
         let failure: String?
         if case .failed(let reason) = model.phase {
-            failure = reason
+            failure = reason.diagnosticDescription
         } else {
             failure = nil
         }

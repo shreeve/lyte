@@ -54,6 +54,17 @@ struct ConnectionWindow: View {
             // renderer, input, helper, and session lifecycle.
             guard !didAutoconnect, let requested = autoconnect else { return }
             didAutoconnect = true
+            // A LaunchServices start is the path macOS subjects to Local
+            // Network privacy. Let Bonjour finish its authorization probe
+            // before a diagnostic UDP send; otherwise autoconnect can race
+            // the prompt and collapse a policy decision into errno 65.
+            let preflight = await LyteDiscovery.scan(duration: 1.0)
+            if let problem = preflight.accessProblem {
+                model.phase = .failed(.localNetwork(
+                    problem,
+                    diagnosticDetail: "autoconnect preflight: \(problem)"))
+                return
+            }
             let store = PinnedHostStore.load()
             var probe = in_addr()
             let requestedIsAddress =

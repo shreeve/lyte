@@ -10,15 +10,9 @@
 //                       re-key) without touching the network; the key
 //                       itself never rides the advertisement.
 //
-// This is the client's only discovery (the GameStream `_nvstream._tcp`
-// browse died with LyteKit at the H2 demolition, checklist item 4).
-// Discovery is a convenience layer only: manual host:port stays the
-// always-working fallback everywhere a host is named (wire-view's
-// --host, the risk-register rule).
-//
-// Resolution craft carried from the deleted Discovery (lessons, not the
-// file): Bonjour service names are useless as connect targets, so each
-// result resolves through an NWConnection — UDP here, which reaches
+// Discovery is a convenience layer; explicit host:port remains available
+// to diagnostic callers. Bonjour service names are not connect targets, so
+// each result resolves through an NWConnection — UDP here, which reaches
 // `.ready` on path resolution alone, sending nothing — and the numeric
 // address + port are read off the established path's remote endpoint.
 
@@ -68,6 +62,22 @@ public struct DiscoveredLyteHost: Sendable, Equatable, Identifiable {
     }
 }
 
+/// One bounded Bonjour scan. Hosts and access diagnosis are independent:
+/// already-observed hosts remain useful evidence even if the browser later
+/// reports a policy problem.
+public struct LyteDiscoveryScan: Sendable, Equatable {
+    public let hosts: [DiscoveredLyteHost]
+    public let accessProblem: LocalNetworkAccessProblem?
+
+    public init(
+        hosts: [DiscoveredLyteHost],
+        accessProblem: LocalNetworkAccessProblem?
+    ) {
+        self.hosts = hosts
+        self.accessProblem = accessProblem
+    }
+}
+
 public enum LyteDiscovery {
     public static let serviceType = "_lyte._udp"
 
@@ -97,26 +107,49 @@ public enum LyteDiscovery {
     /// numeric address + port. Hosts that fail to resolve within the
     /// timeout are dropped — an unresolvable record is not a connect
     /// target, and manual host:port remains the fallback.
-    public static func browse(duration: TimeInterval = 3.0) async -> [DiscoveredLyteHost] {
-        let services = await browseServices(duration: duration)
+    public static func scan(duration: TimeInterval = 3.0) async
+        -> LyteDiscoveryScan
+    {
+        let browse = await browseServices(duration: duration)
         var hosts: [DiscoveredLyteHost] = []
-        await withTaskGroup(of: DiscoveredLyteHost?.self) { group in
-            for service in services {
+        var accessProblem = browse.accessProblem
+        await withTaskGroup(of: HostResolution.self) { group in
+            for service in browse.services {
                 group.addTask {
-                    guard let (address, port) = await resolve(service.endpoint)
-                    else { return nil }
-                    let parsed = parseTxt(service.txt)
-                    return DiscoveredLyteHost(
-                        name: service.name, address: address, port: port,
-                        wireVersion: parsed.wireVersion,
-                        publicKeyHash: parsed.publicKeyHash)
+                    switch await resolve(service.endpoint) {
+                    case .resolved(let address, let port):
+                        let parsed = parseTxt(service.txt)
+                        return .host(DiscoveredLyteHost(
+                            name: service.name, address: address, port: port,
+                            wireVersion: parsed.wireVersion,
+                            publicKeyHash: parsed.publicKeyHash))
+                    case .accessProblem(let problem):
+                        return .accessProblem(problem)
+                    case .failed:
+                        return .failed
+                    }
                 }
             }
-            for await host in group {
-                if let host { hosts.append(host) }
+            for await result in group {
+                switch result {
+                case .host(let host): hosts.append(host)
+                case .accessProblem(let problem): accessProblem = problem
+                case .failed: break
+                }
             }
         }
-        return hosts.sorted { $0.name < $1.name }
+        return LyteDiscoveryScan(
+            hosts: hosts.sorted { $0.name < $1.name },
+            accessProblem: accessProblem)
+    }
+
+    /// Compatibility surface for roaming and CLI discovery. Those callers
+    /// consume sightings only; the app's host picker uses `scan` so it can
+    /// offer a truthful recovery path.
+    public static func browse(duration: TimeInterval = 3.0) async
+        -> [DiscoveredLyteHost]
+    {
+        await scan(duration: duration).hosts
     }
 
     // MARK: - Browse
@@ -127,9 +160,22 @@ public enum LyteDiscovery {
         let txt: [String: String]
     }
 
+    private enum HostResolution: Sendable {
+        case host(DiscoveredLyteHost)
+        case accessProblem(LocalNetworkAccessProblem)
+        case failed
+    }
+
+    private enum EndpointResolution: Sendable {
+        case resolved(String, UInt16)
+        case accessProblem(LocalNetworkAccessProblem)
+        case failed
+    }
+
     private final class Collector: @unchecked Sendable {
         private let lock = NSLock()
         private var services: [String: FoundService] = [:]
+        private var accessEvidence = LocalNetworkAccessEvidence()
         private var finished = false
 
         func add(_ service: FoundService) {
@@ -137,22 +183,42 @@ public enum LyteDiscovery {
             services[service.name] = service
         }
 
+        func observe(browserError error: NWError) {
+            lock.lock(); defer { lock.unlock() }
+            accessEvidence.observe(browserError: error)
+        }
+
+        func browserReady() {
+            lock.lock(); defer { lock.unlock() }
+            accessEvidence.browserReady()
+        }
+
         /// Returns the results exactly once; nil on subsequent calls.
-        func finish() -> [FoundService]? {
+        func finish() -> (
+            services: [FoundService],
+            accessProblem: LocalNetworkAccessProblem?
+        )? {
             lock.lock(); defer { lock.unlock() }
             guard !finished else { return nil }
             finished = true
-            return Array(services.values)
+            return (Array(services.values), accessEvidence.problem)
         }
     }
 
-    private static func browseServices(duration: TimeInterval) async -> [FoundService] {
+    private static func browseServices(duration: TimeInterval) async -> (
+        services: [FoundService],
+        accessProblem: LocalNetworkAccessProblem?
+    ) {
         // bonjourWithTXTRecord delivers the TXT alongside each browse
         // result — no second resolve round-trip for v/pkh.
         let browser = NWBrowser(
             for: .bonjourWithTXTRecord(type: serviceType, domain: nil),
             using: NWParameters())
         let collector = Collector()
+        // Network delivers every browser callback on its start queue. A
+        // private serial queue makes policy-denied → ready ordering and the
+        // bounded deadline one chronology; a concurrent global queue cannot.
+        let queue = DispatchQueue(label: "dev.shreeve.lyte.discovery.scan")
         return await withCheckedContinuation { cont in
             browser.browseResultsChangedHandler = { browseResults, _ in
                 for result in browseResults {
@@ -166,8 +232,18 @@ public enum LyteDiscovery {
                         name: name, endpoint: result.endpoint, txt: txt))
                 }
             }
-            browser.start(queue: .global())
-            DispatchQueue.global().asyncAfter(deadline: .now() + duration) {
+            browser.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    collector.browserReady()
+                case .waiting(let error), .failed(let error):
+                    collector.observe(browserError: error)
+                default:
+                    break
+                }
+            }
+            browser.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + duration) {
                 guard let results = collector.finish() else { return }
                 browser.cancel()
                 cont.resume(returning: results)
@@ -184,15 +260,18 @@ public enum LyteDiscovery {
     /// row is still informative even before the transport can use it.
     private static func resolve(
         _ endpoint: NWEndpoint, timeout: TimeInterval = 2.0
-    ) async -> (String, UInt16)? {
+    ) async -> EndpointResolution {
         let v4 = NWParameters.udp
         if let ip = v4.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
             ip.version = .v4
         }
-        if let resolved = await resolve(endpoint, using: v4, timeout: timeout) {
-            return resolved
+        let first = await resolve(endpoint, using: v4, timeout: timeout)
+        switch first {
+        case .resolved, .accessProblem:
+            return first
+        case .failed:
+            return await resolve(endpoint, using: .udp, timeout: timeout)
         }
-        return await resolve(endpoint, using: .udp, timeout: timeout)
     }
 
     /// Resolve a Bonjour service endpoint to (numeric address, port) by
@@ -202,10 +281,23 @@ public enum LyteDiscovery {
     private static func resolve(
         _ endpoint: NWEndpoint, using parameters: NWParameters,
         timeout: TimeInterval
-    ) async -> (String, UInt16)? {
+    ) async -> EndpointResolution {
         final class Once: @unchecked Sendable {
             private let lock = NSLock()
             private var used = false
+            private var pendingProblem: LocalNetworkAccessProblem?
+
+            func observe(_ problem: LocalNetworkAccessProblem?) {
+                lock.lock(); defer { lock.unlock() }
+                pendingProblem = problem ?? pendingProblem
+            }
+
+            func timeoutResult() -> EndpointResolution {
+                lock.lock(); defer { lock.unlock() }
+                return pendingProblem.map(EndpointResolution.accessProblem)
+                    ?? .failed
+            }
+
             func first() -> Bool {
                 lock.lock(); defer { lock.unlock() }
                 if used { return false }
@@ -217,6 +309,8 @@ public enum LyteDiscovery {
         return await withCheckedContinuation { cont in
             let connection = NWConnection(to: endpoint, using: parameters)
             let once = Once()
+            let queue = DispatchQueue(
+                label: "dev.shreeve.lyte.discovery.resolve")
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
@@ -240,18 +334,38 @@ public enum LyteDiscovery {
                         }
                     }
                     connection.cancel()
-                    if once.first() { cont.resume(returning: resolved) }
-                case .failed, .cancelled:
-                    if once.first() { cont.resume(returning: nil) }
+                    if once.first() {
+                        if let resolved {
+                            cont.resume(returning: .resolved(
+                                resolved.0, resolved.1))
+                        } else {
+                            cont.resume(returning: .failed)
+                        }
+                    }
+                case .waiting(let error):
+                    once.observe(LocalNetworkAccessProblem.connectionError(
+                        error,
+                        pathReason: connection.currentPath?.unsatisfiedReason))
+                case .failed(let error):
+                    let problem = LocalNetworkAccessProblem.connectionError(
+                        error,
+                        pathReason: connection.currentPath?.unsatisfiedReason)
+                    if once.first() {
+                        cont.resume(returning: problem.map(
+                            EndpointResolution.accessProblem) ?? .failed)
+                    }
+                case .cancelled:
+                    if once.first() { cont.resume(returning: .failed) }
                 default:
                     break
                 }
             }
-            connection.start(queue: .global())
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+            connection.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + timeout) {
                 if once.first() {
+                    let result = once.timeoutResult()
                     connection.cancel()
-                    cont.resume(returning: nil)
+                    cont.resume(returning: result)
                 }
             }
         }

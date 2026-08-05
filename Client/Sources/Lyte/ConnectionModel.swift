@@ -12,19 +12,36 @@ import UniformTypeIdentifiers
 @MainActor
 @Observable
 final class ConnectionModel {
+    enum Failure {
+        case ordinary(String)
+        case localNetwork(
+            LocalNetworkAccessProblem,
+            diagnosticDetail: String
+        )
+
+        var diagnosticDescription: String {
+            switch self {
+            case .ordinary(let message):
+                return message
+            case .localNetwork(let problem, let detail):
+                return "localNetwork(\(problem)): \(detail)"
+            }
+        }
+    }
+
     enum Phase {
         case pickHost
         case connecting(String)
         case streaming
-        case failed(String)
+        case failed(Failure)
     }
 
     var phase: Phase = .pickHost
 
     /// Fresh-connect patience (the respawn-gap hunt in connectLyte):
     /// silence keeps re-dialing until this budget runs out. Sized to
-    /// cover a full host restart (portal reopen + self-probes,
-    /// 10–15 s observed) with margin, not to camp forever.
+    /// cover a full host restart and hardware initialization
+    /// (10–15 s observed) with margin, not to camp forever.
     static let freshConnectBudgetMicroseconds: UInt64 = 45_000_000
     /// Invalidates in-flight connect rounds (Cancel, or a newer
     /// connect superseding an old one mid-dial).
@@ -195,7 +212,8 @@ final class ConnectionModel {
     func connectLyte(_ host: DiscoveredLyteHost) async {
         guard let pinned = PinnedHostStore.load().host(publicKeyHash: host.publicKeyHash),
               let hostStatic = pinned.staticPublicKey else {
-            phase = .failed("\(host.name) is not paired — use Pair… first")
+            phase = .failed(.ordinary(
+                "\(host.name) is not paired — use Pair… first"))
             return
         }
         hostAddress = host.address
@@ -233,7 +251,7 @@ final class ConnectionModel {
             ])
             // The Keychain path needs the stable "Lyte Dev" signature —
             // builds via Scripts/make-app.sh (docs/MACOS-SIGNING.md).
-            phase = .failed("client identity: \(error)")
+            phase = .failed(.ordinary("client identity: \(error)"))
             return
         }
 
@@ -299,7 +317,7 @@ final class ConnectionModel {
                     attempts: round == 1 ? 5 : 3,
                     attemptTimeoutMilliseconds: round == 1 ? 2_000 : 700)
             } catch {
-                phase = .failed("host key: \(error)")
+                phase = .failed(.ordinary("host key: \(error)"))
                 return
             }
             let candidate = makeLyteSession(
@@ -337,7 +355,17 @@ final class ConnectionModel {
                 guard case TransportCryptoError.handshakeFailed(let why)
                         = error, why.hasPrefix("no response"),
                       SystemMonotonicClock.nowMicroseconds < deadline else {
-                    phase = .failed("Lyte-UDP connect: \(error)")
+                    if let endpointError = error as? TransportEndpointError,
+                       let problem = LocalNetworkAccessProblem.endpointError(
+                        endpointError)
+                    {
+                        phase = .failed(.localNetwork(
+                            problem,
+                            diagnosticDetail: String(describing: error)))
+                    } else {
+                        phase = .failed(.ordinary(
+                            "Lyte-UDP connect: \(error)"))
+                    }
                     return
                 }
                 phase = .connecting("\(host.name) isn't answering — "
@@ -619,7 +647,7 @@ final class ConnectionModel {
         lyteVideoSize = .zero
         AgentState.shared.streamEnded()
         if let reason {
-            phase = .failed(reason)
+            phase = .failed(.ordinary(reason))
         } else {
             phase = .pickHost
         }
