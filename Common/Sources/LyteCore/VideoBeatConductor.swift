@@ -67,9 +67,13 @@ public struct VideoBeatConductor: Sendable {
 
     public struct Decision: Sendable, Equatable {
         public var presentationMicroseconds: UInt64
-        /// The cue in force (books name it targetDelay for continuity
-        /// with the flight recorder's fields).
-        public var targetDelayMicroseconds: UInt64
+        /// Total score-to-glass time in force for this part.
+        public var cueMicroseconds: UInt64
+        /// This part's measured mapped-capture-to-arrival path time.
+        public var pathDelayMicroseconds: UInt64
+        /// Cue remaining after the measured path time: the Conductor's
+        /// actual timing reserve, including beat-grid alignment.
+        public var reserveMicroseconds: UInt64
         /// How far past its beat the part arrived (0 = on time).
         public var latenessMicroseconds: UInt64
         public var shouldFlush: Bool
@@ -89,6 +93,8 @@ public struct VideoBeatConductor: Sendable {
     private var anchorMicroseconds: UInt64 = 0
     private var lastPresentationMicroseconds: UInt64?
     private var lastMeasuredCueMicroseconds: UInt64 = 0
+    private var lastPathDelayMicroseconds: UInt64 = 0
+    private var lastReserveMicroseconds: UInt64 = 0
     private var lastSourceCaptureMicroseconds: UInt64?
     private var lastFrameWasRetained = false
 
@@ -114,6 +120,8 @@ public struct VideoBeatConductor: Sendable {
 
     public mutating func reset() {
         lastMeasuredCueMicroseconds = 0
+        lastPathDelayMicroseconds = 0
+        lastReserveMicroseconds = 0
         gridPresentationMicroseconds = nil
         previousFreshSourceForStep = nil
         anchorMicroseconds = 0
@@ -163,7 +171,9 @@ public struct VideoBeatConductor: Sendable {
             lastPresentationMicroseconds = presentation
             return Decision(
                 presentationMicroseconds: presentation,
-                targetDelayMicroseconds: lastMeasuredCueMicroseconds,
+                cueMicroseconds: lastMeasuredCueMicroseconds,
+                pathDelayMicroseconds: lastPathDelayMicroseconds,
+                reserveMicroseconds: lastReserveMicroseconds,
                 latenessMicroseconds: 0,
                 shouldFlush: false)
         }
@@ -308,11 +318,18 @@ public struct VideoBeatConductor: Sendable {
             presentation = previous &+ 1
         }
         lastPresentationMicroseconds = presentation
-        lastMeasuredCueMicroseconds = measuredCue
+        let finalCue = presentation > mappedCaptureMicroseconds
+            ? presentation - mappedCaptureMicroseconds : 0
+        let reserve = finalCue > pathDelay ? finalCue - pathDelay : 0
+        lastMeasuredCueMicroseconds = finalCue
+        lastPathDelayMicroseconds = pathDelay
+        lastReserveMicroseconds = reserve
 
         return Decision(
             presentationMicroseconds: presentation,
-            targetDelayMicroseconds: measuredCue,
+            cueMicroseconds: finalCue,
+            pathDelayMicroseconds: pathDelay,
+            reserveMicroseconds: reserve,
             latenessMicroseconds: lateness,
             shouldFlush: shouldFlush)
     }
