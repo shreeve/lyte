@@ -1,14 +1,10 @@
 import XCTest
 @testable import LyteTransport
 
-/// The link-health verdict laws: quiet link → good (and the UI shows
-/// nothing); one stall → degraded with its magnitude; frequent or
-/// deep stalls → poor; episodes coalesce and age out; the connect
-/// ramp gets a warmup grace; a recorder reset (ordinals restart)
-/// restarts the window but the sitting's books survive roams.
-///
-/// Every test anchors its epoch with a clean frame at t=0 — the
-/// warmup grace (10 s) swallows anything earlier by design.
+/// The user-facing video-health law: successful correction is silent. Only a
+/// presentation beat that was actually missed or a renderer loss enters the
+/// rolling warning window. Episodes still coalesce, age out, and survive the
+/// same session/roaming boundaries as before.
 final class LinkHealthMeterTests: XCTestCase {
     private func micros(_ seconds: TimeInterval) -> UInt64 {
         UInt64(seconds * 1_000_000)
@@ -21,290 +17,212 @@ final class LinkHealthMeterTests: XCTestCase {
         meter.assessment(nowMicroseconds: micros(seconds))
     }
 
-    private func feedClean(
-        _ meter: LinkHealthMeter, ordinals: Range<UInt64>,
-        at time: TimeInterval
-    ) {
-        for o in ordinals {
-            meter.observe(
-                ordinal: o, transitStretchMilliseconds: 0.5,
-                queueWaitMilliseconds: 0.05,
-                enqueueMilliseconds: 0.03,
-                eventMicroseconds: micros(time))
-        }
-    }
-
-    private func feedStall(
-        _ meter: LinkHealthMeter, ordinal: UInt64,
-        transit: Double, at time: TimeInterval
+    private func observe(
+        _ meter: LinkHealthMeter,
+        ordinal: UInt64,
+        at time: TimeInterval,
+        lateness: Double? = nil,
+        dropped: Bool = false,
+        failed: Bool = false
     ) {
         meter.observe(
-            ordinal: ordinal, transitStretchMilliseconds: transit,
-            queueWaitMilliseconds: 0.05,
-            enqueueMilliseconds: 0.03,
+            ordinal: ordinal,
+            presentationLatenessMilliseconds: lateness,
+            rendererDropped: dropped,
+            rendererFailed: failed,
             eventMicroseconds: micros(time))
     }
 
-    func testQuietLinkIsGoodAndBlamesNobody() {
+    private func anchor(_ meter: LinkHealthMeter, at time: TimeInterval = 0) {
+        observe(meter, ordinal: 1, at: time)
+    }
+
+    func testSuccessfulFramesAreSilent() {
         let meter = LinkHealthMeter()
-        feedClean(meter, ordinals: 1..<120, at: 0)
-        let verdict = assessment(meter, at: 0)
+        anchor(meter)
+        for ordinal in UInt64(2)..<120 {
+            observe(meter, ordinal: ordinal, at: 20)
+        }
+        let verdict = assessment(meter, at: 20)
         XCTAssertEqual(verdict.level, .good)
         XCTAssertEqual(verdict.stallsLastMinute, 0)
         XCTAssertEqual(verdict.dominantStage, "none")
     }
 
     func testWarmupGraceSwallowsTheConnectRamp() {
-        // The first seconds of every epoch spike while the pipeline
-        // fills — no episodes, no books, no pill.
         let meter = LinkHealthMeter()
-        feedClean(meter, ordinals: 1..<2, at: 0)
-        feedStall(meter, ordinal: 2, transit: 115, at: 3)
-        feedStall(meter, ordinal: 3, transit: 90, at: 9)
-        var verdict = assessment(meter, at: 9)
-        XCTAssertEqual(verdict.level, .good)
-        XCTAssertEqual(verdict.sessionStallCount, 0)
-        // Past the grace, stalls count normally.
-        feedStall(meter, ordinal: 4, transit: 88, at: 15)
-        verdict = assessment(meter, at: 15)
+        anchor(meter)
+        observe(meter, ordinal: 2, at: 3, lateness: 115)
+        observe(meter, ordinal: 3, at: 9, dropped: true)
+        XCTAssertEqual(assessment(meter, at: 9).level, .good)
+
+        observe(meter, ordinal: 4, at: 15, lateness: 88)
+        let verdict = assessment(meter, at: 15)
         XCTAssertEqual(verdict.level, .degraded)
         XCTAssertEqual(verdict.sessionStallCount, 1)
     }
 
-    func testWarmupGraceAppliesAfreshAfterARoamRedial() {
+    func testLatePresentationIsReportedWithItsMagnitude() {
         let meter = LinkHealthMeter()
-        feedClean(meter, ordinals: 1..<2, at: 0)
-        feedStall(meter, ordinal: 2, transit: 88, at: 20)
-        XCTAssertEqual(assessment(meter, at: 20).sessionStallCount, 1)
-        meter.resetEpochKeepingSessionBooks()
-        // Roam re-dial: its own connect ramp gets the same grace while the
-        // sitting-wide count remains intact.
-        feedStall(meter, ordinal: 1, transit: 115, at: 100)
-        XCTAssertEqual(assessment(meter, at: 100).sessionStallCount, 1)
-        feedStall(meter, ordinal: 2, transit: 90, at: 115)
-        XCTAssertEqual(assessment(meter, at: 115).sessionStallCount, 2)
+        anchor(meter)
+        observe(meter, ordinal: 2, at: 15, lateness: 7.25)
+
+        let verdict = assessment(meter, at: 15)
+        XCTAssertEqual(verdict.level, .degraded)
+        XCTAssertEqual(verdict.stallsLastMinute, 1)
+        XCTAssertEqual(verdict.worstStallMilliseconds, 7.25)
+        XCTAssertEqual(verdict.dominantStage, "late")
     }
 
-    func testExplicitEpochResetHandlesEqualAndLeapfroggedOrdinals() {
-        for firstNewOrdinal: UInt64 in [1, 500] {
+    func testRendererDropOrFailureIsReportedWithoutInventedDuration() {
+        for failure in [(dropped: true, failed: false),
+                        (dropped: false, failed: true)] {
             let meter = LinkHealthMeter()
-            feedClean(meter, ordinals: 1..<2, at: 0)
-            feedStall(meter, ordinal: 2, transit: 88, at: 20)
-            XCTAssertEqual(assessment(meter, at: 20).sessionStallCount, 1)
+            anchor(meter)
+            observe(
+                meter, ordinal: 2, at: 15,
+                dropped: failure.dropped, failed: failure.failed)
 
-            meter.resetEpochKeepingSessionBooks()
-            feedStall(
-                meter, ordinal: firstNewOrdinal,
-                transit: 115, at: 100)
-
-            let reconnectRamp = assessment(meter, at: 100)
-            XCTAssertEqual(reconnectRamp.level, .good)
-            XCTAssertEqual(reconnectRamp.stallsLastMinute, 0)
-            XCTAssertEqual(reconnectRamp.sessionStallCount, 1)
+            let verdict = assessment(meter, at: 15)
+            XCTAssertEqual(verdict.level, .degraded)
+            XCTAssertEqual(verdict.stallsLastMinute, 1)
+            XCTAssertEqual(verdict.worstStallMilliseconds, 0)
+            XCTAssertEqual(verdict.dominantStage, "renderer")
         }
     }
 
-    func testOneTransitStallIsDegradedWithItsMagnitude() {
-        let meter = LinkHealthMeter()
-        feedClean(meter, ordinals: 1..<60, at: 0)
-        feedStall(meter, ordinal: 60, transit: 88, at: 15)
-        let verdict = assessment(meter, at: 15)
-        XCTAssertEqual(verdict.level, .degraded)
-        XCTAssertEqual(verdict.worstStallMilliseconds, 88)
-        XCTAssertEqual(verdict.dominantStage, "delivery")
-        XCTAssertEqual(verdict.stallsLastMinute, 1)
-    }
-
-    func testDeepOrFrequentStallsArePoor() {
-        // Deep: one ≥100 ms freeze is poor on its own.
+    func testDeepOrFrequentFailuresArePoor() {
         let deep = LinkHealthMeter()
-        feedClean(deep, ordinals: 1..<2, at: 0)
-        feedStall(deep, ordinal: 2, transit: 115, at: 15)
+        anchor(deep)
+        observe(deep, ordinal: 2, at: 15, lateness: 115)
         XCTAssertEqual(assessment(deep, at: 15).level, .poor)
 
-        // Frequent: three separated 30 ms stalls are poor too —
-        // the 2026-08-01 Wi-Fi comb shape.
         let frequent = LinkHealthMeter()
-        feedClean(frequent, ordinals: 1..<2, at: 0)
-        for (i, t) in [15.0, 25.0, 35.0].enumerated() {
-            feedStall(frequent, ordinal: UInt64(i + 2), transit: 30,
-                      at: t)
+        anchor(frequent)
+        for (index, time) in [15.0, 25.0, 35.0].enumerated() {
+            observe(
+                frequent, ordinal: UInt64(index + 2),
+                at: time, lateness: 3)
         }
         let verdict = assessment(frequent, at: 35)
         XCTAssertEqual(verdict.level, .poor)
         XCTAssertEqual(verdict.stallsLastMinute, 3)
     }
 
-    func testBurstCoalescesToOneEpisodeAndPeakWins() {
-        // One deaf-window smears across adjacent frames — the user
-        // felt ONE hitch, the meter counts ONE episode at its peak.
+    func testConsecutiveFailedFramesCoalesceAndPeakWins() {
         let meter = LinkHealthMeter()
-        feedClean(meter, ordinals: 1..<2, at: 0)
-        for (i, stretch) in [40.0, 115.0, 60.0].enumerated() {
-            feedStall(meter, ordinal: UInt64(i + 2), transit: stretch,
-                      at: 15 + Double(i) * 0.02)
-        }
+        anchor(meter)
+        observe(meter, ordinal: 2, at: 15.00, lateness: 4)
+        observe(meter, ordinal: 3, at: 15.02, lateness: 19)
+        observe(meter, ordinal: 4, at: 15.04, dropped: true)
+
         let verdict = assessment(meter, at: 15.04)
         XCTAssertEqual(verdict.stallsLastMinute, 1)
-        XCTAssertEqual(verdict.worstStallMilliseconds, 115)
-        XCTAssertEqual(verdict.level, .poor)
+        XCTAssertEqual(verdict.sessionStallCount, 1)
+        XCTAssertEqual(verdict.worstStallMilliseconds, 19)
+        XCTAssertEqual(verdict.dominantStage, "late")
     }
 
-    func testEpisodesAgeOutBackToGood() {
+    func testRendererEpisodeCanBecomeMeasuredLateWithoutDoubleCounting() {
         let meter = LinkHealthMeter()
-        feedClean(meter, ordinals: 1..<2, at: 0)
-        feedStall(meter, ordinal: 2, transit: 90, at: 15)
-        XCTAssertEqual(assessment(meter, at: 15).level, .degraded)
-        // The live verdict clock moves it past the stall even if a quiet,
-        // damage-driven desktop emits no more frames.
-        let aged = assessment(meter, at: 75)
+        anchor(meter)
+        observe(meter, ordinal: 2, at: 15.0, dropped: true)
+        observe(meter, ordinal: 3, at: 15.1, lateness: 22)
+
+        let verdict = assessment(meter, at: 15.1)
+        XCTAssertEqual(verdict.stallsLastMinute, 1)
+        XCTAssertEqual(verdict.sessionStallCount, 1)
+        XCTAssertEqual(verdict.worstStallMilliseconds, 22)
+        XCTAssertEqual(verdict.dominantStage, "late")
+    }
+
+    func testFailuresAgeOutWhileSessionBooksSurvive() {
+        let meter = LinkHealthMeter()
+        anchor(meter)
+        observe(meter, ordinal: 2, at: 15, lateness: 39)
+        observe(meter, ordinal: 3, at: 25, dropped: true)
+
+        let aged = assessment(meter, at: 85)
         XCTAssertEqual(aged.level, .good)
         XCTAssertEqual(aged.stallsLastMinute, 0)
         XCTAssertEqual(aged.worstStallMilliseconds, 0)
-        XCTAssertEqual(aged.sessionStallCount, 1)
-        XCTAssertEqual(aged.sessionWorstMilliseconds, 90)
+        XCTAssertEqual(aged.sessionStallCount, 2)
+        XCTAssertEqual(aged.sessionWorstMilliseconds, 39)
     }
 
-    func testStageAttributionPicksTheGuiltyParty() {
-        // Source-capture gaps are deliberately NOT a stage: capture is
-        // damage-driven, so an idle desktop with a seconds clock produces
-        // 1000 ms gaps by design (the 2026-08-01
-        // "Host capture stalls — worst 1,002 ms" false alarm). The
-        // meter no longer accepts them as evidence at all — clean
-        // transit on a quiet desktop stays good however sparse the
-        // frames.
+    func testRoamStartsFreshWindowAndKeepsSessionBooks() {
         let meter = LinkHealthMeter()
-        feedClean(meter, ordinals: 1..<2, at: 0)
-        feedClean(meter, ordinals: 2..<3, at: 15)
-        feedClean(meter, ordinals: 3..<4, at: 16)
-        XCTAssertEqual(assessment(meter, at: 16).level, .good)
-        XCTAssertEqual(assessment(meter, at: 16).dominantStage, "none")
+        anchor(meter)
+        observe(meter, ordinal: 2, at: 15, lateness: 88)
+        XCTAssertEqual(assessment(meter, at: 15).sessionStallCount, 1)
 
-        let renderer = LinkHealthMeter()
-        feedClean(renderer, ordinals: 1..<2, at: 0)
-        renderer.observe(
-            ordinal: 2, transitStretchMilliseconds: nil,
-            queueWaitMilliseconds: 9,
-            enqueueMilliseconds: 3,
-            eventMicroseconds: micros(15))
-        XCTAssertEqual(
-            assessment(renderer, at: 15).dominantStage, "renderer")
-    }
-
-    func testCoalescedEpisodePeakMovesItsStageWithoutDoubleCounting() {
-        for reverse in [false, true] {
-            let meter = LinkHealthMeter()
-            feedClean(meter, ordinals: 1..<2, at: 0)
-            meter.observe(
-                ordinal: 2,
-                transitStretchMilliseconds: reverse ? 0 : 40,
-                queueWaitMilliseconds: reverse ? 35 : 0,
-                enqueueMilliseconds: reverse ? 5 : 0,
-                eventMicroseconds: micros(15))
-            meter.observe(
-                ordinal: 3,
-                transitStretchMilliseconds: reverse ? 60 : 0,
-                queueWaitMilliseconds: reverse ? 0 : 55,
-                enqueueMilliseconds: reverse ? 0 : 5,
-                eventMicroseconds: micros(15.1))
-
-            let verdict = assessment(meter, at: 15.1)
-            XCTAssertEqual(verdict.stallsLastMinute, 1)
-            XCTAssertEqual(verdict.sessionStallCount, 1)
-            XCTAssertEqual(verdict.worstStallMilliseconds, 60)
-            XCTAssertEqual(
-                verdict.dominantStage,
-                reverse ? "delivery" : "renderer")
-        }
-    }
-
-    func testRecorderResetRestartsTheWindowButKeepsTheBooks() {
-        let meter = LinkHealthMeter()
-        feedClean(meter, ordinals: 1..<2, at: 0)
-        feedStall(meter, ordinal: 500, transit: 115, at: 15)
-        XCTAssertEqual(assessment(meter, at: 15).level, .poor)
-        // A roam re-dial explicitly starts a new epoch: the window must not
-        // carry old episodes, but the sitting's totals survive.
         meter.resetEpochKeepingSessionBooks()
-        feedClean(meter, ordinals: 1..<2, at: 16)
-        let after = assessment(meter, at: 16)
-        XCTAssertEqual(after.level, .good)
-        XCTAssertEqual(after.sessionStallCount, 1)
-        XCTAssertEqual(after.sessionWorstMilliseconds, 115)
-        // Only the sitting's end clears the books.
-        meter.resetSessionBooks()
-        XCTAssertEqual(assessment(meter, at: 16).sessionStallCount, 0)
+        observe(meter, ordinal: 1, at: 100, lateness: 115)
+        let ramp = assessment(meter, at: 100)
+        XCTAssertEqual(ramp.level, .good)
+        XCTAssertEqual(ramp.stallsLastMinute, 0)
+        XCTAssertEqual(ramp.sessionStallCount, 1)
+
+        observe(meter, ordinal: 2, at: 115, lateness: 9)
+        XCTAssertEqual(assessment(meter, at: 115).sessionStallCount, 2)
     }
 
-    func testSessionBooksOutliveTheWindowAndDieWithTheSession() {
+    func testSessionResetClearsAllBooks() {
         let meter = LinkHealthMeter()
-        feedClean(meter, ordinals: 1..<2, at: 0)
-        feedStall(meter, ordinal: 2, transit: 39, at: 15)
-        feedStall(meter, ordinal: 3, transit: 27, at: 25)
-        // Two minutes of clean frames later the window has forgotten
-        // both; the session books have not — "2 total, worst 39 ms"
-        // still true.
-        feedClean(meter, ordinals: 4..<5, at: 140)
-        let verdict = assessment(meter, at: 140)
-        XCTAssertEqual(verdict.level, .good)
-        XCTAssertEqual(verdict.sessionStallCount, 2)
-        XCTAssertEqual(verdict.sessionWorstMilliseconds, 39)
-        // A roam re-dial keeps the books; only the sitting's end clears them.
-        meter.resetEpochKeepingSessionBooks()
-        feedClean(meter, ordinals: 1..<2, at: 150)
-        XCTAssertEqual(assessment(meter, at: 150).sessionStallCount, 2)
+        anchor(meter)
+        observe(meter, ordinal: 2, at: 15, lateness: 39)
         meter.resetSessionBooks()
-        let fresh = assessment(meter, at: 150)
+
+        let fresh = assessment(meter, at: 15)
+        XCTAssertEqual(fresh.level, .good)
         XCTAssertEqual(fresh.sessionStallCount, 0)
         XCTAssertEqual(fresh.sessionWorstMilliseconds, 0)
     }
 
     func testDuplicateOrdinalsFoldOnce() {
         let meter = LinkHealthMeter()
-        feedClean(meter, ordinals: 1..<2, at: 0)
+        anchor(meter)
         for _ in 0..<5 {
-            feedStall(meter, ordinal: 7, transit: 80, at: 15)
+            observe(meter, ordinal: 7, at: 15, lateness: 8)
         }
-        // Re-fed frames (the 1 Hz scan overlaps the ring) count once.
         XCTAssertEqual(assessment(meter, at: 15).stallsLastMinute, 1)
-        // A later distinct stall past the coalesce window is a second.
-        feedStall(meter, ordinal: 8, transit: 80, at: 17)
+
+        observe(meter, ordinal: 8, at: 17, lateness: 8)
         XCTAssertEqual(assessment(meter, at: 17).stallsLastMinute, 2)
     }
 
-    func testOneSecondBucketCountsEveryDistinctEpisode() {
+    func testOneSecondBucketCountsDistinctEpisodes() {
         let meter = LinkHealthMeter()
-        feedClean(meter, ordinals: 1..<2, at: 0)
-        feedStall(meter, ordinal: 2, transit: 40, at: 15.00)
-        feedStall(meter, ordinal: 3, transit: 45, at: 15.75)
+        anchor(meter)
+        observe(meter, ordinal: 2, at: 15.00, lateness: 4)
+        observe(meter, ordinal: 3, at: 15.75, dropped: true)
 
         let verdict = assessment(meter, at: 15.99)
         XCTAssertEqual(verdict.stallsLastMinute, 2)
         XCTAssertEqual(verdict.sessionStallCount, 2)
-        XCTAssertEqual(verdict.worstStallMilliseconds, 45)
+        XCTAssertEqual(verdict.worstStallMilliseconds, 4)
     }
 
     func testExactlySixtyOneSecondBucketsRollAtTheBoundary() {
         let meter = LinkHealthMeter()
-        feedClean(meter, ordinals: 1..<2, at: 0)
-        feedStall(meter, ordinal: 2, transit: 40, at: 15)
-        feedStall(meter, ordinal: 3, transit: 45, at: 16)
+        anchor(meter)
+        observe(meter, ordinal: 2, at: 15, lateness: 4)
+        observe(meter, ordinal: 3, at: 16, lateness: 5)
 
-        XCTAssertEqual(
-            assessment(meter, at: 74.999).stallsLastMinute, 2)
+        XCTAssertEqual(assessment(meter, at: 74.999).stallsLastMinute, 2)
         XCTAssertEqual(assessment(meter, at: 75).stallsLastMinute, 1)
         XCTAssertEqual(assessment(meter, at: 76).stallsLastMinute, 0)
     }
 
-    func testRingSlotReuseCannotResurrectTheOldMinute() {
+    func testRingSlotReuseCannotResurrectOldFailure() {
         let meter = LinkHealthMeter()
-        feedClean(meter, ordinals: 1..<2, at: 0)
-        feedStall(meter, ordinal: 2, transit: 40, at: 15)
-        feedStall(meter, ordinal: 3, transit: 45, at: 75)
+        anchor(meter)
+        observe(meter, ordinal: 2, at: 15, lateness: 4)
+        observe(meter, ordinal: 3, at: 75, lateness: 5)
 
         let verdict = assessment(meter, at: 75)
         XCTAssertEqual(verdict.stallsLastMinute, 1)
         XCTAssertEqual(verdict.sessionStallCount, 2)
-        XCTAssertEqual(verdict.worstStallMilliseconds, 45)
+        XCTAssertEqual(verdict.worstStallMilliseconds, 5)
     }
 }

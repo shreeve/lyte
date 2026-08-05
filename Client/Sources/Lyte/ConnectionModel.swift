@@ -659,9 +659,10 @@ final class ConnectionModel {
         for f in videoFlightRecorder.recentFrames() {
             linkHealthMeter.observe(
                 ordinal: f.ordinal,
-                transitStretchMilliseconds: f.transitStretchMilliseconds,
-                queueWaitMilliseconds: f.queueWaitMilliseconds,
-                enqueueMilliseconds: f.enqueueMilliseconds,
+                presentationLatenessMilliseconds:
+                    f.presentationLatenessMilliseconds,
+                rendererDropped: f.rendererDropped,
+                rendererFailed: f.rendererFailed,
                 eventMicroseconds: f.readyMicroseconds)
         }
         linkHealth = linkHealthMeter.assessment(
@@ -1984,6 +1985,11 @@ private final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     ) {
         let started = enqueueStarted ?? SystemMonotonicClock.nowNanoseconds
         let finished = enqueueFinished ?? started
+        let finishedMicroseconds = finished / 1_000
+        let handoffLateness = finishedMicroseconds
+            > pending.decision.presentationMicroseconds
+            ? finishedMicroseconds - pending.decision.presentationMicroseconds
+            : 0
         books.record(
             hopMilliseconds:
                 Double(finished &- pending.dispatchedNanoseconds) / 1e6)
@@ -2004,8 +2010,9 @@ private final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
             pathDelayMicroseconds:
                 pending.decision.pathDelayMicroseconds,
             reserveMicroseconds: pending.decision.reserveMicroseconds,
-            presentationLatenessMicroseconds:
+            presentationLatenessMicroseconds: max(
                 pending.decision.latenessMicroseconds,
+                handoffLateness),
             rendererRecovery: recovery)
         sampleMetricsIfDue(
             after: pending.token,

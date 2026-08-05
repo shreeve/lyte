@@ -1,11 +1,10 @@
 import Foundation
 
-/// The delivery path's self-diagnosis — the flight recorder already
-/// measures every stage per frame; this folds those numbers into one
-/// user-facing verdict so a transit hiccup announces itself instead
-/// of being someone's heisenbug (the 2026-08-01 Wi-Fi hunt: ~100 ms
-/// radio deaf-windows every ~10 s, invisible in percentiles, obvious
-/// in per-frame books).
+/// The delivery path's user-visible failure verdict. The flight recorder
+/// retains every internal disturbance for diagnosis, but this meter is
+/// deliberately narrower: a recovered transit or queue delay is success and
+/// stays silent. Only a frame that missed its presentation beat or was lost by
+/// the renderer enters the warning window.
 ///
 /// Cost model: fed once a second with only the frames recorded since
 /// the last feed (ordinal high-water mark); each frame is a handful
@@ -15,13 +14,11 @@ public struct LinkHealthAssessment: Equatable, Sendable {
         case good, degraded, poor
     }
 
-    /// Where the recent stalls were measured: "delivery" spans capture-stamp
-    /// to client-ready work before renderer handoff; "renderer" spans the
-    /// queue and enqueue handoff itself. Delivery deliberately makes no
-    /// narrower causal claim about encoding, pacing, wire, repair, assembly,
-    /// or sample construction.
+    /// Where the recent failures became conclusive: "late" means the frame
+    /// reached renderer handoff after its presentation beat; "renderer" means
+    /// it was explicitly dropped or the renderer failed.
     public var level: Level
-    /// Exact number of stall episodes in the current second and the
+    /// Exact number of failure episodes in the current second and the
     /// preceding 59 one-second buckets.
     public var stallsLastMinute: Int
     public var worstStallMilliseconds: Double
@@ -49,7 +46,7 @@ public final class LinkHealthMeter {
         var second: UInt64?
         var count = 0
         var worstMilliseconds = 0.0
-        var deliveryCount = 0
+        var lateCount = 0
         var rendererCount = 0
     }
 
@@ -62,8 +59,6 @@ public final class LinkHealthMeter {
         var stage: String
     }
 
-    public static let transitStallMilliseconds = 25.0
-    public static let rendererStallMilliseconds = 8.0
     public static let coalesceMicroseconds: UInt64 = 500_000
     public static let windowBucketCount = 60
     public static let warmupMicroseconds: UInt64 = 10_000_000
@@ -86,9 +81,9 @@ public final class LinkHealthMeter {
     /// recorder scans idempotent.
     public func observe(
         ordinal: UInt64,
-        transitStretchMilliseconds: Double?,
-        queueWaitMilliseconds: Double,
-        enqueueMilliseconds: Double,
+        presentationLatenessMilliseconds: Double?,
+        rendererDropped: Bool,
+        rendererFailed: Bool,
         eventMicroseconds: UInt64
     ) {
         guard ordinal > highWaterOrdinal else { return }
@@ -100,19 +95,19 @@ public final class LinkHealthMeter {
               eventMicroseconds - epochStart >= Self.warmupMicroseconds
         else { return }
 
-        var worst = 0.0
-        var stage = ""
-        if let transit = transitStretchMilliseconds,
-           transit >= Self.transitStallMilliseconds, transit > worst {
-            worst = transit
-            stage = "delivery"
-        }
-        let renderer = queueWaitMilliseconds + enqueueMilliseconds
-        if renderer >= Self.rendererStallMilliseconds, renderer > worst {
-            worst = renderer
+        let lateness = max(presentationLatenessMilliseconds ?? 0, 0)
+        let stage: String
+        if lateness > 0 {
+            stage = "late"
+        } else if rendererDropped || rendererFailed {
             stage = "renderer"
+        } else {
+            // Internal jitter, queueing, repair, and re-cue evidence remains
+            // in the flight recorder. The mechanism worked, so the UI says
+            // nothing.
+            return
         }
-        guard worst > 0 else { return }
+        let worst = lateness
 
         let eventSecond = eventMicroseconds / 1_000_000
         if var last = lastEpisode,
@@ -175,7 +170,7 @@ public final class LinkHealthMeter {
         let nowSecond = nowMicroseconds / 1_000_000
         var count = 0
         var worst = 0.0
-        var deliveryCount = 0
+        var lateCount = 0
         var rendererCount = 0
         for bucket in buckets {
             guard let second = bucket.second,
@@ -184,17 +179,17 @@ public final class LinkHealthMeter {
             else { continue }
             count += bucket.count
             worst = max(worst, bucket.worstMilliseconds)
-            deliveryCount += bucket.deliveryCount
+            lateCount += bucket.lateCount
             rendererCount += bucket.rendererCount
         }
 
         let dominant: String
-        if deliveryCount == 0, rendererCount == 0 {
+        if lateCount == 0, rendererCount == 0 {
             dominant = "none"
-        } else if rendererCount > deliveryCount {
+        } else if rendererCount > lateCount {
             dominant = "renderer"
         } else {
-            dominant = "delivery"
+            dominant = "late"
         }
         let level: LinkHealthAssessment.Level
         if count >= 3 || worst >= 100 {
@@ -236,7 +231,7 @@ public final class LinkHealthMeter {
         if stage == "renderer" {
             buckets[index].rendererCount += 1
         } else {
-            buckets[index].deliveryCount += 1
+            buckets[index].lateCount += 1
         }
     }
 
@@ -253,9 +248,9 @@ public final class LinkHealthMeter {
         guard oldStage != newStage else { return }
         if oldStage == "renderer" {
             buckets[index].rendererCount -= 1
-            buckets[index].deliveryCount += 1
+            buckets[index].lateCount += 1
         } else {
-            buckets[index].deliveryCount -= 1
+            buckets[index].lateCount -= 1
             buckets[index].rendererCount += 1
         }
     }

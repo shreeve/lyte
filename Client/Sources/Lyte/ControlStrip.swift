@@ -47,10 +47,10 @@ struct StreamContainer: View {
         StripEdge(rawValue: stripEdgeRaw) ?? .bottom
     }
 
-    /// "Video delayed 5 times in the last minute, worst was 49 ms":
+    /// "Video was delayed 5 times in the last minute, worst was 49 ms":
     /// every number in the warning describes the same live 60-second window.
-    /// Sitting-wide books and stage attribution remain diagnostic evidence,
-    /// not alarm copy.
+    /// The pill is failure-only: disturbances absorbed by the Conductor stay
+    /// in diagnostics and never become user-facing alarm copy.
     private func linkHealthLine(
         _ health: LinkHealthAssessment
     ) -> String {
@@ -58,10 +58,12 @@ struct StreamContainer: View {
         let occurrence = health.stallsLastMinute == 1
             ? "1 time"
             : "\(recent) times"
-        let worst = health.worstStallMilliseconds
-            .formatted(.number.precision(.fractionLength(0)))
-        return "Video delayed \(occurrence) in the last minute, "
-            + "worst was \(worst) ms"
+        guard health.worstStallMilliseconds > 0 else {
+            return "Video playback failed \(occurrence) in the last minute"
+        }
+        let worst = max(1, Int(ceil(health.worstStallMilliseconds)))
+        return "Video was delayed \(occurrence) in the last minute, "
+            + "worst was \(worst.formatted()) ms"
     }
 
     var body: some View {
@@ -105,12 +107,10 @@ struct StreamContainer: View {
                             .foregroundStyle(.orange)
                             .transition(.opacity)
                     }
-                    // The link-health pill: the flight recorder's
-                    // per-frame stage timings, folded to a verdict at
-                    // 1 Hz. Appears ONLY when stalls are measured —
-                    // the software confesses before the user has to
-                    // heisenbug (the 2026-08-01 Wi-Fi hunt) — and
-                    // names the measured stage without inventing a cause.
+                    // The link-health pill: actual late or lost frames,
+                    // folded to a verdict at 1 Hz. Repaired wire damage,
+                    // absorbed jitter, re-cues, and successful reserve use
+                    // remain diagnostic evidence and stay silent.
                     // Owner ruling 2026-08-03: the warning pill FILLS
                     // with its color and the text goes bold white
                     // (black on amber — white washes out there), so a
@@ -130,12 +130,10 @@ struct StreamContainer: View {
                                 health.level == .poor
                                     ? Color.white : Color.black)
                             .transition(.opacity)
-                            .help("Measured stall episodes in the last "
-                                + "minute. Pre-render delivery spans host "
-                                + "encode and pacing, the wire and repair, "
-                                + "client assembly, and sample construction; "
-                                + "renderer handoff covers the app queue and "
-                                + "enqueue only.")
+                            .help("Frames that reached their presentation "
+                                + "beat too late or were lost by the renderer "
+                                + "during the last minute. Recovered network "
+                                + "and delivery disturbances are not shown.")
                     }
                 }
                 .padding(stripEdge == .top ? .bottom : .top, 10)
