@@ -4,11 +4,11 @@
 
 ## Resume here
 
-- **Branch:** resume on clean `main` after the #180 landing; do not continue on
-  its merged feature branch.
-- **GitHub:** PR #180 made the video-health pill failure-only: absorbed jitter,
-  repair, queueing, and re-cues stay silent; only missed presentation beats or
-  explicit renderer loss/failure alert the user.
+- **Branch:** resume `agent/host-session-core` from its committed extraction
+  after incorporating clean `main` through PR #181.
+- **GitHub:** PR #181 prevents clean verification from deleting the owner's
+  running app and makes a missing optional helper fail soft instead of entering
+  the crashing `SMAppService.register()` path.
 - **Workspace:** one checkout and no auxiliary worktrees.
 - **Current objective:** extract pure host session policy behind injected time
   and randomness without moving sockets, queues, persistence, or Linux IO.
@@ -134,11 +134,21 @@ handoff lateness and explicit renderer loss/failure; successfully absorbed
 delivery disturbances remain in the flight recorder and do not raise a pill.
 Frozen vectors were unchanged.
 
+The live-app clean-safety fix passed the complete warning-enforced macOS gate:
+Common 93, Wire 513, Host 340, Client 297, and SystemTests 17 plus benchmark
+safety, signing, 25 analyzers, app identity, the signed CLI, packaging, and
+hermetic linkage. The gate ran while Lyte PID 55056 was live; its bundle
+version, executable SHA-256, and PID were identical before and after. The
+captured crash was `EXC_BAD_ACCESS` in `_load_plist_from_bundle` after the old
+gate erased `.build/Lyte.app` and stream start tried to register its now-
+missing helper. Client tests now use `Client/.build`; stream start never owns
+registration; `.notFound` fails soft. PR #181 landed the fix.
+
 ## Current live rig
 
 ### Client
 
-- `.build/Lyte.app` (PID 59509) is running and connected to pup. The previous app's
+- `.build/Lyte.app` (PID 77688) is running; helper PID 77929 is active. The previous app's
   beachball was a main-thread `StatsOverlay` feedback loop: its `TimelineView`
   repeatedly invoked `ConnectionModel.statsRows()` and percentile sorting from
   SwiftUI layout while media queues kept playing. The repaired overlay renders
@@ -146,10 +156,11 @@ Frozen vectors were unchanged.
   proof is recorded under the focused gate above.
 - It is signed by `Apple Development: Steve Shreeve (8FHNN4RZ9Q)` with team
   identifier `SD6N7Z8P9P` and bundle identifier `dev.shreeve.lyte`.
-- The current candidate bundle is source `ceee74dba7b1`, build `1785909980`.
+- The current candidate bundle is clean source `39638567a097`, build
+  `1785918461`.
   Its Lyte and helper executable SHA-256 values are respectively
-  `cc580fbccae153ac92df169c45bf16f8020e76d8111788d3e96f1c6685ab96c6`
-  and `9f906eeeab860dd754a7fdfe7e88cfb17570053fc97aa76780b0c949a408f90d`.
+  `676c817ca64c5260daa704b2a6ea0152cffd5c43adfa9df6b520e43604976352`
+  and `ca926cb3c27673b718f6d13db830a20e6bdd543bb0429cbfff20d22e033423b0`.
   Packaging, hermetic-linkage, and strict deep-signature checks pass.
 - LaunchServices resolves the exact candidate path, build version, signing
   identity, and Mach-O UUID. After the completed reboot and an owner-controlled
