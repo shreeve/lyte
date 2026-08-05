@@ -4,14 +4,15 @@
 
 ## Resume here
 
-- **Branch:** `commissioning/local-network-identity`, based on `33ed995`
-  (`main`, #168).
+- **Branch:** `commissioning/local-network-identity`; local identity commit
+  `85242c9` is based on `33ed995` (`main`, #168), with review hardening in the
+  worktree.
 - **GitHub:** no open pull requests.
 - **Workspace:** one checkout and no auxiliary worktrees.
 - **Current objective:** make every rebuilt app a fresh, explicitly registered
-  LaunchServices artifact without ever replacing its bundle under a running
-  process, and make Bonjour-resolution denial visible as a permission/route
-  problem instead of an empty-network result.
+  LaunchServices artifact; serialize scripted build/launch, check external app
+  state before live publication, and make Bonjour-resolution denial visible as
+  a permission/route problem instead of an empty-network result.
 
 ## Last green gates
 
@@ -26,15 +27,14 @@ and release builds; release host/audio linkage checks; positive Opus symbol
 proof; and the netio and pacing harnesses. The release Opus leaf compiled with
 `-O2`. Pup's protected identity state was unchanged.
 
-The final complete macOS gate passed all five packages, benchmark and host
-release safety, signing policy, 25 analyzer tests, the signed CLI, and signed
-app packaging. The app's hermetic linkage checks passed both before publication
-and after the atomic bundle swap.
-
-The local-network identity slice passed its app-identity, packaging, benchmark
-safety, signing, and focused 21-test discovery/access suites. `git diff --check`
-is clean. The complete Client suite passed before the final discovery-UI patch;
-rerun that complete suite before landing.
+The final local-network identity gate passed all five packages: Common 86,
+Wire 513, Host 338, Client 283, and SystemTests 17. It also passed benchmark and
+host-release safety, signing policy, 25 analyzer tests, app-identity policy,
+the signed CLI, packaging, and hermetic linkage. The isolated release app was
+assembled twice at one path; the second build advanced `CFBundleVersion` and
+exercised the atomic bundle-swap path without touching `.build/Lyte.app`.
+Focused discovery/access coverage is 24 tests. `git diff --check` and shell
+syntax are clean. The known `VideoReadbackTap` warnings remain queued below.
 
 ## Current live rig
 
@@ -66,8 +66,10 @@ rerun that complete suite before landing.
   120-second no-client-handshake timeout can trigger the existing systemd
   restart policy; that event is not evidence of a host crash.
 - Unit binary: `~/src/lyte-host/.build/release/lyte-host`.
-- Running PID 945642 exactly matches release SHA-256
+- The deployed release binary has SHA-256
   `9eb92ad911225e84d7c4dd0e0a40a04af15a33a39102f25933045d11bacb03e3`.
+  The service's configured no-client timeout intentionally changes its PID;
+  the current service remains active and listening on UDP 41151.
 - The one-time debug-to-release service migration sustained the same PID for
   30 seconds with zero restarts. The previous config is recoverable at
   `/etc/lyte/lyte-host.conf.pre-release-opus-20260804`.
@@ -83,7 +85,11 @@ and `--no-advertise`.
 1. Resolve the `VideoReadbackTap` Swift concurrency/pointer warnings, the
    unnecessary mutable test variables, and Linux `String(cString:)`
    deprecations; then add a warning ratchet.
-2. Run the owner-visible two-column stats-ledger check during a sustained live
+2. Reconcile the playout setting and `docs/CUSHION.md` with the Conductor's
+   actual one-beat minimum, then pin the settings-to-config mapping.
+3. Authenticate every privileged `lyte-helperd` XPC client with an exact code
+   signing requirement; pin signed-client acceptance and foreign rejection.
+4. Run the owner-visible two-column stats-ledger check during a sustained live
    stream and investigate the reported network stalls. GNOME Shell's known
    ten-second source-stall comb on pup remains an environment limitation, not
    a Lyte host-loop defect.
@@ -92,13 +98,17 @@ and `--no-advertise`.
 
 Keep every landing small and green. The intended order is:
 
-1. Extract pure `LyteClientCore` policy with a sans-IO import lint.
-2. Extract pure host session policy behind injected time and randomness.
-3. Extract the client ingress/session vertical without moving platform IO.
-4. Make application composition roots explicit.
-5. Remove executable insecure/plaintext production paths while preserving
+1. Strengthen one sans-IO/dependency ratchet before creating more targets.
+2. Extract pure `LyteClientCore` policy one organ at a time, starting with
+   roaming policy.
+3. Extract the client session vertical without moving platform IO.
+4. Replace `COpusEncode` with the pinned `COpus` Swift-facing leaf and delete
+   the duplicate C codec-policy wrapper.
+5. Extract pure host session policy behind injected time and randomness.
+6. Make application composition roots explicit.
+7. Remove executable insecure/plaintext production paths while preserving
    test-only frozen-vector equipment.
-6. Finish documentation and architectural ratchets, then repeat clean macOS,
+8. Finish documentation and architectural ratchets, then repeat clean macOS,
    pup, WASM, and live-rig commissioning.
 
 ## Recovery pointers

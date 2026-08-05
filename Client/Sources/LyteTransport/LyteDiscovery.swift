@@ -69,6 +69,13 @@ public struct LyteDiscoveryScan: Sendable, Equatable {
     public let hosts: [DiscoveredLyteHost]
     public let accessProblem: LocalNetworkAccessProblem?
 
+    /// A scan-level access problem blocks progress only when the scan found no
+    /// usable dial target. Independent stale or unreachable advertisements
+    /// remain diagnostic evidence without eclipsing a resolved host.
+    public var blockingAccessProblem: LocalNetworkAccessProblem? {
+        hosts.isEmpty ? accessProblem : nil
+    }
+
     public init(
         hosts: [DiscoveredLyteHost],
         accessProblem: LocalNetworkAccessProblem?
@@ -296,8 +303,17 @@ public enum LyteDiscovery {
         }
         let first = await resolve(endpoint, using: v4, timeout: timeout)
         switch first {
-        case .resolved, .accessProblem:
+        case .resolved, .accessProblem(.permissionRequired):
             return first
+        case .accessProblem(.routeOrPermissionUnavailable):
+            let fallback = await resolve(
+                endpoint, using: .udp, timeout: timeout)
+            switch fallback {
+            case .resolved, .accessProblem:
+                return fallback
+            case .failed:
+                return first
+            }
         case .failed:
             return await resolve(endpoint, using: .udp, timeout: timeout)
         }

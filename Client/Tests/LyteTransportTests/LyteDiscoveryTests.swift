@@ -106,6 +106,29 @@ final class LyteDiscoveryTests: XCTestCase {
             .permissionRequired)
     }
 
+    func testBrowserEvidenceSurvivesWithoutResolverEvidence() {
+        for problem in [
+            LocalNetworkAccessProblem.permissionRequired,
+            .routeOrPermissionUnavailable,
+        ] {
+            XCTAssertEqual(
+                LyteDiscovery.combinedAccessProblem(
+                    browserProblem: problem,
+                    resolutionProblems: [],
+                    hadUnresolvedService: false),
+                problem)
+        }
+    }
+
+    func testResolverRouteEvidenceSurvivesAHealthyBrowser() {
+        XCTAssertEqual(
+            LyteDiscovery.combinedAccessProblem(
+                browserProblem: nil,
+                resolutionProblems: [.routeOrPermissionUnavailable],
+                hadUnresolvedService: false),
+            .routeOrPermissionUnavailable)
+    }
+
     func testUnresolvedAdvertisedServiceIsNotReportedAsEmptyNetwork() {
         XCTAssertEqual(
             LyteDiscovery.combinedAccessProblem(

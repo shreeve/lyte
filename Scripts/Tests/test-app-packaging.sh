@@ -125,7 +125,8 @@ grep -Fq '<key>LyteSourceRevision</key>' "$make_app"
 grep -Fq '<string>0.5.0</string>' "$make_app"
 grep -Fq -- '--is-shallow-repository' "$make_app"
 grep -Fq 'Scripts/next-bundle-version.sh' "$make_app"
-grep -Fq 'pgrep -x Lyte' "$make_app"
+grep -Fq '. "$ROOT/Scripts/AppArtifact/app-artifact.sh"' "$make_app"
+grep -Fq 'lyte_require_app_quiescent "live app publication"' "$make_app"
 [[ -x "$sign_dev" ]]
 
 leftovers="$(

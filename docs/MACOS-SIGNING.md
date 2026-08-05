@@ -72,11 +72,13 @@ validates its property list, signs it, and then publishes it with one macOS
 rename-swap. APFS supports that publication primitive; an unsupported swap,
 failed build, or failed signature leaves the previously published
 `.build/Lyte.app` intact. LaunchServices requires a valid numeric
-`CFBundleVersion`. Every assembly receives a monotonically fresh version whose
-floor is the reachable Git commit count; rebuilding the same source can never
-publish a new Mach-O UUID under the previous version. `LyteSourceRevision`
-separately records the short commit hash and a trailing `+` for a dirty source
-tree.
+`CFBundleVersion`. Every in-place publication receives a version greater than
+the retained predecessor, with UTC epoch seconds and the reachable Git commit
+count as floors. This prevents same-path rebuilds from pairing a new Mach-O
+UUID with the preceding version. Deleting the prior bundle also deletes that
+local monotonic record; this is development packaging, not a release-version
+ledger. `LyteSourceRevision` separately records the short commit hash and a
+trailing `+` for a dirty source tree.
 
 `launch-app.sh` force-registers the finished bundle before opening it. This is
 important because atomic publication changes the app inode and every link
@@ -84,6 +86,8 @@ produces a new executable UUID. TN3179 says that UUID participates in macOS
 Local Network privacy and must be present and unique. Registering only after
 publication is Lyte's additional precaution: LaunchServices sees the exact
 signed artifact that the next command opens; it is not a privacy-state reset.
+The fixed `lsregister` path is a macOS implementation detail, checked at
+runtime and confined to this development launcher.
 
 The fallback identity is kept in its **own** keychain so `codesign` can use it
 non-interactively without changing the login keychain's security posture.
@@ -136,8 +140,12 @@ Scripts/launch-app.sh
 ```
 
 `make-app.sh` refuses to replace the bundle while any `Lyte` process is
-running. Quit the existing app first, build it completely, and use the launch
-script rather than opening a newly replaced bundle by hand.
+running, including its helper. Assembly and scripted launch share one
+non-waiting artifact lock, and publication checks process state again after
+the build. Quit the existing app first, build it completely, and use the
+launch script rather than opening a newly replaced bundle by hand. Finder and
+other external launchers do not participate in that advisory lock, so this is
+a disciplined development workflow rather than a system-wide exclusion.
 
 If System Settings shows duplicated Lyte rows or an enabled row still produces
 `Local network prohibited`, do not use `tccutil`: macOS Local Network privacy

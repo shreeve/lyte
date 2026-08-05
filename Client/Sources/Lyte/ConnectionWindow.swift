@@ -59,7 +59,7 @@ struct ConnectionWindow: View {
             // before a diagnostic UDP send; otherwise autoconnect can race
             // the prompt and collapse a policy decision into errno 65.
             let preflight = await LyteDiscovery.scan(duration: 1.0)
-            if let problem = preflight.accessProblem {
+            if let problem = preflight.blockingAccessProblem {
                 model.phase = .failed(.localNetwork(
                     problem,
                     diagnosticDetail: "autoconnect preflight: \(problem)"))

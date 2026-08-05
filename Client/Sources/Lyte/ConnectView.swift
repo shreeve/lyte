@@ -79,7 +79,7 @@ struct ConnectView: View {
                     Text("No hosts found on this network")
                         .foregroundStyle(.secondary)
                 }
-                ForEach(lyteHosts, id: \.address) { host in
+                ForEach(lyteHosts) { host in
                     lyteHostRow(host)
                 }
                 Button("Search Again") { Task { await browse() } }
@@ -105,7 +105,7 @@ struct ConnectView: View {
             browsing = true
             let scan = await LyteDiscovery.scan(duration: 3.0)
             lyteHosts = scan.hosts
-            accessProblem = scan.accessProblem
+            accessProblem = scan.blockingAccessProblem
             browsing = false
             guard rescanWhenActive, scenePhase == .active else { return }
         }
