@@ -7,6 +7,7 @@ public enum ClientControlSessionEvent: Hashable, Sendable {
     case malformedLifecycle(ClientLifecycleMessage)
     case capability(ClientCapabilitySessionEvent)
     case audioRouting(ClientAudioRoutingSessionEvent)
+    case clipboard(ClientClipboardSessionEvent)
 }
 
 /// One composed client-control decision. The shell sends the returned bytes,
@@ -35,17 +36,23 @@ public struct ClientControlSession: Sendable {
     private var lifecycle: ClientSessionLifecycle
     private var capabilities: ClientCapabilitySession
     private var audioRouting: ClientAudioRoutingSession
+    private var clipboard: ClientClipboardSession
 
     public init(
         localCapabilities: Capabilities,
         machineConfig: SessionMachineConfig,
         desiredHostAudioRouting: HostAudioRoutingMode?,
+        clipboardSharingAtStart: Bool = false,
+        clipboardImageSharingAtStart: Bool = false,
         now: ClientTimestamp
     ) {
         lifecycle = ClientSessionLifecycle(config: machineConfig, now: now)
         capabilities = ClientCapabilitySession(local: localCapabilities)
         audioRouting = ClientAudioRoutingSession(
             desiredAtStart: desiredHostAudioRouting)
+        clipboard = ClientClipboardSession(
+            textSharingAtStart: clipboardSharingAtStart,
+            imageSharingAtStart: clipboardImageSharingAtStart)
     }
 
     public var state: SessionState { lifecycle.state }
@@ -57,6 +64,21 @@ public struct ClientControlSession: Sendable {
     }
     public var hostAudioRoutingNegotiated: Bool {
         capabilities.agreed?.hostAudioRouting == true
+    }
+    public var clipboardNegotiated: Bool {
+        capabilities.agreed?.clipboardText == true
+    }
+    public var clipboardSharingEnabled: Bool {
+        clipboard.isTextSharingEnabled
+    }
+    public var clipboardImagesNegotiated: Bool {
+        capabilities.agreed?.clipboardImagesAgreed == true
+    }
+    public var clipboardImageSharingEnabled: Bool {
+        clipboard.isImageSharingEnabled
+    }
+    public var clipboardImageCounters: ClipboardImageChannelCounters {
+        clipboard.imageCounters
     }
     public var operativeMaxDatagramBytes: UInt32 {
         capabilities.operativeMaxDatagramBytes
@@ -72,6 +94,50 @@ public struct ClientControlSession: Sendable {
         _ mode: HostAudioRoutingMode
     ) throws -> [UInt8] {
         try audioRouting.request(mode, agreed: capabilities.agreed)
+    }
+
+    public mutating func setClipboardSharing(_ enabled: Bool) {
+        clipboard.setTextSharing(enabled)
+    }
+
+    public mutating func setClipboardImageSharing(_ enabled: Bool) {
+        clipboard.setImageSharing(enabled)
+    }
+
+    public mutating func shareLocalClipboard(
+        _ text: String
+    ) -> ClientClipboardSessionDecision {
+        clipboard.shareLocalText(text, agreed: capabilities.agreed)
+    }
+
+    public mutating func noteLocalClipboardSent(_ text: String) {
+        clipboard.noteLocalTextSent(text)
+    }
+
+    public mutating func shareLocalClipboardImage(
+        _ data: [UInt8],
+        sha256: [UInt8],
+        rng: inout some RandomNumberGenerator
+    ) -> ClientClipboardSessionDecision {
+        clipboard.shareLocalImage(
+            data, sha256: sha256, rng: &rng, agreed: capabilities.agreed)
+    }
+
+    public mutating func receiveClipboardImageCargo(
+        _ bytes: [UInt8]
+    ) -> ClientClipboardSessionDecision {
+        clipboard.receiveImageCargo(bytes, agreed: capabilities.agreed)
+    }
+
+    public func clipboardClaimsBulk(_ message: BulkMessage) -> Bool {
+        clipboard.claimsBulk(message)
+    }
+
+    public mutating func receiveClipboardBulk(
+        _ message: BulkMessage,
+        sha256: ([UInt8]) -> [UInt8]
+    ) -> ClientClipboardSessionDecision {
+        clipboard.receiveBulk(message, sha256: sha256)
     }
 
     /// Advances injected time or applies a local lifecycle input.
@@ -112,7 +178,13 @@ public struct ClientControlSession: Sendable {
             guard let decision = audioRouting.receiveReliable(
                 bytes, agreed: capabilities.agreed)
             else {
-                return nil
+                guard let event = clipboard.receiveReliable(
+                    bytes, agreed: capabilities.agreed)
+                else {
+                    return nil
+                }
+                return ClientControlSessionDecision(
+                    event: .clipboard(event))
             }
             return ClientControlSessionDecision(
                 outboundReliable: decision.outboundReliable,

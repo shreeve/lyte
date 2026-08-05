@@ -108,6 +108,32 @@ final class ClientControlSessionTests: XCTestCase {
         XCTAssertTrue(session.hostAudioRoutingNegotiated)
     }
 
+    func testClipboardTextSharesTheComposedBoundary() throws {
+        let clipboard = local.declaringClipboardText()
+        var session = makeSession(
+            localCapabilities: clipboard,
+            clipboardSharingAtStart: true)
+        _ = try session.receiveReliable(
+            try CapabilityDeclaration(capabilities: clipboard).encode(),
+            now: at(10))
+
+        XCTAssertTrue(session.clipboardNegotiated)
+        XCTAssertTrue(session.clipboardSharingEnabled)
+        XCTAssertEqual(
+            session.shareLocalClipboard("local"),
+            ClientClipboardSessionDecision(
+                outboundReliable: [
+                    try ClipboardSet(text: "local").encode(),
+                ],
+                shareOutcome: .shared))
+        XCTAssertEqual(
+            try session.receiveReliable(
+                try ClipboardAnnounce(text: "remote").encode(),
+                now: at(11)),
+            ClientControlSessionDecision(
+                event: .clipboard(.textChanged("remote"))))
+    }
+
     func testUnrelatedReliableWordIsNotClaimed() throws {
         var session = makeSession()
         XCTAssertNil(try session.receiveReliable(
@@ -116,12 +142,14 @@ final class ClientControlSessionTests: XCTestCase {
 
     private func makeSession(
         localCapabilities: Capabilities? = nil,
-        desiredHostAudioRouting: HostAudioRoutingMode? = nil
+        desiredHostAudioRouting: HostAudioRoutingMode? = nil,
+        clipboardSharingAtStart: Bool = false
     ) -> ClientControlSession {
         ClientControlSession(
             localCapabilities: localCapabilities ?? local,
             machineConfig: SessionMachineConfig(),
             desiredHostAudioRouting: desiredHostAudioRouting,
+            clipboardSharingAtStart: clipboardSharingAtStart,
             now: at(0)
         )
     }

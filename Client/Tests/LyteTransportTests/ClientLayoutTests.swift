@@ -98,6 +98,11 @@ final class ClientLayoutTests: XCTestCase {
                 "Client/Sources/LyteClientSession/"
                     + "ClientAudioRoutingSession.swift"),
             encoding: .utf8)
+        let clipboard = try String(
+            contentsOf: root.appendingPathComponent(
+                "Client/Sources/LyteClientSession/"
+                    + "ClientClipboardSession.swift"),
+            encoding: .utf8)
 
         XCTAssertTrue(transport.contains(
             "private var controlSession: ClientControlSession"))
@@ -113,6 +118,11 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertFalse(transport.contains("SessionTeardown.decode"))
         XCTAssertFalse(transport.contains("SessionStateMachine<"))
         XCTAssertFalse(transport.contains("AudioRoutingStatus.decode"))
+        XCTAssertFalse(transport.contains("ClipboardAnnounce.decode"))
+        XCTAssertFalse(transport.contains("ClipboardSyncBook"))
+        XCTAssertFalse(transport.contains("ClipboardImageChannel("))
+        XCTAssertFalse(transport.contains("private var clipboardSharingOn"))
+        XCTAssertFalse(transport.contains("private var clipboardImagesOn"))
         XCTAssertFalse(transport.contains("private var hostAudioPosture"))
         XCTAssertFalse(transport.contains("private var lastState"))
         XCTAssertFalse(transport.contains("private var lastWireMode"))
@@ -126,7 +136,12 @@ final class ClientLayoutTests: XCTestCase {
             "private var capabilities: ClientCapabilitySession"))
         XCTAssertTrue(control.contains(
             "private var audioRouting: ClientAudioRoutingSession"))
+        XCTAssertTrue(control.contains(
+            "private var clipboard: ClientClipboardSession"))
         XCTAssertTrue(audioRouting.contains("AudioRoutingStatus.decode"))
+        XCTAssertTrue(clipboard.contains("ClipboardAnnounce.decode"))
+        XCTAssertTrue(clipboard.contains("ClipboardSyncBook"))
+        XCTAssertTrue(clipboard.contains("ClipboardImageChannel("))
     }
 
     func testClientCapabilitySessionAloneOwnsTheAgreedSet() throws {

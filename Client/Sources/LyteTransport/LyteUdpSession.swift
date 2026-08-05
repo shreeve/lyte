@@ -63,35 +63,10 @@ public enum BulkChannelError: Error, Equatable, Sendable {
     case notNegotiated
 }
 
-// MARK: - Client-side clipboard policy (CL-15)
-
-/// One local clipboard change's fate (the pasteboard watcher calls on
-/// every changeCount bump while sharing is on; the verdict is policy,
-/// counted, never thrown — a poller has nobody to catch for it).
-public enum ClipboardShareOutcome: Equatable, Sendable {
-    /// A 0x1A left on the ordered stream.
-    case shared
-    /// The pasteboard reporting our own host-announce apply back —
-    /// the sync book's boomerang stop.
-    case suppressedEcho
-    /// Identical to the last text we shared — the host already holds it.
-    case suppressedDuplicate
-    /// P-1 (images only): the clipboard send lane already carries a
-    /// transfer — v2 syncs latest-wins clipboards, so the superseded
-    /// copy just drops. Text never reports this (0x1A has no lane).
-    case suppressedBusy
-    /// The session toggle (or per-host default) says clipboard
-    /// sharing is off: nothing leaves.
-    case sharingDisabled
-    /// Key 10 never survived intersection — refused before a byte
-    /// leaves (the rule-3 gate, the audio-routing ask's rule).
-    case notNegotiated
-    /// Past the 65,536-byte v1 ceiling (or empty) — suppressed
-    /// weather, counted.
-    case overBudget(Int)
-    /// The reliable endpoint refused the send (teardown races).
-    case sendRefused(String)
-}
+/// Source-compatible facade for callers that import LyteTransport. Clipboard
+/// policy and its outcome now live in the IO-free client-session package.
+public typealias ClipboardShareOutcome =
+    LyteClientSession.ClipboardShareOutcome
 
 // MARK: - Events
 
@@ -391,27 +366,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public private(set) var nackPolicy: NackPolicy!
     public let clockModel: HostClockModel
 
-    // IO-free session policy + transport-owned feature state, one lock.
+    // IO-free session policy + transport-owned counters, one lock.
     private let lock = NSLock()
     private var controlSession: ClientControlSession
-    /// CL-15: the live clipboard-sharing toggle (seeded from the
-    /// config's per-host default; the strip flips it). Gates BOTH
-    /// directions — nothing leaves, nothing lands, while off.
-    private var clipboardSharingOn: Bool
-    /// CL-15: the loop-prevention/dedupe books (the host runs the
-    /// identical type on its side).
-    private var clipboardBook = ClipboardSyncBook()
-    /// P-1: the images rung's live toggle (seeded from the config's
-    /// per-host default). Images move only when clipboardSharingOn
-    /// AND this are true — the Text + images tier.
-    private var clipboardImagesOn: Bool
-    /// P-1: the clipboard-image lane (Wire's sans-IO channel — the
-    /// host runs the identical type). Shares clipboardBook so
-    /// cross-modal echoes suppress.
-    private var imageChannel = ClipboardImageChannel()
     /// Transfer-id minting for image shares. System randomness is
-    /// fine here — ids only need collision resistance on one chan-8
-    /// stream, not determinism (tests drive the channel directly).
+    /// injected into the IO-free policy at its one minting decision.
     private var imageRng = SystemRandomNumberGenerator()
     /// V-5: the negotiated-posture audit — SPS chroma_format_idc off
     /// every IDR against the agreed chroma singleton (confirmation
@@ -478,14 +437,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         self.onEvent = onEvent
         self.onVideoRecoveryDemand = onVideoRecoveryDemand
         self.onVideoRecoveryTrace = onVideoRecoveryTrace
-        self.clipboardSharingOn = config.shareClipboard
-        self.clipboardImagesOn = config.shareClipboardImages
         // The machine begins at establishment (the shell constructs the
         // core only after the Noise handshake), streaming: ACTIVE.
         self.controlSession = ClientControlSession(
             localCapabilities: config.capabilities,
             machineConfig: config.machineConfig,
             desiredHostAudioRouting: config.desiredHostAudioRouting,
+            clipboardSharingAtStart: config.shareClipboard,
+            clipboardImageSharingAtStart: config.shareClipboardImages,
             now: now()
         )
 
@@ -823,7 +782,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public var clipboardNegotiated: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return controlSession.agreedCapabilities?.clipboardText == true
+        return controlSession.clipboardNegotiated
     }
 
     /// The live sharing toggle's state (seeded from the per-host
@@ -831,7 +790,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public var clipboardSharingEnabled: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return clipboardSharingOn
+        return controlSession.clipboardSharingEnabled
     }
 
     /// The strip's live override for clipboard sharing. Local policy
@@ -839,7 +798,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// named non-goal), so a disabled end simply goes quiet and deaf.
     public func setClipboardSharing(_ enabled: Bool) {
         lock.lock()
-        clipboardSharingOn = enabled
+        controlSession.setClipboardSharing(enabled)
         lock.unlock()
     }
 
@@ -853,41 +812,24 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         _ text: String, now: ClientTimestamp
     ) -> ClipboardShareOutcome {
         lock.lock()
-        guard controlSession.agreedCapabilities?.clipboardText == true else {
-            lock.unlock()
-            return .notNegotiated
-        }
-        guard clipboardSharingOn else {
-            lock.unlock()
-            return .sharingDisabled
-        }
-        switch clipboardBook.admitLocalChange(text) {
-        case .suppressEcho:
+        let decision = controlSession.shareLocalClipboard(text)
+        switch decision.shareOutcome {
+        case .suppressedEcho, .suppressedDuplicate:
             counters.clipboardLoopSuppressed += 1
-            lock.unlock()
-            return .suppressedEcho
-        case .suppressDuplicate:
-            counters.clipboardLoopSuppressed += 1
-            lock.unlock()
-            return .suppressedDuplicate
-        case .share:
+        default:
             break
         }
         lock.unlock()
-        let message: [UInt8]
-        do {
-            message = try ClipboardSet(text: text).encode()
-        } catch {
-            // Empty or over the v1 ceiling: suppressed weather.
-            return .overBudget(text.utf8.count)
+        guard decision.shareOutcome == .shared,
+              let message = decision.outboundReliable.first
+        else {
+            return decision.shareOutcome ?? .sendRefused(
+                "clipboard policy returned no outcome")
         }
-        do {
-            try reliable.send(message, now: now)
-        } catch {
-            return .sendRefused(String(describing: error))
-        }
+        do { try reliable.send(message, now: now) }
+        catch { return .sendRefused(String(describing: error)) }
         lock.lock()
-        clipboardBook.noteShared(text)
+        controlSession.noteLocalClipboardSent(text)
         counters.clipboardSharesSent += 1
         lock.unlock()
         return .shared
@@ -907,7 +849,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public var clipboardImagesNegotiated: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return controlSession.agreedCapabilities?.clipboardImagesAgreed == true
+        return controlSession.clipboardImagesNegotiated
     }
 
     /// The images rung's live state: images move only when sharing
@@ -915,7 +857,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public var clipboardImageSharingEnabled: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return clipboardSharingOn && clipboardImagesOn
+        return controlSession.clipboardImageSharingEnabled
     }
 
     /// The strip's live override for the images rung. Local policy
@@ -924,7 +866,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// the image sender waits on a verdict.
     public func setClipboardImageSharing(_ enabled: Bool) {
         lock.lock()
-        clipboardImagesOn = enabled
+        controlSession.setClipboardImageSharing(enabled)
         lock.unlock()
     }
 
@@ -933,7 +875,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public var clipboardImageCounters: ClipboardImageChannelCounters {
         lock.lock()
         defer { lock.unlock() }
-        return imageChannel.counters
+        return controlSession.clipboardImageCounters
     }
 
     /// The pasteboard watcher's image funnel: one local image copy
@@ -946,20 +888,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         _ data: [UInt8], now: ClientTimestamp
     ) -> ClipboardShareOutcome {
         lock.lock()
-        guard controlSession.agreedCapabilities?.clipboardImagesAgreed == true else {
-            lock.unlock()
-            return .notNegotiated
-        }
-        guard clipboardSharingOn, clipboardImagesOn else {
-            lock.unlock()
-            return .sharingDisabled
-        }
-        let events = imageChannel.shareLocalImage(
-            data, sha256: Sha256.digest(data),
-            book: &clipboardBook, rng: &imageRng
+        let decision = controlSession.shareLocalClipboardImage(
+            data, sha256: Sha256.digest(data), rng: &imageRng
         )
         lock.unlock()
-        return processImageEvents(events, now: now)
+        return executeClipboardDecision(decision, now: now)
     }
 
     @discardableResult
@@ -976,49 +909,51 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// the funnel's caller; called OUTSIDE the lock (the v1 send
     /// pattern — the reliable endpoint's callbacks take our lock).
     @discardableResult
-    private func processImageEvents(
-        _ events: [ClipboardImageEvent], now: ClientTimestamp
+    private func executeClipboardDecision(
+        _ decision: ClientClipboardSessionDecision,
+        now: ClientTimestamp
     ) -> ClipboardShareOutcome {
-        var outcome: ClipboardShareOutcome = .shared
-        for event in events {
+        var outcome = decision.shareOutcome ?? .shared
+        for bytes in decision.outboundBulk {
+            bulkReliable.adoptConnectionId(reliable.learnedConnectionId)
+            do {
+                try bulkReliable.send(bytes, now: now)
+            } catch {
+                outcome = .sendRefused(String(describing: error))
+            }
+        }
+        for event in decision.events {
             switch event {
-            case .send(let bytes):
-                bulkReliable.adoptConnectionId(reliable.learnedConnectionId)
-                do {
-                    try bulkReliable.send(bytes, now: now)
-                } catch {
-                    outcome = .sendRefused(String(describing: error))
-                }
-            case .shareStarted:
-                outcome = .shared
-            case .shareCompleted(_, let byteCount):
+            case .image(.shareCompleted(_, let byteCount)):
                 onEvent(.protocolNote(
                     "clipboard image landed on the host sha-exact "
                         + "(\(byteCount) B)"))
-            case .shareAborted(let reason, let byRemote):
+            case .image(.shareAborted(let reason, let byRemote)):
                 onEvent(.protocolNote(
                     "clipboard image share aborted "
                         + "(\(reason), \(byRemote ? "remote" : "local"))"))
-            case .receiveAborted(let reason, let byRemote):
+            case .image(.receiveAborted(let reason, let byRemote)):
                 onEvent(.protocolNote(
                     "incoming clipboard image aborted "
                         + "(\(reason), \(byRemote ? "remote" : "local"))"))
-            case .suppressed(let reason):
-                switch reason {
-                case .loopEcho: outcome = .suppressedEcho
-                case .duplicate: outcome = .suppressedDuplicate
-                case .overBudget(let count): outcome = .overBudget(count)
-                case .emptyImage: outcome = .overBudget(0)
-                case .sendBusy: outcome = .suppressedBusy
-                }
-            case .refused(let reason):
+            case .image(.refused(let reason)):
                 onEvent(.protocolNote(
                     "incoming clipboard image refused (\(reason))"))
-            case .applyImage(let data, let mime):
+            case .image(.applyImage(let data, let mime)):
                 onEvent(.hostClipboardImageChanged(data: data, mime: mime))
-            case .violated(let violation):
+            case .image(.violated(let violation)):
                 onEvent(.protocolNote(
                     "clipboard image lane violation: \(violation)"))
+            case .image(.send):
+                onEvent(.protocolNote(
+                    "clipboard policy leaked an unseparated send event"))
+            case .image(.shareStarted), .image(.suppressed):
+                break
+            case .textChanged, .malformedTextAnnounce,
+                 .unnegotiatedTextAnnounce, .textIgnoredDisabled,
+                 .roleConfusedTextSet, .malformedImageCargo,
+                 .unnegotiatedImageCargo:
+                break
             }
         }
         return outcome
@@ -1398,7 +1333,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
              CtrlMessageType.capabilityDeclaration,
              CtrlMessageType.capabilityUpdate,
              CtrlMessageType.audioRoutingRequest,
-             CtrlMessageType.audioRoutingStatus:
+             CtrlMessageType.audioRoutingStatus,
+             CtrlMessageType.clipboardSet,
+             CtrlMessageType.clipboardAnnounce:
             receiveControlWord(bytes, now: now)
 
         case CtrlMessageType.idleFrame:
@@ -1420,21 +1357,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         case CtrlMessageType.videoPostureState:
             receiveVideoPostureState(bytes)
 
-        case CtrlMessageType.clipboardAnnounce:
-            receiveClipboardAnnounce(bytes)
-
         case CtrlMessageType.cursorShape:
             receiveCursorShape(bytes)
-
-        case CtrlMessageType.clipboardSet:
-            // Role confusion: 0x1A is client→host only (the host's
-            // 0x1B-at-host mirror). Loud, payload never logged.
-            lock.lock()
-            counters.clipboardDropsLoud += 1
-            lock.unlock()
-            onEvent(.protocolNote(
-                "clipboard 0x1A arrived AT the client "
-                + "(role confusion) — dropped"))
 
         default:
             lock.lock()
@@ -1477,6 +1401,13 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         case .audioRouting(.unnegotiatedStatus),
              .audioRouting(.roleConfusedRequest):
             counters.audioRoutingDropsLoud += 1
+        case .clipboard(.textChanged):
+            counters.clipboardAnnouncesReceived += 1
+        case .clipboard(.textIgnoredDisabled):
+            counters.clipboardIgnoredDisabled += 1
+        case .clipboard(.unnegotiatedTextAnnounce),
+             .clipboard(.roleConfusedTextSet):
+            counters.clipboardDropsLoud += 1
         default:
             break
         }
@@ -1553,6 +1484,25 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             onEvent(.protocolNote(
                 "audio-routing 0x18 arrived AT the client "
                 + "(role confusion) — dropped"))
+        case .clipboard(.textChanged(let text)):
+            onEvent(.hostClipboardChanged(text))
+        case .clipboard(.malformedTextAnnounce):
+            noteMalformed("clipboard announce")
+        case .clipboard(.unnegotiatedTextAnnounce):
+            onEvent(.protocolNote(
+                "clipboard 0x1B without negotiated key 10 — dropped"))
+        case .clipboard(.textIgnoredDisabled(let byteCount)):
+            onEvent(.protocolNote(
+                "clipboard 0x1B while sharing is off — ignored "
+                    + "(\(byteCount) B never applied)"))
+        case .clipboard(.roleConfusedTextSet):
+            onEvent(.protocolNote(
+                "clipboard 0x1A arrived AT the client "
+                    + "(role confusion) — dropped"))
+        case .clipboard(.malformedImageCargo),
+             .clipboard(.unnegotiatedImageCargo),
+             .clipboard(.image):
+            break   // Image words ride the bulk channel, not this seam.
         }
         if let lifecycle = decision.lifecycle {
             executeLifecycle(lifecycle, now: now)
@@ -1585,12 +1535,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             return
         }
         lock.lock()
-        if imageChannel.claims(message) {
-            let events = imageChannel.ingest(
-                message, book: &clipboardBook, sha256: Sha256.digest
-            )
+        if controlSession.clipboardClaimsBulk(message) {
+            let decision = controlSession.receiveClipboardBulk(
+                message, sha256: Sha256.digest)
             lock.unlock()
-            processImageEvents(events, now: now)
+            executeClipboardDecision(decision, now: now)
             return
         }
         guard controlSession.agreedCapabilities?.bulkTransfer == true else {
@@ -1613,34 +1562,32 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     private func receiveImageCargo(
         _ bytes: [UInt8], now: ClientTimestamp
     ) {
-        guard let cargo = try? ClipboardImageCargo.decode(bytes) else {
-            lock.lock()
-            counters.clipboardDropsLoud += 1
-            lock.unlock()
-            onEvent(.protocolNote(String(
-                format: "malformed clipboard-image marker dropped (%d B)",
-                bytes.count)))
-            return
-        }
         lock.lock()
-        guard controlSession.agreedCapabilities?.clipboardImagesAgreed == true else {
+        let decision = controlSession.receiveClipboardImageCargo(bytes)
+        switch decision.events.first {
+        case .malformedImageCargo:
             counters.clipboardDropsLoud += 1
-            lock.unlock()
-            onEvent(.protocolNote(
-                "clipboard-image 0x22 without negotiated keys 10∧12 "
-                    + "— dropped"))
-            return
-        }
-        let events: [ClipboardImageEvent]
-        if clipboardSharingOn && clipboardImagesOn {
-            events = imageChannel.ingestCargo(cargo)
-        } else {
-            // Text's off-posture is silent deafness; the image sender
-            // waits on a verdict, so off answers typed instead.
-            events = imageChannel.declineCargo(cargo)
+        case .unnegotiatedImageCargo:
+            counters.clipboardDropsLoud += 1
+        default:
+            break
         }
         lock.unlock()
-        processImageEvents(events, now: now)
+        for event in decision.events {
+            switch event {
+            case .malformedImageCargo(let byteCount):
+                onEvent(.protocolNote(
+                    "malformed clipboard-image marker dropped "
+                        + "(\(byteCount) B)"))
+            case .unnegotiatedImageCargo:
+                onEvent(.protocolNote(
+                    "clipboard-image 0x22 without negotiated keys 10∧12 "
+                        + "— dropped"))
+            default:
+                break
+            }
+        }
+        executeClipboardDecision(decision, now: now)
     }
 
     /// The 0x15 idle frame: decode, render through the shared factory
@@ -1662,41 +1609,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         )
         onEvent(.idleFrameReceived(
             frame: idle.frame.rawValue, outcome: outcome))
-    }
-
-    /// The 0x1B announce (CL-15). Gated on the agreed set (an
-    /// announce from a host that never negotiated key 10 is a
-    /// protocol break — dropped loud, the rule-3 gate mirrored) AND
-    /// on the session toggle (consent: while sharing is off, host
-    /// clipboard content must not land on the pasteboard — counted,
-    /// ignored, no event). A legitimate one pre-arms the sync book
-    /// against its own changeCount echo, then surfaces for the glue
-    /// to apply.
-    private func receiveClipboardAnnounce(_ bytes: [UInt8]) {
-        guard let announce = try? ClipboardAnnounce.decode(bytes) else {
-            noteMalformed("clipboard announce")
-            return
-        }
-        lock.lock()
-        guard controlSession.agreedCapabilities?.clipboardText == true else {
-            counters.clipboardDropsLoud += 1
-            lock.unlock()
-            onEvent(.protocolNote(
-                "clipboard 0x1B without negotiated key 10 — dropped"))
-            return
-        }
-        guard clipboardSharingOn else {
-            counters.clipboardIgnoredDisabled += 1
-            lock.unlock()
-            onEvent(.protocolNote(
-                "clipboard 0x1B while sharing is off — ignored "
-                + "(\(announce.text.utf8.count) B never applied)"))
-            return
-        }
-        counters.clipboardAnnouncesReceived += 1
-        clipboardBook.noteRemoteApplied(announce.text)
-        lock.unlock()
-        onEvent(.hostClipboardChanged(announce.text))
     }
 
     private func receiveCursorShape(_ bytes: [UInt8]) {
