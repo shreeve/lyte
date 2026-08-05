@@ -1,6 +1,8 @@
 #!/bin/sh
 # Assemble Lyte.app from the SwiftPM build (dev bundling until a notarized
-# release exists). The stable Lyte Dev signature preserves local identity.
+# release exists). A stable Apple Development signature preserves both
+# Local Network privacy identity and Keychain authorization; Lyte Dev is the
+# contributor fallback when an Apple-issued identity is unavailable.
 set -e
 cd "$(dirname "$0")/.."
 

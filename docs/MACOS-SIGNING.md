@@ -20,27 +20,46 @@ it by a hash of its bytes. Every `swift build` produces new bytes, so every
 rebuild is, to the Keychain, a brand-new program the ACL has never seen — and
 you get prompted again. Forever.
 
-## The fix: a stable signing identity
+## The fix: a stable Apple-issued identity
 
-Give every build the **same** code signature. macOS then records the approval
-against the signature's *designated requirement* (DR) — a rule like:
+Sign every build with the **same identity and designated requirement** (DR).
+The signature bytes and code-directory hash still change with the program.
+The stable DR is a rule like:
 
 ```
-identifier "dev.shreeve.lyte-cli" and certificate root = H"6a07…c23f"
+identifier "dev.shreeve.lyte-cli" and anchor apple generic and
+certificate leaf[subject.CN] = "Apple Development: Example (TEAMID)"
 ```
 
 The DR depends only on the bundle identifier and the signing certificate, not on
 the binary's bytes. Rebuild all you want: the DR is identical, the ACL match
 holds, and there is **no prompt**. Approve once, done.
 
-We use a dedicated **self-signed** code-signing certificate ("Lyte Dev"). No
-Apple Developer account is required for local development.
+`sign-dev.sh` uses the sole valid **Apple Development** certificate in the
+user's Keychain search list. Besides stabilizing the Keychain ACL, Apple-issued
+signing is Apple's documented requirement for reliable macOS Local Network
+privacy tracking. If more than one certificate exists, the script fails closed:
+set `LYTE_SIGNING_IDENTITY` to its 40-character SHA-1 identity hash. An exact
+certificate name is also accepted when that name has only one matching hash.
+
+See Apple's [TN3179: Understanding local network
+privacy](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
+
+Contributors without an Apple Developer certificate can still use the
+dedicated self-signed **Lyte Dev** fallback. It keeps Keychain authorization
+stable, but macOS may not reliably preserve the app's Local Network privacy
+record across rebuilds. Set `LYTE_SIGNING_IDENTITY="Lyte Dev"` to choose it
+deliberately even when Apple identities exist.
+
+Apple Development is local development signing. It does not notarize Lyte or
+make the bundle suitable for Gatekeeper distribution.
 
 ## Where things live
 
 | Item | Path | Notes |
 |------|------|-------|
-| Cert + key + PKCS#12 | `~/.config/lyte-signing/` (`lyte-dev.{crt,key,p12}`) | mode `0600`; **not** in the repo (private key) |
+| Apple certificate | user Keychain search list | preferred; issued by Apple Development |
+| Fallback cert + key + PKCS#12 | `~/.config/lyte-signing/` (`lyte-dev.{crt,key,p12}`) | mode `0600`; **not** in the repo (private key) |
 | Signing keychain | `~/Library/Keychains/lyte-signing.keychain-db` | dedicated, password `lyte`, holds only this dev cert |
 | Setup (one-time) | `Scripts/setup-dev-signing.sh` | creates cert + keychain; idempotent |
 | Signer | `Scripts/sign-dev.sh` | signs a binary or `.app` |
@@ -56,13 +75,13 @@ failed build, or failed signature leaves the previously published
 `LyteSourceRevision` separately records the short commit hash and a trailing
 `+` for a dirty source tree.
 
-The identity is kept in its **own** keychain rather than the login keychain so
-`codesign` can use the key non-interactively (via a known keychain password +
-partition list) without changing the login keychain's security posture.
+The fallback identity is kept in its **own** keychain so `codesign` can use it
+non-interactively without changing the login keychain's security posture.
 
 ## One-time setup
 
-On a fresh machine (or after a Keychain reset), run once:
+If `security find-identity -v -p codesigning` lists an Apple Development
+certificate, no Lyte-specific signing setup is required. Otherwise run once:
 
 ```sh
 Scripts/setup-dev-signing.sh
@@ -79,10 +98,16 @@ This will:
 3. Run `security set-key-partition-list -S apple-tool:,apple:,codesign:` so
    `codesign` may use the private key without an interactive prompt.
 
-Then build, sign, and run each distinct executable that accesses the identity
-against a host once. Click **Always Allow** separately for Lyte.app and
-`lyte-cli`; each executable has its own designated requirement. Rebuilds made
-through the scripts are silent thereafter.
+Then build, sign, and run each distinct executable that accesses the pairing
+identity against a host once. Click **Always Allow** separately for Lyte.app
+and `lyte-cli`; each executable has its own designated requirement. Rebuilds
+made through the scripts are silent thereafter.
+
+Migrating an existing checkout from Lyte Dev to Apple Development changes its
+DR once. Expect to approve the app and CLI's pairing-key access again, regrant
+Local Network access, and possibly reapprove the registered helper under
+System Settings → General → Login Items. Those prompts are security decisions
+for the owner; build scripts never automate them.
 
 ## Everyday use
 
@@ -117,30 +142,35 @@ The bundle identifier is part of the DR, so it must be stable per target:
 - `*.app` → `dev.shreeve.lyte`
 - anything else → `dev.shreeve.<basename>` (e.g. `dev.shreeve.lyte-cli`)
 
-It signs with `--force --timestamp=none` using the identity **by SHA-1 hash**,
-then verifies the signature, identifier, and certificate-root requirement.
-If the identity is missing it fails closed: silently producing an ad-hoc
-Keychain client would invalidate the ACL invariant and guarantee another
-authorization prompt.
+It selects the sole Apple Development identity, an exact name or hash override,
+or the explicit Lyte Dev fallback. It signs using the identity **by SHA-1
+hash** and verifies the identifier, team consistency, and matching Apple-anchor
+or certificate-root requirement. If selection is absent or ambiguous it fails
+closed; an ad-hoc Keychain client would invalidate the ACL invariant and Local
+Network identity.
 
 ## Verifying a signature
 
 ```sh
-codesign -dvv .build/debug/lyte-cli        # Identifier / Authority=Lyte Dev
+codesign -dvv .build/debug/lyte-cli        # Identifier / Authority
 codesign -d -r- .build/debug/lyte-cli      # the designated requirement (DR)
 codesign --verify --strict .build/debug/lyte-cli
 ```
 
-The DR's `certificate root = H"…"` hash must be **identical** across rebuilds —
-that constancy is the whole point. If it changes, the signing cert changed and
-you'll get one fresh prompt.
+The DR must be **identical** across rebuilds. Apple signing names its leaf
+certificate under `anchor apple generic`; the fallback names Lyte Dev's root
+hash. If the DR changes, expect one fresh Keychain and Local Network grant.
+
+The packaging gate also requires Mach-O UUIDs on the app and helper, as TN3179
+recommends for reliable program identity.
 
 ## Gotchas (learned the hard way)
 
-- **`security find-identity -v` hides this identity.** The `-v` (valid-only)
-  filter runs chain validation, which a self-signed cert fails
-  (`CSSMERR_TP_NOT_TRUSTED`). Both scripts therefore use plain
-  `security find-identity` (no `-v`); `codesign` signs by hash regardless of
+- **`security find-identity -v` hides the fallback.** Apple selection uses
+  `security find-identity -v -p codesigning`. The valid-only filter omits the
+  self-signed Lyte Dev certificate because chain validation fails
+  (`CSSMERR_TP_NOT_TRUSTED`), so fallback lookup uses plain `find-identity`
+  against only the dedicated keychain. `codesign` signs by hash regardless of
   chain trust.
 - **PKCS#12 import fails without `-legacy`.** `SecKeychainItemImport: MAC
   verification failed` — export the `.p12` with `openssl pkcs12 -export
@@ -148,14 +178,15 @@ you'll get one fresh prompt.
 - **Partition list is required.** Without `set-key-partition-list`, `codesign`
   itself triggers a keychain prompt to *use* the signing key — separate from
   the pairing-key prompt. Setup handles this.
-- **The signing cert is dev-machine only.** The private key is never committed
+- **Every signing key is dev-machine only.** The private key is never committed
   (`~/.config/lyte-signing/`). This is throwaway local-dev material, unrelated
   to any future notarized release identity.
 - **Distinct from the pairing key.** Two different keys are in play: the
   *pairing* key (the client's Noise static, in the login keychain,
-  authenticates to Lyte hosts) and the *signing* key (`Lyte Dev`, in the
-  lyte-signing keychain, signs our binaries). Signing the binary stably is
-  what keeps the pairing key's ACL grant valid.
+  authenticates to Lyte hosts) and the *signing* key (an Apple Development
+  identity from the user's search list, or Lyte Dev from the dedicated
+  keychain). A stable signing identity and DR keep the pairing key's ACL grant
+  valid.
 - **A later bare `swift build --package-path Client --scratch-path .build`
   overwrites the CLI artifact.** SwiftPM emits an
   ad-hoc-signed executable at `.build/<configuration>/lyte-cli`, replacing the
