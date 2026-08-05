@@ -73,6 +73,7 @@ var targets: [Target] = [
             .product(name: "LyteWireTestKit", package: "Wire"),
         ]
     ),
+    .testTarget(name: "HostLayoutTests"),
 ]
 
 #if os(Linux)

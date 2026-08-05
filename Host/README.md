@@ -38,9 +38,10 @@ closed 2026-07-22 (gate report in git history); the portal era ended
   TOS cmsgs, kernel TX timestamps, line-buffered stdout).
 - `Sources/CInputUinput` — C leaf: virtual evdev devices, the sole input
   backend.
-- `Sources/lyte-host` — the executable: direct-eye capture, session
-  wiring, Avahi advertisement, pairing (`--pair`), input backends
-  (`--input auto|uinput|off`).
+- `Sources/lyte-host` — the Linux application composition root:
+  `main.swift` only delegates, while `HostApplication` selects direct-eye
+  capture, session wiring, Avahi advertisement, pairing (`--pair`), audio,
+  clipboard, files, and input backends (`--input auto|uinput|off`).
 - `Sources/lyte-eye` / `lyte-nvenc` — the standalone direct-eye probe and
   the banked NVENC-native probe (E6a).
 - `Sources/lyte-netio-check`, `lyte-pace-check`, `lyte-audio-check` —
