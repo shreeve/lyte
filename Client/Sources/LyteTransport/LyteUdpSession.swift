@@ -8,12 +8,9 @@
 //     → UdpReceiveEndpoint (bind, handshake, receive thread)
 //     → ReceiveDemux / TransportSender (seal/unseal, header-as-AAD)
 //     → ReliableCtrlEndpoint (CL-7's ARQ carriage)
-//         → ClientCapabilitySession — IO-free client judgment over the wire
-//           capability machine; declaration 0x0F is the FIRST reliable word
-//           each way and the intersection IS the agreement (W7)
-//         → SessionStateMachine(mediaReceiver) — mirrors ModeTransition
-//           0x09, consumes SessionTeardown 0x0A, derives the FROZEN
-//           pill (W4b)
+//         → ClientControlSession — IO-free client judgment over capability,
+//           lifecycle, and host-audio control; declaration 0x0F is the FIRST
+//           reliable word each way and the intersection IS the agreement (W7)
 //         → IdleFrame 0x15 → LyteVideoPipeline.ingestReliableFrame
 //           (rendered through the SAME factory as datagram video; the
 //           one-shot's ACK — the host's flip-to-IDLE gate — leaves in
@@ -52,20 +49,9 @@ import Foundation
 import LyteWire
 import Synchronization
 
-// MARK: - Client-side audio-routing policy
-
-/// The rule-3 gate, client side: asking for a flip the intersection
-/// never agreed to is refused HERE, before a byte leaves — the host
-/// would only drop it loud (`.audioRoutingNotNegotiated`). Client
-/// session policy, not wire vocabulary — which is why it stayed behind
-/// when the 0x18/0x19 codecs promoted into LyteWire.
-public enum AudioRoutingAskError: Error, Equatable, Sendable {
-    case notNegotiated
-    /// streamOff asked against an intersection without key 14 — the
-    /// mute-at-source dialect never survived, so the ask is refused
-    /// before a byte leaves.
-    case streamOffNotNegotiated
-}
+/// Source-compatible facade for callers that import LyteTransport. Policy and
+/// the concrete error now live in the IO-free client-session package.
+public typealias AudioRoutingAskError = LyteClientSession.AudioRoutingAskError
 
 // MARK: - Client-side bulk-channel policy (F-4)
 
@@ -408,10 +394,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     // IO-free session policy + transport-owned feature state, one lock.
     private let lock = NSLock()
     private var controlSession: ClientControlSession
-    /// The 0x19-confirmed posture of the host's own speakers (CL-13);
-    /// nil until the first status lands. Never set optimistically —
-    /// the strip renders exactly this.
-    private var hostAudioPosture: HostAudioRoutingMode?
     /// CL-15: the live clipboard-sharing toggle (seeded from the
     /// config's per-host default; the strip flips it). Gates BOTH
     /// directions — nothing leaves, nothing lands, while off.
@@ -503,6 +485,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         self.controlSession = ClientControlSession(
             localCapabilities: config.capabilities,
             machineConfig: config.machineConfig,
+            desiredHostAudioRouting: config.desiredHostAudioRouting,
             now: now()
         )
 
@@ -808,31 +791,25 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     // MARK: Host audio routing (CL-13)
 
     /// Asks the host to flip its own speakers (0x18 on the ARQ ordered
-    /// stream) — the strip's live override. Refused HERE when key 9
-    /// never survived intersection (the rule-3 gate: the host would
-    /// only drop the ask loud) or before the exchange settled. The
-    /// posture does NOT change on send: it changes when the host's
-    /// 0x19 answer says it did.
+    /// stream) — the strip's live override. The IO-free control session
+    /// refuses it when key 9 never survived intersection (the rule-3 gate:
+    /// the host would only drop the ask loud) or before the exchange settled.
+    /// The posture does NOT change on send: it changes when the host's 0x19
+    /// answer says it did.
     public func requestHostAudioRouting(
         _ mode: HostAudioRoutingMode, now: ClientTimestamp
     ) throws {
         lock.lock()
-        guard controlSession.agreedCapabilities?.hostAudioRouting == true else {
+        let bytes: [UInt8]
+        do {
+            bytes = try controlSession.requestHostAudioRouting(mode)
+        } catch {
             lock.unlock()
-            throw AudioRoutingAskError.notNegotiated
-        }
-        // The key-14 gate: streamOff is a separate dialect — a legacy
-        // host would reject the byte as a protocol break, so the
-        // refusal happens HERE, typed, before anything leaves.
-        if mode == .streamOff,
-           controlSession.agreedCapabilities?.audioStreamOff != true
-        {
-            lock.unlock()
-            throw AudioRoutingAskError.streamOffNotNegotiated
+            throw error
         }
         counters.audioRoutingRequestsSent += 1
         lock.unlock()
-        try reliable.send(AudioRoutingRequest(mode: mode).encode(), now: now)
+        try reliable.send(bytes, now: now)
     }
 
     public func requestHostAudioRouting(_ mode: HostAudioRoutingMode) throws {
@@ -1339,7 +1316,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public var hostAudioRoutingNegotiated: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return controlSession.agreedCapabilities?.hostAudioRouting == true
+        return controlSession.hostAudioRoutingNegotiated
     }
 
     /// The 0x19-confirmed posture of the host's own speakers; nil
@@ -1348,7 +1325,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public var hostAudioRoutingPosture: HostAudioRoutingMode? {
         lock.lock()
         defer { lock.unlock() }
-        return hostAudioPosture
+        return controlSession.hostAudioRoutingPosture
     }
 
     public var isReliableQuiescent: Bool { reliable.isQuiescent }
@@ -1419,7 +1396,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         case CtrlMessageType.modeTransition,
              CtrlMessageType.sessionTeardown,
              CtrlMessageType.capabilityDeclaration,
-             CtrlMessageType.capabilityUpdate:
+             CtrlMessageType.capabilityUpdate,
+             CtrlMessageType.audioRoutingRequest,
+             CtrlMessageType.audioRoutingStatus:
             receiveControlWord(bytes, now: now)
 
         case CtrlMessageType.idleFrame:
@@ -1435,24 +1414,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             lock.unlock()
             input.handleEcho(echo, now: now)
 
-        case CtrlMessageType.audioRoutingStatus:
-            receiveAudioRoutingStatus(bytes, now: now)
-
         case CtrlMessageType.audioTrackState:
             receiveAudioTrackState(bytes, now: now)
 
         case CtrlMessageType.videoPostureState:
             receiveVideoPostureState(bytes)
-
-        case CtrlMessageType.audioRoutingRequest:
-            // Role confusion: 0x18 is client→host only. The host's
-            // mirror drops a client-bound 0x19 the same way — loud.
-            lock.lock()
-            counters.audioRoutingDropsLoud += 1
-            lock.unlock()
-            onEvent(.protocolNote(
-                "audio-routing 0x18 arrived AT the client "
-                + "(role confusion) — dropped"))
 
         case CtrlMessageType.clipboardAnnounce:
             receiveClipboardAnnounce(bytes)
@@ -1502,6 +1468,18 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         if case .capability(.updateAnswered) = decision?.event {
             counters.capabilityUpdatesAnswered += 1
         }
+        switch decision?.event {
+        case .audioRouting(.status(_, startup: let startup)):
+            counters.audioRoutingStatusesReceived += 1
+            if case .requested = startup {
+                counters.audioRoutingRequestsSent += 1
+            }
+        case .audioRouting(.unnegotiatedStatus),
+             .audioRouting(.roleConfusedRequest):
+            counters.audioRoutingDropsLoud += 1
+        default:
+            break
+        }
         if let lifecycle = decision?.lifecycle {
             machineFrozen.store(
                 lifecycle.state == .frozen, ordering: .relaxed)
@@ -1509,12 +1487,23 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         lock.unlock()
         guard let decision else { return }
 
+        if case .audioRouting(.status(let mode, startup: _)) = decision.event {
+            onEvent(.hostAudioRoutingStatus(mode))
+        }
+
         for outbound in decision.outboundReliable {
             do {
                 try reliable.send(outbound, now: now)
             } catch {
-                onEvent(.protocolNote(
-                    "control response send refused: \(error)"))
+                if case .audioRouting(.status(
+                    _, startup: .requested
+                )) = decision.event {
+                    onEvent(.protocolNote(
+                        "session-start posture ask refused: \(error)"))
+                } else {
+                    onEvent(.protocolNote(
+                        "control response send refused: \(error)"))
+                }
                 return
             }
         }
@@ -1542,6 +1531,28 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         case .capability(.refused(.update, let failure)):
             onEvent(.protocolNote(
                 "capability update refused: \(failure)"))
+        case .audioRouting(.status(
+            let hostMode, startup: .requested(let desired)
+        )):
+            onEvent(.protocolNote(
+                "session-start posture: asked host for \(desired) "
+                + "(host default \(hostMode))"))
+        case .audioRouting(.status(
+            _, startup: .refused(_, let error)
+        )):
+            onEvent(.protocolNote(
+                "session-start posture ask refused: \(error)"))
+        case .audioRouting(.status(_, startup: .none)):
+            break
+        case .audioRouting(.malformedStatus):
+            noteMalformed("audio-routing status")
+        case .audioRouting(.unnegotiatedStatus):
+            onEvent(.protocolNote(
+                "audio-routing 0x19 without negotiated key 9 — dropped"))
+        case .audioRouting(.roleConfusedRequest):
+            onEvent(.protocolNote(
+                "audio-routing 0x18 arrived AT the client "
+                + "(role confusion) — dropped"))
         }
         if let lifecycle = decision.lifecycle {
             executeLifecycle(lifecycle, now: now)
@@ -1651,47 +1662,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         )
         onEvent(.idleFrameReceived(
             frame: idle.frame.rawValue, outcome: outcome))
-    }
-
-    /// The 0x19 applied-posture status (CL-13). Gated on the agreed
-    /// set (a status from a host that never negotiated key 9 is a
-    /// protocol break — dropped loud, the host's rule-3 gate
-    /// mirrored); a legitimate one updates the confirmed posture and
-    /// surfaces. The FIRST status is also the session-start seam: it
-    /// is the host's own default, so if the configured desired posture
-    /// differs, exactly one 0x18 leaves here.
-    private func receiveAudioRoutingStatus(
-        _ bytes: [UInt8], now: ClientTimestamp
-    ) {
-        guard let status = try? AudioRoutingStatus.decode(bytes) else {
-            noteMalformed("audio-routing status")
-            return
-        }
-        lock.lock()
-        guard controlSession.agreedCapabilities?.hostAudioRouting == true else {
-            counters.audioRoutingDropsLoud += 1
-            lock.unlock()
-            onEvent(.protocolNote(
-                "audio-routing 0x19 without negotiated key 9 — dropped"))
-            return
-        }
-        counters.audioRoutingStatusesReceived += 1
-        let firstStatus = hostAudioPosture == nil
-        hostAudioPosture = status.mode
-        let desired = config.desiredHostAudioRouting
-        lock.unlock()
-        onEvent(.hostAudioRoutingStatus(status.mode))
-        if firstStatus, let desired, desired != status.mode {
-            do {
-                try requestHostAudioRouting(desired, now: now)
-                onEvent(.protocolNote(
-                    "session-start posture: asked host for \(desired) "
-                    + "(host default \(status.mode))"))
-            } catch {
-                onEvent(.protocolNote(
-                    "session-start posture ask refused: \(error)"))
-            }
-        }
     }
 
     /// The 0x1B announce (CL-15). Gated on the agreed set (an

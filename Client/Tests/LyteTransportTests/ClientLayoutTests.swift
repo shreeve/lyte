@@ -93,6 +93,11 @@ final class ClientLayoutTests: XCTestCase {
             contentsOf: root.appendingPathComponent(
                 "Client/Sources/LyteClientSession/ClientControlSession.swift"),
             encoding: .utf8)
+        let audioRouting = try String(
+            contentsOf: root.appendingPathComponent(
+                "Client/Sources/LyteClientSession/"
+                    + "ClientAudioRoutingSession.swift"),
+            encoding: .utf8)
 
         XCTAssertTrue(transport.contains(
             "private var controlSession: ClientControlSession"))
@@ -107,6 +112,8 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertFalse(transport.contains("ModeTransition.decode"))
         XCTAssertFalse(transport.contains("SessionTeardown.decode"))
         XCTAssertFalse(transport.contains("SessionStateMachine<"))
+        XCTAssertFalse(transport.contains("AudioRoutingStatus.decode"))
+        XCTAssertFalse(transport.contains("private var hostAudioPosture"))
         XCTAssertFalse(transport.contains("private var lastState"))
         XCTAssertFalse(transport.contains("private var lastWireMode"))
         XCTAssertTrue(lifecycle.contains(
@@ -117,6 +124,9 @@ final class ClientLayoutTests: XCTestCase {
             "private var lifecycle: ClientSessionLifecycle"))
         XCTAssertTrue(control.contains(
             "private var capabilities: ClientCapabilitySession"))
+        XCTAssertTrue(control.contains(
+            "private var audioRouting: ClientAudioRoutingSession"))
+        XCTAssertTrue(audioRouting.contains("AudioRoutingStatus.decode"))
     }
 
     func testClientCapabilitySessionAloneOwnsTheAgreedSet() throws {
@@ -141,15 +151,23 @@ final class ClientLayoutTests: XCTestCase {
             "public var agreed: Capabilities? { negotiator.agreed }"))
     }
 
-    func testConfirmedAudioPostureAloneOwnsTheFirstStatusSeam() throws {
-        let source = try String(
-            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
-                "/Client/Sources/LyteTransport/LyteUdpSession.swift"),
+    func testAudioRoutingSessionAloneOwnsTheFirstStatusSeam() throws {
+        let root = URL(fileURLWithPath: ClientTestPaths.repositoryRoot)
+        let transport = try String(
+            contentsOf: root.appendingPathComponent(
+                "Client/Sources/LyteTransport/LyteUdpSession.swift"),
+            encoding: .utf8)
+        let audioRouting = try String(
+            contentsOf: root.appendingPathComponent(
+                "Client/Sources/LyteClientSession/"
+                    + "ClientAudioRoutingSession.swift"),
             encoding: .utf8)
 
-        XCTAssertFalse(source.contains("sessionStartAudioAskDone"))
-        XCTAssertTrue(source.contains(
+        XCTAssertFalse(transport.contains("sessionStartAudioAskDone"))
+        XCTAssertFalse(transport.contains(
             "let firstStatus = hostAudioPosture == nil"))
+        XCTAssertTrue(audioRouting.contains(
+            "let isFirstStatus = posture == nil"))
     }
 
     func testObservedChromaAloneOwnsTheAuditReportEdge() throws {

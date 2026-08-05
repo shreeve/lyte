@@ -81,16 +81,47 @@ final class ClientControlSessionTests: XCTestCase {
         )
     }
 
+    func testAudioRoutingRequestAndStatusShareTheComposedBoundary() throws {
+        let routing = local.declaringHostAudioRouting()
+        var session = makeSession(
+            localCapabilities: routing,
+            desiredHostAudioRouting: .hostMuted)
+        _ = try session.receiveReliable(
+            try CapabilityDeclaration(capabilities: routing).encode(),
+            now: at(10))
+
+        XCTAssertEqual(
+            try session.requestHostAudioRouting(.hostAudible),
+            [0x18, 0x01]
+        )
+        XCTAssertEqual(
+            try session.receiveReliable(
+                AudioRoutingStatus(mode: .hostAudible).encode(),
+                now: at(11)),
+            ClientControlSessionDecision(
+                outboundReliable: [[0x18, 0x02]],
+                event: .audioRouting(.status(
+                    .hostAudible,
+                    startup: .requested(.hostMuted))))
+        )
+        XCTAssertEqual(session.hostAudioRoutingPosture, .hostAudible)
+        XCTAssertTrue(session.hostAudioRoutingNegotiated)
+    }
+
     func testUnrelatedReliableWordIsNotClaimed() throws {
         var session = makeSession()
         XCTAssertNil(try session.receiveReliable(
             [CtrlMessageType.idleFrame], now: at(10)))
     }
 
-    private func makeSession() -> ClientControlSession {
+    private func makeSession(
+        localCapabilities: Capabilities? = nil,
+        desiredHostAudioRouting: HostAudioRoutingMode? = nil
+    ) -> ClientControlSession {
         ClientControlSession(
-            localCapabilities: local,
+            localCapabilities: localCapabilities ?? local,
             machineConfig: SessionMachineConfig(),
+            desiredHostAudioRouting: desiredHostAudioRouting,
             now: at(0)
         )
     }
