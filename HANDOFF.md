@@ -6,13 +6,13 @@ action changes. Completed detail belongs in Git history.*
 
 ## Resume here
 
-- **Branch:** `agent/delete-obsolete-cleanup-charter`
-- **HEAD:** `59e8bb4` — deletes obsolete `CLEANUP.md`
-- **GitHub:** draft PR #156 is open for the cleanup-charter deletion.
-- **Worktree:** root-document normalization is complete and uncommitted:
-  README, AGENTS, HANDOFF, and TODO now have one responsibility each;
-  `LYTE-PLAN.md` is retired and its active references are migrated.
-- **Base:** `main` / `origin/main` at `9fce6c8`.
+- **Branch:** `main`, aligned with `origin/main`.
+- **GitHub:** no open PRs; #156 landed the root-document normalization.
+- **Repository:** one worktree, one local branch, and one remote branch—all
+  `main`. Stale migration, cleanup, ledger, and agent pointers were audited
+  and retired after their merged or superseding work was confirmed present.
+- **Documents:** README, AGENTS, HANDOFF, and TODO have one responsibility
+  each; `CLEANUP.md` and `LYTE-PLAN.md` are retired to Git history.
 
 The architecture-cleanup train is frozen after #155. The authoritative
 projection inventory is closed; remaining candidates are diagnostic-only or
@@ -65,12 +65,10 @@ remain product follow-ups rather than a wire failure.
 
 ## Next action
 
-1. Review, commit, and push the verified root-document normalization.
-2. Land or otherwise resolve PR #156 without mixing behavioral source work.
-3. Run the final commissioning campaign against the frozen code tree:
+1. Run the final commissioning campaign against the frozen code tree:
    deterministic/structural gates, live quality, scoped impairment, soak,
    and owner feel.
-4. Reopen cleanup only for a concrete commissioning finding or a clearly
+2. Reopen cleanup only for a concrete commissioning finding or a clearly
    earned shared owner.
 
 The remaining owner-visible quality check is the two-column stats ledger
