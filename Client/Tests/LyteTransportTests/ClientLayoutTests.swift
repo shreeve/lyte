@@ -101,15 +101,28 @@ final class ClientLayoutTests: XCTestCase {
             "private var machine: SessionStateMachine<ClientClock>"))
     }
 
-    func testCapabilityNegotiatorAloneOwnsTheAgreedSet() throws {
-        let source = try String(
-            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
-                "/Client/Sources/LyteTransport/LyteUdpSession.swift"),
+    func testClientCapabilitySessionAloneOwnsTheAgreedSet() throws {
+        let root = URL(fileURLWithPath: ClientTestPaths.repositoryRoot)
+        let transport = try String(
+            contentsOf: root.appendingPathComponent(
+                "Client/Sources/LyteTransport/LyteUdpSession.swift"),
+            encoding: .utf8)
+        let capabilities = try String(
+            contentsOf: root.appendingPathComponent(
+                "Client/Sources/LyteClientSession/"
+                    + "ClientCapabilitySession.swift"),
             encoding: .utf8)
 
-        XCTAssertFalse(source.contains("private var agreed:"))
-        XCTAssertTrue(source.contains("return negotiator.agreed"))
-        XCTAssertTrue(source.contains("negotiator.agreed?.chromaModes"))
+        XCTAssertFalse(transport.contains("CapabilityNegotiator"))
+        XCTAssertFalse(transport.contains("private var agreed:"))
+        XCTAssertTrue(transport.contains(
+            "private var capabilitySession: ClientCapabilitySession"))
+        XCTAssertTrue(transport.contains(
+            "return capabilitySession.agreed"))
+        XCTAssertTrue(capabilities.contains(
+            "private var negotiator: CapabilityNegotiator"))
+        XCTAssertTrue(capabilities.contains(
+            "public var agreed: Capabilities? { negotiator.agreed }"))
     }
 
     func testConfirmedAudioPostureAloneOwnsTheFirstStatusSeam() throws {
