@@ -10,13 +10,20 @@ final class HostCompositionRootTests: XCTestCase {
         return components.joined(separator: "/")
     }
 
-    func testExecutableEntryPointOnlyDelegatesToCompositionRoot() throws {
-        let main = try source("main.swift")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    func testExecutableEntryPointDelegatesToCompositionRoot() throws {
+        let root = try source("HostApplication.swift")
+        XCTAssertTrue(root.contains("@main\nenum HostApplication"))
+        XCTAssertTrue(root.contains("static func main()"))
+        XCTAssertTrue(root.contains(
+            "main(arguments: CommandLine.arguments)"
+        ))
         XCTAssertEqual(
-            main,
-            "HostApplication.main(arguments: CommandLine.arguments)"
+            root.components(separatedBy: "CommandLine.arguments").count - 1,
+            1
         )
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: packageRoot + "/Sources/lyte-host/main.swift"
+        ))
     }
 
     func testCompositionRootOwnsDispatchConstructionAndFailure() throws {
@@ -33,7 +40,6 @@ final class HostCompositionRootTests: XCTestCase {
         ] {
             XCTAssertTrue(root.contains(witness), "missing \(witness)")
         }
-        XCTAssertFalse(root.contains("CommandLine.arguments"))
     }
 
     private func source(_ name: String) throws -> String {
