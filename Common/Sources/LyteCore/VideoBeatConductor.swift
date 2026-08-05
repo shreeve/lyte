@@ -36,6 +36,10 @@ public struct VideoBeatConductor: Sendable {
         /// The automatic reserve floor. A hole adds whole beats; sustained
         /// clean proof returns them one at a time, never below this floor.
         public var cushionBeats: Int
+        /// The automatic reserve ceiling. Path trouble may grow the cushion
+        /// only to this many whole beats; a worse hole stays honestly late
+        /// instead of silently turning into more latency.
+        public var maximumCushionBeats: Int
         /// Hard safety ceiling on the automatic cue.
         public var maximumCueMicroseconds: UInt64
         /// Fresh frames of sustained surplus required before one slip.
@@ -49,13 +53,16 @@ public struct VideoBeatConductor: Sendable {
         public init(
             beatPeriodMicroseconds: UInt64 = 16_667,
             cushionBeats: Int = 1,
+            maximumCushionBeats: Int = 4,
             maximumCueMicroseconds: UInt64 = 150_000,
-            slipProofFrames: Int = 600,
+            slipProofFrames: Int = 120,
             maximumFreshBurstDebtMicroseconds: UInt64 = 200_000,
             freshDebtRearmStableFrames: Int = 30
         ) {
             self.beatPeriodMicroseconds = max(beatPeriodMicroseconds, 1_000)
             self.cushionBeats = max(cushionBeats, 1)
+            self.maximumCushionBeats = max(
+                maximumCushionBeats, self.cushionBeats)
             self.maximumCueMicroseconds = max(
                 maximumCueMicroseconds, self.beatPeriodMicroseconds)
             self.slipProofFrames = max(slipProofFrames, 1)
@@ -97,6 +104,10 @@ public struct VideoBeatConductor: Sendable {
     private var lastReserveMicroseconds: UInt64 = 0
     private var lastSourceCaptureMicroseconds: UInt64?
     private var lastFrameWasRetained = false
+    /// The quantized reserve posture currently in force. It starts at the
+    /// configured floor, grows only through the hole law, and returns one
+    /// beat at a time through ceiling cuts or sustained slip proof.
+    private var cushionBeatsInForce: Int
 
     // Tail estimation: the Conductor's shared ring (the cue's
     // evidence — path-delay p99 over the recent window).
@@ -116,6 +127,7 @@ public struct VideoBeatConductor: Sendable {
 
     public init(config: Config = Config()) {
         self.config = config
+        self.cushionBeatsInForce = config.cushionBeats
     }
 
     public mutating func reset() {
@@ -128,6 +140,7 @@ public struct VideoBeatConductor: Sendable {
         lastPresentationMicroseconds = nil
         lastSourceCaptureMicroseconds = nil
         lastFrameWasRetained = false
+        cushionBeatsInForce = config.cushionBeats
         pathDelayTailRing.removeAll()
         slipProof.reset()
         lastFreshSourceMicroseconds = nil
@@ -261,6 +274,8 @@ public struct VideoBeatConductor: Sendable {
                   presentation >= lastGrid &+ period,
                   presentation >= arrivalMicroseconds &+ period {
                 presentation -= period
+                cushionBeatsInForce = max(
+                    cushionBeatsInForce - 1, config.cushionBeats)
             }
         }
 
@@ -276,10 +291,13 @@ public struct VideoBeatConductor: Sendable {
             let cueNow = presentation &- mappedCaptureMicroseconds
             let room = config.maximumCueMicroseconds > cueNow
                 ? (config.maximumCueMicroseconds - cueNow) / period : 0
+            let cushionRoom = UInt64(max(
+                config.maximumCushionBeats - cushionBeatsInForce, 0))
             // The ceiling wins: re-cue as far as allowed, and the
             // remainder stays honest lateness.
-            beatsBehind = min(beatsBehind, room)
+            beatsBehind = min(beatsBehind, room, cushionRoom)
             presentation &+= beatsBehind &* period
+            cushionBeatsInForce += Int(beatsBehind)
             slipProof.reset()
         }
 
@@ -297,6 +315,8 @@ public struct VideoBeatConductor: Sendable {
                measuredCue >= (pathDelayTailRing.p99 ?? 0)
                    &+ cushionFloor &+ period {
                 presentation -= period
+                cushionBeatsInForce = max(
+                    cushionBeatsInForce - 1, config.cushionBeats)
                 slipProof.reset()
             }
         } else {
