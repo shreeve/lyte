@@ -5,10 +5,10 @@ history.*
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #192. There are no auxiliary worktrees,
+- **Branch:** clean `main` through PR #193. There are no auxiliary worktrees,
   other local or remote branches, or open pull requests.
-- **Current objective:** select the first native-packaging slice without
-  weakening the clean Mac/Linux/WASM/live commissioning baseline.
+- **Current objective:** make the Linux installer consume PR #193's stable,
+  integrity-manifested host image without weakening service or identity safety.
 - **Recent landings:** PR #186 made shipping transport Noise-only and removed
   513 net lines; PR #187 made `HostApplication` the native Swift `@main` entry;
   PR #188 aligned every living architecture document with those landings and
@@ -17,22 +17,26 @@ history.*
   with warnings as errors; PR #191 recorded the living browser direction and
   its WASM/WebTransport/WebCodecs/WebGPU commissioning boundary; PR #192 made
   the living design, comparison, and repository maps distinguish shipping
-  behavior from future direction. Frozen dated records and vectors did not
-  change.
+  behavior from future direction; PR #193 created the rootless Linux host image
+  with stable paths, complete notices, an exact inventory, and a SHA-256
+  manifest. Frozen dated records and vectors did not change.
 
 ## Last green gates
 
-The exact PR #190 source commit passed the complete warning-enforced macOS gate:
+The exact PR #193 source commit passed the complete warning-enforced macOS gate:
 Common 93, Wire 513, Host 345, Client 301, and SystemTests 17. Benchmark and
 host-release safety, signing policy, 25 analyzer tests, app identity, the
 signed CLI, hermetic linkage, packaging, and double signed release-app
-assembly all passed.
+assembly all passed. The isolated rootless-host-image self-test also proved the
+exact inventory, permissions, stable service path, manifest, and corruption
+rejection.
 
 The same commit passed pup's deterministic gate: Common 94, Wire 513, and Host
 346; warning-enforced `LyteClientCore` and `LyteClientSession` Linux builds;
 warning-enforced debug and release builds; hermetic linkage; pinned Opus symbol
-proof; socket/TOS and pacing harnesses; and protected-state verification. The
-gate did not deploy or restart the standing service.
+proof; a real release host image plus packaged-binary linkage proof; socket/TOS
+and pacing harnesses; and protected-state verification. The gate did not
+deploy or restart the standing service.
 
 Focused architecture proof on the composed main branch passes all three host
 composition/security laws: one native `@main` doorway, injected argument
@@ -92,10 +96,13 @@ stay diagnostic and silent.
 
 ## Next commissioning order
 
-1. Define the smallest native Linux packaging slice that turns the proven host
-   build into a coherent installation without changing protocol or policy.
-2. Keep the clean Mac/Linux/WASM/live commissioning baseline green; add new
-   platform shells only at the existing IO-free session boundaries.
+1. Change `Host/Scripts/install-host.sh` to consume PR #193's verified image,
+   preserving first-install configuration ownership, seat attribution,
+   identity, and explicit service-start behavior.
+2. Extract the remaining concrete client-session orchestration into the
+   IO-free `LyteClientSession` boundary.
+3. Keep the clean Mac/Linux/WASM/live commissioning baseline green, then add
+   thin macOS/Linux/Windows/browser shells at that shared boundary.
 
 ## Recovery pointers
 
