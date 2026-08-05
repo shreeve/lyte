@@ -53,74 +53,67 @@ public struct RepositorySourceTree {
     }
 
     public func productionSwiftFiles() throws -> [URL] {
-        let fileManager = FileManager.default
         var allFiles: [URL] = []
 
         for root in productionSourceRoots {
-            var isDirectory = ObjCBool(false)
-            guard fileManager.fileExists(
-                atPath: root.path,
-                isDirectory: &isDirectory
-            ), isDirectory.boolValue else {
-                throw RepositorySourceTreeError.missingDirectory(
-                    relativePath(for: root)
-                )
-            }
-            var enumerationError: Error?
-            guard let enumerator = fileManager.enumerator(
-                at: root,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [],
-                errorHandler: { _, error in
-                    enumerationError = error
-                    return false
-                }
-            ) else {
-                throw RepositorySourceTreeError.unreadableDirectory(
-                    relativePath(for: root)
-                )
-            }
-
             var rootFiles: [URL] = []
-            for case let file as URL in enumerator {
-                do {
-                    let values = try file.resourceValues(
-                        forKeys: [.isDirectoryKey]
-                    )
-                    // Umbrella source roots contain multiple SwiftPM targets.
-                    // TestKit targets are reusable test equipment, not
-                    // production; a nested production directory merely named
-                    // *TestKit must remain visible and is pinned in tests.
-                    if values.isDirectory == true,
-                       root.lastPathComponent == "Sources",
-                       file.deletingLastPathComponent().standardizedFileURL
-                           == root.standardizedFileURL,
-                       file.lastPathComponent.hasSuffix("TestKit") {
-                        enumerator.skipDescendants()
-                        continue
-                    }
-                } catch {
-                    enumerationError = error
-                    break
+            for file in try swiftFiles(below: relativePath(for: root)) {
+                // Umbrella source roots contain multiple SwiftPM targets.
+                // TestKit targets are reusable test equipment, not
+                // production; a nested production directory merely named
+                // *TestKit must remain visible and is pinned in tests.
+                let relative = file.path.dropFirst(root.path.count + 1)
+                if root.lastPathComponent == "Sources",
+                   relative.split(separator: "/").first?.hasSuffix("TestKit")
+                       == true {
+                    continue
                 }
-                if file.pathExtension == "swift" {
-                    rootFiles.append(file.standardizedFileURL)
-                }
-            }
-            if enumerationError != nil {
-                throw RepositorySourceTreeError.unreadableDirectory(
-                    relativePath(for: root)
-                )
-            }
-            guard !rootFiles.isEmpty else {
-                throw RepositorySourceTreeError.emptySwiftDirectory(
-                    relativePath(for: root)
-                )
+                rootFiles.append(file)
             }
             allFiles.append(contentsOf: rootFiles)
         }
 
         return allFiles.sorted { $0.path < $1.path }
+    }
+
+    /// Enumerates one required Swift source boundary and fails closed when
+    /// the boundary is missing, unreadable, or empty.
+    public func swiftFiles(below relativeRoot: String) throws -> [URL] {
+        let root = repositoryRoot.appendingPathComponent(relativeRoot)
+        let fileManager = FileManager.default
+        var isDirectory = ObjCBool(false)
+        guard fileManager.fileExists(
+            atPath: root.path,
+            isDirectory: &isDirectory
+        ), isDirectory.boolValue else {
+            throw RepositorySourceTreeError.missingDirectory(relativeRoot)
+        }
+
+        var enumerationError: Error?
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: nil,
+            options: [],
+            errorHandler: { _, error in
+                enumerationError = error
+                return false
+            }
+        ) else {
+            throw RepositorySourceTreeError.unreadableDirectory(relativeRoot)
+        }
+
+        var files: [URL] = []
+        for case let file as URL in enumerator
+        where file.pathExtension == "swift" {
+            files.append(file.standardizedFileURL)
+        }
+        if enumerationError != nil {
+            throw RepositorySourceTreeError.unreadableDirectory(relativeRoot)
+        }
+        guard !files.isEmpty else {
+            throw RepositorySourceTreeError.emptySwiftDirectory(relativeRoot)
+        }
+        return files.sorted { $0.path < $1.path }
     }
 
     public func violations(
