@@ -1299,8 +1299,8 @@ final class ConnectionModel {
     }
 
     /// A compact snapshot of the session's existing books — the same
-    /// counters wire-view prints, shaped for the overlay. Re-read on
-    /// every call; the overlay's TimelineView drives the cadence.
+    /// counters wire-view prints, shaped for the overlay. The overlay
+    /// explicitly samples this snapshot once per second while visible.
     struct StatsRow: Identifiable {
         var label: String
         var value: String
