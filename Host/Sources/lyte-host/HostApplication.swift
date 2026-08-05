@@ -19,6 +19,7 @@ import HostWire
 import LyteCore
 import LyteWire
 
+@main
 enum HostApplication {}
 
 // MARK: - Options
@@ -1094,8 +1095,13 @@ static func run(arguments: [String]) throws {
 
 /// The Linux host application's one composition root. It selects the command,
 /// constructs every concrete platform organ, and owns process-level failure.
-/// `main.swift` deliberately does nothing except delegate here.
 extension HostApplication {
+    /// Swift's process entry point. Keep the global argument read at this
+    /// doorway; the real composition root below remains explicitly injectable.
+    static func main() {
+        main(arguments: CommandLine.arguments)
+    }
+
     static func main(arguments: [String]) {
         // Subcommands never return: `sniff` is the HS-5 Lyte-UDP header
         // dissector; `advertise` is the HS-10 standalone Avahi surface.
