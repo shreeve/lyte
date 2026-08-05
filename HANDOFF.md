@@ -5,12 +5,11 @@ history.*
 
 ## Resume here
 
-- **Branch:** `fix/direct-eye-same-fb-damage` from clean `main` through PR #198.
-  There is one checkout, no auxiliary worktree, and no open pull request yet.
-- **Current objective:** land the Direct Eye correction that observes pixels
-  at 60 Hz, treats KMS framebuffer identity only as an import-cache key, and
-  encodes only actual changes. Then resume the IO-free client-control sequence
-  with clipboard followed by cursor.
+- **Branch:** clean `main` through PR #199. There is one checkout, no auxiliary
+  worktree, no topic branch, and no open pull request.
+- **Current objective:** resume the IO-free client-control sequence with
+  clipboard followed by cursor. The Direct Eye same-framebuffer freeze is
+  corrected and commissioned.
 - **Recent landings:** PR #186 made shipping transport Noise-only and removed
   513 net lines; PR #187 made `HostApplication` the native Swift `@main` entry;
   PR #188 aligned every living architecture document with those landings and
@@ -35,13 +34,14 @@ history.*
   reconciliation, malformed-status handling, role-confusion judgment, and
   outbound request bytes into one IO-free `ClientAudioRoutingSession`, leaving
   macOS transport to synchronize counters, execute sends, and project events.
-  This branch corrects the Direct Eye's false damage premise, replaces FB-flip
-  gating with a compact full-screen GPU fingerprint, and retires the obsolete
+  PR #199 corrected the Direct Eye's false damage premise, replaced FB-flip
+  gating with a compact full-screen GPU fingerprint, and retired the obsolete
   flip-gap ledger. Frozen wire vectors did not change.
 
 ## Last green gates
 
-The exact current source passed the complete warning-enforced macOS gate:
+The exact PR #199 source commit `8ea13c4` (landed as `aede741`) passed the
+complete warning-enforced macOS gate:
 Common 93, Wire 513, Host 340, Client 329, and SystemTests 17. Benchmark and
 host-release safety, signing policy, 25 analyzer tests, app identity, the
 signed CLI, hermetic linkage, packaging, and double signed release-app
@@ -117,11 +117,10 @@ video-reserve owner.
 
 ## Next commissioning order
 
-1. Land this Direct Eye correction through the PR train and record its commit.
-2. Move clipboard control judgment behind `ClientControlSession`, preserving
+1. Move clipboard control judgment behind `ClientControlSession`, preserving
    consent, capability, origin/echo, size, and role-confusion laws as typed
    IO-free decisions; then do the same for cursor control.
-3. Keep the clean Mac/Linux/WASM/live commissioning baseline green, then add
+2. Keep the clean Mac/Linux/WASM/live commissioning baseline green, then add
    thin macOS/Linux/Windows/browser shells at that shared boundary.
 
 ## Recovery pointers
