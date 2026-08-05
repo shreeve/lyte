@@ -43,16 +43,16 @@ return to the one-beat floor in exactly six clean seconds at one Hz.
 
 ### Client
 
-- `.build/Lyte.app` PID 74705 is the freshly release-built, signed, and
-  published PR #205 landing. It completed Noise with pup, opened video, and is
+- `.build/Lyte.app` PID 69280 is the freshly release-built, signed, and
+  published PR #207 landing. It completed Noise with pup, opened video, and is
   the only ordinary Lyte client running.
-- Product source revision `360d788d6d18`; bundle build `1785955849`; build UTC
-  `2026-08-05T18:51:16Z`; source-tree digest
-  `b5ad83fc80a7d8cf3c284b7afe846788fdb78b5503ab7829ace8afd5f0a09539`.
+- Product source revision `05df35c7ac1b`; bundle build `1785964994`; build UTC
+  `2026-08-05T21:23:43Z`; source-tree digest
+  `f717264f24619bd46d58bf881642b69f63d6589f891fe9ed24b4eafa1e69c454`.
 - Lyte executable SHA-256:
-  `ca1d2a1f7dc6adf7899e5dda3b6393fdb0a6a2994a1da5c4e994355d8a935204`.
+  `81e66a7dd75cc9f11bc238c24fa0adff2148d3f4273b90772a15437eb77445b2`.
   Helper SHA-256:
-  `af01bdd8bbd1d90ce94eaea8a014daeedf961334c2c6d1cb0b358eb8c3076c3b`.
+  `d7b38435a3a05fc009c8e5d546f52890d741f9b08bb3aedfa8b1d14dc648f9f5`.
 - Bundle identifier `dev.shreeve.lyte`, team `SD6N7Z8P9P`, signed by
   `Apple Development: Steve Shreeve (8FHNN4RZ9Q)`.
 - Do not launch a benchmark or second ordinary app while this one is open;
@@ -71,9 +71,9 @@ return to the one-beat floor in exactly six clean seconds at one Hz.
 - Deployed release binary SHA-256:
   `7f0be45e971e2a63b8f2aa74d155febe39b195d821511460cf37f4287da4d9a6`.
 - Session log: `/tmp/lyte-host-session.log`.
-- The commissioned PR #205 client negotiated Best 4:4:4 and opened the native
+- The commissioned PR #207 client negotiated Best 4:4:4 and opened the native
   VAAPI Direct Eye at 2048×1280. The current socket is
-  `10.0.0.232:41151 → 10.0.0.211`.
+  `10.0.0.232:41151 → 10.0.0.211:56798`.
 
 Never touch pup's
 `~/.config/lyte-host/{portal_token,noise_static.key,paired_clients}` and never
@@ -94,20 +94,18 @@ A passive paused-video observation exposed the final PR #205 defect: at roughly
 one fresh frame per second, its 120-frame proof meant about two minutes rather
 than two seconds, and its 600-sample path tail could retain stale evidence for
 about ten minutes. PR #207 replaces both sample-count durations with exact
-elapsed-time policy. The current ordinary app still contains PR #205; do not
-attribute live behavior to PR #207 until the landed app is rebuilt below.
+elapsed-time policy. Its exact landed release app is now live; controlled
+reserve-distribution measurement remains outstanding.
 
 ## Next commissioning order
 
-1. Rebuild and launch the landed PR #207 release app, reconnect to pup on wired
-   `.232`, and confirm Best 4:4:4 opens normally.
-2. Observe motion followed by a static screen and confirm reserve returns one
+1. Observe motion followed by a static screen and confirm reserve returns one
    beat per two clean seconds toward one beat (~17 ms), never above four
    (~67 ms).
-3. Quit the ordinary app, run the exact-build 30-second motion benchmark on
+2. Quit the ordinary app, run the exact-build 30-second motion benchmark on
    Ethernet, and record cue/reserve p50, p95, and maximum alongside the existing
    cadence, loss, quality, and renderer gates.
-4. Repeat the same trace with pup on Wi-Fi and lid closed. Compare the same
+3. Repeat the same trace with pup on Wi-Fi and lid closed. Compare the same
    authored workload; diagnose only from current-build evidence.
 
 ## Recovery pointers
