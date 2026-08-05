@@ -152,6 +152,8 @@ rsync -a Scripts/verify-opus-upstream.sh \
     "$pup:$pup_gate_root/Scripts/verify-opus-upstream.sh"
 rsync -a Scripts/Tests/test-host-package-image.sh \
     "$pup:$pup_gate_root/Scripts/Tests/test-host-package-image.sh"
+rsync -a Scripts/Tests/test-host-installer.sh \
+    "$pup:$pup_gate_root/Scripts/Tests/test-host-installer.sh"
 
 ssh "$pup" 'bash -se' <<'REMOTE'
 set -euo pipefail
@@ -306,6 +308,7 @@ package_image="$package_image_parent/root"
 LYTE_REPOSITORY_ROOT="$gate_root" \
     "$gate_root/Host/Scripts/stage-host-image.sh" "$package_image"
 "$gate_root/Scripts/Tests/test-host-package-image.sh" "$package_image"
+"$gate_root/Scripts/Tests/test-host-installer.sh" "$package_image"
 "$gate_root/test-hermetic-linkage.sh" \
     "$package_image/usr/local/bin/lyte-host"
 find "$package_image_parent" -xdev -depth -delete

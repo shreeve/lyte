@@ -127,7 +127,10 @@ the rootless Linux package image: one stable `/usr/local/bin/lyte-host` path,
 the service/configuration templates, Lyte and dependency notices, and a
 SHA-256 manifest. `Scripts/Tests/test-host-package-image.sh DESTINATION`
 verifies the complete image contract. Staging is inert and does not deploy or
-restart the host; see `INSTALL.md` for the current development-install boundary.
+restart the host. `Host/Scripts/install-host.sh [IMAGE]` consumes only a
+verified image (or stages the current release build when no image is supplied),
+refreshes product-owned files, preserves operator configuration, and leaves
+start/restart explicit. See `INSTALL.md` for the complete lifecycle.
 Rate moves apply with zero reset and zero IDR by
 construction — our own pens never emit a reset. The setcap line is the
 DRM ticket for the direct eye; re-arm it after every rebuild.

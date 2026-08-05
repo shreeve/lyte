@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Build a rootless, integrity-manifested Linux host filesystem image from an
 # already-built release binary. This script never escalates, installs, starts,
-# stops, or contacts a service; install-host.sh will consume this image in the
-# next packaging slice.
+# stops, or contacts a service; install-host.sh consumes this exact image.
 set -euo pipefail
 
 usage() {
@@ -97,21 +96,12 @@ install -m 0644 "$asn1_root/LICENSE.txt" \
 install -m 0644 "$asn1_root/NOTICE.txt" \
     "$notice_dir/SwiftASN1-NOTICE.txt"
 
-# The checked-in configuration retains the checkout-coupled development loop
-# until install-host.sh moves to this image. The image itself owns a stable
-# binary path, so LYTE_HOST_BIN and its explanatory block do not belong here.
-awk '
-    /^# LYTE_HOST_BIN:/ { dropping = 1; next }
-    dropping && /^LYTE_HOST_BIN=/ { dropping = 0; next }
-    !dropping { print }
-' "$host_root/Systemd/lyte-host.conf" > "$config_dir/lyte-host.conf"
-chmod 0644 "$config_dir/lyte-host.conf"
+install -m 0644 "$host_root/Systemd/lyte-host.conf" \
+    "$config_dir/lyte-host.conf"
+install -m 0644 "$host_root/Systemd/lyte-host.service" \
+    "$unit_dir/lyte-host.service"
 
-sed 's|exec "\$LYTE_HOST_BIN" \$LYTE_HOST_ARGS|exec /usr/local/bin/lyte-host $LYTE_HOST_ARGS|' \
-    "$host_root/Systemd/lyte-host.service" > "$unit_dir/lyte-host.service"
-chmod 0644 "$unit_dir/lyte-host.service"
-
-if rg -n 'LYTE_HOST_BIN|\.build/|/home/CHANGE_ME' \
+if grep -En 'LYTE_HOST_BIN|\.build/|/home/CHANGE_ME' \
     "$config_dir/lyte-host.conf" "$unit_dir/lyte-host.service"
 then
     echo "host image FAILED: checkout-coupled service path survived" >&2

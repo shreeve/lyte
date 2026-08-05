@@ -12,6 +12,7 @@ files=(
     Host/README.md
     Host/Scripts/install-host.sh
     Host/Scripts/setup-host.sh
+    Host/Scripts/verify-host-image.sh
     Host/Systemd/lyte-host.conf
     Scripts/benchmark-app.sh
 )
@@ -28,8 +29,14 @@ for file in "${files[@]}"; do
     }
 done
 
-grep -Fq '.build/release/lyte-host' Host/Systemd/lyte-host.conf
-grep -Fq 'swift build -c release' Host/INSTALL.md
+grep -Fq '/usr/local/bin/lyte-host' Host/Systemd/lyte-host.service
+if rg -n 'LYTE_HOST_BIN|\.build/(debug|release)/lyte-host|/home/CHANGE_ME' \
+    Host/Systemd Host/Scripts/install-host.sh
+then
+    echo "host release posture FAILED: installed service regained a checkout path" >&2
+    exit 1
+fi
+grep -Fq 'swift build --package-path Host -c release' Host/INSTALL.md
 grep -Fq 'swift build -c release' AGENTS.md
 
 echo "host release posture tests PASSED"
