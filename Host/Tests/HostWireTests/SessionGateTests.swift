@@ -2,7 +2,7 @@ import XCTest
 import Foundation
 import HostCore
 import HostSession
-import HostWire
+@_spi(Testing) import HostWire
 import LyteCore
 import LyteWire
 import LyteWireTestKit
@@ -18,7 +18,7 @@ import LyteWireTestKit
 // carries the conn-id TLV within the 1152 B budget, a client 0x10 IDR
 // request raises the encoder-loop keyframe poll, and a conn-id-bearing
 // datagram from a new tuple draws a sealed path challenge on that exact
-// tuple. The `--insecure` CP-3 path delivers the same frames through the
+// tuple. The test-only passthrough delivers the same frames through the
 // same wiring with the passthrough seal — geometry identical by design.
 
 final class SessionGateTests: XCTestCase {
@@ -497,14 +497,14 @@ final class SessionGateTests: XCTestCase {
         return k + m
     }
 
-    // MARK: The gate — `--insecure` CP-3 path
+    // MARK: The gate — test-only passthrough path
 
     func testGateInsecureLoopbackDeliversFrames() throws {
         let frames = try Array(corpusFrames().prefix(4))
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .insecure,
+                crypto: .testPassthrough,
                 rateBitsPerSecond: Self.rateBPS
             ),
             clientTuple: Self.tupleA,
@@ -604,7 +604,7 @@ final class SessionGateTests: XCTestCase {
         ])
         XCTAssertEqual(session.clock.samples, 1)
 
-        print("HS-7 gate (--insecure): \(units.count) frames byte-exact, "
+        print("HS-7 gate (test passthrough): \(units.count) frames byte-exact, "
             + "beacon + echo through the passthrough seal")
     }
 
@@ -631,7 +631,7 @@ final class SessionGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .insecure,
+                crypto: .testPassthrough,
                 rateBitsPerSecond: Self.rateBPS
             ),
             clientTuple: Self.tupleA,
@@ -677,7 +677,7 @@ final class SessionGateTests: XCTestCase {
         var outbox: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .insecure,
+                crypto: .testPassthrough,
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62
             ),
@@ -747,7 +747,7 @@ final class SessionGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .insecure,
+                crypto: .testPassthrough,
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62
             ),
@@ -883,7 +883,7 @@ final class SessionGateTests: XCTestCase {
     }
 
     func testGeometryIsIdenticalWithAndWithoutSeal() throws {
-        // §4.2's rule, held by construction: the `--insecure` passthrough
+        // §4.2's rule, held by construction: the test passthrough
         // and the no-seal HS-5 shape emit byte-identical datagrams, so
         // FEC geometry and gate results never depend on the crypto mode.
         var rng = SplitMix64(seed: 0x3)
@@ -921,7 +921,7 @@ final class SessionGateTests: XCTestCase {
     func testKernelPressureFrameShedArmsOneFreshIDR() {
         let session = Session(
             config: SessionConfig(
-                crypto: .insecure,
+                crypto: .testPassthrough,
                 rateBitsPerSecond: Self.rateBPS
             ),
             clientTuple: Self.tupleA,

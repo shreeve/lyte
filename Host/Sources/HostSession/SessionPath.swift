@@ -111,8 +111,7 @@ public struct PathValidatorConfig: Sendable {
     /// What one challenge costs against the budget on the wire: 24 B
     /// envelope + 11 B conn-id TLV block + 10 B body + 16 B AEAD tag
     /// = 61 B (HS-7: challenges are sealed like every post-handshake
-    /// datagram; `--insecure` spends 16 B less than accounted, which
-    /// errs the safe way for a reflection budget).
+    /// datagram).
     public var challengeDatagramByteCount: Int
 
     public init(

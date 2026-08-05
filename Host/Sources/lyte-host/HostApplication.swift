@@ -2,7 +2,7 @@
 // encode — HostEye) → Annex-B file, or the Lyte-UDP session (HS-7):
 // `--wire-out HOST:PORT` (or `--wire-listen PORT`) runs
 // HostWire.Session — Noise IK responder handshake against a connecting
-// client (default) or the `--insecure` CP-3 passthrough — then capture
+// client — then capture
 // → encode → VideoChannel → seal → Pacer → CNetIO, with 1 Hz beacons,
 // conn-id TLVs, and inbound handling (echoes, IDR requests, path
 // challenges) on the same loop.
@@ -43,9 +43,6 @@ struct Options {
     /// estimator still governs below it, and capped-CQ means an idle
     /// desktop at a 50 Mbps cap still costs ~0.4 Mbps.
     var wireRateMbps = 50.0
-    /// CP-3 fallback (§4.1): passthrough seal, stream to the fixed peer
-    /// without a handshake. The default is real Noise.
-    var insecure = false
     /// Pin the advertisement to one interface (e.g. the Ethernet NIC
     /// on a wired+wireless host) so discovery never hands clients the
     /// radio's address. Empty = all interfaces.
@@ -172,8 +169,6 @@ struct Options {
                     throw HostError("--wire-listen needs a port")
                 }
                 opts.wireListen = port
-            case "--insecure":
-                opts.insecure = true
             case "--no-advertise":
                 opts.advertise = false
             case "--advertise-interface":
@@ -277,9 +272,6 @@ struct Options {
                   --wire-listen P   session mode, but bind port P and adopt
                                     whichever client completes message 1
                                     (advertises _lyte._udp via Avahi)
-                  --insecure        CP-3 fallback: no handshake, passthrough
-                                    seal, stream to the --wire-out peer
-                                    immediately (re-gate with Noise later)
                   --wire-rate-mbps  session ceiling: pacer rate + the
                                     estimator's negotiated cap
                                     (default 50 — the owner-ruled LAN
@@ -454,7 +446,7 @@ static func run(arguments: [String]) throws {
         ? "lyte-udp session ("
             + (opts.wireOut.map { "\($0.host):\($0.port)" }
                 ?? "listen :\(opts.wireListen!)")
-            + (opts.insecure ? ", INSECURE" : ", noise") + ")"
+            + ", noise)"
         : opts.outputPath
     print("lyte-host — direct eye (KMS doorbell + EGL blit) → "
         + "native VAAPI (our pens) → \(destination)")
@@ -478,14 +470,6 @@ static func run(arguments: [String]) throws {
     var clipboardLeaf: MutterClipboardLeaf?
     var bulkShell: BulkReceiveShell?
     if sessionMode {
-        if opts.insecure, opts.wireOut == nil {
-            throw HostError("--insecure streams to a fixed peer; "
-                + "give --wire-out HOST:PORT")
-        }
-        if opts.insecure, opts.pair || opts.requirePaired {
-            throw HostError("pairing binds to the Noise session that "
-                + "carries it — drop --insecure")
-        }
         if opts.pair, opts.requirePaired {
             throw HostError("--pair admits a not-yet-paired client; "
                 + "--require-paired contradicts it")
@@ -497,32 +481,30 @@ static func run(arguments: [String]) throws {
 
         // HS-9 setup happens before the socket exists so a bad keystore
         // fails the run instead of a live session.
-        var hostStatic: NoiseKeyPair?
+        let hostStatic: NoiseKeyPair
         var allowed: [[UInt8]]?
-        if !opts.insecure {
-            let keys = try HostStaticKey.loadOrCreate()
-            hostStatic = keys
-            if opts.requirePaired {
-                let store = try PairedClients.load()
-                guard !store.entries.isEmpty else {
-                    throw HostError("--require-paired with an empty "
-                        + "keystore would lock every client out — run "
-                        + "--pair once first")
-                }
-                allowed = store.publicKeys
-                print("pairing: enforcing \(store.entries.count) paired "
-                    + "client static(s) from \(PairedClients.path.path)")
+        let keys = try HostStaticKey.loadOrCreate()
+        hostStatic = keys
+        if opts.requirePaired {
+            let store = try PairedClients.load()
+            guard !store.entries.isEmpty else {
+                throw HostError("--require-paired with an empty "
+                    + "keystore would lock every client out — run "
+                    + "--pair once first")
             }
-            if opts.pair {
-                let pin = mintPairingPin()
-                pairingService = PairingResponderService(
-                    pin: Array(pin.utf8),
-                    hostStaticPublicKey: keys.publicKey
-                )
-                print("pairing: PIN \(pin) — enter it on the client "
-                    + "(3 wrong guesses burn it; rerun --pair for a "
-                    + "fresh one)")
-            }
+            allowed = store.publicKeys
+            print("pairing: enforcing \(store.entries.count) paired "
+                + "client static(s) from \(PairedClients.path.path)")
+        }
+        if opts.pair {
+            let pin = mintPairingPin()
+            pairingService = PairingResponderService(
+                pin: Array(pin.utf8),
+                hostStaticPublicKey: keys.publicKey
+            )
+            print("pairing: PIN \(pin) — enter it on the client "
+                + "(3 wrong guesses burn it; rerun --pair for a "
+                + "fresh one)")
         }
 
         // HS-18 housekeeping before any session traffic: put back a
@@ -654,7 +636,6 @@ static func run(arguments: [String]) throws {
         let w = try SessionWire(
             listenPort: opts.wireListen,
             peer: opts.wireOut,
-            insecure: opts.insecure,
             rateBitsPerSecond: Int(opts.wireRateMbps * 1_000_000),
             capabilities: declared,
             allowedClientStatics: allowed,
@@ -662,25 +643,23 @@ static func run(arguments: [String]) throws {
             pairing: pairingService,
             onPairingEvent: handlePairingEvent
         )
-        if let hostStatic {
-            // HS-10: the advertisement goes up BEFORE the handshake wait,
-            // so a browsing client can find the host and then connect to
-            // it — commit-and-retain is all Avahi needs (the entry group
-            // lives as long as the D-Bus connection; no servicing loop).
-            if opts.advertise, let listenPort = opts.wireListen {
-                do {
-                    advertiser = try AvahiAdvertiser(
-                        port: listenPort,
-                        staticPublicKey: hostStatic.publicKey,
-                        interfaceName: opts.advertiseInterface
-                    )
-                } catch {
-                    print("discovery: unavailable (\(error)) — "
-                        + "manual host:port still works")
-                }
+        // HS-10: the advertisement goes up BEFORE the handshake wait,
+        // so a browsing client can find the host and then connect to
+        // it — commit-and-retain is all Avahi needs (the entry group
+        // lives as long as the D-Bus connection; no servicing loop).
+        if opts.advertise, let listenPort = opts.wireListen {
+            do {
+                advertiser = try AvahiAdvertiser(
+                    port: listenPort,
+                    staticPublicKey: hostStatic.publicKey,
+                    interfaceName: opts.advertiseInterface
+                )
+            } catch {
+                print("discovery: unavailable (\(error)) — "
+                    + "manual host:port still works")
             }
-            try w.awaitClient(hostStatic: hostStatic, timeoutSeconds: 120)
         }
+        try w.awaitClient(hostStatic: hostStatic, timeoutSeconds: 120)
         wire = w
         print("session: up — pacer \(opts.wireRateMbps) Mbps, per-packet "
             + "TOS (video 0xA0 / ctrl+audio+repairs 0xC0), 1 Hz beacon "

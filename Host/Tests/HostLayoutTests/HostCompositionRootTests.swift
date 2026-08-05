@@ -36,6 +36,20 @@ final class HostCompositionRootTests: XCTestCase {
         XCTAssertFalse(root.contains("CommandLine.arguments"))
     }
 
+    func testShippingHostHasNoPlaintextTransportMode() throws {
+        for name in ["HostApplication.swift", "SessionWire.swift"] {
+            let shippingSource = try source(name)
+            XCTAssertFalse(
+                shippingSource.contains("--insecure"),
+                "shipping plaintext option returned in \(name)"
+            )
+            XCTAssertFalse(
+                shippingSource.contains("testPassthrough"),
+                "test transport entered shipping executable \(name)"
+            )
+        }
+    }
+
     private func source(_ name: String) throws -> String {
         try String(
             contentsOfFile: packageRoot + "/Sources/lyte-host/" + name,

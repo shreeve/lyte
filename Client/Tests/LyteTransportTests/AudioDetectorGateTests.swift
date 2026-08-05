@@ -64,7 +64,7 @@ final class AudioDetectorGateTests: XCTestCase {
             VideoRecoveryCause, FrameNumber
         ) -> Void = { _, _ in }
     ) -> LyteUdpSessionCore {
-        let crypto = InsecureTransportCrypto()
+        let crypto = PassthroughTransportCrypto()
         return LyteUdpSessionCore(
             demux: ReceiveDemux(crypto: crypto),
             sender: TransportSender(crypto: crypto, transmit: { _ in true }),

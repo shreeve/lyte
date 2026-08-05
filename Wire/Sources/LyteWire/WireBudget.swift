@@ -11,13 +11,13 @@ public enum WireBudget {
     /// Hard ceiling for one datagram: envelope + extensions + payload.
     public static let maxDatagramByteCount = 1152
 
-    /// What may follow the header on the wire: ciphertext + AEAD tag once
-    /// crypto is on (W5), or the bare plaintext in `--insecure` mode — the
-    /// same ceiling either way, so FEC geometry never depends on the mode.
+    /// What may follow the header in a live session: ciphertext + AEAD tag.
+    /// Test/vector bare framing uses the same ceiling so FEC geometry stays
+    /// independent of the crypto seam.
     public static let maxWirePayloadByteCount = 1128
 
     /// What a packetizer may put into one shard before sealing. Enforced
-    /// here identically for insecure mode so gate results carry over.
+    /// identically by test/vector equipment so gate results carry over.
     public static let maxPlaintextShardByteCount = 1112
 
     /// Plaintext available when the mandatory connection-id TLV rides

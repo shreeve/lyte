@@ -14,8 +14,6 @@ struct WireListen: AsyncParsableCommand {
 
     @Argument(help: "UDP port to bind (0 picks a free port)") var port: UInt16
     @Option(name: .long, help: "Address to bind") var bind: String = "0.0.0.0"
-    @Flag(name: .long, help: "CP-3 recorded fallback: accept payloads with NO crypto")
-    var insecure = false
     @Option(name: .long, help: "Noise mode: the host's static public key, 64 hex digits")
     var hostKey: String?
     @Option(name: .long, help: "Noise mode: the host's address")
@@ -26,27 +24,19 @@ struct WireListen: AsyncParsableCommand {
     var duration: Int = 0
 
     func validate() throws {
-        if insecure, hostKey != nil {
-            throw ValidationError("--insecure and --host-key are mutually exclusive")
-        }
-        if !insecure, hostKey == nil {
+        if hostKey == nil {
             throw ValidationError(
-                "Noise mode needs --host-key <64-hex host static>, or pass --insecure for the recorded CP-3 fallback")
+                "wire-listen needs --host-key <64-hex host static>")
         }
     }
 
     func run() async throws {
         setvbuf(stdout, nil, _IOLBF, 0)   // line-buffer even when piped
 
-        let crypto: any TransportCrypto
-        if insecure {
-            crypto = InsecureTransportCrypto()
-        } else {
-            crypto = try NoiseTransportCrypto(
-                hostAddress: host,
-                hostPort: hostPort == 0 ? port : hostPort,
-                hostStaticPublicKey: NoiseTransportCrypto.parseKeyHex(hostKey!))
-        }
+        let crypto = try NoiseTransportCrypto(
+            hostAddress: host,
+            hostPort: hostPort == 0 ? port : hostPort,
+            hostStaticPublicKey: NoiseTransportCrypto.parseKeyHex(hostKey!))
         let endpoint = UdpReceiveEndpoint(port: port, bindAddress: bind, crypto: crypto)
         do {
             try endpoint.start()
@@ -59,9 +49,6 @@ struct WireListen: AsyncParsableCommand {
             }
         }
         print("wire-listen: bound \(bind):\(endpoint.boundPort) — \(crypto.modeDescription)")
-        if insecure {
-            print("wire-listen: *** INSECURE MODE — payloads are neither encrypted nor authenticated ***")
-        }
 
         let printer = WireStatsPrinter(demux: endpoint.demux)
 

@@ -29,8 +29,8 @@ public struct VideoShard: Hashable, Sendable {
         self.payload = payload
     }
 
-    /// The full datagram, header + bare shard (`--insecure` framing; W5
-    /// seals the payload without changing the geometry).
+    /// The test/vector datagram, header + bare shard. Live sessions seal
+    /// the payload without changing this geometry.
     public func encodeDatagram() throws -> [UInt8] {
         try envelope.encode(plaintextShard: payload)
     }

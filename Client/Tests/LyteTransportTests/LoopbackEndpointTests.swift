@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import LyteClientTestKit
 import LyteTransport
 import LyteWire
 import LyteWireTestKit
@@ -30,7 +31,7 @@ final class LoopbackEndpointTests: XCTestCase {
 
     func testInsecureTransportOpensImmediately() throws {
         let endpoint = UdpReceiveEndpoint(
-            port: 0, bindAddress: "127.0.0.1", crypto: InsecureTransportCrypto())
+            port: 0, bindAddress: "127.0.0.1", crypto: PassthroughTransportCrypto())
         try endpoint.start()
         defer { endpoint.stop() }
         XCTAssertNotEqual(endpoint.boundPort, 0, "port 0 bind must learn the real port")
@@ -38,7 +39,7 @@ final class LoopbackEndpointTests: XCTestCase {
 
     func testLiveDatagramsCountedGapsTrackedRejectsRejected() throws {
         let endpoint = UdpReceiveEndpoint(
-            port: 0, bindAddress: "127.0.0.1", crypto: InsecureTransportCrypto())
+            port: 0, bindAddress: "127.0.0.1", crypto: PassthroughTransportCrypto())
         try endpoint.start()
         defer { endpoint.stop() }
 
@@ -127,7 +128,7 @@ final class LoopbackEndpointTests: XCTestCase {
 
     func testSendToPeerReachesTheDatagramSource() throws {
         let endpoint = UdpReceiveEndpoint(
-            port: 0, bindAddress: "127.0.0.1", crypto: InsecureTransportCrypto())
+            port: 0, bindAddress: "127.0.0.1", crypto: PassthroughTransportCrypto())
         try endpoint.start()
         defer { endpoint.stop() }
 
@@ -136,7 +137,7 @@ final class LoopbackEndpointTests: XCTestCase {
         XCTAssertFalse(endpoint.sendToPeer([1, 2, 3]),
                        "no datagram has arrived, so there is nobody to reply to")
 
-        // A connected sender (wire-send's shape): its one datagram
+        // A connected sender: its one datagram
         // teaches the endpoint the reply address.
         let sender = try LoopbackSender(port: endpoint.boundPort)
         defer { sender.close() }

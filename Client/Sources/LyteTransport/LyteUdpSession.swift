@@ -1776,9 +1776,8 @@ public final class LyteUdpSession: @unchecked Sendable {
     }
 
     /// The crypto seam, prepared by the caller: NoiseTransportCrypto
-    /// (persistent identity for the app's paired path, throwaway for
-    /// the --host-key debug posture) or InsecureTransportCrypto for
-    /// the recorded CP-3 fallback.
+    /// with persistent identity for the app's paired path or a throwaway
+    /// identity for the --host-key debug posture.
     public let crypto: any TransportCrypto
     public let config: Config
     public private(set) var endpoint: UdpReceiveEndpoint?

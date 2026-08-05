@@ -3,8 +3,6 @@
 // bytes as `aad` and the envelope for nonce material (chan, seq feed the
 // extended-counter nonce per the master plan §4.1), so the Noise impl
 // (NoiseTransportCrypto.swift) slots in without touching the receive path.
-// InsecureTransportCrypto is the CP-3 recorded `--insecure` fallback —
-// passthrough, loudly labeled.
 
 import LyteWire
 
@@ -20,9 +18,8 @@ public enum TransportCryptoError: Error, Equatable, Sendable {
 }
 
 /// Both directions of one transport session's crypto. `open()` is the
-/// transport-open step: it must complete before any payload is accepted
-/// (Noise IK handshake once W5 lands; immediate in insecure mode). `unseal`
-/// maps a wire payload (ciphertext + 16 B tag, or the bare shard) to
+    /// transport-open step: it must complete before any payload is accepted.
+    /// `unseal` maps a wire payload (ciphertext + 16 B tag) to
 /// plaintext; `seal` is the mirror the CL-3 send path added — same AAD
 /// discipline, same envelope-derived nonce material, so W5's Noise slots
 /// into both directions without touching either path.
@@ -48,41 +45,10 @@ public protocol TransportCrypto: Sendable {
     /// Seals one outbound plaintext shard. `aad` is the exact header bytes
     /// that will precede the payload on the wire (fixed envelope + TLV
     /// block); `envelope` carries the (chan, seq, frame) the nonce derives
-    /// from. Returns the wire payload (ciphertext + tag with Noise, the
-    /// shard unchanged in insecure mode).
+    /// from. Returns the wire payload (ciphertext + authentication tag).
     func seal(
         plaintext: ArraySlice<UInt8>,
         aad: ArraySlice<UInt8>,
         envelope: Envelope
     ) throws -> [UInt8]
 }
-
-/// INSECURE passthrough — the CP-3 recorded fallback (master plan §4.1).
-/// No confidentiality, no integrity: the payload is returned as-is. LAN
-/// debugging only; the default is Noise.
-public struct InsecureTransportCrypto: TransportCrypto {
-    public init() {}
-
-    public var modeDescription: String {
-        "INSECURE passthrough (CP-3 fallback — no crypto)"
-    }
-
-    public func open() throws {}
-
-    public func unseal(
-        wirePayload: ArraySlice<UInt8>,
-        aad: ArraySlice<UInt8>,
-        envelope: Envelope
-    ) throws -> [UInt8] {
-        Array(wirePayload)
-    }
-
-    public func seal(
-        plaintext: ArraySlice<UInt8>,
-        aad: ArraySlice<UInt8>,
-        envelope: Envelope
-    ) throws -> [UInt8] {
-        Array(plaintext)
-    }
-}
-

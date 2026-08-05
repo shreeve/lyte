@@ -22,7 +22,7 @@ final class EnvelopeVectorGateTests: XCTestCase {
     }
 
     private func makeDemux() -> ReceiveDemux {
-        ReceiveDemux(crypto: InsecureTransportCrypto())
+        ReceiveDemux(crypto: PassthroughTransportCrypto())
     }
 
     func testFileIsTheFrozenContract() throws {

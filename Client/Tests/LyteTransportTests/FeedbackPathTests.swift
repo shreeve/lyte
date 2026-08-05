@@ -27,7 +27,7 @@ final class FeedbackPathTests: XCTestCase {
     /// A demux fed a known pattern: video seqs 0,1,2,4 (gap at 3, then a
     /// duplicate of 2), audio seqs 100,101 — with fixed arrival stamps.
     private func makeKnownDemux() throws -> ReceiveDemux {
-        let demux = ReceiveDemux(crypto: InsecureTransportCrypto())
+        let demux = ReceiveDemux(crypto: PassthroughTransportCrypto())
         var arrival: UInt64 = 1_000_000
         for seq in [0, 1, 2, 4] {
             let envelope = Envelope(
@@ -86,7 +86,7 @@ final class FeedbackPathTests: XCTestCase {
     func testReportFromKnownDemuxStateHasCorrectLedgersAndDispersion() throws {
         let demux = try makeKnownDemux()
         let capture = Capture()
-        let sender = TransportSender(crypto: InsecureTransportCrypto(),
+        let sender = TransportSender(crypto: PassthroughTransportCrypto(),
                                      transmit: { capture.append($0) })
         let feedback = FeedbackSender(demux: demux, sender: sender)
 
@@ -141,7 +141,7 @@ final class FeedbackPathTests: XCTestCase {
     }
 
     func testDispersionDecimatesToSectionBound() throws {
-        let demux = ReceiveDemux(crypto: InsecureTransportCrypto())
+        let demux = ReceiveDemux(crypto: PassthroughTransportCrypto())
         for i in 0..<200 {
             let envelope = Envelope(
                 channel: .videoActive, seq: ChannelSeq(rawValue: UInt16(i)),
@@ -150,7 +150,7 @@ final class FeedbackPathTests: XCTestCase {
                 datagram: try envelope.encode(payload: [1])[...],
                 arrivalMicroseconds: 5_000_000 + UInt64(i) * 100)
         }
-        let sender = TransportSender(crypto: InsecureTransportCrypto(),
+        let sender = TransportSender(crypto: PassthroughTransportCrypto(),
                                      transmit: { _ in true })
         let feedback = FeedbackSender(demux: demux, sender: sender)
         let report = feedback.buildReport(now: ClientTimestamp(microseconds: 6_000_000))
@@ -161,9 +161,9 @@ final class FeedbackPathTests: XCTestCase {
     }
 
     func testQueuedNacksFillOneReportAndSpillInOrder() throws {
-        let demux = ReceiveDemux(crypto: InsecureTransportCrypto())
+        let demux = ReceiveDemux(crypto: PassthroughTransportCrypto())
         let sender = TransportSender(
-            crypto: InsecureTransportCrypto(),
+            crypto: PassthroughTransportCrypto(),
             transmit: { _ in true }
         )
         let feedback = FeedbackSender(demux: demux, sender: sender)
@@ -201,8 +201,8 @@ final class FeedbackPathTests: XCTestCase {
     // MARK: - Cadence
 
     func testCadenceClampsToBuildPlanRange() {
-        let demux = ReceiveDemux(crypto: InsecureTransportCrypto())
-        let sender = TransportSender(crypto: InsecureTransportCrypto(),
+        let demux = ReceiveDemux(crypto: PassthroughTransportCrypto())
+        let sender = TransportSender(crypto: PassthroughTransportCrypto(),
                                      transmit: { _ in true })
         XCTAssertEqual(FeedbackSender(demux: demux, sender: sender,
                                       intervalMilliseconds: 10).cadenceMilliseconds, 25)
@@ -213,9 +213,9 @@ final class FeedbackPathTests: XCTestCase {
     }
 
     func testCadenceTimerFiresWithinTheWindow() throws {
-        let demux = ReceiveDemux(crypto: InsecureTransportCrypto())
+        let demux = ReceiveDemux(crypto: PassthroughTransportCrypto())
         let capture = Capture()
-        let sender = TransportSender(crypto: InsecureTransportCrypto(),
+        let sender = TransportSender(crypto: PassthroughTransportCrypto(),
                                      transmit: { capture.append($0) })
         let feedback = FeedbackSender(demux: demux, sender: sender,
                                       intervalMilliseconds: 25)
@@ -304,7 +304,7 @@ final class FeedbackPathTests: XCTestCase {
 
     func testSendPathAllocatesIndependentSeqsPerChannel() throws {
         let capture = Capture()
-        let sender = TransportSender(crypto: InsecureTransportCrypto(),
+        let sender = TransportSender(crypto: PassthroughTransportCrypto(),
                                      transmit: { capture.append($0) })
         try sender.send(channel: .feedback, timestamp: ClientTimestamp(microseconds: 0), plaintext: [1])
         try sender.send(channel: .ctrl, timestamp: ClientTimestamp(microseconds: 0), plaintext: [2])
