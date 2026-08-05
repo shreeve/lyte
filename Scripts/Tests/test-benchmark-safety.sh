@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 netem="$repo_root/Scripts/netem/port-netem.sh"
 benchmark="$repo_root/Scripts/benchmark-app.sh"
+benchmark_process="$repo_root/Scripts/lib/benchmark-process.sh"
 benchmark_netem="$repo_root/Scripts/benchmark-netem.sh"
 build_cli="$repo_root/Scripts/build-cli.sh"
 make_app="$repo_root/Scripts/make-app.sh"
@@ -13,7 +14,75 @@ vscode_launch="$repo_root/.vscode/launch.json"
 vscode_tasks="$repo_root/.vscode/tasks.json"
 fake_tc="$repo_root/Scripts/Tests/Fixtures/fake-tc.sh"
 test_root="$(mktemp -d)"
-trap 'rm -rf "$test_root"' EXIT
+ordinary_pid=""
+claimed_pid=""
+cleanup() {
+    [[ -z "$ordinary_pid" ]] || kill "$ordinary_pid" 2>/dev/null || true
+    [[ -z "$claimed_pid" ]] || kill "$claimed_pid" 2>/dev/null || true
+    rm -rf "$test_root"
+}
+trap cleanup EXIT
+
+source "$benchmark_process"
+
+# The owner guard runs before output creation, builds, or any pup operation,
+# and an unreadable process table fails closed.
+fake_pgrep="$test_root/fake-pgrep"
+cat > "$fake_pgrep" <<'EOF'
+#!/bin/sh
+case "${LYTE_FAKE_PGREP_RESULT:-match}" in
+  match) printf '%s\n' 4242; exit 0 ;;
+  empty) exit 1 ;;
+  error) exit 2 ;;
+esac
+exit 2
+EOF
+chmod +x "$fake_pgrep"
+blocked_out="$test_root/blocked-output"
+if LYTE_PGREP="$fake_pgrep" LYTE_FAKE_PGREP_RESULT=match \
+    "$benchmark" --no-build --out "$blocked_out" handshake-only \
+    >"$test_root/blocked.stdout" 2>"$test_root/blocked.stderr"
+then
+    echo "benchmark ignored an active Lyte process" >&2
+    exit 1
+fi
+[[ ! -e "$blocked_out" ]]
+grep -Fq 'PID(s): 4242' "$test_root/blocked.stderr"
+
+error_out="$test_root/error-output"
+if LYTE_PGREP="$fake_pgrep" LYTE_FAKE_PGREP_RESULT=error \
+    "$benchmark" --no-build --out "$error_out" handshake-only \
+    >"$test_root/error.stdout" 2>"$test_root/error.stderr"
+then
+    echo "benchmark trusted an unreadable process table" >&2
+    exit 1
+fi
+[[ ! -e "$error_out" ]]
+grep -Fq 'cannot inspect running Lyte processes' "$test_root/error.stderr"
+
+allowed_out="$test_root/allowed-output"
+mkdir -p "$test_root/bin"
+cat > "$test_root/bin/codesign" <<'EOF'
+#!/bin/sh
+echo "fake codesign reached" >&2
+exit 73
+EOF
+chmod +x "$test_root/bin/codesign"
+if PATH="$test_root/bin:$PATH" \
+    LYTE_PGREP="$fake_pgrep" LYTE_FAKE_PGREP_RESULT=empty \
+    "$benchmark" --no-build --out "$allowed_out" handshake-only \
+    >"$test_root/allowed.stdout" 2>"$test_root/allowed.stderr"
+then
+    echo "benchmark unexpectedly passed without a built app" >&2
+    exit 1
+fi
+[[ -d "$allowed_out" ]]
+if ! grep -Fq 'fake codesign reached' "$test_root/allowed.stderr" \
+    && ! grep -Fq 'missing signed app' "$test_root/allowed.stderr"
+then
+    echo "benchmark did not progress beyond an empty owner preflight" >&2
+    exit 1
+fi
 
 export LYTE_TC="$fake_tc"
 export LYTE_FAKE_TC_LOG="$test_root/tc.log"
@@ -79,6 +148,7 @@ then
 fi
 
 bash -n "$benchmark" "$benchmark_netem" "$pup_gate"
+sh -n "$benchmark_process"
 sh -n "$netem" "$build_cli" "$make_app"
 
 # The Client package lives under Client/, but every user-facing artifact stays
@@ -118,6 +188,85 @@ then
     echo "handshake-only regained retired process supervision" >&2
     exit 1
 fi
+grep -Fq 'refuse_if_lyte_is_running' "$benchmark"
+if grep -Eq 'FALLBACK_APP_PID|pgrep -n' "$benchmark"; then
+    echo "benchmark regained fallback PID guessing" >&2
+    exit 1
+fi
+if grep -Fq 'trap cleanup EXIT INT TERM' "$benchmark"; then
+    echo "benchmark regained a reentrant signal trap" >&2
+    exit 1
+fi
+grep -Fq 'trap cleanup EXIT' "$benchmark"
+grep -Fq "trap 'handle_signal 130' INT" "$benchmark"
+grep -Fq "trap 'handle_signal 143' TERM" "$benchmark"
+grep -Fq 'DiagnosticRunIdentity.publishIfRequested()' \
+    "$repo_root/Client/Sources/Lyte/LyteApp.swift"
+grep -Fq 'guard !DiagnosticRunIdentity.isRequested else { return }' \
+    "$repo_root/Client/Sources/Lyte/LyteApp.swift"
+grep -Fq 'registration: helperRegistration' \
+    "$repo_root/Client/Sources/Lyte/AgentMenu.swift"
+grep -Fq 'registration: self.helperRegistration' \
+    "$repo_root/Client/Sources/Lyte/AgentMenu.swift"
+grep -Fq 'case existingOnly' \
+    "$repo_root/Client/Sources/Lyte/HelperClient.swift"
+if grep -Fq 'LYTE_BENCHMARK_PIDFILE' \
+    "$repo_root/Client/Sources/Lyte/DiagnosticBenchmark.swift"
+then
+    echo "benchmark driver regained late PID publication" >&2
+    exit 1
+fi
+
+# Exercise the exact signal edge with real processes. A stale or forged PID
+# must survive; only a process whose executable and run argument both match
+# may be terminated.
+fake_app="$test_root/Lyte.app/Contents/MacOS/Lyte"
+mkdir -p "$(dirname "$fake_app")"
+cat > "$test_root/stay.c" <<'EOF'
+#include <signal.h>
+#include <unistd.h>
+int main(void) {
+    for (;;) pause();
+}
+EOF
+cc "$test_root/stay.c" -o "$fake_app"
+"$fake_app" ordinary >/dev/null &
+ordinary_pid=$!
+"$fake_app" --lyte-benchmark-run-id exact-run >/dev/null &
+claimed_pid=$!
+
+for _ in {1..100}; do
+    kill -0 "$ordinary_pid" 2>/dev/null \
+        && kill -0 "$claimed_pid" 2>/dev/null && break
+    sleep 0.01
+done
+! lyte_benchmark_claim_matches "$ordinary_pid" "$fake_app" exact-run
+claim_file="$test_root/benchmark.pid"
+printf '%s %s\n' "$ordinary_pid" exact-run > "$claim_file"
+! lyte_benchmark_terminate_claimed \
+    "$claim_file" "$ordinary_pid" "$fake_app" exact-run
+kill -0 "$ordinary_pid"
+printf '%s %s\n' 999999 exact-run > "$claim_file"
+! lyte_benchmark_terminate_claimed \
+    "$claim_file" 999999 "$fake_app" exact-run
+lyte_benchmark_claim_matches "$claimed_pid" "$fake_app" exact-run
+printf '%s %s %s\n' "$claimed_pid" exact-run forged > "$claim_file"
+! lyte_benchmark_terminate_claimed \
+    "$claim_file" "$claimed_pid" "$fake_app" exact-run
+kill -0 "$claimed_pid"
+printf '%s %s\n' "$claimed_pid" wrong-run > "$claim_file"
+! lyte_benchmark_terminate_claimed \
+    "$claim_file" "$claimed_pid" "$fake_app" exact-run
+kill -0 "$claimed_pid"
+printf '%s %s\n' "$claimed_pid" exact-run > "$claim_file"
+lyte_benchmark_terminate_claimed \
+    "$claim_file" "$claimed_pid" "$fake_app" exact-run
+wait "$claimed_pid" 2>/dev/null || true
+! kill -0 "$claimed_pid" 2>/dev/null
+claimed_pid=""
+kill "$ordinary_pid"
+wait "$ordinary_pid" 2>/dev/null || true
+ordinary_pid=""
 grep -Fq 'systemctl restart lyte-host' "$benchmark"
 grep -Fq 'systemctl show lyte-host --property MainPID --value' "$benchmark"
 

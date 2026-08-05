@@ -8,9 +8,25 @@ struct LyteApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
+        let diagnosticRequested: Bool
+        do {
+            diagnosticRequested = try DiagnosticRunIdentity.publishIfRequested()
+        } catch {
+            fputs(
+                "lyte benchmark identity: \(error.localizedDescription)\n",
+                stderr)
+            exit(74)
+        }
+
         // Headless helper registration: lets tooling (and CI) drive the
         // SMAppService dance without opening windows or streams.
         if CommandLine.arguments.contains("--register-helper") {
+            guard !diagnosticRequested else {
+                fputs(
+                    "lyte benchmark identity: helper registration refused\n",
+                    stderr)
+                exit(74)
+            }
             HelperClient.shared.registerIfNeeded()
             print("helper status: \(HelperClient.shared.statusDescription)")
             exit(0)
@@ -51,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard !DiagnosticRunIdentity.isRequested else { return }
         // Refresh (not just ensure) the AWDL helper registration: a
         // rebuilt binary's stale LWCR otherwise EX_CONFIGs every spawn.
         Task.detached(priority: .utility) {
