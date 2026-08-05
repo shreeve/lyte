@@ -3,8 +3,7 @@ import ServiceManagement
 import SwiftUI
 
 /// The agent (A0): Lyte's quiet menu-bar presence — the same binary wearing
-/// its always-on face (LYTE-PLAN §3: one program per platform, living in the
-/// menu bar). Fronts the client role today: new connections.
+/// its always-on face. Fronts the client role today: new connections.
 /// The Host toggle is visible but disabled until the Lyte host lands.
 struct AgentMenu: View {
     @Environment(\.openWindow) private var openWindow

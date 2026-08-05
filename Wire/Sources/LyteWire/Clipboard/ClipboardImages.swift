@@ -22,7 +22,7 @@
 // AND 12 both survived — the feature (clipboard) and the dialect
 // (image cargo). Key 11 is deliberately NOT in the gate: F-2 pinned
 // key 11's declaration as the STANDING FILE-DROP CONSENT, and the
-// Off / Text only / Text + images tier (LYTE-PLAN §8) must not
+// Off / Text only / Text + images tier (clipboard design §6) must not
 // couple image sync to file consent — an images-tier end speaks the
 // chan-8 bulk vocabulary for clipboard cargo whenever key 12 agreed,
 // key 11 or no. Declaration follows the tier: a text-only HOST

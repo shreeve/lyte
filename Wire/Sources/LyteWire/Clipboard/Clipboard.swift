@@ -202,8 +202,8 @@ public enum ClipboardLocalChangeVerdict: Equatable, Sendable {
     case suppressDuplicate
 }
 
-/// The loop-prevention/dedupe books both ends run identically (LYTE-PLAN
-/// §5's content-suppression discipline as one sans-IO value type): a
+/// The loop-prevention/dedupe books both ends run identically (the clipboard
+/// design's content-suppression discipline as one sans-IO value type): a
 /// remote set applied to the OS clipboard fires the OS's own change
 /// signal, and without these books each end would announce the peer's
 /// write back forever. The proof obligation — "a set must not
