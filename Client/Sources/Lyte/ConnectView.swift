@@ -1,12 +1,16 @@
 import SwiftUI
+import AppKit
 import LyteTransport
 
 /// The window's empty state (D6): discovered Lyte hosts and pairing.
 /// Melts away when the stream starts.
 struct ConnectView: View {
     @Bindable var model: ConnectionModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var lyteHosts: [DiscoveredLyteHost] = []
     @State private var browsing = false
+    @State private var accessProblem: LocalNetworkAccessProblem?
+    @State private var rescanWhenActive = false
     // CL-6: the pairing sheet's target, and a pinned-store snapshot for
     // the paired badges (reloaded after every pair/unpair).
     @State private var pairingTarget: DiscoveredLyteHost?
@@ -41,6 +45,11 @@ struct ConnectView: View {
             .ignoresSafeArea()
         }
         .task { await browse() }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active, rescanWhenActive else { return }
+            if case .failed = model.phase { model.phase = .pickHost }
+            Task { await browse(afterSettings: true) }
+        }
         .sheet(item: $pairingTarget) { host in
             LytePairingSheet(host: host) { pairedNow in
                 if pairedNow { pinnedStore = PinnedHostStore.load() }
@@ -64,6 +73,9 @@ struct ConnectView: View {
                 if lyteHosts.isEmpty && browsing {
                     ProgressView("Looking for hosts…")
                         .controlSize(.small)
+                } else if lyteHosts.isEmpty,
+                          accessProblem == .permissionRequired {
+                    localNetworkPermissionView
                 } else if lyteHosts.isEmpty {
                     Text("No hosts found on this network")
                         .foregroundStyle(.secondary)
@@ -81,10 +93,44 @@ struct ConnectView: View {
         .padding(32)
     }
 
-    private func browse() async {
-        browsing = true
-        lyteHosts = await LyteDiscovery.browse(duration: 3.0)
-        browsing = false
+    private func browse(afterSettings: Bool = false) async {
+        if afterSettings { rescanWhenActive = true }
+        guard !browsing else { return }
+        while true {
+            // Claim the Settings-return intent only when this scan is truly
+            // about to start. An older scan leaves the flag queued and
+            // consumes it immediately after completion.
+            if rescanWhenActive, scenePhase == .active {
+                rescanWhenActive = false
+            }
+            browsing = true
+            let scan = await LyteDiscovery.scan(duration: 3.0)
+            lyteHosts = scan.hosts
+            accessProblem = scan.accessProblem
+            browsing = false
+            guard rescanWhenActive, scenePhase == .active else { return }
+        }
+    }
+
+    private var localNetworkPermissionView: some View {
+        VStack(spacing: 8) {
+            Text("Local Network access is required")
+                .fontWeight(.medium)
+            Text("Allow Lyte in the macOS prompt. If you previously chose "
+                + "Don’t Allow, enable Lyte in System Settings → Privacy & "
+                + "Security → Local Network.")
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
+            Button("Open System Settings") { openSystemSettings() }
+                .buttonStyle(.bordered)
+        }
+    }
+
+    private func openSystemSettings() {
+        rescanWhenActive = true
+        NSWorkspace.shared.open(URL(
+            fileURLWithPath: "/System/Applications/System Settings.app"))
     }
 
     /// One Lyte host row: unpaired opens the pairing sheet; paired is a
@@ -219,20 +265,55 @@ struct ConnectView: View {
 
     // MARK: - Failure
 
-    private func failedView(_ message: String) -> some View {
+    private func failedView(_ failure: ConnectionModel.Failure) -> some View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 40))
                 .foregroundStyle(.orange)
-            Text(message)
+            Text(failureTitle(failure))
                 .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-            Button("Start Over") { model.phase = .pickHost }
+            if case .localNetwork(let problem, _) = failure {
+                Text(localNetworkRecovery(problem))
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 520)
+                Button("Open System Settings") { openSystemSettings() }
+                    .buttonStyle(.bordered)
+            }
+            Button("Start Over") {
+                model.phase = .pickHost
+                Task { await browse() }
+            }
                 .buttonStyle(.borderedProminent)
             Spacer()
         }
         .padding(32)
+    }
+
+    private func failureTitle(_ failure: ConnectionModel.Failure) -> String {
+        switch failure {
+        case .ordinary(let message):
+            return message
+        case .localNetwork:
+            return "Lyte couldn’t reach this host on the local network."
+        }
+    }
+
+    private func localNetworkRecovery(
+        _ problem: LocalNetworkAccessProblem
+    ) -> String {
+        switch problem {
+        case .permissionRequired:
+            return "Lyte is waiting for Local Network access. Allow it in "
+                + "the macOS prompt, or enable Lyte in System Settings → "
+                + "Privacy & Security → Local Network. Then return here; "
+                + "Lyte will search again."
+        case .routeOrPermissionUnavailable:
+            return "The route may be unavailable, or Local Network access "
+                + "may be off. Check Lyte in System Settings → Privacy & "
+                + "Security → Local Network, then return here to retry."
+        }
     }
 }
 

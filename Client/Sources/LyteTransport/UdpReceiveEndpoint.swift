@@ -422,8 +422,19 @@ final class SocketHandshakeIO: NoiseHandshakeIO {
             "durationNanoseconds": String(
                 SystemMonotonicClock.nowNanoseconds &- started),
         ])
-        guard sent == datagram.count else {
-            throw TransportEndpointError.socketFailed(errno: errno)
+        try Self.validateSend(
+            sent: sent, expected: datagram.count,
+            capturedErrno: sendErrno)
+    }
+
+    /// `errno` belongs to the failing syscall, not to later diagnostics.
+    /// Keep this seam executable so logging can never silently change the
+    /// transport error that reaches recovery policy.
+    static func validateSend(
+        sent: Int, expected: Int, capturedErrno: Int32
+    ) throws {
+        guard sent == expected else {
+            throw TransportEndpointError.socketFailed(errno: capturedErrno)
         }
     }
 
