@@ -20,14 +20,15 @@ existed when they were authored. Recover its final form with
 - [BROWSER.md](BROWSER.md) — current browser-client direction: the proven
   WASM boundary, WebTransport carrier, WebCodecs/WebGPU canvas path,
   Conductor ownership, and the commissioning ladder.
-- [DESIGN.md](DESIGN.md) — product design decisions (the 2×2
-  intent×network grid, D1–D6ff); update as decisions land.
+- [DESIGN.md](DESIGN.md) — product and interaction decisions, with shipping
+  behavior distinguished from directional intent.
 - [MACOS-SIGNING.md](MACOS-SIGNING.md) — signing, bundling, and
   helper-registration reference for the Mac app.
 - [THIRD-PARTY.md](THIRD-PARTY.md) — dependency licenses, pinned source
   provenance, and binary-notice obligations.
 - [COMPARISON.md](COMPARISON.md) — where Lyte stands against
-  conferencing share, remote desktop, and its game-streaming lineage.
+  conferencing share, remote desktop, and game streaming, with dated Lyte
+  evidence kept distinct from qualitative product comparisons.
 
 ## The protocol spec (frozen; reference, don't restate)
 
@@ -57,7 +58,8 @@ existed when they were authored. Recover its final form with
   the flip-day capability matrix and punch list. CLOSED (see banner).
 - [20260802-013946 postures design](20260802-013946-postures-design.md) —
   announced quiet/wake postures, tripwire audio + pre-roll, the REWIND,
-  Lyte OS north star. THE ACTIVE TRACK.
+  and the Lyte OS north star. Settled direction; `TODO.md` owns the remaining
+  refinements.
 - [20260803-050422 THE CONDUCTOR](20260803-050422-metronome-playout-design.md) —
   one score, one clock, many instruments: the six laws of on-beat
   playout (cue/beat/late/hole/slip/chain), audio + video on one
@@ -86,9 +88,10 @@ existed when they were authored. Recover its final form with
 ## Studies and scoping (banked, not scheduled)
 
 - [20260720-184200 browser client + Caddy bridge](20260720-184200-browser-client-caddy-bridge.md) —
-  parked post-H6 plan of record.
+  frozen first bridge consult; [BROWSER.md](BROWSER.md) owns current direction.
 - [20260728-054139 browser viewer scoping](20260728-054139-lyte-browser-viewer-scoping.md) —
-  B-2+ waits on the owner's QUIC posture decision (§6).
+  frozen WASM/browser survey and original slice ladder; its first WASM proof
+  has landed, while [BROWSER.md](BROWSER.md) owns what remains uncommissioned.
 - [20260728-175200 wire v2 study](20260728-175200-lyte-wire-v2-study.md) —
   the pre-written v2 batch (fec group-index rides it).
 - [20260801-075746 pup scan-stall study](20260801-075746-lyte-pup-scan-stall-study.md) —

@@ -15,17 +15,20 @@ desktop.
 
 ## Product model
 
-The user states intent; Lyte derives settings. Every streaming decision
-falls on two axes:
+The long-term product model is that the user states intent and Lyte derives
+settings. Policy falls on two axes:
 
 | | **Local** | **Remote** |
 |---|---|---|
 | **Work** | native pixels, maximum text fidelity, free mouse | adaptive, resilient, legible desktop |
 | **Play** | minimum latency, fullscreen, locked mouse | conservative latency-first stream |
 
-The user chooses **Work** or **Play**. Local versus remote is detected from
-address and measured RTT/jitter. Bitrate, resolution, buffer depth, chroma,
-and other concrete values are policy results—not a preset farm.
+The current app does not yet expose Work/Play. It connects directly to a host
+and keeps its explicit controls to real declarations and consent, while rate,
+repair, pacing, and Conductor reserve already derive from live evidence. When
+Work/Play ships, Local versus Remote will be detected from address and measured
+path behavior. See [`docs/DESIGN.md`](docs/DESIGN.md) for the shipping versus
+directional boundary.
 
 The long-term product is one program named Lyte on each platform. It can be
 a client, a host, or both; discovery, pairing, identity, and feature consent
@@ -49,7 +52,7 @@ limited to narrow leaves such as DRM/EGL/VAAPI, PipeWire, the pinned Opus
 codec, UDP syscalls, uinput, and the vendored Reed-Solomon implementation.
 `LyteWire` and `LyteCore` are sans-IO and lint-guarded; committed vectors
 under `Wire/Vectors/` are append-only wire contracts tested byte-for-byte
-on macOS and Linux.
+on macOS, Linux, and WebAssembly.
 
 The direct media path avoids general-purpose transcoding stacks. The Linux
 host reads KMS scanout, performs its color conversion on the GPU, and drives
@@ -100,6 +103,10 @@ The order ahead is deliberate:
 3. Add Windows and Linux client/host shells around the same shared cores.
 4. Consider browser, mobile, and relay surfaces only after the native path
    earns them.
+
+The current browser boundary and eventual commissioning ladder live in
+[`docs/BROWSER.md`](docs/BROWSER.md); the passing WASM wire suite is a
+portability proof, not a browser client.
 
 Remote v1 means direct UDP on the LAN and Tailscale or an explicit port
 forward beyond it. Lyte does not ship a rendezvous or TURN fleet today.
