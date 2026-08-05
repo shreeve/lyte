@@ -4,13 +4,13 @@
 
 ## Resume here
 
-- **Branch:** resume on clean `main` after the #178 landing; do not continue on
+- **Branch:** resume on clean `main` after the #179 landing; do not continue on
   its merged feature branch.
-- **GitHub:** PR #178 landed the first IO-free `LyteClientSession` organ with
-  full Mac, pup, and standalone Linux-target proof.
+- **GitHub:** PR #179 replaced `COpusEncode` with Swift `HostAudio` policy over
+  the one pinned `COpus` leaf, with full Mac, pup, and live-audio proof.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** replace `COpusEncode` with the pinned `COpus`
-  Swift-facing leaf and delete the duplicate C codec-policy wrapper.
+- **Current objective:** extract pure host session policy behind injected time
+  and randomness without moving sockets, queues, persistence, or Linux IO.
 
 ## Last green gates
 
@@ -110,6 +110,18 @@ are now IO-free value policy; locks, clocks, timers, wire sends, callbacks,
 media handling, and platform IO remain in `LyteTransport`. Frozen vectors were
 unchanged.
 
+The Swift host-audio extraction passed macOS Common 93, Wire 513, Host 340,
+Client 299, and SystemTests 17 plus benchmark safety, signing, 25 analyzers,
+app identity, the signed CLI, hermetic linkage, and double signed release-app
+assembly. Pup passed Common 94, Wire 513, and Host 341 plus warning-enforced
+debug and release builds, direct pinned-Opus symbol linkage, socket and pacing
+harnesses, and protected-state verification. A two-second live pup audio run
+produced 398 hard-CBR packets: exactly 200.0 packets/s, 80 bytes each, 5,000 us
+between every graph-clock timestamp, and clean decode-back. `COpusEncode` is
+deleted; `HostAudio` owns codec policy in Swift, while one policy-free inline C
+bridge remains solely because Swift cannot import variadic functions. Frozen
+vectors were unchanged.
+
 ## Current live rig
 
 ### Client
@@ -186,13 +198,11 @@ automatic response; no policy change was earned.
 
 Keep every landing small and green. The remaining order is:
 
-1. Replace `COpusEncode` with the pinned `COpus` Swift-facing leaf and delete
-   the duplicate C codec-policy wrapper.
-2. Extract pure host session policy behind injected time and randomness.
-3. Make application composition roots explicit.
-4. Remove executable insecure/plaintext production paths while preserving
+1. Extract pure host session policy behind injected time and randomness.
+2. Make application composition roots explicit.
+3. Remove executable insecure/plaintext production paths while preserving
    test-only frozen-vector equipment.
-5. Finish documentation and architectural ratchets, then repeat clean macOS,
+4. Finish documentation and architectural ratchets, then repeat clean macOS,
    pup, WASM, and live-rig commissioning.
 
 ## Recovery pointers
