@@ -1,7 +1,7 @@
 import XCTest
 import HostCore
 import HostSession
-import HostWire
+@_spi(Testing) import HostWire
 import LyteWire
 import LyteWireTestKit
 
@@ -53,7 +53,7 @@ final class UnprotectableFrameGateTests: XCTestCase {
     private func makeSession(box: Box) -> Session {
         Session(
             config: SessionConfig(
-                crypto: .insecure, rateBitsPerSecond: Self.rate
+                crypto: .testPassthrough, rateBitsPerSecond: Self.rate
             ),
             clientTuple: Self.tuple,
             now: 0,

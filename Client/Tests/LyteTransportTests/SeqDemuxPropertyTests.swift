@@ -1,4 +1,5 @@
 import XCTest
+import LyteClientTestKit
 import LyteTransport
 import LyteWire
 import LyteWireTestKit
@@ -117,7 +118,7 @@ final class SeqDemuxPropertyTests: XCTestCase {
     /// channels never see each other's seqs.
     func testDemuxIsolatesChannelsUnderShuffle() throws {
         var rng = SplitMix64(seed: 0x51CE_C1E1)
-        let demux = ReceiveDemux(crypto: InsecureTransportCrypto())
+        let demux = ReceiveDemux(crypto: PassthroughTransportCrypto())
 
         var datagrams: [[UInt8]] = []
         for channel in [ChannelId.videoActive, ChannelId.audio] {

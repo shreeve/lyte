@@ -142,7 +142,7 @@ public struct VideoFrameVector: Codable, Sendable {
     }
 }
 
-/// One frozen shard datagram (envelope + payload, `--insecure` framing).
+/// One frozen bare shard datagram (envelope + payload) for contract tests.
 public struct VideoShardVector: Codable, Sendable {
     public var seq: UInt16
     /// The envelope fec field, hex u64.

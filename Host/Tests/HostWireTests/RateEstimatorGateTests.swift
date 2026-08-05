@@ -1,7 +1,7 @@
 import XCTest
 import HostCore
 import HostSession
-import HostWire
+@_spi(Testing) import HostWire
 import LyteWire
 import LyteWireTestKit
 
@@ -2385,7 +2385,7 @@ final class RateEstimatorGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .insecure, rateBitsPerSecond: Self.ceiling,
+                crypto: .testPassthrough, rateBitsPerSecond: Self.ceiling,
                 beaconIntervalNS: 1 << 62
             ),
             clientTuple: Self.tupleA,
@@ -2465,7 +2465,7 @@ final class RateEstimatorGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .insecure, rateBitsPerSecond: Self.ceiling,
+                crypto: .testPassthrough, rateBitsPerSecond: Self.ceiling,
                 beaconIntervalNS: 1 << 62
             ),
             clientTuple: Self.tupleA,
@@ -2509,7 +2509,7 @@ final class RateEstimatorGateTests: XCTestCase {
         let box = Box()
         let session = Session(
             config: SessionConfig(
-                crypto: .insecure, rateBitsPerSecond: Self.ceiling
+                crypto: .testPassthrough, rateBitsPerSecond: Self.ceiling
             ),
             clientTuple: Self.tupleA,
             now: 0,

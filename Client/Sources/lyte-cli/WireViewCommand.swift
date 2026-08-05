@@ -28,10 +28,8 @@ struct WireView: AsyncParsableCommand {
         commandName: "wire-view",
         abstract: "Render an incoming Lyte-UDP video stream in a window (wire-listen + eyes).")
 
-    @Argument(help: "UDP port to bind (0 picks a free port; in Noise mode also the host's listen port unless --host-port)") var port: UInt16
+    @Argument(help: "UDP port to bind (0 picks a free port; also the host's listen port unless --host-port)") var port: UInt16
     @Option(name: .long, help: "Address to bind") var bind: String = "0.0.0.0"
-    @Flag(name: .long, help: "CP-3 recorded fallback: accept payloads with NO crypto")
-    var insecure = false
     @Option(name: .long, help: "Noise mode: the host's static public key, 64 hex digits (printed by lyte-host at start). Omit it once paired — the pinned key + Keychain identity take over (CL-6)")
     var hostKey: String?
     @Option(name: .long, help: "Noise mode: the host's address")
@@ -64,9 +62,6 @@ struct WireView: AsyncParsableCommand {
     var inputScript: String?
 
     func validate() throws {
-        if insecure, hostKey != nil {
-            throw ValidationError("--insecure and --host-key are mutually exclusive")
-        }
         if let inputScript {
             _ = try InputScript.parse(inputScript)   // fail before the dial
         }
@@ -111,9 +106,7 @@ struct WireView: AsyncParsableCommand {
         defer { ProcessInfo.processInfo.endActivity(activity) }
 
         let crypto: any TransportCrypto
-        if insecure {
-            crypto = InsecureTransportCrypto()
-        } else if let hostKey {
+        if let hostKey {
             // Explicit key: throwaway client static, exactly as before —
             // the debug-harness posture (a --require-paired host will
             // refuse the unpinned static; that refusal is the feature).
@@ -131,7 +124,7 @@ struct WireView: AsyncParsableCommand {
                   let key = pinned.staticPublicKey
             else {
                 throw ValidationError(
-                    "\(host) is not paired — run `lyte-cli wire-pair \(host) --pin <PIN>` first, pass --host-key <64-hex> for a one-off, or --insecure for the recorded CP-3 fallback")
+                    "\(host) is not paired — run `lyte-cli wire-pair \(host) --pin <PIN>` first or pass --host-key <64-hex> for a one-off")
             }
             let identity: NoiseKeyPair
             do {
@@ -289,9 +282,7 @@ struct WireView: AsyncParsableCommand {
                 }
             })
 
-        if !insecure {
-            print("wire-view: Noise IK handshake → \(host):\(hostPort == 0 ? port : hostPort) …")
-        }
+        print("wire-view: Noise IK handshake → \(host):\(hostPort == 0 ? port : hostPort) …")
         do {
             try session.start()
         } catch let error as TransportCryptoError {
@@ -310,9 +301,6 @@ struct WireView: AsyncParsableCommand {
            noise.retryChallengesAnsweredSnapshot > 0 {
             print("wire-view: dial answered \(noise.retryChallengesAnsweredSnapshot) "
                 + "retry challenge(s) (0x13 → 0x14, same msg1)")
-        }
-        if insecure {
-            print("wire-view: *** INSECURE MODE — payloads are neither encrypted nor authenticated ***")
         }
         print("wire-view: capability declaration sent (0x0F, first reliable word); "
             + "feedback cadence \(core.feedback.cadenceMilliseconds) ms")

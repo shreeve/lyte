@@ -14,9 +14,9 @@
 //     path challenges — is sealed
 //     under the transport with the exact header bytes (fixed envelope +
 //     TLV block) as AAD, mirroring the client seam (CL-1/CL-3) so both
-//     directions speak identical crypto. `--insecure` (CP-3 fallback,
-//     §4.1) is the same wiring with a passthrough seal; the default is
-//     Noise, and geometry/pacing are mode-identical by construction.
+//     directions speak identical crypto. A test-only passthrough keeps
+//     geometry and pacing independently provable without becoming an
+//     executable mode.
 //   • the 1 Hz clock beacon on CTRL (§4.6, W4a): beaconSeq from 0 at
 //     session start plus one beacon at establishment; t1 is the host
 //     graph-clock µs the caller injects. Client BeaconEchoes come back
@@ -69,11 +69,9 @@ public enum SessionCryptoMode: Sendable {
     /// static keypair; the transport derives from the completed
     /// handshake.
     case noise(hostStatic: NoiseKeyPair)
-    /// The CP-3 recorded `--insecure` fallback (§4.1): passthrough seal,
-    /// no handshake — the session is established from init and streams
-    /// to the configured peer. Same wiring, same geometry, mandatory
-    /// re-gate with Noise.
-    case insecure
+    /// Test-only passthrough: no handshake or authentication. Shipping
+    /// executables cannot select it; gates use it to isolate wire geometry.
+    @_spi(Testing) case testPassthrough
 }
 
 public struct SessionConfig: Sendable {
@@ -910,7 +908,7 @@ public final class Session {
         let lifecycleEstablishedAt: UInt64?
         switch config.crypto {
         case .noise: lifecycleEstablishedAt = nil
-        case .insecure: lifecycleEstablishedAt = now
+        case .testPassthrough: lifecycleEstablishedAt = now
         }
         self.lifecycleLane = SessionLifecycleLane(
             config: config.lifecycle,
@@ -923,7 +921,7 @@ public final class Session {
             config: config.path,
             rng: rng
         )
-        if case .insecure = config.crypto {
+        if case .testPassthrough = config.crypto {
             // No handshake to wait for; the session-start beacon (and
             // the capability declaration) leave on the first `advance`.
             self.beaconClock.armSessionStart(at: now)
@@ -3131,7 +3129,7 @@ public final class Session {
         envelope: Envelope
     ) throws -> [UInt8] {
         switch config.crypto {
-        case .insecure:
+        case .testPassthrough:
             return Array(plaintext)
         case .noise:
             guard transport != nil else { throw SessionError.notEstablished }
@@ -3147,7 +3145,7 @@ public final class Session {
         envelope: Envelope
     ) throws -> [UInt8] {
         switch config.crypto {
-        case .insecure:
+        case .testPassthrough:
             return Array(wirePayload)
         case .noise:
             guard transport != nil else { throw SessionError.notEstablished }

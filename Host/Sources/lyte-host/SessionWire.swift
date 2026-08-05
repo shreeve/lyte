@@ -8,14 +8,12 @@
 // per packet is J-G1's tcpdump check), and the forced-IDR + VBV polls
 // the encoder consults before each frame.
 //
-// Modes (extending HS-5's --wire-out into a real session):
-//   • Noise (default): bind, print the host static public key, block
+// Mode (extending HS-5's --wire-out into a real session):
+//   • Noise: bind, print the host static public key, block
 //     until a client's IK message 1 arrives (that datagram's source is
 //     the session's initial validated tuple), connect() to it, complete
 //     the handshake, then stream. `--wire-listen PORT` binds a fixed
 //     port; `--wire-out HOST:PORT` pre-connects and still awaits msg1.
-//   • `--insecure` (CP-3 fallback, §4.1): stream to the fixed peer
-//     immediately, passthrough seal — same wiring, mandatory re-gate.
 //
 // Threading honesty, amended at HS-15 and again at the fps-ceiling fix:
 // the VIDEO PipeWire loop thread runs capture → encode → sendFrame
@@ -109,7 +107,6 @@ final class SessionWire {
     /// threading note in the header). Held across service passes,
     /// released across sleeps.
     private let lock = NSLock()
-    private let insecure: Bool
     private let rateBitsPerSecond: Int
     /// What this host declares in the W7 exchange (HS-18: key 9 rides
     /// here when the audio leg is on).
@@ -454,12 +451,11 @@ final class SessionWire {
     /// - Parameters:
     ///   - listenPort: bind here and await a connecting client (nil =
     ///     kernel-assigned port, requires `peer`).
-    ///   - peer: pre-connected far end (insecure mode's fixed peer; in
-    ///     Noise mode message 1 must still arrive from it).
+    ///   - peer: optional pre-connected far end; Noise message 1 must
+    ///     still arrive from it before the session is established.
     init(
         listenPort: UInt16?,
         peer: (host: String, port: UInt16)?,
-        insecure: Bool,
         rateBitsPerSecond: Int,
         capabilities: Capabilities = .wireDefault,
         allowedClientStatics: [[UInt8]]? = nil,
@@ -474,11 +470,6 @@ final class SessionWire {
         // allocation. A throw after the drain thread holds `self` would
         // leave that thread on a deinit'd object — nothing may throw
         // past thread.start() below.
-        if insecure, peer == nil {
-            throw HostError("--insecure streams to a fixed peer; "
-                + "give --wire-out HOST:PORT")
-        }
-        self.insecure = insecure
         self.rateBitsPerSecond = rateBitsPerSecond
         self.capabilities = capabilities
         self.allowedClientStatics = allowedClientStatics
@@ -543,22 +534,6 @@ final class SessionWire {
         }
         thread.name = "lyte-wire-drain"
         thread.start()
-
-        if insecure {
-            // Validated above the allocations: insecure implies peer.
-            let peer = peer!
-            makeSession(
-                crypto: .insecure,
-                clientTuple: FourTuple(
-                    localAddress: "0.0.0.0",
-                    localPort: lyte_netio_local_port(n),
-                    remoteAddress: peer.host, remotePort: peer.port
-                )
-            )
-            print("session: INSECURE passthrough (CP-3 fallback — no "
-                + "crypto, re-gate when a paired client exists) → "
-                + "\(peer.host):\(peer.port)")
-        }
     }
 
     deinit {

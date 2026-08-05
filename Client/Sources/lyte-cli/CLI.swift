@@ -7,7 +7,7 @@ struct LyteCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "lyte-cli",
         abstract: "Lyte development CLI — discover, pair with, and stream from Lyte-UDP hosts.",
-        subcommands: [WireListen.self, WireView.self, WireSend.self, WireDiscover.self, WirePair.self, WireUnpair.self, DecodeProbe.self, CorpusGen.self, CorpusGate.self]
+        subcommands: [WireListen.self, WireView.self, WireDiscover.self, WirePair.self, WireUnpair.self, DecodeProbe.self, CorpusGen.self, CorpusGate.self]
     )
 }
 

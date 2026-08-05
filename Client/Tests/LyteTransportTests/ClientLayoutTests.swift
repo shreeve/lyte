@@ -44,6 +44,27 @@ final class ClientLayoutTests: XCTestCase {
         )
     }
 
+    func testShippingClientHasNoPlaintextTransportMode() throws {
+        let root = URL(fileURLWithPath: ClientTestPaths.repositoryRoot)
+            .appendingPathComponent("Client/Sources")
+        for target in ["Lyte", "LyteTransport", "lyte-cli"] {
+            let targetRoot = root.appendingPathComponent(target)
+            for file in try swiftFiles(beneath: targetRoot) {
+                let source = try String(contentsOf: file, encoding: .utf8)
+                XCTAssertFalse(
+                    source.contains("--insecure"),
+                    "shipping plaintext option returned in \(file.path)"
+                )
+                XCTAssertFalse(
+                    source.contains("PassthroughTransportCrypto"),
+                    "test transport entered shipping target \(file.path)"
+                )
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root
+            .appendingPathComponent("lyte-cli/WireSendCommand.swift").path))
+    }
+
     func testSessionEndpointPublishesCoreThroughWeakSynchronizedSeam() throws {
         let source = try String(
             contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
@@ -225,5 +246,21 @@ final class ClientLayoutTests: XCTestCase {
         ).filter {
             try $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
         }.map(\.lastPathComponent).sorted()
+    }
+
+    private func swiftFiles(beneath root: URL) throws -> [URL] {
+        let keys: [URLResourceKey] = [.isRegularFileKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return try enumerator.compactMap { item in
+            guard let url = item as? URL,
+                  url.pathExtension == "swift",
+                  try url.resourceValues(forKeys: Set(keys)).isRegularFile == true
+            else { return nil }
+            return url
+        }
     }
 }

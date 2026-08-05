@@ -2,7 +2,7 @@ import XCTest
 import Foundation
 import HostCore
 import HostSession
-import HostWire
+@_spi(Testing) import HostWire
 import LyteWire
 import LyteWireTestKit
 
@@ -121,7 +121,7 @@ final class FallPurgeGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .insecure,
+                crypto: .testPassthrough,
                 rateBitsPerSecond: 2_000_000,
                 beaconIntervalNS: 1 << 62
             ),
@@ -250,13 +250,13 @@ final class FallPurgeGateTests: XCTestCase {
 
     func testQueueBudgetDefaultsAndImpairedClamp() {
         let defaults = SessionConfig(
-            crypto: .insecure, rateBitsPerSecond: 20_000_000
+            crypto: .testPassthrough, rateBitsPerSecond: 20_000_000
         )
         XCTAssertEqual(defaults.cleanVideoQueueBudgetNS, 50_000_000)
         XCTAssertEqual(defaults.impairedVideoQueueBudgetNS, 100_000_000)
 
         let clamped = SessionConfig(
-            crypto: .insecure,
+            crypto: .testPassthrough,
             rateBitsPerSecond: 20_000_000,
             cleanVideoQueueBudgetNS: 40_000_000,
             impairedVideoQueueBudgetNS: 500_000_000
@@ -340,7 +340,7 @@ final class FallPurgeGateTests: XCTestCase {
         var sent: [VideoChannelDatagram] = []
         let session = Session(
             config: SessionConfig(
-                crypto: .insecure,
+                crypto: .testPassthrough,
                 rateBitsPerSecond: 2_000_000,
                 beaconIntervalNS: 1 << 62
             ),

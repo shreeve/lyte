@@ -8,7 +8,7 @@
 // everywhere and the caller owns scheduling and syscalls.
 //
 // Crypto seam (§4.1), filled at HS-7: `seal` is injected — the Session's
-// NoiseTransport (or the `--insecure` passthrough) turns each plaintext
+// NoiseTransport turns each plaintext
 // shard into the wire payload with the exact header bytes (fixed envelope
 // + TLV block) as AAD, the same discipline the client's TransportSender
 // pins. Nil (the pre-session HS-5 shape) keeps bare-plaintext framing.
@@ -20,8 +20,8 @@
 // (24 + 11 + 1112 + 16 = 1163), so the geometry here derives from the
 // same parity ladder but with the real headroom: shard ≤ 1128 − tag −
 // TLV block (1101 B with the conn-id, 1112 B without). The tag is
-// reserved in `--insecure` mode too, so FEC geometry never depends on
-// the crypto mode (the §4.2 rule). This is why packetization moved
+// reserved for test-only bare framing too, so FEC geometry never depends
+// on the crypto seam (the §4.2 rule). This is why packetization moved
 // in-house from LyteWire.VideoPacketizer: the table cannot be told about
 // TLV headroom and Wire/ is not this slice's territory. Everything else
 // (balanced split, FecField interior, contiguous ascending seq per
@@ -77,7 +77,7 @@ public struct VideoChannelDatagram: Hashable, Sendable {
 
 /// The HS-7 crypto seam: exact header bytes as AAD, envelope for nonce
 /// material, plaintext in, wire payload (ciphertext ‖ tag, or the shard
-/// unchanged in `--insecure`) out. Mirrors the client seam's shape.
+/// unchanged in test-only gates) out. Mirrors the client seam's shape.
 public typealias VideoChannelSealer = (
     _ plaintext: ArraySlice<UInt8>,
     _ aad: ArraySlice<UInt8>,

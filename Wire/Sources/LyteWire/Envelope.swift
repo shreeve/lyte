@@ -16,8 +16,9 @@
 //   24     …    [TLV block when flags bit0] then payload
 //
 // The header (fixed 24 bytes plus any TLV block) rides as AAD; the payload
-// is the AEAD ciphertext + tag once W5 lands, or the bare shard in
-// `--insecure` mode. Budgets are enforced at encode time: 1112 B per
+// is the AEAD ciphertext + authentication tag in a live session. Bare
+// shards exist only as frozen-vector/test equipment. Budgets are enforced
+// at encode time: 1112 B per
 // plaintext shard, 1128 B per wire payload, 1152 B per datagram.
 
 public struct Envelope: Hashable, Sendable {

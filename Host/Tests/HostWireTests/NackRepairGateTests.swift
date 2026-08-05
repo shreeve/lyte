@@ -1,7 +1,7 @@
 import XCTest
 import HostCore
 import HostSession
-import HostWire
+@_spi(Testing) import HostWire
 import LyteWire
 import LyteWireTestKit
 
@@ -69,7 +69,7 @@ final class NackRepairGateTests: XCTestCase {
         tweak: (inout SessionConfig) -> Void = { _ in }
     ) -> Session {
         var config = SessionConfig(
-            crypto: .insecure, rateBitsPerSecond: Self.ceiling
+            crypto: .testPassthrough, rateBitsPerSecond: Self.ceiling
         )
         tweak(&config)
         return Session(
