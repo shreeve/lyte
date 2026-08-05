@@ -103,6 +103,11 @@ final class ClientLayoutTests: XCTestCase {
                 "Client/Sources/LyteClientSession/"
                     + "ClientClipboardSession.swift"),
             encoding: .utf8)
+        let cursor = try String(
+            contentsOf: root.appendingPathComponent(
+                "Client/Sources/LyteClientSession/"
+                    + "ClientCursorSession.swift"),
+            encoding: .utf8)
 
         XCTAssertTrue(transport.contains(
             "private var controlSession: ClientControlSession"))
@@ -121,6 +126,7 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertFalse(transport.contains("ClipboardAnnounce.decode"))
         XCTAssertFalse(transport.contains("ClipboardSyncBook"))
         XCTAssertFalse(transport.contains("ClipboardImageChannel("))
+        XCTAssertFalse(transport.contains("CursorShape.decode"))
         XCTAssertFalse(transport.contains("private var clipboardSharingOn"))
         XCTAssertFalse(transport.contains("private var clipboardImagesOn"))
         XCTAssertFalse(transport.contains("private var hostAudioPosture"))
@@ -138,10 +144,13 @@ final class ClientLayoutTests: XCTestCase {
             "private var audioRouting: ClientAudioRoutingSession"))
         XCTAssertTrue(control.contains(
             "private var clipboard: ClientClipboardSession"))
+        XCTAssertTrue(control.contains(
+            "private var cursor: ClientCursorSession"))
         XCTAssertTrue(audioRouting.contains("AudioRoutingStatus.decode"))
         XCTAssertTrue(clipboard.contains("ClipboardAnnounce.decode"))
         XCTAssertTrue(clipboard.contains("ClipboardSyncBook"))
         XCTAssertTrue(clipboard.contains("ClipboardImageChannel("))
+        XCTAssertTrue(cursor.contains("CursorShape.decode"))
     }
 
     func testClientCapabilitySessionAloneOwnsTheAgreedSet() throws {
