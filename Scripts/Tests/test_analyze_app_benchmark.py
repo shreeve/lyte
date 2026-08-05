@@ -411,6 +411,31 @@ class AnalyzerTests(unittest.TestCase):
         result = self.analyze(fixtures[-1], samples=fixtures)
         self.assertIn("quality_phase_ambiguous", result["failures"])
 
+    def test_warmup_readback_race_is_not_phase_ambiguity(self):
+        fixtures = [
+            quality_sample(1.0, 60),
+            quality_sample(2.0, 120),
+            quality_sample(4.0, 240),
+            quality_sample(5.0, 300),
+        ]
+        fixtures[0]["quality"]["error"] = "no_displayed_pixel_buffer"
+        fixtures[0]["quality"]["psnrMinDB"] = None
+        fixtures[0]["quality"]["lumaSSIM"] = None
+        fixtures[0]["quality"]["syntheticFrameID"] = None
+        fixtures[0]["quality"]["phaseMatched"] = None
+
+        result = self.analyze(fixtures[-1], samples=fixtures)
+
+        self.assertEqual(result["verdict"], "PASS")
+        self.assertNotIn("quality_phase_ambiguous", result["failures"])
+        self.assertEqual(
+            result["quality"]["readbackErrors"],
+            [{
+                "elapsedSeconds": 1.0,
+                "error": "no_displayed_pixel_buffer",
+            }],
+        )
+
     def test_clean_motion_witness_passes_end_to_end(self):
         fixture = sample("motion", 2, ["freshCapture", "freshCapture"])
         result = self.analyze(fixture)
