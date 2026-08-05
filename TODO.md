@@ -26,12 +26,6 @@ belong in `AGENTS.md` or `docs/`; completed work belongs in Git history.
   during the exact transition into FROZEN exits on the next beat rather than
   immediately. This is bounded to 100 ms and lossless; revisit only if the
   product requires a stricter guarantee.
-- **Pre-session service shutdown**
-  (`Host/Sources/lyte-host/HostApplication.swift`): make the blocking Noise
-  handshake receive observe SIGTERM promptly. A no-client service currently
-  remains in `stop-sigterm` until systemd's timeout or a scoped SIGKILL, even
-  though an established Direct Eye session closes cleanly.
-
 Live checks still owed:
 
 - Observe `rate: fall purge` and `hole-recused` during an impaired session.
