@@ -4,23 +4,26 @@ import CDRM
 import Glibc
 import HostCore
 
-/// One changed screen generation. The DRM framebuffer id stays private to
-/// HostEye; consumers can only ask the source to turn it into a held ticket.
-public struct ScreenSourceChange {
-    fileprivate let framebufferId: UInt32
+/// One observation of the currently scanned primary buffer. Identity is an
+/// import-cache key, never evidence that its pixels are unchanged: Mutter may
+/// render new pixels into the same framebuffer for minutes.
+public struct ScreenSourceObservation {
+    public let framebufferIdentity: UInt32
+    public let identityChanged: Bool
 }
 
 /// Capture organ above the operating system's display buffer. The direct-eye
-/// implementation owns DRM device/plane lifetime and the FB_ID doorbell; a
-/// future Lyte OS source can implement the same change → ticket contract.
+/// implementation owns DRM device/plane lifetime. Framebuffer identity says
+/// when an imported scanout must be replaced; only pixel observation can say
+/// whether content changed.
 public protocol ScreenSource: AnyObject {
     var width: Int32 { get }
     var height: Int32 { get }
     var fileDescriptor: Int32 { get }
 
-    func poll() -> ScreenSourceChange?
-    func capture(_ change: ScreenSourceChange) -> ScanoutTicket?
-    func resetDoorbell()
+    func observe() -> ScreenSourceObservation?
+    func capture(_ observation: ScreenSourceObservation) -> ScanoutTicket?
+    func resetIdentityObservation()
 }
 
 public enum DirectScreenSourceError: Error, CustomStringConvertible {
@@ -48,7 +51,7 @@ public final class DirectScreenSource: ScreenSource {
     public let fileDescriptor: Int32
 
     private let primaryPlaneId: UInt32
-    private var doorbell = ScreenDoorbell()
+    private var identityTracker = FramebufferIdentityTracker()
 
     public init(device: String) throws {
         let fd = open(device, O_RDWR)
@@ -78,22 +81,33 @@ public final class DirectScreenSource: ScreenSource {
         close(fileDescriptor)
     }
 
-    public func poll() -> ScreenSourceChange? {
-        switch doorbell.observe(currentFB(
-            fd: fileDescriptor, planeId: primaryPlaneId)) {
+    public func observe() -> ScreenSourceObservation? {
+        let framebuffer = currentFB(
+            fd: fileDescriptor, planeId: primaryPlaneId)
+        switch identityTracker.observe(framebuffer) {
         case .changed(let framebufferId):
-            return ScreenSourceChange(framebufferId: framebufferId)
-        case .unavailable, .held:
+            return ScreenSourceObservation(
+                framebufferIdentity: framebufferId,
+                identityChanged: true)
+        case .held:
+            guard let framebuffer else { return nil }
+            return ScreenSourceObservation(
+                framebufferIdentity: framebuffer,
+                identityChanged: false)
+        case .unavailable:
             return nil
         }
     }
 
-    public func capture(_ change: ScreenSourceChange) -> ScanoutTicket? {
-        grabTicket(fd: fileDescriptor, fbId: change.framebufferId)
+    public func capture(
+        _ observation: ScreenSourceObservation
+    ) -> ScanoutTicket? {
+        grabTicket(
+            fd: fileDescriptor, fbId: observation.framebufferIdentity)
     }
 
-    public func resetDoorbell() {
-        doorbell.reset()
+    public func resetIdentityObservation() {
+        identityTracker.reset()
     }
 }
 

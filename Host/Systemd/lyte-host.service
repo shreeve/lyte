@@ -14,7 +14,7 @@
 # direct eye reads the scanout from DRM alone.
 #
 # Output appends to /tmp/lyte-host-session.log — the rig's standing
-# recipes (beat books, chroma lines, session forensics) all grep
+# recipes (observation books, chroma lines, session forensics) all grep
 # that file; the journal keeps the unit lifecycle. The redirect
 # lives INSIDE the shell (which runs as the seat user) because
 # Ubuntu's fs.protected_regular forbids root — i.e. systemd's own
@@ -24,7 +24,7 @@
 # Install (idempotent): Host/Scripts/install-host.sh
 
 [Unit]
-Description=Lyte host — the direct eye (KMS doorbell, EGL blit, native VAAPI pens)
+Description=Lyte host — direct eye (GPU pixel observation, EGL blit, native VAAPI pens)
 After=graphical.target
 Wants=graphical.target
 

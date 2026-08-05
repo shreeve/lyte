@@ -1,5 +1,6 @@
 // DirectEyeLeg (direct-eye plan E1): the fused capture+encode backend
-// — the doorbell paces it, HostEye grabs/blits/encodes on the Arc
+// — a phase-stable screen beat paces it, HostEye observes pixels on the GPU,
+// grabs/blits/encodes changed scanout on the Arc
 // media engine, and encoded access units go straight to the session's
 // sendFrame (or the probe file). No PipeWire, no portal, no Mutter:
 // the compositor cannot wedge a register read.
@@ -79,27 +80,29 @@ final class DirectEyeLeg {
     private var lastCursorFrame: CursorFrame?
     private var sentHotspot: (x: Int, y: Int)?
     private var hotspotRecheckArmed = false
-    /// The Conductor's host-side witness: who skips the capture
-    /// beats — the compositor (source) or this loop (loop). The
-    /// doorbell's poll cadence is the evidence; the stage clocks
-    /// below say WHERE the loop spent a blind interval.
-    private var beatBook = CaptureBeatBook()
+    /// The screen observer's stage clocks explain where a late observation
+    /// spent its time. Content cadence is deliberately absent: a 30 fps video
+    /// on a 60 Hz observation grid is normal, not a skipped capture beat.
     private struct StageClocks {
         var cursorUs: UInt64 = 0
         var grabUs: UInt64 = 0
+        var fingerprintUs: UInt64 = 0
         var blitUs: UInt64 = 0
         var encodeUs: UInt64 = 0
         var deliverUs: UInt64 = 0
         mutating func formMax(_ other: StageClocks) {
             cursorUs = max(cursorUs, other.cursorUs)
             grabUs = max(grabUs, other.grabUs)
+            fingerprintUs = max(fingerprintUs, other.fingerprintUs)
             blitUs = max(blitUs, other.blitUs)
             encodeUs = max(encodeUs, other.encodeUs)
             deliverUs = max(deliverUs, other.deliverUs)
         }
         func described() -> String {
             "cursor=\(Self.ms(cursorUs)) "
-            + "grab=\(Self.ms(grabUs)) blit=\(Self.ms(blitUs)) "
+            + "grab=\(Self.ms(grabUs)) "
+            + "fingerprint=\(Self.ms(fingerprintUs)) "
+            + "blit=\(Self.ms(blitUs)) "
             + "encode=\(Self.ms(encodeUs)) deliver=\(Self.ms(deliverUs))"
         }
         static func ms(_ us: UInt64) -> String {
@@ -179,7 +182,7 @@ final class DirectEyeLeg {
             + "(rate directives apply live)")
 
         // E3: the cursor plane travels as metadata, never as video.
-        // The watcher shares the doorbell fd and cadence; a session-
+        // The watcher shares the DRM fd and loop cadence; a session-
         // less (file-mode) leg has no one to tell, so it skips.
         let cursorWatcher = wire != nil ? EyeCursorWatcher(fd: fd) : nil
         if wire != nil {
@@ -191,9 +194,17 @@ final class DirectEyeLeg {
 
         var targets: [UInt32: NV12Target] = [:]
         var targets444: [UInt32: AyuvTarget] = [:]
+        var scanoutSource: ImportedTexture?
+        var scanoutIdentity: UInt32?
+        var samplingCadence = ScreenSamplingCadence()
+        var observations: UInt64 = 0
+        var framebufferTransitions: UInt64 = 0
+        var changedObservations: UInt64 = 0
+        var skippedObservationBeats: UInt64 = 0
+        var observationSkipEvents: UInt64 = 0
         var pendingCauses: [String] = []
         let t0 = SystemMonotonicClock.nowSeconds
-        // The stillness clock: last damage (FB flip) or client input.
+        // The stillness clock: last pixel change or client input.
         var lastActivityWallSeconds = t0
 
         // The shell service cadence: the agreed-time pendings (the
@@ -203,7 +214,7 @@ final class DirectEyeLeg {
         // not the shell. It used to ride this loop and the beat book
         // convicted it (106 ms connect stall = a skipped capture
         // beat); now the janitor sweeps on its own thread and the
-        // doorbell never goes blind for a mop bucket. SessionWire is
+        // screen beat never goes blind for a mop bucket. SessionWire is
         // cross-thread by design with `lock` as the discipline; this
         // thread is service()'s ONLY caller.
         if let wire {
@@ -237,6 +248,61 @@ final class DirectEyeLeg {
                 serviceLock.unlock()
                 serviceDone.wait()
             }
+            if var source = scanoutSource {
+                gl.destroy(&source)
+            }
+        }
+
+        // Recovery and quiet-desktop traffic do not depend on a fresh pixel
+        // observation. This is deliberately serviced from the 1 ms shell
+        // loop while screen reads stay on their independent 60 Hz grid.
+        func serveRetainedFrameIfNeeded() throws -> Bool {
+            if staticIdrWanted, let sid = lastEncodedSurface {
+                let packet = try encoder.encode(surface: sid, forceIDR: true)
+                let causes = packet.keyframe ? pendingCauses : []
+                if packet.keyframe { pendingCauses.removeAll() }
+                deliver(Data(packet.data),
+                        keyframe: packet.keyframe,
+                        causes: causes,
+                        captureUs: lastEncodedCaptureUs)
+                staticIdrWanted = false
+                staticIdrsServed += 1
+                lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
+                print("direct: static-screen IDR served "
+                    + "(re-encoded retained surface \(sid))")
+                return true
+            }
+
+            var keepaliveInterval = Self.keepaliveSeconds
+            if let wire {
+                let inputSeconds = Double(wire.lastInputActivityNS) / 1e9
+                let idle = SystemMonotonicClock.nowSeconds
+                    - max(lastActivityWallSeconds, inputSeconds)
+                if wire.videoQuietPostureAgreed() {
+                    let verdict = quietPacer.assess(idleSeconds: idle)
+                    keepaliveInterval = verdict.keepaliveSeconds
+                    if let announce = verdict.announce {
+                        wire.sendVideoPostureState(
+                            quiet: announce.quiet,
+                            keepaliveSeconds: announce.keepaliveSeconds)
+                        postureAnnouncements += 1
+                    }
+                }
+            }
+            if wire != nil, let sid = lastEncodedSurface,
+               SystemMonotonicClock.nowSeconds - lastDeliveryWallSeconds
+                   >= keepaliveInterval {
+                let packet = try encoder.encode(
+                    surface: sid, forceIDR: false)
+                deliver(Data(packet.data),
+                        keyframe: packet.keyframe,
+                        causes: [],
+                        captureUs: lastEncodedCaptureUs)
+                keepalivesSent += 1
+                lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
+                return true
+            }
+            return false
         }
 
         while SystemMonotonicClock.nowSeconds - t0 < config.seconds {
@@ -259,9 +325,9 @@ final class DirectEyeLeg {
             // rides the handshake). One session per leg lifetime → at
             // most one flip: a Best-tier agreement reopens the encoder
             // in Rext 4:4:4. The fresh encoder's first frame is the
-            // IDR the joiner needs, and zeroing lastFB makes the very
-            // next poll treat the current screen as damage — a static
-            // desktop still delivers immediately.
+            // IDR the joiner needs. Resetting the sampling/fingerprint
+            // state makes the current screen fresh immediately, even
+            // when the desktop is static.
             if !chroma444Active,
                ChromaPosture.from(
                    agreedChromaModes: wire?.agreedChromaModes
@@ -271,8 +337,19 @@ final class DirectEyeLeg {
                         gl.destroy(&targets[sid]!)
                     }
                     targets.removeAll()
+                    for sid in targets444.keys {
+                        gl.destroy(&targets444[sid]!)
+                    }
+                    targets444.removeAll()
+                    if var source = scanoutSource {
+                        gl.destroy(&source)
+                        scanoutSource = nil
+                    }
+                    scanoutIdentity = nil
+                    gl.resetFingerprint()
+                    samplingCadence.reset()
                     lastEncodedSurface = nil
-                    screen.resetDoorbell()
+                    screen.resetIdentityObservation()
                     encoder = try EyeVaapiEncoder(
                         width: width, height: height, fps: 60,
                         qp: config.qp,
@@ -318,130 +395,113 @@ final class DirectEyeLeg {
                 staticIdrWanted = true
             }
 
-            let change = screen.poll()
-            beatBook.notePoll(nowMicroseconds: SystemMonotonicClock.nowMicroseconds)
-            guard let change else {
-                if staticIdrWanted, let sid = lastEncodedSurface {
-                    do {
-                        let packet = try encoder.encode(
-                            surface: sid, forceIDR: true)
-                        let causes = packet.keyframe ? pendingCauses : []
-                        if packet.keyframe { pendingCauses.removeAll() }
-                        deliver(Data(packet.data),
-                                keyframe: packet.keyframe,
-                                causes: causes,
-                                captureUs: lastEncodedCaptureUs)
-                        staticIdrWanted = false
-                        staticIdrsServed += 1
-                        lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
-                        print("direct: static-screen IDR served "
-                            + "(re-encoded retained surface \(sid))")
-                    } catch {
-                        lastError = "direct: static IDR: \(error)"
-                        return
-                    }
-                    continue
-                }
-                // E5 audit item 3 (minimal form): the idle keepalive.
-                // A quiet desktop still supplies the wire one retained
-                // re-encode per second — the clock model stays fed,
-                // transit stays measurable across roams, and the
-                // client's freshness logic sees a live host instead of
-                // silence. ORIGINAL capture stamp (retained-frame
-                // law), never an IDR, wire sessions only — file-mode
-                // captures stay damage-driven so their books grade
-                // the screen, not the heartbeat.
-                var keepaliveInterval = Self.keepaliveSeconds
-                if let wire {
-                    // Client input wakes the posture preemptively —
-                    // the input packet IS the wake (postures design).
-                    let inputSeconds =
-                        Double(wire.lastInputActivityNS) / 1e9
-                    let idle = SystemMonotonicClock.nowSeconds
-                        - max(lastActivityWallSeconds, inputSeconds)
-                    if wire.videoQuietPostureAgreed() {
-                        let verdict = quietPacer.assess(idleSeconds: idle)
-                        keepaliveInterval = verdict.keepaliveSeconds
-                        if let announce = verdict.announce {
-                            wire.sendVideoPostureState(
-                                quiet: announce.quiet,
-                                keepaliveSeconds: announce.keepaliveSeconds)
-                            postureAnnouncements += 1
-                        }
-                    }
-                }
-                if wire != nil, let sid = lastEncodedSurface,
-                   SystemMonotonicClock.nowSeconds - lastDeliveryWallSeconds
-                       >= keepaliveInterval {
-                    do {
-                        let packet = try encoder.encode(
-                            surface: sid, forceIDR: false)
-                        deliver(Data(packet.data),
-                                keyframe: packet.keyframe,
-                                causes: [],
-                                captureUs: lastEncodedCaptureUs)
-                        keepalivesSent += 1
-                        lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
-                    } catch {
-                        lastError = "direct: keepalive: \(error)"
-                        return
-                    }
-                    continue
+            let observationClock = SystemMonotonicClock.nowMicroseconds
+            guard case .sample(let skippedBeats) = samplingCadence.poll(
+                nowMicroseconds: observationClock)
+            else {
+                do {
+                    if try serveRetainedFrameIfNeeded() { continue }
+                } catch {
+                    lastError = "direct: retained frame: \(error)"
+                    return
                 }
                 usleep(config.pollUs)
                 continue
             }
-            lastActivityWallSeconds = SystemMonotonicClock.nowSeconds
-            // The flip is judged at DETECTION (the honest doorbell
-            // moment); the capture stamp below stays post-grab so the
-            // wire's score is untouched by the bookkeeping.
-            if let skip = beatBook.noteFlip(
-                nowMicroseconds: SystemMonotonicClock.nowMicroseconds) {
-                if beatBook.skips <= 40 {
-                    print("direct: beat-skip gap="
-                        + StageClocks.ms(skip.gapMicroseconds)
-                        + " ms blind="
-                        + StageClocks.ms(skip.blindMicroseconds)
-                        + " ms verdict=\(skip.verdict.rawValue)"
-                        + " prev[\(lastStages.described())] ms")
+            observations += 1
+            skippedObservationBeats += skippedBeats
+            if skippedBeats > 0 {
+                observationSkipEvents += 1
+                if observationSkipEvents <= 40 {
+                    print("direct: observation beat skipped "
+                        + "\(skippedBeats) beat(s) "
+                        + "prev[\(lastStages.described())] ms")
                 }
             }
-            let grabStart = SystemMonotonicClock.nowMicroseconds
-            guard let ticket = screen.capture(change) else {
-                missedGrabs += 1
+            guard let observation = screen.observe() else {
+                do {
+                    if try serveRetainedFrameIfNeeded() { continue }
+                } catch {
+                    lastError = "direct: retained frame: \(error)"
+                    return
+                }
+                usleep(config.pollUs)
                 continue
             }
-            // E5 audit item 4 (minimal form): a display mode change
-            // mid-session arrives as tickets whose geometry no longer
-            // matches the encoder's. Scaling them into the old-size
-            // target would silently distort the picture; ending the
-            // leg cleanly is the honest minimum — the session tears
-            // down typed, the supervisor respawns the host, and the
-            // client's existing auto-re-dial reads fresh geometry.
-            // (In-place encoder re-open is the deluxe follow-up.)
-            if Int32(ticket.width) != width
-                || Int32(ticket.height) != height {
-                ticket.release()
-                print("direct: display mode changed \(width)x\(height)"
-                    + " → \(ticket.width)x\(ticket.height) — ending "
-                    + "session; the re-dial reads fresh geometry")
-                modeChangeEnded = true
+            if observation.identityChanged { framebufferTransitions += 1 }
+
+            let grabStart = SystemMonotonicClock.nowMicroseconds
+            if scanoutSource == nil
+                || scanoutIdentity != observation.framebufferIdentity {
+                guard let ticket = screen.capture(observation) else {
+                    missedGrabs += 1
+                    continue
+                }
+                if Int32(ticket.width) != width
+                    || Int32(ticket.height) != height {
+                    ticket.release()
+                    print("direct: display mode changed \(width)x\(height)"
+                        + " → \(ticket.width)x\(ticket.height) — ending "
+                        + "session; the re-dial reads fresh geometry")
+                    modeChangeEnded = true
+                    return
+                }
+                do {
+                    let imported = try gl.importTexture(
+                        width: Int32(ticket.width),
+                        height: Int32(ticket.height),
+                        fourcc: ticket.fourcc,
+                        modifier: ticket.modifier,
+                        planes: ticket.planes)
+                    ticket.release()
+                    if var old = scanoutSource { gl.destroy(&old) }
+                    scanoutSource = imported
+                    scanoutIdentity = observation.framebufferIdentity
+                    gl.resetFingerprint()
+                } catch {
+                    ticket.release()
+                    lastError = "direct: scanout import: \(error)"
+                    return
+                }
+            }
+            lastStages.grabUs = SystemMonotonicClock.nowMicroseconds - grabStart
+
+            guard let source = scanoutSource else {
+                lastError = "direct: scanout import disappeared"
                 return
             }
-            let captureUs = UInt64(SystemMonotonicClock.nowSeconds * 1_000_000)
-            lastStages.grabUs = captureUs - grabStart
+            let pixelsChanged: Bool
+            let fingerprintStart = SystemMonotonicClock.nowMicroseconds
+            do {
+                pixelsChanged = try gl.scanoutChanged(
+                    source: source, width: width, height: height)
+            } catch {
+                lastError = "direct: scanout fingerprint: \(error)"
+                return
+            }
+            lastStages.fingerprintUs =
+                SystemMonotonicClock.nowMicroseconds - fingerprintStart
+            maxStages.formMax(lastStages)
+            guard pixelsChanged else {
+                do {
+                    if try serveRetainedFrameIfNeeded() { continue }
+                } catch {
+                    lastError = "direct: retained frame: \(error)"
+                    return
+                }
+                usleep(config.pollUs)
+                continue
+            }
+            changedObservations += 1
+            lastActivityWallSeconds = SystemMonotonicClock.nowSeconds
+            // Pixel equality, not framebuffer identity, is damage truth.
+            let captureUs = observationClock
 
             let forceIdr = frames == 0 || staticIdrWanted
             staticIdrWanted = false
             if frames == 0 { pendingCauses.append("opening") }
 
-            var ticketReleased = false
             do {
-                var source = try gl.importTexture(
-                    width: Int32(ticket.width),
-                    height: Int32(ticket.height),
-                    fourcc: ticket.fourcc, modifier: ticket.modifier,
-                    planes: ticket.planes)
                 func blitInto(
                     _ sid: UInt32,
                     export: () throws -> (y: ExportedPlane,
@@ -467,12 +527,9 @@ final class DirectEyeLeg {
                     }
                     gl.blit(
                         source: source,
-                        srcWidth: Int32(ticket.width),
-                        srcHeight: Int32(ticket.height),
+                        srcWidth: width,
+                        srcHeight: height,
                         into: targets[sid]!)
-                    gl.destroy(&source)
-                    ticket.release()
-                    ticketReleased = true
                 }
 
                 func blit444Into(_ sid: UInt32) throws {
@@ -488,12 +545,9 @@ final class DirectEyeLeg {
                     }
                     gl.blit444(
                         source: source,
-                        srcWidth: Int32(ticket.width),
-                        srcHeight: Int32(ticket.height),
+                        srcWidth: width,
+                        srcHeight: height,
                         into: targets444[sid]!)
-                    gl.destroy(&source)
-                    ticket.release()
-                    ticketReleased = true
                 }
 
                 // Synchronous seat: vaSyncSurface inside encode
@@ -526,7 +580,6 @@ final class DirectEyeLeg {
                 frames += 1
                 lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
             } catch {
-                if !ticketReleased { ticket.release() }
                 lastError = "direct: frame \(frames): \(error)"
                 return
             }
@@ -539,21 +592,21 @@ final class DirectEyeLeg {
             + "directives_applied=\(directivesApplied), "
             + "static_idrs=\(staticIdrsServed), "
             + "keepalives=\(keepalivesSent), "
+            + "observations=\(observations), "
+            + "framebuffer_transitions=\(framebufferTransitions), "
+            + "pixel_changes=\(changedObservations), "
+            + "observation_beats_skipped=\(skippedObservationBeats), "
             + "posture_announcements=\(postureAnnouncements), "
             + "cursor_shapes=\(cursorShapesSeen), "
             + "hotspot_corrections=\(cursorHotspotCorrections)")
         serviceLock.lock()
         let serviceMaxUs = serviceMaxMicroseconds
         serviceLock.unlock()
-        print("direct: beat-book — flips=\(beatBook.flips), "
-            + "skips=\(beatBook.skips) "
-            + "(source=\(beatBook.sourceSkips), "
-            + "loop=\(beatBook.loopSkips)), "
-            + "stills=\(beatBook.stillGaps), "
-            + "gap_max=\(StageClocks.ms(beatBook.gapMaxMicroseconds))"
-            + " ms, blind_max="
-            + StageClocks.ms(beatBook.blindMaxMicroseconds)
-            + " ms, stage_max[\(maxStages.described())] ms, "
+        print("direct: observation-book — beats=\(observations), "
+            + "skip_events=\(observationSkipEvents), "
+            + "beats_skipped=\(skippedObservationBeats), "
+            + "pixel_changes=\(changedObservations), "
+            + "stage_max[\(maxStages.described())] ms, "
             + "service_max=\(StageClocks.ms(serviceMaxUs)) ms "
             + "(janitor thread)")
     }

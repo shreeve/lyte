@@ -1,7 +1,7 @@
-/// Sans-IO state behind a screen source's change doorbell. A framebuffer id
-/// is captured once per transition; resetting makes the current buffer fresh
-/// again after an encoder or posture reconfiguration.
-public struct ScreenDoorbell: Sendable, Equatable {
+/// Sans-IO state that distinguishes framebuffer replacement from a held
+/// import. Identity changes invalidate the platform shell's dmabuf cache;
+/// they say nothing about whether pixels changed inside the current buffer.
+public struct FramebufferIdentityTracker: Sendable, Equatable {
     public enum Verdict: Sendable, Equatable {
         case unavailable
         case held

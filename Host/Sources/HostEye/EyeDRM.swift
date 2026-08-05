@@ -1,5 +1,5 @@
 // EyeDRM: the kernel-facing half of the direct eye — plane discovery,
-// the FB_ID doorbell (milestone 1), and the scanout ticket (GETFB2 +
+// the FB_ID import identity (milestone 1), and the scanout ticket (GETFB2 +
 // dmabuf export, milestone 2). All libdrm via the CDRM module map.
 
 #if os(Linux)
@@ -56,11 +56,12 @@ public func findActivePlanes(fd: Int32) -> ActivePlanes? {
     return ActivePlanes(primary: prim, cursor: cursor)
 }
 
-/// Current FB_ID of a plane — the doorbell's one register read.
+/// Current FB_ID of a plane — an import-cache key, not damage evidence.
 public func currentFB(fd: Int32, planeId: UInt32) -> UInt32? {
     guard let plane = drmModeGetPlane(fd, planeId) else { return nil }
     defer { drmModeFreePlane(plane) }
-    return plane.pointee.fb_id
+    let framebufferId = plane.pointee.fb_id
+    return framebufferId == 0 ? nil : framebufferId
 }
 
 /// One grabbed scanout frame: geometry plus per-plane dmabufs. The
