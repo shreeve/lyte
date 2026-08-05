@@ -1,6 +1,6 @@
 import XCTest
 import Foundation
-@testable import HostWire
+@testable import HostSession
 import LyteWire
 
 final class SessionLifecycleLaneTests: XCTestCase {
@@ -11,7 +11,7 @@ final class SessionLifecycleLaneTests: XCTestCase {
         components.removeLast(3)
         let packageRoot = components.joined(separator: "/")
         let source = try String(contentsOfFile:
-            packageRoot + "/Sources/HostWire/SessionLifecycleLane.swift",
+            packageRoot + "/Sources/HostSession/SessionLifecycleLane.swift",
             encoding: .utf8
         )
 

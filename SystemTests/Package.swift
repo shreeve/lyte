@@ -21,6 +21,7 @@ let package = Package(
                 .product(name: "LyteClientTestKit", package: "Client"),
                 .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteTestKit", package: "Common"),
+                .product(name: "HostSession", package: "Host"),
                 .product(name: "HostWire", package: "Host"),
                 .product(name: "LyteWire", package: "Wire"),
                 .product(name: "LyteWireTestKit", package: "Wire"),

@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import HostCore
+import HostSession
 import HostWire
 import LyteWire
 import LyteWireTestKit
@@ -56,7 +57,7 @@ final class CookieGateTests: XCTestCase {
         XCTAssertFalse(session.contains("noteCookieModeTransition"))
 
         let gate = try String(contentsOfFile:
-            packageRoot + "/Sources/HostWire/HandshakeGate.swift",
+            packageRoot + "/Sources/HostSession/HandshakeGate.swift",
             encoding: .utf8
         )
         XCTAssertTrue(gate.contains("public struct Decision"))

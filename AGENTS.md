@@ -32,10 +32,12 @@ in `docs/20260803-084328-source-layout-and-migration.md`.
   policy. `COpus` is the one pinned, statically propagated libopus source
   leaf; its upstream BSD license remains separate from Lyte's MIT license.
 - **`Host/` — `LyteHost`:** `HostCore` owns pure host policy and bitstream
-  helpers; `HostAudio` owns Swift host codec policy over the shared `COpus`
-  mechanism; `HostWire` owns packetization, FEC, pacing, and host-side
-  session wiring. Linux-only executables and hardware/OS C leaves stay behind
-  `#if os(Linux)` in the manifest. Pure targets must build on macOS too.
+  helpers; `HostSession` owns IO-free responder policy with injected time and
+  randomness; `HostAudio` owns Swift host codec policy over the shared
+  `COpus` mechanism; `HostWire` executes session decisions through
+  packetization, FEC, pacing, and wire orchestration. Linux-only executables
+  and hardware/OS C leaves stay behind `#if os(Linux)` in the manifest. Pure
+  targets must build on macOS too.
 - **`Client/` — `Lyte`:** macOS-only app and CLI. `LyteClientCore` owns pure
   client-role policy; `LyteClientSession` owns IO-free initiator/session
   orchestration; `LyteTransport` owns the client protocol/media and macOS IO

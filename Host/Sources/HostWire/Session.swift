@@ -59,6 +59,7 @@
 // test drives the whole session in-process against a LyteWire initiator.
 
 import HostCore
+import HostSession
 import LyteCore
 import LyteWire
 
@@ -686,7 +687,7 @@ public final class Session {
     public let connectionId: ConnectionId
     /// HS-12's decision machine; public for the loop's routing queries
     /// (primary tuple, send allowances) and the tests' state checks.
-    public let validator: PathValidator
+    public private(set) var validator: PathValidator
     public var phase: Phase {
         lifecycleLane.isEstablished ? .established : .awaitingHandshake
     }

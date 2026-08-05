@@ -2,9 +2,9 @@ import LyteWire
 
 /// One lifecycle service pass: the machine's externally executable actions
 /// and, when the pass crossed a state boundary, its single final projection.
-struct SessionLifecycleVerdict: Sendable {
-    var actions: [SessionAction]
-    var stateChangedTo: SessionState?
+public struct SessionLifecycleVerdict: Sendable {
+    public var actions: [SessionAction]
+    public var stateChangedTo: SessionState?
 }
 
 /// The sans-IO owner of the Host session's W4b lifecycle projection.
@@ -17,13 +17,13 @@ struct SessionLifecycleVerdict: Sendable {
 ///
 /// FROZEN deliberately suppresses video only. Audio remains admitted as the
 /// path probe until the terminal CLOSED state suppresses both media lanes.
-struct SessionLifecycleLane: Sendable {
+public struct SessionLifecycleLane: Sendable {
     private let config: SessionMachineConfig
     private var machine: SessionStateMachine<HostClock>?
 
-    private(set) var nextDeadlineNanoseconds: UInt64?
+    public private(set) var nextDeadlineNanoseconds: UInt64?
 
-    init(
+    public init(
         config: SessionMachineConfig,
         establishedAtNanoseconds: UInt64? = nil
     ) {
@@ -37,34 +37,34 @@ struct SessionLifecycleLane: Sendable {
         }
     }
 
-    var isEstablished: Bool { machine != nil }
-    var state: SessionState? { machine?.state }
-    var wireMode: SessionWireMode? { machine?.wireMode }
-    var closeReason: SessionCloseReason? { machine?.closeReason }
-    var isRecovering: Bool { machine?.state == .recovery }
+    public var isEstablished: Bool { machine != nil }
+    public var state: SessionState? { machine?.state }
+    public var wireMode: SessionWireMode? { machine?.wireMode }
+    public var closeReason: SessionCloseReason? { machine?.closeReason }
+    public var isRecovering: Bool { machine?.state == .recovery }
 
     /// A newly established machine needs one first service pass to project
     /// its timer. Thereafter only the exact due boundary runs; CLOSED is
     /// absorbing and owns no timer.
-    func shouldService(at now: UInt64) -> Bool {
+    public func shouldService(at now: UInt64) -> Bool {
         guard let machine, machine.state != .closed else { return false }
         return nextDeadlineNanoseconds.map { now >= $0 } ?? true
     }
 
     /// Before establishment neither media lane exists. FROZEN then blocks
     /// only video; CLOSED blocks both.
-    var videoSendsSuppressed: Bool {
+    public var videoSendsSuppressed: Bool {
         machine == nil || machine?.state == .frozen || machine?.state == .closed
     }
 
-    var audioSendsSuppressed: Bool {
+    public var audioSendsSuppressed: Bool {
         machine == nil || machine?.state == .closed
     }
 
     /// Begins the machine in ACTIVE without inventing a state-change event.
     /// The first `drive` projects its timer, matching the machine's rule that
     /// apply/poll service starts only after establishment is complete.
-    mutating func establish(at now: UInt64) {
+    public mutating func establish(at now: UInt64) {
         guard machine == nil else { return }
         machine = SessionStateMachine(
             role: .mediaSender,
@@ -77,7 +77,7 @@ struct SessionLifecycleLane: Sendable {
     /// Applies one input first, then polls timers at the same injected instant.
     /// Freeze/resume actions are consumed into the local projection; all other
     /// actions return to `Session` in their original order.
-    mutating func drive(
+    public mutating func drive(
         _ input: SessionInput?, now: UInt64
     ) -> SessionLifecycleVerdict {
         guard machine != nil else {

@@ -39,7 +39,7 @@ tests separate:
 ```text
 Wire/         LyteWire — Foundation-free, sans-IO protocol core and vectors
 Common/       LyteCore policy + LyteIO operating-system adapters
-Host/         HostCore + HostAudio + HostWire + Linux hardware/OS leaves
+Host/         HostCore + HostSession + HostAudio + HostWire + Linux OS leaves
 Client/       LyteClientCore + LyteClientSession + LyteTransport + app/CLI
 SystemTests/  cross-role composition tests; no production ownership
 ```

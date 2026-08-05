@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import HostCore
+import HostSession
 @testable import HostWire
 import LyteWire
 

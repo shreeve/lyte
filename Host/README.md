@@ -15,10 +15,15 @@ closed 2026-07-22 (gate report in git history); the portal era ended
   encoder recipe, the quality ratchet, the strict-priority send pacer,
   the kernel-pressure governor, histograms. Builds and tests on macOS
   so the contracts are verifiable off-target.
-- `Sources/HostWire` — the session layer on LyteWire (also cross-platform):
-  Session (Noise responder), VideoChannel (packetize/FEC/pace/repair
-  store), AudioFramer, RateEstimator, SessionStateMachine wiring,
-  PathValidator migration, pairing responder, client keystore.
+- `Sources/HostSession` — IO-free responder policy over LyteWire: handshake
+  admission and stateless retry cookies, lifecycle projection, and validated
+  path migration. Time and randomness are mandatory inputs; decisions are
+  values. Builds and tests on macOS and Linux.
+- `Sources/HostWire` — the session execution layer on LyteWire (also
+  cross-platform): Noise responder orchestration, VideoChannel
+  (packetize/FEC/pace/repair store), AudioFramer, RateEstimator, pairing
+  responder, and client keystore. It executes `HostSession` decisions but does
+  not own their policy.
 - `Sources/HostEye` — the direct eye (Linux): KMS doorbell + GETFB2/dmabuf
   export, EGL import + RGB→NV12 blit, the native VAAPI encoder seat fed
   by HostCore's pens, cursor-plane tracking.
@@ -50,7 +55,7 @@ Swift (HostCore's pens).
 ## Test (macOS or Linux)
 
 ```
-swift test           # HostCore + HostWire (the executable + C leaves are Linux-only)
+swift test           # pure cores + HostWire (the executable/C leaves are Linux-only)
 ```
 
 On macOS use `DEVELOPER_DIR=/Applications/Xcode.app swift test` (CLT lacks XCTest).

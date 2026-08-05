@@ -128,7 +128,7 @@ public struct PathValidatorConfig: Sendable {
     }
 }
 
-public final class PathValidator {
+public struct PathValidator {
     private struct Probe {
         let tuple: FourTuple
         let token: UInt64
@@ -154,7 +154,7 @@ public final class PathValidator {
         initialPath: FourTuple,
         now: UInt64,
         config: PathValidatorConfig = PathValidatorConfig(),
-        rng: some RandomNumberGenerator = SystemRandomNumberGenerator()
+        rng: some RandomNumberGenerator
     ) {
         self.connectionId = connectionId
         self.config = config
@@ -167,7 +167,7 @@ public final class PathValidator {
     /// The demux trigger: any received datagram, after envelope decode,
     /// reports its source tuple, the connection ID its TLV carried (nil
     /// when absent), and its wire size. Returns the actions to take.
-    public func datagramReceived(
+    public mutating func datagramReceived(
         from tuple: FourTuple,
         connectionId claimed: ConnectionId?,
         byteCount: Int,
@@ -218,7 +218,9 @@ public final class PathValidator {
 
     /// The reflection guard applies to our own challenge too: emit it
     /// only when the budget covers it, accounting the bytes on success.
-    private func challengeWithinBudget(of probe: inout Probe) -> PathChallenge? {
+    private mutating func challengeWithinBudget(
+        of probe: inout Probe
+    ) -> PathChallenge? {
         let budget = probe.bytesReceived * config.amplificationFactor
         guard probe.bytesSent + config.challengeDatagramByteCount <= budget
         else { return nil }
@@ -230,7 +232,7 @@ public final class PathValidator {
     /// token match and the source being the probed tuple — an off-path
     /// attacker who somehow learned the token still cannot promote a
     /// tuple that was never probed.
-    public func pathResponseReceived(
+    public mutating func pathResponseReceived(
         from tuple: FourTuple,
         response: PathResponse,
         now: UInt64
@@ -255,7 +257,7 @@ public final class PathValidator {
 
     /// Clock advance with no datagram — the caller's timer wake. Emits
     /// any expiries that fell due.
-    public func advance(now: UInt64) -> [PathValidatorEvent] {
+    public mutating func advance(now: UInt64) -> [PathValidatorEvent] {
         expire(now: now)
     }
 
@@ -291,7 +293,7 @@ public final class PathValidator {
     /// Accounts caller-originated bytes (retransmitted challenges, future
     /// probe padding) against an unvalidated tuple's budget. The
     /// validator already accounted the challenges it emitted itself.
-    public func recordSend(to tuple: FourTuple, byteCount: Int) {
+    public mutating func recordSend(to tuple: FourTuple, byteCount: Int) {
         guard var active = probe, active.tuple == tuple else { return }
         active.bytesSent += byteCount
         probe = active
@@ -301,14 +303,14 @@ public final class PathValidator {
     /// encoder loop polls this (exactly like a client 0x0302 IDR
     /// request) and feeds the forced IDR into VideoChannel, whose
     /// keyframe shards enqueue urgent (HS-5) — that is the whole wiring.
-    public func takeFreshKeyframeRequest() -> Bool {
+    public mutating func takeFreshKeyframeRequest() -> Bool {
         defer { keyframePending = false }
         return keyframePending
     }
 
     // MARK: Timers
 
-    private func expire(now: UInt64) -> [PathValidatorEvent] {
+    private mutating func expire(now: UInt64) -> [PathValidatorEvent] {
         var events: [PathValidatorEvent] = []
         if let active = probe, now >= active.deadline {
             probe = nil
