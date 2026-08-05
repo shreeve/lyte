@@ -78,7 +78,7 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertFalse(source.contains("SessionCoreBox"))
     }
 
-    func testTransportDelegatesLifecyclePolicyToClientSession() throws {
+    func testTransportUsesOneComposedClientControlSession() throws {
         let root = URL(fileURLWithPath: ClientTestPaths.repositoryRoot)
         let transport = try String(
             contentsOf: root.appendingPathComponent(
@@ -89,13 +89,21 @@ final class ClientLayoutTests: XCTestCase {
                 "Client/Sources/LyteClientSession/"
                     + "ClientSessionLifecycle.swift"),
             encoding: .utf8)
+        let control = try String(
+            contentsOf: root.appendingPathComponent(
+                "Client/Sources/LyteClientSession/ClientControlSession.swift"),
+            encoding: .utf8)
 
         XCTAssertTrue(transport.contains(
+            "private var controlSession: ClientControlSession"))
+        XCTAssertTrue(transport.contains(
+            "let decision = controlSession.advance(input, now: now)"))
+        XCTAssertTrue(transport.contains(
+            "decision = try controlSession.receiveReliable(bytes, now: now)"))
+        XCTAssertFalse(transport.contains(
             "private var lifecycle: ClientSessionLifecycle"))
-        XCTAssertTrue(transport.contains(
-            "let decision = lifecycle.advance(input, now: now)"))
-        XCTAssertTrue(transport.contains(
-            "let ingress = lifecycle.receiveReliable(bytes, now: now)"))
+        XCTAssertFalse(transport.contains(
+            "private var capabilitySession: ClientCapabilitySession"))
         XCTAssertFalse(transport.contains("ModeTransition.decode"))
         XCTAssertFalse(transport.contains("SessionTeardown.decode"))
         XCTAssertFalse(transport.contains("SessionStateMachine<"))
@@ -105,6 +113,10 @@ final class ClientLayoutTests: XCTestCase {
             "private var machine: SessionStateMachine<ClientClock>"))
         XCTAssertTrue(lifecycle.contains("ModeTransition.decode"))
         XCTAssertTrue(lifecycle.contains("SessionTeardown.decode"))
+        XCTAssertTrue(control.contains(
+            "private var lifecycle: ClientSessionLifecycle"))
+        XCTAssertTrue(control.contains(
+            "private var capabilities: ClientCapabilitySession"))
     }
 
     func testClientCapabilitySessionAloneOwnsTheAgreedSet() throws {
@@ -122,9 +134,7 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertFalse(transport.contains("CapabilityNegotiator"))
         XCTAssertFalse(transport.contains("private var agreed:"))
         XCTAssertTrue(transport.contains(
-            "private var capabilitySession: ClientCapabilitySession"))
-        XCTAssertTrue(transport.contains(
-            "return capabilitySession.agreed"))
+            "return controlSession.agreedCapabilities"))
         XCTAssertTrue(capabilities.contains(
             "private var negotiator: CapabilityNegotiator"))
         XCTAssertTrue(capabilities.contains(
