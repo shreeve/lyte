@@ -35,7 +35,7 @@ being an accident and becomes a law.
 ## The six laws
 
 ```
-cue   = score + path_delay_p99 + cushion × beat_period
+cue   = score + measured_path_delay + cushion × beat_period
 beat  = at every beat, play the newest part whose time has come
 late  = ingest always, play never (its beat has passed)
 hole  = cushion empty: video holds, audio conceals; re-cue +1 beat, once
@@ -154,20 +154,15 @@ the precedent) applied to timing:
    are the model of record for every medium; instruments differ only
    in verbs and constants.
 2. **Shared primitives — DONE (#86, 2026-08-03,
-   ConductorPrimitives.swift).** What proved literally identical and
-   was extracted: the tail ring (`BeatTailRing` — video's private
-   p99 estimator retired for it), the proof-before-shed law
-   (`ProofCounter` — video's slip proof and audio's decay
-   hold/step/retarget cadence were one law spelled four ways),
-   audio's private copy of the 5 ms beat constant (now the wire's),
-   and `LatencyHistogram`'s home (moved out of InputSender.swift).
-   What measured DIFFERENT and stays by doctrine: audio's clock of
-   record is the DAC, never HostClockModel (the ear forgives slow
-   drift, never a click — lattice detrend, not stamp mapping), and
-   audio sizes its cushion from the detrended window SPREAD, not a
-   percentile (the former p99 discarded exactly the late/PLC
-   events; a measured fix). Both instruments' full pin suites
-   passed unchanged across the migration — nothing moved.
+   ConductorPrimitives.swift).** Only machinery that remains literally
+   identical is shared. `ProofCounter` serves audio's packet-cadenced
+   hold/step/retarget laws; video deliberately does not use it because Direct
+   Eye emits fewer frames when pixels stay still. Video's return proof is
+   elapsed injected time, while audio's clock of record is the DAC (never
+   HostClockModel) and audio sizes its cushion from the detrended window
+   spread. Those asymmetries are product laws, not duplicate implementations.
+   The wire owns audio's 5 ms beat constant, and shared histograms have one
+   home in LyteCore.
 3. **v2 (`Common/Core` → `LyteCore`, per the v2 rulings): the
    Conductor becomes a real shared module.** Laws and primitives in
    LyteCore (sans-IO, injected time, WASM-buildable); each instrument
@@ -192,7 +187,7 @@ user-selectable postures:
 
 Today's measured tail (~1 beat) is covered by 1–2 beats.
 
-Lyte sees the evidence the user cannot: measured path-delay tail, late
+Lyte sees the evidence the user cannot: measured path delay, late
 delivery, healed loss, real holes, and sustained clean runs. The Conductor
 therefore owns the latency/resilience decision:
 
@@ -201,16 +196,19 @@ therefore owns the latency/resilience decision:
 | reserve floor | 1 beat (~17 ms) |
 | reserve ceiling | 4 beats (~67 ms) |
 | growth | whole-beat re-cue only after a real hole, never past 4 beats |
-| return | 1 beat after 120 fresh frames (~2 s) of surplus proof |
+| return | 1 beat after 2 elapsed seconds of uninterrupted surplus proof |
 | internal cue safety ceiling | 150 ms |
 
 The cue starts at the measured path delay plus the one-beat floor. A repaired
 packet loss does not move it. When delivery proves the reserve insufficient,
 the hole law adds only the whole beats required to land the newest part back
 on the score, capped at the four-beat resilient posture; a worse hole remains
-honestly late instead of becoming hidden latency. When calm air proves a full
-beat is surplus for two seconds, the slip law returns exactly one beat. The
-150 ms total-cue ceiling remains a final failsafe for path delay and clock
+honestly late instead of becoming hidden latency. When every delivered frame
+across two elapsed seconds proves a full beat is surplus, the slip law returns
+exactly one beat. A contrary frame restarts the window. The duration is
+cadence-independent: 60 Hz motion, 30 Hz video, and one-Hz static keepalives
+all obey the same clock. The 150 ms total-cue ceiling remains a final failsafe
+for path delay and clock
 mapping; it does not authorize reserve beyond four beats. There is no persisted
 cushion preference, no alternate adaptive-delay controller, and no Settings
 surface.
