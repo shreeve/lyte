@@ -1,8 +1,8 @@
 // OpusStreamDecoder (CL-11): the client's libopus decode leaf — 48 kHz
 // stereo, one 5 ms packet per call, PLC on nil (the concealment tool
 // the audio-continuity decision pins: "lost packets interpolate
-// instead of going silent", §5.4). Host/'s COpusEncode decoder half is
-// the loop-decode reference this mirrors; the system AudioConverter
+// instead of going silent", §5.4). HostAudio's loop decoder is the
+// verification reference this mirrors; the system AudioConverter
 // is NOT used (no PLC entry point — the gap that pinned libopus).
 //
 // Real-time posture: opus_decode_float neither allocates nor blocks,

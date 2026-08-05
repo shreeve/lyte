@@ -2,15 +2,16 @@
 import Foundation
 import PackageDescription
 
-// HostCore (pure Swift bitstream helpers), HostWire (the wiring layer that
-// marries HostCore mechanisms to LyteWire codecs — HS-5), and their tests
-// build everywhere, including macOS, so the Annex-B contract and the video
-// channel pipeline are testable without a Linux GUI. The capture/encode
-// leaves exist only on Linux: they bind PipeWire, D-Bus, DRM/GBM/EGL/VAAPI,
-// CUDA/NVENC, uinput, and UDP through narrow C or system-library targets.
+// HostCore (pure Swift bitstream helpers), HostAudio (Swift codec policy),
+// HostWire (the wiring layer that marries HostCore mechanisms to LyteWire
+// codecs — HS-5), and their tests build everywhere, including macOS. The
+// capture/encode leaves exist only on Linux: they bind PipeWire, D-Bus,
+// DRM/GBM/EGL/VAAPI, CUDA/NVENC, uinput, and UDP through narrow C or
+// system-library targets.
 
 var products: [Product] = [
     .library(name: "HostCore", targets: ["HostCore"]),
+    .library(name: "HostAudio", targets: ["HostAudio"]),
     .library(name: "HostWire", targets: ["HostWire"]),
 ]
 
@@ -25,6 +26,16 @@ var targets: [Target] = [
             "HostCore",
             .product(name: "LyteCore", package: "Common"),
         ]
+    ),
+    // Host audio codec policy in Swift over the one pinned COpus mechanism.
+    // This stays platform-neutral; PipeWire capture remains a Linux C leaf.
+    .target(
+        name: "HostAudio",
+        dependencies: [.product(name: "COpus", package: "Common")]
+    ),
+    .testTarget(
+        name: "HostAudioTests",
+        dependencies: ["HostAudio"]
     ),
     // HS-5: encoded Annex-B frames → packetizer + FEC → paced datagram
     // blobs, plus the `lyte sniff` header formatter. Cross-platform on
@@ -74,12 +85,6 @@ targets += [
     .target(
         name: "CPipeWireAudio",
         dependencies: ["CPipeWire"]
-    ),
-    // C leaf: libopus pinned to the dialect (CELT restricted-lowdelay,
-    // 48 kHz stereo, 5 ms frames, DTX off) + the loop-decode half.
-    .target(
-        name: "COpusEncode",
-        dependencies: [.product(name: "COpus", package: "Common")]
     ),
     // The direct eye (docs/20260801-105800-direct-eye-plan.md, E0): libdrm
     // imported straight into Swift — a module map, no .c files. The
@@ -196,7 +201,7 @@ targets += [
     .executableTarget(
         name: "lyte-audio-check",
         dependencies: [
-            "HostCore", "CPipeWireAudio", "COpusEncode",
+            "HostCore", "HostAudio", "CPipeWireAudio",
             .product(name: "LyteIO", package: "Common"),
         ],
         linkerSettings: [
@@ -212,7 +217,7 @@ targets += [
             // HS-15: the audio leg — monitor capture + Opus encode
             // feeding the session's audio channel.
             "CPipeWireAudio",
-            "COpusEncode",
+            "HostAudio",
             "CNetIO",
             "CInputUinput",
             // E5: the direct eye is THE capture organ — the portal

@@ -1,8 +1,8 @@
 // AudioWire (HS-15): lyte-host's audio leg — the HS-14 capture/encode
-// path (CPipeWireAudio monitor capture → exact 5 ms slices → COpusEncode
-// hard CBR) feeding SessionWire.sendAudioPacket, which runs the packet
-// through AudioFramer / RS 4+2 / the shared pacer / CNetIO with per-
-// packet TOS 0xC0 (CS6 / DSCP 48 — the tos(for:) map already routes
+// path (CPipeWireAudio monitor capture → exact 5 ms slices → HostAudio's
+// Swift hard-CBR encoder) feeding SessionWire.sendAudioPacket, which runs
+// the packet through AudioFramer / RS 4+2 / the shared pacer / CNetIO with
+// per-packet TOS 0xC0 (CS6 / DSCP 48 — the tos(for:) map already routes
 // PacerClass.audio there).
 //
 // HS-18 routing: the leaf now runs in one of two postures. hostAudible
@@ -26,9 +26,9 @@
 // arrived in, advanced by the sample offset within it — pure graph clock,
 // never wall clock (audio-continuity §4.3).
 
-import COpusEncode
 import CPipeWireAudio
 import Foundation
+import HostAudio
 import HostCore
 import HostWire
 import LyteWire
@@ -49,13 +49,13 @@ final class AudioWire: @unchecked Sendable {
     let mode: HostAudioRoutingMode
     private let wire: SessionWire
     private var capture: OpaquePointer?
-    private let encoder: OpaquePointer
+    private let encoder: HostOpusEncoder
     private var thread: Thread?
     private let finished = DispatchSemaphore(value: 0)
 
-    private let packetFrames = Int(LYTE_OPUS_FRAME) // 240 = 5 ms
-    private let channels = Int(LYTE_OPUS_CHANNELS)
-    private let sampleRate = Int(LYTE_OPUS_RATE)
+    private let packetFrames = HostOpus.framesPerPacket
+    private let channels = HostOpus.channels
+    private let sampleRate = HostOpus.sampleRate
 
     // Audio-loop-thread state (never touched from outside).
     private let slicer: InterleavedPcmSlicer
@@ -81,17 +81,18 @@ final class AudioWire: @unchecked Sendable {
     ) throws {
         self.wire = wire
         self.mode = mode
-        var err = [CChar](repeating: 0, count: 256)
-        guard let enc = lyte_opus_enc_new(bitrate, 0, &err, err.count) else {
-            throw HostError("opus encoder: \(errString(err))")
+        do {
+            encoder = try HostOpusEncoder(bitrate: bitrate)
+        } catch {
+            throw HostError("opus encoder: \(error)")
         }
-        encoder = enc
-        packet = [UInt8](repeating: 0, count: Int(LYTE_OPUS_MAX_PACKET))
+        packet = [UInt8](repeating: 0, count: HostOpus.maxPacketBytes)
         slicer = InterleavedPcmSlicer(
             sampleRate: sampleRate,
             channels: channels,
             packetFrames: packetFrames
         )
+        var err = [CChar](repeating: 0, count: 256)
         let user = Unmanaged.passUnretained(self).toOpaque()
         // From here on the throw paths free NOTHING: once `encoder` is
         // assigned every stored property is initialized, so a later
@@ -146,7 +147,6 @@ final class AudioWire: @unchecked Sendable {
         }
         restoreRouting()
         if let capture { lyte_pw_audio_free(capture) }
-        lyte_opus_enc_free(encoder)
     }
 
     private var routingRestored = false
@@ -274,21 +274,18 @@ final class AudioWire: @unchecked Sendable {
         }
         let rms = (sumSquares / Float(sampleCount)).squareRoot()
 
-        var err = [CChar](repeating: 0, count: 256)
-        let n = lyte_opus_enc_encode(
-            encoder, pcm.baseAddress, &packet,
-            Int32(packet.count), &err, err.count
-        )
-
-        guard n > 0 else {
+        let n: Int
+        do {
+            n = try encoder.encode(pcm, into: &packet)
+        } catch {
             encodeFailures += 1
             if encodeFailures == 1 {
-                print("audio: opus encode failed: \(errString(err))")
+                print("audio: opus encode failed: \(error)")
             }
             return
         }
         packetsEncoded += 1
-        let encoded = Array(packet.prefix(Int(n)))
+        let encoded = Array(packet.prefix(n))
 
         // Capture never stops — the gate is transmission-side, and it
         // exists at all only under the key-15 agreement (per-packet
