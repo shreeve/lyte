@@ -22,11 +22,12 @@
 //       BeaconEchoResponder → HostClockModel (CL-10), IdrRequester
 //
 // Split for the gate tests (the ReliableCtrlGateTests/PairingGateTests
-// pattern): `LyteUdpSessionCore` is everything above the socket — it
-// takes a demux, a sender, and an injected clock, so tests drive the
-// REAL assembly through SimNet in virtual time against a LyteWire host
-// build-up. `LyteUdpSession` is the thin production shell that binds
-// the socket, runs the handshake, and owns the wall-clock timers.
+// pattern): `LyteUdpSessionCore` is the synchronized protocol/media
+// shell above the socket. It delegates pure lifecycle orchestration to
+// `ClientSessionLifecycle`, takes a demux, sender, and injected clock,
+// and lets tests drive the REAL assembly through SimNet in virtual time
+// against a LyteWire host build-up. `LyteUdpSession` is the thin
+// production shell that binds the socket and runs the handshake.
 //
 // The client's silence detector — an honest deviation, documented:
 // W4b's 350 ms detector is dimensioned for the media-path evidence
@@ -45,6 +46,7 @@
 
 import LyteIO
 import LyteCore
+import LyteClientSession
 import Dispatch
 import Foundation
 import LyteWire
@@ -405,10 +407,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     // Machine + negotiator + dispatch state, one lock.
     private let lock = NSLock()
-    private var machine: SessionStateMachine<ClientClock>
+    private var lifecycle: ClientSessionLifecycle
     private var negotiator: CapabilityNegotiator
-    private var lastState: SessionState = .active
-    private var lastWireMode: SessionWireMode = .active
     /// The 0x19-confirmed posture of the host's own speakers (CL-13);
     /// nil until the first status lands. Never set optimistically —
     /// the strip renders exactly this.
@@ -501,8 +501,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         self.clipboardImagesOn = config.shareClipboardImages
         // The machine begins at establishment (the shell constructs the
         // core only after the Noise handshake), streaming: ACTIVE.
-        self.machine = SessionStateMachine(
-            role: .mediaReceiver,
+        self.lifecycle = ClientSessionLifecycle(
             config: config.machineConfig,
             now: now()
         )
@@ -1245,15 +1244,12 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// already relaxed (check-ins repeat every ~5 s by design).
     private func relaxDetectorForAnnouncedQuiet(now: ClientTimestamp) {
         lock.lock()
-        guard detectorTightened, machine.state != .closed else {
+        guard detectorTightened, lifecycle.state != .closed else {
             lock.unlock()
             return
         }
         detectorTightened = false
-        var rebuilt = SessionStateMachine<ClientClock>(
-            role: .mediaReceiver, config: config.machineConfig, now: now)
-        _ = rebuilt.apply(.modeMessage(machine.wireMode), now: now)
-        machine = rebuilt
+        _ = lifecycle.reconfigure(config.machineConfig, now: now)
         lock.unlock()
         onEvent(.protocolNote(String(
             format: "audio quiet announced — blackout detector relaxed "
@@ -1270,20 +1266,17 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         guard let tightened = config.tightenedBlackoutSilenceMicroseconds
         else { return }
         lock.lock()
-        guard !detectorTightened, machine.state != .closed else {
+        guard !detectorTightened, lifecycle.state != .closed else {
             lock.unlock()
             return
         }
         detectorTightened = true
         var machineConfig = config.machineConfig
         machineConfig.blackoutSilenceMicroseconds = tightened
-        var rebuilt = SessionStateMachine<ClientClock>(
-            role: .mediaReceiver, config: machineConfig, now: now)
-        _ = rebuilt.apply(.modeMessage(machine.wireMode), now: now)
-        // lastState/lastWireMode stay untouched: the next applyMachine
+        _ = lifecycle.reconfigure(machineConfig, now: now)
+        // Edge reporting stays untouched: the next applyMachine
         // pass surfaces any edge this rebuild caused (e.g. a FROZEN
         // pill clearing on this very evidence).
-        machine = rebuilt
         lock.unlock()
         onEvent(.protocolNote(String(
             format: "audio evidence — blackout detector tightened to %d ms",
@@ -1319,13 +1312,13 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public var state: SessionState {
         lock.lock()
         defer { lock.unlock() }
-        return machine.state
+        return lifecycle.state
     }
 
     public var wireMode: SessionWireMode {
         lock.lock()
         defer { lock.unlock() }
-        return machine.wireMode
+        return lifecycle.wireMode
     }
 
     /// The CL-8 pill: true while the local overlay says the path is
@@ -1372,22 +1365,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         _ input: SessionInput?, now: ClientTimestamp
     ) {
         lock.lock()
-        var actions: [SessionAction] = []
-        if let input {
-            actions += machine.apply(input, now: now)
-        }
-        let (polled, _) = machine.poll(now: now)
-        actions += polled
-        let state = machine.state
-        let mode = machine.wireMode
-        let stateEdge = state != lastState
-        let modeEdge = mode != lastWireMode
-        lastState = state
-        lastWireMode = mode
-        machineFrozen.store(state == .frozen, ordering: .relaxed)
+        let decision = lifecycle.advance(input, now: now)
+        machineFrozen.store(decision.state == .frozen, ordering: .relaxed)
         lock.unlock()
 
-        for action in actions {
+        for action in decision.actions {
             switch action {
             case .sendTeardownMessage(let reason):
                 do {
@@ -1406,8 +1388,12 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 break   // sender-role actions; a receiver never emits them
             }
         }
-        if modeEdge { onEvent(.modeChanged(mode)) }
-        if stateEdge { onEvent(.stateChanged(state)) }
+        if let mode = decision.wireModeChange {
+            onEvent(.modeChanged(mode))
+        }
+        if let state = decision.stateChange {
+            onEvent(.stateChanged(state))
+        }
     }
 
     // MARK: Reliable dispatch

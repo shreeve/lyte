@@ -40,7 +40,7 @@ tests separate:
 Wire/         LyteWire — Foundation-free, sans-IO protocol core and vectors
 Common/       LyteCore policy + LyteIO operating-system adapters
 Host/         HostCore + HostWire + the Linux host and hardware/OS leaves
-Client/       LyteClientCore + LyteTransport + diagnostics + macOS app and CLI
+Client/       LyteClientCore + LyteClientSession + LyteTransport + app/CLI
 SystemTests/  cross-role composition tests; no production ownership
 ```
 

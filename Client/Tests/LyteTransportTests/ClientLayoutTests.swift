@@ -20,16 +20,18 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertEqual(
             try directoryNames(at: root.appendingPathComponent("Sources")),
             [
-                "Lyte", "LyteClientCore", "LyteClientTestKit", "LyteCorpus",
-                "LyteHelperProtocol", "LyteHelperSecurity", "LyteTransport",
-                "LyteUI", "lyte-cli", "lyte-helperd",
+                "Lyte", "LyteClientCore", "LyteClientSession",
+                "LyteClientTestKit", "LyteCorpus", "LyteHelperProtocol",
+                "LyteHelperSecurity", "LyteTransport", "LyteUI", "lyte-cli",
+                "lyte-helperd",
             ]
         )
         XCTAssertEqual(
             try directoryNames(at: root.appendingPathComponent("Tests")),
             [
-                "LyteClientCoreTests", "LyteHelperSecurityTests",
-                "LyteTransportTests", "LyteUITests",
+                "LyteClientCoreTests", "LyteClientSessionTests",
+                "LyteHelperSecurityTests", "LyteTransportTests",
+                "LyteUITests",
             ]
         )
         XCTAssertEqual(
@@ -53,6 +55,29 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertTrue(source.contains("onDatagram: { [weak self]"))
         XCTAssertTrue(source.contains("self?.core?.handleDatagram("))
         XCTAssertFalse(source.contains("SessionCoreBox"))
+    }
+
+    func testTransportDelegatesLifecyclePolicyToClientSession() throws {
+        let root = URL(fileURLWithPath: ClientTestPaths.repositoryRoot)
+        let transport = try String(
+            contentsOf: root.appendingPathComponent(
+                "Client/Sources/LyteTransport/LyteUdpSession.swift"),
+            encoding: .utf8)
+        let lifecycle = try String(
+            contentsOf: root.appendingPathComponent(
+                "Client/Sources/LyteClientSession/"
+                    + "ClientSessionLifecycle.swift"),
+            encoding: .utf8)
+
+        XCTAssertTrue(transport.contains(
+            "private var lifecycle: ClientSessionLifecycle"))
+        XCTAssertTrue(transport.contains(
+            "let decision = lifecycle.advance(input, now: now)"))
+        XCTAssertFalse(transport.contains("SessionStateMachine<"))
+        XCTAssertFalse(transport.contains("private var lastState"))
+        XCTAssertFalse(transport.contains("private var lastWireMode"))
+        XCTAssertTrue(lifecycle.contains(
+            "private var machine: SessionStateMachine<ClientClock>"))
     }
 
     func testCapabilityNegotiatorAloneOwnsTheAgreedSet() throws {
