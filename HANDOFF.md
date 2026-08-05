@@ -4,12 +4,13 @@
 
 ## Resume here
 
-- **Branch:** `agent/playout-setting-truth`, based on clean `main` at the #172
-  landing.
-- **GitHub:** the automatic-Conductor cleanup is ready for its focused PR.
+- **Branch:** resume on clean `main` after the #173 landing; do not continue on
+  its merged feature branch.
+- **GitHub:** PR #173 is landing the automatic-Conductor cleanup with complete
+  Mac, pup, and signed live-app proof.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** land the automatic-Conductor cleanup, then authenticate
-  every privileged helper XPC client with an exact signing requirement.
+- **Current objective:** authenticate every privileged helper XPC client with
+  an exact signing requirement.
 
 ## Last green gates
 
