@@ -4,14 +4,14 @@
 
 ## Resume here
 
-- **Branch:** resume on `main` after the current landing; do not continue on
-  the merged feature branch.
-- **GitHub:** PR #170 is the warning-zero landing, based on #169.
+- **Branch:** `cleanup/playout-setting-truth`, based directly on clean `main` at
+  the #170 landing.
+- **GitHub:** PR #170 is merged; the current stats-overlay repair is not yet a
+  PR.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** land PR #170, return to clean `main`, then reconcile the
-  playout setting and `docs/CUSHION.md` with the Conductor's one-beat minimum.
-  The owner-visible sustained-stream ledger remains blocked by the confirmed
-  macOS Local Network privacy-state defect described below.
+- **Current objective:** land the stats-overlay beachball repair and its
+  owner-approved warning copy, then reconcile the playout setting and
+  `docs/CUSHION.md` with the Conductor's one-beat minimum.
 
 ## Last green gates
 
@@ -43,14 +43,30 @@ debug and release builds; hermetic linkage; socket and pacing harnesses; and
 protected-state verification. Clean independent audits found no remaining
 repo-source Swift warnings.
 
+The stats-overlay repair passed warning-enforced macOS Common 86, Wire 513,
+Host 338, Client 285, and SystemTests 17. Pup passed Common 87, Wire 513, Host
+339, debug and release builds, hermetic linkage, socket and pacing harnesses,
+and protected-state verification. The signed release app passed packaging and
+hermetic linkage, connected to pup, and kept its main thread idle for 11,994 of
+12,008 samples during a 15-second live trace with Session Stats visible. No
+`TimelineView`, `statsRows`, or stats-overlay stack appeared; the menu remained
+responsive through two stats toggles.
+
 ## Current live rig
 
 ### Client
 
-- `.build/Lyte.app` is not currently running.
+- `.build/Lyte.app` is running and connected to pup. The previous app's
+  beachball was a main-thread `StatsOverlay` feedback loop: its `TimelineView`
+  repeatedly invoked `ConnectionModel.statsRows()` and percentile sorting from
+  SwiftUI layout while media queues kept playing. The repaired overlay renders
+  cached rows and refreshes them from one cancellable one-second task. The live
+  proof is recorded under the focused gate above.
 - It is signed by `Apple Development: Steve Shreeve (8FHNN4RZ9Q)` with team
   identifier `SD6N7Z8P9P` and bundle identifier `dev.shreeve.lyte`.
-- The current candidate bundle is source `d2bb60773721`, build `1785901215`;
+- The current candidate bundle is source `a16f93e0153b+`, build `1785904418`,
+  with client-source hash
+  `8147584f679bb83f98044fdb38b04c753d35d75c46e85ebc170bb8038fd47590`;
   its packaging, hermetic-linkage, and strict deep-signature checks pass.
 - LaunchServices resolves the exact candidate path, build version, signing
   identity, and Mach-O UUID. After the completed reboot and an owner-controlled
@@ -58,9 +74,17 @@ repo-source Swift warnings.
   pup but Network.framework marks every IPv4 and IPv6 child path `Local network
   prohibited`. The signed CLI discovers `10.0.0.232:41151`, and route, ping,
   and direct UDP checks succeed. Apple DTS reproduces this enabled-but-denied
-  state as an OS bug (FB21858319/FB21858436). No privacy database reset or
-  system-wide CIDR exception has been attempted; another reboot has no current
-  evidence behind it.
+  state as an OS bug (FB21858319/FB21858436). A clean Lyte quit, fresh
+  `nehelper` and explicitly kickstarted `nesessionmanager`, and exact-bundle
+  relaunch reproduced the contradiction: the preference layer logged Lyte as
+  allowed while every resolved path remained prohibited. No privacy database
+  or undocumented plist edit was attempted. At the owner's direction, the
+  Apple-documented Wi-Fi exception `10.0.0.0/24` is installed in
+  `com.apple.network.local-network`. After the required reboot, the exact
+  signed bundle connected to pup successfully and CoreMedia reported the video
+  renderer ready for display; the fresh trace contained no `Local network
+  prohibited` verdict. This exception deliberately bypasses Local Network
+  privacy for every app contacting the owner's trusted Wi-Fi `/24`.
 - Do not launch a benchmark or second ordinary Lyte app while this process is
   open; both use the same bundle identity.
 

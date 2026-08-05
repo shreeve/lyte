@@ -47,22 +47,21 @@ struct StreamContainer: View {
         StripEdge(rawValue: stripEdgeRaw) ?? .bottom
     }
 
-    /// "Pre-render delivery stalls — last 60 s: 1, worst 49 ms": every
-    /// number in the warning describes the same live 60-second window.
-    /// Sitting-wide books remain diagnostic evidence, not alarm copy.
+    /// "Video delayed 5 times in the last minute, worst was 49 ms":
+    /// every number in the warning describes the same live 60-second window.
+    /// Sitting-wide books and stage attribution remain diagnostic evidence,
+    /// not alarm copy.
     private func linkHealthLine(
         _ health: LinkHealthAssessment
     ) -> String {
-        let stage: String
-        switch health.dominantStage {
-        case "delivery": stage = "Pre-render delivery stalls"
-        case "renderer": stage = "Renderer handoff stalls"
-        default: stage = "Delivery stalls"
-        }
         let recent = health.stallsLastMinute.formatted()
+        let occurrence = health.stallsLastMinute == 1
+            ? "1 time"
+            : "\(recent) times"
         let worst = health.worstStallMilliseconds
             .formatted(.number.precision(.fractionLength(0)))
-        return "\(stage) — last 60 s: \(recent), worst \(worst) ms"
+        return "Video delayed \(occurrence) in the last minute, "
+            + "worst was \(worst) ms"
     }
 
     var body: some View {
@@ -723,30 +722,39 @@ struct DropHintOverlay: View {
 /// flowing, audio depth/PLC — re-read once a second while visible.
 struct StatsOverlay: View {
     let model: ConnectionModel
+    @State private var rows: [ConnectionModel.StatsRow] = []
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { _ in
-            // The two-column ledger (owner steal from YouTube's
-            // stats-for-nerds, 2026-08-03): labels right-aligned and
-            // dimmed, values left-aligned — the eye scans one seam.
-            // Grammar unchanged: lowercase nominal, caps = alarm.
-            Grid(alignment: .topLeading,
-                 horizontalSpacing: 8, verticalSpacing: 3) {
-                ForEach(model.statsRows()) { statsRow in
-                    GridRow {
-                        Text(statsRow.label)
-                            .gridColumnAlignment(.trailing)
-                            .foregroundStyle(.white.opacity(0.55))
-                        Text(statsRow.value)
-                    }
+        // The two-column ledger (owner steal from YouTube's
+        // stats-for-nerds, 2026-08-03): labels right-aligned and
+        // dimmed, values left-aligned — the eye scans one seam.
+        // Grammar unchanged: lowercase nominal, caps = alarm.
+        Grid(alignment: .topLeading,
+             horizontalSpacing: 8, verticalSpacing: 3) {
+            ForEach(rows) { statsRow in
+                GridRow {
+                    Text(statsRow.label)
+                        .gridColumnAlignment(.trailing)
+                        .foregroundStyle(.white.opacity(0.55))
+                    Text(statsRow.value)
                 }
             }
-            .font(.caption.monospaced())
-            .foregroundStyle(.white.opacity(0.9))
-            .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(.black.opacity(0.55)))
+        }
+        .font(.caption.monospaced())
+        .foregroundStyle(.white.opacity(0.9))
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.black.opacity(0.55)))
+        .task {
+            while !Task.isCancelled {
+                rows = model.statsRows()
+                do {
+                    try await Task.sleep(for: .seconds(1))
+                } catch {
+                    return
+                }
+            }
         }
         .allowsHitTesting(false)
     }

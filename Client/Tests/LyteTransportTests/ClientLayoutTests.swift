@@ -112,6 +112,25 @@ final class ClientLayoutTests: XCTestCase {
             1)
     }
 
+    func testStatsOverlaySamplesOutsideSwiftUILayout() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
+                "/Client/Sources/Lyte/ControlStrip.swift"),
+            encoding: .utf8)
+        let marker = "struct StatsOverlay: View {"
+        let overlay = try XCTUnwrap(source.range(of: marker)).lowerBound
+        let overlaySource = source[overlay...]
+
+        XCTAssertTrue(overlaySource.contains(
+            "@State private var rows: [ConnectionModel.StatsRow] = []"))
+        XCTAssertTrue(overlaySource.contains("ForEach(rows)"))
+        XCTAssertTrue(overlaySource.contains("rows = model.statsRows()"))
+        XCTAssertTrue(overlaySource.contains(
+            "try await Task.sleep(for: .seconds(1))"))
+        XCTAssertFalse(overlaySource.contains("TimelineView"))
+        XCTAssertFalse(overlaySource.contains("ForEach(model.statsRows())"))
+    }
+
     private func directoryNames(at root: URL) throws -> [String] {
         try FileManager.default.contentsOfDirectory(
             at: root,
