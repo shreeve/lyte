@@ -69,6 +69,13 @@ public struct LyteDiscoveryScan: Sendable, Equatable {
     public let hosts: [DiscoveredLyteHost]
     public let accessProblem: LocalNetworkAccessProblem?
 
+    /// A scan-level access problem blocks progress only when the scan found no
+    /// usable dial target. Independent stale or unreachable advertisements
+    /// remain diagnostic evidence without eclipsing a resolved host.
+    public var blockingAccessProblem: LocalNetworkAccessProblem? {
+        hosts.isEmpty ? accessProblem : nil
+    }
+
     public init(
         hosts: [DiscoveredLyteHost],
         accessProblem: LocalNetworkAccessProblem?
@@ -105,14 +112,15 @@ public enum LyteDiscovery {
 
     /// Browse for `duration` seconds, then resolve each instance to a
     /// numeric address + port. Hosts that fail to resolve within the
-    /// timeout are dropped — an unresolvable record is not a connect
-    /// target, and manual host:port remains the fallback.
+    /// timeout are not returned as connect targets, but their presence is
+    /// retained as qualified route-or-permission evidence for the UI.
     public static func scan(duration: TimeInterval = 3.0) async
         -> LyteDiscoveryScan
     {
         let browse = await browseServices(duration: duration)
         var hosts: [DiscoveredLyteHost] = []
-        var accessProblem = browse.accessProblem
+        var resolutionProblems: [LocalNetworkAccessProblem] = []
+        var hadUnresolvedService = false
         await withTaskGroup(of: HostResolution.self) { group in
             for service in browse.services {
                 group.addTask {
@@ -133,14 +141,42 @@ public enum LyteDiscovery {
             for await result in group {
                 switch result {
                 case .host(let host): hosts.append(host)
-                case .accessProblem(let problem): accessProblem = problem
-                case .failed: break
+                case .accessProblem(let problem):
+                    resolutionProblems.append(problem)
+                case .failed:
+                    hadUnresolvedService = true
                 }
             }
         }
         return LyteDiscoveryScan(
             hosts: hosts.sorted { $0.name < $1.name },
-            accessProblem: accessProblem)
+            accessProblem: combinedAccessProblem(
+                browserProblem: browse.accessProblem,
+                resolutionProblems: resolutionProblems,
+                hadUnresolvedService: hadUnresolvedService))
+    }
+
+    /// Reduce independently timed browser and resolver evidence into one
+    /// honest operator diagnosis. A discovered Bonjour instance that cannot
+    /// become a numeric target is not an empty network: it proves either a
+    /// route/resolution problem or a Local Network privacy denial. Preserve
+    /// that qualified diagnosis even when Network.framework surfaces no
+    /// classifiable NWError for the failed resolver child.
+    static func combinedAccessProblem(
+        browserProblem: LocalNetworkAccessProblem?,
+        resolutionProblems: [LocalNetworkAccessProblem],
+        hadUnresolvedService: Bool
+    ) -> LocalNetworkAccessProblem? {
+        if browserProblem == .permissionRequired
+            || resolutionProblems.contains(.permissionRequired)
+        {
+            return .permissionRequired
+        }
+        if let browserProblem { return browserProblem }
+        if let resolutionProblem = resolutionProblems.first {
+            return resolutionProblem
+        }
+        return hadUnresolvedService ? .routeOrPermissionUnavailable : nil
     }
 
     /// Compatibility surface for roaming and CLI discovery. Those callers
@@ -267,8 +303,17 @@ public enum LyteDiscovery {
         }
         let first = await resolve(endpoint, using: v4, timeout: timeout)
         switch first {
-        case .resolved, .accessProblem:
+        case .resolved, .accessProblem(.permissionRequired):
             return first
+        case .accessProblem(.routeOrPermissionUnavailable):
+            let fallback = await resolve(
+                endpoint, using: .udp, timeout: timeout)
+            switch fallback {
+            case .resolved, .accessProblem:
+                return fallback
+            case .failed:
+                return first
+            }
         case .failed:
             return await resolve(endpoint, using: .udp, timeout: timeout)
         }

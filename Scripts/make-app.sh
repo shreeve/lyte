@@ -5,8 +5,84 @@
 # contributor fallback when an Apple-issued identity is unavailable.
 set -e
 cd "$(dirname "$0")/.."
+ROOT="$PWD"
+. "$ROOT/Scripts/AppArtifact/app-artifact.sh"
 
 CONFIG="${1:-release}"
+LIVE_APP="$ROOT/.build/Lyte.app"
+APP="${LYTE_APP_DESTINATION:-$LIVE_APP}"
+case "$APP" in
+  /*) ;;
+  *) APP="$ROOT/$APP" ;;
+esac
+case "$APP" in
+  "$LIVE_APP"/*)
+    echo "error: isolated app destination cannot be inside $LIVE_APP" >&2
+    exit 1
+    ;;
+esac
+
+# Serialize before inspecting or changing any destination state. Requiring an
+# existing parent lets us canonicalize through symlinks and `..` without first
+# creating attacker- or caller-selected directories.
+lyte_acquire_app_artifact_lock
+if [ ! -d "$(dirname "$APP")" ]; then
+  echo "error: app destination parent must already exist" >&2
+  exit 1
+fi
+APP="$(cd "$(dirname "$APP")" && pwd -P)/$(basename "$APP")"
+case "$APP" in
+  "$ROOT/.build/"*) ;;
+  *)
+    echo "error: app destination must stay inside $ROOT/.build" >&2
+    exit 1
+    ;;
+esac
+case "$APP" in
+  "$LIVE_APP") PUBLISHING_LIVE=1 ;;
+  "$LIVE_APP"/*)
+    echo "error: isolated app destination cannot be inside $LIVE_APP" >&2
+    exit 1
+    ;;
+  *) PUBLISHING_LIVE=0 ;;
+esac
+
+[ "$PUBLISHING_LIVE" -eq 0 ] \
+  || lyte_require_app_quiescent "live app publication"
+
+# LaunchServices requires a numeric bundle build. Source identity is separate
+# because a Git hash is provenance, not a valid CFBundleVersion.
+if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+  echo "error: bundle version requires full Git history" >&2
+  echo "       fetch --unshallow before assembling Lyte.app" >&2
+  exit 1
+fi
+SOURCE_VERSION_FLOOR="$(git rev-list --count HEAD)"
+SOURCE_REVISION="$(git rev-parse --short=12 HEAD)"
+[ -n "$(git status --porcelain)" ] \
+  && SOURCE_REVISION="${SOURCE_REVISION}+"
+case "$SOURCE_VERSION_FLOOR" in
+  ''|*[!0-9]*)
+    echo "error: Git produced a non-numeric bundle version" >&2
+    exit 1
+    ;;
+esac
+
+PREVIOUS_BUNDLE_VERSION=0
+if [ -f "$APP/Contents/Info.plist" ]; then
+  if ! PREVIOUS_BUNDLE_VERSION="$(
+    plutil -extract CFBundleVersion raw -o - "$APP/Contents/Info.plist" \
+      2>/dev/null
+  )"; then
+    echo "error: existing Lyte.app has no readable CFBundleVersion" >&2
+    exit 1
+  fi
+fi
+BUNDLE_VERSION="$(
+  Scripts/next-bundle-version.sh \
+    "$PREVIOUS_BUNDLE_VERSION" "$SOURCE_VERSION_FLOOR"
+)"
+
 swift build \
   --package-path Client \
   --scratch-path .build \
@@ -18,25 +94,6 @@ swift build \
   -c "$CONFIG" \
   --product lyte-helperd
 
-# LaunchServices requires a numeric bundle build. Source identity is separate
-# because a Git hash is provenance, not a valid CFBundleVersion.
-if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-  echo "error: bundle version requires full Git history" >&2
-  echo "       fetch --unshallow before assembling Lyte.app" >&2
-  exit 1
-fi
-BUNDLE_VERSION="$(git rev-list --count HEAD)"
-SOURCE_REVISION="$(git rev-parse --short=12 HEAD)"
-[ -n "$(git status --porcelain)" ] \
-  && SOURCE_REVISION="${SOURCE_REVISION}+"
-case "$BUNDLE_VERSION" in
-  ''|*[!0-9]*)
-    echo "error: Git produced a non-numeric bundle version" >&2
-    exit 1
-    ;;
-esac
-
-APP=".build/Lyte.app"
 STAGE_ROOT="$(mktemp -d ".build/.lyte-app-stage.XXXXXX")"
 STAGED_APP="$STAGE_ROOT/Lyte.app"
 cleanup() { rm -rf "$STAGE_ROOT"; }
@@ -146,6 +203,11 @@ Scripts/Tests/test-app-packaging.sh "$STAGED_APP" "$STAGE_ROOT"
 Scripts/Tests/test-hermetic-linkage.sh \
   "$STAGED_APP/Contents/MacOS/Lyte" \
   "$STAGED_APP/Contents/MacOS/lyte-helperd"
+
+# The shared lock excludes the scripted launcher and concurrent publishers.
+# Recheck external process state immediately before replacing the live bundle.
+[ "$PUBLISHING_LIVE" -eq 0 ] \
+  || lyte_require_app_quiescent "live app publication"
 
 # macOS rename-swap publishes the complete signed directory in one filesystem
 # operation. The old app moves into the private stage and the EXIT trap removes

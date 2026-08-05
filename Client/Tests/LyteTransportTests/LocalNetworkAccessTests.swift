@@ -85,5 +85,15 @@ final class LocalNetworkAccessTests: XCTestCase {
 
         XCTAssertEqual(scan.hosts, [host])
         XCTAssertEqual(scan.accessProblem, .permissionRequired)
+        XCTAssertNil(scan.blockingAccessProblem)
+    }
+
+    func testAccessEvidenceBlocksOnlyWhenNoHostResolved() {
+        let scan = LyteDiscoveryScan(
+            hosts: [], accessProblem: .routeOrPermissionUnavailable)
+
+        XCTAssertEqual(
+            scan.blockingAccessProblem,
+            .routeOrPermissionUnavailable)
     }
 }

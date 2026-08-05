@@ -145,6 +145,7 @@ if [[ ! -x "$python_env/bin/python3" || "$installed_hash" != "$required_hash" ]]
 fi
 
 "$python_env/bin/python3" Scripts/Tests/test_analyze_app_benchmark.py
+Scripts/Tests/test-app-identity.sh
 
 echo "==> signed debug CLI"
 Scripts/build-cli.sh debug
@@ -152,13 +153,27 @@ codesign --verify --strict .build/debug/lyte-cli
 Scripts/Tests/test-hermetic-linkage.sh .build/debug/lyte-cli
 
 echo "==> signed release app"
-Scripts/make-app.sh release
-Scripts/Tests/test-app-packaging.sh .build/Lyte.app
-codesign --verify --strict .build/Lyte.app/Contents/MacOS/Lyte
-codesign --verify --strict .build/Lyte.app/Contents/MacOS/lyte-helperd
-codesign --verify --strict .build/Lyte.app
+ci_app_root="$(mktemp -d .build/.lyte-ci-app.XXXXXX)"
+cleanup_ci_app() { rm -rf -- "$ci_app_root"; }
+trap cleanup_ci_app EXIT
+ci_app="$ci_app_root/Lyte.app"
+LYTE_APP_DESTINATION="$ci_app" Scripts/make-app.sh release
+first_ci_bundle_version="$(
+    plutil -extract CFBundleVersion raw -o - "$ci_app/Contents/Info.plist"
+)"
+# A second assembly exercises the version-successor and RENAME_SWAP path at an
+# isolated destination without touching the owner's published app.
+LYTE_APP_DESTINATION="$ci_app" Scripts/make-app.sh release
+second_ci_bundle_version="$(
+    plutil -extract CFBundleVersion raw -o - "$ci_app/Contents/Info.plist"
+)"
+[[ "$second_ci_bundle_version" -gt "$first_ci_bundle_version" ]]
+Scripts/Tests/test-app-packaging.sh "$ci_app" "$ci_app_root"
+codesign --verify --strict "$ci_app/Contents/MacOS/Lyte"
+codesign --verify --strict "$ci_app/Contents/MacOS/lyte-helperd"
+codesign --verify --strict "$ci_app"
 Scripts/Tests/test-hermetic-linkage.sh \
-    .build/Lyte.app/Contents/MacOS/Lyte \
-    .build/Lyte.app/Contents/MacOS/lyte-helperd
+    "$ci_app/Contents/MacOS/Lyte" \
+    "$ci_app/Contents/MacOS/lyte-helperd"
 
 echo "macOS gate PASSED"

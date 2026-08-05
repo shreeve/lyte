@@ -114,7 +114,9 @@ cd SystemTests && DEVELOPER_DIR=/Applications/Xcode.app swift test
 
 Client binaries that contact a host must be built through
 `Scripts/build-cli.sh` or `Scripts/make-app.sh`; the stable "Lyte Dev"
-signature preserves Keychain authorization. See `docs/MACOS-SIGNING.md`.
+signature preserves Keychain authorization. Quit a running app before
+rebuilding its bundle, then use `Scripts/launch-app.sh` so LaunchServices
+registers the exact published artifact. See `docs/MACOS-SIGNING.md`.
 
 ### Reference host: pup
 

@@ -1,6 +1,6 @@
 import XCTest
 import Foundation
-import LyteTransport
+@testable import LyteTransport
 import LyteWire
 
 // CL-5's testable core: the TXT identity parse and the pinned-key hash
@@ -93,5 +93,55 @@ final class LyteDiscoveryTests: XCTestCase {
             name: "old", address: "10.0.0.7", port: 41000,
             wireVersion: nil, publicKeyHash: nil)
         XCTAssertFalse(bare.matches(pinnedStaticPublicKey: pinned))
+    }
+
+    // MARK: - Scan diagnosis
+
+    func testDefinitiveResolverDenialOutranksQualifiedEvidence() {
+        XCTAssertEqual(
+            LyteDiscovery.combinedAccessProblem(
+                browserProblem: .routeOrPermissionUnavailable,
+                resolutionProblems: [.permissionRequired],
+                hadUnresolvedService: true),
+            .permissionRequired)
+    }
+
+    func testBrowserEvidenceSurvivesWithoutResolverEvidence() {
+        for problem in [
+            LocalNetworkAccessProblem.permissionRequired,
+            .routeOrPermissionUnavailable,
+        ] {
+            XCTAssertEqual(
+                LyteDiscovery.combinedAccessProblem(
+                    browserProblem: problem,
+                    resolutionProblems: [],
+                    hadUnresolvedService: false),
+                problem)
+        }
+    }
+
+    func testResolverRouteEvidenceSurvivesAHealthyBrowser() {
+        XCTAssertEqual(
+            LyteDiscovery.combinedAccessProblem(
+                browserProblem: nil,
+                resolutionProblems: [.routeOrPermissionUnavailable],
+                hadUnresolvedService: false),
+            .routeOrPermissionUnavailable)
+    }
+
+    func testUnresolvedAdvertisedServiceIsNotReportedAsEmptyNetwork() {
+        XCTAssertEqual(
+            LyteDiscovery.combinedAccessProblem(
+                browserProblem: nil,
+                resolutionProblems: [],
+                hadUnresolvedService: true),
+            .routeOrPermissionUnavailable)
+    }
+
+    func testTrulyEmptySuccessfulBrowseHasNoInventedAccessProblem() {
+        XCTAssertNil(LyteDiscovery.combinedAccessProblem(
+            browserProblem: nil,
+            resolutionProblems: [],
+            hadUnresolvedService: false))
     }
 }
