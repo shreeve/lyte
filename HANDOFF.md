@@ -1,260 +1,71 @@
 # Lyte — session handoff
 
-*Current as of 2026-08-05. This is the live resume point, not a history log.*
+*Current as of 2026-08-05. This is the live resume point; Git owns completed
+history.*
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #187; no other local or remote branches
-  remain and GitHub has no open pull requests.
-- **GitHub:** PR #186 makes every shipping transport Noise-only and confines
-  passthrough crypto to test equipment. PR #187 makes `HostApplication` the
-  native Swift `@main` entry and deletes the one-line `main.swift`.
-- **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** finish documentation and architectural ratchets, then
-  repeat clean macOS, pup, WASM, and live-rig commissioning.
+- **Branch:** clean `main` through PR #188. There are no auxiliary worktrees,
+  other local or remote branches, or open pull requests.
+- **Current objective:** make the Noise-only host ratchet scan the complete
+  shipping executable target, then repeat WASM and owner-visible live-rig
+  commissioning.
+- **Recent landings:** PR #186 made shipping transport Noise-only and removed
+  513 net lines; PR #187 made `HostApplication` the native Swift `@main` entry;
+  PR #188 aligned every living architecture document with those landings and
+  the automatic Conductor. Frozen dated records and vectors did not change.
 
 ## Last green gates
 
-The #168 hermetic Opus slice passed its focused macOS checks: Common's 86 tests,
-the host release-posture ratchet, signed app assembly, exact third-party notice
-hashes, deployment target checks, positive Opus and nanors symbol checks, and
-the complete Mach-O dependency/RPATH allowlist. A separately downloaded
-official Opus 1.6.1 archive matched all 240 pinned files byte-for-byte.
+The exact PR #188 commit passed the complete warning-enforced macOS gate:
+Common 93, Wire 513, Host 345, Client 301, and SystemTests 17. Benchmark and
+host-release safety, signing policy, 25 analyzer tests, app identity, the
+signed CLI, hermetic linkage, packaging, and double signed release-app
+assembly all passed.
 
-The complete pup gate passed Common 87, Wire 513, and Host 339 tests; the debug
-and release builds; release host/audio linkage checks; positive Opus symbol
-proof; and the netio and pacing harnesses. The release Opus leaf compiled with
-`-O2`. Pup's protected identity state was unchanged.
+The same commit passed pup's deterministic gate: Common 94, Wire 513, and Host
+346; warning-enforced debug and release builds; hermetic linkage; pinned Opus
+symbol proof; socket/TOS and pacing harnesses; and protected-state
+verification. The gate did not deploy or restart the standing service.
 
-The final local-network identity gate passed all five packages: Common 86,
-Wire 513, Host 338, Client 283, and SystemTests 17. It also passed benchmark and
-host-release safety, signing policy, 25 analyzer tests, app-identity policy,
-the signed CLI, packaging, and hermetic linkage. The isolated release app was
-assembled twice at one path; the second build advanced `CFBundleVersion` and
-exercised the atomic bundle-swap path without touching `.build/Lyte.app`.
-Focused discovery/access coverage is 24 tests. `git diff --check` and shell
-syntax are clean.
-
-The warning-zero gate passed macOS Common 86, Wire 513, Host 338, Client 284,
-and SystemTests 17 with Swift warnings promoted to errors. Signing, analyzers,
-the signed CLI, hermetic linkage, packaging, and double signed app assembly
-also passed. Pup passed Common 87, Wire 513, and Host 339; warning-enforced
-debug and release builds; hermetic linkage; socket and pacing harnesses; and
-protected-state verification. Clean independent audits found no remaining
-repo-source Swift warnings.
-
-The stats-overlay repair passed warning-enforced macOS Common 86, Wire 513,
-Host 338, Client 285, and SystemTests 17. Pup passed Common 87, Wire 513, Host
-339, debug and release builds, hermetic linkage, socket and pacing harnesses,
-and protected-state verification. The signed release app passed packaging and
-hermetic linkage, connected to pup, and kept its main thread idle for 11,994 of
-12,008 samples during a 15-second live trace with Session Stats visible. No
-`TimelineView`, `statsRows`, or stats-overlay stack appeared; the menu remained
-responsive through two stats toggles.
-
-The automatic-Conductor cleanup passed macOS Common 86, Wire 513, Host 338,
-Client 286, and SystemTests 17 plus benchmark safety, signing, app identity,
-packaging, and hermetic linkage. Pup passed Common 87, Wire 513, and Host 339;
-warning-enforced debug and release builds; hermetic linkage; socket and pacing
-harnesses; and protected-state verification. The focused law proof pins a
-one-beat shipping floor, hole-driven whole-beat growth, and proof-driven
-whole-beat return. The signed release app connected to pup with video and audio
-while its application menu correctly exposed no Settings item.
-
-Exact helper-client authentication passed macOS Common 86, Wire 513, Host 338,
-Client 291, and SystemTests 17 plus all safety, signing, identity, packaging,
-and linkage checks. Pup passed Common 87, Wire 513, and Host 339 plus both
-builds, linkage, harnesses, and protected-state verification. Four focused
-requirement tests pin both supported signer forms and malformed fail-closed
-behavior; packaging repeatedly proved the signed app is accepted while the
-same-signed helper and `/bin/ls` are rejected. Live helper PID 98023 installed
-the exact app DR before delegate activation, accepted app PID 96213, held AWDL
-down, and emitted no Security performance diagnostic.
-
-The truthful-flight-ledger slice passed macOS Common 87, Wire 513, Host 338,
-Client 293, and SystemTests 17 plus benchmark safety, signing, analyzer,
-packaging, hermetic-linkage, and double app-assembly checks. Pup passed Common
-88, Wire 513, and Host 339 plus warning-enforced debug and release builds,
-linkage, socket and pacing harnesses, and protected-state verification. The
-focused laws separate total cue, measured path, and reserve; expire historical
-renderer blame from the rolling window; and select the newest cue after the
-six-second frame ring wraps.
-
-The architecture-boundary ratchet passed macOS Common 92, Wire 513, Host 338,
-Client 293, and SystemTests 17 plus benchmark safety, signing, 25 analyzers,
-app identity, signed CLI, hermetic linkage, and double signed release-app
-assembly. Pup passed Common 93, Wire 513, and Host 339 plus warning-enforced
-debug and release builds, linkage, socket and pacing harnesses, and protected-
-state verification. One reusable lexer now owns structural source scans;
-registered pure targets fail closed on missing roots, outward imports, OS
-clocks, synchronization, and IO vocabulary. Frozen vectors were unchanged.
-
-The client-core roaming extraction passed macOS Common 92, Wire 513, Host
-338, Client 294, and SystemTests 17 plus benchmark safety, signing, 25
-analyzers, app identity, the signed CLI, hermetic linkage, and double signed
-release-app assembly. Pup passed Common 93, Wire 513, and Host 339 plus
-warning-enforced debug and release builds, linkage, socket and pacing
-harnesses, and protected-state verification. `LyteClientCore` has no
-dependencies or allowed imports; pure virtual-time roaming proof lives in
-`LyteClientCoreTests`, while persistence, Network.framework, and real-session
-resume proof remain at the transport edge. Frozen vectors were unchanged.
-
-The client-session lifecycle extraction passed macOS Common 92, Wire 513,
-Host 338, Client 299, and SystemTests 17 plus benchmark safety, signing, 25
-analyzers, app identity, the signed CLI, hermetic linkage, and double signed
-release-app assembly. Pup passed Common 93, Wire 513, and Host 339 plus
-warning-enforced debug and release builds, linkage, socket and pacing
-harnesses, and protected-state verification. The new `LyteClientSession`
-target also built directly on Linux with warnings as errors. Receiver
-lifecycle ownership, detector reconfiguration, and state/mode edge reporting
-are now IO-free value policy; locks, clocks, timers, wire sends, callbacks,
-media handling, and platform IO remain in `LyteTransport`. Frozen vectors were
-unchanged.
-
-The Swift host-audio extraction passed macOS Common 93, Wire 513, Host 340,
-Client 299, and SystemTests 17 plus benchmark safety, signing, 25 analyzers,
-app identity, the signed CLI, hermetic linkage, and double signed release-app
-assembly. Pup passed Common 94, Wire 513, and Host 341 plus warning-enforced
-debug and release builds, direct pinned-Opus symbol linkage, socket and pacing
-harnesses, and protected-state verification. A two-second live pup audio run
-produced 398 hard-CBR packets: exactly 200.0 packets/s, 80 bytes each, 5,000 us
-between every graph-clock timestamp, and clean decode-back. `COpusEncode` is
-deleted; `HostAudio` owns codec policy in Swift, while one policy-free inline C
-bridge remains solely because Swift cannot import variadic functions. Frozen
-vectors were unchanged.
-
-The failure-only video-warning slice passed 14 focused warning-contract tests
-and the complete warning-enforced macOS gate: Common 93, Wire 513, Host 340,
-Client 297, and SystemTests 17 plus benchmark safety, signing, 25 analyzers,
-app identity, the signed CLI, hermetic linkage, and double signed release-app
-assembly. Pup passed Common 94, Wire 513, and Host 341 plus warning-enforced
-debug and release builds, linkage, socket and pacing harnesses, and protected-
-state verification. The user-facing meter now receives only final renderer-
-handoff lateness and explicit renderer loss/failure; successfully absorbed
-delivery disturbances remain in the flight recorder and do not raise a pill.
-Frozen vectors were unchanged.
-
-The live-app clean-safety fix passed the complete warning-enforced macOS gate:
-Common 93, Wire 513, Host 340, Client 297, and SystemTests 17 plus benchmark
-safety, signing, 25 analyzers, app identity, the signed CLI, packaging, and
-hermetic linkage. The gate ran while Lyte PID 55056 was live; its bundle
-version, executable SHA-256, and PID were identical before and after. The
-captured crash was `EXC_BAD_ACCESS` in `_load_plist_from_bundle` after the old
-gate erased `.build/Lyte.app` and stream start tried to register its now-
-missing helper. Client tests now use `Client/.build`; stream start never owns
-registration; `.notFound` fails soft. PR #181 landed the fix.
-
-The terminal-video-verdict slice passed 16 focused warning-contract tests and
-the complete warning-enforced macOS gate: Common 93, Wire 513, Host 340,
-Client 299, and SystemTests 17 plus benchmark safety, signing, 25 analyzers,
-app identity, the signed CLI, packaging, hermetic linkage, and double signed
-release-app assembly. The gate left the owner's running app PID, bundle
-version, and executable hash unchanged. Pup passed Common 94, Wire 513, and
-Host 341 plus warning-enforced debug and release builds, linkage, socket and
-pacing harnesses, and protected-state verification. Preserved frames remain
-silent at measured lateness from 0.999 through 400 ms; terminal misses retain
-their measured lateness only as context. Frozen vectors were unchanged.
-
-The two-row stats slice passed its focused 13-test layout proof and the full
-warning-enforced macOS gate: Common 93, Wire 513, Host 340, Client 300, and
-SystemTests 17 plus benchmark safety, signing, 25 analyzers, app identity, the
-signed CLI, packaging, hermetic linkage, and double signed release-app
-assembly. Pup passed Common 94, Wire 513, and Host 341 plus warning-enforced
-debug and release builds, linkage, socket and pacing harnesses, and protected-
-state verification. No metric or telemetry source changed; only the stable
-presentation boundary changed. Frozen vectors were unchanged.
-
-The host-session extraction passed 8 focused pure-policy tests and the full
-warning-enforced macOS gate: Common 93, Wire 513, Host 342, Client 300, and
-SystemTests 17 plus benchmark safety, signing, 25 analyzers, app identity, the
-signed CLI, packaging, hermetic linkage, and double signed release-app
-assembly. Pup passed Common 94, Wire 513, and Host 343 plus warning-enforced
-debug and release builds, linkage, socket and pacing harnesses, and protected-
-state verification. `HostSession` now owns handshake admission, lifecycle
-projection, and path migration as injected-input value policy. Frozen vectors
-and live protocol behavior were unchanged.
-
-The explicit-host-composition slice passed 2 focused layout tests and the
-complete warning-enforced macOS and pup gates, including safety, signing,
-analyzers, app identity, packaging, hermetic linkage, Linux socket and pacing
-harnesses, and protected-state verification. `main.swift` now delegates in one
-line to `HostApplication`, which owns argument injection, command dispatch,
-dependency construction, and process-level failure. The change moved the
-existing production wiring without changing runtime or protocol behavior;
-frozen vectors were unchanged.
-
-The Noise-only shipping slice passed Client's 14 focused layout tests, all
-`LyteTransportTests`, Host's 3 focused composition tests, and all
-`HostWireTests`. The complete macOS gate passed Common 93, Wire 513, Host 345,
-Client 301, and SystemTests 17 plus every safety, signing, analyzer, identity,
-packaging, and linkage check. Pup passed Common 94, Wire 513, and Host 346 plus
-warning-enforced debug and release builds, hermetic linkage, Opus symbol proof,
-socket/TOS and pacing harnesses, and protected-state verification. Shipping
-executables now expose only authenticated Noise transport; passthrough crypto
-is test-only, the obsolete `wire-send` stand-in is gone, 513 net lines were
-removed, and frozen vectors remained byte-for-byte unchanged.
-
-The native-host-entry slice passed 2 focused layout tests and the complete
-macOS and pup gates. Pup compiled and linked `lyte-host` in debug and release,
-then passed its socket and pacing harnesses with protected host state unchanged.
-`HostApplication` is now the Swift `@main` type, its zero-argument process
-doorway delegates to the injected argument composition root, and the one-line
-`main.swift` is deleted. After PRs #186 and #187 composed on `main`, all 3 host
-composition/security laws passed together.
+Focused architecture proof on the composed main branch passes all three host
+composition/security laws: one native `@main` doorway, injected argument
+composition, and no plaintext selector in the named host seams. The next slice
+widens that last scan to every Swift file in `Host/Sources/lyte-host`.
 
 ## Current live rig
 
 ### Client
 
-- `.build/Lyte.app` (PID 64483) is running; the helper is demand-launched when
-  a stream needs it. The previous app's
-  beachball was a main-thread `StatsOverlay` feedback loop: its `TimelineView`
-  repeatedly invoked `ConnectionModel.statsRows()` and percentile sorting from
-  SwiftUI layout while media queues kept playing. The repaired overlay renders
-  cached rows and refreshes them from one cancellable one-second task. The live
-  proof is recorded under the focused gate above.
-- It is signed by `Apple Development: Steve Shreeve (8FHNN4RZ9Q)` with team
-  identifier `SD6N7Z8P9P` and bundle identifier `dev.shreeve.lyte`.
-- The current landed bundle is clean source `ad1512c3206b`, build
-  `1785919825`.
-  Its Lyte and helper executable SHA-256 values are respectively
-  `aa5b63f5acfbc30e559e5c398d047b3db7e9a1a517a71397a0dbf4267b59d48f`
-  and `eae3cff51bbe689f4e82e755edc49ef9b2d5c320286bd452dd33148a92e1fe2e`.
-  Packaging, hermetic-linkage, and strict deep-signature checks pass.
-- LaunchServices resolves the exact candidate path, build version, signing
-  identity, and Mach-O UUID. After the completed reboot and an owner-controlled
-  Lyte Local Network off/on cycle, the signed GUI still browses and resolves
-  pup but Network.framework marks every IPv4 and IPv6 child path `Local network
-  prohibited`. The signed CLI discovers `10.0.0.232:41151`, and route, ping,
-  and direct UDP checks succeed. Apple DTS reproduces this enabled-but-denied
-  state as an OS bug (FB21858319/FB21858436). A clean Lyte quit, fresh
-  `nehelper` and explicitly kickstarted `nesessionmanager`, and exact-bundle
-  relaunch reproduced the contradiction: the preference layer logged Lyte as
-  allowed while every resolved path remained prohibited. No privacy database
-  or undocumented plist edit was attempted. At the owner's direction, the
-  Apple-documented Wi-Fi exception `10.0.0.0/24` is installed in
-  `com.apple.network.local-network`. After the required reboot, the exact
-  signed bundle connected to pup successfully and CoreMedia reported the video
-  renderer ready for display; the fresh trace contained no `Local network
-  prohibited` verdict. This exception deliberately bypasses Local Network
-  privacy for every app contacting the owner's trusted Wi-Fi `/24`.
-- Do not launch a benchmark or second ordinary Lyte app while this process is
-  open; both use the same bundle identity.
+- `.build/Lyte.app` PID 64483 is running and responsive. Do not launch a
+  benchmark or second ordinary Lyte app while it is open; both use the same
+  bundle identity.
+- Bundle identifier `dev.shreeve.lyte`, team `SD6N7Z8P9P`, signed by
+  `Apple Development: Steve Shreeve (8FHNN4RZ9Q)`, build `1785919825`.
+- Lyte executable SHA-256:
+  `aa5b63f5acfbc30e559e5c398d047b3db7e9a1a517a71397a0dbf4267b59d48f`.
+  Helper SHA-256:
+  `eae3cff51bbe689f4e82e755edc49ef9b2d5c320286bd452dd33148a92e1fe2e`.
+- The beachball was resolved in PR #181: the old gate removed the live bundle
+  while the process was running, then helper registration crashed inside
+  bundle plist loading. Client tests now use `Client/.build`, gates assemble
+  isolated apps, stream start does not own helper registration, and missing
+  registration fails soft.
+- macOS Local Network privacy remained path-prohibited even while its
+  preference layer logged Lyte as allowed (Apple FB21858319/FB21858436). At the
+  owner's direction, the documented Wi-Fi exception `10.0.0.0/24` is installed
+  in `com.apple.network.local-network`. After reboot, the exact signed app
+  connected to pup. This deliberately bypasses Local Network privacy for every
+  app contacting that trusted Wi-Fi `/24`.
 
 ### Host
 
 - `pup` is wired at `10.0.0.232`; Wi-Fi backup is `10.0.0.249`.
-- The standing `lyte-host.service` owns UDP 41151 and is active. Its configured
-  120-second no-client-handshake timeout can trigger the existing systemd
-  restart policy; that event is not evidence of a host crash.
-- Unit binary: `~/src/lyte-host/.build/release/lyte-host`.
-- The deployed release binary has SHA-256
+- `lyte-host.service` is active on UDP 41151. Its configured 120-second
+  no-client-handshake timeout can exercise systemd restart policy; a changing
+  PID alone is not a host crash.
+- Deployed release binary: `~/src/lyte-host/.build/release/lyte-host`, SHA-256
   `9eb92ad911225e84d7c4dd0e0a40a04af15a33a39102f25933045d11bacb03e3`.
-  The service's configured no-client timeout intentionally changes its PID;
-  the current service remains active and listening on UDP 41151.
-- The one-time debug-to-release service migration sustained the same PID for
-  30 seconds with zero restarts. The previous config is recoverable at
-  `/etc/lyte/lyte-host.conf.pre-release-opus-20260804`.
 - Session log: `/tmp/lyte-host-session.log`.
 
 Never touch pup's
@@ -262,26 +73,22 @@ Never touch pup's
 displace its standing UDP 41151 service. Test hosts require a fresh 41xxx port
 and `--no-advertise`.
 
-## Latest commissioning evidence
+## Latest owner-visible evidence
 
-The sustained owner-visible run resolved the ledger ambiguity without changing
-playout policy. A 63 ms cue decomposed into about 10 ms of current path and 53
-ms of reserve. Four historical Apple renderer drops with zero recent drops no
-longer blamed the renderer; the live verdict named pre-render delivery. Later
-59 fps motion caught one genuinely recent Apple drop and an 8.1 ms enqueue p99,
-and the verdict correctly changed to renderer dropped frames. A 104 ms episode
-raised the automatic cue near 132 ms; clean active frames returned it through
-107 ms in whole-beat steps. The exact landed app then reconnected with zero
-loss over its first 35.1k host packets, one total/zero recent renderer drops,
-and current pre-render attribution. The evidence supports the Conductor's
-automatic response; no policy change was earned.
+Lyte connected to pup with video, audio, keyboard, and mouse. The automatic
+Conductor decomposed observed delay into measured path plus whole-beat reserve,
+grew after genuine holes, and returned through proof-driven clean beats. The
+user warning now counts only terminal renderer misses/failures; disturbances
+that the reserve successfully absorbs remain diagnostic evidence and do not
+raise a warning pill. No manual cushion setting is present or scheduled.
 
-## Architecture train after commissioning
+## Next commissioning order
 
-Keep every landing small and green. The remaining order is:
-
-1. Finish documentation and architectural ratchets, then repeat clean macOS,
-   pup, WASM, and live-rig commissioning.
+1. Land the executable-wide Noise-only host ratchet as its own PR.
+2. Run the Wire WASM suite on the landed tree.
+3. Build/deploy a clean release host on pup without altering identity state,
+   build/launch the exact signed Mac app, and repeat the owner-visible stream
+   proof.
 
 ## Recovery pointers
 
