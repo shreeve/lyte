@@ -1,124 +1,129 @@
-# Lyte — Design Decisions
+# Lyte — design decisions
 
-This living document records Lyte's current product decisions. The original
-direction came from the diagnosis session summarized in the case study; later
-commissioning replaced the bootstrap implementation details with the owned
-architecture described here.
+This living document owns product behavior and interaction decisions. Each
+section says whether the decision ships today or remains direction; frozen
+protocol and architecture records own the mechanics beneath it.
 
 ## D1. Two axes, one question
 
-Streaming policy is resolved from a 2×2 grid: **intent × network**.
+*Status: directional. The Work/Play choice is not exposed by the current app.*
 
-- **Intent — Work or Play.** The only choice the user makes, one visible toggle.
-- **Network — Local or Remote.** Detected: host address in a private range *and*
-  RTT/jitter consistent with LAN ⇒ Local; otherwise Remote. Re-evaluated during the
-  session (a VPN can make Remote look Local — telemetry breaks the tie).
+The intended product model resolves streaming policy from **intent × network**:
 
-An earlier three-mode sketch (Work / Play / Away) was rejected: "Away" conflated
-network location with intent. Location is a fact, not a mode.
+- **Intent — Work or Play.** The user states what matters.
+- **Network — Local or Remote.** Lyte derives this from address and measured
+  path behavior; location is evidence, not a user mode.
+
+An earlier Work/Play/Away sketch was rejected because Away confused network
+location with intent. The current client connects directly to a host and keeps
+its explicit controls narrow: feature consent, audio routing, and a
+hardware-backed Chroma posture. A future Work/Play surface must earn its place
+by driving real policy rather than exposing placeholder presets.
 
 ## D2. Policies, not presets
 
-A cell never stores numbers. It stores *goals*, resolved against live measurement:
+*Status: shipping law; the complete four-cell product surface is directional.*
 
-| Cell        | Optimizes for            | Derived behavior (examples)                          |
-|-------------|--------------------------|------------------------------------------------------|
-| Local·Work  | static-image fidelity    | 1:1 host resolution, bitrate = f(measured headroom), free mouse, windowed, 4:4:4 if host supports, audio buffers padded |
-| Local·Play  | motion latency           | fullscreen, locked mouse, frame pacing, min buffers, max fps, HDR, bitrate yields to latency |
-| Remote·Work | resilient legibility     | encryption required, capped resolution, aggressive ABR, auto-reconnect w/ resume |
-| Remote·Play | playable latency         | conservative start bitrate, latency-first ABR, encryption required |
+A policy cell stores goals, never a bag of encoder numbers:
 
-Same cell, different network conditions ⇒ different numbers. That is the point.
+| Cell | Optimizes for | Target behavior |
+|---|---|---|
+| Local·Work | static-image fidelity | native geometry, text fidelity, free mouse, best proven chroma |
+| Local·Play | motion latency | fullscreen, locked mouse, latency-first pacing |
+| Remote·Work | resilient legibility | bounded geometry, adaptive rate, reconnect |
+| Remote·Play | playable latency | conservative start and latency-first adaptation |
 
-- Auto-select intent when possible: launching "Desktop" ⇒ Work; a game/Big Picture ⇒ Play.
-  Show the choice as a dismissible pill, never a dialog.
-- The Conductor derives playout reserve from observed holes and clean beats.
-  Cushion is not a user setting and is never stored as milliseconds or frames.
+The shipping system already follows the underlying rule: congestion control,
+repair, pacing, and reserve come from live evidence rather than user-entered
+numbers. The Conductor derives playout reserve from holes and clean beats;
+cushion is not a setting and is never stored as milliseconds or frames.
+Encryption is always on and therefore never varies by policy cell.
 
 ## D3. Declarations are not tuning knobs
 
-- Users declare intent and, where the hardware offers a real choice, a named
-  posture such as chroma quality. Lyte derives bitrate, resolution, pacing,
-  repair, and reserve from those declarations plus live evidence.
-- Diagnostic surfaces may expose derived values and the evidence behind them,
-  but the primary product does not offer an encoder-knob farm or expert
-  profiles that override automatic policy.
-- Chroma changes are session postures and therefore reconnect cleanly; they
-  are not mid-stream encoder controls.
+*Status: shipping.*
 
-## D4. Network doctor is a first-class subsystem
+- Users may declare intent or a real hardware posture; Lyte derives bitrate,
+  pacing, repair, and reserve from declarations plus evidence.
+- Diagnostic surfaces expose derived values and their evidence, but the
+  primary product does not offer an encoder-knob farm.
+- Chroma is a connect-time session posture. Changing it reconnects cleanly;
+  it is not a mid-stream encoder control.
+- Corrected network and playout disturbances remain diagnostic. User-facing
+  warnings are reserved for terminal playback misses or failures.
 
-Continuous lightweight probing (RTT/jitter to gateway and host), plus host-side checks
-over SSH when authorized. Known culprit signatures:
+## D4. Network diagnosis is a product responsibility
 
-| Symptom signature                         | Culprit                            | Fix                                   |
-|-------------------------------------------|------------------------------------|---------------------------------------|
-| client→gateway spikes 60–100 ms, awdl0 up | AWDL (AirDrop/AirPlay) radio share | suppress awdl0 during stream (helper) |
-| host→gateway spikes, power_save on        | host Wi-Fi power save              | `iw set power_save off` + NM config   |
-| both ends wireless, same channel          | double airtime                     | halve bitrate target; suggest wire    |
-| host tx MCS far below rx MCS              | host uplink retries                | lower bitrate; reposition/wire        |
+*Status: partially shipping.*
 
-Prior art: moonlight clients ship AWDL helpers on macOS — validates the concept.
+The app ships path/session telemetry, failure-only health reporting, reconnect
+policy, and a narrowly authenticated macOS helper for AWDL posture. A complete
+Network Doctor—continuous gateway attribution, host-side inspection, and
+guided remediation—is not yet a finished subsystem.
 
-## D5. Stack: Swift throughout, MIT, independently owned
+Known signatures worth preserving for that future work:
 
-- **License: MIT for all Lyte-authored code.** Bundled third-party leaves retain
-  their upstream licenses and notices.
-- **LyteWire** owns the sans-IO protocol. **LyteCore** owns shared sans-IO
-  policy and **LyteIO** owns shared OS adapters. **LyteClientCore** and
-  **LyteClientSession** own pure client policy; **HostCore**, **HostSession**,
-  and **HostAudio** own pure host policy. **LyteTransport** and **HostWire**
-  execute those decisions at the role boundaries.
-  The system speaks only Lyte-UDP; no GameStream, Sunshine, or Moonlight source
-  remains in the product.
-- Bootstrap-era compatibility code and reference studies were retired to git
-  history at the H2 exit. They are not dependencies of the current system.
-- The shipping client uses SwiftUI/AppKit for its shell and input forwarding,
-  CoreMedia/VideoToolbox through `AVSampleBufferDisplayLayer` for HEVC glass,
-  AudioUnit plus pinned Opus for audio, Network.framework for UDP, and a
-  narrowly authenticated ServiceManagement helper for radio posture.
-- Swift Crypto is LyteWire's sole external Swift dependency and is confined
-  to its crypto leaf; Keychain and code-signing operations use Security.
-- The Linux host uses native KMS/DRM capture, GPU color conversion, VAAPI HEVC,
-  PipeWire audio, uinput, and the narrow UDP syscall leaf.
+| Symptom | Likely cause | Possible response |
+|---|---|---|
+| client gateway spikes while AWDL is active | shared Apple radio airtime | helper-managed AWDL posture |
+| host gateway spikes with power save enabled | host Wi-Fi power saving | disable power saving or recommend Ethernet |
+| both endpoints share one wireless channel | double airtime | reduce rate or recommend wiring one endpoint |
+| host transmit rate trails receive rate | uplink retries or placement | reduce rate and surface placement guidance |
 
-## D6. Interaction model: the window is the app (decided 2026-07-15)
+Diagnosis must be evidence-backed. Lyte must not present a generic network
+warning when its own repair and Conductor successfully absorbed the event.
 
-No splash, no launcher, no hosts screen gating the product. The stream window
-is the unit of everything; the M5 "Hosts/Apps/Stream" screens collapse into
-*states of one window type*.
+## D5. Swift throughout, MIT, independently owned
 
-- **Launch → window.** ⌘N makes another. Each window is one connection to one
-  host. Multiple windows can represent multiple independent host sessions.
-- **The gate is the empty state.** A new window shows a quiet connect state
-  inside itself: Bonjour-discovered hosts, recents first, then the chosen
-  host's app list. Pick an app → the picker melts away and the window becomes
-  pure stream. First-run pairing (PIN) lives in the same empty state.
-  Safari's new-tab page, not a login wall.
-- **Relaunch = resume.** Each window remembers its host and reconnects at
-  launch. Daily experience: click Dock icon → your desktop appears. Beats the
-  M5 "<60 s cold start" metric by an order of magnitude.
-- **Toolbar as a whisper.** Slim title-bar accessory, hidden by default while
-  streaming (chrome-less look is the default), toggleable. Carries only live
-  state such as host identity, intent, health, and mute. Derived transport and
-  playout numbers stay out of the primary interaction (D2).
-- **Menus stay minimal** (shipped in M4): app menu = identity + housekeeping
-  only; a single Actions menu = every command with its shortcut, doubling as
-  the shortcut cheat-sheet.
+*Status: shipping architecture.*
 
-## Case study (motivating session, 2026-07-14)
+- All Lyte-authored code is MIT-licensed. Third-party leaves retain their
+  upstream licenses and notices.
+- `LyteWire` owns sans-IO protocol contracts; `LyteCore` owns shared sans-IO
+  policy; `LyteIO` owns shared OS adapters.
+- `LyteClientCore` and `LyteClientSession` own pure client policy.
+  `HostCore`, `HostSession`, and `HostAudio` own pure host policy.
+  `LyteTransport` and `HostWire` execute those decisions at role boundaries.
+- The product speaks only Lyte-UDP. No GameStream, Sunshine, or Moonlight
+  source remains in the shipping system.
+- The macOS shell uses SwiftUI/AppKit, VideoToolbox through
+  `AVSampleBufferDisplayLayer`, AVAudioEngine plus pinned Opus,
+  Network.framework, and a narrowly authenticated ServiceManagement helper.
+- The Linux host uses KMS/DRM capture, GPU color conversion, native VAAPI HEVC,
+  PipeWire audio, uinput, and a narrow UDP syscall leaf.
+- Swift Crypto is the only external Swift dependency of `LyteWire` and remains
+  confined to its crypto leaf.
 
-Stock Sunshine (Linux, hybrid Intel/NVIDIA laptop "ice") + moonlight-qt on an M5 Mac
-looked terrible. Root causes found by hand, in order:
+## D6. The window is the app
 
-1. Moonlight default ~7.3 Mbps auto bitrate; 720p-class default resolution rescaled
-   from a 2048×1280 16:10 host panel, then upscaled to a 5K client display.
-2. NVENC probe fails on hybrid graphics (display on iGPU) — VAAPI on Intel Arc is fine,
-   but silent fallback hid the fact; pinned `encoder = vaapi`.
-3. Choppy audio = jitter, not codec: host Wi-Fi power save (fixed, persisted) +
-   client AWDL spikes to ~85 ms (fixed; ~7× jitter reduction) + both ends sharing one
-   6 GHz channel (bitrate halved 80→40 Mbps).
-4. Double cursor in absolute mouse mode: host composites its cursor into KMS capture
-   (no Sunshine option); client-side hide-local-cursor is the only lever.
+*Status: the core interaction ships; automatic resume-on-launch remains
+directional.*
 
-Every one of these becomes either a policy input (1, 3) or a doctor signature (2, 3, 4).
+There is no separate launcher or hosts application. One window owns one
+connection and moves through connect, pair, stream, failure, and reconnect
+states.
+
+- **Launch → connection window.** A new window discovers Lyte hosts. An
+  unpaired host opens the PIN sheet; a paired host connects directly to its
+  desktop. There is no intervening host-app catalog.
+- **The empty state is the gate.** Discovery, pairing, Local Network recovery,
+  and retry all live inside the same window that becomes the stream.
+- **The control strip is a whisper.** It auto-hides around the stream and owns
+  only live actions and state. Derived transport and Conductor books stay in
+  the optional diagnostic surface.
+- **Menus are a complete fallback.** The Actions menu exposes the same model
+  verbs as the strip, including audio, consent, Chroma, transfer, reconnect,
+  and display actions.
+- **Window close means disconnect.** Closing the window performs typed session
+  teardown and releases its platform resources.
+- **Future relaunch behavior.** Remembering and automatically resuming prior
+  windows is product direction, not current shipping behavior.
+
+## Origin
+
+Lyte began with a poorly behaving Sunshine/Moonlight session on a hybrid-GPU
+Linux laptop and a Mac client. The investigation exposed four durable product
+inputs: preserve native geometry, make hardware selection truthful, treat
+network jitter as measured evidence, and keep cursor ownership explicit. Lyte
+now owns both endpoints and its protocol; the origin explains these decisions
+but is not an architectural dependency.
