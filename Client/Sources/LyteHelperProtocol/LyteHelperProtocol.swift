@@ -16,5 +16,5 @@ import Foundation
 public enum LyteHelper {
     public static let machServiceName = "dev.shreeve.lyte.helper"
     public static let plistName = "dev.shreeve.lyte.helper.plist"
-    public static let version = "1"
+    public static let version = "2"
 }

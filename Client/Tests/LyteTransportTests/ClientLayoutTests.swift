@@ -21,12 +21,16 @@ final class ClientLayoutTests: XCTestCase {
             try directoryNames(at: root.appendingPathComponent("Sources")),
             [
                 "Lyte", "LyteClientTestKit", "LyteCorpus", "LyteHelperProtocol",
-                "LyteTransport", "LyteUI", "lyte-cli", "lyte-helperd",
+                "LyteHelperSecurity", "LyteTransport", "LyteUI", "lyte-cli",
+                "lyte-helperd",
             ]
         )
         XCTAssertEqual(
             try directoryNames(at: root.appendingPathComponent("Tests")),
-            ["LyteTransportTests", "LyteUITests"]
+            [
+                "LyteHelperSecurityTests", "LyteTransportTests",
+                "LyteUITests",
+            ]
         )
         XCTAssertEqual(
             try directoryNames(
@@ -152,6 +156,24 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertFalse(app.contains("Settings {"))
         XCTAssertFalse(model.contains("playoutCushion"))
         XCTAssertFalse(model.contains("PlayoutCushionPreference"))
+    }
+
+    func testHelperListenerAuthenticatesBeforeAcceptingClients() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
+                "/Client/Sources/lyte-helperd/main.swift"),
+            encoding: .utf8)
+        let requirement = try XCTUnwrap(source.range(
+            of: "listener.setConnectionCodeSigningRequirement(requirement)"))
+        let delegate = try XCTUnwrap(source.range(
+            of: "listener.delegate = delegate"))
+
+        XCTAssertLessThan(
+            source.distance(from: source.startIndex, to: requirement.lowerBound),
+            source.distance(from: source.startIndex, to: delegate.lowerBound))
+        XCTAssertTrue(source.contains(
+            "let requirement = try HelperClientRequirement.forCurrentProcess()"))
+        XCTAssertTrue(source.contains("exit(EX_CONFIG)"))
     }
 
     private func directoryNames(at root: URL) throws -> [String] {

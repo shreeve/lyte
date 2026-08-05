@@ -4,13 +4,13 @@
 
 ## Resume here
 
-- **Branch:** resume on clean `main` after the #173 landing; do not continue on
+- **Branch:** resume on clean `main` after the #174 landing; do not continue on
   its merged feature branch.
-- **GitHub:** PR #173 is landing the automatic-Conductor cleanup with complete
-  Mac, pup, and signed live-app proof.
+- **GitHub:** PR #174 is landing exact helper-client authentication with full
+  signed acceptance, foreign rejection, Mac, pup, and live proof.
 - **Workspace:** one checkout and no auxiliary worktrees.
-- **Current objective:** authenticate every privileged helper XPC client with
-  an exact signing requirement.
+- **Current objective:** run the sustained owner-visible stats-ledger
+  investigation and fix only defects supported by its attribution evidence.
 
 ## Last green gates
 
@@ -60,11 +60,21 @@ one-beat shipping floor, hole-driven whole-beat growth, and proof-driven
 whole-beat return. The signed release app connected to pup with video and audio
 while its application menu correctly exposed no Settings item.
 
+Exact helper-client authentication passed macOS Common 86, Wire 513, Host 338,
+Client 291, and SystemTests 17 plus all safety, signing, identity, packaging,
+and linkage checks. Pup passed Common 87, Wire 513, and Host 339 plus both
+builds, linkage, harnesses, and protected-state verification. Four focused
+requirement tests pin both supported signer forms and malformed fail-closed
+behavior; packaging repeatedly proved the signed app is accepted while the
+same-signed helper and `/bin/ls` are rejected. Live helper PID 98023 installed
+the exact app DR before delegate activation, accepted app PID 96213, held AWDL
+down, and emitted no Security performance diagnostic.
+
 ## Current live rig
 
 ### Client
 
-- `.build/Lyte.app` (PID 47586) is running and connected to pup. The previous app's
+- `.build/Lyte.app` (PID 96213) is running and connected to pup. The previous app's
   beachball was a main-thread `StatsOverlay` feedback loop: its `TimelineView`
   repeatedly invoked `ConnectionModel.statsRows()` and percentile sorting from
   SwiftUI layout while media queues kept playing. The repaired overlay renders
@@ -72,9 +82,10 @@ while its application menu correctly exposed no Settings item.
   proof is recorded under the focused gate above.
 - It is signed by `Apple Development: Steve Shreeve (8FHNN4RZ9Q)` with team
   identifier `SD6N7Z8P9P` and bundle identifier `dev.shreeve.lyte`.
-- The current candidate bundle is source `32746ef83199+`, build `1785907165`;
-  its Lyte executable SHA-256 is
-  `c2c231ab037334dc8bdc0186f9958784487f1d9ddd5b747f32cf7edcb86da384`.
+- The current candidate bundle is source `34026759f9f3+`, build `1785908343`.
+  Its Lyte and helper executable SHA-256 values are respectively
+  `b859dff80bdf42c9240bbbb302599c2307ebaef6ba001998d84b32dd4dbcd15c`
+  and `7d9ac31cc84ea845bfb214c6e51bf56cb73f6dd619adbbe800f7923ab828648f`.
   Packaging, hermetic-linkage, and strict deep-signature checks pass.
 - LaunchServices resolves the exact candidate path, build version, signing
   identity, and Mach-O UUID. After the completed reboot and an owner-controlled
@@ -119,12 +130,14 @@ and `--no-advertise`.
 
 ## Commissioning findings still open
 
-1. Authenticate every privileged `lyte-helperd` XPC client with an exact code
-   signing requirement; pin signed-client acceptance and foreign rejection.
-2. Run the owner-visible two-column stats-ledger check during a sustained live
-   stream and investigate the reported network stalls. GNOME Shell's known
-   ten-second source-stall comb on pup remains an environment limitation, not
-   a Lyte host-loop defect.
+1. Run the owner-visible two-column stats-ledger check during a sustained live
+   stream and investigate the reported stalls. The first owner snapshot saw 6
+   delays (63 ms worst) while loss was 12/184.3k (0.007%), delivery p99 was
+   1.8 ms, jitter 6.0 ms, RTT 6.7 ms, source/ready p99 33.6/35.7 ms, cadence
+   56/56 fps, renderer drops 9, and the automatic cue had grown to 73 ms. This
+   points away from network delivery and toward pup's known GNOME Shell
+   ten-second source-cadence comb and/or client rendering; prove attribution in
+   the sustained run before changing code.
 
 ## Architecture train after commissioning
 

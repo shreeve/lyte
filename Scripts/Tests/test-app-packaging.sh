@@ -97,6 +97,30 @@ case "$authority" in
         ;;
 esac
 
+# The helper derives the peer requirement from its own validated designated
+# requirement, changing only the code identifier. Prove the packaged app is
+# accepted and two foreign peers are rejected: the same-signed helper (wrong
+# identifier) and an Apple platform binary (wrong identifier and signer).
+client_requirement="$(
+    "$app/Contents/MacOS/lyte-helperd" --print-client-requirement
+)"
+app_designated_requirement="$(
+    printf '%s\n' "$requirement" \
+        | awk '/^designated => / {sub(/^designated => /, ""); print; exit}'
+)"
+[[ "$client_requirement" == "$app_designated_requirement" ]]
+codesign --verify --strict -R="$client_requirement" "$app"
+if codesign --verify --strict -R="$client_requirement" \
+    "$app/Contents/MacOS/lyte-helperd" >/dev/null 2>&1; then
+    echo "helper client requirement accepted the wrong bundle identifier" >&2
+    exit 1
+fi
+if codesign --verify --strict -R="$client_requirement" \
+    /bin/ls >/dev/null 2>&1; then
+    echo "helper client requirement accepted a foreign platform binary" >&2
+    exit 1
+fi
+
 # TN3179 requires a Mach-O UUID so Local Network privacy can track a macOS
 # program reliably. Both responsible executables must carry one.
 dwarfdump --uuid "$app/Contents/MacOS/Lyte" | grep -Eq '^UUID: [0-9A-F-]{36} '

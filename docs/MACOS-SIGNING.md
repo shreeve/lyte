@@ -196,6 +196,28 @@ hash. If the DR changes, expect one fresh Keychain and Local Network grant.
 The packaging gate also requires Mach-O UUIDs on the app and helper, as TN3179
 recommends for reliable program identity.
 
+## Privileged helper client authentication
+
+`lyte-helperd` does not trust Mach-service reachability. Before its listener
+activates, `LyteHelperSecurity` validates the running helper signature, reads
+its designated requirement, and changes only the expected identifier from
+`dev.shreeve.lyte-helperd` to `dev.shreeve.lyte`. The listener installs that
+requirement with Foundation's macOS 13+ XPC signing API. XPC therefore rejects
+a foreign peer before the listener delegate can export the root-only AWDL
+operations.
+
+Deriving from the helper rather than hard-coding a certificate preserves the
+exact signer selected by `sign-dev.sh`: the Apple Development anchor and leaf
+identity in the preferred path, or the Lyte Dev certificate root in the
+explicit fallback. Startup fails closed if the running code is invalid, its
+requirement has an unexpected shape, or the rewritten requirement cannot be
+compiled.
+
+The packaging gate asks the signed helper for the derived requirement, proves
+it is byte-for-byte the signed app's designated requirement, proves the app
+satisfies it, and proves both the same-signed helper (wrong identifier) and an
+Apple platform binary (wrong identity) fail it.
+
 ## Gotchas (learned the hard way)
 
 - **`security find-identity -v` hides the fallback.** Apple selection uses
