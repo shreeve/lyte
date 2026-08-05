@@ -4,10 +4,11 @@
 
 ## Resume here
 
-- **Branch:** resume on clean `main` after the #179 landing; do not continue on
+- **Branch:** resume on clean `main` after the #180 landing; do not continue on
   its merged feature branch.
-- **GitHub:** PR #179 replaced `COpusEncode` with Swift `HostAudio` policy over
-  the one pinned `COpus` leaf, with full Mac, pup, and live-audio proof.
+- **GitHub:** PR #180 made the video-health pill failure-only: absorbed jitter,
+  repair, queueing, and re-cues stay silent; only missed presentation beats or
+  explicit renderer loss/failure alert the user.
 - **Workspace:** one checkout and no auxiliary worktrees.
 - **Current objective:** extract pure host session policy behind injected time
   and randomness without moving sockets, queues, persistence, or Linux IO.
@@ -121,6 +122,17 @@ between every graph-clock timestamp, and clean decode-back. `COpusEncode` is
 deleted; `HostAudio` owns codec policy in Swift, while one policy-free inline C
 bridge remains solely because Swift cannot import variadic functions. Frozen
 vectors were unchanged.
+
+The failure-only video-warning slice passed 14 focused warning-contract tests
+and the complete warning-enforced macOS gate: Common 93, Wire 513, Host 340,
+Client 297, and SystemTests 17 plus benchmark safety, signing, 25 analyzers,
+app identity, the signed CLI, hermetic linkage, and double signed release-app
+assembly. Pup passed Common 94, Wire 513, and Host 341 plus warning-enforced
+debug and release builds, linkage, socket and pacing harnesses, and protected-
+state verification. The user-facing meter now receives only final renderer-
+handoff lateness and explicit renderer loss/failure; successfully absorbed
+delivery disturbances remain in the flight recorder and do not raise a pill.
+Frozen vectors were unchanged.
 
 ## Current live rig
 
