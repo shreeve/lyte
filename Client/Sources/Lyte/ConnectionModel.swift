@@ -1,5 +1,6 @@
 import LyteIO
 import LyteCore
+import LyteClientCore
 import SwiftUI
 @preconcurrency import AVFoundation
 import LyteTransport

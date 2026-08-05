@@ -1,4 +1,4 @@
-// RoamingPolicy (F-5): the client's roaming/reconnect brain — what to
+// RoamingPolicy (F-5): pure client roaming/reconnect policy — what to
 // do when the host moves out from under a standing session (the hotel
 // move: the host's address changed and the old experience was "No
 // hosts found" + a frozen frame with no recovery story), or when the

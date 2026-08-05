@@ -20,16 +20,16 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertEqual(
             try directoryNames(at: root.appendingPathComponent("Sources")),
             [
-                "Lyte", "LyteClientTestKit", "LyteCorpus", "LyteHelperProtocol",
-                "LyteHelperSecurity", "LyteTransport", "LyteUI", "lyte-cli",
-                "lyte-helperd",
+                "Lyte", "LyteClientCore", "LyteClientTestKit", "LyteCorpus",
+                "LyteHelperProtocol", "LyteHelperSecurity", "LyteTransport",
+                "LyteUI", "lyte-cli", "lyte-helperd",
             ]
         )
         XCTAssertEqual(
             try directoryNames(at: root.appendingPathComponent("Tests")),
             [
-                "LyteHelperSecurityTests", "LyteTransportTests",
-                "LyteUITests",
+                "LyteClientCoreTests", "LyteHelperSecurityTests",
+                "LyteTransportTests", "LyteUITests",
             ]
         )
         XCTAssertEqual(
