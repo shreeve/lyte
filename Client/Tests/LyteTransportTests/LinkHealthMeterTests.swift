@@ -76,12 +76,32 @@ final class LinkHealthMeterTests: XCTestCase {
         feedClean(meter, ordinals: 1..<2, at: 0)
         feedStall(meter, ordinal: 2, transit: 88, at: 20)
         XCTAssertEqual(assessment(meter, at: 20).sessionStallCount, 1)
-        // Roam re-dial: ordinals restart on a fresh clock — its own
-        // connect ramp gets the same grace.
+        meter.resetEpochKeepingSessionBooks()
+        // Roam re-dial: its own connect ramp gets the same grace while the
+        // sitting-wide count remains intact.
         feedStall(meter, ordinal: 1, transit: 115, at: 100)
         XCTAssertEqual(assessment(meter, at: 100).sessionStallCount, 1)
         feedStall(meter, ordinal: 2, transit: 90, at: 115)
         XCTAssertEqual(assessment(meter, at: 115).sessionStallCount, 2)
+    }
+
+    func testExplicitEpochResetHandlesEqualAndLeapfroggedOrdinals() {
+        for firstNewOrdinal: UInt64 in [1, 500] {
+            let meter = LinkHealthMeter()
+            feedClean(meter, ordinals: 1..<2, at: 0)
+            feedStall(meter, ordinal: 2, transit: 88, at: 20)
+            XCTAssertEqual(assessment(meter, at: 20).sessionStallCount, 1)
+
+            meter.resetEpochKeepingSessionBooks()
+            feedStall(
+                meter, ordinal: firstNewOrdinal,
+                transit: 115, at: 100)
+
+            let reconnectRamp = assessment(meter, at: 100)
+            XCTAssertEqual(reconnectRamp.level, .good)
+            XCTAssertEqual(reconnectRamp.stallsLastMinute, 0)
+            XCTAssertEqual(reconnectRamp.sessionStallCount, 1)
+        }
     }
 
     func testOneTransitStallIsDegradedWithItsMagnitude() {
@@ -171,10 +191,9 @@ final class LinkHealthMeterTests: XCTestCase {
         feedClean(meter, ordinals: 1..<2, at: 0)
         feedStall(meter, ordinal: 500, transit: 115, at: 15)
         XCTAssertEqual(assessment(meter, at: 15).level, .poor)
-        // A roam re-dial resets the recorder (ordinals restart): the
-        // WINDOW must not carry old-clock episodes, but the sitting's
-        // totals survive — the stalls that trigger re-dials are
-        // exactly the ones the total exists to count.
+        // A roam re-dial explicitly starts a new epoch: the window must not
+        // carry old episodes, but the sitting's totals survive.
+        meter.resetEpochKeepingSessionBooks()
         feedClean(meter, ordinals: 1..<2, at: 16)
         let after = assessment(meter, at: 16)
         XCTAssertEqual(after.level, .good)
@@ -198,8 +217,8 @@ final class LinkHealthMeterTests: XCTestCase {
         XCTAssertEqual(verdict.level, .good)
         XCTAssertEqual(verdict.sessionStallCount, 2)
         XCTAssertEqual(verdict.sessionWorstMilliseconds, 39)
-        // A roam re-dial (ordinals restart) keeps the books; only
-        // the sitting's end clears them.
+        // A roam re-dial keeps the books; only the sitting's end clears them.
+        meter.resetEpochKeepingSessionBooks()
         feedClean(meter, ordinals: 1..<2, at: 150)
         XCTAssertEqual(assessment(meter, at: 150).sessionStallCount, 2)
         meter.resetSessionBooks()

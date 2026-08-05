@@ -90,17 +90,7 @@ public final class LinkHealthMeter {
         enqueueMilliseconds: Double,
         eventMicroseconds: UInt64
     ) {
-        if ordinal < highWaterOrdinal {
-            if debugTrace {
-                print("link-health: window reset — ordinal \(ordinal) "
-                    + "< high-water \(highWaterOrdinal) "
-                    + "(keeping \(sessionStallCount) total)")
-                fflush(stdout)
-            }
-            resetWindow()
-        } else if ordinal == highWaterOrdinal {
-            return
-        }
+        guard ordinal > highWaterOrdinal else { return }
         highWaterOrdinal = ordinal
 
         let epochStart = epochFirstEventMicroseconds ?? eventMicroseconds
@@ -167,6 +157,14 @@ public final class LinkHealthMeter {
         highWaterOrdinal = 0
         sessionStallCount = 0
         sessionWorstMilliseconds = 0
+    }
+
+    /// Start a fresh recorder epoch without ending the user's sitting.
+    /// Roaming reconnects reset frame ordinals, the rolling warning window,
+    /// and its warm-up grace, while session-wide totals remain meaningful.
+    public func resetEpochKeepingSessionBooks() {
+        resetWindow()
+        highWaterOrdinal = 0
     }
 
     /// Sum the current one-second bucket and the preceding 59 buckets.

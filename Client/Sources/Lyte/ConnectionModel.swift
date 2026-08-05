@@ -397,6 +397,7 @@ final class ConnectionModel {
     private func makeLyteSession(
         crypto: NoiseTransportCrypto, config: LyteUdpSession.Config
     ) -> LyteUdpSession {
+        linkHealthMeter.resetEpochKeepingSessionBooks()
         videoFlightRecorder.reset()
         videoDeliveryBooks.reset()
         videoInMeter.reset()
