@@ -6,8 +6,9 @@ action changes. Completed detail belongs in Git history.*
 
 ## Resume here
 
-- **Branch:** `main` is canonical; temporary PR branches are deleted after
-  landing so the repository returns to one local and one remote branch.
+- **Branch:** `fix/link-health-epoch`, based on `origin/main`; temporary PR
+  branches are deleted after landing so the repository returns to one local
+  and one remote branch.
 - **GitHub:** no open PRs; #156 landed the root-document normalization.
 - **Repository:** one worktree, one local branch, and one remote branch—all
   `main`. Stale migration, cleanup, ledger, and agent pointers were audited
@@ -50,11 +51,13 @@ frames without a transport error.
 The commissioning client now computes the warning pill from an exact ring of
 60 tagged one-second buckets using client-monotonic event times. The 1 Hz UI
 heartbeat ages the window even when damage-driven capture emits no frames.
-Focused LinkHealth tests passed 14/14, the full Client suite passed 265/265,
-SystemTests passed 17/17, and the complete macOS and pup deterministic gates
-passed. The signed release is live against pup; replacing the prior client
-ended the one-session host cleanly and systemd restarted it successfully
-(`Result=success`, not a crash).
+An explicit epoch seam resets that window and its warm-up on every reconnect,
+including equal or leapfrogged frame ordinals, while preserving sitting-wide
+totals. Focused LinkHealth tests passed 15/15, the full Client suite passed
+266/266, SystemTests passed 17/17, and the complete macOS and pup deterministic
+gates passed for the underlying ring. The signed release is live against pup;
+replacing the prior client ended the one-session host cleanly and systemd
+restarted it successfully (`Result=success`, not a crash).
 
 Two launch problems were distinguished:
 
