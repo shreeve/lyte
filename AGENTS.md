@@ -36,9 +36,10 @@ in `docs/20260803-084328-source-layout-and-migration.md`.
   wiring. Linux-only executables and hardware/OS C leaves stay behind
   `#if os(Linux)` in the manifest. Pure targets must build on macOS too.
 - **`Client/` — `Lyte`:** macOS-only app and CLI. `LyteClientCore` owns pure
-  client-role policy; `LyteTransport` owns the client protocol/session/media
-  stack; `LyteCorpus` owns diagnostic and benchmark machinery; `LyteUI` owns
-  shared AppKit shims;
+  client-role policy; `LyteClientSession` owns IO-free initiator/session
+  orchestration; `LyteTransport` owns the client protocol/media and macOS IO
+  stack; `LyteCorpus` owns diagnostic and benchmark machinery; `LyteUI`
+  owns shared AppKit shims;
   `LyteClientTestKit` owns reusable client test equipment. Production
   streaming code must not depend on corpus or harness code.
 - **`SystemTests/` — `LyteSystemTests`:** cross-role composition tests that

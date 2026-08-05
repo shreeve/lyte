@@ -8,6 +8,7 @@ let package = Package(
         // Pure client-role policy, exported for future cross-platform
         // composition without importing the macOS transport shell.
         .library(name: "LyteClientCore", targets: ["LyteClientCore"]),
+        .library(name: "LyteClientSession", targets: ["LyteClientSession"]),
         // The real client role, exported for the repository's cross-end
         // SystemTests composition package. Shipping products remain below.
         .library(name: "LyteTransport", targets: ["LyteTransport"]),
@@ -27,12 +28,21 @@ let package = Package(
         // Pure client-role policy: injected time, value-state decisions,
         // and no platform frameworks or IO.
         .target(name: "LyteClientCore"),
+        // IO-free initiator/session orchestration over LyteWire. Platform
+        // shells inject clocks and execute the returned decisions.
+        .target(
+            name: "LyteClientSession",
+            dependencies: [
+                .product(name: "LyteWire", package: "Wire"),
+            ]
+        ),
         // The Lyte-UDP client (CL-1..CL-12): owns the receive socket,
         // decodes envelopes via LyteWire, demuxes (chan, seq), renders
         // video/audio, sends input — the client's entire protocol stack.
         .target(
             name: "LyteTransport",
             dependencies: [
+                "LyteClientSession",
                 .product(name: "COpus", package: "Common"),
                 .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteIO", package: "Common"),
@@ -106,6 +116,13 @@ let package = Package(
         .testTarget(
             name: "LyteClientCoreTests",
             dependencies: ["LyteClientCore"]
+        ),
+        .testTarget(
+            name: "LyteClientSessionTests",
+            dependencies: [
+                "LyteClientSession",
+                .product(name: "LyteWire", package: "Wire"),
+            ]
         ),
         .testTarget(
             name: "LyteTransportTests",
