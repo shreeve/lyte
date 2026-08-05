@@ -5,6 +5,9 @@ let package = Package(
     name: "Lyte",
     platforms: [.macOS(.v15)],
     products: [
+        // Pure client-role policy, exported for future cross-platform
+        // composition without importing the macOS transport shell.
+        .library(name: "LyteClientCore", targets: ["LyteClientCore"]),
         // The real client role, exported for the repository's cross-end
         // SystemTests composition package. Shipping products remain below.
         .library(name: "LyteTransport", targets: ["LyteTransport"]),
@@ -21,6 +24,9 @@ let package = Package(
         .package(path: "../Common"),
     ],
     targets: [
+        // Pure client-role policy: injected time, value-state decisions,
+        // and no platform frameworks or IO.
+        .target(name: "LyteClientCore"),
         // The Lyte-UDP client (CL-1..CL-12): owns the receive socket,
         // decodes envelopes via LyteWire, demuxes (chan, seq), renders
         // video/audio, sends input — the client's entire protocol stack.
@@ -75,7 +81,8 @@ let package = Package(
         .executableTarget(
             name: "Lyte",
             dependencies: [
-                "LyteUI", "LyteHelperProtocol", "LyteTransport",
+                "LyteClientCore", "LyteUI", "LyteHelperProtocol",
+                "LyteTransport",
                 // The env-gated diagnostic benchmark's quality scorer
                 // (VideoQualityReadback) — an explicit, honest dependency;
                 // the streaming stack itself carries no corpus code.
@@ -97,8 +104,13 @@ let package = Package(
             dependencies: ["LyteHelperSecurity"]
         ),
         .testTarget(
+            name: "LyteClientCoreTests",
+            dependencies: ["LyteClientCore"]
+        ),
+        .testTarget(
             name: "LyteTransportTests",
             dependencies: [
+                "LyteClientCore",
                 "LyteTransport",
                 "LyteCorpus",
                 "LyteClientTestKit",
