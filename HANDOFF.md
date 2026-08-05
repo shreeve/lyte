@@ -5,41 +5,39 @@ history.*
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #205 after this handoff lands. There is
+- **Branch:** clean `main` through PR #207 after this handoff lands. There is
   one checkout, no auxiliary worktree, and no open implementation PR.
-- **Current objective:** measure the newly bounded Conductor first on pup's
-  wired path, then under the owner's adverse Wi-Fi/lid-closed setup. Preserve
-  exact 60 Hz beat cadence while proving that clean reserve settles near one
-  beat and real trouble can earn no more than four.
-- **Recent landings:** PR #203 made pre-session host shutdown prompt and clean.
-  PR #204 made the benchmark analyzer treat the first-three-second native
-  readback race as warm-up while keeping every steady-state quality gate hard.
-  PR #205 made the automatic video reserve an exact 1–4 beat posture: one beat
-  at rest, whole-beat growth only after a real hole, a four-beat ceiling, and
-  one beat returned after each 120-frame (~2 s) clean proof. The 150 ms total
-  cue remains only a path-delay/clock-mapping failsafe; it cannot mint hidden
+- **Current objective:** commission PR #207's cadence-independent Conductor on
+  pup's wired path, then compare the same authored workload under the owner's
+  adverse Wi-Fi/lid-closed setup.
+- **Recent landings:** PR #205 made automatic video reserve an exact 1–4 beat
+  posture. PR #207 corrects its remaining cadence dependency: every two
+  elapsed seconds of uninterrupted clean evidence returns one earned beat,
+  identically at 60 Hz, 30 Hz, or one-Hz static cadence. Video no longer owns a
+  sample-count proof counter or 600-sample path-delay tail. The 150 ms total cue
+  remains only a path-delay/clock-mapping failsafe; it cannot mint hidden
   reserve beyond four beats.
 
 ## Last green gates
 
-The exact PR #205 source commit `5f41098` (landed as `360d788`) passed the
-complete warning-enforced macOS gate: Common 96, Wire 513, Host 341, Client
+The exact PR #207 source commit `79df48f` passed the complete warning-enforced
+macOS gate: Common 98, Wire 513, Host 341, Client
 347, and SystemTests 17. Frozen-vector, sans-IO and ownership ratchets;
 benchmark and host-release safety; analyzer tests; signing; app identity;
 hermetic linkage; release-image and installer tests; and double signed
 release-app assembly all passed.
 
-The same source passed pup's deterministic Linux gate: Common 96, Wire 513,
+The same source passed pup's deterministic Linux gate: Common 98, Wire 513,
 and Host 343; warning-enforced portable-client, host debug, and host release
 builds; release-image and installer checks; hermetic linkage; kernel socket/TOS
-and pacing harnesses; and protected-state verification. Rebuilding the host
-produced the same release-binary SHA-256, confirming PR #205 changes only
-client playout policy.
+and pacing harnesses; and protected-state verification. The standing host was
+not displaced and protected identity/configuration state remained unchanged.
 
-Focused Conductor tests pin both directions of the law: a severe hole grows
-the shipping posture from one beat to exactly four and cannot mint a fifth;
-clean evidence then returns all three earned beats one at a time until the
-one-beat floor is restored.
+Focused Conductor tests pin both directions and all relevant cadences: a severe
+hole grows the shipping posture from one beat to exactly four and cannot mint a
+fifth; 60 Hz, 30 Hz, and one-Hz clean evidence return one beat after the same
+two elapsed seconds; contrary path evidence restarts the proof; and four beats
+return to the one-beat floor in exactly six clean seconds at one Hz.
 
 ## Current live rig
 
@@ -92,19 +90,24 @@ inside excluded warm-up; the corrected analyzer passes the trace with no
 failure. Artifact:
 `.build/benchmarks/motion-20260805T183100Z-15743-4985f42799bc.jsonl`.
 
-PR #205's unit and composition proof is complete, and the exact landed app is
-live. Its controlled Ethernet and adverse-Wi-Fi reserve distributions remain
-the next measurement; do not claim the subjective latency win from unit proof
-alone.
+A passive paused-video observation exposed the final PR #205 defect: at roughly
+one fresh frame per second, its 120-frame proof meant about two minutes rather
+than two seconds, and its 600-sample path tail could retain stale evidence for
+about ten minutes. PR #207 replaces both sample-count durations with exact
+elapsed-time policy. The current ordinary app still contains PR #205; do not
+attribute live behavior to PR #207 until the landed app is rebuilt below.
 
 ## Next commissioning order
 
-1. Observe the ordinary wired session after clean motion and confirm the UI's
-   reserve returns toward one beat (~17 ms), never above four (~67 ms).
-2. Quit the ordinary app, run the exact-build 30-second motion benchmark on
+1. Rebuild and launch the landed PR #207 release app, reconnect to pup on wired
+   `.232`, and confirm Best 4:4:4 opens normally.
+2. Observe motion followed by a static screen and confirm reserve returns one
+   beat per two clean seconds toward one beat (~17 ms), never above four
+   (~67 ms).
+3. Quit the ordinary app, run the exact-build 30-second motion benchmark on
    Ethernet, and record cue/reserve p50, p95, and maximum alongside the existing
    cadence, loss, quality, and renderer gates.
-3. Repeat the same trace with pup on Wi-Fi and lid closed. Compare the same
+4. Repeat the same trace with pup on Wi-Fi and lid closed. Compare the same
    authored workload; diagnose only from current-build evidence.
 
 ## Recovery pointers
