@@ -160,6 +160,22 @@ final class ClientLayoutTests: XCTestCase {
         XCTAssertFalse(overlaySource.contains("ForEach(model.statsRows())"))
     }
 
+    func testGlassTelemetryUsesTwoStableSemanticRows() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
+                "/Client/Sources/Lyte/ConnectionModel.swift"),
+            encoding: .utf8)
+        let glass = try XCTUnwrap(source.range(of: "row(\"glass\", glass)"))
+        let playout = try XCTUnwrap(source.range(
+            of: "row(\"playout\", playout.joined(separator: \" · \"))"))
+
+        XCTAssertLessThan(glass.lowerBound, playout.lowerBound)
+        XCTAssertTrue(source.contains(
+            "playout.append(\"render \\(renderer.totalFrames)\")"))
+        XCTAssertTrue(source.contains("playout.append(flight.bottleneck)"))
+        XCTAssertFalse(source.contains("glass +="))
+    }
+
     func testConductorOwnsCushionWithoutAUserSetting() throws {
         let root = URL(fileURLWithPath: ClientTestPaths.repositoryRoot)
         XCTAssertFalse(FileManager.default.fileExists(atPath: root
