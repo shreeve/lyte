@@ -6,11 +6,11 @@ verification state belong in `HANDOFF.md`; settled decisions belong in
 
 ## Verification debt
 
-- **Harsh-path climb under mild residual:** IDR storm cleared in #220
-  (proof ONE re-proof: 2 IDRs / 1 static vs ~114–116). Climb on the quiet
-  static leg stayed PARTIAL (0 upshifts under continuous 1% loss). Re-run
-  moderate netem on a motion leg (+ optional delay-burst / HS-30 A/B) once
-  climb is the next priority.
+- **Harsh-path climb (closed as doctrine + #222):** quiet-static 0 upshifts
+  is correct (no delivery trains; do not pad). Sparse one-way ratchet fixed
+  in #222. Motion re-proof: 5 upshifts, final 3208 kbps, 1 IDR / 60 s
+  (`.build/benchmarks/harsh-path-climb-20260806T234411Z/`). Optional later:
+  longer settle / HS-30 cadence A/B under moderate netem.
 - **Conductor on Ethernet client path:** cue/reserve and static return are
   PASS on Wi‑Fi (`HANDOFF.md` proof TWO). Repeat when a true Ethernet client
   NIC is available.
