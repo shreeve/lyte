@@ -1,19 +1,19 @@
 # AGENTS.md — repository law
 
-This file contains stable engineering rules for Lyte. Read `HANDOFF.md`
-first for the current branch, next slice, test results, and live-rig state.
-Read `TODO.md` for deliberately deferred work. Do not put completed history
-in any of these files; Git already owns it.
+Stable engineering rules for Lyte. Read `HANDOFF.md` for the current tip,
+next slice, and live-rig state. Read `TODO.md` for deliberately deferred
+work. Git owns completed history — do not essay it into these files.
 
 ## System identity
 
 Lyte is an MIT-licensed remote-desktop system whose macOS client and Linux
 host speak exactly one independently owned protocol: Lyte-UDP over plain
-UDP. The product contains no Sunshine, Moonlight, GameStream, RTSP, RTP,
-VNC, or RDP compatibility path. The decision record is
-`docs/20260720-215100-lyte-udp-decision.md`; the protocol specification is
-the four `docs/20260720-19170*-lyte-protocol-*.md` pillars reconciled by
-`docs/20260720-193000-lyte-protocol-overview.md`.
+UDP. There is no Sunshine, Moonlight, GameStream, RTSP, RTP, VNC, or RDP
+compatibility path. Decision record:
+`docs/20260720-215100-lyte-udp-decision.md`. Protocol pillars and overview:
+`docs/20260720-19170*-lyte-protocol-*.md` and
+`docs/20260720-193000-lyte-protocol-overview.md`. Product identity and
+direction live in `README.md`; this file owns implementation law.
 
 ## Package ownership
 
@@ -42,9 +42,9 @@ in `docs/20260803-084328-source-layout-and-migration.md`.
   client-role policy; `LyteClientSession` owns IO-free initiator/session
   orchestration; `LyteTransport` owns the client protocol/media and macOS IO
   stack; `LyteCorpus` owns diagnostic and benchmark machinery; `LyteUI`
-  owns shared AppKit shims;
-  `LyteClientTestKit` owns reusable client test equipment. Production
-  streaming code must not depend on corpus or harness code.
+  owns shared AppKit shims; `LyteClientTestKit` owns reusable client test
+  equipment. Production streaming code must not depend on corpus or harness
+  code.
 - **`SystemTests/` — `LyteSystemTests`:** cross-role composition tests that
   import exported Client and Host libraries. It owns no production code and
   does not justify a dependency between Client and Host.
@@ -65,8 +65,8 @@ reusable library. C/system-library leaves stay explicit and narrow.
   WASM-compilable.
 - **One owner per concept.** Shared policy lives in `LyteCore`; wire
   contracts in `LyteWire`; role policy stays with its role. Extract only
-  when a real second owner exists—similar-looking role code is not itself a
-  shared abstraction.
+  when a real second owner exists — similar-looking role code is not itself
+  a shared abstraction.
 - **Value policy, shell synchronization.** Core policy is single-threaded
   value state. Platform shells own queues, actors, and locks.
 - **Named media organs.** Client rendering enters through `VideoSink`;
@@ -85,7 +85,7 @@ reusable library. C/system-library leaves stay explicit and narrow.
 
 Settled v2 laws live in `docs/20260730-115707-lyte-v2-rulings.md`. Treat
 them as constraints: one repository, convergence in place, always green;
-fix before spec, spec before code; rebuild only earned organs against frozen
+form before spec, spec before code; rebuild only earned organs against frozen
 contracts.
 
 ### Standing rulings
@@ -145,11 +145,11 @@ The `LD_LIBRARY_PATH` shim is specific to pup: Swift's build tools request
 dependency. No ffmpeg environment exists; a plain build is a gate.
 
 The standing host is the release-built system service `lyte-host.service` on
-UDP 41151.
-After a deployed rebuild, run `sudo -n systemctl restart lyte-host`; its
-ambient capability grants direct-eye DRM access. Hand-run `lyte-eye` or
-host binaries need `sudo -n setcap cap_sys_admin+ep <exact-binary>`.
-Details and current operational deviations belong in `HANDOFF.md`.
+UDP 41151. After a deployed rebuild, run `sudo -n systemctl restart
+lyte-host`; its ambient capability grants direct-eye DRM access. Hand-run
+`lyte-eye` or host binaries need
+`sudo -n setcap cap_sys_admin+ep <exact-binary>`. Live operational state
+belongs in `HANDOFF.md`.
 
 ## Safety
 
@@ -158,8 +158,14 @@ Details and current operational deviations belong in `HANDOFF.md`.
   Verify them before and after any run that approaches identity state.
 - Never displace the owner's standing UDP 41151 service. Test hosts use an
   explicit fresh 41xxx port and `--no-advertise`.
+- Do not run a second Direct Eye while 41151 holds the DRM seat — parallel
+  eyes black the interactive glass. Hand-run test binaries must live off
+  `/tmp` (`nosuid` strips file caps); put them under the home build tree and
+  `setcap` there.
 - Scope netem/tc impairment to the exact Lyte port, following
-  `Scripts/netem/lo-netem.sh`, and remove it after the run.
+  `Scripts/netem/lo-netem.sh` (and `port-netem.sh` for host-side scoping),
+  and remove it after the run. Benchmark netem requires
+  `LYTE_BENCHMARK_PORT` and refuses standing 41151 unless explicitly allowed.
 - Do not launch a benchmark app while the owner's interactive app is open;
   both use the same bundle identity and a diagnostic launch can replace the
   real client.
@@ -169,14 +175,15 @@ Details and current operational deviations belong in `HANDOFF.md`.
 - Start from `HANDOFF.md`; keep it accurate as live state changes.
 - Preserve unrelated user changes in a dirty worktree.
 - Stage by territory (`git add Wire/`, `git add Host/`, or explicit root
-  files). Never use `git add -A`.
-- Use `apply_patch` for edits. Prefer `rg`/`rg --files` for discovery.
+  files such as `git add AGENTS.md HANDOFF.md`). Never use `git add -A`.
+- Prefer `rg` / `rg --files` for discovery.
 - Commit subjects are declarative, use the repository's em-dash flourish,
   and explain why in the body. Never add AI attribution or co-author lines.
-- Avoid amend. Never force-push main.
-- Use the PR train: branch → change → reproducing pin → Mac and pup gates →
-  `gh pr create` → merge with `(#N)` in the landing subject → record the
-  landing → push.
+- Avoid amend. Never force-push `main`.
+- **Land a PR:** branch → change → reproducing pin → Mac and pup gates →
+  `gh pr create` → merge to **`main`** with `(#N)` in the landing subject →
+  **delete the branch** → update `HANDOFF.md` when live state changed →
+  push.
 - One coherent worker owns a package territory at a time. Long live tests
   may be quiet; silence alone is not failure.
 
@@ -188,9 +195,3 @@ Details and current operational deviations belong in `HANDOFF.md`.
 - `TODO.md` — deferred actionable work only.
 - `LICENSE` — legal terms; never paraphrase or consolidate it.
 - `docs/README.md` — catalog for living decisions and frozen records.
-
-The former root strategy document is retired at this cleanup. Its valid
-product direction is now in `README.md`; its implementation law is here;
-its protocol, design, and historical decisions remain in the dated records.
-Recover the final pre-retirement copy with
-`git show 59e8bb4:LYTE-PLAN.md`.
