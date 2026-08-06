@@ -1049,7 +1049,8 @@ static func run(arguments: [String]) throws {
         \(wire.estimatorStats.overuseVerdicts) overuse verdicts, \
         \(wire.estimatorStats.selfReferenceHolds) self-ref holds, \
         \(wire.estimatorStats.stallHolds) stall holds, \
-        \(wire.estimatorStats.fallDeferrals) dwell deferrals), \
+        \(wire.estimatorStats.fallDeferrals) dwell deferrals, \
+        \(wire.estimatorStats.sparseEvidenceHolds) sparse holds), \
         \(wire.estimatorStats.upshifts) upshifts \
         (\(wire.estimatorStats.upshiftsDamped) probe-damped, \
         \(wire.estimatorStats.upshiftsCadenceHeld) cadence-held), \

@@ -95,6 +95,16 @@
 //       0.8×btlRate cap would spiral every clean path to the floor. The
 //       0.8 factor applies where the pillar needs it — at the overuse
 //       fall.
+//     - SYMMETRIC FRESHNESS (harsh-path static ratchet): climbs already
+//       require a delivery train inside `upshiftEvidenceWindowNS`. Loss,
+//       overuse, and post-FEC falls share that bar OR standing pacer
+//       backlog (bytes already admitted — real demand even if trains
+//       have not refreshed yet). Sparse keepalive under mild netem
+//       must not ratchet the standing rate down while climb is
+//       unreachable by construction — doctrine forbids padding a blank
+//       desktop just to probe, so thin traffic freezes rather than
+//       walking one way. Belief stays; motion or backlog reopens falls;
+//       trains reopen climbs.
 //     THE SELF-REFERENCE GATE (HS-22c) lived here until HS-28
 //     retired it: with the pacer holding standing backlog, a
 //     multi-quantum frame drains as a full train paced at exactly R —
@@ -495,6 +505,10 @@ public struct RateEstimatorStats: Equatable, Sendable {
     /// Evidence climbs admitted while post-FEC sat between the clean
     /// column and rung 3 — residual NACK echo that must not pin the rate.
     public var upshiftsUnderMildPostFec = 0
+    /// Loss / overuse / post-FEC falls held because delivery evidence is
+    /// stale and there is no standing pacer backlog — sparse keepalive
+    /// under mild impairment must not one-way ratchet the standing rate.
+    public var sparseEvidenceHolds = 0
     public var overuseVerdicts = 0
     /// HS-22c: overuse falls the self-reference gate refused — the
     /// evidence measured our own pacing and nothing corroborated a
@@ -1469,6 +1483,17 @@ public final class RateEstimator {
         return false
     }
 
+    /// Climb needs a delivery train inside `upshiftEvidenceWindowNS`.
+    /// Falls share that bar, or standing pacer backlog as proof of
+    /// real demand. Sparse keepalive (neither trains nor backlog)
+    /// freezes — doctrine forbids inventing probe traffic just to
+    /// reverse a one-way ratchet.
+    private func hasFreshDeliveryEvidence(now: UInt64) -> Bool {
+        lastDeliveryAt.map {
+            now &- $0 <= config.upshiftEvidenceWindowNS
+        } ?? false
+    }
+
     private func applyControlLaw(
         overuse: Bool,
         lossFraction: Double,
@@ -1479,6 +1504,13 @@ public final class RateEstimator {
         let downshiftAllowed = lastDownshiftAt.map {
             now &- $0 >= config.downshiftMinIntervalNS
         } ?? true
+        let deliveryFresh = hasFreshDeliveryEvidence(now: now)
+        let backlogFloorBytes = max(1, Int(
+            Double(rateBitsPerSecond)
+                * Double(config.selfReferenceBacklogWindowNS) / 8e9
+        ))
+        let backlogStanding = pacerBacklogBytes >= backlogFloorBytes
+        let fallEvidence = deliveryFresh || backlogStanding
 
         if overuse, downshiftAllowed {
             // THE HONESTY LAW (HS-28 — the three shape-gates' single
@@ -1500,11 +1532,6 @@ public final class RateEstimator {
             // the old law and stays on the record, but the fall
             // answers to the belief alone.
             let anchor = overuseAnchorRate.map(Int.init) ?? rateBitsPerSecond
-            let backlogFloorBytes = max(1, Int(
-                Double(rateBitsPerSecond)
-                    * Double(config.selfReferenceBacklogWindowNS) / 8e9
-            ))
-            let backlogStanding = pacerBacklogBytes >= backlogFloorBytes
             let queueGrew = inflatedStreakStartMicros.map {
                 (queuingDelayMicroseconds ?? 0)
                     >= $0 + config.overuseThresholdMicroseconds
@@ -1526,9 +1553,18 @@ public final class RateEstimator {
                 || postFecLossFraction > config.postFecDownshiftThreshold
             let persisted = now &- (inflatedStreakSinceNS ?? now)
                 >= config.beliefDemotionSustainNS
+            let wouldFall = instant
+                || (persisted && (queueGrew || honestLow || !selfExplaining))
 
-            if instant
-                || (persisted && (queueGrew || honestLow || !selfExplaining)) {
+            if wouldFall, !fallEvidence {
+                // Same starvation that blocks climbs: no recent train
+                // and no standing backlog, so delay/loss sprinkled on
+                // keepalive cannot move the standing rate. Overuse
+                // still blocks rises below.
+                stats.sparseEvidenceHolds += 1
+                lastAdjustAt = now
+                return nil
+            } else if wouldFall {
                 // The fall EXECUTES — anchored to the CAPACITY BELIEF,
                 // never to the median of raw recent samples.
                 // Invariant 2's demotion rides the fall: a fresh
@@ -1617,6 +1653,11 @@ public final class RateEstimator {
         }
 
         if lossFraction > config.lossDownshiftThreshold, downshiftAllowed {
+            guard fallEvidence else {
+                stats.sparseEvidenceHolds += 1
+                lastAdjustAt = now
+                return nil
+            }
             // GCC's loss response: rate × (1 − loss/2) — a 20% loss
             // window falls 10%, a 50% catastrophe falls 25% per beat.
             rateBitsPerSecond = clamp(Int(
@@ -1631,6 +1672,11 @@ public final class RateEstimator {
 
         if postFecLossFraction > config.postFecDownshiftThreshold,
            downshiftAllowed {
+            guard fallEvidence else {
+                stats.sparseEvidenceHolds += 1
+                lastAdjustAt = now
+                return nil
+            }
             // Rung 3: loss FEC could not absorb. NOT the 2–10% hold —
             // that band is held precisely because parity absorbs it,
             // and this evidence says it did not. Multiplicative fall,

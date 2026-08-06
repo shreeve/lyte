@@ -629,24 +629,24 @@ final class RateEstimatorGateTests: XCTestCase {
         }
         var now: UInt64 = 0
         var clientMicros: UInt64 = 0
+        var seq = 0
         var received: UInt32 = 100
         var missing: UInt32 = 0
-        // Prime totals.
-        _ = estimator.ingest(
-            report(samples: [], clientMicros: 1_000,
-                   channels: lossLedger(received: received, missing: missing)),
-            now: Self.ms, inRecovery: false
-        )
-        // Relentless 50% loss for a minute of virtual time.
-        for _ in 0..<120 {
-            now += 500 * Self.ms
-            clientMicros += 500_000
+        // Relentless 50% loss with paced trains — ledger-only loss no
+        // longer moves the rate (sparse-evidence hold); the floor pin
+        // still needs honest delivery freshness on every fall beat.
+        // ~10 s of 25 ms reports covers ≥ the 500 ms fall limiter's
+        // walk from the ceiling to the historical 500 kbps floor.
+        for _ in 0..<400 {
             received += 50
             missing += 50
-            _ = estimator.ingest(
-                report(samples: [], clientMicros: clientMicros,
-                       channels: lossLedger(received: received, missing: missing)),
-                now: now, inRecovery: false
+            _ = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: max(
+                    0.5, Double(estimator.rateBitsPerSecond) / 1e6),
+                extraDelayMicros: 0,
+                backlogBytes: 0,
+                channels: lossLedger(received: received, missing: missing)
             )
         }
         XCTAssertEqual(estimator.rateBitsPerSecond, 500_000,
@@ -2402,6 +2402,152 @@ final class RateEstimatorGateTests: XCTestCase {
         print("rung-3 climb block: fell to "
             + "\(rateAfterFall / 1_000) kbps; 0 climbs under sustained "
             + "post-FEC past the downshift bar")
+    }
+
+    /// Quiet-static / sparse keepalive under impairment must not
+    /// one-way ratchet the standing rate. Climb already needs a fresh
+    /// delivery train; falls share that freshness bar so thin traffic
+    /// freezes rather than inventing a descent the climb path cannot
+    /// reverse (doctrine: no padding a blank desktop to probe).
+    func testSparseKeepaliveLossDoesNotRatchetWithoutDeliveryEvidence() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        var received: UInt32 = 0
+
+        // One clean full train primes delivery freshness + belief.
+        received += 1_200
+        _ = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 20, extraDelayMicros: 0,
+            backlogBytes: 0,
+            channels: lossLedger(received: received, missing: 0)
+        )
+        let primed = estimator.rateBitsPerSecond
+        XCTAssertEqual(primed, Self.ceiling)
+
+        // Age past the climb freshness window with no new trains —
+        // the quiet-desktop shape after the opening IDR drains.
+        now += 3_000 * Self.ms
+        clientMicros += 3_000_000
+
+        let holdsBefore = estimator.stats.sparseEvidenceHolds
+        var receivedSparse: UInt32 = received
+        var missingSparse: UInt32 = 0
+        for _ in 0..<40 {
+            // ~20% ledger loss on a trickle of packets, no dispersion
+            // trains — enough to fire the old loss fall every limiter
+            // beat, and exactly the sparse ratchet the live static
+            // harsh-path walk showed (50 → 13.8 Mbps, 0 upshifts).
+            receivedSparse += 8
+            missingSparse += 2
+            let verdict = estimator.ingest(
+                report(
+                    samples: [],
+                    clientMicros: clientMicros,
+                    channels: lossLedger(
+                        received: receivedSparse, missing: missingSparse)
+                ),
+                now: now, inRecovery: false
+            )
+            now += 25 * Self.ms
+            clientMicros += 25_000
+            XCTAssertNil(verdict.newRateBitsPerSecond,
+                "stale delivery evidence must freeze the standing rate")
+        }
+        XCTAssertEqual(estimator.rateBitsPerSecond, primed,
+            "sparse keepalive loss must not ratchet without trains")
+        XCTAssertEqual(estimator.stats.lossDownshifts, 0)
+        XCTAssertEqual(estimator.stats.upshifts, 0,
+            "no trains → no climbs (content-driven; no padding)")
+        XCTAssertGreaterThan(
+            estimator.stats.sparseEvidenceHolds, holdsBefore,
+            "the sparse-hold book must fire")
+
+        // Fresh paced trains reopen the loss fall — motion returns.
+        let beforeMotion = estimator.rateBitsPerSecond
+        var fell = false
+        for _ in 0..<8 {
+            receivedSparse += 960
+            missingSparse += 240
+            let verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: Double(beforeMotion) / 1e6,
+                extraDelayMicros: 0,
+                backlogBytes: 0,
+                channels: lossLedger(
+                    received: receivedSparse, missing: missingSparse)
+            )
+            if verdict.change == .loss { fell = true }
+        }
+        XCTAssertTrue(fell,
+            "paced multi-packet trains must still admit loss falls")
+        XCTAssertLessThan(estimator.rateBitsPerSecond, beforeMotion)
+
+        print("sparse-hold: primed \(primed / 1_000) kbps held across "
+            + "\(estimator.stats.sparseEvidenceHolds - holdsBefore) "
+            + "stale-loss beats; motion reopened falls → "
+            + "\(estimator.rateBitsPerSecond / 1_000) kbps")
+    }
+
+    /// Stale overuse pressure on an empty path (netem delay on
+    /// keepalive) must hold, not walk the rate down with a 25 s-old
+    /// full-train forensic and no climb path back.
+    func testSparseOveruseDoesNotFallWithoutFreshDeliveryEvidence() {
+        let estimator = makeEstimator()
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+
+        for _ in 0..<8 {
+            _ = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: 20, extraDelayMicros: 0,
+                backlogBytes: 0
+            )
+        }
+        let primed = estimator.rateBitsPerSecond
+
+        // Age the delivery window past freshness, then apply sustained
+        // inflation with no new trains and no backlog — the live
+        // static overuse shape (`full-train … 25560 ms ago`).
+        now += 3_000 * Self.ms
+        clientMicros += 3_000_000
+        let holdsBefore = estimator.stats.sparseEvidenceHolds
+        var overuseBeats = 0
+        for _ in 0..<40 {
+            // Ledger-only reports still need *some* matched samples to
+            // move the delay detector. Two short video packets are
+            // enough for inflation bookkeeping but never form a
+            // delivery train (≥3), so freshness stays stale.
+            let samples = train(
+                estimator, seqStart: seq, count: 2,
+                frameNumber: UInt32(seq),
+                sendStartNS: now - Self.ms,
+                bottleneckBitsPerSecond: 20e6,
+                extraDelayMicros: 40_000
+            )
+            seq += 2
+            let verdict = estimator.ingest(
+                report(samples: samples, clientMicros: clientMicros),
+                now: now, inRecovery: false, pacerBacklogBytes: 0
+            )
+            if verdict.overuse { overuseBeats += 1 }
+            XCTAssertNil(verdict.newRateBitsPerSecond)
+            now += 25 * Self.ms
+            clientMicros += 25_000
+        }
+        XCTAssertGreaterThan(overuseBeats, 0,
+            "overuse must still detect — the gate holds the FALL")
+        XCTAssertEqual(estimator.rateBitsPerSecond, primed)
+        XCTAssertEqual(estimator.stats.downshifts, 0)
+        XCTAssertGreaterThan(
+            estimator.stats.sparseEvidenceHolds, holdsBefore)
+
+        print("sparse overuse hold: \(overuseBeats) verdicts, "
+            + "\(estimator.stats.sparseEvidenceHolds - holdsBefore) "
+            + "sparse holds, rate still \(primed / 1_000) kbps")
     }
 
     // MARK: Leg 4 — the machine's numbers

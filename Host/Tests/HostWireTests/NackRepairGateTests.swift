@@ -861,11 +861,13 @@ final class NackRepairGateTests: XCTestCase {
             now: 100 * Self.ms, inRecovery: false
         )
         // 100 more video datagrams attempted; 5 of them NACKed
-        // post-FEC = 5% — over rung 3's 2%.
+        // post-FEC = 5% — over rung 3's 2%. Standing backlog stands
+        // in for fall evidence (no dispersion trains in this pin).
         let verdict = estimator.ingest(
             try report(received: 200, nackFrame: 7,
                        shards: [0, 1, 2, 3, 4], clientMicros: 200_000),
-            now: 200 * Self.ms, inRecovery: false
+            now: 200 * Self.ms, inRecovery: false,
+            pacerBacklogBytes: 40_000
         )
         XCTAssertEqual(verdict.postFecLossFraction, 0.05, accuracy: 1e-9)
         XCTAssertEqual(verdict.change, .postFecLoss,
@@ -969,10 +971,20 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(cleanGeo).parityShards, 5)
 
         // Seed the ledger, then a NACK-heavy report: 5% post-FEC.
+        // Leave a second frame queued so standing backlog reopens the
+        // rate fall (regime steps regardless; the fall needs evidence).
         _ = try feed(session, report: FeedbackReport(
             clientTimestamp: ClientTimestamp(microseconds: now / 1_000),
             channels: videoLedger(received: 100)
         ), now: now)
+        box.sendInstant = now
+        _ = try session.ingestVideoFrame(
+            syntheticFrame(byteCount: 30_000),
+            captureTimestampMicroseconds: now / 1_000,
+            isKeyframe: false, now: now
+        )
+        XCTAssertGreaterThan(session.queuedVideoBytes, 0,
+            "queued frame supplies fall evidence without dispersion")
         now += 25 * Self.ms
         let events = try feed(session, report: FeedbackReport(
             clientTimestamp: ClientTimestamp(microseconds: now / 1_000),
@@ -989,8 +1001,10 @@ final class NackRepairGateTests: XCTestCase {
         }))
         XCTAssertEqual(session.fecRegime, .lossy)
 
-        // The NEXT frame draws from the lossy column: k=28 → 35% →
-        // 10 parity. Per-frame switch, no re-cutting of frame 0.
+        // Drain the pre-step queued frame (clean geometry already
+        // sealed at ingest), then ingest a fresh one under lossy:
+        // k=28 → 35% → 10 parity.
+        drain(session, box: box, until: now + 30 * Self.ms, now: &now)
         box.sendInstant = now
         _ = try session.ingestVideoFrame(
             syntheticFrame(byteCount: 30_000),
@@ -998,14 +1012,14 @@ final class NackRepairGateTests: XCTestCase {
             isKeyframe: false, now: now
         )
         drain(session, box: box, until: now + 30 * Self.ms, now: &now)
-        let (byIndex, lossyGeo) = try shardsByIndex(box.fresh(), frame: 1)
+        let (byIndex, lossyGeo) = try shardsByIndex(box.fresh(), frame: 2)
         XCTAssertEqual(try XCTUnwrap(lossyGeo).parityShards, 10,
                        "the lossy §5.2 column applies from the next frame")
         XCTAssertEqual(byIndex.count, 38)
         XCTAssertEqual(session.counters.fecRegimeSteps, 1)
 
         print("HS-17 gate leg 5: post-FEC 5% stepped clean→lossy — "
-            + "frame 0 at 28+5, frame 1 at 28+10")
+            + "frame 0 at 28+5, frame 2 at 28+10")
     }
 
     // MARK: Leg 6 — THE CADENCE GATE under a repair storm (R-G8 shape)
