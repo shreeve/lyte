@@ -4,7 +4,8 @@
 
 ## Resume here
 
-- **Tip:** `main` @ `2a49bdf` (includes PR #215 commissioning record).
+- **Tip:** `main` @ `9314b36` (PR #216 root-docs cleanup; includes #215
+  commissioning).
 - **Next:**
   1. Owner visual check of resize-corner cursor tips (owed from #212) —
      tl/tr/br/bl shape/tip match and `cursor derive` with real `plane(x,y)` /
