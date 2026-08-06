@@ -287,5 +287,15 @@ fi
 grep -Fq -- '--no-build --out "$RUN_DIR" motion' "$benchmark_netem"
 grep -Fq "match ip sport" "$netem"
 grep -Fq "match ip dst" "$netem"
+grep -Fq 'LYTE_BENCHMARK_PORT' "$benchmark_netem"
+grep -Fq 'LYTE_BENCHMARK_ALLOW_STANDING_PORT' "$benchmark_netem"
+if "$benchmark_netem" moderate >/dev/null 2>&1; then
+    echo "benchmark-netem accepted a missing LYTE_BENCHMARK_PORT" >&2
+    exit 1
+fi
+if LYTE_BENCHMARK_PORT=41151 "$benchmark_netem" moderate >/dev/null 2>&1; then
+    echo "benchmark-netem accepted standing 41151 without allow flag" >&2
+    exit 1
+fi
 
 echo "benchmark safety tests PASSED"

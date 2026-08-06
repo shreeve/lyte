@@ -25,7 +25,10 @@ filter on the Lyte port (and DSCP class where a leg needs it).
   sudo Scripts/netem/lo-netem.sh remove
   ```
 
-`benchmark-netem.sh moderate` is the current real-client egress SLO leg. It
-matches host UDP source port 41151 and the resolved client `/32`; it does not
-shape feedback toward the host. Bidirectional impairment remains a distinct
-future gate requiring an ingress/ifb design.
+`LYTE_BENCHMARK_PORT=<41xxx> Scripts/benchmark-netem.sh moderate` is the
+real-client egress SLO leg against a fresh test host. It matches that host
+UDP source port and the resolved client `/32`; it does not shape feedback
+toward the host. The script refuses to default to standing 41151 (set
+`LYTE_BENCHMARK_ALLOW_STANDING_PORT=1` only for an explicit standing-leg).
+Bidirectional impairment remains a distinct future gate requiring an
+ingress/ifb design.
