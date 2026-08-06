@@ -5,9 +5,9 @@
 Lyte is an MIT-licensed remote-desktop system that owns both ends of the
 wire: a SwiftUI-native macOS client and a Swift Linux host speaking exactly
 one protocol, **Lyte-UDP**, over plain UDP. There is no RTSP, RTP,
-GameStream, Sunshine, or Moonlight compatibility layer in the product.
-Every byte on the wire is ours: Noise-encrypted, paced, measured, and
-repaired by Lyte's own transport.
+GameStream, Sunshine, Moonlight, VNC, or RDP compatibility path. Every byte
+on the wire is ours — Noise-encrypted, paced, measured, and repaired by
+Lyte's own transport.
 
 The product goal is simple: use another computer as if it were local, with
 game-streaming responsiveness and the conveniences expected from a remote
@@ -15,7 +15,7 @@ desktop.
 
 ## Product model
 
-The long-term product model is that the user states intent and Lyte derives
+The long-term model is that the user states intent and Lyte derives
 settings. Policy falls on two axes:
 
 | | **Local** | **Remote** |
@@ -23,16 +23,15 @@ settings. Policy falls on two axes:
 | **Work** | native pixels, maximum text fidelity, free mouse | adaptive, resilient, legible desktop |
 | **Play** | minimum latency, fullscreen, locked mouse | conservative latency-first stream |
 
-The current app does not yet expose Work/Play. It connects directly to a host
-and keeps its explicit controls to real declarations and consent, while rate,
-repair, pacing, and Conductor reserve already derive from live evidence. When
-Work/Play ships, Local versus Remote will be detected from address and measured
-path behavior. See [`docs/DESIGN.md`](docs/DESIGN.md) for the shipping versus
-directional boundary.
+The shipping app does not yet expose Work/Play. It connects directly to a
+host and keeps explicit controls to real declarations and consent, while
+rate, repair, pacing, and Conductor reserve already derive from live
+evidence. See [`docs/DESIGN.md`](docs/DESIGN.md) for shipping versus
+directional boundaries.
 
-The long-term product is one program named Lyte on each platform. It can be
-a client, a host, or both; discovery, pairing, identity, and feature consent
-remain coherent whichever role is active.
+Long-term, one program named Lyte on each platform can be a client, a host,
+or both; discovery, pairing, identity, and feature consent stay coherent
+whichever role is active.
 
 ## Repository
 
@@ -47,69 +46,54 @@ Client/       LyteClientCore + LyteClientSession + LyteTransport + app/CLI
 SystemTests/  cross-role composition tests; no production ownership
 ```
 
-Swift owns everything above hardware and operating-system boundaries. C is
-limited to narrow leaves such as DRM/EGL/VAAPI, PipeWire, the pinned Opus
-codec, UDP syscalls, uinput, and the vendored Reed-Solomon implementation.
-`LyteWire` and `LyteCore` are sans-IO and lint-guarded; committed vectors
-under `Wire/Vectors/` are append-only wire contracts tested byte-for-byte
-on macOS, Linux, and WebAssembly.
+Swift owns everything above hardware and OS boundaries. C is limited to
+narrow leaves (DRM/EGL/VAAPI, PipeWire, pinned Opus, UDP syscalls, uinput,
+vendored Reed-Solomon). `LyteWire` and `LyteCore` are sans-IO and
+lint-guarded; committed vectors under `Wire/Vectors/` are append-only wire
+contracts tested byte-for-byte on macOS, Linux, and WebAssembly.
 
-The direct media path avoids general-purpose transcoding stacks. The Linux
-host reads KMS scanout, performs its color conversion on the GPU, and drives
+The Linux host reads KMS scanout, converts color on the GPU, and drives
 native VAAPI with Lyte's Swift HEVC bitstream writers. The macOS client
 hands compressed samples to VideoToolbox through
-`AVSampleBufferDisplayLayer`. Static desktops are change-driven and become
-nearly silent on the wire.
+`AVSampleBufferDisplayLayer`. Static desktops are change-driven and nearly
+silent on the wire.
 
 ## Protocol and security
 
-Lyte-UDP provides:
+Lyte-UDP provides Noise IK encryption for every accepted datagram; PIN
+pairing through a PAKE with pinned static identities; adaptive Reed-Solomon
+FEC and targeted NACK repair; reliable control beside low-latency media;
+explicit active / idle / frozen / recovery behavior; and application-level
+congestion control. Encryption is always on. Feature channels are
+capability-negotiated and separately consented. Payload contents are never
+logged.
 
-- Noise IK encryption for every accepted datagram;
-- PIN pairing through a PAKE, followed by pinned static identities;
-- adaptive Reed-Solomon FEC and targeted NACK repair;
-- reliable control and feature messages beside low-latency media;
-- explicit active, idle, frozen, and recovery behavior;
-- per-packet traffic classes and application-level congestion control.
-
-Encryption is always on. Viewing, input, clipboard text, clipboard images,
-files, and future feature channels are capability-negotiated and separately
-consented. Payload contents are never logged.
-
-The protocol specification is the four dated pillar documents and their
-overview, reconciled by the one-protocol decision:
-
-- [`docs/20260720-191701-lyte-protocol-image-quality.md`](docs/20260720-191701-lyte-protocol-image-quality.md)
-- [`docs/20260720-191702-lyte-protocol-timing.md`](docs/20260720-191702-lyte-protocol-timing.md)
-- [`docs/20260720-191703-lyte-protocol-resiliency.md`](docs/20260720-191703-lyte-protocol-resiliency.md)
-- [`docs/20260720-191704-lyte-protocol-transport.md`](docs/20260720-191704-lyte-protocol-transport.md)
-- [`docs/20260720-193000-lyte-protocol-overview.md`](docs/20260720-193000-lyte-protocol-overview.md)
-- [`docs/20260720-215100-lyte-udp-decision.md`](docs/20260720-215100-lyte-udp-decision.md)
-
-[`docs/README.md`](docs/README.md) catalogs the living decisions, frozen
-records, plans, and studies without duplicating them here.
+The protocol specification is the four dated pillars plus overview,
+reconciled by the one-protocol decision — catalogued in
+[`docs/README.md`](docs/README.md). Start with
+[`docs/20260720-215100-lyte-udp-decision.md`](docs/20260720-215100-lyte-udp-decision.md)
+and
+[`docs/20260720-193000-lyte-protocol-overview.md`](docs/20260720-193000-lyte-protocol-overview.md).
 
 ## Platform direction
 
 The macOS client and Linux host are live end-to-end: HEVC 4:2:0/4:4:4,
-5 ms Opus audio, input, congestion control, targeted repair, clipboard,
-and file transfer. Since the `self-hosted` milestone, the host captures and
+5 ms Opus audio, input, congestion control, targeted repair, clipboard, and
+file transfer. Since the `self-hosted` milestone, the host captures and
 encodes without portals, ffmpeg, or libav.
 
-The order ahead is deliberate:
+The order ahead:
 
-1. Commission and harden the macOS-client/Linux-host path.
-2. Add the macOS host using ScreenCaptureKit and VideoToolbox leaves.
+1. Commission and harden the macOS-client / Linux-host path.
+2. Add the macOS host (ScreenCaptureKit + VideoToolbox leaves).
 3. Add Windows and Linux client/host shells around the same shared cores.
 4. Consider browser, mobile, and relay surfaces only after the native path
    earns them.
 
-The current browser boundary and eventual commissioning ladder live in
-[`docs/BROWSER.md`](docs/BROWSER.md); the passing WASM wire suite is a
-portability proof, not a browser client.
-
-Remote v1 means direct UDP on the LAN and Tailscale or an explicit port
-forward beyond it. Lyte does not ship a rendezvous or TURN fleet today.
+Browser direction lives in [`docs/BROWSER.md`](docs/BROWSER.md); the passing
+WASM wire suite is a portability proof, not a browser client. Remote v1
+means direct UDP on the LAN and Tailscale or an explicit port forward beyond
+it — Lyte does not ship a rendezvous or TURN fleet today.
 
 ## Non-goals
 
@@ -121,24 +105,19 @@ forward beyond it. Lyte does not ship a rendezvous or TURN fleet today.
 
 ## Building
 
-Each package is built and tested independently. macOS commands require the
-full Xcode toolchain:
+Each package builds and tests independently. macOS requires the full Xcode
+toolchain (`DEVELOPER_DIR=/Applications/Xcode.app`). Canonical package test
+commands, pup deploy, signing, and safety rules live in
+[`AGENTS.md`](AGENTS.md). Host install notes are in
+[`Host/README.md`](Host/README.md). Client binaries that contact a host use
+`Scripts/build-cli.sh` / `Scripts/make-app.sh` and `Scripts/launch-app.sh`
+(see [`docs/MACOS-SIGNING.md`](docs/MACOS-SIGNING.md)).
 
-```sh
-cd Wire && DEVELOPER_DIR=/Applications/Xcode.app swift test
-cd Common && DEVELOPER_DIR=/Applications/Xcode.app swift test
-cd Host && DEVELOPER_DIR=/Applications/Xcode.app swift test
-DEVELOPER_DIR=/Applications/Xcode.app swift test --package-path Client --scratch-path .build
-cd SystemTests && DEVELOPER_DIR=/Applications/Xcode.app swift test
-```
-
-Host deployment details are in [`Host/README.md`](Host/README.md). Stable
-repository rules are in [`AGENTS.md`](AGENTS.md); current work and live rig
-state are in [`HANDOFF.md`](HANDOFF.md); deliberately deferred work is in
-[`TODO.md`](TODO.md).
+Current work and live-rig state: [`HANDOFF.md`](HANDOFF.md).
+Deferred actionable work: [`TODO.md`](TODO.md).
 
 ## License
 
 Lyte-authored code is MIT-licensed. Bundled third-party leaves retain their
-upstream licenses and notices. See [`LICENSE`](LICENSE) and the
-[`docs/THIRD-PARTY.md`](docs/THIRD-PARTY.md) catalog.
+upstream licenses and notices. See [`LICENSE`](LICENSE) and
+[`docs/THIRD-PARTY.md`](docs/THIRD-PARTY.md).
