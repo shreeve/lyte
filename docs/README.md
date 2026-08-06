@@ -101,3 +101,7 @@ existed when they were authored. Recover its final form with
 - [20260801-075746 pup scan-stall study](20260801-075746-lyte-pup-scan-stall-study.md) —
   the network campaign's conviction record (gateway 6 GHz radio); pup
   is wired at 10.0.0.232 because of it.
+- [20260806-115922 harsh-path control plane](20260806-115922-harsh-path-control-plane.md) —
+  detection/mitigation inventory, Conductor-aligned architecture, and the
+  harsh-network recovery fixes (floor, FEC-aware ceiling, IDR ownership,
+  mild post-FEC climb).

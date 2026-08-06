@@ -406,6 +406,38 @@ final class SessionGateTests: XCTestCase {
         XCTAssertTrue(forced.allSatisfy(\.isKeyframe),
                       "the demanded frame reaches the wire as keyframe shards")
 
+        // A fire-and-forget retry for the SAME recovery episode names damage
+        // older than the IDR we just offered. Inside the in-flight window
+        // it must not mint another IDR (storm control); encode-time is not
+        // delivery proof — see IdrOfferInFlightGateTests for the lost-IDR
+        // re-arm after the window.
+        let retry = IdrRequest(
+            requestSeq: 1, frame: FrameNumber(rawValue: 7), coalescedCount: 4
+        )
+        _ = session.receive(
+            try client.ctrlDatagram(
+                body: retry.encode(), sealed: true, clientMicros: t3 + 2_000
+            ),
+            from: Self.tupleA, now: clock, hostMicroseconds: t4 + 2_000
+        )
+        XCTAssertFalse(session.takeFreshKeyframeRequest(),
+            "an in-flight offered IDR still answers this episode")
+        XCTAssertEqual(session.counters.idrRequestsSupersededByKeyframe, 1)
+
+        // Genuine later damage is at/after that anchor and starts a new heal.
+        let laterDamage = IdrRequest(
+            requestSeq: 2, frame: FrameNumber(rawValue: 14), coalescedCount: 1
+        )
+        _ = session.receive(
+            try client.ctrlDatagram(
+                body: laterDamage.encode(), sealed: true,
+                clientMicros: t3 + 3_000
+            ),
+            from: Self.tupleA, now: clock, hostMicroseconds: t4 + 3_000
+        )
+        XCTAssertTrue(session.takeFreshKeyframeRequest(),
+            "damage after the delivered anchor still earns a new IDR")
+
         // ── 1 Hz beacon with the W4a mirror of the last echo ───────────
         let t1Beacon1: UInt64 = 2_000_000
         let preBeaconCount = sent.count

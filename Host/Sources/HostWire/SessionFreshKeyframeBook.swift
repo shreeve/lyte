@@ -12,12 +12,10 @@ public struct FreshKeyframeDemand: OptionSet, Sendable {
     public static let machineWake = FreshKeyframeDemand(rawValue: 1 << 2)
     /// The lifecycle machine's RECOVERY (forceIdr, .halfStaleEstimate).
     public static let machineRecovery = FreshKeyframeDemand(rawValue: 1 << 3)
-    /// HS-17: a stale NACK verdict left the client stuck — re-anchor.
-    public static let staleNackArm = FreshKeyframeDemand(rawValue: 1 << 4)
     /// HS-25: an unprotectable frame was dropped — re-anchor references.
-    public static let unprotectableDrop = FreshKeyframeDemand(rawValue: 1 << 5)
+    public static let unprotectableDrop = FreshKeyframeDemand(rawValue: 1 << 4)
     /// A rate fall purged queued video mid-flight — re-anchor.
-    public static let fallPurge = FreshKeyframeDemand(rawValue: 1 << 6)
+    public static let fallPurge = FreshKeyframeDemand(rawValue: 1 << 5)
 
     /// The books' short names, in bit order.
     public var names: [String] {
@@ -26,43 +24,46 @@ public struct FreshKeyframeDemand: OptionSet, Sendable {
         if contains(.clientRequest) { out.append("client-request") }
         if contains(.machineWake) { out.append("wake") }
         if contains(.machineRecovery) { out.append("recovery") }
-        if contains(.staleNackArm) { out.append("stale-nack") }
         if contains(.unprotectableDrop) { out.append("unprotectable") }
         if contains(.fallPurge) { out.append("fall-purge") }
         return out
     }
 }
 
+/// Production telemetry for demands actually consumed by the encoder poll.
+/// `demands` counts forced-IDR opportunities; cause fields may sum higher
+/// because one encoded IDR can satisfy several coalesced causes.
+public struct FreshKeyframeDemandCounts: Equatable, Sendable {
+    public private(set) var demands: UInt64 = 0
+    public private(set) var pathPromotions: UInt64 = 0
+    public private(set) var clientRequests: UInt64 = 0
+    public private(set) var machineWakes: UInt64 = 0
+    public private(set) var machineRecoveries: UInt64 = 0
+    public private(set) var unprotectableDrops: UInt64 = 0
+    public private(set) var fallPurges: UInt64 = 0
+
+    public init() {}
+
+    public mutating func record(_ demand: FreshKeyframeDemand) {
+        guard !demand.isEmpty else { return }
+        demands &+= 1
+        if demand.contains(.pathPromotion) { pathPromotions &+= 1 }
+        if demand.contains(.clientRequest) { clientRequests &+= 1 }
+        if demand.contains(.machineWake) { machineWakes &+= 1 }
+        if demand.contains(.machineRecovery) { machineRecoveries &+= 1 }
+        if demand.contains(.unprotectableDrop) { unprotectableDrops &+= 1 }
+        if demand.contains(.fallPurge) { fallPurges &+= 1 }
+    }
+}
+
 /// The sans-IO, take-once owner of every Host fresh-keyframe demand.
 public struct SessionFreshKeyframeBook: Equatable, Sendable {
     public private(set) var pending: FreshKeyframeDemand = []
-    private var lastUnknownFrameArmAtNanoseconds: UInt64?
 
     public init() {}
 
     public mutating func arm(_ demand: FreshKeyframeDemand) {
         pending.formUnion(demand)
-    }
-
-    /// Arms the shared stale-NACK demand. Authenticated guesses naming an
-    /// unknown frame are rate-limited; verdicts tied to real frame history
-    /// remain unthrottled. Taking the pending demand does not reset this
-    /// peer-pressure window.
-    @discardableResult
-    public mutating func armStaleNack(
-        unknownFrame: Bool,
-        now: UInt64,
-        minimumUnknownFrameInterval: UInt64
-    ) -> Bool {
-        if unknownFrame {
-            let admitted = lastUnknownFrameArmAtNanoseconds.map {
-                now &- $0 >= minimumUnknownFrameInterval
-            } ?? true
-            guard admitted else { return false }
-            lastUnknownFrameArmAtNanoseconds = now
-        }
-        arm(.staleNackArm)
-        return true
     }
 
     /// Returns every coalesced cause and clears them as one encoder poll.

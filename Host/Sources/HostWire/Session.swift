@@ -123,7 +123,8 @@ public struct SessionConfig: Sendable {
     /// The HS-16 congestion estimator's knobs. Nil derives the default
     /// config with `rateBitsPerSecond` as the ceiling — the negotiated
     /// session rate IS the ceiling (no capability key carries bitrate
-    /// in v1) and the floor is resiliency's 500 kbps.
+    /// in v1) and the operational floor is 2 Mbps, enough to pay the
+    /// protected lanes plus a minimum lossy-FEC video flight.
     public var estimator: RateEstimatorConfig?
     /// HS-17 → HS-32: the retransmit gate's freeze budget. A NACK is
     /// honored iff SRTT + retransmit serialization still fit inside
@@ -167,11 +168,6 @@ public struct SessionConfig: Sendable {
     /// from the other end.
     public var openingRepairMaxAttempts: Int
     public var openingRepairMaxBytes: Int
-    /// Peer-driven unknown-frame NACKs may arm at most one IDR in this
-    /// interval. Other stale-NACK reasons and every host-driven demand
-    /// source are unaffected. This bounds an authenticated peer naming
-    /// a fresh garbage frame on every 25–50 ms feedback report.
-    public var unknownFrameIdrArmIntervalNS: UInt64
     /// HS-17: the repair store's retention window (build plan's
     /// "≥4 s rings") and byte cap, passed through to VideoChannel.
     public var repairRetentionNS: UInt64
@@ -186,6 +182,14 @@ public struct SessionConfig: Sendable {
     /// A repair still queued after this interval is no longer useful to
     /// the bounded client assembler and expires before transmit.
     public var repairQueueUsefulnessNS: UInt64
+    /// How long a committed host IDR may suppress older-named client 0x10
+    /// retries as "already answered". Encode/ingest advances
+    /// `lastKeyframeNumber` before delivery; this window is storm control
+    /// for an in-flight offer, not delivery proof. Matches the client's
+    /// 500 ms `IdrRequester` retry so a wholly lost recovery IDR can
+    /// re-arm on the next episode tick instead of black-glassing a
+    /// static desktop forever.
+    public var clientIdrOfferInFlightNS: UInt64
 
     public init(
         crypto: SessionCryptoMode,
@@ -206,12 +210,12 @@ public struct SessionConfig: Sendable {
         repairBudgetJitterAllowanceNS: UInt64 = 15_000_000,
         openingRepairMaxAttempts: Int = 4,
         openingRepairMaxBytes: Int = 2 << 20,
-        unknownFrameIdrArmIntervalNS: UInt64 = 1_000_000_000,
         repairRetentionNS: UInt64 = 4_000_000_000,
         repairStoreByteCap: Int = 16 << 20,
         cleanVideoQueueBudgetNS: UInt64 = 50_000_000,
         impairedVideoQueueBudgetNS: UInt64 = 100_000_000,
-        repairQueueUsefulnessNS: UInt64 = 100_000_000
+        repairQueueUsefulnessNS: UInt64 = 100_000_000,
+        clientIdrOfferInFlightNS: UInt64 = 500_000_000
     ) {
         self.crypto = crypto
         self.rateBitsPerSecond = rateBitsPerSecond
@@ -231,7 +235,6 @@ public struct SessionConfig: Sendable {
         self.repairBudgetJitterAllowanceNS = repairBudgetJitterAllowanceNS
         self.openingRepairMaxAttempts = openingRepairMaxAttempts
         self.openingRepairMaxBytes = openingRepairMaxBytes
-        self.unknownFrameIdrArmIntervalNS = unknownFrameIdrArmIntervalNS
         self.repairRetentionNS = repairRetentionNS
         self.repairStoreByteCap = repairStoreByteCap
         let boundedCleanBudget = min(
@@ -243,6 +246,7 @@ public struct SessionConfig: Sendable {
             100_000_000
         )
         self.repairQueueUsefulnessNS = repairQueueUsefulnessNS
+        self.clientIdrOfferInFlightNS = clientIdrOfferInFlightNS
     }
 }
 
@@ -338,8 +342,8 @@ public enum SessionEvent: Equatable, Sendable {
     /// repair datagrams are enqueued (fresh seqs, videoTail class).
     case repairEnqueued(frame: FrameNumber, shards: Int)
     /// HS-17: a client NACK was judged per the staleness ruling and
-    /// refused. `.budgetExceeded`/`.unavailable` arm the coalesced
-    /// keyframe latch (the IDR alternative, §1.1 rule 4);
+    /// refused. `.budgetExceeded`/`.unavailable` send an explicit refusal;
+    /// the client's coalesced recovery episode owns the IDR alternative;
     /// `.olderThanIdr` refuses silently (a newer IDR already heals)
     /// and `.alreadyRepaired` is the one-attempt rule holding.
     case nackJudgedStale(frame: FrameNumber, reason: NackStaleReason)
@@ -557,6 +561,10 @@ public struct SessionCounters: Equatable, Sendable {
     public var beaconsSent = 0
     public var beaconEchoes = 0
     public var idrRequests = 0
+    /// Client 0x10 retries naming damage older than a host IDR still inside
+    /// its in-flight offer window. Encode-time is not delivery proof; after
+    /// the window a continuing episode may re-arm.
+    public var idrRequestsSupersededByKeyframe = 0
     /// Reliable CTRL messages the ARQ delivered (HS-8).
     public var arqMessages = 0
     /// Ingested ARQ bytes the endpoint refused or deduplicated.
@@ -633,10 +641,6 @@ public struct SessionCounters: Equatable, Sendable {
     public var nacksJudgedStale = 0
     /// Repair datagrams enqueued (fresh seqs on videoTail).
     public var repairDatagramsEnqueued = 0
-    /// Stale verdicts that armed the coalesced keyframe latch.
-    public var idrArmedOnStaleNack = 0
-    /// Unknown-frame NACK arms refused by the peer-driven interval cap.
-    public var unknownFrameIdrArmsThrottled = 0
     /// HS-32: explicit 0x23 repair refusals sent (stale-budget,
     /// superseded, unknown-frame — the verdicts the client can act
     /// on; FROZEN/closed and already-repaired stay silent by design).
@@ -731,7 +735,13 @@ public final class Session {
 
     private var beaconClock: SessionBeaconClock
     private var freshKeyframes = SessionFreshKeyframeBook()
+    public private(set) var freshKeyframeDemandCounts =
+        FreshKeyframeDemandCounts()
     private var repairBudget = SessionRepairBudgetBook()
+    /// Injected `now` when the channel last advanced `lastKeyframeNumber`.
+    /// Bounds how long older-named 0x10 retries may coalesce against that
+    /// offer; never treated as proof the client accepted an IRAP.
+    private var lastKeyframeOfferedAtNS: UInt64?
 
     // MARK: HS-11 lifecycle + W7 capabilities state
 
@@ -1318,6 +1328,7 @@ public final class Session {
         // is the evidence that something plausibly decoded.
         if prepared.isKeyframe {
             repairBudget.noteOpeningIdr(shardCount: shards)
+            lastKeyframeOfferedAtNS = now
         }
         lastAdmittedVideoFrameNumber = context.frameNumber
         return shards
@@ -1454,7 +1465,9 @@ public final class Session {
         if validator.takeFreshKeyframeRequest() {
             freshKeyframes.arm(.pathPromotion)
         }
-        return freshKeyframes.take()
+        let demand = freshKeyframes.take()
+        freshKeyframeDemandCounts.record(demand)
+        return demand
     }
 
     // MARK: Lifecycle inputs (HS-11)
@@ -2450,10 +2463,9 @@ public final class Session {
     ///   honor iff SRTT + retxSerialization < remainingFreezeBudget
     ///         AND the frame is newer than the last IDR;
     ///   one attempt per shard, no retransmission of retransmissions;
-    ///   otherwise the IDR alternative: stale verdicts that leave the
-    ///   client stuck (budget gone, bytes gone) arm the SAME coalesced
-    ///   keyframe latch client 0x10 requests pull — the next
-    ///   `takeFreshKeyframeRequest` poll answers with a fresh IDR.
+    ///   otherwise send an explicit refusal; the client's one-outstanding
+    ///   recovery episode requests the IDR alternative. The client's
+    ///   deadline is the fallback when that fire-and-forget refusal is lost.
     ///
     /// HS-32 grew two things. (1) Refusals the client can act on are
     /// EXPLICIT: budget-gone, older-than-IDR, and store-gone verdicts
@@ -2477,22 +2489,8 @@ public final class Session {
     ) -> [SessionEvent] {
         counters.nackEntriesReceived += 1
 
-        func stale(
-            _ reason: NackStaleReason, armIdr: Bool
-        ) -> [SessionEvent] {
+        func stale(_ reason: NackStaleReason) -> [SessionEvent] {
             counters.nacksJudgedStale += 1
-            if armIdr {
-                if freshKeyframes.armStaleNack(
-                    unknownFrame: reason == .unavailable,
-                    now: now,
-                    minimumUnknownFrameInterval:
-                        config.unknownFrameIdrArmIntervalNS
-                ) {
-                    counters.idrArmedOnStaleNack += 1
-                } else {
-                    counters.unknownFrameIdrArmsThrottled += 1
-                }
-            }
             var events: [SessionEvent] = [
                 .nackJudgedStale(frame: nack.frame, reason: reason)
             ]
@@ -2522,7 +2520,7 @@ public final class Session {
         }
 
         if lifecycleLane.videoSendsSuppressed {
-            return stale(.sendsSuppressed, armIdr: false)
+            return stale(.sendsSuppressed)
         }
         // "The frame is newer than the last IDR": a frame BEHIND the
         // last IDR is a dead reference — the IDR re-anchored the chain
@@ -2531,17 +2529,17 @@ public final class Session {
         // No IDR arm on refusal: the newer IDR IS the heal, in flight
         // or delivered (and if IT died, the client names it too).
         if let lastIdr = channel.lastKeyframeNumber, nack.frame < lastIdr {
-            return stale(.olderThanIdr, armIdr: false)
+            return stale(.olderThanIdr)
         }
         // A fall purge already armed the one replacement IDR. Treat
         // later NACKs for any purged frame as superseded: resurrecting
         // its stored shards would rebuild the stale tail, while arming
         // another IDR would turn one capacity cliff into an avalanche.
         if channel.wasPurged(nack.frame) {
-            return stale(.olderThanIdr, armIdr: false)
+            return stale(.olderThanIdr)
         }
         guard let ingestedAt = channel.repairAnchor(for: nack.frame) else {
-            return stale(.unavailable, armIdr: true)
+            return stale(.unavailable)
         }
         let repairBytes = channel.repairByteCount(
             frame: nack.frame, shardIndices: nack.missingShards
@@ -2552,7 +2550,7 @@ public final class Session {
             // would double-heal; the client's own coalescing
             // requester escalates if the frame stays incomplete
             // (rule 4's client half).
-            return stale(.alreadyRepaired, armIdr: false)
+            return stale(.alreadyRepaired)
         }
         // HS-32: the opening-IDR exemption. While nothing has
         // plausibly reached the client's glass, an ask naming the
@@ -2584,7 +2582,7 @@ public final class Session {
             guard elapsedNS < budgetNS,
                   let srttMicros = estimator.srttMicroseconds
             else {
-                return stale(.budgetExceeded, armIdr: true)
+                return stale(.budgetExceeded)
             }
             let remainingNS = budgetNS - elapsedNS
             let rttMicros = min(
@@ -2597,7 +2595,7 @@ public final class Session {
                     / Double(channel.rateBitsPerSecond) * 1e9
             )
             guard rttNS + serializationNS < remainingNS else {
-                return stale(.budgetExceeded, armIdr: true)
+                return stale(.budgetExceeded)
             }
         }
 
@@ -2612,7 +2610,7 @@ public final class Session {
             return [.sendFailed("repair frame \(nack.frame.rawValue): \(error)")]
         }
         guard enqueued > 0 else {
-            return stale(.unavailable, armIdr: true)
+            return stale(.unavailable)
         }
         if openingExempt {
             repairBudget.commitOpeningExemptRepair(bytes: repairBytes)
@@ -2996,8 +2994,23 @@ public final class Session {
                 counters.dropped += 1
                 return [.dropped(.malformedCtrl)]
             }
-            freshKeyframes.arm(.clientRequest)
             counters.idrRequests += 1
+            // The requester retries one recovery episode every 500 ms until
+            // its renderer accepts an IRAP. Encode-time
+            // `lastKeyframeNumber` is an offer, not delivery proof: suppress
+            // older-named retries only while that offer is still inside the
+            // in-flight window. A wholly lost recovery IDR on a static
+            // desktop keeps naming the pre-IDR damage forever; after the
+            // window the episode must be able to re-arm. Damage at/after
+            // the offered anchor remains eligible immediately.
+            if let lastIdr = channel.lastKeyframeNumber,
+               request.frame < lastIdr,
+               let offeredAt = lastKeyframeOfferedAtNS,
+               now &- offeredAt < config.clientIdrOfferInFlightNS {
+                counters.idrRequestsSupersededByKeyframe += 1
+            } else {
+                freshKeyframes.arm(.clientRequest)
+            }
             return [.idrRequested(request)]
         default:
             counters.dropped += 1

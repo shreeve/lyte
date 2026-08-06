@@ -94,7 +94,13 @@ LOG="$RUN_DIR/benchmark.log"
 LYTE_BENCHMARK_HOST="$HOST" "$ROOT/Scripts/benchmark-app.sh" \
   --no-build --out "$RUN_DIR" motion >"$LOG" 2>&1 || true
 shopt -s nullglob
-artifacts=("$RUN_DIR"/motion-*.jsonl)
+artifacts=()
+for candidate in "$RUN_DIR"/motion-*.jsonl; do
+  case "$candidate" in
+    *-client-handshake.jsonl|*-motion-source.jsonl) continue ;;
+    *) artifacts+=("$candidate") ;;
+  esac
+done
 shopt -u nullglob
 if (( ${#artifacts[@]} != 1 )); then
   echo "the impaired benchmark leg produced ${#artifacts[@]} artifacts; expected exactly one — log tail:" >&2

@@ -123,7 +123,13 @@ final class FallPurgeGateTests: XCTestCase {
             config: SessionConfig(
                 crypto: .testPassthrough,
                 rateBitsPerSecond: 2_000_000,
-                beaconIntervalNS: 1 << 62
+                beaconIntervalNS: 1 << 62,
+                // This gate needs room below its deliberately tiny
+                // 2 Mbps ceiling to exercise a fall purge. Production's
+                // 2 Mbps floor is tested by RateEstimatorGateTests.
+                estimator: RateEstimatorConfig(
+                    ceilingBitsPerSecond: 2_000_000,
+                    floorBitsPerSecond: 500_000)
             ),
             clientTuple: FourTuple(
                 localAddress: "10.0.0.1", localPort: 41000,

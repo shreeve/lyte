@@ -398,6 +398,9 @@ final class SessionWire {
 
     var counters: VideoChannelCounters { session.videoCounters }
     var sessionCounters: SessionCounters { session.counters }
+    var freshKeyframeDemandCounts: FreshKeyframeDemandCounts {
+        session.freshKeyframeDemandCounts
+    }
     /// P-1: the image lane's books (share/apply/refuse verdicts).
     var clipboardImageCounters: ClipboardImageChannelCounters {
         session.clipboardImageCounters
