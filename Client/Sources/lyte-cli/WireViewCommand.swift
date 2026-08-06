@@ -208,10 +208,19 @@ struct WireView: AsyncParsableCommand {
         sessionConfig.core.capabilities = sessionConfig.core.capabilities
             .declaringChroma(tier: Self.parseChroma(chroma) ?? .good)
         let pasteboardBox = LockedCell<PasteboardSync?>(nil)
+        // Close the coalesced IDR episode when an IRAP actually reaches the
+        // diagnostic renderer — same seam the app's VideoRendererHandoff
+        // owns. Without it, mild loss left IdrRequester retrying forever
+        // and the host re-armed static-screen IDRs on every 500 ms tick.
+        let sessionBox = LockedCell<LyteUdpSession?>(nil)
+        let videoSink = AVSampleBufferRendererVideoSink(renderer: renderer) {
+            [sessionBox] frame in
+            sessionBox.value?.noteVideoIrapEnqueued(frame: frame)
+        }
         let session = LyteUdpSession(
             crypto: crypto,
             config: sessionConfig,
-            videoSink: AVSampleBufferRendererVideoSink(renderer: renderer),
+            videoSink: videoSink,
             onEvent: { event in
                 switch event {
                 case .capabilitiesAgreed(let agreed):
@@ -281,6 +290,7 @@ struct WireView: AsyncParsableCommand {
                     print("wire-view: \(note)")
                 }
             })
+        sessionBox.value = session
 
         print("wire-view: Noise IK handshake → \(host):\(hostPort == 0 ? port : hostPort) …")
         do {

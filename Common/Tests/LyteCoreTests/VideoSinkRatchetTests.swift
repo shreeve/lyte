@@ -31,8 +31,18 @@ final class VideoSinkRatchetTests: XCTestCase {
     func testProductionImplementationsRemainWired() throws {
         let app = try source("Client/Sources/Lyte/ConnectionModel.swift")
         let cli = try source("Client/Sources/lyte-cli/WireViewCommand.swift")
+        let sink = try source(
+            "Client/Sources/LyteTransport/VideoSink.swift")
         XCTAssertTrue(app.contains("VideoRendererHandoff: VideoSink"))
+        XCTAssertTrue(app.contains("noteVideoIrapEnqueued"))
         XCTAssertTrue(cli.contains("AVSampleBufferRendererVideoSink"))
+        // Diagnostic shell must close the IDR episode on IRAP enqueue —
+        // omitting this re-armed static-screen IDRs under mild loss.
+        XCTAssertTrue(cli.contains("noteVideoIrapEnqueued"))
+        XCTAssertTrue(sink.contains("onIrapEnqueued"))
+        XCTAssertTrue(
+            sink.contains("onIrapEnqueued: @escaping @Sendable (FrameNumber) -> Void"),
+            "diagnostic sink must require the IRAP-close callback")
     }
 
     func testSessionPolicyStaysNativeMediaTypeFree() throws {
