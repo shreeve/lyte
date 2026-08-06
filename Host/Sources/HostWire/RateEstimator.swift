@@ -83,13 +83,18 @@
 //       evidence HS-17 wired in) → multiplicative fall ×0.85, same
 //       500 ms limiter — this band is NOT held: loss FEC could not
 //       absorb is the pillar's downshift-and-step trigger;
-//     - clean + fresh delivery evidence → upshift ≤10%/s toward the
-//       negotiated ceiling, held for 1 s after any downshift so the
-//       queue can drain. The standing rate is deliberately allowed
-//       above btlRate×0.8: paced sends at rate R self-limit the
-//       measurement to ≈R, so a standing 0.8×btlRate cap would spiral
-//       every clean path to the floor. The 0.8 factor applies where
-//       the pillar needs it — at the overuse fall.
+//     - fresh delivery evidence with pre-FEC loss below the clean
+//       band (< 2%) and post-FEC at-or-below rung 3 (≤ 2%) → upshift
+//       ≤10%/s toward the probe ceiling, held for 1 s after any
+//       downshift so the queue can drain. The stricter post-FEC clean
+//       column (< 0.5%) still owns lastGoodRate and regime step-down —
+//       a mild residual NACK echo must not permanently pin the climb
+//       after a fall (the ~3 Mbps settle under 1% netem). The standing
+//       rate is deliberately allowed above btlRate×0.8: paced sends at
+//       rate R self-limit the measurement to ≈R, so a standing
+//       0.8×btlRate cap would spiral every clean path to the floor. The
+//       0.8 factor applies where the pillar needs it — at the overuse
+//       fall.
 //     THE SELF-REFERENCE GATE (HS-22c) lived here until HS-28
 //     retired it: with the pacer holding standing backlog, a
 //     multi-quantum frame drains as a full train paced at exactly R —
@@ -115,9 +120,14 @@
 //     fall-limiter window — so the fall the gate used to refuse is
 //     simply never corroborated. `stallHolds` keeps the vocabulary in
 //     the books for withheld beats with fresh drain evidence.
-//     Floor 500 kbps (a paced IDR within 2 s even on a terrible path),
-//     ceiling = the negotiated session rate (W7 carries no bitrate key
-//     in v1, so the session config IS the negotiated ceiling).
+//     Floor 2 Mbps: the smallest rounded posture that can pay the
+//     820 kbps protected-traffic reserve and one worst-column 1+2 FEC
+//     flight inside the 25 ms burst budget. The old 500 kbps floor was
+//     below its own higher-class reserve; it therefore collapsed the
+//     encoder to a one-shard ceiling while making even that protected
+//     shard impossible to pace. Ceiling = the negotiated session rate
+//     (W7 carries no bitrate key in v1, so the session config IS the
+//     negotiated ceiling).
 //   • THE CAPACITY BELIEF (HS-28 — the estimator-honesty reformulation):
 //     a paced sender can never measure more than it sends — every
 //     delivery sample is censored from above by our own rate — and the
@@ -206,7 +216,8 @@ public struct RateEstimatorConfig: Sendable {
     /// The negotiated session ceiling, bits/s (the W7-era session rate;
     /// no capability key carries bitrate in v1).
     public var ceilingBitsPerSecond: Int
-    /// Resiliency §2.2: 500 kbps — enough for a paced IDR within 2 s.
+    /// Operational floor: 2 Mbps pays the protected-traffic reserve plus
+    /// the lossy ladder's minimum 1-data + 2-parity flight in 25 ms.
     public var floorBitsPerSecond: Int
     /// Where the standing rate starts. Nil = the ceiling (the honest
     /// pre-evidence default the pacer has always used).
@@ -355,7 +366,7 @@ public struct RateEstimatorConfig: Sendable {
 
     public init(
         ceilingBitsPerSecond: Int,
-        floorBitsPerSecond: Int = 500_000,
+        floorBitsPerSecond: Int = 2_000_000,
         initialRateBitsPerSecond: Int? = nil,
         sampleWindowNS: UInt64 = 10_000_000_000,
         trainGapNS: UInt64 = 2_000_000,
@@ -481,6 +492,9 @@ public struct RateEstimatorStats: Equatable, Sendable {
     /// HS-30: rises held by the probe cadence — the rate was back in
     /// the band where the last probe FAILED, inside the cadence window.
     public var upshiftsCadenceHeld = 0
+    /// Evidence climbs admitted while post-FEC sat between the clean
+    /// column and rung 3 — residual NACK echo that must not pin the rate.
+    public var upshiftsUnderMildPostFec = 0
     public var overuseVerdicts = 0
     /// HS-22c: overuse falls the self-reference gate refused — the
     /// evidence measured our own pacing and nothing corroborated a
@@ -943,9 +957,13 @@ public final class RateEstimator {
     }
 
     /// The HS-6 frame ceiling at the LIVE estimate: R×B/8 −
-    /// higherClassBytes(B), B = min(2/fps, 25 ms). Never below one
-    /// shard — a ceiling of zero would forbid streaming entirely, and
-    /// the floor rate exists precisely so a paced IDR stays possible.
+    /// higherClassBytes(B), B = min(2/fps, 25 ms), converted from wire
+    /// bytes back to encoded bytes through the CURRENT FEC ladder.
+    ///
+    /// Charging parity here is load-bearing: the encoder controls source
+    /// bytes, but the pacer drains data + parity datagrams. Treating those
+    /// units as equal overstated the usable frame budget precisely when a
+    /// harsh path stepped into the higher-overhead lossy regime.
     public func frameByteCeiling(fps: Int) -> Int {
         let budgetNS = Self.frameBudgetNS(fps: fps)
         let budgetSeconds = Double(budgetNS) / 1e9
@@ -954,7 +972,35 @@ public final class RateEstimator {
             config.audioReserveBitsPerSecond
                 + config.controlReserveBitsPerSecond
         ) * budgetSeconds / 8
-        return max(Int(gross - reserves), WireBudget.maxDatagramByteCount)
+        let availableWireBytes = max(Int(gross - reserves), 0)
+        let totalShardBudget = availableWireBytes
+            / WireBudget.maxDatagramByteCount
+
+        // Production video always carries the connection-id TLV, and may
+        // carry lastInputSeq. Budget for both so a frame admitted at this
+        // ceiling cannot gain a surprise data shard at packetization.
+        let extensionBytes = 1 + 2 + ConnectionId.byteCount
+            + LastInputSeqTlv.encodedByteCount
+        let payloadPerDataShard = WireBudget.maxWirePayloadByteCount
+            - WireBudget.aeadTagByteCount - extensionBytes
+
+        for dataShards in stride(
+            from: FecGeometryTable.maxDataShards(fecRegime),
+            through: 1,
+            by: -1
+        ) {
+            guard let parity = try? FecGeometryTable.parityShards(
+                forDataShards: dataShards, regime: fecRegime
+            ) else { continue }
+            if dataShards + parity <= totalShardBudget {
+                return dataShards * payloadPerDataShard
+            }
+        }
+
+        // Explicit custom floors below the production default remain
+        // representable for deterministic estimator tests. Production's
+        // 2 Mbps floor always fits at least one protected flight.
+        return payloadPerDataShard
     }
 
     // MARK: - Internals
@@ -1599,27 +1645,33 @@ public final class RateEstimator {
             return .postFecLoss
         }
 
-        // Clean: the path is healthy at this rate.
+        // Fully clean: the path is healthy at this rate. The stricter
+        // post-FEC clean column owns lastGoodRate; mild residual NACK
+        // echo may still climb (below) without rewriting the WAKE anchor.
         if !overuse, lossFraction < config.lossCleanThreshold,
            postFecLossFraction <= config.postFecCleanThreshold {
             lastGoodRate = rateBitsPerSecond
         }
 
-        // Rise only on evidence: fresh delivery samples, loss below
-        // the CLEAN band (2–10% holds — FEC's band), no active
-        // hold-down, headroom to the PROBE ceiling — the configured
-        // ceiling damped by the capacity belief (HS-29). The climb may
-        // probe above the belief (honest samples above it raise it, so
-        // the belief walks up geometrically when the air improves); it
-        // may not keep slamming a wall the belief already located.
+        // Rise only on evidence: fresh delivery samples, pre-FEC loss
+        // below the CLEAN band (2–10% holds — FEC's band), post-FEC at
+        // or below rung 3 (the fall threshold — residual echo between
+        // 0.5% and 2% must not pin the climb), no active hold-down,
+        // headroom to the PROBE ceiling — the configured ceiling
+        // damped by the capacity belief (HS-29). The climb may probe
+        // above the belief (honest samples above it raise it, so the
+        // belief walks up geometrically when the air improves); it may
+        // not keep slamming a wall the belief already located.
         let probeCeiling = beliefBits.map {
             min(config.ceilingBitsPerSecond,
                 max(config.floorBitsPerSecond,
                     Int($0 * config.probeHeadroomFactor)))
         } ?? config.ceilingBitsPerSecond
+        let mildPostFec = postFecLossFraction > config.postFecCleanThreshold
+            && postFecLossFraction <= config.postFecDownshiftThreshold
         guard rateBitsPerSecond < probeCeiling,
               !overuse, lossFraction < config.lossCleanThreshold,
-              postFecLossFraction <= config.postFecCleanThreshold,
+              postFecLossFraction <= config.postFecDownshiftThreshold,
               let deliveredAt = lastDeliveryAt,
               now &- deliveredAt <= config.upshiftEvidenceWindowNS,
               lastDownshiftAt.map({
@@ -1649,6 +1701,7 @@ public final class RateEstimator {
         rateBitsPerSecond = clamp(min(wanted, probeCeiling))
         lastAdjustAt = now
         stats.upshifts += 1
+        if mildPostFec { stats.upshiftsUnderMildPostFec += 1 }
         return .evidence
     }
 

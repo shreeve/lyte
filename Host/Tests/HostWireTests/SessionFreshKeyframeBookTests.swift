@@ -36,14 +36,13 @@ final class SessionFreshKeyframeBookTests: XCTestCase {
         var book = SessionFreshKeyframeBook()
         book.arm(.fallPurge)
         book.arm([.machineRecovery, .pathPromotion, .clientRequest])
-        book.arm([.staleNackArm, .unprotectableDrop, .machineWake])
+        book.arm([.unprotectableDrop, .machineWake])
 
         XCTAssertEqual(book.pending, [
             .pathPromotion,
             .clientRequest,
             .machineWake,
             .machineRecovery,
-            .staleNackArm,
             .unprotectableDrop,
             .fallPurge,
         ])
@@ -52,7 +51,6 @@ final class SessionFreshKeyframeBookTests: XCTestCase {
             "client-request",
             "wake",
             "recovery",
-            "stale-nack",
             "unprotectable",
             "fall-purge",
         ])
@@ -71,71 +69,19 @@ final class SessionFreshKeyframeBookTests: XCTestCase {
         XCTAssertTrue(book.take().isEmpty)
     }
 
-    func testUnknownFramePressureUsesTheExactIntervalBoundary() {
-        var book = SessionFreshKeyframeBook()
+    func testDemandTelemetryCountsFramesAndEveryCoalescedCause() {
+        var counts = FreshKeyframeDemandCounts()
+        counts.record([])
+        counts.record([.clientRequest, .unprotectableDrop])
+        counts.record([.machineRecovery, .fallPurge])
 
-        XCTAssertTrue(book.armStaleNack(
-            unknownFrame: true, now: 10, minimumUnknownFrameInterval: 100
-        ))
-        XCTAssertFalse(book.armStaleNack(
-            unknownFrame: true, now: 109, minimumUnknownFrameInterval: 100
-        ))
-        XCTAssertTrue(book.armStaleNack(
-            unknownFrame: true, now: 110, minimumUnknownFrameInterval: 100
-        ))
-        XCTAssertEqual(book.pending, [.staleNackArm])
+        XCTAssertEqual(counts.demands, 2)
+        XCTAssertEqual(counts.clientRequests, 1)
+        XCTAssertEqual(counts.machineRecoveries, 1)
+        XCTAssertEqual(counts.fallPurges, 1)
+        XCTAssertEqual(counts.pathPromotions, 0)
+        XCTAssertEqual(counts.machineWakes, 0)
+        XCTAssertEqual(counts.unprotectableDrops, 1)
     }
 
-    func testTakingDemandDoesNotResetUnknownFramePressureWindow() {
-        var book = SessionFreshKeyframeBook()
-        XCTAssertTrue(book.armStaleNack(
-            unknownFrame: true, now: 1_000,
-            minimumUnknownFrameInterval: 500
-        ))
-        XCTAssertEqual(book.take(), [.staleNackArm])
-        XCTAssertFalse(book.armStaleNack(
-            unknownFrame: true, now: 1_499,
-            minimumUnknownFrameInterval: 500
-        ))
-        XCTAssertTrue(book.pending.isEmpty)
-    }
-
-    func testUnknownFramePressureMeasuresAcrossClockWrap() {
-        var book = SessionFreshKeyframeBook()
-        XCTAssertTrue(book.armStaleNack(
-            unknownFrame: true, now: .max - 50,
-            minimumUnknownFrameInterval: 100
-        ))
-        XCTAssertFalse(book.armStaleNack(
-            unknownFrame: true, now: 48,
-            minimumUnknownFrameInterval: 100
-        ))
-        XCTAssertTrue(book.armStaleNack(
-            unknownFrame: true, now: 49,
-            minimumUnknownFrameInterval: 100
-        ))
-    }
-
-    func testKnownStaleNacksRemainUnthrottledAndDoNotMoveUnknownWindow() {
-        var book = SessionFreshKeyframeBook()
-        XCTAssertTrue(book.armStaleNack(
-            unknownFrame: true, now: 100, minimumUnknownFrameInterval: 1_000
-        ))
-
-        for now in 101...110 {
-            XCTAssertTrue(book.armStaleNack(
-                unknownFrame: false,
-                now: UInt64(now),
-                minimumUnknownFrameInterval: 1_000
-            ))
-        }
-        XCTAssertFalse(book.armStaleNack(
-            unknownFrame: true, now: 1_099,
-            minimumUnknownFrameInterval: 1_000
-        ))
-        XCTAssertTrue(book.armStaleNack(
-            unknownFrame: true, now: 1_100,
-            minimumUnknownFrameInterval: 1_000
-        ))
-    }
 }

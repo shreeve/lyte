@@ -6,6 +6,13 @@ belong in `AGENTS.md` or `docs/`; completed work belongs in Git history.
 
 ## Verification debt
 
+- **Harsh-path live re-commission**
+  (`docs/20260806-115922-harsh-path-control-plane.md`): after the
+  uncommitted HostWire recovery patch deploys, run moderate netem and a
+  delay-burst leg on a fresh 41xxx test host (never 41151); confirm climb
+  leaves the old ~3 Mbps settle, IDR stays near the prior 2-IDR result,
+  then restore qdisc/binary. Optionally A/B HS-30’s 10 s probe cadence
+  once that climb is live.
 - **VideoAssembler threshold invariant**
   (`Wire/Sources/LyteWire/Video/VideoAssembler.swift`):
   `sweepLossPresumption` assumes

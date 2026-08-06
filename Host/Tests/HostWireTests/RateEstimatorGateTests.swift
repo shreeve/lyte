@@ -13,7 +13,7 @@ import LyteWireTestKit
 //     the send ledger (resiliency §2.2's packet-train reading), and
 //     short trains are weighted down, not trusted;
 //   • the rate falls fast on loss (multiplicative, rate-limited to one
-//     downshift per 500 ms, never below the 500 kbps floor) and on
+//     downshift per 500 ms, never below the 2 Mbps operational floor) and on
 //     queuing-delay inflation (anchored to the measured delivery rate),
 //     and rises only on evidence (fresh delivery samples), ≤10%/s,
 //     never above the negotiated ceiling;
@@ -24,8 +24,8 @@ import LyteWireTestKit
 //     min(btlRate, lastGoodRate), RECOVERY at max(floor, ½ × stale
 //     estimate), applied to the shared pacer the moment the machine
 //     demands them;
-//   • frameByteCeiling tracks the LIVE estimate (the HS-6 math:
-//     R×B/8 − higherClassBytes, B = min(2/fps, 25 ms));
+//   • frameByteCeiling tracks the LIVE estimate and current FEC regime
+//     (the HS-6 wire budget converted back to encoded source bytes);
 //   • THE CADENCE GATE, HS-15's R-G8 shape under a rate crash: a loss
 //     burst crashes the send rate mid-stream and audio inter-send
 //     stays 5 ms ± 2 ms at p99 throughout — rate changes re-cap
@@ -275,6 +275,7 @@ final class RateEstimatorGateTests: XCTestCase {
 
     func testMixedAudioCadenceCannotManufactureVideoCapacity() {
         let estimator = makeEstimator {
+            $0.floorBitsPerSecond = 500_000
             $0.initialRateBitsPerSecond = 500_000
         }
         // Sparse video contributes only two packets: no capacity train.
@@ -309,6 +310,7 @@ final class RateEstimatorGateTests: XCTestCase {
 
     func testSeparateSixtyFpsVideoFramesNeverChainAtTheFloor() {
         let estimator = makeEstimator {
+            $0.floorBitsPerSecond = 500_000
             $0.initialRateBitsPerSecond = 500_000
         }
         var samples: [FeedbackReport.Dispersion.Sample] = []
@@ -336,6 +338,7 @@ final class RateEstimatorGateTests: XCTestCase {
 
     func testSameFrameLowRateShardsRemainOneTrain() {
         let estimator = makeEstimator {
+            $0.floorBitsPerSecond = 500_000
             $0.initialRateBitsPerSecond = 500_000
         }
         let samples = train(
@@ -580,7 +583,11 @@ final class RateEstimatorGateTests: XCTestCase {
     /// rate can never earn its way back up. The gap must scale with
     /// the standing rate so paced-at-R spacing still reads as a train.
     func testClimbsBackFromTheFloorOnPacedEvidence() {
-        let estimator = makeEstimator()
+        let estimator = makeEstimator {
+            // Retain the historical low-rate train-classification pin
+            // below production's now-viable operational floor.
+            $0.floorBitsPerSecond = 500_000
+        }
         // Crash to the floor.
         for _ in 0..<8 {
             _ = estimator.applyIdrPacing(.halfStaleEstimate, now: 0)
@@ -617,7 +624,9 @@ final class RateEstimatorGateTests: XCTestCase {
     }
 
     func testRateNeverLeavesTheFloorCeilingBand() {
-        let estimator = makeEstimator()
+        let estimator = makeEstimator {
+            $0.floorBitsPerSecond = 500_000
+        }
         var now: UInt64 = 0
         var clientMicros: UInt64 = 0
         var received: UInt32 = 100
@@ -2242,6 +2251,159 @@ final class RateEstimatorGateTests: XCTestCase {
             + "\(verdict.newRateBitsPerSecond! / 1_000) kbps")
     }
 
+    /// Mild residual post-FEC (clean column < x ≤ rung 3) must not pin
+    /// the climb after a fall. The ~3 Mbps settle under 1% netem was
+    /// this seam: residual NACK echo blocked every evidence rise while
+    /// never itself warranting a rung-3 fall. lastGoodRate and regime
+    /// step-down stay on the stricter clean column.
+    func testMildPostFecResidualDoesNotPinTheClimb() throws {
+        let startRate = 3_000_000
+        let estimator = makeEstimator {
+            $0.initialRateBitsPerSecond = startRate
+        }
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        var received: UInt32 = 0
+        var frame: UInt32 = 100
+
+        // Prime totals + paced evidence at the depressed standing rate.
+        // A little probe-headroom climb during the clean prime is fine;
+        // the residual phase must keep climbing from that settle point.
+        for _ in 0..<12 {
+            received += 1_200
+            _ = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: Double(startRate) / 1e6,
+                extraDelayMicros: 0,
+                backlogBytes: 0,
+                channels: lossLedger(received: received, missing: 0)
+            )
+        }
+        let settlePoint = estimator.rateBitsPerSecond
+        XCTAssertLessThan(settlePoint, startRate + 250_000,
+            "prime must stay near the depressed settle, not race the ceiling")
+
+        // Continuous ~1% post-FEC residual with clean pre-FEC ledgers:
+        // 12 fresh NACK shards against ~1,200 attempted per beat.
+        var climbs = 0
+        let mildBefore = estimator.stats.upshiftsUnderMildPostFec
+        for _ in 0..<160 {
+            received += 1_200
+            let residual = try FeedbackReport.NackEntry(
+                frame: FrameNumber(rawValue: frame),
+                missingShards: Array(0..<12)
+            )
+            frame &+= 1
+            let before = estimator.rateBitsPerSecond
+            let verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: Double(before) / 1e6,
+                extraDelayMicros: 0,
+                backlogBytes: 0,
+                channels: lossLedger(received: received, missing: 0),
+                nacks: [residual]
+            )
+            XCTAssertNotEqual(verdict.change, .postFecLoss,
+                "sub-rung-3 residual must not itself fall the rate")
+            if let rate = verdict.newRateBitsPerSecond, rate > before {
+                climbs += 1
+            }
+        }
+
+        XCTAssertGreaterThan(climbs, 0,
+            "mild post-FEC residual must admit evidence climbs")
+        XCTAssertGreaterThan(estimator.rateBitsPerSecond, settlePoint,
+            "the climb must leave the depressed settle point")
+        XCTAssertGreaterThan(
+            estimator.stats.upshiftsUnderMildPostFec, mildBefore,
+            "the mild-residual climb book must fire")
+        XCTAssertLessThan(
+            estimator.stats.postFecDownshifts, 1,
+            "residual below rung 3 must not mint rung-3 falls")
+
+        print("mild post-FEC climb: \(settlePoint / 1_000) → "
+            + "\(estimator.rateBitsPerSecond / 1_000) kbps after "
+            + "\(climbs) rises "
+            + "(\(estimator.stats.upshiftsUnderMildPostFec - mildBefore) "
+            + "mild-residual)")
+    }
+
+    /// Rung-3 post-FEC still falls and blocks climbs — the mild-residual
+    /// climb gate must not open past the downshift threshold.
+    func testRungThreePostFecStillBlocksTheClimb() throws {
+        let estimator = makeEstimator {
+            $0.initialRateBitsPerSecond = 6_000_000
+        }
+        var now: UInt64 = 0
+        var clientMicros: UInt64 = 0
+        var seq = 0
+        var received: UInt32 = 0
+        var frame: UInt32 = 200
+
+        for _ in 0..<8 {
+            received += 400
+            _ = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: 6, extraDelayMicros: 0,
+                backlogBytes: 0,
+                channels: lossLedger(received: received, missing: 0)
+            )
+        }
+        let beforeFall = estimator.rateBitsPerSecond
+
+        // ~5% post-FEC: well past rung 3 against the rolling attempts.
+        received += 400
+        let heavy = try (0..<4).map {
+            try FeedbackReport.NackEntry(
+                frame: FrameNumber(rawValue: frame &+ UInt32($0)),
+                missingShards: Array(0..<20)
+            )
+        }
+        let fall = selfRefBeat(
+            &now, &clientMicros, &seq, on: estimator,
+            bottleneckMbps: 6, extraDelayMicros: 0,
+            backlogBytes: 0,
+            channels: lossLedger(received: received, missing: 0),
+            nacks: heavy
+        )
+        XCTAssertEqual(fall.change, .postFecLoss)
+        XCTAssertLessThan(estimator.rateBitsPerSecond, beforeFall)
+
+        let rateAfterFall = estimator.rateBitsPerSecond
+        var climbs = 0
+        for _ in 0..<40 {
+            received += 400
+            let keepHeavy = try FeedbackReport.NackEntry(
+                frame: FrameNumber(rawValue: frame),
+                missingShards: Array(0..<20)
+            )
+            frame &+= 1
+            let before = estimator.rateBitsPerSecond
+            let verdict = selfRefBeat(
+                &now, &clientMicros, &seq, on: estimator,
+                bottleneckMbps: Double(max(before, 2_000_000)) / 1e6,
+                extraDelayMicros: 0,
+                backlogBytes: 0,
+                channels: lossLedger(received: received, missing: 0),
+                nacks: [keepHeavy]
+            )
+            if let rate = verdict.newRateBitsPerSecond, rate > before {
+                climbs += 1
+            }
+        }
+        XCTAssertEqual(climbs, 0,
+            "rung-3 post-FEC must keep blocking evidence climbs")
+        XCTAssertLessThanOrEqual(
+            estimator.rateBitsPerSecond, rateAfterFall,
+            "sustained rung-3 evidence must not raise the rate")
+        XCTAssertEqual(estimator.stats.upshiftsUnderMildPostFec, 0)
+
+        print("rung-3 climb block: fell to "
+            + "\(rateAfterFall / 1_000) kbps; 0 climbs under sustained "
+            + "post-FEC past the downshift bar")
+    }
+
     // MARK: Leg 4 — the machine's numbers
 
     func testIdrPacingNumbers() {
@@ -2343,12 +2505,13 @@ final class RateEstimatorGateTests: XCTestCase {
 
     func testFrameByteCeilingTracksTheLiveEstimate() {
         let estimator = makeEstimator()
-        // At the 20 Mbps ceiling, 60 fps: B = min(2/60 s, 25 ms) =
-        // 25 ms → 62,500 B gross − (820 kbps of audio + control
-        // reserves × 25 ms / 8) ≈ 2,562 B → the HS-6 figure.
+        // At 20 Mbps and 60 fps, the 25 ms budget leaves 59,937 wire
+        // bytes after protected traffic: 52 complete datagrams. Clean
+        // FEC fits k=47 + m=5, each carrying 1,095 encoded bytes under
+        // the production connection-id + last-input overhead.
         let atCeiling = estimator.frameByteCeiling(fps: 60)
-        XCTAssertEqual(atCeiling, 59_937,
-                       "the HS-6 derivation at the live rate")
+        XCTAssertEqual(atCeiling, 47 * 1_095,
+                       "the ceiling charges clean FEC wire overhead")
         // 30 fps: B stays 25 ms (min(66 ms, 25 ms)); 120 fps: B =
         // 16.6 ms.
         XCTAssertEqual(estimator.frameByteCeiling(fps: 30), atCeiling)
@@ -2357,22 +2520,67 @@ final class RateEstimatorGateTests: XCTestCase {
         // The ceiling tracks the estimate down…
         _ = estimator.applyIdrPacing(.halfStaleEstimate, now: Self.ms)
         let atHalf = estimator.frameByteCeiling(fps: 60)
-        XCTAssertEqual(
-            Double(atHalf),
-            Double(10_000_000) * 0.025 / 8 - 820_000.0 * 0.025 / 8,
-            accuracy: 2
-        )
-        // …and never below one datagram, even at the floor.
+        XCTAssertEqual(atHalf, 20 * 1_095,
+            "24 wire shards fit k=20 + m=3; k=21 + m=4 does not")
+        // …and reaches the production floor, which can still pace a
+        // complete protected frame inside the same budget.
         for _ in 0..<8 {
             _ = estimator.applyIdrPacing(
                 .halfStaleEstimate, now: 2 * Self.ms
             )
         }
-        XCTAssertEqual(estimator.rateBitsPerSecond, 500_000)
+        XCTAssertEqual(estimator.rateBitsPerSecond, 2_000_000)
+        XCTAssertEqual(estimator.frameByteCeiling(fps: 60), 2 * 1_095,
+            "the clean floor fits k=2 + m=1 in three wire datagrams")
+    }
+
+    func testProductionFloorPaysProtectedTrafficAndWorstFecFlight() {
+        let config = RateEstimatorConfig(
+            ceilingBitsPerSecond: Self.ceiling)
+        XCTAssertEqual(config.floorBitsPerSecond, 2_000_000)
+
+        let budgetSeconds = Double(
+            RateEstimator.frameBudgetNS(fps: 60)) / 1e9
+        let grossWireBytes = Int(
+            Double(config.floorBitsPerSecond) * budgetSeconds / 8)
+        let protectedBytes = Int(Double(
+            config.audioReserveBitsPerSecond
+                + config.controlReserveBitsPerSecond
+        ) * budgetSeconds / 8)
+        let worstMinimumFlightBytes =
+            3 * WireBudget.maxDatagramByteCount // k=1 + lossy m=2
+
         XCTAssertGreaterThanOrEqual(
-            estimator.frameByteCeiling(fps: 60),
-            WireBudget.maxDatagramByteCount
-        )
+            grossWireBytes - protectedBytes,
+            worstMinimumFlightBytes,
+            "the operational floor must not command an impossible recovery")
+    }
+
+    func testLossyFecStepTightensTheEncodedCeilingAtTheFloor() throws {
+        let estimator = makeEstimator {
+            $0.initialRateBitsPerSecond = 2_000_000
+        }
+        XCTAssertEqual(estimator.frameByteCeiling(fps: 60), 2 * 1_095,
+            "clean k=2 + m=1 consumes the three-shard wire allowance")
+
+        _ = estimator.ingest(
+            report(
+                samples: [], clientMicros: 1_000,
+                channels: lossLedger(received: 1_000, missing: 0)),
+            now: Self.ms, inRecovery: false)
+        let nack = try FeedbackReport.NackEntry(
+            frame: FrameNumber(rawValue: 7),
+            missingShards: [0, 1, 2])
+        let verdict = estimator.ingest(
+            report(
+                samples: [], clientMicros: 2_000,
+                channels: lossLedger(received: 1_100, missing: 0),
+                nacks: [nack]),
+            now: 2 * Self.ms, inRecovery: false)
+
+        XCTAssertEqual(verdict.fecRegime, .lossy)
+        XCTAssertEqual(estimator.frameByteCeiling(fps: 60), 1_095,
+            "lossy k=1 + m=2 consumes the same three-shard allowance")
     }
 
     // MARK: Leg 5 — RECOVERY verdicts through the whole session

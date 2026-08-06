@@ -265,7 +265,7 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertTrue(box.tail().allSatisfy(\.isKeyframe))
     }
 
-    func testNackPastFreezeBudgetArmsTheCoalescedIdrLatch() throws {
+    func testNackPastFreezeBudgetDelegatesRecoveryToClientEpisode() throws {
         let box = Box()
         // Pin the budget via the HS-32 override: this leg
         // tests the refusal behavior, not the derivation (which has
@@ -299,11 +299,9 @@ final class NackRepairGateTests: XCTestCase {
         drain(session, box: box, until: now + 5 * Self.ms, now: &now)
         XCTAssertTrue(box.tail().isEmpty,
                       "a repair that cannot beat the freeze is not sent")
-        XCTAssertTrue(session.takeFreshKeyframeRequest(),
-                      "the stale verdict answers with the IDR alternative")
         XCTAssertFalse(session.takeFreshKeyframeRequest(),
-                       "the latch is coalesced: one demand, one IDR")
-        XCTAssertEqual(session.counters.idrArmedOnStaleNack, 1)
+            "the refusal delegates recovery to the client episode owner")
+        XCTAssertEqual(session.counters.repairRefusalsSent, 1)
     }
 
     func testNackWithoutRttEvidenceIsRefused() throws {
@@ -328,10 +326,11 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertTrue(events.contains(.nackJudgedStale(
             frame: FrameNumber(rawValue: 0), reason: .budgetExceeded
         )), "no RTT evidence = no honest promise the repair lands")
-        XCTAssertTrue(session.takeFreshKeyframeRequest())
+        XCTAssertFalse(session.takeFreshKeyframeRequest(),
+            "a refusal, or the client's deadline if it is lost, owns recovery")
     }
 
-    func testNackForEvictedFrameIsUnavailableAndArmsIdr() throws {
+    func testNackForEvictedFrameIsUnavailableAndRefusesWithoutHostIdr() throws {
         let box = Box()
         // Tight retention, roomy budget: isolate the eviction verdict.
         let session = makeSession(box: box) {
@@ -368,20 +367,19 @@ final class NackRepairGateTests: XCTestCase {
         XCTAssertTrue(events.contains(.nackJudgedStale(
             frame: FrameNumber(rawValue: 0), reason: .unavailable
         )))
-        XCTAssertTrue(session.takeFreshKeyframeRequest())
+        XCTAssertFalse(session.takeFreshKeyframeRequest())
+        XCTAssertEqual(session.counters.repairRefusalsSent, 1)
     }
 
-    func testGarbageUnknownFrameNacksArmAtMostOncePerInterval() throws {
+    func testGarbageUnknownFrameNacksNeverBypassClientRecoveryOwner() throws {
         let box = Box()
-        let session = makeSession(box: box) {
-            $0.unknownFrameIdrArmIntervalNS = 1_000 * Self.ms
-        }
+        let session = makeSession(box: box)
         var now: UInt64 = 10 * Self.ms
         var armed = 0
 
         // An authenticated peer names a different impossible frame on
         // every 25 ms feedback beat. Verdicts/refusals still surface,
-        // but only the first may pressure the encoder into an IDR.
+        // but none may bypass the client's one-outstanding recovery episode.
         for i in 0..<40 {
             let events = try feed(
                 session,
@@ -398,13 +396,12 @@ final class NackRepairGateTests: XCTestCase {
             if session.takeFreshKeyframeRequest() { armed += 1 }
             now += 25 * Self.ms
         }
-        XCTAssertEqual(armed, 1,
-            "wire-cadence garbage NACKs forced repeated IDRs")
-        XCTAssertEqual(session.counters.idrArmedOnStaleNack, 1)
-        XCTAssertEqual(session.counters.unknownFrameIdrArmsThrottled, 39)
+        XCTAssertEqual(armed, 0,
+            "wire-cadence garbage NACKs bypassed the client episode")
+        XCTAssertEqual(session.counters.repairRefusalsSent, 40)
 
-        // A legitimate later unknown-frame demand gets a fresh interval
-        // and must still re-anchor the client.
+        // A later unknown frame remains the same policy: refuse now; the
+        // client request (or its 250 ms deadline) re-anchors once.
         now = 1_011 * Self.ms
         _ = try feed(
             session,
@@ -413,8 +410,8 @@ final class NackRepairGateTests: XCTestCase {
             ),
             now: now
         )
-        XCTAssertTrue(session.takeFreshKeyframeRequest())
-        XCTAssertEqual(session.counters.idrArmedOnStaleNack, 2)
+        XCTAssertFalse(session.takeFreshKeyframeRequest())
+        XCTAssertEqual(session.counters.repairRefusalsSent, 41)
     }
 
     func testNackAfterCloseIsSuppressed() throws {

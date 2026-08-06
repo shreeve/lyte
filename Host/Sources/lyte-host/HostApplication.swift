@@ -966,7 +966,9 @@ static func run(arguments: [String]) throws {
         session: \(s.beaconsSent) beacons, \(s.beaconEchoes) echoes \
         (last offset \(wire.clock.lastOffsetMicroseconds.map(String.init) ?? "—") µs, \
         min rtt \(wire.clock.minRttMicroseconds.map(String.init) ?? "—") µs), \
-        \(s.idrRequests) IDR requests, \(s.unsealFailures) unseal failures, \
+        \(s.idrRequests) IDR requests \
+        (\(s.idrRequestsSupersededByKeyframe) superseded retries), \
+        \(s.unsealFailures) unseal failures, \
         \(s.feedbackDatagrams) feedback datagrams, \
         \(s.handshakesThrottled) msg1 throttled
         handshake-flood: \(s.handshakeChallengesMinted) cookies minted \
@@ -1061,13 +1063,19 @@ static func run(arguments: [String]) throws {
         \(wire.vbvRateMovesAbsorbed) rate moves absorbed \
         (pacer-only, no encoder reset); applied live — native seat, \
         zero reset, zero IDR by construction\(vbvFinal)
+        idr-demand: \(wire.freshKeyframeDemandCounts.demands) consumed \
+        (path \(wire.freshKeyframeDemandCounts.pathPromotions), \
+        client \(wire.freshKeyframeDemandCounts.clientRequests), \
+        wake \(wire.freshKeyframeDemandCounts.machineWakes), \
+        recovery \(wire.freshKeyframeDemandCounts.machineRecoveries), \
+        unprotectable \(wire.freshKeyframeDemandCounts.unprotectableDrops), \
+        fall-purge \(wire.freshKeyframeDemandCounts.fallPurges))
         repair: \(s.nackEntriesReceived) NACK entries \
         (\(s.nacksHonored) honored → \(s.repairDatagramsEnqueued) repair \
         datagrams, \(s.nacksJudgedStale) stale, \
         \(s.repairRefusalsSent) refusals sent, \
         \(s.openingExemptRepairsHonored) opening-exempt, \
-        \(s.idrArmedOnStaleNack) IDR-armed; \
-        budget \(wire.repairBudgetMS) ms), \
+        client-owned recovery; budget \(wire.repairBudgetMS) ms), \
         \(wire.estimatorStats.nackShardsCounted) post-FEC shards counted \
         (\(wire.estimatorStats.nackShardsRecused) recused as self-drain), \
         \(wire.estimatorStats.postFecDownshifts) rung-3 downshifts, \
