@@ -6,13 +6,11 @@ verification state belong in `HANDOFF.md`; settled decisions belong in
 
 ## Verification debt
 
-- **Harsh-path IDR re-arm under 1% loss:** live moderate netem on 41200
-  (2026-08-06; numbers in `HANDOFF.md` proof ONE) produced ~114–116
-  static-screen IDRs / 60 s with zero FROZEN; climb upshifts fire above the
-  2 Mbps floor but settle stays floor-neighborhood under continuous 1% loss.
-  Fix the static/near-static lost-IDR re-arm storm without restoring
-  dual-path host stale-NACK amplification; then re-run moderate netem
-  (+ optional delay-burst / HS-30 A/B).
+- **Harsh-path climb under mild residual:** IDR storm cleared in #220
+  (proof ONE re-proof: 2 IDRs / 1 static vs ~114–116). Climb on the quiet
+  static leg stayed PARTIAL (0 upshifts under continuous 1% loss). Re-run
+  moderate netem on a motion leg (+ optional delay-burst / HS-30 A/B) once
+  climb is the next priority.
 - **Conductor on Ethernet client path:** cue/reserve and static return are
   PASS on Wi‑Fi (`HANDOFF.md` proof TWO). Repeat when a true Ethernet client
   NIC is available.

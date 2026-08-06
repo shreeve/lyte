@@ -4,17 +4,16 @@
 
 ## Resume here
 
-- **Tip:** `main` @ PR #216 family (root-docs cleanup; pull for exact SHA).
-  Includes #215 commissioning.
+- **Tip:** `main` @ PR #220 family (diagnostic IRAP close; pull for exact SHA).
+  Includes #215 commissioning and #216 root-docs cleanup.
 - **Next:**
   1. Owner visual check of resize-corner cursor tips (owed from #212) —
      tl/tr/br/bl shape/tip match and `cursor derive` with real `plane(x,y)` /
      non-zero hotspots.
-  2. Harsh-path follow-up: stop the static-screen lost-IDR re-arm storm under
-     1% loss without restoring dual-path host stale-NACK amplification
-     (see proof ONE; backlog in `TODO.md`).
-  3. Optional later: Conductor numbers on a true Ethernet client path; HS-30
-     probe-cadence A/B once a non-storming harsh climb is live.
+  2. Optional later: harsh-path climb under mild residual once a motion leg
+     is re-run without the IDR storm (proof ONE still PARTIAL on climb);
+     Conductor numbers on a true Ethernet client path; HS-30 probe-cadence
+     A/B.
 
 ## Live rig
 
@@ -37,8 +36,8 @@
 - Deployed binary SHA-256
   `8b527bda30e9bbebd513cb7a4b50c18a0decf389ecce673a8e8b048b91a709f0` at
   `/home/shreeve/src/lyte-host/.build/release/lyte-host`. Identity files
-  verified unchanged through the harsh-path stop/start cycle. Session log:
-  `/tmp/lyte-host-session.log`.
+  verified unchanged through the #220 harsh-path stop/start cycle. Session
+  log: `/tmp/lyte-host-session.log`.
 
 **Safety (law in `AGENTS.md`):** never touch
 `~/.config/lyte-host/{portal_token,noise_static.key,paired_clients}`; never
@@ -48,21 +47,26 @@ home build tree with `setcap` (not `/tmp`).
 
 ## Proof (2026-08-06)
 
-### ONE — harsh-path live — FAIL / PARTIAL
+### ONE — harsh-path live — PASS (IDR) / PARTIAL (climb)
 
-Port **41200** (`--no-advertise --require-paired`); standing 41151 stopped for
+Port **41201** (`--no-advertise --require-paired`); standing 41151 stopped for
 the DRM seat then restored. Netem: moderate `20ms delay / 10ms jitter / 1%
-loss`, scoped `sport 41200 → 10.0.0.211` via `port-netem.sh` (removed after).
-Client tip `4617fc8`; host SHA `8b527bda…`. 60 s `lyte-cli wire-view`.
+loss`, scoped `sport 41201 → 10.0.0.211` via `port-netem.sh` (removed after).
+Client tip includes #220; host SHA `8b527bda…` (unchanged host code). 60 s
+`lyte-cli wire-view`. Identity hashes unchanged through the cycle.
 
 | Check | Result |
 |---|---|
-| IDR storm gone | **FAIL** — host ~114–116 static-screen IDRs / 60 s (`ctrl: IDR request` 116; client 116 IDR-requests / 4 verdicts) |
-| Climb under mild residual | **PARTIAL** — rate floor 2000 kbps; 18–25 `evidence climb` upshifts (e.g. 2000→~2889) pulled back by loss; not the old 500 kbps pin, not a sustained climb |
+| IDR storm gone | **PASS** — host **2 IDRs / 1 static-screen** / 60 s (`ctrl: IDR request` 1; client **1 IDR-request / 5 verdicts**) — was ~114–116 static IDRs |
+| Climb under mild residual | **PARTIAL** — static quiet desktop; 8 loss/overuse downshifts, **0 upshifts**; no floor pin, not a sustained climb (re-check on motion) |
 | No RECOVERY thrash | **PASS** — 0 `lifecycle: FROZEN` / 0 client `PILL ON` |
 
-Artifacts: `.build/benchmarks/harsh-path-20260806T211856Z/` and
-`.build/benchmarks/harsh-path-motion-20260806T212138Z/`.
+Root cause of the prior storm: wire-view enqueued IRAPs without
+`noteVideoIrapEnqueued`, so `IdrRequester` retried forever while the host's
+500 ms offer window re-armed retained-surface IDRs. Fixed in #220.
+
+Prior FAIL artifact: `.build/benchmarks/harsh-path-20260806T211856Z/`.
+Re-proof: `.build/benchmarks/harsh-path-20260806T213410Z/`.
 
 ### TWO — Conductor cue/reserve — PASS (Wi‑Fi)
 
