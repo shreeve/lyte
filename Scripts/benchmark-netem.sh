@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The impairment SLO gate (buttery-smooth program, step 9's live half).
-# Shapes only the standing host's UDP flow to this client with tc netem ON
-# PUP around one real motion benchmark leg, then judges the analyzer verdict
+# Shapes one host UDP flow to this client with tc netem ON PUP around
+# one real motion benchmark leg, then judges the analyzer verdict
 # against the program's IMPAIRMENT SLOs — not the clean-air gates
 # (under deliberate 20 ms jitter the clean transport rung fails by
 # design; the contract under impairment is bounded presentation cadence
@@ -12,22 +12,36 @@
 #              p99 ≤ 50 ms, audio concealment intact, renderer clean,
 #              decoded ≥ 30 fps.
 #
-# Safety: the qdisc is removed by an EXIT trap and verified gone; the
-# script refuses to start if any qdisc other than the default is
-# already installed (never stack shaping on a stranger's experiment).
+# Safety: LYTE_BENCHMARK_PORT is required (fresh 41xxx test host; never
+# silently shape standing 41151). The qdisc is removed by an EXIT trap
+# and verified gone; the script refuses to start if any qdisc other than
+# the default is already installed (never stack shaping on a stranger's
+# experiment).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PUP="${LYTE_BENCHMARK_PUP:-pup}"
 HOST="${LYTE_BENCHMARK_HOST:-10.0.0.232}"
 PROFILE="${1:-moderate}"
-HOST_PORT=41151
+# Never silently shape the standing UDP 41151 service. Point this at a
+# fresh 41xxx test-host port (with --no-advertise). Opt into 41151 only
+# with LYTE_BENCHMARK_ALLOW_STANDING_PORT=1 for an explicit standing-leg.
+HOST_PORT="${LYTE_BENCHMARK_PORT:-}"
 NETEM_HELPER="$ROOT/Scripts/netem/port-netem.sh"
 
 case "$PROFILE" in
   moderate) DELAY_MS=20; JITTER_MS=10; LOSS_PCT=1 ;;
-  *) echo "usage: Scripts/benchmark-netem.sh [moderate]" >&2; exit 2 ;;
+  *) echo "usage: LYTE_BENCHMARK_PORT=<41xxx> Scripts/benchmark-netem.sh [moderate]" >&2; exit 2 ;;
 esac
+
+[[ "$HOST_PORT" =~ ^[0-9]+$ ]] && (( HOST_PORT >= 1 && HOST_PORT <= 65535 )) || {
+  echo "set LYTE_BENCHMARK_PORT to the test host's UDP source port (fresh 41xxx; never imply 41151)" >&2
+  exit 2
+}
+if [[ "$HOST_PORT" == "41151" && "${LYTE_BENCHMARK_ALLOW_STANDING_PORT:-}" != "1" ]]; then
+  echo "refusing standing port 41151 without LYTE_BENCHMARK_ALLOW_STANDING_PORT=1" >&2
+  exit 2
+fi
 
 # The interface pup reaches the client through (the wired leg today;
 # resolves whatever routing says tomorrow).
