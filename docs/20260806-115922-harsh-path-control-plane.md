@@ -102,6 +102,7 @@ FIXED AMPLIFICATION (prior patch):
 | 2 | `frameByteCeiling` ignored FEC wire | Harsh path entered lossy geometry; encoder admitted unpaceable frames | **Fixed in patch** |
 | 3 | Host stale-NACK IDR × client retries | 124 IDRs moderate netem | **Fixed in patch** |
 | 3b | Encode-time `lastKeyframeNumber` forever superseding 0x10 | Wholly lost recovery IDR + static desktop → permanent black glass | **Fixed**: in-flight offer window, then re-arm |
+| 3c | Diagnostic sink never closed IDR episode | wire-view enqueued IRAPs but omitted `noteVideoIrapEnqueued` → 116×0x10 / 4 verdicts; host 500 ms offer window re-armed static-screen IDRs at ~2 Hz (114/60s) | **Fixed**: required `onIrapEnqueued` on `AVSampleBufferRendererVideoSink`; app handoff already closed |
 | 4 | Climb gated on post-FEC < 0.5% | ~3 Mbps settle under 1% netem; rung-3 is 2% | **Fixed this pass** |
 | 5 | Probe cadence 10 s after failed probe | Slows recovery after wall-slam; intentional HS-30 | Deferred — needs live A/B |
 | 6 | Belief censored at pace | Structural; climb is geometric 10%/s | Accept; do not fake padding |
