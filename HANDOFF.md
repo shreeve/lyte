@@ -1,22 +1,18 @@
 # Lyte — session handoff
 
-*Current as of 2026-08-05. This is the live resume point; Git owns completed
+*Current as of 2026-08-06. This is the live resume point; Git owns completed
 history.*
 
 ## Resume here
 
-- **Branch:** clean `main` through PR #207 after this handoff lands. There is
-  one checkout, no auxiliary worktree, and no open implementation PR.
-- **Current objective:** commission PR #207's cadence-independent Conductor on
-  pup's wired path, then compare the same authored workload under the owner's
-  adverse Wi-Fi/lid-closed setup.
-- **Recent landings:** PR #205 made automatic video reserve an exact 1–4 beat
-  posture. PR #207 corrects its remaining cadence dependency: every two
-  elapsed seconds of uninterrupted clean evidence returns one earned beat,
-  identically at 60 Hz, 30 Hz, or one-Hz static cadence. Video no longer owns a
-  sample-count proof counter or 600-sample path-delay tail. The 150 ms total cue
-  remains only a path-delay/clock-mapping failsafe; it cannot mint hidden
-  reserve beyond four beats.
+- **Branch:** `recovery-silence-grace` off latest `main` (separate from open
+  `harsh-path-recovery` / PR #209). One checkout; no auxiliary worktree.
+- **Current objective:** land the RECOVERY-only silence grace so CTRL wakes
+  cannot thrash FROZEN⇄RECOVERY at the ACTIVE 350 ms bar; keep #209's floor /
+  FEC / 0x10 work on its own train.
+- **Recent landings:** PR #208 recorded the time-proof commissioning. PR #207
+  made Conductor return cadence-independent. Harsh-path floor/FEC work remains
+  on PR #209; this branch is only the session-machine hysteresis follow-up.
 
 ## Last green gates
 

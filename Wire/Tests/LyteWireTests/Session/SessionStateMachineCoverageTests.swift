@@ -288,7 +288,10 @@ final class SessionStateMachineCoverageTests: XCTestCase {
                 ? [.active, .idle, .recovery] : [.active, .idle]
             for state in states {
                 var (m, now) = machine(role: role, in: state)
-                now = now.advanced(byMicroseconds: 350_000)
+                let silence = state == .recovery
+                    ? m.config.recoveryBlackoutSilenceMicroseconds
+                    : m.config.blackoutSilenceMicroseconds
+                now = now.advanced(byMicroseconds: silence)
                 let (actions, deadline) = m.poll(now: now)
                 XCTAssertEqual(m.state, .frozen, "\(role)/\(state)")
                 XCTAssertEqual(
