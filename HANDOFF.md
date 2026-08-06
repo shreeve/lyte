@@ -5,20 +5,21 @@ history.*
 
 ## Resume here
 
-- **Branch:** `main` @ `825d2ff`.
-- **Just landed:** PR #209 (`6344f79`) — recovery floor, FEC-aware frame
-  ceilings, client-owned IDR / lost-IDR re-arm, mild post-FEC climb. PR #210
-  (`a617833`) — RECOVERY silence grace (~2 s) so CTRL wakes cannot thrash
-  FROZEN⇄RECOVERY at the ACTIVE 350 ms bar. PR #211 records the post-land
-  handoff. Tip includes #209–#211.
-- **Current objective:** prove the harsh-path control plane live, then finish
-  Conductor reserve commissioning on current builds.
+- **Branch:** `main` @ `57c3a5b`.
+- **Just landed:** PR #212 (`b778989`) — glass-cursor tip/hotspot fix:
+  enable `DRM_CLIENT_CAP_ATOMIC` so cursor `CRTC_X`/`CRTC_Y` are visible;
+  keep a missing plane distinct from a real `(0,0)` park; sans-IO
+  `CursorHotspot` pins. Tip includes #209–#212.
+- **Current objective:** verify resize-corner cursor alignment live, then
+  prove the harsh-path control plane and finish Conductor reserve
+  commissioning.
 
 ## Last green gates
 
-PR #209 Host suite green (342). PR #210 Wire suite green (514) plus focused
-Host `SessionGateTests`. The earlier full warning-enforced macOS + pup gate
-still stands on the PR #207 source pin (`79df48f` / Common 98, Wire 513,
+PR #212 Host suite green (350), including new `CursorHotspotTests`. PR #209
+Host suite green (342). PR #210 Wire suite green (514) plus focused Host
+`SessionGateTests`. The earlier full warning-enforced macOS + pup gate still
+stands on the PR #207 source pin (`79df48f` / Common 98, Wire 513,
 Host 341–343, Client 347, SystemTests 17); re-run a complete gate only if a
 later touch wants a fresh cross-package stamp.
 
@@ -30,8 +31,8 @@ elapsed seconds; contrary evidence restarts the proof.
 
 ### Client
 
-- Fresh release app from `main` @ `825d2ff` (`LyteSourceRevision` =
-  `825d2ff768ac`), launched via `Scripts/launch-app.sh` as PID **89591**.
+- Fresh release app from `main` @ `57c3a5b` (`LyteSourceRevision` =
+  `57c3a5b81af2`), launched via `Scripts/launch-app.sh` as PID **39823**.
   Bundle: `.build/Lyte.app` (`dev.shreeve.lyte`). Connect manually if needed.
 - Bundle identity remains `dev.shreeve.lyte`. Do not launch a benchmark or
   second ordinary app while an interactive Lyte is open.
@@ -45,11 +46,13 @@ elapsed seconds; contrary evidence restarts the proof.
 - `lyte-host.service` remains the standing UDP 41151 host. Its PID can change
   when the configured 120-second no-client-handshake timeout exercises
   systemd restart; a changing pre-session PID alone is not a crash.
-- **Deploy honesty:** standing binary rebuilt from `main` @ `825d2ff` on
+- **Deploy honesty:** standing binary rebuilt from `main` @ `57c3a5b` on
   2026-08-06; service restarted active, listening `0.0.0.0:41151`. Binary
-  SHA-256 `5a2ad1d819dbc0f8a0cdc0b1357ac0ae87edea58531acf304911bbbf9f8d8be4`
+  SHA-256 `8b527bda30e9bbebd513cb7a4b50c18a0decf389ecce673a8e8b048b91a709f0`
   at `/home/shreeve/src/lyte-host/.build/release/lyte-host`. Identity files
-  unchanged. Session log: `/tmp/lyte-host-session.log`.
+  unchanged (portal_token / noise_static.key / paired_clients checksums
+  verified before and after restart). Session log:
+  `/tmp/lyte-host-session.log`.
 
 Never touch pup's
 `~/.config/lyte-host/{portal_token,noise_static.key,paired_clients}` and never
@@ -69,8 +72,12 @@ reserve-distribution measurement on current builds remains outstanding.
 
 ## Next commissioning order
 
-1. ~~Deploy current `main` to pup + rebuild/publish macOS client~~ done
-   (`825d2ff`; host active on 41151; client PID 89591).
+1. ~~Cursor tip/hotspot fix (#212) + deploy host/client~~ done
+   (`57c3a5b`; host active on 41151; client PID 39823). Owner should connect
+   and verify window resize corners (tl/tr/br/bl): shape and tip must match
+   the drawn cursor; session log `cursor derive` lines should show real
+   `plane(x,y)` (not `nil` / tip fallback) and non-zero hotspots on resize
+   chrome.
 2. Harsh-path live proof on a fresh 41xxx test host (never 41151): moderate
    netem + delay-burst per
    `docs/20260806-115922-harsh-path-control-plane.md`; confirm climb leaves
