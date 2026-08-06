@@ -4,8 +4,8 @@
 
 ## Resume here
 
-- **Tip:** `main` @ `9314b36` (PR #216 root-docs cleanup; includes #215
-  commissioning).
+- **Tip:** `main` @ PR #216/#217 family (`eece4b1`; pull for exact SHA).
+  Includes #215 commissioning.
 - **Next:**
   1. Owner visual check of resize-corner cursor tips (owed from #212) —
      tl/tr/br/bl shape/tip match and `cursor derive` with real `plane(x,y)` /
