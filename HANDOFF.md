@@ -4,7 +4,7 @@
 
 ## Resume here
 
-- **Tip:** `main` @ PR #216/#217 family (`eece4b1`; pull for exact SHA).
+- **Tip:** `main` @ PR #216 family (root-docs cleanup; pull for exact SHA).
   Includes #215 commissioning.
 - **Next:**
   1. Owner visual check of resize-corner cursor tips (owed from #212) —
