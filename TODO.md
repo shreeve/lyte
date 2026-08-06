@@ -6,17 +6,17 @@ belong in `AGENTS.md` or `docs/`; completed work belongs in Git history.
 
 ## Verification debt
 
-- **Harsh-path live re-commission**
-  (`docs/20260806-115922-harsh-path-control-plane.md`): after deploying
-  main with PRs #209/#210 (floor, FEC ceilings, IDR ownership, lost-IDR
-  re-arm, RECOVERY silence grace), run moderate netem and a delay-burst
-  leg on a fresh 41xxx test host (never 41151); confirm climb leaves the
-  old ~3 Mbps settle, IDR stays near the prior 2-IDR result, then restore
-  qdisc/binary. Optionally A/B HS-30’s 10 s probe cadence once that climb
-  is live.
-- **Conductor reserve live measure:** after current-build deploy, record
-  cue/reserve p50/p95/max on Ethernet then Wi-Fi motion; confirm return is
-  one beat per two clean seconds and never above four.
+- **Harsh-path IDR re-arm under 1% loss (follow-up from ONE FAIL):** live
+  moderate netem on 41200 (2026-08-06 tip `4617fc8`, host `8b527bda…`)
+  produced ~114–116 static-screen IDRs / 60 s with zero FROZEN; climb
+  upshifts fire above the 2 Mbps floor but settle stays floor-neighborhood
+  under continuous 1% loss. Fix the static/near-static lost-IDR re-arm
+  storm without restoring dual-path host stale-NACK amplification; then
+  re-run moderate netem (+ optional delay-burst / HS-30 A/B). Numbers and
+  artifacts are in `HANDOFF.md`.
+- ~~**Conductor reserve live measure**~~ done on Wi‑Fi (cue/reserve p50/p95/max
+  + static 3.76→1.05 beat return @ ~2 s/beat; never above four). Optional:
+  repeat on a true Ethernet client path when available.
 - **VideoAssembler threshold invariant**
   (`Wire/Sources/LyteWire/Video/VideoAssembler.swift`):
   `sweepLossPresumption` assumes
