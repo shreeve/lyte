@@ -134,8 +134,9 @@ final class SessionStateMachineTests: XCTestCase {
         XCTAssertFalse(m.isPreArmed)
 
         // A second freeze/recover cycle without new input emits its
-        // own IDR but carries no stale pre-arm.
-        now = now.advanced(byMicroseconds: 350_000)
+        // own IDR but carries no stale pre-arm. RECOVERY's silence bar
+        // is the longer grace (not ACTIVE's 350 ms).
+        now = now.advanced(byMicroseconds: 2_000_000)
         _ = m.poll(now: now)
         XCTAssertEqual(m.state, .frozen)
         XCTAssertFalse(m.isPreArmed)
@@ -203,11 +204,61 @@ final class SessionStateMachineTests: XCTestCase {
         _ = m.apply(.mediaPathEvidence, now: now)
         XCTAssertEqual(m.state, .recovery)
 
-        // The path dies again before any window completes.
+        // ACTIVE's 350 ms bar must NOT re-freeze RECOVERY — that is the
+        // live thrash: CTRL wakes recovery, forceIdr starts, silence
+        // kills mid-flight, next beacon forceIdrs again.
         now = now.advanced(byMicroseconds: 350_000)
-        let (actions, _) = m.poll(now: now)
+        var (actions, _) = m.poll(now: now)
+        XCTAssertEqual(m.state, .recovery)
+        XCTAssertEqual(actions, [])
+
+        // Renewed silence past the recovery grace still re-freezes.
+        now = now.advanced(byMicroseconds: 2_000_000 - 350_000)
+        (actions, _) = m.poll(now: now)
         XCTAssertEqual(m.state, .frozen)
         XCTAssertEqual(actions, [.freezeDatagramSends])
+    }
+
+    func testCtrlWakeDoesNotThrashRecoveryAtActiveSilenceBar() {
+        // Live harsh-path shape: media-path silence freezes; a beacon
+        // (CTRL) exits FROZEN with forceIdr; without the recovery grace
+        // the next 350 ms would re-freeze and the next CTRL would mint
+        // another IDR — dozens per session at beacon cadence.
+        var m = freshSender()
+        var now = t0.advanced(byMicroseconds: 350_000)
+        _ = m.poll(now: now)
+        XCTAssertEqual(m.state, .frozen)
+
+        now = now.advanced(byMicroseconds: 1_000_000)
+        let wake = m.apply(.ctrlEvidence, now: now)
+        XCTAssertEqual(wake, [
+            .resumeDatagramSends,
+            .forceIdr(.halfStaleEstimate),
+        ])
+        XCTAssertEqual(m.state, .recovery)
+
+        // ACTIVE bar: still RECOVERY, no second freeze/forceIdr.
+        now = now.advanced(byMicroseconds: 350_000)
+        let (mid, _) = m.poll(now: now)
+        XCTAssertEqual(m.state, .recovery)
+        XCTAssertEqual(mid, [])
+        XCTAssertEqual(
+            m.apply(.ctrlEvidence, now: now), [],
+            "CTRL while already recovering must not mint another forceIdr"
+        )
+
+        // Past recovery grace with no media: re-freeze once, then one
+        // more CTRL earns exactly one more forceIdr — not a 350 ms loop.
+        now = now.advanced(byMicroseconds: 2_000_000 - 350_000)
+        let (refreeze, _) = m.poll(now: now)
+        XCTAssertEqual(m.state, .frozen)
+        XCTAssertEqual(refreeze, [.freezeDatagramSends])
+        now = now.advanced(byMicroseconds: 1_000_000)
+        let second = m.apply(.ctrlEvidence, now: now)
+        XCTAssertEqual(second, [
+            .resumeDatagramSends,
+            .forceIdr(.halfStaleEstimate),
+        ])
     }
 
     // MARK: The silence detector's evidence discipline

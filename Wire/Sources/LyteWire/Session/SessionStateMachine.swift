@@ -48,7 +48,12 @@
 //     during a blackout is never lost semantics.
 //   - RECOVERY, two consecutive clean feedback windows → ACTIVE (the
 //     overlay clears; the wire mode never changed). A dirty window
-//     resets the count. Renewed silence re-freezes.
+//     resets the count. Renewed silence re-freezes, but RECOVERY uses a
+//     longer silence bar than ACTIVE: the forced IDR must serialize,
+//     cross the path, and earn feedback before the detector may kill
+//     mid-flight sends. The ACTIVE 350 ms bar here thrashes
+//     FROZEN⇄RECOVERY on every CTRL wake (beacon / 0x10) whenever the
+//     media path is slower than that window.
 //   - A converged ratchet during RECOVERY is accepted like ACTIVE's:
 //     the final frame rides its one-shot, and an acknowledged delivery
 //     through the recovering path is path evidence at least as strong
@@ -70,10 +75,15 @@
 
 public struct SessionMachineConfig: Hashable, Sendable {
     /// The blackout detector: this long with no media-path evidence
-    /// (feedback datagrams, audio acks) freezes the session.
-    /// Resiliency §4 pins 350 ms — covers office→kitchen roams, well
-    /// past any aggregation stall.
+    /// (feedback datagrams, audio acks) freezes the session while
+    /// ACTIVE or IDLE. Resiliency §4 pins 350 ms — covers
+    /// office→kitchen roams, well past any aggregation stall.
     public var blackoutSilenceMicroseconds: Int64
+    /// Silence bar while RECOVERY. Must be ≥ the ACTIVE bar. Default
+    /// 2 s (or the ACTIVE bar when that is longer) so a half-stale
+    /// recovery IDR can finish and produce chan-3 evidence before
+    /// `freezeDatagramSends` aborts it — see recovery thrash note above.
+    public var recoveryBlackoutSilenceMicroseconds: Int64
     /// The slow liveness clock: this long with no authenticated peer
     /// evidence of any kind closes the session (transport's ≥30 s).
     public var livenessTimeoutMicroseconds: Int64
@@ -83,10 +93,16 @@ public struct SessionMachineConfig: Hashable, Sendable {
 
     public init(
         blackoutSilenceMicroseconds: Int64 = 350_000,
+        recoveryBlackoutSilenceMicroseconds: Int64? = nil,
         livenessTimeoutMicroseconds: Int64 = 30_000_000,
         cleanWindowsToRecover: Int = 2
     ) {
         self.blackoutSilenceMicroseconds = blackoutSilenceMicroseconds
+        self.recoveryBlackoutSilenceMicroseconds = max(
+            recoveryBlackoutSilenceMicroseconds
+                ?? max(blackoutSilenceMicroseconds, 2_000_000),
+            blackoutSilenceMicroseconds
+        )
         self.livenessTimeoutMicroseconds = livenessTimeoutMicroseconds
         self.cleanWindowsToRecover = max(cleanWindowsToRecover, 1)
     }
@@ -359,9 +375,8 @@ public struct SessionStateMachine<ClockDomain>: Sendable {
         }
 
         var actions: [SessionAction] = []
-        if silenceDetectorRuns,
-           now.microseconds(since: lastMediaEvidenceAt)
-               >= config.blackoutSilenceMicroseconds {
+        if let silenceLimit = silenceLimitMicroseconds,
+           now.microseconds(since: lastMediaEvidenceAt) >= silenceLimit {
             // FROZEN entry: the pending idle flip dies with the path
             // (RECOVERY re-ratchets); the wire mode stays whatever it
             // was — FROZEN is never a wire mode.
@@ -374,10 +389,15 @@ public struct SessionStateMachine<ClockDomain>: Sendable {
         return (actions, nextDeadline())
     }
 
-    private var silenceDetectorRuns: Bool {
+    /// ACTIVE/IDLE use the 350 ms bar; RECOVERY uses the longer grace.
+    private var silenceLimitMicroseconds: Int64? {
         switch state {
-        case .active, .idle, .recovery: return true
-        case .frozen, .closed: return false
+        case .active, .idle:
+            return config.blackoutSilenceMicroseconds
+        case .recovery:
+            return config.recoveryBlackoutSilenceMicroseconds
+        case .frozen, .closed:
+            return nil
         }
     }
 
@@ -385,9 +405,9 @@ public struct SessionStateMachine<ClockDomain>: Sendable {
         var earliest = lastPeerEvidenceAt.advanced(
             byMicroseconds: config.livenessTimeoutMicroseconds
         )
-        if silenceDetectorRuns {
+        if let silenceLimit = silenceLimitMicroseconds {
             let silence = lastMediaEvidenceAt.advanced(
-                byMicroseconds: config.blackoutSilenceMicroseconds
+                byMicroseconds: silenceLimit
             )
             if silence < earliest { earliest = silence }
         }

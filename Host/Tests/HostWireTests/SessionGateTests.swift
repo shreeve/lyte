@@ -444,9 +444,10 @@ final class SessionGateTests: XCTestCase {
         let beaconEvents = session.advance(
             now: 1_000_000_000, hostMicroseconds: t1Beacon1
         )
-        // RECOVERY without feedback re-freezes 350 ms later by design
-        // (this harness has no chan-3 stream), so the wake may carry a
-        // lifecycle event alongside the beacon.
+        // RECOVERY without feedback re-freezes after the recovery
+        // silence grace by design (this harness has no chan-3 stream),
+        // so a later wake may carry a lifecycle event alongside the
+        // beacon. The ACTIVE 350 ms bar must not cut the recovery IDR.
         XCTAssertEqual(beaconEvents.first, .beaconSent(beaconSeq: 1))
         session.pump(now: 1_000_000_000)
         // The unacknowledged declaration may PTO-retransmit alongside
