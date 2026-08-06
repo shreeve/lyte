@@ -43,6 +43,7 @@ func runDoorbell(
         exit(1)
     }
     drmSetClientCap(fd, UInt64(DRM_CLIENT_CAP_UNIVERSAL_PLANES), 1)
+    drmSetClientCap(fd, UInt64(DRM_CLIENT_CAP_ATOMIC), 1)
     guard let planes = findActivePlanes(fd: fd) else {
         FileHandle.standardError.write(
             Data("no active primary plane on \(device)\n".utf8))
