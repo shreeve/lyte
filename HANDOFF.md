@@ -5,11 +5,12 @@ history.*
 
 ## Resume here
 
-- **Branch:** `main` @ `a617833`.
+- **Branch:** `main` @ `825d2ff`.
 - **Just landed:** PR #209 (`6344f79`) — recovery floor, FEC-aware frame
   ceilings, client-owned IDR / lost-IDR re-arm, mild post-FEC climb. PR #210
   (`a617833`) — RECOVERY silence grace (~2 s) so CTRL wakes cannot thrash
-  FROZEN⇄RECOVERY at the ACTIVE 350 ms bar. Both branches deleted.
+  FROZEN⇄RECOVERY at the ACTIVE 350 ms bar. PR #211 records the post-land
+  handoff. Tip includes #209–#211.
 - **Current objective:** prove the harsh-path control plane live, then finish
   Conductor reserve commissioning on current builds.
 
@@ -29,8 +30,9 @@ elapsed seconds; contrary evidence restarts the proof.
 
 ### Client
 
-- Ordinary client identity and PIDs from the PR #207 commissioning run are
-  stale; rebuild/publish from current `main` before claiming live proof.
+- Fresh release app from `main` @ `825d2ff` (`LyteSourceRevision` =
+  `825d2ff768ac`), launched via `Scripts/launch-app.sh` as PID **89591**.
+  Bundle: `.build/Lyte.app` (`dev.shreeve.lyte`). Connect manually if needed.
 - Bundle identity remains `dev.shreeve.lyte`. Do not launch a benchmark or
   second ordinary app while an interactive Lyte is open.
 - The owner-installed Local Network exception `10.0.0.0/24` remains active
@@ -43,10 +45,11 @@ elapsed seconds; contrary evidence restarts the proof.
 - `lyte-host.service` remains the standing UDP 41151 host. Its PID can change
   when the configured 120-second no-client-handshake timeout exercises
   systemd restart; a changing pre-session PID alone is not a crash.
-- **Deploy honesty:** last recorded standing binary was pre-#210
-  (`abecd3f`-era / earlier). Assume pup is still on that deploy until
-  Wire/Common/Host are rsynced, release-built, and `lyte-host` restarted.
-  Session log: `/tmp/lyte-host-session.log`.
+- **Deploy honesty:** standing binary rebuilt from `main` @ `825d2ff` on
+  2026-08-06; service restarted active, listening `0.0.0.0:41151`. Binary
+  SHA-256 `5a2ad1d819dbc0f8a0cdc0b1357ac0ae87edea58531acf304911bbbf9f8d8be4`
+  at `/home/shreeve/src/lyte-host/.build/release/lyte-host`. Identity files
+  unchanged. Session log: `/tmp/lyte-host-session.log`.
 
 Never touch pup's
 `~/.config/lyte-host/{portal_token,noise_static.key,paired_clients}` and never
@@ -66,8 +69,8 @@ reserve-distribution measurement on current builds remains outstanding.
 
 ## Next commissioning order
 
-1. Deploy current `main` to pup (rsync Wire/Common/Host, release build,
-   restart `lyte-host`). Rebuild/publish the macOS client from the same tip.
+1. ~~Deploy current `main` to pup + rebuild/publish macOS client~~ done
+   (`825d2ff`; host active on 41151; client PID 89591).
 2. Harsh-path live proof on a fresh 41xxx test host (never 41151): moderate
    netem + delay-burst per
    `docs/20260806-115922-harsh-path-control-plane.md`; confirm climb leaves
