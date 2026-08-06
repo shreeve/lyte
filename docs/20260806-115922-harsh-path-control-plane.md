@@ -104,11 +104,19 @@ FIXED AMPLIFICATION (prior patch):
 | 3b | Encode-time `lastKeyframeNumber` forever superseding 0x10 | Wholly lost recovery IDR + static desktop → permanent black glass | **Fixed**: in-flight offer window, then re-arm |
 | 3c | Diagnostic sink never closed IDR episode | wire-view enqueued IRAPs but omitted `noteVideoIrapEnqueued` → 116×0x10 / 4 verdicts; host 500 ms offer window re-armed static-screen IDRs at ~2 Hz (114/60s) | **Fixed**: required `onIrapEnqueued` on `AVSampleBufferRendererVideoSink`; app handoff already closed |
 | 4 | Climb gated on post-FEC < 0.5% | ~3 Mbps settle under 1% netem; rung-3 is 2% | **Fixed this pass** |
+| 4b | Sparse static one-way ratchet | Post-#220 quiet desktop: 8 loss/overuse falls, 0 upshifts; standing rate 50→13.8 Mbps while belief stayed ~33 Mbps; wire-view “Mbps” was content (~300 B/frame), not the floor | **Fixed**: falls share climb freshness (or standing backlog); thin keepalive freezes |
 | 5 | Probe cadence 10 s after failed probe | Slows recovery after wall-slam; intentional HS-30 | Deferred — needs live A/B |
 | 6 | Belief censored at pace | Structural; climb is geometric 10%/s | Accept; do not fake padding |
 | 7 | Conductor reserve sticky after Wi‑Fi holes | 2 s/beat return by design (#207) | Deferred product feel |
 | 8 | No ECN / recv-window | Wire-v2 parked | Deferred |
 | 9 | Chroma / coalescing / clean-path tails | Owner notes | Outside this control-plane slice |
+
+**Climb proof doctrine:** quiet-static correctly does **not** evidence-climb —
+single-datagram keepalives never form delivery trains, and doctrine forbids
+padding a blank desktop to probe. The climb bar is mild-motion (or any
+workload that emits multi-packet trains) under moderate netem. Pre-#220
+motion “332 upshifts” was contaminated by the IDR storm pumping large
+frames; re-proof on tip after the sparse-hold fix.
 
 ## Recommended optimal architecture
 
@@ -118,7 +126,7 @@ Layered stages matching resiliency §4 and the Conductor laws:
 2. **Shape (host capacity)** — Delay inflation and honesty-gated falls; pre-FEC hold band; post-FEC rung-3 + FEC step; FEC-aware frame ceiling; operational floor ≥ protected + min FEC flight.
 3. **Repair (targeted)** — NACK within freeze budget; refuse otherwise; never host-arm IDR from stale NACK.
 4. **Recover (one episode)** — Client coalesced IDR; host coalesces older-named 0x10 only for an in-flight offer window, then re-arms if the episode continues; fall purge / unprotectable / lifecycle keep their own arms.
-5. **Climb** — Evidence rises whenever pre-FEC is clean and post-FEC ≤ rung-3; `lastGoodRate` and FEC step-down stay on the strict clean column (< 0.5%).
+5. **Climb** — Evidence rises whenever pre-FEC is clean and post-FEC ≤ rung-3 with a fresh delivery train; `lastGoodRate` and FEC step-down stay on the strict clean column (< 0.5%). Falls require the same freshness or standing pacer backlog — sparse keepalive freezes rather than ratcheting.
 
 Sans-IO: all policy remains in `HostWire` / `LyteCore` value types with injected time. No frozen-vector change.
 
@@ -131,11 +139,12 @@ Sans-IO: all policy remains in `HostWire` / `LyteCore` value types with injected
 | Floor 2 Mbps; FEC-aware `frameByteCeiling` | `RateEstimator.swift`, tests, `benchmark-netem.sh` artifact filter |
 | Client-owned recovery; in-flight 0x10 coalesce; remove stale-NACK arm; lost-IDR re-arm | `Session.swift`, `SessionFreshKeyframeBook.swift`, `HostApplication.swift`, `SessionWire.swift`, `IdrOfferInFlightGateTests.swift`, related tests |
 | Climb admits mild post-FEC residual (≤2%); book `upshiftsUnderMildPostFec`; pins | `RateEstimator.swift`, `RateEstimatorGateTests.swift` |
+| Symmetric sparse-evidence hold; book `sparseEvidenceHolds`; static-no-climb doctrine | `RateEstimator.swift`, gate + NACK pins, this doc |
 
 ### Deferred (actionable)
 
-- Live re-commission moderate netem + delay-burst on a fresh 41xxx port after deploy.
-- HS-30 probe-cadence A/B once mild-residual climb is live.
+- Live mild-motion climb under moderate netem on tip (static is not the climb bar).
+- HS-30 probe-cadence A/B once mild-motion climb is live.
 - Optional audio↔video shared “tempo stress” signal inside LyteCore (v2 convergence), not a second rate loop.
 - ECN / recv-window TLVs only with a wire-version decision.
 
