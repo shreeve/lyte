@@ -617,7 +617,8 @@ final class DirectEyeLeg {
     /// and i915 has no HOTSPOT props to ask instead. Mid-motion the
     /// plane can lag the newest injection by a frame, so the derived
     /// point is clamped into the image; the next shape change
-    /// re-derives it at rest.
+    /// re-derives it at rest. Plane CRTC requires ATOMIC client cap —
+    /// see `CursorHotspot` / `ScreenSource`.
     private func pollCursor(_ watcher: EyeCursorWatcher?) {
         guard let watcher, let wire else { return }
         switch watcher.poll() {
@@ -630,45 +631,40 @@ final class DirectEyeLeg {
             wire.noteCursorShape(.hidden)
         case .shape(let frame):
             cursorShapesSeen += 1
-            // The derivation ledger (2026-08-01) convicted the plane
-            // position: this stack commits legacy cursor moves that
-            // leave CRTC_X/Y at 0, so pointer − plane − crop slammed
-            // into the clamp and stamped every hotspot bottom-right
-            // (the owner's ~25 px aim offset). A (0,0) plane reading
-            // with the pointer far away IS the lie's fingerprint —
-            // fall back to the content top-left, which is the arrow's
-            // true tip within a few pixels. (Exact per-shape hotspots
-            // = the Xcursor theme matcher, filed as the real fix.)
-            var hx = 0, hy = 0
-            if let pointer = wire.lastAbsolutePointerInjection(),
-               frame.planeCrtcX != 0 || frame.planeCrtcY != 0 {
-                hx = Int(pointer.x.rounded())
-                    - frame.planeCrtcX - frame.cropX
-                hy = Int(pointer.y.rounded())
-                    - frame.planeCrtcY - frame.cropY
+            let pointer = wire.lastAbsolutePointerInjection().map {
+                CursorHotspot.Point(
+                    x: Int($0.x.rounded()), y: Int($0.y.rounded()))
             }
-            hx = min(max(hx, 0), frame.width - 1)
-            hy = min(max(hy, 0), frame.height - 1)
-            // The derivation ledger (owner's ~25 px aim offset): the
-            // first few shapes print their full inputs so a wrong
+            let plane = frame.planeCrtc.map {
+                CursorHotspot.Point(x: $0.x, y: $0.y)
+            }
+            let hot = CursorHotspot.derive(
+                pointer: pointer,
+                planeCrtc: plane,
+                crop: .init(x: frame.cropX, y: frame.cropY),
+                width: frame.width, height: frame.height)
+            // The first few shapes print their full inputs so a wrong
             // hotspot reads straight back to which term lied.
             if cursorShapesSeen <= 6 {
-                let p = wire.lastAbsolutePointerInjection()
+                let planeDesc = plane.map { "\($0.x),\($0.y)" }
+                    ?? "nil"
+                let pointerDesc = pointer.map { "\($0.x),\($0.y)" }
+                    ?? "none"
                 print("direct: cursor derive #\(cursorShapesSeen): "
                     + "\(frame.width)x\(frame.height) "
                     + "crop(\(frame.cropX),\(frame.cropY)) "
-                    + "plane(\(frame.planeCrtcX),\(frame.planeCrtcY)) "
-                    + "pointer("
-                    + (p.map { "\(Int($0.x)),\(Int($0.y))" } ?? "none")
-                    + ") → hotspot(\(hx),\(hy))")
+                    + "plane(\(planeDesc)) "
+                    + "pointer(\(pointerDesc)) "
+                    + "→ hotspot(\(hot.x),\(hot.y))")
             }
             lastCursorFrame = frame
-            sentHotspot = (hx, hy)
-            hotspotRecheckArmed = true
+            sentHotspot = (hot.x, hot.y)
+            hotspotRecheckArmed = CursorHotspot.canRecheck(
+                planeCrtc: plane)
             wire.noteCursorShape(CursorShape(
                 width: UInt16(frame.width),
                 height: UInt16(frame.height),
-                hotspotX: UInt16(hx), hotspotY: UInt16(hy),
+                hotspotX: UInt16(hot.x), hotspotY: UInt16(hot.y),
                 pixels: frame.pixels))
         case .failed(let why):
             cursorReadFailures += 1
@@ -693,29 +689,32 @@ final class DirectEyeLeg {
         let nowMicros = UInt64(SystemMonotonicClock.nowSeconds * 1_000_000)
         guard nowMicros &- pointer.atMicros > 150_000 else { return }
         guard let plane = watcher.planeCrtcPosition(),
-              plane.x != 0 || plane.y != 0 else {
-            // Same fingerprint as the derive path: a (0,0) plane is
-            // the legacy-cursor lie — a rest recheck against it would
-            // "correct" a good hotspot into garbage.
+              CursorHotspot.canRecheck(
+                  planeCrtc: .init(x: plane.x, y: plane.y))
+        else {
+            // Props still absent — do not invent a correction.
             hotspotRecheckArmed = false
             return
         }
-        var hx = Int(pointer.x.rounded()) - plane.x - frame.cropX
-        var hy = Int(pointer.y.rounded()) - plane.y - frame.cropY
-        hx = min(max(hx, 0), frame.width - 1)
-        hy = min(max(hy, 0), frame.height - 1)
+        let hot = CursorHotspot.derive(
+            pointer: .init(
+                x: Int(pointer.x.rounded()),
+                y: Int(pointer.y.rounded())),
+            planeCrtc: .init(x: plane.x, y: plane.y),
+            crop: .init(x: frame.cropX, y: frame.cropY),
+            width: frame.width, height: frame.height)
         hotspotRecheckArmed = false
-        guard hx != sent.x || hy != sent.y else { return }
+        guard hot.x != sent.x || hot.y != sent.y else { return }
         cursorHotspotCorrections += 1
         print("direct: cursor hotspot corrected "
-            + "(\(sent.x),\(sent.y)) → (\(hx),\(hy)) at rest — "
+            + "(\(sent.x),\(sent.y)) → (\(hot.x),\(hot.y)) at rest — "
             + "plane(\(plane.x),\(plane.y)) "
             + "pointer(\(Int(pointer.x)),\(Int(pointer.y)))")
-        sentHotspot = (hx, hy)
+        sentHotspot = (hot.x, hot.y)
         wire.noteCursorShape(CursorShape(
             width: UInt16(frame.width),
             height: UInt16(frame.height),
-            hotspotX: UInt16(hx), hotspotY: UInt16(hy),
+            hotspotX: UInt16(hot.x), hotspotY: UInt16(hot.y),
             pixels: frame.pixels))
     }
 

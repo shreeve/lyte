@@ -5,10 +5,10 @@
 // LINEAR ARGB8888 cursor buffer (GETFB2 + PRIME + mmap — CPU-readable,
 // unlike the primary's CCS scanout), crops it to the content box
 // (cursor buffers are mostly transparent padding), and hands the
-// tight BGRA image up. Hotspot derivation lives in the caller: i915
-// exposes no HOTSPOT_X/Y plane props, so the hotspot is recovered
-// from (last injected pointer position − plane CRTC position), and
-// only the caller knows both.
+// tight BGRA image up. Hotspot derivation lives in HostCore.CursorHotspot:
+// i915 exposes no HOTSPOT_X/Y plane props, so the hotspot is recovered
+// from (last injected pointer − plane CRTC − crop). CRTC_X/Y require
+// DRM_CLIENT_CAP_ATOMIC on the shared DRM fd.
 
 #if os(Linux)
 
@@ -40,7 +40,7 @@ func planePropValue(
 
 /// One read cursor image: the content-cropped BGRA pixels plus where
 /// the crop sits — in the buffer (cropX/Y, the hotspot's shift) and
-/// on screen (planeCrtcX/Y at grab time, the hotspot's anchor).
+/// on screen (planeCrtc at grab time, the hotspot's anchor).
 public struct CursorFrame {
     public var width: Int
     public var height: Int
@@ -48,9 +48,11 @@ public struct CursorFrame {
     public var cropX: Int
     public var cropY: Int
     /// The PLANE's position on the CRTC when grabbed (device pixels;
-    /// negative when the cursor overhangs the top-left edge).
-    public var planeCrtcX: Int
-    public var planeCrtcY: Int
+    /// negative when the cursor overhangs the top-left edge). `nil`
+    /// when CRTC_X/Y props are absent — the caller must not invent
+    /// `(0,0)`, which is indistinguishable from a real origin park
+    /// and was the E3 tip/hotspot mismatch.
+    public var planeCrtc: (x: Int, y: Int)?
     /// width*height*4 BGRA bytes, rows top-to-bottom, tightly packed.
     public var pixels: [UInt8]
 }
@@ -102,7 +104,9 @@ public final class EyeCursorWatcher {
 
     /// The plane's current CRTC position (atomic property state —
     /// drmModeGetPlane's crtc_x/y fields are NOT filled by the legacy
-    /// ioctl). nil when the props are missing.
+    /// ioctl). Requires `DRM_CLIENT_CAP_ATOMIC` on the fd; without it
+    /// the props are absent and this returns nil. nil must stay nil —
+    /// collapsing to `(0,0)` is the tip/hotspot mismatch.
     public func planeCrtcPosition() -> (x: Int, y: Int)? {
         guard let rawX = planePropValue(
                   fd: fd, planeId: planeId, name: "CRTC_X"),
@@ -197,10 +201,9 @@ public final class EyeCursorWatcher {
                        src, cw * 4)
             }
         }
-        let crtc = planeCrtcPosition()
         return .success(CursorFrame(
             width: cw, height: ch, cropX: minX, cropY: minY,
-            planeCrtcX: crtc?.x ?? 0, planeCrtcY: crtc?.y ?? 0,
+            planeCrtc: planeCrtcPosition(),
             pixels: pixels))
     }
 
