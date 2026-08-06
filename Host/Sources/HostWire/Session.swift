@@ -182,6 +182,14 @@ public struct SessionConfig: Sendable {
     /// A repair still queued after this interval is no longer useful to
     /// the bounded client assembler and expires before transmit.
     public var repairQueueUsefulnessNS: UInt64
+    /// How long a committed host IDR may suppress older-named client 0x10
+    /// retries as "already answered". Encode/ingest advances
+    /// `lastKeyframeNumber` before delivery; this window is storm control
+    /// for an in-flight offer, not delivery proof. Matches the client's
+    /// 500 ms `IdrRequester` retry so a wholly lost recovery IDR can
+    /// re-arm on the next episode tick instead of black-glassing a
+    /// static desktop forever.
+    public var clientIdrOfferInFlightNS: UInt64
 
     public init(
         crypto: SessionCryptoMode,
@@ -206,7 +214,8 @@ public struct SessionConfig: Sendable {
         repairStoreByteCap: Int = 16 << 20,
         cleanVideoQueueBudgetNS: UInt64 = 50_000_000,
         impairedVideoQueueBudgetNS: UInt64 = 100_000_000,
-        repairQueueUsefulnessNS: UInt64 = 100_000_000
+        repairQueueUsefulnessNS: UInt64 = 100_000_000,
+        clientIdrOfferInFlightNS: UInt64 = 500_000_000
     ) {
         self.crypto = crypto
         self.rateBitsPerSecond = rateBitsPerSecond
@@ -237,6 +246,7 @@ public struct SessionConfig: Sendable {
             100_000_000
         )
         self.repairQueueUsefulnessNS = repairQueueUsefulnessNS
+        self.clientIdrOfferInFlightNS = clientIdrOfferInFlightNS
     }
 }
 
@@ -551,9 +561,9 @@ public struct SessionCounters: Equatable, Sendable {
     public var beaconsSent = 0
     public var beaconEchoes = 0
     public var idrRequests = 0
-    /// Client 0x10 retries naming damage already superseded by a newer
-    /// host IDR. The newer anchor may still be in flight; minting another
-    /// keyframe here would amplify one recovery episode.
+    /// Client 0x10 retries naming damage older than a host IDR still inside
+    /// its in-flight offer window. Encode-time is not delivery proof; after
+    /// the window a continuing episode may re-arm.
     public var idrRequestsSupersededByKeyframe = 0
     /// Reliable CTRL messages the ARQ delivered (HS-8).
     public var arqMessages = 0
@@ -728,6 +738,10 @@ public final class Session {
     public private(set) var freshKeyframeDemandCounts =
         FreshKeyframeDemandCounts()
     private var repairBudget = SessionRepairBudgetBook()
+    /// Injected `now` when the channel last advanced `lastKeyframeNumber`.
+    /// Bounds how long older-named 0x10 retries may coalesce against that
+    /// offer; never treated as proof the client accepted an IRAP.
+    private var lastKeyframeOfferedAtNS: UInt64?
 
     // MARK: HS-11 lifecycle + W7 capabilities state
 
@@ -1314,6 +1328,7 @@ public final class Session {
         // is the evidence that something plausibly decoded.
         if prepared.isKeyframe {
             repairBudget.noteOpeningIdr(shardCount: shards)
+            lastKeyframeOfferedAtNS = now
         }
         lastAdmittedVideoFrameNumber = context.frameNumber
         return shards
@@ -2981,12 +2996,17 @@ public final class Session {
             }
             counters.idrRequests += 1
             // The requester retries one recovery episode every 500 ms until
-            // its renderer accepts an IRAP. Once our newer IDR is committed,
-            // a retry naming older damage is already answered even if that
-            // anchor is still crossing the path. If it was itself lost, later
-            // undecodable frames carry numbers at/after it and remain eligible.
+            // its renderer accepts an IRAP. Encode-time
+            // `lastKeyframeNumber` is an offer, not delivery proof: suppress
+            // older-named retries only while that offer is still inside the
+            // in-flight window. A wholly lost recovery IDR on a static
+            // desktop keeps naming the pre-IDR damage forever; after the
+            // window the episode must be able to re-arm. Damage at/after
+            // the offered anchor remains eligible immediately.
             if let lastIdr = channel.lastKeyframeNumber,
-               request.frame < lastIdr {
+               request.frame < lastIdr,
+               let offeredAt = lastKeyframeOfferedAtNS,
+               now &- offeredAt < config.clientIdrOfferInFlightNS {
                 counters.idrRequestsSupersededByKeyframe += 1
             } else {
                 freshKeyframes.arm(.clientRequest)

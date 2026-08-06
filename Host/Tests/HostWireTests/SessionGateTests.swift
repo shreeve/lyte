@@ -407,7 +407,10 @@ final class SessionGateTests: XCTestCase {
                       "the demanded frame reaches the wire as keyframe shards")
 
         // A fire-and-forget retry for the SAME recovery episode names damage
-        // older than the IDR we just committed. It must not mint another IDR.
+        // older than the IDR we just offered. Inside the in-flight window
+        // it must not mint another IDR (storm control); encode-time is not
+        // delivery proof — see IdrOfferInFlightGateTests for the lost-IDR
+        // re-arm after the window.
         let retry = IdrRequest(
             requestSeq: 1, frame: FrameNumber(rawValue: 7), coalescedCount: 4
         )
@@ -418,7 +421,7 @@ final class SessionGateTests: XCTestCase {
             from: Self.tupleA, now: clock, hostMicroseconds: t4 + 2_000
         )
         XCTAssertFalse(session.takeFreshKeyframeRequest(),
-            "a newer committed IDR already answers this episode")
+            "an in-flight offered IDR still answers this episode")
         XCTAssertEqual(session.counters.idrRequestsSupersededByKeyframe, 1)
 
         // Genuine later damage is at/after that anchor and starts a new heal.

@@ -12,15 +12,15 @@ import LyteWireTestKit
 // judgement, retention, estimator, and scheduling laws below:
 //
 //   • STALENESS VERDICTS (resiliency §1.1 rules 3–4): a frame older
-//     than the last IDR is refused dead (no repair, no IDR — the IDR
-//     already re-anchored the chain) while the IDR itself stays
-//     repairable; a NACK whose SRTT + retransmit serialization no
-//     longer fit the cadence-derived freeze budget is answered with the
-//     IDR alternative through the SAME coalesced keyframe latch client
-//     0x10 requests pull; no RTT evidence means no honest promise, so the
-//     gate refuses; an evicted frame is unavailable → IDR; one
-//     attempt per shard, ever — no retransmission of retransmissions;
-//     a closed session suppresses repairs entirely;
+//     than the last IDR is refused dead (no repair, no host IDR arm —
+//     the client owns coalesced 0x10 recovery) while the IDR itself
+//     stays repairable; a NACK whose SRTT + retransmit serialization no
+//     longer fit the cadence-derived freeze budget is refused (0x23)
+//     without arming a host IDR — the client's IdrRequester escalates;
+//     no RTT evidence means no honest promise, so the gate refuses; an
+//     evicted frame is unavailable and likewise refuses without a host
+//     IDR arm; one attempt per shard, ever — no retransmission of
+//     retransmissions; a closed session suppresses repairs entirely;
 //   • THE ≥4 s RING: the repair store evicts by age and by byte cap,
 //     oldest first;
 //   • POST-FEC LOSS → THE ESTIMATOR (HS-16's named seam): NACK

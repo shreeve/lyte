@@ -1,8 +1,9 @@
 # Harsh-path control plane — detection, mitigation, optimality
 
 *2026-08-06 local. Analysis of Lyte’s end-to-end congestion / loss / jitter /
-stall control plane, with the uncommitted harsh-network patch as the working
-tree under review. Not a protocol change; frozen vectors untouched.*
+stall control plane, with the harsh-network patch as the working tree under
+review. Control-plane policy only — not a wire/protocol change; frozen
+vectors untouched.*
 
 ## Measured path envelope
 
@@ -55,7 +56,7 @@ Product posture today: default 4:2:0 on many connects; Best 4:4:4 when negotiate
 | NACK repair | `Session.respondToNack` | SRTT freeze gate; opening exemption; refusals 0x23 |
 | Fall purge | Session on rate fall | Purges stale backlog; arms `.fallPurge` IDR |
 | Fresh-keyframe book | `SessionFreshKeyframeBook` | Coalesced causes; **stale-NACK IDR arm removed** (patch) |
-| Client IDR episode | `IdrRequester` 500 ms retry | Sole recovery owner after stale repair; superseded retries suppressed on host |
+| Client IDR episode | `IdrRequester` 500 ms retry | Sole recovery owner after stale repair; host suppresses older-named 0x10 only for an in-flight offer window (encode-time `lastKeyframeNumber` is not delivery proof) |
 | Conductor reserve | 1–4 beats | Absorb delay/jitter without rate churn |
 | Audio PLC / depth | jitter buffer 5–20 pkts | Protects intelligibility; pacer reserves 320 kbps |
 
@@ -78,7 +79,9 @@ Post-FEC holes          REPAIR then RECOVER
 FIXED AMPLIFICATION (prior patch):
   host stale-NACK armed IDR  +  client coalesced 500 ms retries
   -> 124 IDRs under moderate netem
-  NOW: host refuses; client episode; host suppresses request.frame < lastIDR
+  NOW: host refuses; client episode; host suppresses older-named 0x10
+       only while a newer IDR offer is in flight (500 ms), then re-arms
+       if the episode keeps naming pre-offer damage (lost-IDR stall fix)
 ```
 
 ### Loop-interaction answers
@@ -98,6 +101,7 @@ FIXED AMPLIFICATION (prior patch):
 | 1 | Floor 500 kbps < protected reserve | Math: 820 kbps reserve + lossy 1+2 FEC in 25 ms | **Fixed in patch** (2 Mbps) |
 | 2 | `frameByteCeiling` ignored FEC wire | Harsh path entered lossy geometry; encoder admitted unpaceable frames | **Fixed in patch** |
 | 3 | Host stale-NACK IDR × client retries | 124 IDRs moderate netem | **Fixed in patch** |
+| 3b | Encode-time `lastKeyframeNumber` forever superseding 0x10 | Wholly lost recovery IDR + static desktop → permanent black glass | **Fixed**: in-flight offer window, then re-arm |
 | 4 | Climb gated on post-FEC < 0.5% | ~3 Mbps settle under 1% netem; rung-3 is 2% | **Fixed this pass** |
 | 5 | Probe cadence 10 s after failed probe | Slows recovery after wall-slam; intentional HS-30 | Deferred — needs live A/B |
 | 6 | Belief censored at pace | Structural; climb is geometric 10%/s | Accept; do not fake padding |
@@ -112,7 +116,7 @@ Layered stages matching resiliency §4 and the Conductor laws:
 1. **Absorb (client tempo)** — Conductor reserve + audio depth for delay/jitter with ≈0 loss. No host rate move.
 2. **Shape (host capacity)** — Delay inflation and honesty-gated falls; pre-FEC hold band; post-FEC rung-3 + FEC step; FEC-aware frame ceiling; operational floor ≥ protected + min FEC flight.
 3. **Repair (targeted)** — NACK within freeze budget; refuse otherwise; never host-arm IDR from stale NACK.
-4. **Recover (one episode)** — Client coalesced IDR; host honors only non-superseded requests; fall purge / unprotectable / lifecycle keep their own arms.
+4. **Recover (one episode)** — Client coalesced IDR; host coalesces older-named 0x10 only for an in-flight offer window, then re-arms if the episode continues; fall purge / unprotectable / lifecycle keep their own arms.
 5. **Climb** — Evidence rises whenever pre-FEC is clean and post-FEC ≤ rung-3; `lastGoodRate` and FEC step-down stay on the strict clean column (< 0.5%).
 
 Sans-IO: all policy remains in `HostWire` / `LyteCore` value types with injected time. No frozen-vector change.
@@ -124,7 +128,7 @@ Sans-IO: all policy remains in `HostWire` / `LyteCore` value types with injected
 | Change | Files |
 |---|---|
 | Floor 2 Mbps; FEC-aware `frameByteCeiling` | `RateEstimator.swift`, tests, `benchmark-netem.sh` artifact filter |
-| Client-owned recovery; supersede IDR retries; remove stale-NACK arm | `Session.swift`, `SessionFreshKeyframeBook.swift`, `HostApplication.swift`, `SessionWire.swift`, related tests |
+| Client-owned recovery; in-flight 0x10 coalesce; remove stale-NACK arm; lost-IDR re-arm | `Session.swift`, `SessionFreshKeyframeBook.swift`, `HostApplication.swift`, `SessionWire.swift`, `IdrOfferInFlightGateTests.swift`, related tests |
 | Climb admits mild post-FEC residual (≤2%); book `upshiftsUnderMildPostFec`; pins | `RateEstimator.swift`, `RateEstimatorGateTests.swift` |
 
 ### Deferred (actionable)
