@@ -9,8 +9,8 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ browser B-3 — control-only Chrome session (pull if HEAD
-  moved). WASM Noise IK + PIN PAKE + capabilities + teardown over
+- **Tip:** `main` @ #236 — browser B-3 control-only Chrome session (pull
+  if HEAD moved). WASM Noise IK + PIN PAKE + capabilities + teardown over
   `lyte-wt-sidecar --udp-peer` against DRM-free `lyte-control-peer`
   (`Browser/`, `Host/Sources/lyte-control-peer/`, `docs/BROWSER.md`).
 - **Next:** **B-4** — one timestamped frame through WebCodecs + WebGPU.
