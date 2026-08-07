@@ -9,7 +9,7 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ browser-client platform B-0 (pull if HEAD moved) —
+- **Tip:** `main` @ #230 — browser-client platform B-0 (pull if HEAD moved) —
   peer platform slice opened; WebTransport carrier and `LyteClientBrowser`
   naming frozen in
   `docs/20260807-021425-browser-client-platform-slice.md`.
