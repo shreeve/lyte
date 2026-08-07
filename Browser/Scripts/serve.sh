@@ -1,6 +1,6 @@
 #!/bin/sh
 # Serve Browser/.serve/ with lyte-control-peer + lyte-wt-sidecar for the
-# B-3 Chrome proof. Requires a prior Browser/Scripts/build.sh.
+# B-3/B-4 Chrome proof. Requires a prior Browser/Scripts/build.sh.
 # Binds 127.0.0.1 only. Never touches standing host UDP 41151.
 set -eu
 
@@ -19,7 +19,9 @@ PEER_PID=""
 if [ ! -f "${SERVE_DIR}/index.html" ] \
     || [ ! -f "${SERVE_DIR}/LyteClientBrowser.wasm" ] \
     || [ ! -f "${SERVE_DIR}/webtransport-carrier.js" ] \
-    || [ ! -f "${SERVE_DIR}/control-session.js" ]; then
+    || [ ! -f "${SERVE_DIR}/control-session.js" ] \
+    || [ ! -f "${SERVE_DIR}/frame-present.js" ] \
+    || [ ! -f "${SERVE_DIR}/frame-000-idr.annexb" ]; then
     echo "browser-serve: missing staged tree — run Browser/Scripts/build.sh first" >&2
     exit 1
 fi
@@ -116,7 +118,7 @@ done
 PIN="$(python3 -c 'import json; print(json.load(open("'"${PEER_META}"'"))["pin"])')"
 echo "browser-serve: http://127.0.0.1:${PORT}/"
 echo "browser-serve: open that URL in Google Chrome (primary gate)"
-echo "browser-serve: expect PASS for B-1 + control-session/* (B-3)"
+echo "browser-serve: expect PASS for B-1 + control-session/* + frame-present/* (B-4)"
 echo "browser-serve: control PIN ${PIN} (also in ${PEER_META})"
 echo "browser-serve: Ctrl-C to stop"
 cd "$SERVE_DIR"

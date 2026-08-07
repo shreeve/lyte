@@ -9,11 +9,11 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ #236 — browser B-3 control-only Chrome session (pull
-  if HEAD moved). WASM Noise IK + PIN PAKE + capabilities + teardown over
-  `lyte-wt-sidecar --udp-peer` against DRM-free `lyte-control-peer`
-  (`Browser/`, `Host/Sources/lyte-control-peer/`, `docs/BROWSER.md`).
-- **Next:** **B-4** — one timestamped frame through WebCodecs + WebGPU.
+- **Tip:** `main` @ browser B-4 — one timestamped canned HEVC IRAP through
+  WebCodecs + WebGPU in Chrome (pull if HEAD moved). Keeps B-3 control
+  session; fixture is Wire `video-corpus-v1/frame-000-idr.annexb`
+  (`Browser/`, `docs/BROWSER.md`).
+- **Next:** **B-5** — live Conductor-driven video over the browser path.
   Wayland clipboard leaf remains **blocked on GNOME** —
   `docs/20260807-015743-wayland-clipboard-gnome-blocker.md`.
 
@@ -46,11 +46,12 @@
 displace 41151 — test hosts use a fresh 41xxx port and `--no-advertise`; no
 second Direct Eye while 41151 holds the DRM seat (parallel eyes black the
 glass); hand-run binaries under the home build tree with `setcap` (not
-`/tmp`). B-3 uses `lyte-control-peer` (no DRM) on a fresh 41xxx port.
+`/tmp`). Browser B-3/B-4 use `lyte-control-peer` (no DRM) on a fresh 41xxx
+port; B-4 frame is a canned corpus IRAP (no host media / no Direct Eye).
 
 ## Proof (final bars)
 
-### Browser B-3 — PASS (Chrome)
+### Browser B-4 — PASS (Chrome)
 
 ```sh
 Browser/Scripts/build.sh
@@ -61,13 +62,21 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 # SKIP  wt-carrier/* — sidecar --udp-peer mode (B-2 already landed)
 # PASS  control-session/noise-pair-caps
 # PASS  control-session/teardown
+# PASS  frame-present/classify
+# PASS  frame-present/webcodecs — hev1.1.6.L150.B0, ts=1000000µs
+# PASS  frame-present/webgpu — importExternalTexture → canvas
 ```
 
 Interactive: `Browser/Scripts/serve.sh` → http://127.0.0.1:8765/ in Chrome
-(starts `lyte-control-peer` + `lyte-wt-sidecar --udp-peer`). Safari not a
-gate. No media / no Direct Eye. Optional pup qualification: run
-`lyte-control-peer` on pup 41xxx and point the Mac sidecar at it — never
-41151.
+(starts `lyte-control-peer` + `lyte-wt-sidecar --udp-peer`). Smoke needs
+GPU (no `--disable-gpu`). Safari not a gate. Frame fixture is canned —
+not live Conductor / not Direct Eye. Optional pup qualification for
+control peer only: fresh 41xxx — never 41151.
+
+### Browser B-3 — PASS (Chrome)
+
+Control-only session (Noise / PIN PAKE / capabilities / teardown) via
+sidecar `--udp-peer` → DRM-free `lyte-control-peer`. Landed #236/#237.
 
 ### Browser B-2 — PASS (Chrome)
 

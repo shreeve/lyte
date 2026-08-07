@@ -48,7 +48,15 @@ through the sidecar in `--udp-peer` mode:
 - PIN PAKE pairing (`PairingPakeInitiator` ↔ `PairingResponderService`)
 - capability declaration / agreement via `LyteClientSession`
 - typed `SessionTeardown`
-- media channels ignored (no WebCodecs, no Direct Eye on the peer)
+- peer has no Direct Eye (safe beside standing 41151)
+
+**B-4 is green in Chrome:** one **timestamped** canned HEVC IRAP from the
+frozen Wire corpus (`video-corpus-v1/frame-000-idr.annexb`, staged by
+`build.sh`) is classified in WASM (`AnnexBCheck`), decoded with **WebCodecs**
+(`hev1.1.6.L150.B0`, hardware prefer), and presented with **WebGPU**
+(`importExternalTexture` → `<canvas>`). This is **not** live Conductor
+video and **not** host-emitted media over WT — those are B-5. The control
+plane from B-3 stays in the same proof page.
 
 Logical packets stay transport-independent:
 
@@ -64,19 +72,22 @@ pretend otherwise. Native Lyte keeps custom UDP.
 Page JavaScript can call back into WASM via
 `globalThis.lyteBrowser.runFrozenContracts()`,
 `verifyCarrierEcho(...)`, `controlOpen` / `controlBegin` / `controlIngest`
-/ `controlTick` / `controlTeardown`, and related helpers. Headless gate:
-`Browser/Scripts/smoke-chrome.sh`.
+/ `controlTick` / `controlTeardown`, `classifyAnnexBHex(...)`, and related
+helpers. Headless gate: `Browser/Scripts/smoke-chrome.sh` (needs GPU —
+does not pass `--disable-gpu`).
 
-This does **not** yet prove WebCodecs, WebGPU presentation, or Conductor
-video against pup's standing Direct Eye host.
+This does **not** yet prove live Conductor-driven video, FEC reassembly of
+host shards over WT, or a Direct Eye session against pup's standing host.
 
 The client policy boundaries are moving in the same direction:
 `LyteClientCore` and `LyteClientSession` now compile on Linux with warnings as
 errors. A browser shell must consume those IO-free boundaries rather than
 reimplementing their policy in JavaScript. B-3 wires `LyteClientSession`
-into the WASM control initiator for capabilities / lifecycle.
+into the WASM control initiator for capabilities / lifecycle. B-4 keeps
+HEVC decode/present in page JS (platform ports) and Annex-B classification
+in `LyteCore`.
 
-## Run B-1 / B-2 / B-3 locally (Chrome)
+## Run B-1 … B-4 locally (Chrome)
 
 Pins match the Wire wasm leg: swiftly toolchain **6.3.3** + SDK
 `swift-6.3.3-RELEASE_wasm` (install commands in
@@ -84,11 +95,12 @@ Pins match the Wire wasm leg: swiftly toolchain **6.3.3** + SDK
 
 ```sh
 # From the repository root
-Browser/Scripts/build.sh          # stages Browser/.serve/
+Browser/Scripts/build.sh          # stages Browser/.serve/ (+ corpus IRAP)
 Browser/Scripts/serve.sh          # http://127.0.0.1:8765/ + control-peer + wt-sidecar
-# Open that URL in Google Chrome — expect PASS for B-1 + control-session/*.
+# Open that URL in Google Chrome — expect PASS for B-1 + control-session/*
+# and frame-present/* (WebCodecs + WebGPU).
 
-# Optional headless gate (system Chrome + node + openssl + Xcode swift)
+# Headless gate (system Chrome + node + openssl + Xcode swift; needs GPU)
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   Browser/Scripts/smoke-chrome.sh
 ```
@@ -100,19 +112,21 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 3. static file server for `.serve/`
 
 `build.sh` uses PackageToJS `--use-cdn` so the WASI browser shim loads from
-jsDelivr; no local `npm install` is required for the served page. The B-2
-sidecar installs `rwebtransport` under `Browser/Harness/` on first run
+jsDelivr; no local `npm install` is required for the served page. It also
+copies `Wire/Vectors/video-corpus-v1/frame-000-idr.annexb` into `.serve/`
+for the B-4 fixture (not duplicated in `Browser/` git). The B-2 sidecar
+installs `rwebtransport` under `Browser/Harness/` on first run
 (`node_modules/` is gitignored). The release wasm is large (~76 MB today;
 swift-crypto/FoundationEssentials drag — recorded in the scoping doc, not
 fought this slice). `wasm-opt` is optional and not required for the gate.
 
 **Echo vs peer sidecar:** B-2 carrier echoes need the sidecar's built-in UDP
-echo. B-3 needs `--udp-peer`. The combined page SKIPs `wt-carrier/*` when
+echo. B-3/B-4 need `--udp-peer`. The combined page SKIPs `wt-carrier/*` when
 the sidecar is in peer mode (B-2 already landed) and runs the control
-session instead.
+session plus the canned-frame proof.
 
 **Safari:** deferred. Recent Safari may run the WASM proof page, but Safari
-is not a B-1/B-2/B-3 gate. Fleet `serverCertificateHashes` constraints remain a
+is not a B-1…B-4 gate. Fleet `serverCertificateHashes` constraints remain a
 later concern. Do not block Chrome progress on Safari.
 
 ### Optional pup qualification (no DRM)
@@ -239,8 +253,8 @@ independently testable slices (full matrix in the B-0 decision record):
 | **B-1** | Load Lyte WASM in Chrome; exercise frozen contracts through the JS boundary — **landed** |
 | **B-2** | Opaque datagram round-trip through the WebTransport adapter; measure datagram ceiling — **landed** |
 | **B-3** | Pair, Noise, capabilities, control-only session — **landed** (HostWire peer; pup optional) |
-| **B-4** | One timestamped frame through WebCodecs and WebGPU — **next** |
-| **B-5** | Live Conductor-driven video |
+| **B-4** | One timestamped frame through WebCodecs and WebGPU — **landed** (canned corpus IRAP) |
+| **B-5** | Live Conductor-driven video — **next** |
 | **B-6** | AudioWorklet, input, clipboard, product UI — browser client “done” |
 
 Every slice keeps the native Mac/Linux gates and the WASM vector suite green.

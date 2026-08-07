@@ -64,12 +64,19 @@ rm -rf "$SERVE_DIR"
 mkdir -p "$SERVE_DIR"
 # PackageToJS output (wasm + JS loader + WASI browser shim via CDN).
 cp -R "${PACKAGE_OUT}/." "$SERVE_DIR/"
-# Diagnostic host page + B-2 carrier pump + B-3 control-session pump.
+# Diagnostic host page + B-2/B-3 pumps + B-4 WebCodecs/WebGPU proof.
 cp "${BROWSER_ROOT}/Page/index.html" "$SERVE_DIR/index.html"
 cp "${BROWSER_ROOT}/Page/webtransport-carrier.js" "$SERVE_DIR/webtransport-carrier.js"
 cp "${BROWSER_ROOT}/Page/control-session.js" "$SERVE_DIR/control-session.js"
+cp "${BROWSER_ROOT}/Page/frame-present.js" "$SERVE_DIR/frame-present.js"
+# Frozen corpus IRAP — do not duplicate into git; stage from Wire vectors.
+IDR_FIXTURE="${BROWSER_ROOT}/../Wire/Vectors/video-corpus-v1/frame-000-idr.annexb"
+[ -f "$IDR_FIXTURE" ] || fail "missing canned IRAP fixture ${IDR_FIXTURE}"
+cp "$IDR_FIXTURE" "${SERVE_DIR}/frame-000-idr.annexb"
 
 SIZE="$(wc -c < "${SERVE_DIR}/LyteClientBrowser.wasm" | tr -d ' ')"
+IDR_SIZE="$(wc -c < "${SERVE_DIR}/frame-000-idr.annexb" | tr -d ' ')"
 echo "browser-build: staged ${SERVE_DIR}"
 echo "browser-build: LyteClientBrowser.wasm is ${SIZE} bytes"
+echo "browser-build: frame-000-idr.annexb is ${IDR_SIZE} bytes (B-4 fixture)"
 echo "browser-build: next — Browser/Scripts/serve.sh  (then open in Chrome)"

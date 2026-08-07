@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LyteClientBrowser — B-3</title>
+  <title>LyteClientBrowser — B-4</title>
   <style>
     :root {
       color-scheme: light;
@@ -69,6 +69,20 @@
       cursor: pointer;
     }
     button:hover { background: #f7f5f0; }
+    .frame-wrap {
+      margin-top: 1.25rem;
+      background: #0d0d0f;
+      border: 1px solid #d8d4cb;
+      line-height: 0;
+    }
+    #frame-canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      max-height: 22rem;
+      object-fit: contain;
+      background: #0d0d0f;
+    }
     .note {
       margin-top: 2rem;
       color: var(--muted);
@@ -81,18 +95,23 @@
   <main>
     <h1>LyteClientBrowser</h1>
     <p class="sub">
-      B-3 proof: Swift WASM frozen contracts, opaque WebTransport datagrams,
-      then a control-only session (Noise IK + PIN PAKE + capabilities +
-      teardown) against a HostWire peer via lyte-wt-sidecar. No media.
+      B-4 proof: Swift WASM frozen contracts and a control-only session
+      (Noise IK + PIN PAKE + capabilities + teardown), then one timestamped
+      canned HEVC IRAP through WebCodecs decode and WebGPU present. Not live
+      Conductor video (B-5).
     </p>
     <div id="status" class="pending">LOADING</div>
     <pre id="log">Instantiating LyteClientBrowser.wasm…</pre>
+    <div class="frame-wrap">
+      <canvas id="frame-canvas" width="960" height="540" aria-label="WebGPU presented frame"></canvas>
+    </div>
     <pre id="meta"></pre>
     <button type="button" id="rerun" disabled>Re-run proofs</button>
     <p class="note">
       Safari is deferred. Native Lyte keeps custom UDP; browser Lyte uses
       WebTransport as the browser-safe carrier. The sidecar never unseals.
-      Standing host UDP 41151 is never used by this harness.
+      Standing host UDP 41151 is never used by this harness. Frame fixture is
+      Wire video-corpus-v1/frame-000-idr.annexb (canned IRAP).
     </p>
   </main>
   <script type="module">
@@ -104,21 +123,24 @@
       loadControlPeerMeta,
       runControlSessionProof,
     } from "./control-session.js";
+    import { runFramePresentProof } from "./frame-present.js";
 
     const status = document.getElementById("status");
     const log = document.getElementById("log");
     const metaEl = document.getElementById("meta");
     const rerun = document.getElementById("rerun");
+    const canvas = document.getElementById("frame-canvas");
 
     function setOutcome(passed, lines, extraMeta) {
       status.textContent = passed ? "PASS" : "FAIL";
       status.className = passed ? "pass" : "fail";
       log.textContent = lines;
       if (extraMeta) metaEl.textContent = extraMeta;
-      globalThis.lyteB3Passed = passed;
+      globalThis.lyteB4Passed = passed;
     }
 
     async function runAll() {
+      globalThis.lyteB4Passed = undefined;
       const b1 = globalThis.lyteBrowser?.runFrozenContracts?.();
       if (!b1?.passed) {
         setOutcome(
@@ -156,15 +178,15 @@
             setOutcome(false, lines, `adapter=${wt.adapter} url=${wt.url}`);
             return;
           }
-          // Echo-only serve: B-2 green is enough when no control peer is staged.
           try {
             await loadControlPeerMeta("./control-peer.json");
           } catch {
             setOutcome(
-              wt.passed,
-              lines,
-              `adapter=${wt.adapter} url=${wt.url}\n` +
-                `B-2 only (no control-peer.json — start serve.sh for B-3)`
+              false,
+              lines +
+                "\nFAIL  control-session — no control-peer.json " +
+                "(start serve.sh for B-3/B-4)",
+              `adapter=${wt.adapter} url=${wt.url}`
             );
             return;
           }
@@ -179,6 +201,20 @@
           pin: peer.pin,
         });
         lines = lines + "\n" + ctrl.lines;
+        globalThis.lyteB3Passed = !!ctrl.passed;
+        if (!ctrl.passed) {
+          setOutcome(
+            false,
+            lines,
+            `adapter=${sidecar.adapter} url=${sidecar.url} shape=${sidecar.shape}`
+          );
+          return;
+        }
+
+        status.textContent = "FRAME…";
+        log.textContent = lines + "\n\nDecoding canned IRAP (WebCodecs → WebGPU)…";
+        const frame = await runFramePresentProof({ canvas });
+        lines = lines + "\n" + frame.lines;
         const meta =
           `adapter=${sidecar.adapter} url=${sidecar.url} shape=${sidecar.shape}\n` +
           `controlPeer=${peer.bindHost}:${peer.listenPort} ` +
@@ -186,12 +222,12 @@
           (measuredCeiling != null
             ? `measuredCeiling=${measuredCeiling} B reportedMax=${reportedMax}\n`
             : "") +
-          `B-3 = Noise + pair + capabilities + teardown; no media.`;
-        setOutcome(ctrl.passed, lines, meta);
+          (frame.meta || "");
+        setOutcome(frame.passed, lines, meta);
       } catch (error) {
         lines =
           lines +
-          "\nFAIL  control-session — " +
+          "\nFAIL  browser-proof — " +
           String(error?.message || error);
         setOutcome(false, lines);
       }
@@ -210,6 +246,7 @@
       setOutcome(false, String(error?.stack || error));
       globalThis.lyteB1Passed = false;
       globalThis.lyteB3Passed = false;
+      globalThis.lyteB4Passed = false;
     }
   </script>
 </body>
