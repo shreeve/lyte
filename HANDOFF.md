@@ -9,9 +9,10 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
     rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ browser B-6 interaction shell (pull if HEAD moved) —
-  sealed input echo, capability-gated clipboard text, Opus → AudioWorklet,
-  product connect/PIN/video UI on top of B-3…B-5 Conductor video.
+- **Tip:** `main` @ #242 — browser B-6 interaction shell (pull if HEAD
+  moved): sealed input echo, capability-gated clipboard text, Opus →
+  AudioWorklet, product connect/PIN/video UI on top of B-3…B-5 Conductor
+  video.
 - **Next:** daily-driver browser RD remainders (live Direct Eye against
   standing host, persistent interactive session, Safari, OS clipboard on
   non-GNOME paths). Wayland clipboard leaf remains **blocked on GNOME** —
