@@ -1,4 +1,4 @@
-/// One frozen-contract check result for the B-1 Chrome proof page.
+/// One frozen-contract or carrier-proof check result for the Chrome page.
 struct ContractResult: Sendable {
     var name: String
     var passed: Bool

@@ -8,6 +8,11 @@ import LyteWire
 enum FrozenNoiseContract {
     static let vectorName = "noise-v1/snow-ik-25519-chachapoly-sha256"
 
+    /// Committed IK message-1 ciphertext hex from noise-v1.json — reused as
+    /// an opaque sealed payload for the B-2 WebTransport carrier proof.
+    static let msg1CiphertextHex =
+        "6d21fec9141f3f37cc464e936a48b2d9521b5a44e0f3d960895d3c3fba30282f731f445c25e898e2534ac0536715b24308c108fc46bd260c887b36c3f68e3a05654fc8295c068ed53fb2022560961224e0b10b0835e1efc82fc587cd50f7178fe3d9eb06e0351c6e7334162c10bed670bfa2a105f7b2768a140b3fd597782601"
+
     static func verify() -> ContractResult {
         do {
             let initStatic = try key(
@@ -38,10 +43,7 @@ enum FrozenNoiseContract {
                 "95a8f51c435a9530ff1f30868ed7b23ec952eb513c26a0774fed82d2978a8c81",
                 "msg1 payload"
             )
-            let msg1Ciphertext = try bytes(
-                "6d21fec9141f3f37cc464e936a48b2d9521b5a44e0f3d960895d3c3fba30282f731f445c25e898e2534ac0536715b24308c108fc46bd260c887b36c3f68e3a05654fc8295c068ed53fb2022560961224e0b10b0835e1efc82fc587cd50f7178fe3d9eb06e0351c6e7334162c10bed670bfa2a105f7b2768a140b3fd597782601",
-                "msg1 ciphertext"
-            )
+            let msg1Ciphertext = try bytes(msg1CiphertextHex, "msg1 ciphertext")
             let msg2Payload = try bytes(
                 "b866b807a6d8b83182b884dbfedc861843c5082bd6e480cb54e4245a72083041",
                 "msg2 payload"

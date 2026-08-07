@@ -28,20 +28,42 @@ JavaScript boundary:
 - `envelope-v1/nominal-video-shard` — decode + re-encode byte match
 - `noise-v1/snow-ik-25519-chachapoly-sha256` — IK message 1+2 byte match
 
+**B-2 is green in Chrome:** the same page dials a same-box
+`lyte-wt-sidecar` (`Browser/Scripts/wt-sidecar.mjs`, Node
+`rwebtransport`) and round-trips **opaque** Lyte-shaped datagrams over
+WebTransport:
+
+- frozen envelope framing bytes survive WT↔UDP echo
+- frozen Noise IK message-1 **ciphertext** survives as opaque bytes (sidecar
+  never unseals)
+- full `WireBudget.maxDatagramByteCount` (1152 B) round-trips
+- measured usable ceiling **1214 B** ≥ 1152 B (Chrome's reported
+  `maxDatagramSize` was 1024 — treat runtime measure as truth)
+
+Logical packets stay transport-independent:
+
+```text
+Lyte packet → native: UDP | browser: WebTransport datagram
+```
+
+WebTransport is **not** raw UDP. It is the browser-safe QUIC/HTTP3 path
+(datagrams ≈ unreliable unordered delivery; TLS and congestion control
+built in). QUIC congestion control is less free than raw UDP — do not
+pretend otherwise. Native Lyte keeps custom UDP.
+
 Page JavaScript can call back into WASM via
-`globalThis.lyteBrowser.runFrozenContracts()` (and
-`verifyEnvelopeHex(...)`). Headless gate:
+`globalThis.lyteBrowser.runFrozenContracts()`,
+`verifyCarrierEcho(...)`, and related helpers. Headless gate:
 `Browser/Scripts/smoke-chrome.sh`.
 
-This does **not** yet prove WebTransport, WebCodecs, rendering, or a
-session against pup.
+This does **not** yet prove a session against pup, WebCodecs, or rendering.
 
 The client policy boundaries are moving in the same direction:
 `LyteClientCore` and `LyteClientSession` now compile on Linux with warnings as
 errors. A browser shell must consume those IO-free boundaries rather than
 reimplementing their policy in JavaScript.
 
-## Run B-1 locally (Chrome)
+## Run B-1 / B-2 locally (Chrome)
 
 Pins match the Wire wasm leg: swiftly toolchain **6.3.3** + SDK
 `swift-6.3.3-RELEASE_wasm` (install commands in
@@ -50,22 +72,23 @@ Pins match the Wire wasm leg: swiftly toolchain **6.3.3** + SDK
 ```sh
 # From the repository root
 Browser/Scripts/build.sh          # stages Browser/.serve/
-Browser/Scripts/serve.sh          # http://127.0.0.1:8765/
-# Open that URL in Google Chrome — expect PASS for both contracts.
+Browser/Scripts/serve.sh          # http://127.0.0.1:8765/ + wt-sidecar
+# Open that URL in Google Chrome — expect PASS for contracts + wt-carrier/*.
 
-# Optional headless gate (system Chrome + node)
+# Optional headless gate (system Chrome + node + openssl)
 Browser/Scripts/smoke-chrome.sh
 ```
 
 `build.sh` uses PackageToJS `--use-cdn` so the WASI browser shim loads from
-jsDelivr; no local `npm install` is required for the served page. The
-release wasm is large (~72 MB today; swift-crypto/FoundationEssentials drag
-— recorded in the scoping doc, not fought this slice). `wasm-opt` is
-optional and not required for the B-1 gate.
+jsDelivr; no local `npm install` is required for the served page. The B-2
+sidecar installs `rwebtransport` under `Browser/Harness/` on first run
+(`node_modules/` is gitignored). The release wasm is large (~72 MB today;
+swift-crypto/FoundationEssentials drag — recorded in the scoping doc, not
+fought this slice). `wasm-opt` is optional and not required for the gate.
 
 **Safari:** deferred. Recent Safari may run the WASM proof page, but Safari
-is not a B-1 gate. WebTransport / `serverCertificateHashes` fleet constraints
-remain a later concern (B-2+). Do not block Chrome progress on Safari.
+is not a B-1/B-2 gate. Fleet `serverCertificateHashes` constraints remain a
+later concern. Do not block Chrome progress on Safari.
 
 ## Intended shape
 
@@ -118,12 +141,19 @@ preserve unreliable, unordered datagram behavior without TCP head-of-line
 blocking. A carrier adapter moves opaque Lyte envelopes between WebTransport
 and the host's UDP session boundary.
 
-The adapter is not a second protocol endpoint. Pairing and Noise remain
-end-to-end between the browser's WASM client and the host; an optional bridge
-must see only ciphertext. Whether that adapter is an optional Linux host leaf
-or a same-box sidecar remains an explicit B-2 implementation decision. Its
-real datagram ceiling must be measured and, if necessary, negotiated downward
-per session rather than assumed.
+**B-2 adapter decision: same-box sidecar** (`lyte-wt-sidecar`) for the
+Chrome proof and local harness. It mints a short-lived ECDSA P-256 cert
+(≤14-day Chrome pin rules), exposes SHA-256 for
+`serverCertificateHashes`, and relays opaque datagrams onto loopback UDP
+(and back). Pairing and Noise remain end-to-end between the browser's WASM
+client and the host; the sidecar sees only ciphertext. An optional in-process
+Linux host leaf remains a later packaging choice — not required to claim B-2.
+Native UDP on standing 41151 is untouched.
+
+Measured datagram ceiling must be consulted (and negotiated downward per
+session if a future path falls short). Do not assume 1152 B from the Lyte
+budget alone; do not treat Chrome's reported `maxDatagramSize` as the sole
+truth without a measure.
 
 ## Codec posture
 
@@ -155,8 +185,8 @@ independently testable slices (full matrix in the B-0 decision record):
 |---|---|
 | **B-0** | Naming, WebTransport carrier, capability matrix, ladder — **landed** |
 | **B-1** | Load Lyte WASM in Chrome; exercise frozen contracts through the JS boundary — **landed** |
-| **B-2** | Opaque datagram round-trip through the WebTransport adapter; measure datagram ceiling — **next** |
-| **B-3** | Pair, Noise, capabilities, control-only session against pup |
+| **B-2** | Opaque datagram round-trip through the WebTransport adapter; measure datagram ceiling — **landed** |
+| **B-3** | Pair, Noise, capabilities, control-only session against pup — **next** |
 | **B-4** | One timestamped frame through WebCodecs and WebGPU |
 | **B-5** | Live Conductor-driven video |
 | **B-6** | AudioWorklet, input, clipboard, product UI — browser client “done” |

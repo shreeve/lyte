@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-// Drive system Chrome against the B-1 proof page and assert lyteB1Passed.
+// Drive system Chrome against the B-2 proof page: frozen WASM contracts plus
+// opaque WebTransport datagram carriage through lyte-wt-sidecar.
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -12,6 +14,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const browserRoot = fileURLToPath(new URL("..", import.meta.url));
 const serveDir = join(browserRoot, ".serve");
+const metaOut = join(serveDir, "wt-sidecar.json");
 const timeoutMs = Number(process.env.LYTE_BROWSER_SMOKE_TIMEOUT_S || 180) * 1000;
 
 const chrome =
@@ -36,7 +39,7 @@ async function ensureWs() {
     return require("ws");
   } catch {
     const { execFileSync } = await import("node:child_process");
-    const prefix = await mkdtemp(join(tmpdir(), "lyte-b1-npm-"));
+    const prefix = await mkdtemp(join(tmpdir(), "lyte-b2-npm-"));
     execFileSync(
       "npm",
       ["install", "--silent", "--no-fund", "--no-audit", "--prefix", prefix, "ws@8"],
@@ -44,6 +47,35 @@ async function ensureWs() {
     );
     return require(join(prefix, "node_modules", "ws"));
   }
+}
+
+async function startSidecar() {
+  await mkdir(serveDir, { recursive: true });
+  if (existsSync(metaOut)) {
+    await rm(metaOut, { force: true });
+  }
+  const proc = spawn(
+    process.execPath,
+    [join(browserRoot, "Scripts", "wt-sidecar.mjs"), "--meta-out", metaOut],
+    { stdio: ["ignore", "pipe", "pipe"] }
+  );
+  let stderr = "";
+  proc.stderr.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+  proc.stdout.on("data", () => {});
+  for (let i = 0; i < 100; i++) {
+    if (existsSync(metaOut)) {
+      const meta = JSON.parse(await readFile(metaOut, "utf8"));
+      return { proc, meta, stderr: () => stderr };
+    }
+    if (proc.exitCode != null) {
+      throw new Error(`wt-sidecar exited early (${proc.exitCode}): ${stderr}`);
+    }
+    await sleep(50);
+  }
+  proc.kill("SIGTERM");
+  throw new Error(`timed out waiting for ${metaOut}: ${stderr}`);
 }
 
 async function startStaticServer() {
@@ -97,11 +129,25 @@ async function cdp(wsUrl, WebSocket) {
   return { ws, send };
 }
 
+const requiredLogSnippets = [
+  "envelope-v1/nominal-video-shard",
+  "noise-v1/snow-ik-25519-chachapoly-sha256",
+  "wt-carrier/envelope-echo",
+  "wt-carrier/noise-msg1-echo",
+  "wt-carrier/budget-1152",
+  "wt-carrier/ceiling",
+];
+
 const WebSocket = await ensureWs();
+const { proc: sidecar, meta: sidecarMeta } = await startSidecar();
 const { server, port } = await startStaticServer();
 const userData = await mkdtemp(join(tmpdir(), "lyte-browser-smoke-"));
 const debugPort = 9200 + Math.floor(Math.random() * 200);
 const pageUrl = `http://127.0.0.1:${port}/index.html`;
+
+console.log(
+  `browser-smoke: sidecar ${sidecarMeta.url} (budget ${sidecarMeta.lyteBudgetBytes} B)`
+);
 
 const chromeProc = spawn(
   chrome,
@@ -113,6 +159,8 @@ const chromeProc = spawn(
     `--user-data-dir=${userData}`,
     `--remote-debugging-port=${debugPort}`,
     "--remote-allow-origins=*",
+    // WebTransport + pinned cert hashes are the B-2 path.
+    "--enable-features=WebTransport,WebTransportDraft07",
     "about:blank",
   ],
   { stdio: "ignore" }
@@ -145,12 +193,14 @@ try {
   while (Date.now() < deadline) {
     const result = await send("Runtime.evaluate", {
       expression: `(() => {
-        if (typeof lyteB1Passed === 'boolean') {
+        if (typeof lyteB2Passed === 'boolean') {
           return JSON.stringify({
             ready: true,
-            passed: lyteB1Passed,
+            passed: lyteB2Passed,
+            b1: typeof lyteB1Passed === 'boolean' ? lyteB1Passed : null,
             status: document.getElementById('status')?.textContent || '',
-            log: document.getElementById('log')?.textContent || ''
+            log: document.getElementById('log')?.textContent || '',
+            meta: document.getElementById('meta')?.textContent || ''
           });
         }
         return JSON.stringify({
@@ -166,27 +216,58 @@ try {
       if (!payload.passed) {
         console.error("browser-smoke: FAIL");
         console.error(payload.log);
+        if (payload.meta) console.error(payload.meta);
         failed = true;
         break;
       }
-      if (!payload.log.includes("envelope-v1/nominal-video-shard")) {
-        console.error("browser-smoke: missing envelope contract line");
+      for (const snippet of requiredLogSnippets) {
+        if (!payload.log.includes(snippet)) {
+          console.error(`browser-smoke: missing expected line containing ${snippet}`);
+          console.error(payload.log);
+          failed = true;
+          break;
+        }
+      }
+      if (failed) break;
+      if (!payload.log.includes("PASS  wt-carrier/ceiling")) {
+        console.error("browser-smoke: ceiling check did not PASS");
+        console.error(payload.log);
         failed = true;
         break;
       }
-      if (!payload.log.includes("noise-v1/snow-ik-25519-chachapoly-sha256")) {
-        console.error("browser-smoke: missing noise contract line");
-        failed = true;
-        break;
-      }
-      console.log("browser-smoke: PASS — Chrome reported B-1 frozen contracts green");
+      console.log(
+        "browser-smoke: PASS — Chrome reported B-1 contracts + B-2 WT carrier green"
+      );
       console.log(payload.log);
+      if (payload.meta) console.log(payload.meta);
+      // Persist measured ceiling next to the staged tree for docs/HANDOFF.
+      try {
+        const measurePath = join(serveDir, "wt-carrier-measure.json");
+        await writeFile(
+          measurePath,
+          JSON.stringify(
+            {
+              passed: true,
+              adapter: sidecarMeta.adapter,
+              url: sidecarMeta.url,
+              lyteBudgetBytes: sidecarMeta.lyteBudgetBytes,
+              metaText: payload.meta,
+              log: payload.log,
+            },
+            null,
+            2
+          ) + "\n"
+        );
+      } catch {
+        /* non-fatal */
+      }
       break;
     }
     if (
       (payload.status || "").includes("FAIL") &&
       payload.log &&
-      !payload.log.includes("Instantiating")
+      !payload.log.includes("Instantiating") &&
+      !payload.log.includes("Dialing WebTransport")
     ) {
       console.error("browser-smoke: page reported FAIL while loading");
       console.error(payload.log);
@@ -196,12 +277,16 @@ try {
     await sleep(250);
   }
   if (!failed && Date.now() >= deadline) {
-    console.error("browser-smoke: timeout waiting for lyteB1Passed");
+    console.error("browser-smoke: timeout waiting for lyteB2Passed");
     failed = true;
   }
   ws.close();
+} catch (error) {
+  console.error("browser-smoke:", error);
+  failed = true;
 } finally {
   chromeProc.kill("SIGTERM");
+  sidecar.kill("SIGTERM");
   server.close();
   await rm(userData, { recursive: true, force: true });
 }
