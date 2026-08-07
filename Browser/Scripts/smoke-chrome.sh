@@ -17,10 +17,23 @@ if [ ! -f "${BROWSER_ROOT}/.serve/LyteClientBrowser.wasm" ] \
     "${BROWSER_ROOT}/Scripts/build.sh"
 fi
 
+WT_RUNTIME="${LYTE_WT_RUNTIME:-node}"
+case "$WT_RUNTIME" in
+    node|bun) ;;
+    *)
+        echo "browser-smoke: LYTE_WT_RUNTIME must be node or bun (got ${WT_RUNTIME})" >&2
+        exit 1
+        ;;
+esac
 command -v node >/dev/null 2>&1 || {
     echo "browser-smoke: node is required" >&2
     exit 1
 }
+command -v "$WT_RUNTIME" >/dev/null 2>&1 || {
+    echo "browser-smoke: ${WT_RUNTIME} is required for wt-sidecar (LYTE_WT_RUNTIME)" >&2
+    exit 1
+}
+export LYTE_WT_RUNTIME="$WT_RUNTIME"
 command -v openssl >/dev/null 2>&1 || {
     echo "browser-smoke: openssl is required for wt-sidecar cert" >&2
     exit 1
