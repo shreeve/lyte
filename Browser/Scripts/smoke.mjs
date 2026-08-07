@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Drive system Chrome against the B-4 proof page: frozen WASM contracts,
-// a control-only session (Noise / pair / capabilities / teardown) through
-// lyte-wt-sidecar --udp-peer → lyte-control-peer, then one canned HEVC IRAP
-// through WebCodecs + WebGPU.
+// Drive system Chrome against the B-5 proof page: frozen WASM contracts,
+// a control session (Noise / pair / capabilities / teardown) through
+// lyte-wt-sidecar --udp-peer → lyte-control-peer --emit-corpus, then
+// Conductor-scheduled multi-frame WebCodecs + WebGPU present.
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -46,7 +46,7 @@ async function ensureWs() {
   try {
     return require("ws");
   } catch {
-    const prefix = await mkdtemp(join(tmpdir(), "lyte-b4-npm-"));
+    const prefix = await mkdtemp(join(tmpdir(), "lyte-b5-npm-"));
     execFileSync(
       "npm",
       ["install", "--silent", "--no-fund", "--no-audit", "--prefix", prefix, "ws@8"],
@@ -87,15 +87,26 @@ async function startControlPeer(bin) {
   const logFd = await import("node:fs").then((fs) =>
     fs.openSync(logPath, "w")
   );
+  const corpusDir = join(serveDir, "corpus");
+  if (!existsSync(join(corpusDir, "frame-000-idr.annexb"))) {
+    throw new Error(
+      `missing ${corpusDir}/frame-000-idr.annexb — run Browser/Scripts/build.sh`
+    );
+  }
   const proc = spawn(
-    bin,
+    "stdbuf",
     [
+      "-oL",
+      "-eL",
+      bin,
       "--listen",
       String(peerPort),
       "--bind",
       "127.0.0.1",
       "--meta-out",
       peerMetaOut,
+      "--emit-corpus",
+      corpusDir,
       "--seconds",
       "180",
     ],
@@ -209,13 +220,16 @@ const requiredLogSnippets = [
   "frame-present/classify",
   "frame-present/webcodecs",
   "frame-present/webgpu",
+  "conductor-video/assemble",
+  "conductor-video/schedule",
+  "conductor-video/present",
 ];
 
 if (
   !existsSync(join(serveDir, "LyteClientBrowser.wasm")) ||
   !existsSync(join(serveDir, "control-session.js")) ||
-  !existsSync(join(serveDir, "frame-present.js")) ||
-  !existsSync(join(serveDir, "frame-000-idr.annexb"))
+  !existsSync(join(serveDir, "conductor-video.js")) ||
+  !existsSync(join(serveDir, "corpus", "frame-000-idr.annexb"))
 ) {
   console.log("browser-smoke: building Browser package first…");
   execFileSync(join(browserRoot, "Scripts", "build.sh"), {
@@ -282,10 +296,10 @@ try {
   while (Date.now() < deadline) {
     const result = await send("Runtime.evaluate", {
       expression: `(() => {
-        if (typeof lyteB4Passed === 'boolean') {
+        if (typeof lyteB5Passed === 'boolean') {
           return JSON.stringify({
             ready: true,
-            passed: lyteB4Passed,
+            passed: lyteB5Passed,
             b1: typeof lyteB1Passed === 'boolean' ? lyteB1Passed : null,
             b3: typeof lyteB3Passed === 'boolean' ? lyteB3Passed : null,
             status: document.getElementById('status')?.textContent || '',
@@ -307,6 +321,24 @@ try {
         console.error("browser-smoke: FAIL");
         console.error(payload.log);
         if (payload.meta) console.error(payload.meta);
+        try {
+          const peerLog = await readFile(join(serveDir, "control-peer.log"), "utf8");
+          if (peerLog.trim()) {
+            console.error("--- control-peer.log ---");
+            console.error(peerLog.trim().split("\n").slice(-40).join("\n"));
+          }
+        } catch {
+          /* ignore */
+        }
+        try {
+          const wtLog = sidecar.stderr?.() || "";
+          if (wtLog.trim()) {
+            console.error("--- wt-sidecar stderr ---");
+            console.error(wtLog.trim().split("\n").slice(-40).join("\n"));
+          }
+        } catch {
+          /* ignore */
+        }
         failed = true;
         break;
       }
@@ -325,6 +357,9 @@ try {
         "PASS  control-session/noise-pair-caps",
         "PASS  frame-present/webcodecs",
         "PASS  frame-present/webgpu",
+        "PASS  conductor-video/assemble",
+        "PASS  conductor-video/schedule",
+        "PASS  conductor-video/present",
       ]) {
         if (!payload.log.includes(mustPass)) {
           console.error(`browser-smoke: missing ${mustPass}`);
@@ -335,13 +370,13 @@ try {
       }
       if (failed) break;
       console.log(
-        "browser-smoke: PASS — Chrome reported B-1 + B-3 control + B-4 frame green"
+        "browser-smoke: PASS — Chrome reported B-1 + B-3 control + B-5 Conductor video green"
       );
       console.log(payload.log);
       if (payload.meta) console.log(payload.meta);
       try {
         await writeFile(
-          join(serveDir, "frame-present-measure.json"),
+          join(serveDir, "conductor-video-measure.json"),
           JSON.stringify(
             {
               passed: true,
@@ -377,7 +412,7 @@ try {
     await sleep(250);
   }
   if (!failed && Date.now() >= deadline) {
-    console.error("browser-smoke: timeout waiting for lyteB4Passed");
+    console.error("browser-smoke: timeout waiting for lyteB5Passed");
     failed = true;
   }
   ws.close();
@@ -389,7 +424,11 @@ try {
   sidecar.kill("SIGTERM");
   peerProc.kill("SIGTERM");
   server.close();
-  await rm(userData, { recursive: true, force: true });
+  try {
+    await rm(userData, { recursive: true, force: true });
+  } catch {
+    /* Chrome sometimes leaves Default/ busy; non-fatal */
+  }
 }
 
 process.exit(failed ? 1 : 0);

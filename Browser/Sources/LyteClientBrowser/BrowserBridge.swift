@@ -48,6 +48,17 @@ enum BrowserBridge {
             let now = UInt64(arguments[1].number ?? 0)
             return controlIngest(datagramHex: hex, nowMicros: now)
         }
+        let ingestControlBytes = JSClosure { arguments in
+            let now = UInt64(arguments[1].number ?? 0)
+            guard let typed = JSTypedArray<UInt8>(from: arguments[0]) else {
+                return stepToJS(
+                    outbound: [], events: ["FAIL  ingest: not Uint8Array"],
+                    status: "failed", detail: "not Uint8Array", passed: false
+                )
+            }
+            let bytes = typed.withUnsafeBytes { Array($0) }
+            return controlIngest(datagram: bytes, nowMicros: now)
+        }
         let tickControl = JSClosure { arguments in
             let now = UInt64(arguments[0].number ?? 0)
             return controlTick(nowMicros: now)
@@ -58,6 +69,69 @@ enum BrowserBridge {
         }
         let classifyAnnexB = JSClosure { arguments in
             classifyAnnexBHex(arguments[0].string ?? "")
+        }
+        let classifyAnnexBTyped = JSClosure { arguments in
+            guard let typed = JSTypedArray<UInt8>(from: arguments[0]) else {
+                return [
+                    "ok": false.jsValue,
+                    "frameShaped": false.jsValue,
+                    "containsIrap": false.jsValue,
+                    "byteCount": 0.jsValue,
+                    "summary": "".jsValue,
+                    "detail": "not Uint8Array".jsValue,
+                ].jsValue
+            }
+            let bytes = typed.withUnsafeBytes { Array($0) }
+            return classifyFrameBytes(bytes)
+        }
+        let mediaAnnexB = JSClosure { arguments in
+            let frame = UInt32(arguments[0].number ?? -1)
+            guard let session = controlSession,
+                  let hex = session.annexBHex(frameNumber: frame)
+            else {
+                return JSValue.null
+            }
+            return hex.jsValue
+        }
+        let mediaAnnexBBytes = JSClosure { arguments in
+            let frame = UInt32(arguments[0].number ?? -1)
+            guard let session = controlSession,
+                  let bytes = session.annexBBytes(frameNumber: frame)
+            else {
+                return JSValue.null
+            }
+            return JSTypedArray<UInt8>(bytes).jsValue
+        }
+        let mediaPopDue = JSClosure { arguments in
+            let now = UInt64(arguments[0].number ?? 0)
+            guard let session = controlSession,
+                  let frame = session.popDueFrame(nowMicros: now)
+            else {
+                return JSValue.null
+            }
+            return scheduledFrameToJS(frame)
+        }
+        let mediaNotePresented = JSClosure { arguments in
+            let frame = UInt32(arguments[0].number ?? -1)
+            controlSession?.notePresented(frameNumber: frame)
+            return JSValue.undefined
+        }
+        let mediaNoteDropped = JSClosure { arguments in
+            let frame = UInt32(arguments[0].number ?? -1)
+            controlSession?.noteDropped(frameNumber: frame)
+            return JSValue.undefined
+        }
+        let mediaStats = JSClosure { _ in
+            guard let session = controlSession else {
+                return [
+                    "assembled": 0.jsValue,
+                    "presented": 0.jsValue,
+                ].jsValue
+            }
+            return [
+                "assembled": Double(session.framesAssembled).jsValue,
+                "presented": Double(session.framesPresented).jsValue,
+            ].jsValue
         }
 
         JSObject.global["lyteBrowser"] = [
@@ -74,14 +148,22 @@ enum BrowserBridge {
             "controlOpen": openControl.jsValue,
             "controlBegin": beginControl.jsValue,
             "controlIngest": ingestControl.jsValue,
+            "controlIngestBytes": ingestControlBytes.jsValue,
             "controlTick": tickControl.jsValue,
             "controlTeardown": teardownControl.jsValue,
             "classifyAnnexBHex": classifyAnnexB.jsValue,
+            "classifyAnnexBBytes": classifyAnnexBTyped.jsValue,
+            "mediaAnnexBHex": mediaAnnexB.jsValue,
+            "mediaAnnexBBytes": mediaAnnexBBytes.jsValue,
+            "mediaPopDue": mediaPopDue.jsValue,
+            "mediaNotePresented": mediaNotePresented.jsValue,
+            "mediaNoteDropped": mediaNoteDropped.jsValue,
+            "mediaStats": mediaStats.jsValue,
         ].jsValue
     }
 
-    /// Paints B-1 frozen-contract results. The page JS appends B-2/B-3/B-4
-    /// lines and owns `lyteB2Passed` / `lyteB3Passed` / `lyteB4Passed`.
+    /// Paints B-1 frozen-contract results. The page JS appends B-2…B-5
+    /// lines and owns `lyteB1Passed` … `lyteB5Passed`.
     static func paintProofPage(results: [ContractResult]) {
         let document = JSObject.global.document
         let passed = results.allSatisfy(\.passed)
@@ -96,12 +178,13 @@ enum BrowserBridge {
         if let meta = document.getElementById("meta").object {
             meta.textContent = .string(
                 """
-                LyteClientBrowser B-4 — WASM + WT control + one WebCodecs/WebGPU frame
+                LyteClientBrowser B-5 — WASM + WT control + Conductor video
                 Contracts: \(FrozenEnvelopeContract.vectorName); \(FrozenNoiseContract.vectorName)
                 Carrier: opaque WT datagrams via lyte-wt-sidecar (ciphertext only)
                 Control: Noise IK + PIN PAKE + capabilities via LyteClientSession
-                Frame: canned corpus IRAP → WebCodecs → WebGPU (not live Conductor)
-                Bridge: control{Open,Begin,Ingest,Tick,Teardown}; classifyAnnexBHex
+                Video: corpus replay over sealed Lyte-UDP → assemble → Conductor → WebCodecs → WebGPU
+                Gap: not live Direct Eye / not full remote desktop (B-6 next)
+                Bridge: controlIngestBytes (media hot path); mediaAnnexBBytes; classifyAnnexBBytes
                 """
             )
         }
@@ -121,6 +204,10 @@ enum BrowserBridge {
                 "detail": "malformed hex".jsValue,
             ].jsValue
         }
+        return classifyFrameBytes(bytes)
+    }
+
+    private static func classifyFrameBytes(_ bytes: [UInt8]) -> JSValue {
         let classification = AnnexBCheck.classifyFrame(bytes)
         let summary = AnnexBCheck.summary(of: bytes)
         return [
@@ -193,6 +280,20 @@ enum BrowserBridge {
         ))
     }
 
+    private static func controlIngest(
+        datagram: [UInt8], nowMicros: UInt64
+    ) -> JSValue {
+        guard let session = controlSession else {
+            return stepToJS(
+                outbound: [], events: [], status: "failed",
+                detail: "no session", passed: false
+            )
+        }
+        return stepToJS(session.ingest(
+            datagram: datagram, nowMicros: nowMicros
+        ))
+    }
+
     private static func controlTick(nowMicros: UInt64) -> JSValue {
         guard let session = controlSession else {
             return stepToJS(
@@ -219,7 +320,8 @@ enum BrowserBridge {
             events: step.events,
             status: step.status.rawValue,
             detail: step.detail,
-            passed: step.passed
+            passed: step.passed,
+            scheduled: step.scheduled
         )
     }
 
@@ -228,11 +330,14 @@ enum BrowserBridge {
         events: [String],
         status: String,
         detail: String,
-        passed: Bool
+        passed: Bool,
+        scheduled: [BrowserVideoPlayout.ScheduledFrame] = []
     ) -> JSValue {
         // Newline-joined hex keeps the bridge free of JSArray kit churn;
         // page JS splits on '\n' (empty string → zero datagrams).
-        [
+        // Scheduled frames: one CSV line each for the media pump.
+        let scheduledLines = scheduled.map(scheduledLine)
+        return [
             "outboundHex": outbound.joined(separator: "\n").jsValue,
             "outboundCount": Double(outbound.count).jsValue,
             "events": events.joined(separator: "\n").jsValue,
@@ -242,6 +347,46 @@ enum BrowserBridge {
             "ready": (status == "ready").jsValue,
             "closed": (status == "closed").jsValue,
             "failed": (status == "failed").jsValue,
+            "scheduledLines": scheduledLines.joined(separator: "\n").jsValue,
+            "scheduledCount": Double(scheduled.count).jsValue,
+        ].jsValue
+    }
+
+    private static func scheduledLine(
+        _ frame: BrowserVideoPlayout.ScheduledFrame
+    ) -> String {
+        [
+            "\(frame.frameNumber)",
+            "\(frame.presentationMicroseconds)",
+            "\(frame.cueMicroseconds)",
+            "\(frame.pathDelayMicroseconds)",
+            "\(frame.reserveMicroseconds)",
+            "\(frame.latenessMicroseconds)",
+            frame.isRandomAccess ? "1" : "0",
+            frame.shouldPresent ? "1" : "0",
+            "\(frame.annexBByteCount)",
+            "\(frame.sourceCaptureMicroseconds)",
+            "\(frame.arrivalMicroseconds)",
+        ].joined(separator: ",")
+    }
+
+    private static func scheduledFrameToJS(
+        _ frame: BrowserVideoPlayout.ScheduledFrame
+    ) -> JSValue {
+        [
+            "frameNumber": Double(frame.frameNumber).jsValue,
+            "presentationMicroseconds": Double(frame.presentationMicroseconds)
+                .jsValue,
+            "cueMicroseconds": Double(frame.cueMicroseconds).jsValue,
+            "pathDelayMicroseconds": Double(frame.pathDelayMicroseconds).jsValue,
+            "reserveMicroseconds": Double(frame.reserveMicroseconds).jsValue,
+            "latenessMicroseconds": Double(frame.latenessMicroseconds).jsValue,
+            "isRandomAccess": frame.isRandomAccess.jsValue,
+            "shouldPresent": frame.shouldPresent.jsValue,
+            "annexBByteCount": Double(frame.annexBByteCount).jsValue,
+            "sourceCaptureMicroseconds": Double(frame.sourceCaptureMicroseconds)
+                .jsValue,
+            "arrivalMicroseconds": Double(frame.arrivalMicroseconds).jsValue,
         ].jsValue
     }
 

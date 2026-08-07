@@ -9,10 +9,10 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ #238 — browser B-4 one timestamped WebCodecs/WebGPU
-  frame (pull if HEAD moved). Canned Wire corpus IRAP + B-3 control
-  session (`Browser/`, `docs/BROWSER.md`).
-- **Next:** **B-5** — live Conductor-driven video over the browser path.
+- **Tip:** `main` @ browser B-5 — sealed corpus Conductor video over WT
+  (pull if HEAD moved). Binary media ingest; DRM-free
+  `lyte-control-peer --emit-corpus`.
+- **Next:** **B-6** — AudioWorklet, input, clipboard, product UI.
   Wayland clipboard leaf remains **blocked on GNOME** —
   `docs/20260807-015743-wayland-clipboard-gnome-blocker.md`.
 
@@ -45,12 +45,12 @@
 displace 41151 — test hosts use a fresh 41xxx port and `--no-advertise`; no
 second Direct Eye while 41151 holds the DRM seat (parallel eyes black the
 glass); hand-run binaries under the home build tree with `setcap` (not
-`/tmp`). Browser B-3/B-4 use `lyte-control-peer` (no DRM) on a fresh 41xxx
-port; B-4 frame is a canned corpus IRAP (no host media / no Direct Eye).
+`/tmp`). Browser B-3…B-5 use `lyte-control-peer` (no DRM) on a fresh 41xxx
+port; B-5 media is sealed Wire corpus replay (no Direct Eye).
 
 ## Proof (final bars)
 
-### Browser B-4 — PASS (Chrome)
+### Browser B-5 — PASS (Chrome)
 
 ```sh
 Browser/Scripts/build.sh
@@ -62,15 +62,23 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 # PASS  control-session/noise-pair-caps
 # PASS  control-session/teardown
 # PASS  frame-present/classify
-# PASS  frame-present/webcodecs — hev1.1.6.L150.B0, ts=1000000µs
-# PASS  frame-present/webgpu — importExternalTexture → canvas
+# PASS  frame-present/webcodecs — Conductor PTS
+# PASS  frame-present/webgpu
+# PASS  conductor-video/assemble
+# PASS  conductor-video/schedule
+# PASS  conductor-video/present
 ```
 
 Interactive: `Browser/Scripts/serve.sh` → http://127.0.0.1:8765/ in Chrome
-(starts `lyte-control-peer` + `lyte-wt-sidecar --udp-peer`). Smoke needs
-GPU (no `--disable-gpu`). Safari not a gate. Frame fixture is canned —
-not live Conductor / not Direct Eye. Optional pup qualification for
-control peer only: fresh 41xxx — never 41151.
+(starts `lyte-control-peer --emit-corpus` + `lyte-wt-sidecar --udp-peer`).
+Smoke needs GPU (no `--disable-gpu`). Safari not a gate. Media is sealed
+corpus over Lyte-UDP — **not** live Direct Eye / not full RD (B-6 next).
+Optional pup qualification for control peer only: fresh 41xxx — never 41151.
+
+### Browser B-4 — PASS (Chrome)
+
+One timestamped canned HEVC IRAP via WebCodecs + WebGPU. Landed #238/#239.
+B-5 subsumes the frame-present lines in the same smoke.
 
 ### Browser B-3 — PASS (Chrome)
 

@@ -1,8 +1,10 @@
-// lyte-control-peer — DRM-free HostWire UDP peer for browser B-3.
+// lyte-control-peer — DRM-free HostWire UDP peer for browser B-3/B-5.
 //
 // Speaks the real host Noise / pairing / capabilities / teardown path via
-// HostWire.Session over plain UDP. No Direct Eye, no PipeWire, no DRM —
-// safe beside a standing lyte-host on 41151. Chrome reaches this peer through
+// HostWire.Session over plain UDP. Optional `--emit-corpus` replays the
+// frozen Wire video-corpus-v1 prefix (frames 000–009) through the sealed
+// video channel — honest continuous media without Direct Eye / DRM.
+// Safe beside a standing lyte-host on 41151. Chrome reaches this peer through
 // lyte-wt-sidecar --udp-peer. Does not touch ~/.config/lyte-host identity.
 
 import Foundation
@@ -33,7 +35,15 @@ struct Options {
     var seconds: Double = 60
     var metaOut: String?
     var hostStaticHex: String?
+    /// Directory with frame-000-idr.annexb … frame-009-p.annexb, or nil.
+    var emitCorpusDir: String?
 }
+
+/// Emit pacing is slower than the 60 Hz score so the browser WT reader is
+/// not starved by FEC bursts. Capture stamps follow wall time at emit
+/// (not a synthetic 60 Hz ladder) so Conductor path delay stays honest.
+// ~3 Conductor beats between frames — headroom for Chrome+WASM FEC drain.
+let corpusEmitIntervalNS: UInt64 = 50_001_000
 
 func parseArgs(_ argv: [String]) throws -> Options {
     var opts = Options()
@@ -71,16 +81,24 @@ func parseArgs(_ argv: [String]) throws -> Options {
                 throw PeerError.message("--host-static-hex needs hex")
             }
             opts.hostStaticHex = argv[i]
+        case "--emit-corpus":
+            i += 1
+            guard i < argv.count else {
+                throw PeerError.message("--emit-corpus needs a directory")
+            }
+            opts.emitCorpusDir = argv[i]
         case "--help", "-h":
             print(
                 """
-                lyte-control-peer — DRM-free HostWire control peer (browser B-3)
+                lyte-control-peer — DRM-free HostWire peer (browser B-3/B-5)
 
                   --listen P          UDP port (default 41234; never 41151)
                   --bind HOST         bind address (default 127.0.0.1)
                   --pin DIGITS        enable CPace pairing with this PIN
                   --seconds N         hold after establish (default 60)
                   --meta-out PATH     write JSON (port, host static, pin)
+                  --emit-corpus DIR   after ready, seal/pace video-corpus-v1
+                                      frames 000–009 from DIR (B-5; no DRM)
 
                 Safe beside standing lyte-host on 41151 — no Direct Eye / DRM.
                 """
@@ -94,6 +112,38 @@ func parseArgs(_ argv: [String]) throws -> Options {
     return opts
 }
 
+func loadCorpusFrames(from directory: String) throws -> [[UInt8]] {
+    let names = [
+        "frame-000-idr.annexb",
+        "frame-001-p.annexb",
+        "frame-002-p.annexb",
+        "frame-003-p.annexb",
+        "frame-004-p.annexb",
+        "frame-005-p.annexb",
+        "frame-006-p.annexb",
+        "frame-007-p.annexb",
+        "frame-008-p.annexb",
+        "frame-009-p.annexb",
+    ]
+    var frames: [[UInt8]] = []
+    for name in names {
+        let path = (directory as NSString).appendingPathComponent(name)
+        let url = URL(fileURLWithPath: path)
+        guard FileManager.default.isReadableFile(atPath: path) else {
+            throw PeerError.message("missing corpus frame \(path)")
+        }
+        let data = try Data(contentsOf: url)
+        guard !data.isEmpty else {
+            throw PeerError.message("empty corpus frame \(path)")
+        }
+        frames.append(Array(data))
+    }
+    guard AnnexBCheck.containsIrap(frames[0]) else {
+        throw PeerError.message("frame-000 is not IRAP-shaped")
+    }
+    return frames
+}
+
 func nowNS() -> UInt64 {
 #if canImport(Darwin)
     return clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
@@ -102,6 +152,11 @@ func nowNS() -> UInt64 {
     clock_gettime(CLOCK_MONOTONIC, &ts)
     return UInt64(ts.tv_sec) * 1_000_000_000 + UInt64(ts.tv_nsec)
 #endif
+}
+
+func logPeer(_ message: String) {
+    print(message)
+    fflush(stdout)
 }
 
 final class UdpSocket: @unchecked Sendable {
@@ -231,6 +286,7 @@ final class ControlPeer {
     let pairing: PairingResponderService
     let pin: String
     let seconds: Double
+    let corpusFrames: [[UInt8]]?
 
     var outbox: [VideoChannelDatagram] = []
     var session: Session?
@@ -240,6 +296,9 @@ final class ControlPeer {
     var paired = false
     var capabilitiesAgreed = false
     var closed = false
+    var corpusIndex = 0
+    var corpusNextEmitNS: UInt64 = 0
+    var corpusEmitFinished = false
 
     init(opts: Options) throws {
         if opts.listenPort == 41151 {
@@ -253,23 +312,87 @@ final class ControlPeer {
         )
         sock = try UdpSocket(host: opts.bindHost, port: opts.listenPort)
         seconds = opts.seconds
+        if let dir = opts.emitCorpusDir {
+            corpusFrames = try loadCorpusFrames(from: dir)
+        } else {
+            corpusFrames = nil
+        }
 
-        print("lyte-control-peer — DRM-free HostWire control peer (B-3)")
+        let shape = corpusFrames == nil
+            ? "hostwire-control-only-udp"
+            : "hostwire-control-plus-corpus-video"
+        print("lyte-control-peer — DRM-free HostWire peer (B-3/B-5)")
         print("listen: \(sock.localHost):\(sock.localPort)")
         print("noise: host static public key \(Hex.string(hostStatic.publicKey))")
         print("pairing: PIN \(pin) — enter it in the browser client")
+        if let frames = corpusFrames {
+            print(
+                "corpus: will emit \(frames.count) sealed frames after ready "
+                    + "(no Direct Eye)"
+            )
+        }
         print("note: no Direct Eye; safe beside standing UDP 41151")
 
         if let metaOut = opts.metaOut {
-            try writeMeta(metaOut, body: [
+            var body: [String: Any] = [
                 "adapter": "lyte-control-peer",
                 "bindHost": sock.localHost,
                 "listenPort": Int(sock.localPort),
                 "hostStaticPublicKeyHex": Hex.string(hostStatic.publicKey),
                 "pin": pin,
                 "seconds": opts.seconds,
-                "shape": "hostwire-control-only-udp",
-            ])
+                "shape": shape,
+            ]
+            if let frames = corpusFrames {
+                body["corpusFrameCount"] = frames.count
+                body["emitCorpus"] = true
+            }
+            try writeMeta(metaOut, body: body)
+        }
+    }
+
+    var mediaReady: Bool {
+        established && paired && capabilitiesAgreed
+    }
+
+    /// Pace one corpus frame when the video channel is idle. Called from
+    /// the receive/pump loop with wall monotonic time.
+    func maybeEmitCorpus(now: UInt64) {
+        guard let frames = corpusFrames, let session, mediaReady,
+              !corpusEmitFinished, !closed
+        else { return }
+        if corpusIndex >= frames.count {
+            if session.isIdle {
+                corpusEmitFinished = true
+                print(
+                    "corpus: emitted \(frames.count) frames "
+                        + "(sealed Lyte-UDP video; not live Direct Eye)"
+                )
+            }
+            return
+        }
+        guard session.isIdle, now >= corpusNextEmitNS else { return }
+        let i = corpusIndex
+        let frame = frames[i]
+        // Wall-aligned capture keeps mapped path delay ≈ seal+wire delay;
+        // a synthetic 60 Hz ladder under slower emit would inflate delay
+        // and mark later parts late (shouldPresent=false).
+        let capture = now / 1_000
+        do {
+            _ = try session.ingestVideoFrame(
+                frame,
+                captureTimestampMicroseconds: capture,
+                isKeyframe: AnnexBCheck.containsIrap(frame),
+                now: now
+            )
+            corpusIndex = i + 1
+            corpusNextEmitNS = now &+ corpusEmitIntervalNS
+            logPeer("corpus: emitted frame \(i)/\(frames.count - 1)")
+            if corpusIndex == frames.count {
+                logPeer("corpus: last frame ingested — draining pacer…")
+            }
+        } catch {
+            logPeer("corpus: ingest frame \(i) failed: \(error)")
         }
     }
 
@@ -366,11 +489,26 @@ final class ControlPeer {
                         remoteAddress: packet.host,
                         remotePort: packet.port
                     )
+                    // Corpus→WT needs a modest pace: 50 Mbps blasts the
+                    // sidecar/Chrome datagram path and FEC-impossibles.
+                    // Control-only keeps the native-like ceiling.
+                    let pace = corpusFrames == nil ? 50_000_000 : 3_000_000
+                    // Browser B-5 has no chan-3 feedback yet; the default
+                    // 350 ms blackout freezes video after ~3 frames and
+                    // suppresses the rest of the corpus. Widen silence
+                    // for corpus emit only — production lyte-host untouched.
+                    let lifecycle = corpusFrames == nil
+                        ? SessionMachineConfig()
+                        : SessionMachineConfig(
+                            blackoutSilenceMicroseconds: 30_000_000,
+                            recoveryBlackoutSilenceMicroseconds: 30_000_000
+                        )
                     session = Session(
                         config: SessionConfig(
                             crypto: .noise(hostStatic: hostStatic),
-                            rateBitsPerSecond: 50_000_000,
-                            capabilities: .wireDefault
+                            rateBitsPerSecond: pace,
+                            capabilities: .wireDefault,
+                            lifecycle: lifecycle
                         ),
                         clientTuple: tuple,
                         now: now
@@ -393,6 +531,7 @@ final class ControlPeer {
                     hostMicroseconds: now / 1_000
                 )
                 handleEvents(events, now: now)
+                maybeEmitCorpus(now: now)
                 session.pump(now: now)
                 flushOutbox()
                 continue
@@ -403,6 +542,7 @@ final class ControlPeer {
                     now: now, hostMicroseconds: now / 1_000
                 )
                 handleEvents(advanced, now: now)
+                maybeEmitCorpus(now: now)
                 session.pump(now: now)
                 flushOutbox()
             } else if now > handshakeDeadline {
@@ -417,7 +557,31 @@ final class ControlPeer {
                 "incomplete (established=\(established) paired=\(paired) caps=\(capabilitiesAgreed))"
             )
         }
-        print("PASS — control-only session (Noise + pair + capabilities)")
+        if let frames = corpusFrames, !corpusEmitFinished {
+            if closed {
+                print(
+                    "WARN — corpus emit incomplete after client close "
+                        + "(index=\(corpusIndex)/\(frames.count))"
+                )
+            } else {
+                throw PeerError.message(
+                    "corpus emit incomplete (index=\(corpusIndex)/\(frames.count))"
+                )
+            }
+        }
+        if corpusFrames != nil, corpusEmitFinished {
+            print(
+                "PASS — control + corpus video "
+                    + "(Noise + pair + capabilities + \(corpusIndex) frames)"
+            )
+        } else if corpusFrames == nil {
+            print("PASS — control-only session (Noise + pair + capabilities)")
+        } else {
+            print(
+                "PASS — control session (corpus partial "
+                    + "\(corpusIndex)/\(corpusFrames?.count ?? 0))"
+            )
+        }
         if let session, !closed {
             let now = nowNS()
             let events = session.beginTeardown(

@@ -153,12 +153,65 @@ async function relaySession(session, relay, destination) {
   const writer = session.datagrams.writable.getWriter();
   const reader = session.datagrams.readable.getReader();
 
+  // Serialize WT writes. Fire-and-forget `.catch(() => {})` silently
+  // dropped FEC shards under burst (B-5 fecImpossible). Queue holds
+  // opaque datagrams until the WT writer accepts them.
+  // Never wipe the whole queue on a single write failure — that was
+  // truncating corpus replay after ~7 frames.
+  const pending = [];
+  let draining = false;
+  let writeFailures = 0;
+  let udpIn = 0;
+  let wtOut = 0;
+  const drainWrites = async () => {
+    if (draining) return;
+    draining = true;
+    try {
+      while (pending.length > 0) {
+        const chunk = pending.shift();
+        try {
+          await writer.write(chunk);
+          wtOut += 1;
+        } catch (err) {
+          writeFailures += 1;
+          // Put the chunk back and pause briefly; do not discard the queue.
+          pending.unshift(chunk);
+          if (writeFailures <= 3 || writeFailures % 50 === 0) {
+            console.error(
+              `wt-sidecar: write fail #${writeFailures} pending=${pending.length}`,
+              err?.message || err
+            );
+          }
+          await new Promise((r) => setTimeout(r, 2));
+          if (writeFailures > 10_000) {
+            pending.length = 0;
+            break;
+          }
+        }
+      }
+    } finally {
+      draining = false;
+      if (pending.length > 0) void drainWrites();
+    }
+  };
+
   const onUdp = (msg, rinfo) => {
     // One WT session ↔ one UDP peer port. Opaque bytes only.
     if (rinfo.port !== destination.port) return;
-    writer.write(new Uint8Array(msg)).catch(() => {});
+    udpIn += 1;
+    pending.push(new Uint8Array(msg));
+    void drainWrites();
   };
   relay.on("message", onUdp);
+  const logSessionStats = () => {
+    console.error(
+      `wt-sidecar: session end udpIn=${udpIn} wtOut=${wtOut} ` +
+        `pending=${pending.length} writeFailures=${writeFailures}`
+    );
+  };
+  if (session.closed && typeof session.closed.finally === "function") {
+    session.closed.finally(logSessionStats).catch(() => {});
+  }
 
   try {
     for (;;) {
@@ -202,6 +255,12 @@ if (!peer) {
 }
 
 const relaySock = await listenUdp(args.host);
+try {
+  // Absorb paced FEC bursts until the WT write queue drains (B-5).
+  relaySock.setRecvBufferSize(4 * 1024 * 1024);
+} catch {
+  /* best-effort */
+}
 const relayPort = relaySock.address().port;
 
 const server = new WebTransportServer({

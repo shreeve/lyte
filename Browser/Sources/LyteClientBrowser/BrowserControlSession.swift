@@ -2,9 +2,10 @@ import LyteClientSession
 import LyteCore
 import LyteWire
 
-/// WASM initiator for B-3: Noise IK → PIN PAKE → capabilities → teardown.
+/// WASM initiator for B-3/B-5: Noise IK → PIN PAKE → capabilities, then
+/// sealed video assemble + Conductor schedule (B-5), then teardown.
 /// Carriage is injected (JS owns WebTransport + clocks); this type only
-/// speaks LyteWire / LyteClientSession policy. Ignores media channels.
+/// speaks LyteWire / LyteClientSession / LyteCore policy.
 final class BrowserControlSession {
     enum Status: String {
         case idle
@@ -21,6 +22,8 @@ final class BrowserControlSession {
         var status: Status
         var detail: String
         var passed: Bool
+        /// Newly Conductor-scheduled frames this step (metadata only).
+        var scheduled: [BrowserVideoPlayout.ScheduledFrame]
     }
 
     private let hostStaticPublicKey: [UInt8]
@@ -49,9 +52,36 @@ final class BrowserControlSession {
     private var capabilitiesDone = false
     private var events: [String] = []
     private var failure: String?
+    private var video = BrowserVideoPlayout()
 
     var clientStaticPublicKeyHex: String { Hex.string(clientStatic.publicKey) }
     var hostStaticPublicKeyHex: String { Hex.string(hostStaticPublicKey) }
+
+    var framesAssembled: UInt64 { video.framesAssembled }
+    var framesPresented: UInt64 { video.framesPresented }
+
+    func annexBHex(frameNumber: UInt32) -> String? {
+        guard let bytes = video.annexB(frameNumber: frameNumber) else {
+            return nil
+        }
+        return Hex.string(bytes)
+    }
+
+    func annexBBytes(frameNumber: UInt32) -> [UInt8]? {
+        video.annexB(frameNumber: frameNumber)
+    }
+
+    func popDueFrame(nowMicros: UInt64) -> BrowserVideoPlayout.ScheduledFrame? {
+        video.popDue(nowMicros: nowMicros)
+    }
+
+    func notePresented(frameNumber: UInt32) {
+        video.notePresented(frameNumber: frameNumber)
+    }
+
+    func noteDropped(frameNumber: UInt32) {
+        video.noteDropped(frameNumber: frameNumber)
+    }
 
     init(hostStaticPublicKeyHex: String, pin: String) throws {
         guard let hostKey = Hex.bytes(hostStaticPublicKeyHex),
@@ -90,11 +120,16 @@ final class BrowserControlSession {
 
     /// Ingest one opaque datagram from the host (via WT↔UDP).
     func ingest(datagramHex: String, nowMicros: UInt64) -> Step {
-        if status == .failed || status == .closed {
-            return step(outbound: [])
-        }
         guard let datagram = Hex.bytes(datagramHex) else {
             return failStep("malformed datagram hex")
+        }
+        return ingest(datagram: datagram, nowMicros: nowMicros)
+    }
+
+    /// Binary ingest — preferred for video shards (hex copies starve WT).
+    func ingest(datagram: [UInt8], nowMicros: UInt64) -> Step {
+        if status == .failed || status == .closed {
+            return step(outbound: [])
         }
         do {
             switch status {
@@ -110,7 +145,7 @@ final class BrowserControlSession {
         }
     }
 
-    /// Drive ARQ PTO / lifecycle with injected time.
+    /// Drive ARQ PTO / lifecycle / assembler eviction with injected time.
     func tick(nowMicros: UInt64) -> Step {
         if status == .failed || status == .closed || status == .idle
             || status == .handshaking
@@ -127,6 +162,9 @@ final class BrowserControlSession {
                 _ = control.advance(
                     now: ClientTimestamp(microseconds: nowMicros))
                 self.control = control
+            }
+            for line in video.evictStale(nowMicros: nowMicros) {
+                note(line)
             }
             return step(outbound: outbound)
         } catch {
@@ -253,11 +291,6 @@ final class BrowserControlSession {
             note("conn-id: learned")
         }
 
-        // Non-CTRL (video/audio/feedback): ignore for control-only B-3.
-        guard envelope.channel == .ctrl else {
-            return step(outbound: [])
-        }
-
         // Exact received header bytes as AAD (fixed envelope + TLV block).
         let aad = datagram[datagram.startIndex..<wirePayload.startIndex]
         let plaintext = try transport.unseal(
@@ -266,6 +299,21 @@ final class BrowserControlSession {
             envelope: envelope
         )
         self.transport = transport
+
+        if envelope.channel == .videoActive {
+            let (notes, scheduled) = video.ingestShard(
+                envelope: envelope,
+                payload: plaintext[...],
+                arrivalMicroseconds: nowMicros
+            )
+            for line in notes { note(line) }
+            return step(outbound: [], scheduled: scheduled)
+        }
+
+        // Idle-video / audio / feedback: ignore until later organs.
+        guard envelope.channel == .ctrl else {
+            return step(outbound: [])
+        }
 
         var outbound: [[UInt8]] = []
         let now = ClientTimestamp(microseconds: nowMicros)
@@ -395,7 +443,7 @@ final class BrowserControlSession {
     private func promoteIfReady() {
         if status == .established, capabilitiesDone, pairingDone {
             status = .ready
-            note("session: control-only READY (Noise + pair + capabilities)")
+            note("session: READY (Noise + pair + capabilities; video arm open)")
         }
     }
 
@@ -457,17 +505,25 @@ final class BrowserControlSession {
         events.append(line)
     }
 
-    private func step(outbound: [[UInt8]]) -> Step {
+    private func step(
+        outbound: [[UInt8]],
+        scheduled: [BrowserVideoPlayout.ScheduledFrame] = []
+    ) -> Step {
         let passed = status == .ready || status == .closed
+        // Drain notes each step — replaying the full history on every
+        // video shard stalls the WT reader under FEC burst.
+        let drained = events
+        events.removeAll(keepingCapacity: true)
         return Step(
             outboundHex: outbound.map(Hex.string),
-            events: events,
+            events: drained,
             status: status,
             detail: failure
                 ?? (status == .ready
                     ? "Noise + pair + capabilities"
                     : status.rawValue),
-            passed: passed && failure == nil
+            passed: passed && failure == nil,
+            scheduled: scheduled
         )
     }
 
@@ -480,7 +536,8 @@ final class BrowserControlSession {
             events: events,
             status: .failed,
             detail: message,
-            passed: false
+            passed: false,
+            scheduled: []
         )
     }
 }

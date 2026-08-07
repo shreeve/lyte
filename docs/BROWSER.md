@@ -54,9 +54,15 @@ through the sidecar in `--udp-peer` mode:
 frozen Wire corpus (`video-corpus-v1/frame-000-idr.annexb`, staged by
 `build.sh`) is classified in WASM (`AnnexBCheck`), decoded with **WebCodecs**
 (`hev1.1.6.L150.B0`, hardware prefer), and presented with **WebGPU**
-(`importExternalTexture` → `<canvas>`). This is **not** live Conductor
-video and **not** host-emitted media over WT — those are B-5. The control
-plane from B-3 stays in the same proof page.
+(`importExternalTexture` → `<canvas>`).
+
+**B-5 is green in Chrome:** sealed corpus video (Wire `video-corpus-v1`
+frames 000–009) over WT → WASM FEC assemble → `VideoBeatConductor` schedule
+→ WebCodecs → WebGPU. Media shards use **binary ingest**
+(`controlIngestBytes` / `Uint8Array`); hex stays for small control/debug
+only. Peer is DRM-free `lyte-control-peer --emit-corpus` (widened blackout
+silence so missing chan-3 feedback does not FROZEN-suppress video). This is
+**not** live Direct Eye / not full browser remote desktop (B-6).
 
 Logical packets stay transport-independent:
 
@@ -71,13 +77,15 @@ pretend otherwise. Native Lyte keeps custom UDP.
 
 Page JavaScript can call back into WASM via
 `globalThis.lyteBrowser.runFrozenContracts()`,
-`verifyCarrierEcho(...)`, `controlOpen` / `controlBegin` / `controlIngest`
-/ `controlTick` / `controlTeardown`, `classifyAnnexBHex(...)`, and related
-helpers. Headless gate: `Browser/Scripts/smoke-chrome.sh` (needs GPU —
-does not pass `--disable-gpu`).
+`verifyCarrierEcho(...)`, `controlOpen` / `controlBegin` /
+`controlIngestBytes` (media hot path) / `controlIngest` (hex, control),
+`controlTick` / `controlTeardown`, `mediaAnnexBBytes` / `mediaPopDue`,
+`classifyAnnexBBytes`, and related helpers. Headless gate:
+`Browser/Scripts/smoke-chrome.sh` (needs GPU — does not pass
+`--disable-gpu`).
 
-This does **not** yet prove live Conductor-driven video, FEC reassembly of
-host shards over WT, or a Direct Eye session against pup's standing host.
+This does **not** yet prove a Direct Eye session against pup's standing
+host, AudioWorklet, input, clipboard, or product UI (B-6).
 
 The client policy boundaries are moving in the same direction:
 `LyteClientCore` and `LyteClientSession` now compile on Linux with warnings as
@@ -87,7 +95,7 @@ into the WASM control initiator for capabilities / lifecycle. B-4 keeps
 HEVC decode/present in page JS (platform ports) and Annex-B classification
 in `LyteCore`.
 
-## Run B-1 … B-4 locally (Chrome)
+## Run B-1 … B-5 locally (Chrome)
 
 Pins match the Wire wasm leg: swiftly toolchain **6.3.3** + SDK
 `swift-6.3.3-RELEASE_wasm` (install commands in
@@ -95,10 +103,10 @@ Pins match the Wire wasm leg: swiftly toolchain **6.3.3** + SDK
 
 ```sh
 # From the repository root
-Browser/Scripts/build.sh          # stages Browser/.serve/ (+ corpus IRAP)
-Browser/Scripts/serve.sh          # http://127.0.0.1:8765/ + control-peer + wt-sidecar
+Browser/Scripts/build.sh          # stages Browser/.serve/ (+ corpus 000–009)
+Browser/Scripts/serve.sh          # http://127.0.0.1:8765/ + control-peer --emit-corpus + wt-sidecar
 # Open that URL in Google Chrome — expect PASS for B-1 + control-session/*
-# and frame-present/* (WebCodecs + WebGPU).
+# + conductor-video/{assemble,schedule,present}.
 
 # Headless gate (system Chrome + node + openssl + Xcode swift; needs GPU)
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
@@ -107,26 +115,27 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 
 `serve.sh` / `smoke-chrome.sh` start:
 
-1. `lyte-control-peer` on a fresh loopback UDP **41xxx** port (never 41151)
+1. `lyte-control-peer --emit-corpus` on a fresh loopback UDP **41xxx**
+   port (never 41151)
 2. `lyte-wt-sidecar --udp-peer 127.0.0.1:<that-port>`
 3. static file server for `.serve/`
 
 `build.sh` uses PackageToJS `--use-cdn` so the WASI browser shim loads from
 jsDelivr; no local `npm install` is required for the served page. It also
-copies `Wire/Vectors/video-corpus-v1/frame-000-idr.annexb` into `.serve/`
-for the B-4 fixture (not duplicated in `Browser/` git). The B-2 sidecar
+stages `Wire/Vectors/video-corpus-v1/frame-000…009.annexb` into `.serve/`
+and `.serve/corpus/` (not duplicated in `Browser/` git). The B-2 sidecar
 installs `rwebtransport` under `Browser/Harness/` on first run
 (`node_modules/` is gitignored). The release wasm is large (~76 MB today;
 swift-crypto/FoundationEssentials drag — recorded in the scoping doc, not
 fought this slice). `wasm-opt` is optional and not required for the gate.
 
 **Echo vs peer sidecar:** B-2 carrier echoes need the sidecar's built-in UDP
-echo. B-3/B-4 need `--udp-peer`. The combined page SKIPs `wt-carrier/*` when
-the sidecar is in peer mode (B-2 already landed) and runs the control
-session plus the canned-frame proof.
+echo. B-3…B-5 need `--udp-peer`. The combined page SKIPs `wt-carrier/*` when
+the sidecar is in peer mode (B-2 already landed) and runs control + Conductor
+video.
 
 **Safari:** deferred. Recent Safari may run the WASM proof page, but Safari
-is not a B-1…B-4 gate. Fleet `serverCertificateHashes` constraints remain a
+is not a B-1…B-5 gate. Fleet `serverCertificateHashes` constraints remain a
 later concern. Do not block Chrome progress on Safari.
 
 ### Optional pup qualification (no DRM)
@@ -254,11 +263,11 @@ independently testable slices (full matrix in the B-0 decision record):
 | **B-2** | Opaque datagram round-trip through the WebTransport adapter; measure datagram ceiling — **landed** |
 | **B-3** | Pair, Noise, capabilities, control-only session — **landed** (HostWire peer; pup optional) |
 | **B-4** | One timestamped frame through WebCodecs and WebGPU — **landed** (canned corpus IRAP) |
-| **B-5** | Live Conductor-driven video — **next** |
-| **B-6** | AudioWorklet, input, clipboard, product UI — browser client “done” |
+| **B-5** | Conductor-driven sealed corpus video over WT — **landed** (not Direct Eye) |
+| **B-6** | AudioWorklet, input, clipboard, product UI — browser client “done” — **next** |
 
 Every slice keeps the native Mac/Linux gates and the WASM vector suite green.
-Do not claim a streaming browser client before B-5.
+Do not claim a full browser remote-desktop client before B-6.
 
 ## Historical detail
 

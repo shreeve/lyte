@@ -64,19 +64,42 @@ rm -rf "$SERVE_DIR"
 mkdir -p "$SERVE_DIR"
 # PackageToJS output (wasm + JS loader + WASI browser shim via CDN).
 cp -R "${PACKAGE_OUT}/." "$SERVE_DIR/"
-# Diagnostic host page + B-2/B-3 pumps + B-4 WebCodecs/WebGPU proof.
+# Diagnostic host page + B-2…B-5 pumps (control + Conductor video).
 cp "${BROWSER_ROOT}/Page/index.html" "$SERVE_DIR/index.html"
 cp "${BROWSER_ROOT}/Page/webtransport-carrier.js" "$SERVE_DIR/webtransport-carrier.js"
 cp "${BROWSER_ROOT}/Page/control-session.js" "$SERVE_DIR/control-session.js"
 cp "${BROWSER_ROOT}/Page/frame-present.js" "$SERVE_DIR/frame-present.js"
-# Frozen corpus IRAP — do not duplicate into git; stage from Wire vectors.
-IDR_FIXTURE="${BROWSER_ROOT}/../Wire/Vectors/video-corpus-v1/frame-000-idr.annexb"
-[ -f "$IDR_FIXTURE" ] || fail "missing canned IRAP fixture ${IDR_FIXTURE}"
-cp "$IDR_FIXTURE" "${SERVE_DIR}/frame-000-idr.annexb"
+cp "${BROWSER_ROOT}/Page/conductor-video.js" "$SERVE_DIR/conductor-video.js"
+# Frozen corpus prefix — staged from Wire vectors (not duplicated in git).
+CORPUS_DIR="${BROWSER_ROOT}/../Wire/Vectors/video-corpus-v1"
+[ -d "$CORPUS_DIR" ] || fail "missing video corpus ${CORPUS_DIR}"
+for f in \
+    frame-000-idr.annexb \
+    frame-001-p.annexb frame-002-p.annexb frame-003-p.annexb \
+    frame-004-p.annexb frame-005-p.annexb frame-006-p.annexb \
+    frame-007-p.annexb frame-008-p.annexb frame-009-p.annexb
+do
+    [ -f "${CORPUS_DIR}/${f}" ] || fail "missing corpus frame ${CORPUS_DIR}/${f}"
+    cp "${CORPUS_DIR}/${f}" "${SERVE_DIR}/${f}"
+done
+# Convenience copy for peer --emit-corpus (same bytes; peer reads DIR).
+mkdir -p "${SERVE_DIR}/corpus"
+cp \
+    "${SERVE_DIR}/frame-000-idr.annexb" \
+    "${SERVE_DIR}/frame-001-p.annexb" \
+    "${SERVE_DIR}/frame-002-p.annexb" \
+    "${SERVE_DIR}/frame-003-p.annexb" \
+    "${SERVE_DIR}/frame-004-p.annexb" \
+    "${SERVE_DIR}/frame-005-p.annexb" \
+    "${SERVE_DIR}/frame-006-p.annexb" \
+    "${SERVE_DIR}/frame-007-p.annexb" \
+    "${SERVE_DIR}/frame-008-p.annexb" \
+    "${SERVE_DIR}/frame-009-p.annexb" \
+    "${SERVE_DIR}/corpus/"
 
 SIZE="$(wc -c < "${SERVE_DIR}/LyteClientBrowser.wasm" | tr -d ' ')"
 IDR_SIZE="$(wc -c < "${SERVE_DIR}/frame-000-idr.annexb" | tr -d ' ')"
 echo "browser-build: staged ${SERVE_DIR}"
 echo "browser-build: LyteClientBrowser.wasm is ${SIZE} bytes"
-echo "browser-build: frame-000-idr.annexb is ${IDR_SIZE} bytes (B-4 fixture)"
+echo "browser-build: corpus IRAP is ${IDR_SIZE} bytes; frames 000–009 staged"
 echo "browser-build: next — Browser/Scripts/serve.sh  (then open in Chrome)"
