@@ -64,12 +64,14 @@ rm -rf "$SERVE_DIR"
 mkdir -p "$SERVE_DIR"
 # PackageToJS output (wasm + JS loader + WASI browser shim via CDN).
 cp -R "${PACKAGE_OUT}/." "$SERVE_DIR/"
-# Diagnostic host page + B-2…B-5 pumps (control + Conductor video).
+# Diagnostic host page + B-2…B-6 pumps (control + video + interaction).
 cp "${BROWSER_ROOT}/Page/index.html" "$SERVE_DIR/index.html"
 cp "${BROWSER_ROOT}/Page/webtransport-carrier.js" "$SERVE_DIR/webtransport-carrier.js"
 cp "${BROWSER_ROOT}/Page/control-session.js" "$SERVE_DIR/control-session.js"
 cp "${BROWSER_ROOT}/Page/frame-present.js" "$SERVE_DIR/frame-present.js"
 cp "${BROWSER_ROOT}/Page/conductor-video.js" "$SERVE_DIR/conductor-video.js"
+cp "${BROWSER_ROOT}/Page/interaction.js" "$SERVE_DIR/interaction.js"
+cp "${BROWSER_ROOT}/Page/audio-ring-worklet.js" "$SERVE_DIR/audio-ring-worklet.js"
 # Frozen corpus prefix — staged from Wire vectors (not duplicated in git).
 CORPUS_DIR="${BROWSER_ROOT}/../Wire/Vectors/video-corpus-v1"
 [ -d "$CORPUS_DIR" ] || fail "missing video corpus ${CORPUS_DIR}"
@@ -102,4 +104,4 @@ IDR_SIZE="$(wc -c < "${SERVE_DIR}/frame-000-idr.annexb" | tr -d ' ')"
 echo "browser-build: staged ${SERVE_DIR}"
 echo "browser-build: LyteClientBrowser.wasm is ${SIZE} bytes"
 echo "browser-build: corpus IRAP is ${IDR_SIZE} bytes; frames 000–009 staged"
-echo "browser-build: next — Browser/Scripts/serve.sh  (then open in Chrome)"
+echo "browser-build: next — Browser/Scripts/serve.sh  (then open in Chrome; B-6)"

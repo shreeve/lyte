@@ -1,6 +1,6 @@
 #!/bin/sh
 # Serve Browser/.serve/ with lyte-control-peer + lyte-wt-sidecar for the
-# B-3/B-5 Chrome proof. Requires a prior Browser/Scripts/build.sh.
+# B-3…B-6 Chrome proof. Requires a prior Browser/Scripts/build.sh.
 # Binds 127.0.0.1 only. Never touches standing host UDP 41151.
 set -eu
 
@@ -21,6 +21,8 @@ if [ ! -f "${SERVE_DIR}/index.html" ] \
     || [ ! -f "${SERVE_DIR}/webtransport-carrier.js" ] \
     || [ ! -f "${SERVE_DIR}/control-session.js" ] \
     || [ ! -f "${SERVE_DIR}/conductor-video.js" ] \
+    || [ ! -f "${SERVE_DIR}/interaction.js" ] \
+    || [ ! -f "${SERVE_DIR}/audio-ring-worklet.js" ] \
     || [ ! -f "${SERVE_DIR}/frame-000-idr.annexb" ] \
     || [ ! -d "${SERVE_DIR}/corpus" ]; then
     echo "browser-serve: missing staged tree — run Browser/Scripts/build.sh first" >&2

@@ -1,13 +1,13 @@
 // swift-tools-version:6.0
 import PackageDescription
 
-// LyteClientBrowser — browser platform adapter (B-5+).
+// LyteClientBrowser — browser platform adapter (B-6).
 // Builds to WebAssembly via the official Swift Wasm SDK + PackageToJS.
 // Consumes IO-free LyteWire / LyteCore / LyteClientSession; owns the
 // JS↔WASM boundary, control-plane initiator for WT carriage, video
-// assemble + Conductor/handoff policy, and Annex-B classification
-// (page JS owns WebCodecs decode + WebGPU present). AudioWorklet /
-// product composition stay deferred (B-6).
+// assemble + Conductor/handoff policy, Annex-B classification, input /
+// clipboard on sealed CTRL, and audio depacketize (page JS owns
+// WebCodecs decode, WebGPU present, AudioWorklet PCM ring).
 
 let package = Package(
     name: "LyteClientBrowser",

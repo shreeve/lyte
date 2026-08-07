@@ -1,9 +1,11 @@
-// B-5: sealed corpus video over WT → WASM assemble + Conductor → WebCodecs → WebGPU.
+// B-5/B-6: sealed corpus video over WT → WASM assemble + Conductor →
+// WebCodecs → WebGPU, then sealed input/clipboard + Opus → AudioWorklet.
 // Presentation times come only from LyteCore VideoBeatConductor; rAF never
 // invents frames. Not live Direct Eye — lyte-control-peer --emit-corpus.
 
 import { loadSidecarMeta } from "./webtransport-carrier.js";
 import { loadControlPeerMeta } from "./control-session.js";
+import { runInteractionProofs } from "./interaction.js";
 
 const BEAT_US = 16_667;
 const MIN_PRESENT = 5;
@@ -515,6 +517,33 @@ export async function runConductorVideoProof(opts = {}) {
     await sleep(2);
   }
 
+  // B-6 interaction organs while the session is still ready.
+  let interactionPassed = false;
+  let interactionLines = [];
+  if (ready && !failed) {
+    const interactionPump = async () => {
+      await drainBurst();
+      const tick = bridge.controlTick(nowMicros());
+      pushEvents(tick);
+      await sendAll(writer, tick);
+      if (tick.failed) failed = true;
+    };
+    try {
+      const ix = await runInteractionProofs({
+        writer,
+        pump: interactionPump,
+        push: (line) => interactionLines.push(line),
+      });
+      interactionPassed = !!ix.passed;
+      interactionLines = ix.lines;
+    } catch (error) {
+      interactionLines = [
+        `FAIL  interaction-shell — ${error?.message || error}`,
+      ];
+      interactionPassed = false;
+    }
+  }
+
   let teardownOk = false;
   if (ready && !failed) {
     const tear = bridge.controlTeardown(nowMicros());
@@ -552,7 +581,7 @@ export async function runConductorVideoProof(opts = {}) {
     }
   }
   try {
-    wt.close({ closeCode: 0, reason: "b5-done" });
+    wt.close({ closeCode: 0, reason: "b6-done" });
   } catch {
     /* ignore */
   }
@@ -560,9 +589,13 @@ export async function runConductorVideoProof(opts = {}) {
   const noiseOk = infoLines.some((l) => l.includes("noise: handshake completed"));
   const pairOk = infoLines.some((l) => l.includes("pairing: PAIRED"));
   const capsOk = infoLines.some((l) => l.includes("capabilities: agreed"));
+  const clipboardCapOk = infoLines.some((l) =>
+    l.includes("clipboardText=true")
+  );
   const readyOk = ready && noiseOk && pairOk && capsOk;
   const stats = bridge.mediaStats?.() || {};
   const assembled = stats.assembled || 0;
+  const ixStats = bridge.interactionStats?.() || {};
 
   // Beat-grid: successive presented PTS differ by whole beats (allow +1µs bump).
   let beatOk = presentedPts.length >= 2;
@@ -579,6 +612,11 @@ export async function runConductorVideoProof(opts = {}) {
     readyOk
       ? "PASS  control-session/noise-pair-caps — Noise IK + PIN PAKE + capabilities"
       : "FAIL  control-session/noise-pair-caps — not ready"
+  );
+  push(
+    clipboardCapOk
+      ? "PASS  control-session/clipboard-cap — clipboardText negotiated"
+      : "FAIL  control-session/clipboard-cap — clipboardText missing from agreement"
   );
   push(
     teardownOk
@@ -603,23 +641,34 @@ export async function runConductorVideoProof(opts = {}) {
   if (!classifyOk) {
     push("FAIL  frame-present/classify — no IRAP classified from wire");
   }
+  for (const line of interactionLines) push(line);
+  push(
+    interactionPassed
+      ? "PASS  interaction-shell/b6 — input + clipboard + audio organs green"
+      : "FAIL  interaction-shell/b6 — see session-input/clipboard/audio lines"
+  );
 
   const passed =
     readyOk &&
+    clipboardCapOk &&
     teardownOk &&
     classifyOk &&
     assembled >= minAssemble &&
     beatOk &&
     presentedPts.length >= minPresent &&
+    interactionPassed &&
     !failed;
 
   const meta =
-    `B-5 = corpus replay over sealed Lyte-UDP → assemble → Conductor → WebCodecs → WebGPU\n` +
+    `B-6 = interactive shell on B-3…B-5 (corpus video + sealed CTRL + Opus tone)\n` +
     `assembled=${assembled} presented=${presentedPts.length} ` +
     `ingestedDatagrams=${ingestCount} ` +
     `pts=[${presentedPts.slice(0, 6).join(",")},…]\n` +
+    `inputsSent=${ixStats.inputsSent || 0} inputEchoes=${ixStats.inputEchoes || 0} ` +
+    `clipboardSent=${ixStats.clipboardSent || 0} ` +
+    `audioAssembled=${ixStats.audioAssembled || 0}\n` +
     `codec=${picked.config.codec} adapter=${presenter.adapter}\n` +
-    `gap: not live Direct Eye / not full browser remote desktop (B-6 next)`;
+    `deferred: live Direct Eye, OS Wayland clipboard, Safari, daily-driver RD`;
 
   return {
     passed,

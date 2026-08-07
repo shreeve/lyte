@@ -133,6 +133,54 @@ enum BrowserBridge {
                 "presented": Double(session.framesPresented).jsValue,
             ].jsValue
         }
+        let sendInput = JSClosure { arguments in
+            controlSendInput(arguments)
+        }
+        let shareClipboard = JSClosure { arguments in
+            let text = arguments[0].string ?? ""
+            let now = UInt64(arguments[1].number ?? 0)
+            return controlClipboardSet(text: text, nowMicros: now)
+        }
+        let audioPop = JSClosure { _ in
+            guard let packet = controlSession?.popAudioPacket() else {
+                return JSValue.null
+            }
+            return [
+                "number": Double(packet.number).jsValue,
+                "captureMicroseconds": Double(packet.captureMicroseconds)
+                    .jsValue,
+                "recovered": packet.recovered.jsValue,
+                "byteCount": Double(packet.bytes.count).jsValue,
+                "bytes": JSTypedArray<UInt8>(packet.bytes).jsValue,
+            ].jsValue
+        }
+        let interactionStats = JSClosure { _ in
+            guard let session = controlSession else {
+                return [
+                    "inputsSent": 0.jsValue,
+                    "inputEchoes": 0.jsValue,
+                    "clipboardSent": 0.jsValue,
+                    "clipboardReceived": 0.jsValue,
+                    "clipboardNegotiated": false.jsValue,
+                    "audioAssembled": 0.jsValue,
+                    "audioPopped": 0.jsValue,
+                    "lastClipboardText": JSValue.null,
+                ].jsValue
+            }
+            return [
+                "inputsSent": Double(session.inputsSent).jsValue,
+                "inputEchoes": Double(session.inputEchoes).jsValue,
+                "clipboardSent": Double(session.clipboardSent).jsValue,
+                "clipboardReceived": Double(session.clipboardReceived).jsValue,
+                "clipboardNegotiated": session.clipboardNegotiated.jsValue,
+                "audioAssembled": Double(session.audioPacketsAssembled)
+                    .jsValue,
+                "audioPopped": Double(session.audioPacketsPopped).jsValue,
+                "lastClipboardText":
+                    (session.lastClipboardText.map { $0.jsValue }
+                        ?? JSValue.null),
+            ].jsValue
+        }
 
         JSObject.global["lyteBrowser"] = [
             "runFrozenContracts": runContracts.jsValue,
@@ -159,11 +207,15 @@ enum BrowserBridge {
             "mediaNotePresented": mediaNotePresented.jsValue,
             "mediaNoteDropped": mediaNoteDropped.jsValue,
             "mediaStats": mediaStats.jsValue,
+            "controlSendInput": sendInput.jsValue,
+            "controlClipboardSet": shareClipboard.jsValue,
+            "audioPopPacket": audioPop.jsValue,
+            "interactionStats": interactionStats.jsValue,
         ].jsValue
     }
 
-    /// Paints B-1 frozen-contract results. The page JS appends B-2…B-5
-    /// lines and owns `lyteB1Passed` … `lyteB5Passed`.
+    /// Paints B-1 frozen-contract results. The page JS appends B-2…B-6
+    /// lines and owns `lyteB1Passed` … `lyteB6Passed`.
     static func paintProofPage(results: [ContractResult]) {
         let document = JSObject.global.document
         let passed = results.allSatisfy(\.passed)
@@ -178,13 +230,14 @@ enum BrowserBridge {
         if let meta = document.getElementById("meta").object {
             meta.textContent = .string(
                 """
-                LyteClientBrowser B-5 — WASM + WT control + Conductor video
+                LyteClientBrowser B-6 — interaction shell over B-3…B-5
                 Contracts: \(FrozenEnvelopeContract.vectorName); \(FrozenNoiseContract.vectorName)
                 Carrier: opaque WT datagrams via lyte-wt-sidecar (ciphertext only)
                 Control: Noise IK + PIN PAKE + capabilities via LyteClientSession
-                Video: corpus replay over sealed Lyte-UDP → assemble → Conductor → WebCodecs → WebGPU
-                Gap: not live Direct Eye / not full remote desktop (B-6 next)
-                Bridge: controlIngestBytes (media hot path); mediaAnnexBBytes; classifyAnnexBBytes
+                Video: corpus → assemble → Conductor → WebCodecs → WebGPU
+                Input/clipboard: sealed CTRL (InputEvent/echo, ClipboardSet/Announce)
+                Audio: sealed Opus → AudioDepacketizer → WebCodecs → AudioWorklet
+                Gap: not live Direct Eye / not daily-driver remote desktop
                 """
             )
         }
@@ -312,6 +365,67 @@ enum BrowserBridge {
             )
         }
         return stepToJS(session.teardown(nowMicros: nowMicros))
+    }
+
+    private static func controlSendInput(_ arguments: [JSValue]) -> JSValue {
+        guard let session = controlSession else {
+            return stepToJS(
+                outbound: [], events: [], status: "failed",
+                detail: "no session", passed: false
+            )
+        }
+        let kind = arguments[0].string ?? ""
+        let now = UInt64(arguments[1].number ?? 0)
+        let body: InputEvent.Body?
+        switch kind {
+        case "pointerMotionAbsolute":
+            let x = arguments[2].number ?? 0
+            let y = arguments[3].number ?? 0
+            body = .pointerMotionAbsolute(x: x, y: y)
+        case "pointerMotionRelative":
+            let dx = arguments[2].number ?? 0
+            let dy = arguments[3].number ?? 0
+            body = .pointerMotionRelative(dx: dx, dy: dy)
+        case "pointerButton":
+            let button = UInt32(arguments[2].number ?? 0)
+            let pressed = (arguments[3].boolean ?? false)
+                || (arguments[3].number ?? 0) != 0
+            body = .pointerButton(button: button, pressed: pressed)
+        case "pointerAxis":
+            let dx = arguments[2].number ?? 0
+            let dy = arguments[3].number ?? 0
+            let finish = (arguments[4].boolean ?? false)
+                || (arguments[4].number ?? 0) != 0
+            body = .pointerAxis(dx: dx, dy: dy, finish: finish)
+        case "keyKeycode":
+            let keycode = UInt32(arguments[2].number ?? 0)
+            let pressed = (arguments[3].boolean ?? false)
+                || (arguments[3].number ?? 0) != 0
+            body = .keyKeycode(keycode: keycode, pressed: pressed)
+        default:
+            body = nil
+        }
+        guard let body else {
+            return stepToJS(
+                outbound: [], events: ["FAIL  input: unknown kind \(kind)"],
+                status: "failed", detail: "unknown input kind", passed: false
+            )
+        }
+        return stepToJS(session.sendInput(body: body, nowMicros: now))
+    }
+
+    private static func controlClipboardSet(
+        text: String, nowMicros: UInt64
+    ) -> JSValue {
+        guard let session = controlSession else {
+            return stepToJS(
+                outbound: [], events: [], status: "failed",
+                detail: "no session", passed: false
+            )
+        }
+        return stepToJS(session.shareClipboard(
+            text: text, nowMicros: nowMicros
+        ))
     }
 
     private static func stepToJS(_ step: BrowserControlSession.Step) -> JSValue {

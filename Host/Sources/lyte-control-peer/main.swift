@@ -1,13 +1,17 @@
-// lyte-control-peer — DRM-free HostWire UDP peer for browser B-3/B-5.
+// lyte-control-peer — DRM-free HostWire UDP peer for browser B-3…B-6.
 //
 // Speaks the real host Noise / pairing / capabilities / teardown path via
 // HostWire.Session over plain UDP. Optional `--emit-corpus` replays the
 // frozen Wire video-corpus-v1 prefix (frames 000–009) through the sealed
-// video channel — honest continuous media without Direct Eye / DRM.
-// Safe beside a standing lyte-host on 41151. Chrome reaches this peer through
-// lyte-wt-sidecar --udp-peer. Does not touch ~/.config/lyte-host identity.
+// video channel; with corpus it also emits a short sealed Opus tone for the
+// browser AudioWorklet organ. Input echoes and an in-memory clipboard
+// announce loop prove sealed CTRL features without Direct Eye / DRM /
+// Wayland clipboard. Safe beside a standing lyte-host on 41151. Chrome
+// reaches this peer through lyte-wt-sidecar --udp-peer. Does not touch
+// ~/.config/lyte-host identity.
 
 import Foundation
+import HostAudio
 import HostSession
 import HostWire
 import LyteCore
@@ -44,6 +48,11 @@ struct Options {
 /// (not a synthetic 60 Hz ladder) so Conductor path delay stays honest.
 // ~3 Conductor beats between frames — headroom for Chrome+WASM FEC drain.
 let corpusEmitIntervalNS: UInt64 = 50_001_000
+/// 5 ms Opus cadence (AudioWire.packetDuration).
+let tonePacketIntervalNS: UInt64 = 5_000_000
+/// ~240 ms of tone — enough for WebCodecs + AudioWorklet smoke.
+let tonePacketCount = 48
+let toneHz: Float = 440
 
 func parseArgs(_ argv: [String]) throws -> Options {
     var opts = Options()
@@ -90,7 +99,7 @@ func parseArgs(_ argv: [String]) throws -> Options {
         case "--help", "-h":
             print(
                 """
-                lyte-control-peer — DRM-free HostWire peer (browser B-3/B-5)
+                lyte-control-peer — DRM-free HostWire peer (browser B-3…B-6)
 
                   --listen P          UDP port (default 41234; never 41151)
                   --bind HOST         bind address (default 127.0.0.1)
@@ -98,7 +107,9 @@ func parseArgs(_ argv: [String]) throws -> Options {
                   --seconds N         hold after establish (default 60)
                   --meta-out PATH     write JSON (port, host static, pin)
                   --emit-corpus DIR   after ready, seal/pace video-corpus-v1
-                                      frames 000–009 from DIR (B-5; no DRM)
+                                      frames 000–009 + Opus tone (B-5/B-6;
+                                      no DRM). Declares clipboardText;
+                                      echoes input; in-memory clipboard ack.
 
                 Safe beside standing lyte-host on 41151 — no Direct Eye / DRM.
                 """
@@ -299,6 +310,12 @@ final class ControlPeer {
     var corpusIndex = 0
     var corpusNextEmitNS: UInt64 = 0
     var corpusEmitFinished = false
+    var toneIndex = 0
+    var toneNextEmitNS: UInt64 = 0
+    var toneEmitFinished = false
+    var toneEncoder: HostOpusEncoder?
+    var inputEventsEchoed = 0
+    var clipboardSetsAcked = 0
 
     init(opts: Options) throws {
         if opts.listenPort == 41151 {
@@ -314,23 +331,27 @@ final class ControlPeer {
         seconds = opts.seconds
         if let dir = opts.emitCorpusDir {
             corpusFrames = try loadCorpusFrames(from: dir)
+            toneEncoder = try HostOpusEncoder(bitrate: 96_000)
         } else {
             corpusFrames = nil
+            toneEmitFinished = true
         }
 
         let shape = corpusFrames == nil
             ? "hostwire-control-only-udp"
-            : "hostwire-control-plus-corpus-video"
-        print("lyte-control-peer — DRM-free HostWire peer (B-3/B-5)")
+            : "hostwire-control-plus-corpus-video-audio"
+        print("lyte-control-peer — DRM-free HostWire peer (B-3…B-6)")
         print("listen: \(sock.localHost):\(sock.localPort)")
         print("noise: host static public key \(Hex.string(hostStatic.publicKey))")
         print("pairing: PIN \(pin) — enter it in the browser client")
         if let frames = corpusFrames {
             print(
-                "corpus: will emit \(frames.count) sealed frames after ready "
+                "corpus: will emit \(frames.count) sealed frames + "
+                    + "\(tonePacketCount) Opus tone packets after ready "
                     + "(no Direct Eye)"
             )
         }
+        print("features: input echo + in-memory clipboardText (not Wayland OS)")
         print("note: no Direct Eye; safe beside standing UDP 41151")
 
         if let metaOut = opts.metaOut {
@@ -342,10 +363,12 @@ final class ControlPeer {
                 "pin": pin,
                 "seconds": opts.seconds,
                 "shape": shape,
+                "clipboardText": true,
             ]
             if let frames = corpusFrames {
                 body["corpusFrameCount"] = frames.count
                 body["emitCorpus"] = true
+                body["tonePacketCount"] = tonePacketCount
             }
             try writeMeta(metaOut, body: body)
         }
@@ -393,6 +416,56 @@ final class ControlPeer {
             }
         } catch {
             logPeer("corpus: ingest frame \(i) failed: \(error)")
+        }
+    }
+
+    /// Pace sealed Opus tone packets (440 Hz sine) for the browser audio organ.
+    func maybeEmitTone(now: UInt64) {
+        guard corpusFrames != nil, let session, let encoder = toneEncoder,
+              mediaReady, !toneEmitFinished, !closed
+        else { return }
+        if toneIndex >= tonePacketCount {
+            toneEmitFinished = true
+            print(
+                "tone: emitted \(tonePacketCount) Opus packets "
+                    + "(\(toneHz) Hz; sealed chan-1; not live host audio)"
+            )
+            return
+        }
+        if toneNextEmitNS == 0 {
+            toneNextEmitNS = now
+        }
+        guard now >= toneNextEmitNS else { return }
+        var pcm = [Float](
+            repeating: 0, count: HostOpus.samplesPerPacket
+        )
+        let baseSample = toneIndex * HostOpus.framesPerPacket
+        for i in 0..<HostOpus.framesPerPacket {
+            let t = Float(baseSample + i) / Float(HostOpus.sampleRate)
+            let sample = 0.2 * sin(2 * Float.pi * toneHz * t)
+            pcm[i * 2] = sample
+            pcm[i * 2 + 1] = sample
+        }
+        var packet = [UInt8](repeating: 0, count: HostOpus.maxPacketBytes)
+        do {
+            let n = try pcm.withUnsafeBufferPointer {
+                try encoder.encode($0, into: &packet)
+            }
+            packet.removeSubrange(n..<packet.count)
+            let capture = now / 1_000
+            _ = try session.ingestAudioPacket(
+                packet, captureTimestampMicroseconds: capture, now: now
+            )
+            toneIndex += 1
+            toneNextEmitNS = now &+ tonePacketIntervalNS
+            if toneIndex == 1 || toneIndex == tonePacketCount {
+                logPeer(
+                    "tone: emitted packet \(toneIndex)/\(tonePacketCount)"
+                )
+            }
+        } catch {
+            logPeer("tone: encode/ingest failed: \(error)")
+            toneEmitFinished = true
         }
     }
 
@@ -454,9 +527,49 @@ final class ControlPeer {
                 print(
                     "capabilities: agreed codecs=\(caps.videoCodecs) "
                         + "chroma=\(caps.chromaModes) maxDatagram=\(caps.maxDatagramBytes)"
+                        + " clipboardText=\(caps.clipboardText)"
                 )
             case .capabilitiesFailed(let why):
                 print("capabilities: FAILED — \(why)")
+            case .inputReceived(let event, let receivedAt):
+                // No uinput / Direct Eye — report inject-at-receive so the
+                // browser can close the sealed InputEcho loop honestly.
+                session?.noteInputInjected(
+                    seq: event.seq,
+                    receivedAtMicroseconds: receivedAt,
+                    injectedAtMicroseconds: receivedAt
+                )
+                inputEventsEchoed += 1
+                if inputEventsEchoed <= 3 || inputEventsEchoed % 25 == 0 {
+                    logPeer(
+                        "input: echoed seq=\(event.seq) "
+                            + "(total \(inputEventsEchoed); no OS inject)"
+                    )
+                }
+            case .clipboardSetReceived(let text):
+                // In-memory ack announce — not Wayland/GNOME host clipboard.
+                // Distinct text avoids ClipboardSyncBook loop-echo suppress.
+                let ack = "lyte-peer-ack:\(text.utf8.count)"
+                if let session {
+                    for ev in session.noteHostClipboardChanged(
+                        ack, now: now, hostMicroseconds: now / 1_000
+                    ) {
+                        if case .clipboardAnnounceSent(let n) = ev {
+                            logPeer("clipboard: announce sent (\(n) B)")
+                        } else if case .clipboardAnnounceSuppressed(let why) = ev {
+                            logPeer("clipboard: announce suppressed (\(why))")
+                        } else if case .sendFailed(let why) = ev {
+                            logPeer("clipboard: announce send failed: \(why)")
+                        }
+                    }
+                }
+                clipboardSetsAcked += 1
+                logPeer(
+                    "clipboard: set \(text.utf8.count) B → announce ack "
+                        + "(in-memory; not OS clipboard)"
+                )
+            case .clipboardAnnounceSent(let byteCount):
+                logPeer("clipboard: announce sent (\(byteCount) B)")
             case .teardownSent(let reason):
                 print("teardown: sent \(reason)")
             case .sessionClosed(let reason):
@@ -507,7 +620,7 @@ final class ControlPeer {
                         config: SessionConfig(
                             crypto: .noise(hostStatic: hostStatic),
                             rateBitsPerSecond: pace,
-                            capabilities: .wireDefault,
+                            capabilities: .wireDefault.declaringClipboardText(),
                             lifecycle: lifecycle
                         ),
                         clientTuple: tuple,
@@ -531,6 +644,7 @@ final class ControlPeer {
                     hostMicroseconds: now / 1_000
                 )
                 handleEvents(events, now: now)
+                maybeEmitTone(now: now)
                 maybeEmitCorpus(now: now)
                 session.pump(now: now)
                 flushOutbox()
@@ -542,6 +656,7 @@ final class ControlPeer {
                     now: now, hostMicroseconds: now / 1_000
                 )
                 handleEvents(advanced, now: now)
+                maybeEmitTone(now: now)
                 maybeEmitCorpus(now: now)
                 session.pump(now: now)
                 flushOutbox()
@@ -569,10 +684,18 @@ final class ControlPeer {
                 )
             }
         }
+        if corpusFrames != nil, !toneEmitFinished, !closed {
+            print(
+                "WARN — tone emit incomplete "
+                    + "(index=\(toneIndex)/\(tonePacketCount))"
+            )
+        }
         if corpusFrames != nil, corpusEmitFinished {
             print(
-                "PASS — control + corpus video "
-                    + "(Noise + pair + capabilities + \(corpusIndex) frames)"
+                "PASS — control + corpus video + tone "
+                    + "(Noise + pair + capabilities + \(corpusIndex) frames "
+                    + "+ \(toneIndex) Opus; inputEchoed=\(inputEventsEchoed) "
+                    + "clipboardAcked=\(clipboardSetsAcked))"
             )
         } else if corpusFrames == nil {
             print("PASS — control-only session (Noise + pair + capabilities)")
