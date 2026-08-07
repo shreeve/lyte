@@ -84,7 +84,13 @@ public struct VideoAssemblerConfig: Hashable, Sendable {
         self.staleAfterMicroseconds = staleAfterMicroseconds
         self.maxTrackedGroups = maxTrackedGroups
         self.reorderThresholdPackets = reorderThresholdPackets
-        self.fecImpossibleThresholdPackets = fecImpossibleThresholdPackets
+        // Write-off must never be looser than NACK presumption: a seq
+        // cannot be written off before it is NACK-worthy. Clamp rather
+        // than trap — callers may pass a tight write-off intending "same
+        // as reorder" and miss the ordering constraint.
+        self.fecImpossibleThresholdPackets = max(
+            fecImpossibleThresholdPackets, reorderThresholdPackets
+        )
     }
 }
 
@@ -243,6 +249,18 @@ public struct VideoAssembler: Sendable {
             dataShards: group.geometry.dataShards,
             parityShards: group.geometry.parityShards
         )
+    }
+
+    /// Leading present-slot count for a tracked frame — the sweep's
+    /// clean-path early-out anchor. Nil when untracked.
+    func testingContiguousPrefix(of frame: FrameNumber) -> Int? {
+        groups[frame.rawValue]?.contiguousPrefix
+    }
+
+    /// Whether the loss sweep has latched out further events for a
+    /// tracked frame. Nil when untracked.
+    func testingSweepSettled(of frame: FrameNumber) -> Bool? {
+        groups[frame.rawValue]?.sweepSettled
     }
 
     /// Ingests one received datagram's (envelope, payload) and returns

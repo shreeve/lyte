@@ -1,7 +1,7 @@
 import XCTest
 import LyteCore
-import LyteWire
 import LyteWireTestKit
+@testable import LyteWire
 
 // Deterministic assembler coverage: every event, every drop reason, and
 // every clause of the holdback policy exercised by hand-scripted
@@ -554,5 +554,126 @@ final class VideoAssemblerTests: XCTestCase {
             ),
             [.shardDropped(.inconsistentGroup(FrameNumber(rawValue: 0)))]
         )
+    }
+
+    // MARK: - Threshold invariant and sweep bookkeeping pins
+
+    func testFecImpossibleThresholdIsAtLeastReorderThreshold() {
+        let config = VideoAssemblerConfig(
+            reorderThresholdPackets: 5,
+            fecImpossibleThresholdPackets: 2
+        )
+        XCTAssertEqual(config.reorderThresholdPackets, 5)
+        XCTAssertEqual(
+            config.fecImpossibleThresholdPackets, 5,
+            "write-off must never be looser than NACK presumption")
+        let alreadyOrdered = VideoAssemblerConfig(
+            reorderThresholdPackets: 3,
+            fecImpossibleThresholdPackets: 10
+        )
+        XCTAssertEqual(alreadyOrdered.fecImpossibleThresholdPackets, 10)
+    }
+
+    func testContiguousPrefixTracksLeadingFilledSlots() throws {
+        // k=3 m=2: out-of-order fill must not advance the leading prefix
+        // past a hole; closing the hole must jump the prefix forward.
+        let shards = try packetize(pFrame(3000, fill: 0x91), number: 0, firstSeq: 0)
+        var assembler = VideoAssembler()
+        _ = assembler.ingest(
+            envelope: shards[0].envelope, payload: shards[0].payload, now: t0
+        )
+        XCTAssertEqual(
+            assembler.testingContiguousPrefix(of: FrameNumber(rawValue: 0)), 1)
+
+        _ = assembler.ingest(
+            envelope: shards[2].envelope, payload: shards[2].payload, now: t0
+        )
+        XCTAssertEqual(
+            assembler.testingContiguousPrefix(of: FrameNumber(rawValue: 0)), 1,
+            "a hole at index 1 must pin the contiguous prefix")
+
+        _ = assembler.ingest(
+            envelope: shards[1].envelope, payload: shards[1].payload, now: t0
+        )
+        // Three data shards complete the group — prefix is gone with it.
+        XCTAssertNil(
+            assembler.testingContiguousPrefix(of: FrameNumber(rawValue: 0)),
+            "decoded group leaves the tracker")
+    }
+
+    func testSweepSettlesOnceAbsentSeqsAreWrittenOff() throws {
+        let frame0 = pFrame(2000, fill: 0x92)
+        let shards0 = try packetize(frame0, number: 0, firstSeq: 0)
+        let shards1 = try packetize(pFrame(100, fill: 0x93), number: 1, firstSeq: 3)
+        let shards2 = try packetize(pFrame(100, fill: 0x94), number: 2, firstSeq: 5)
+        var assembler = VideoAssembler(config: VideoAssemblerConfig(
+            fecImpossibleThresholdPackets: 4
+        ))
+        _ = assembler.ingest(
+            envelope: shards0[0].envelope, payload: shards0[0].payload, now: t0
+        )
+        for shard in shards1 + shards2 {
+            _ = assembler.ingest(
+                envelope: shard.envelope, payload: shard.payload, now: t0
+            )
+        }
+        XCTAssertEqual(
+            assembler.status(of: FrameNumber(rawValue: 0)), .fecImpossible)
+        XCTAssertEqual(
+            assembler.testingSweepSettled(of: FrameNumber(rawValue: 0)), true)
+
+        // Further channel advance must not re-mint NACK/fec events for
+        // a settled group — the latch is the early-out.
+        let filler = try packetize(pFrame(100, fill: 0x95), number: 3, firstSeq: 7)
+        var events: [VideoAssemblerEvent] = []
+        for shard in filler {
+            events += assembler.ingest(
+                envelope: shard.envelope, payload: shard.payload, now: t0
+            )
+        }
+        XCTAssertFalse(events.contains {
+            if case .nackCandidates(let frame, _, _, _, _) = $0 {
+                return frame.rawValue == 0
+            }
+            return false
+        })
+        XCTAssertFalse(events.contains {
+            if case .fecImpossible(let frame, _, _) = $0 {
+                return frame.rawValue == 0
+            }
+            return false
+        })
+    }
+
+    func testLossSweepSkippedWhenNeitherSeqNorGroupAdvances() throws {
+        // After a NACK has fired, a duplicate of an already-seen shard
+        // neither opens a group nor advances highestSeq — the gate must
+        // skip the whole sweep (no re-minted candidates).
+        let frame0 = pFrame(2000, fill: 0x96)
+        let shards0 = try packetize(frame0, number: 0, firstSeq: 0)
+        let shards1 = try packetize(pFrame(100, fill: 0x97), number: 1, firstSeq: 3)
+        var assembler = VideoAssembler(config: VideoAssemblerConfig(
+            fecImpossibleThresholdPackets: 4
+        ))
+        _ = assembler.ingest(
+            envelope: shards0[0].envelope, payload: shards0[0].payload, now: t0
+        )
+        _ = assembler.ingest(
+            envelope: shards1[0].envelope, payload: shards1[0].payload, now: t0
+        )
+        let nackPass = assembler.ingest(
+            envelope: shards1[1].envelope, payload: shards1[1].payload, now: t0
+        )
+        XCTAssertTrue(nackPass.contains {
+            if case .nackCandidates = $0 { return true }
+            return false
+        })
+
+        let dup = assembler.ingest(
+            envelope: shards0[0].envelope, payload: shards0[0].payload, now: t0
+        )
+        XCTAssertEqual(dup, [
+            .shardDropped(.duplicateShard(FrameNumber(rawValue: 0), shardIndex: 0))
+        ])
     }
 }
