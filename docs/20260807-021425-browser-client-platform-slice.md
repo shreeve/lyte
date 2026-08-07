@@ -83,7 +83,7 @@ Wire WASM suite green:
 | Stage | Proof | Not yet |
 |---|---|---|
 | **B-0** (this record) | Naming, WebTransport carrier, matrix, ladder frozen; living docs point here | Runtime code |
-| **B-1** | Load Lyte WASM in a real browser; exercise one frozen wire contract across the JavaScript boundary | Network |
+| **B-1** | Load Lyte WASM in Chrome; exercise frozen envelope + Noise IK vectors across the JavaScript boundary (`Browser/`, smoke-chrome) — **landed** | Network |
 | **B-2** | Opaque datagram round-trip through the chosen WebTransport adapter; measure datagram ceiling | Session |
 | **B-3** | Pair, Noise, capabilities, control-only session against pup | Media |
 | **B-4** | One timestamped frame via WebCodecs + WebGPU | Live stream |
@@ -104,7 +104,10 @@ browser-buffer anti-patterns named in [`BROWSER.md`](BROWSER.md).
 
 ## 7. Immediate next code
 
-**B-1 only:** smallest proof that Swift Lyte wire contracts run under a
-browser WASM + JS host and return a frozen-vector result. No scaffolding
-package, no bridge binary, and no WebCodecs shell until that boundary is
-green.
+**B-1 landed** in `Browser/` (`LyteClientBrowser` + Page +
+`Scripts/{build,serve,smoke-chrome}.sh`). Living runbook:
+[`BROWSER.md`](BROWSER.md).
+
+**B-2 next:** opaque WebTransport datagram round-trip through the chosen
+adapter (host leaf vs sidecar decided in-slice); measure datagram ceiling.
+No session media; do not displace standing UDP 41151 for frivolous tests.

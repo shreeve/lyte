@@ -9,14 +9,12 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ #230 — browser-client platform B-0 (pull if HEAD moved) —
-  peer platform slice opened; WebTransport carrier and `LyteClientBrowser`
-  naming frozen in
-  `docs/20260807-021425-browser-client-platform-slice.md`.
-- **Next:** **B-1** — load Lyte WASM in a real browser and exercise one
-  frozen wire contract through the JavaScript boundary. No empty package
-  scaffolding; no bridge binary until B-2. Wayland clipboard leaf remains
-  **blocked on GNOME** —
+- **Tip:** `main` @ browser B-1 (pull if HEAD moved) — `LyteClientBrowser`
+  loads in Chrome and exercises frozen envelope + Noise IK vectors across
+  the JS boundary (`Browser/`, `docs/BROWSER.md`).
+- **Next:** **B-2** — opaque WebTransport datagram round-trip through the
+  chosen adapter; measure datagram ceiling. No media. Wayland clipboard
+  leaf remains **blocked on GNOME** —
   `docs/20260807-015743-wayland-clipboard-gnome-blocker.md`.
 
 ## Live rig
@@ -51,6 +49,18 @@ glass); hand-run binaries under the home build tree with `setcap` (not
 `/tmp`).
 
 ## Proof (final bars)
+
+### Browser B-1 — PASS (Chrome)
+
+```sh
+Browser/Scripts/build.sh
+Browser/Scripts/smoke-chrome.sh
+# PASS  envelope-v1/nominal-video-shard
+# PASS  noise-v1/snow-ik-25519-chachapoly-sha256
+```
+
+Interactive: `Browser/Scripts/serve.sh` → http://127.0.0.1:8765/ in Chrome.
+Safari not a gate. No WebTransport / session / media yet (B-2…).
 
 ### Harsh-path — PASS (closed)
 
@@ -87,8 +97,8 @@ later (`TODO.md`).
 
 - Law and canonical commands: `AGENTS.md`
 - Deferred work: `TODO.md`
-- Browser platform B-0: `docs/20260807-021425-browser-client-platform-slice.md`
 - Browser living direction: `docs/BROWSER.md`
+- Browser platform B-0: `docs/20260807-021425-browser-client-platform-slice.md`
 - Harsh-path control plane: `docs/20260806-115922-harsh-path-control-plane.md`
 - Metronome design: `docs/20260803-050422-metronome-playout-design.md`
 - Direct Eye correction: `docs/20260805-084033-direct-eye-pixel-observation.md`

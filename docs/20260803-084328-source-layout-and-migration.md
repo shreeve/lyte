@@ -73,6 +73,7 @@ Lyte/
 ├── Wire/
 ├── Common/
 ├── Client/
+├── Browser/          # LyteClientBrowser (wasm + JS boundary; B-1+)
 ├── Host/
 ├── Applications/
 ├── SystemTests/

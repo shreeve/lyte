@@ -17,15 +17,16 @@ direction live in `README.md`; this file owns implementation law.
 
 ## Package ownership
 
-All five packages use Swift tools version 6.0 and the source-layout grammar
-in `docs/20260803-084328-source-layout-and-migration.md`.
+Packages use Swift tools version 6.0 and the source-layout grammar in
+`docs/20260803-084328-source-layout-and-migration.md`.
 
 - **`Wire/` — `LyteWire`:** Foundation-free, sans-IO protocol codecs,
   cryptography, FEC, state machines, vocabulary, and frozen vectors.
   `CNanorsWire` is the vendored Reed-Solomon C leaf;
   `LyteWireTestKit` owns reusable vector equipment. Swift Crypto is its sole
   external dependency and `import Crypto` is confined to
-  `Sources/LyteWire/Crypto/`.
+  `Sources/LyteWire/Crypto/`. Attested under wasmtime
+  (`Wire/Scripts/wasm-test.sh`); that is not the browser client.
 - **`Common/` — `LyteCommon`:** `LyteCore` owns shared sans-IO policy and
   injected-time utilities; `LyteIO` owns shared OS adapters;
   `LyteTestKit` owns reusable shared test equipment. Adapters never own
@@ -45,6 +46,13 @@ in `docs/20260803-084328-source-layout-and-migration.md`.
   owns shared AppKit shims; `LyteClientTestKit` owns reusable client test
   equipment. Production streaming code must not depend on corpus or harness
   code.
+- **`Browser/` — `LyteClientBrowser`:** browser platform adapter. Owns the
+  JS↔WASM boundary and (later) WebTransport / WebCodecs / WebGPU /
+  AudioWorklet ports. Consumes IO-free `LyteWire` / `LyteCore`; does not
+  reimplement protocol policy in JavaScript. Build/serve/smoke:
+  `Browser/Scripts/{build,serve,smoke-chrome}.sh`. Product composition
+  (`LyteBrowserApp` under `Applications/`) stays deferred. Living ladder:
+  `docs/BROWSER.md`.
 - **`SystemTests/` — `LyteSystemTests`:** cross-role composition tests that
   import exported Client and Host libraries. It owns no production code and
   does not justify a dependency between Client and Host.

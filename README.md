@@ -85,13 +85,12 @@ Conductor Wi‑Fi bars are closed; that path has earned peer-platform work.
 
 The order ahead:
 
-1. **Browser client platform** — `LyteClientBrowser` over the same IO-free
-   cores, WebTransport datagrams at the browser edge, WebCodecs/WebGPU
-   presentation. Ladder and frozen carrier:
-   [`docs/BROWSER.md`](docs/BROWSER.md) and
+1. **Browser client platform** — B-1 green in Chrome (`Browser/`): Swift
+   WASM + JS bridge exercises frozen envelope and Noise IK vectors. Next is
+   WebTransport (B-2), then session/media up the ladder in
+   [`docs/BROWSER.md`](docs/BROWSER.md). B-0 freeze:
    [`docs/20260807-021425-browser-client-platform-slice.md`](docs/20260807-021425-browser-client-platform-slice.md).
-   The passing WASM wire suite is a portability proof, not yet a browser
-   client.
+   The wasmtime Wire suite remains a separate portability attestation.
 2. Add the macOS host (ScreenCaptureKit + VideoToolbox leaves).
 3. Add Windows and Linux client/host shells around the same shared cores.
 4. Mobile and relay surfaces after the peer platforms earn them.
