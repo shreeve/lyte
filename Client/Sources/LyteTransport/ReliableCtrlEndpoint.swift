@@ -99,6 +99,12 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// the kernel timer for a <1 ms move is churn without effect, so
     /// the reschedule skips inside that band. Guarded by `lock`.
     private var armedDeadlineMicros: UInt64?
+    /// When true, `serviceLocked` runs re-arm bookkeeping without a live
+    /// DispatchSource so virtual-time tests can pin the wake path.
+    var testingAssumeTimerPresent = false
+    /// After the latest service pass that evaluated re-arm: true when the
+    /// unchanged-deadline band skipped `timer.schedule`.
+    private(set) var testingRescheduleSkipped = false
 
     public init(
         sender: TransportSender,
@@ -258,9 +264,30 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// or an unchanged deadline would skip the re-arm and sleep forever.
     private func timerFired() {
         lock.lock()
-        armedDeadlineMicros = nil
-        serviceLocked(now: now())
+        wakeFromTimerLocked(now: now())
         lock.unlock()
+    }
+
+    /// Virtual-time wake — same clear-then-service order as production
+    /// `timerFired`. `tick` must not clear: tests drive it without a live
+    /// DispatchSource, so the skip bookkeeping is unused.
+    func testingWakeFromTimer(now: ClientTimestamp) {
+        lock.lock()
+        wakeFromTimerLocked(now: now)
+        lock.unlock()
+    }
+
+    /// The absolute µs the re-arm book currently holds, nil when nothing
+    /// is armed — the sleep-forever pin's probe.
+    var testingArmedDeadlineMicros: UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return armedDeadlineMicros
+    }
+
+    private func wakeFromTimerLocked(now: ClientTimestamp) {
+        armedDeadlineMicros = nil
+        serviceLocked(now: now)
     }
 
     /// One timer beat: fires due PTO retransmits and re-arms. The wake
@@ -351,20 +378,26 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         // unless the armed deadline already sits within 1 ms of it
         // (PTOs are 100 ms-scale; a ≤1 ms late wake is nothing, the
         // saved churn at drag rates is hundreds of kernel timer ops/s).
-        if let timer {
+        // `testingAssumeTimerPresent` lets virtual-time tests exercise
+        // the same bookkeeping without a live DispatchSource.
+        if timer != nil || testingAssumeTimerPresent {
             if let deadline {
                 let target = deadline.microseconds
                 let unchanged = armedDeadlineMicros.map {
                     target >= $0 &- 1_000 && target <= $0 &+ 1_000
                 } ?? false
+                testingRescheduleSkipped = unchanged
                 if !unchanged {
-                    let delta = max(deadline.microseconds(since: now), 1_000)
-                    timer.schedule(
-                        deadline: .now() + .microseconds(Int(delta)))
+                    if let timer {
+                        let delta = max(deadline.microseconds(since: now), 1_000)
+                        timer.schedule(
+                            deadline: .now() + .microseconds(Int(delta)))
+                    }
                     armedDeadlineMicros = target
                 }
             } else if armedDeadlineMicros != nil {
-                timer.schedule(deadline: .distantFuture)
+                testingRescheduleSkipped = false
+                timer?.schedule(deadline: .distantFuture)
                 armedDeadlineMicros = nil
             }
         }
