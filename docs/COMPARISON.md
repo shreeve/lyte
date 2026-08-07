@@ -80,10 +80,12 @@ recovery policy it owns end to end.
 
 The shipping combination is a macOS client and Linux host. Native packaging,
 the macOS host role, Windows/Linux role shells, printing, and managed remote
-reach remain future work. The browser client is also future work: its wire
-contracts pass 511 tests under WebAssembly, but WebTransport, browser runtime
-integration, WebCodecs/WebGPU rendering, and AudioWorklet playout are not yet
-commissioned. See [BROWSER.md](BROWSER.md) for that boundary.
+reach remain future work. The browser client is the active peer-platform
+slice (B-0 landed): wire contracts pass 511 tests under WebAssembly, and
+WebTransport, browser runtime integration, WebCodecs/WebGPU rendering, and
+AudioWorklet playout follow the B-1…B-6 ladder. See [BROWSER.md](BROWSER.md)
+and
+[20260807-021425-browser-client-platform-slice.md](20260807-021425-browser-client-platform-slice.md).
 
 Keep this page short and honest. Product direction belongs in `README.md` and
 `DESIGN.md`; protocol law belongs in the frozen specification; detailed gate

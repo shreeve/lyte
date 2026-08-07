@@ -6,6 +6,12 @@ directory and target-shape portions of
 fix-before-spec, spec-before-code, and rebuild-only-earned-organs laws remain
 in force.*
 
+> **Extension (2026-08-07):** client platform identifiers gain **`Browser`**
+> (`LyteClientBrowser`; later `LyteBrowserApp` under `Applications/`). Frozen
+> in
+> [`20260807-021425-browser-client-platform-slice.md`](20260807-021425-browser-client-platform-slice.md).
+> Body below still names MacOS / Linux / Windows as authored.
+
 ## 1. Prime invariant
 
 The migration changes ownership, names, paths, and dependency direction. It
