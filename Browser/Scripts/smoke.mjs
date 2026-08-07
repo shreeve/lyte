@@ -128,12 +128,23 @@ async function startControlPeer(bin) {
   throw new Error(`timed out waiting for ${peerMetaOut}`);
 }
 
+function wtRuntime() {
+  const runtime = process.env.LYTE_WT_RUNTIME || "node";
+  if (runtime !== "node" && runtime !== "bun") {
+    throw new Error(
+      `LYTE_WT_RUNTIME must be node or bun (got ${JSON.stringify(runtime)})`
+    );
+  }
+  return runtime;
+}
+
 async function startSidecar(peer) {
   if (existsSync(metaOut)) {
     await rm(metaOut, { force: true });
   }
+  const runtime = wtRuntime();
   const proc = spawn(
-    process.execPath,
+    runtime,
     [
       join(browserRoot, "Scripts", "wt-sidecar.mjs"),
       "--meta-out",
@@ -256,7 +267,7 @@ const debugPort = 9200 + Math.floor(Math.random() * 200);
 const pageUrl = `http://127.0.0.1:${port}/index.html`;
 
 console.log(
-  `browser-smoke: sidecar ${sidecarMeta.url} → UDP ${peerMeta.listenPort} ` +
+  `browser-smoke: sidecar (${wtRuntime()}) ${sidecarMeta.url} → UDP ${peerMeta.listenPort} ` +
     `(pin ${peerMeta.pin})`
 );
 

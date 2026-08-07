@@ -34,8 +34,16 @@ if [ "$PEER_PORT" = "41151" ]; then
     exit 1
 fi
 
-command -v node >/dev/null 2>&1 || {
-    echo "browser-serve: node is required for wt-sidecar" >&2
+WT_RUNTIME="${LYTE_WT_RUNTIME:-node}"
+case "$WT_RUNTIME" in
+    node|bun) ;;
+    *)
+        echo "browser-serve: LYTE_WT_RUNTIME must be node or bun (got ${WT_RUNTIME})" >&2
+        exit 1
+        ;;
+esac
+command -v "$WT_RUNTIME" >/dev/null 2>&1 || {
+    echo "browser-serve: ${WT_RUNTIME} is required for wt-sidecar (LYTE_WT_RUNTIME)" >&2
     exit 1
 }
 command -v openssl >/dev/null 2>&1 || {
@@ -95,8 +103,8 @@ done
     exit 1
 }
 
-echo "browser-serve: starting lyte-wt-sidecar → UDP ${PEER_PORT}…"
-node "${BROWSER_ROOT}/Scripts/wt-sidecar.mjs" \
+echo "browser-serve: starting lyte-wt-sidecar (${WT_RUNTIME}) → UDP ${PEER_PORT}…"
+"$WT_RUNTIME" "${BROWSER_ROOT}/Scripts/wt-sidecar.mjs" \
     --meta-out "${META_OUT}" \
     --udp-peer "127.0.0.1:${PEER_PORT}" \
     >"${SIDECAR_LOG}" 2>&1 &
