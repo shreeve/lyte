@@ -9,8 +9,8 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ #225 — assembler/ARQ pins + TODO prune (pull if HEAD
-  moved). Harsh-path close remains the #222 family.
+- **Tip:** `main` @ #226 — drop cursor eyeball verification debt (pull if
+  HEAD moved). Harsh-path close remains the #222 family.
 - **Next** (thin; not another control-plane storm): banked product work in
   `TODO.md` (browser, native shells, etc.). Residual SessionWire under-lock
   prints remain verification debt when that seam is next open.
