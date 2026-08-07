@@ -9,8 +9,8 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ #228 — SessionWire under-lock diagnostics through
-  `emit` (pull if HEAD moved). Harsh-path close remains the #222 family.
+- **Tip:** `main` @ #229 — Wayland clipboard GNOME blocker pinned (pull
+  if HEAD moved). Harsh-path close remains the #222 family.
 - **Next** (thin; not another control-plane storm): banked product work in
   `TODO.md` (browser, native shells, etc.). Wayland clipboard leaf is
   **blocked on GNOME** — pin
