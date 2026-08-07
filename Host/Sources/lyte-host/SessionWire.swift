@@ -789,8 +789,10 @@ final class SessionWire {
                         guard lyte_netio_set_peer(
                             self.netio, tuple.remoteAddress, tuple.remotePort,
                             &err, err.count) == 0 else {
-                            print("session: connect to \(tuple.remoteAddress):"
-                                + "\(tuple.remotePort) failed: \(errString(err))")
+                            self.emit(
+                                "session: connect to \(tuple.remoteAddress):"
+                                    + "\(tuple.remotePort) failed: "
+                                    + "\(errString(err))")
                             return
                         }
                         do {
@@ -803,7 +805,7 @@ final class SessionWire {
                                     "remotePort": String(tuple.remotePort),
                                 ])
                         } catch {
-                            print("session: \(error)")
+                            self.emit("session: \(error)")
                             return
                         }
                         self.makeSession(
@@ -1321,8 +1323,10 @@ final class SessionWire {
         }
         guard !replies.isEmpty else { return }
         lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return }
+        guard let session, session.phase == .established else {
+            lock.unlock()
+            return
+        }
         for reply in replies {
             do {
                 try session.sendBulk(
@@ -1331,7 +1335,7 @@ final class SessionWire {
                 )
             } catch {
                 lastSendError = String(describing: error)
-                print("files: bulk send failed: \(error)")
+                emit("files: bulk send failed: \(error)")
             }
         }
         do {
@@ -1340,6 +1344,8 @@ final class SessionWire {
         } catch {
             lastSendError = String(describing: error)
         }
+        lock.unlock()
+        flushLogLines()
     }
 
     /// E3: the eye's report that the hardware cursor plane changed —
@@ -1558,7 +1564,7 @@ final class SessionWire {
     private func notePeerGone() {
         guard !peerGone else { return }
         peerGone = true
-        print("session: client unreachable (ICMP port closed — it exited) "
+        emit("session: client unreachable (ICMP port closed — it exited) "
             + "— closing cleanly")
     }
 
@@ -2169,13 +2175,13 @@ final class SessionWire {
                 challengesSentOffPrimary += 1
                 datagramsSent += 1
                 bytesSent += datagram.bytes.count
-                print("path: challenge sent to \(destination.remoteAddress):"
+                emit("path: challenge sent to \(destination.remoteAddress):"
                     + "\(destination.remotePort) (off-primary sendto)")
             } else if rc == LYTE_NETIO_PEER_GONE {
                 notePeerGone()
             } else {
                 lastSendError = errString(err)
-                print("path: challenge to \(destination.remoteAddress):"
+                emit("path: challenge to \(destination.remoteAddress):"
                     + "\(destination.remotePort) failed: \(errString(err))")
             }
             return false
