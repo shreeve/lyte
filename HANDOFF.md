@@ -9,9 +9,10 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ browser B-1 (pull if HEAD moved) — `LyteClientBrowser`
-  loads in Chrome and exercises frozen envelope + Noise IK vectors across
-  the JS boundary (`Browser/`, `docs/BROWSER.md`).
+- **Tip:** `main` @ #232 — browser B-1 Chrome WASM frozen contracts (pull
+  if HEAD moved). `LyteClientBrowser` loads in Chrome and exercises frozen
+  envelope + Noise IK vectors across the JS boundary (`Browser/`,
+  `docs/BROWSER.md`).
 - **Next:** **B-2** — opaque WebTransport datagram round-trip through the
   chosen adapter; measure datagram ceiling. No media. Wayland clipboard
   leaf remains **blocked on GNOME** —
