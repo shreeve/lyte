@@ -47,8 +47,9 @@ Packages use Swift tools version 6.0 and the source-layout grammar in
   equipment. Production streaming code must not depend on corpus or harness
   code.
 - **`Browser/` — `LyteClientBrowser`:** browser platform adapter. Owns the
-  JS↔WASM boundary and (later) WebTransport / WebCodecs / WebGPU /
-  AudioWorklet ports. Consumes IO-free `LyteWire` / `LyteCore`; does not
+  JS↔WASM boundary and the browser WebTransport datagram carrier
+  (`lyte-wt-sidecar` for local proof; WebCodecs / WebGPU / AudioWorklet
+  ports come later). Consumes IO-free `LyteWire` / `LyteCore`; does not
   reimplement protocol policy in JavaScript. Build/serve/smoke:
   `Browser/Scripts/{build,serve,smoke-chrome}.sh`. Product composition
   (`LyteBrowserApp` under `Applications/`) stays deferred. Living ladder:

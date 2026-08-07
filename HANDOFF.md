@@ -9,12 +9,12 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ #232 — browser B-1 Chrome WASM frozen contracts (pull
-  if HEAD moved). `LyteClientBrowser` loads in Chrome and exercises frozen
-  envelope + Noise IK vectors across the JS boundary (`Browser/`,
+- **Tip:** `main` @ browser B-2 — WebTransport datagram carrier in Chrome
+  (pull if HEAD moved). Opaque Lyte envelopes / Noise ciphertext round-trip
+  WT↔UDP via `lyte-wt-sidecar`; measured ceiling ≥ 1152 B (`Browser/`,
   `docs/BROWSER.md`).
-- **Next:** **B-2** — opaque WebTransport datagram round-trip through the
-  chosen adapter; measure datagram ceiling. No media. Wayland clipboard
+- **Next:** **B-3** — pair, Noise, capabilities, control-only session
+  against pup over the browser WT carrier. No media. Wayland clipboard
   leaf remains **blocked on GNOME** —
   `docs/20260807-015743-wayland-clipboard-gnome-blocker.md`.
 
@@ -51,17 +51,24 @@ glass); hand-run binaries under the home build tree with `setcap` (not
 
 ## Proof (final bars)
 
-### Browser B-1 — PASS (Chrome)
+### Browser B-2 — PASS (Chrome)
 
 ```sh
 Browser/Scripts/build.sh
 Browser/Scripts/smoke-chrome.sh
 # PASS  envelope-v1/nominal-video-shard
 # PASS  noise-v1/snow-ik-25519-chachapoly-sha256
+# PASS  wt-carrier/envelope-echo
+# PASS  wt-carrier/noise-msg1-echo
+# PASS  wt-carrier/budget-1152
+# PASS  wt-carrier/ceiling — measured 1214 B ≥ 1152 B
+#        (reported maxDatagramSize=1024; measure is truth)
 ```
 
-Interactive: `Browser/Scripts/serve.sh` → http://127.0.0.1:8765/ in Chrome.
-Safari not a gate. No WebTransport / session / media yet (B-2…).
+Interactive: `Browser/Scripts/serve.sh` → http://127.0.0.1:8765/ in Chrome
+(starts `lyte-wt-sidecar`). Safari not a gate. Adapter decision: same-box
+sidecar for B-2; host leaf packaging deferred. No pup session / media yet
+(B-3…).
 
 ### Harsh-path — PASS (closed)
 

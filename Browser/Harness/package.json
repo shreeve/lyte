@@ -1,0 +1,10 @@
+{
+  "name": "lyte-browser-harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local WebTransport datagram sidecar deps for browser B-2 (not a product surface).",
+  "dependencies": {
+    "rwebtransport": "0.2.2"
+  }
+}

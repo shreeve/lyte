@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LyteClientBrowser — B-1</title>
+  <title>LyteClientBrowser — B-2</title>
   <style>
     :root {
       color-scheme: light;
@@ -81,47 +81,87 @@
   <main>
     <h1>LyteClientBrowser</h1>
     <p class="sub">
-      B-1 proof: Swift WASM loaded in the browser, frozen LyteWire contracts
-      exercised across the JavaScript boundary. Chrome-first; not a streaming
-      client.
+      B-2 proof: Swift WASM frozen contracts, then opaque Lyte packet bytes
+      over WebTransport datagrams via a same-box WT↔UDP sidecar. Carrier only
+      — not a streaming client. QUIC congestion control is not raw UDP.
     </p>
     <div id="status" class="pending">LOADING</div>
     <pre id="log">Instantiating LyteClientBrowser.wasm…</pre>
     <pre id="meta"></pre>
-    <button type="button" id="rerun" disabled>Re-run via JS bridge</button>
+    <button type="button" id="rerun" disabled>Re-run proofs</button>
     <p class="note">
-      Safari is deferred for this slice (WebTransport / WebCodecs come later;
-      this page may still run on recent Safari WASM but is not a gate).
-      B-2 starts opaque WebTransport datagrams — no media yet.
+      Safari is deferred (not a B-2 gate). Native Lyte keeps custom UDP;
+      browser Lyte uses WebTransport datagrams as the browser-safe carrier.
+      Pairing/Noise stay end-to-end in WASM — the sidecar never unseals.
     </p>
   </main>
   <script type="module">
+    import {
+      loadSidecarMeta,
+      runWebTransportCarrierProof,
+    } from "./webtransport-carrier.js";
+
     const status = document.getElementById("status");
     const log = document.getElementById("log");
+    const metaEl = document.getElementById("meta");
     const rerun = document.getElementById("rerun");
+
+    function setOutcome(passed, lines, extraMeta) {
+      status.textContent = passed ? "PASS" : "FAIL";
+      status.className = passed ? "pass" : "fail";
+      log.textContent = lines;
+      if (extraMeta) metaEl.textContent = extraMeta;
+      globalThis.lyteB2Passed = passed;
+    }
+
+    async function runAll() {
+      const b1 = globalThis.lyteBrowser?.runFrozenContracts?.();
+      if (!b1?.passed) {
+        setOutcome(
+          false,
+          (b1?.lines || "lyteBrowser bridge missing") +
+            "\nFAIL  wt-carrier — skipped (B-1 contracts not green)"
+        );
+        return;
+      }
+
+      let lines = b1.lines;
+      status.textContent = "WT…";
+      status.className = "pending";
+      log.textContent = lines + "\n\nDialing WebTransport sidecar…";
+
+      try {
+        const sidecar = await loadSidecarMeta("./wt-sidecar.json");
+        const wt = await runWebTransportCarrierProof(sidecar);
+        lines = lines + "\n" + wt.lines;
+        const meta =
+          `adapter=${wt.adapter} url=${wt.url}\n` +
+          `measuredCeiling=${wt.measuredCeiling} B ` +
+          `reportedMaxDatagramSize=${wt.reportedMaxDatagramSize} ` +
+          `lyteBudget=${wt.lyteBudgetBytes} B\n` +
+          `QUIC congestion control ≠ raw UDP; WT is the browser-safe carrier only.`;
+        setOutcome(wt.passed, lines, meta);
+      } catch (error) {
+        lines =
+          lines +
+          "\nFAIL  wt-carrier — " +
+          String(error?.message || error);
+        setOutcome(false, lines);
+      }
+    }
 
     try {
       const { init } = await import("./index.js");
       await init();
-      // Swift paints #status / #log / lyteB1Passed on main().
+      // Swift paints B-1 into #status/#log and sets lyteB1Passed.
+      globalThis.lyteB1Passed = !!globalThis.lyteB1Passed;
+      await runAll();
       rerun.disabled = false;
       rerun.addEventListener("click", () => {
-        const summary = globalThis.lyteBrowser?.runFrozenContracts?.();
-        if (!summary) {
-          status.textContent = "FAIL";
-          status.className = "fail";
-          log.textContent = "lyteBrowser bridge missing";
-          return;
-        }
-        status.textContent = summary.passed ? "PASS" : "FAIL";
-        status.className = summary.passed ? "pass" : "fail";
-        log.textContent = summary.lines + "\n(re-run via globalThis.lyteBrowser)";
-        globalThis.lyteB1Passed = summary.passed;
+        runAll();
       });
     } catch (error) {
-      status.textContent = "FAIL";
-      status.className = "fail";
-      log.textContent = String(error?.stack || error);
+      setOutcome(false, String(error?.stack || error));
       globalThis.lyteB1Passed = false;
     }
   </script>

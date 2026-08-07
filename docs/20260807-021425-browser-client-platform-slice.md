@@ -54,8 +54,10 @@ Rejected for v1 browser path (unchanged from scoping): WebSocket as media
 carrier, WebRTC data channels as the Lyte dialect, plaintext or
 transport-trusted modes, and a second application protocol on the host.
 
-Whether the adapter is an optional Linux host leaf or a same-box sidecar
-remains an **implementation decision at B-2**, not a product fork.
+**B-2 adapter decision:** same-box sidecar (`lyte-wt-sidecar` under
+`Browser/Scripts/`) for the Chrome proof and local harness. An optional
+in-process Linux host leaf remains a later packaging choice, not a product
+fork.
 
 ## 4. Capability matrix (session intersection)
 
@@ -84,7 +86,7 @@ Wire WASM suite green:
 |---|---|---|
 | **B-0** (this record) | Naming, WebTransport carrier, matrix, ladder frozen; living docs point here | Runtime code |
 | **B-1** | Load Lyte WASM in Chrome; exercise frozen envelope + Noise IK vectors across the JavaScript boundary (`Browser/`, smoke-chrome) — **landed** | Network |
-| **B-2** | Opaque datagram round-trip through the chosen WebTransport adapter; measure datagram ceiling | Session |
+| **B-2** | Opaque datagram round-trip through same-box WT↔UDP sidecar; measured ceiling ≥ 1152 B in Chrome — **landed** | Session |
 | **B-3** | Pair, Noise, capabilities, control-only session against pup | Media |
 | **B-4** | One timestamped frame via WebCodecs + WebGPU | Live stream |
 | **B-5** | Live Conductor-driven video | Audio / input product surface |
@@ -104,10 +106,10 @@ browser-buffer anti-patterns named in [`BROWSER.md`](BROWSER.md).
 
 ## 7. Immediate next code
 
-**B-1 landed** in `Browser/` (`LyteClientBrowser` + Page +
-`Scripts/{build,serve,smoke-chrome}.sh`). Living runbook:
+**B-1 and B-2 landed** in `Browser/` (`LyteClientBrowser` + Page +
+`Scripts/{build,serve,smoke-chrome,wt-sidecar}.sh|.mjs`). Living runbook:
 [`BROWSER.md`](BROWSER.md).
 
-**B-2 next:** opaque WebTransport datagram round-trip through the chosen
-adapter (host leaf vs sidecar decided in-slice); measure datagram ceiling.
-No session media; do not displace standing UDP 41151 for frivolous tests.
+**B-3 next:** pair, Noise, capabilities, control-only session against pup
+over the browser WebTransport carrier. No media; do not displace standing
+UDP 41151 for frivolous tests.

@@ -14,11 +14,12 @@ Deferred unfinished work only; see `AGENTS.md`. Current slice and live state liv
   automatic under the Conductor; it is not deferred UI work.
 - **Printing:** receive a host print job as PDF and hand it to the client's
   native print flow, with its own negotiated capability and consent.
-- **Browser client (active platform slice):** B-0 naming/carrier and B-1
-  Chrome WASM + frozen-contract JS boundary are landed (`Browser/`,
-  `docs/BROWSER.md`). Next code is **B-2** — opaque WebTransport datagram
-  round-trip and measured datagram ceiling — then control-only pup session
-  (B-3), WebCodecs/WebGPU (B-4), live Conductor video (B-5), and
+- **Browser client (active platform slice):** B-0 naming/carrier, B-1
+  Chrome WASM + frozen-contract JS boundary, and B-2 opaque WebTransport
+  datagram carriage (same-box `lyte-wt-sidecar`, measured ceiling ≥ 1152 B)
+  are landed (`Browser/`, `docs/BROWSER.md`). Next code is **B-3** —
+  control-only pup session (pair/Noise/capabilities) over the WT carrier —
+  then WebCodecs/WebGPU (B-4), live Conductor video (B-5), and
   AudioWorklet/input/clipboard/UI (B-6). Do not claim streaming before B-5;
   do not scaffold empty `Applications/` product stubs until composition
   earns them.

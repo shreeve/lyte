@@ -1,5 +1,5 @@
 #!/bin/sh
-# Cross-build LyteClientBrowser for the browser (Chrome-first B-1 proof)
+# Cross-build LyteClientBrowser for the browser (Chrome B-1/B-2 proof)
 # using the official Swift Wasm SDK and JavaScriptKit PackageToJS.
 # Stages a self-contained tree under Browser/.serve/ for Scripts/serve.sh.
 #
@@ -64,8 +64,9 @@ rm -rf "$SERVE_DIR"
 mkdir -p "$SERVE_DIR"
 # PackageToJS output (wasm + JS loader + WASI browser shim via CDN).
 cp -R "${PACKAGE_OUT}/." "$SERVE_DIR/"
-# Diagnostic host page (imports ./index.js next to the wasm).
+# Diagnostic host page + B-2 WebTransport carrier pump.
 cp "${BROWSER_ROOT}/Page/index.html" "$SERVE_DIR/index.html"
+cp "${BROWSER_ROOT}/Page/webtransport-carrier.js" "$SERVE_DIR/webtransport-carrier.js"
 
 SIZE="$(wc -c < "${SERVE_DIR}/LyteClientBrowser.wasm" | tr -d ' ')"
 echo "browser-build: staged ${SERVE_DIR}"

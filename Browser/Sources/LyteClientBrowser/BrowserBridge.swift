@@ -11,7 +11,7 @@ enum BrowserBridge {
     }
 
     /// Installs `globalThis.lyteBrowser` so page JavaScript can call into
-    /// Swift/WASM and re-run the frozen contracts without a reload.
+    /// Swift/WASM and re-run frozen contracts / carrier checks without a reload.
     static func install() {
         let runContracts = JSClosure { _ in
             resultsToJS(runFrozenContracts())
@@ -20,11 +20,24 @@ enum BrowserBridge {
             let hex = arguments.first?.string ?? FrozenEnvelopeContract.datagramHex
             return verifyEnvelopeHex(hex)
         }
+        let verifyCarrier = JSClosure { arguments in
+            let kind = arguments[0].string ?? "opaque"
+            let sent = arguments[1].string ?? ""
+            let recv = arguments[2].string ?? ""
+            return carrierResultToJS(DatagramCarrierProof.verifyEcho(
+                kind: kind,
+                sentHex: sent,
+                recvHex: recv
+            ))
+        }
 
         JSObject.global["lyteBrowser"] = [
             "runFrozenContracts": runContracts.jsValue,
             "verifyEnvelopeHex": verifyEnvelope.jsValue,
+            "verifyCarrierEcho": verifyCarrier.jsValue,
             "envelopeVectorHex": FrozenEnvelopeContract.datagramHex.jsValue,
+            "noiseMsg1CiphertextHex": DatagramCarrierProof.noiseMsg1CiphertextHex.jsValue,
+            "wireBudgetBytes": Double(DatagramCarrierProof.wireBudgetBytes).jsValue,
             "vectorNames": [
                 FrozenEnvelopeContract.vectorName,
                 FrozenNoiseContract.vectorName,
@@ -32,6 +45,8 @@ enum BrowserBridge {
         ].jsValue
     }
 
+    /// Paints B-1 frozen-contract results. The page JS appends B-2 WebTransport
+    /// carrier lines and owns `lyteB2Passed`.
     static func paintProofPage(results: [ContractResult]) {
         let document = JSObject.global.document
         let passed = results.allSatisfy(\.passed)
@@ -46,9 +61,10 @@ enum BrowserBridge {
         if let meta = document.getElementById("meta").object {
             meta.textContent = .string(
                 """
-                LyteClientBrowser B-1 — Swift WASM + JavaScriptKit in Chrome
+                LyteClientBrowser B-2 — WASM contracts + WebTransport datagram carrier
                 Contracts: \(FrozenEnvelopeContract.vectorName); \(FrozenNoiseContract.vectorName)
-                Bridge: globalThis.lyteBrowser.runFrozenContracts()
+                Carrier: opaque WT datagrams via lyte-wt-sidecar (ciphertext only)
+                Bridge: globalThis.lyteBrowser.{runFrozenContracts,verifyCarrierEcho}
                 """
             )
         }
@@ -61,6 +77,15 @@ enum BrowserBridge {
             "passed": results.allSatisfy(\.passed).jsValue,
             "lines": results.map(\.line).joined(separator: "\n").jsValue,
             "count": Double(results.count).jsValue,
+        ].jsValue
+    }
+
+    private static func carrierResultToJS(_ result: ContractResult) -> JSValue {
+        [
+            "passed": result.passed.jsValue,
+            "detail": result.detail.jsValue,
+            "lines": result.line.jsValue,
+            "name": result.name.jsValue,
         ].jsValue
     }
 
