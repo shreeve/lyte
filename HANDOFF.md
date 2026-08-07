@@ -9,10 +9,9 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ browser B-4 — one timestamped canned HEVC IRAP through
-  WebCodecs + WebGPU in Chrome (pull if HEAD moved). Keeps B-3 control
-  session; fixture is Wire `video-corpus-v1/frame-000-idr.annexb`
-  (`Browser/`, `docs/BROWSER.md`).
+- **Tip:** `main` @ #238 — browser B-4 one timestamped WebCodecs/WebGPU
+  frame (pull if HEAD moved). Canned Wire corpus IRAP + B-3 control
+  session (`Browser/`, `docs/BROWSER.md`).
 - **Next:** **B-5** — live Conductor-driven video over the browser path.
   Wayland clipboard leaf remains **blocked on GNOME** —
   `docs/20260807-015743-wayland-clipboard-gnome-blocker.md`.
