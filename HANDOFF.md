@@ -11,11 +11,9 @@
   Living-doc cleanup landed in the #216 family.
 - **Tip:** `main` @ #225 — assembler/ARQ pins + TODO prune (pull if HEAD
   moved). Harsh-path close remains the #222 family.
-- **Next** (thin; not another control-plane storm):
-  1. Optional owner eyeball of resize-corner cursor tips (owed from #212) —
-     tl/tr/br/bl shape/tip match and `cursor derive` with real `plane(x,y)` /
-     non-zero hotspots. Interactive rig may need Connect first.
-  2. Banked product work stays in `TODO.md` (browser, native shells, etc.).
+- **Next** (thin; not another control-plane storm): banked product work in
+  `TODO.md` (browser, native shells, etc.). Residual SessionWire under-lock
+  prints remain verification debt when that seam is next open.
 
 ## Live rig
 
