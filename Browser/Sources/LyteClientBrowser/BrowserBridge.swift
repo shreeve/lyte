@@ -56,6 +56,9 @@ enum BrowserBridge {
             let now = UInt64(arguments[0].number ?? 0)
             return controlTeardown(nowMicros: now)
         }
+        let classifyAnnexB = JSClosure { arguments in
+            classifyAnnexBHex(arguments[0].string ?? "")
+        }
 
         JSObject.global["lyteBrowser"] = [
             "runFrozenContracts": runContracts.jsValue,
@@ -73,11 +76,12 @@ enum BrowserBridge {
             "controlIngest": ingestControl.jsValue,
             "controlTick": tickControl.jsValue,
             "controlTeardown": teardownControl.jsValue,
+            "classifyAnnexBHex": classifyAnnexB.jsValue,
         ].jsValue
     }
 
-    /// Paints B-1 frozen-contract results. The page JS appends B-2/B-3 lines
-    /// and owns `lyteB2Passed` / `lyteB3Passed`.
+    /// Paints B-1 frozen-contract results. The page JS appends B-2/B-3/B-4
+    /// lines and owns `lyteB2Passed` / `lyteB3Passed` / `lyteB4Passed`.
     static func paintProofPage(results: [ContractResult]) {
         let document = JSObject.global.document
         let passed = results.allSatisfy(\.passed)
@@ -92,16 +96,45 @@ enum BrowserBridge {
         if let meta = document.getElementById("meta").object {
             meta.textContent = .string(
                 """
-                LyteClientBrowser B-3 — WASM contracts + WT carrier + control session
+                LyteClientBrowser B-4 — WASM + WT control + one WebCodecs/WebGPU frame
                 Contracts: \(FrozenEnvelopeContract.vectorName); \(FrozenNoiseContract.vectorName)
                 Carrier: opaque WT datagrams via lyte-wt-sidecar (ciphertext only)
                 Control: Noise IK + PIN PAKE + capabilities via LyteClientSession
-                Bridge: globalThis.lyteBrowser.control{Open,Begin,Ingest,Tick,Teardown}
+                Frame: canned corpus IRAP → WebCodecs → WebGPU (not live Conductor)
+                Bridge: control{Open,Begin,Ingest,Tick,Teardown}; classifyAnnexBHex
                 """
             )
         }
 
         JSObject.global.lyteB1Passed = .boolean(passed)
+    }
+
+    /// LyteCore Annex-B classification for a JS-supplied access unit (B-4).
+    private static func classifyAnnexBHex(_ hex: String) -> JSValue {
+        guard let bytes = Hex.bytes(hex) else {
+            return [
+                "ok": false.jsValue,
+                "frameShaped": false.jsValue,
+                "containsIrap": false.jsValue,
+                "byteCount": 0.jsValue,
+                "summary": "".jsValue,
+                "detail": "malformed hex".jsValue,
+            ].jsValue
+        }
+        let classification = AnnexBCheck.classifyFrame(bytes)
+        let summary = AnnexBCheck.summary(of: bytes)
+        return [
+            "ok": true.jsValue,
+            "frameShaped": classification.isFrameShaped.jsValue,
+            "containsIrap": classification.containsIrap.jsValue,
+            "byteCount": Double(bytes.count).jsValue,
+            "summary": summary.jsValue,
+            "detail": (
+                classification.isFrameShaped && classification.containsIrap
+                    ? "IRAP-shaped Annex-B access unit"
+                    : "not an IRAP-shaped Annex-B frame"
+            ).jsValue,
+        ].jsValue
     }
 
     // MARK: Control session bridge

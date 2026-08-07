@@ -88,8 +88,8 @@ Wire WASM suite green:
 | **B-1** | Load Lyte WASM in Chrome; exercise frozen envelope + Noise IK vectors across the JavaScript boundary (`Browser/`, smoke-chrome) — **landed** | Network |
 | **B-2** | Opaque datagram round-trip through same-box WT↔UDP sidecar; measured ceiling ≥ 1152 B in Chrome — **landed** | Session |
 | **B-3** | Pair, Noise, capabilities, control-only session (HostWire peer via WT; pup optional) — **landed** | Media |
-| **B-4** | One timestamped frame via WebCodecs + WebGPU | Live stream |
-| **B-5** | Live Conductor-driven video | Audio / input product surface |
+| **B-4** | One timestamped frame via WebCodecs + WebGPU (canned corpus IRAP in Chrome) — **landed** | Live stream |
+| **B-5** | Live Conductor-driven video — **next** | Audio / input product surface |
 | **B-6** | AudioWorklet, input capture, clipboard, product UI | “Done” browser client |
 
 **“Browser client done”** for product purposes means B-6 against a real host
@@ -106,10 +106,11 @@ browser-buffer anti-patterns named in [`BROWSER.md`](BROWSER.md).
 
 ## 7. Immediate next code
 
-**B-1, B-2, and B-3 landed** in `Browser/` (`LyteClientBrowser` + Page +
+**B-1 through B-4 landed** in `Browser/` (`LyteClientBrowser` + Page +
 `Scripts/{build,serve,smoke-chrome,wt-sidecar}.sh|.mjs`) with Host
-`lyte-control-peer` for the DRM-free control gate. Living runbook:
+`lyte-control-peer` for the DRM-free control gate and a canned Wire-corpus
+IRAP for the WebCodecs + WebGPU frame bar. Living runbook:
 [`BROWSER.md`](BROWSER.md).
 
-**B-4 next:** one timestamped frame through WebCodecs + WebGPU. No claim of
-a streaming browser client before B-5. Do not displace standing UDP 41151.
+**B-5 next:** live Conductor-driven video. No claim of a streaming browser
+client before that bar. Do not displace standing UDP 41151.

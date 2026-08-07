@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Drive system Chrome against the B-3 proof page: frozen WASM contracts plus
+// Drive system Chrome against the B-4 proof page: frozen WASM contracts,
 // a control-only session (Noise / pair / capabilities / teardown) through
-// lyte-wt-sidecar --udp-peer → lyte-control-peer.
+// lyte-wt-sidecar --udp-peer → lyte-control-peer, then one canned HEVC IRAP
+// through WebCodecs + WebGPU.
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -33,6 +34,7 @@ const mime = {
   ".mjs": "text/javascript; charset=utf-8",
   ".wasm": "application/wasm",
   ".json": "application/json",
+  ".annexb": "application/octet-stream",
   ".ts": "text/plain",
 };
 
@@ -44,7 +46,7 @@ async function ensureWs() {
   try {
     return require("ws");
   } catch {
-    const prefix = await mkdtemp(join(tmpdir(), "lyte-b3-npm-"));
+    const prefix = await mkdtemp(join(tmpdir(), "lyte-b4-npm-"));
     execFileSync(
       "npm",
       ["install", "--silent", "--no-fund", "--no-audit", "--prefix", prefix, "ws@8"],
@@ -204,10 +206,17 @@ const requiredLogSnippets = [
   "noise-v1/snow-ik-25519-chachapoly-sha256",
   "control-session/noise-pair-caps",
   "control-session/teardown",
+  "frame-present/classify",
+  "frame-present/webcodecs",
+  "frame-present/webgpu",
 ];
 
-if (!existsSync(join(serveDir, "LyteClientBrowser.wasm")) ||
-    !existsSync(join(serveDir, "control-session.js"))) {
+if (
+  !existsSync(join(serveDir, "LyteClientBrowser.wasm")) ||
+  !existsSync(join(serveDir, "control-session.js")) ||
+  !existsSync(join(serveDir, "frame-present.js")) ||
+  !existsSync(join(serveDir, "frame-000-idr.annexb"))
+) {
   console.log("browser-smoke: building Browser package first…");
   execFileSync(join(browserRoot, "Scripts", "build.sh"), {
     stdio: "inherit",
@@ -229,17 +238,18 @@ console.log(
     `(pin ${peerMeta.pin})`
 );
 
+// WebGPU + WebCodecs HEVC need a real GPU path — do not pass --disable-gpu.
 const chromeProc = spawn(
   chrome,
   [
     "--headless=new",
-    "--disable-gpu",
     "--no-first-run",
     "--no-default-browser-check",
     `--user-data-dir=${userData}`,
     `--remote-debugging-port=${debugPort}`,
     "--remote-allow-origins=*",
-    "--enable-features=WebTransport,WebTransportDraft07",
+    "--enable-features=WebTransport,WebTransportDraft07,WebGPU",
+    "--enable-unsafe-webgpu",
     "about:blank",
   ],
   { stdio: "ignore" }
@@ -272,11 +282,12 @@ try {
   while (Date.now() < deadline) {
     const result = await send("Runtime.evaluate", {
       expression: `(() => {
-        if (typeof lyteB3Passed === 'boolean') {
+        if (typeof lyteB4Passed === 'boolean') {
           return JSON.stringify({
             ready: true,
-            passed: lyteB3Passed,
+            passed: lyteB4Passed,
             b1: typeof lyteB1Passed === 'boolean' ? lyteB1Passed : null,
+            b3: typeof lyteB3Passed === 'boolean' ? lyteB3Passed : null,
             status: document.getElementById('status')?.textContent || '',
             log: document.getElementById('log')?.textContent || '',
             meta: document.getElementById('meta')?.textContent || ''
@@ -310,20 +321,27 @@ try {
         }
       }
       if (failed) break;
-      if (!payload.log.includes("PASS  control-session/noise-pair-caps")) {
-        console.error("browser-smoke: control-session check did not PASS");
-        console.error(payload.log);
-        failed = true;
-        break;
+      for (const mustPass of [
+        "PASS  control-session/noise-pair-caps",
+        "PASS  frame-present/webcodecs",
+        "PASS  frame-present/webgpu",
+      ]) {
+        if (!payload.log.includes(mustPass)) {
+          console.error(`browser-smoke: missing ${mustPass}`);
+          console.error(payload.log);
+          failed = true;
+          break;
+        }
       }
+      if (failed) break;
       console.log(
-        "browser-smoke: PASS — Chrome reported B-1 contracts + B-3 control session green"
+        "browser-smoke: PASS — Chrome reported B-1 + B-3 control + B-4 frame green"
       );
       console.log(payload.log);
       if (payload.meta) console.log(payload.meta);
       try {
         await writeFile(
-          join(serveDir, "control-session-measure.json"),
+          join(serveDir, "frame-present-measure.json"),
           JSON.stringify(
             {
               passed: true,
@@ -348,7 +366,8 @@ try {
       payload.log &&
       !payload.log.includes("Instantiating") &&
       !payload.log.includes("Dialing") &&
-      !payload.log.includes("Opening control")
+      !payload.log.includes("Opening control") &&
+      !payload.log.includes("Decoding canned")
     ) {
       console.error("browser-smoke: page reported FAIL while loading");
       console.error(payload.log);
@@ -358,7 +377,7 @@ try {
     await sleep(250);
   }
   if (!failed && Date.now() >= deadline) {
-    console.error("browser-smoke: timeout waiting for lyteB3Passed");
+    console.error("browser-smoke: timeout waiting for lyteB4Passed");
     failed = true;
   }
   ws.close();
