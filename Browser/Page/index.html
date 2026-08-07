@@ -3,88 +3,178 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LyteClientBrowser — B-5</title>
+  <title>Lyte — browser</title>
   <style>
     :root {
       color-scheme: light;
-      --ink: #1a1a1a;
-      --muted: #5a5a5a;
+      --ink: #141414;
+      --muted: #5c5c5c;
       --pass: #0b6b2a;
       --fail: #9b1c1c;
-      --band: #f2f0eb;
+      --band: #ece8e0;
+      --panel: rgba(255, 255, 255, 0.78);
+      --line: #d2ccc0;
+      --accent: #2f5d50;
     }
+    * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "IBM Plex Mono", "SF Mono", ui-monospace, monospace;
+      font-family: "IBM Plex Sans", "Source Sans 3", "Segoe UI", sans-serif;
       background:
-        radial-gradient(1200px 600px at 10% -10%, #e8efe6 0%, transparent 55%),
-        radial-gradient(900px 500px at 100% 0%, #ebe4d8 0%, transparent 50%),
-        var(--band);
+        radial-gradient(1100px 520px at 8% -8%, #dfeadf 0%, transparent 55%),
+        radial-gradient(900px 480px at 100% 0%, #e7dcc8 0%, transparent 52%),
+        linear-gradient(180deg, #f4f0e8 0%, var(--band) 100%);
       color: var(--ink);
       min-height: 100vh;
     }
-    main {
-      max-width: 52rem;
+    .shell {
+      max-width: 64rem;
       margin: 0 auto;
-      padding: 3rem 1.25rem 4rem;
+      padding: 1.75rem 1.25rem 3rem;
     }
-    h1 {
-      font-size: 1.35rem;
-      font-weight: 600;
-      letter-spacing: -0.02em;
-      margin: 0 0 0.35rem;
+    header.brand {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 1.25rem;
     }
-    .sub {
+    header.brand h1 {
+      margin: 0;
+      font-size: clamp(2rem, 4vw, 2.75rem);
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      line-height: 1;
+    }
+    header.brand .tag {
       color: var(--muted);
       font-size: 0.85rem;
-      margin-bottom: 1.75rem;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(14rem, 18rem) 1fr;
+      gap: 1rem;
+    }
+    @media (max-width: 800px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      backdrop-filter: blur(8px);
+      padding: 1rem 1.05rem;
+    }
+    .panel h2 {
+      margin: 0 0 0.75rem;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    label {
+      display: block;
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin: 0.55rem 0 0.2rem;
+    }
+    input {
+      width: 100%;
+      font: inherit;
+      padding: 0.45rem 0.55rem;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.9rem;
+    }
+    button {
+      font: inherit;
+      padding: 0.45rem 0.85rem;
+      border: 1px solid #b8b2a6;
+      background: #fff;
+      cursor: pointer;
+      color: var(--ink);
+    }
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    button:hover:not(:disabled) { filter: brightness(1.03); }
+    .session-line {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.78rem;
+      color: var(--muted);
       line-height: 1.45;
+      margin-top: 0.75rem;
+      white-space: pre-wrap;
+    }
+    .stage {
+      background: #0d0d0f;
+      border: 1px solid var(--line);
+      min-height: 18rem;
+      position: relative;
+    }
+    #frame-canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      max-height: min(70vh, 36rem);
+      object-fit: contain;
+      background: #0d0d0f;
+      outline: none;
+    }
+    #frame-canvas:focus {
+      box-shadow: inset 0 0 0 2px var(--accent);
+    }
+    .stage-hint {
+      position: absolute;
+      left: 0.75rem;
+      bottom: 0.65rem;
+      color: rgba(255, 255, 255, 0.55);
+      font-size: 0.72rem;
+      pointer-events: none;
     }
     #status {
-      display: inline-block;
-      font-size: 2.4rem;
+      font-size: 1.6rem;
       font-weight: 700;
       letter-spacing: 0.04em;
-      margin-bottom: 1rem;
+      margin: 0 0 0.65rem;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
     }
     #status.pass { color: var(--pass); }
     #status.fail { color: var(--fail); }
     #status.pending { color: var(--muted); }
     pre {
       background: #fff;
-      border: 1px solid #d8d4cb;
-      padding: 1rem 1.1rem;
+      border: 1px solid var(--line);
+      padding: 0.85rem 0.95rem;
       overflow-x: auto;
       white-space: pre-wrap;
       line-height: 1.5;
-      font-size: 0.82rem;
-    }
-    #meta { color: var(--muted); margin-top: 1rem; }
-    button {
-      margin-top: 1rem;
-      font: inherit;
-      padding: 0.45rem 0.9rem;
-      border: 1px solid #b8b2a6;
-      background: #fff;
-      cursor: pointer;
-    }
-    button:hover { background: #f7f5f0; }
-    .frame-wrap {
-      margin-top: 1.25rem;
-      background: #0d0d0f;
-      border: 1px solid #d8d4cb;
-      line-height: 0;
-    }
-    #frame-canvas {
-      display: block;
-      width: 100%;
-      height: auto;
+      font-size: 0.78rem;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      margin: 0;
       max-height: 22rem;
-      object-fit: contain;
-      background: #0d0d0f;
+    }
+    #meta {
+      color: var(--muted);
+      margin-top: 0.75rem;
+      font-size: 0.78rem;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      white-space: pre-wrap;
     }
     .note {
-      margin-top: 2rem;
+      margin-top: 1.25rem;
       color: var(--muted);
       font-size: 0.78rem;
       line-height: 1.5;
@@ -92,29 +182,49 @@
   </style>
 </head>
 <body>
-  <main>
-    <h1>LyteClientBrowser</h1>
-    <p class="sub">
-      B-5 proof: Swift WASM frozen contracts, a control session (Noise IK +
-      PIN PAKE + capabilities + teardown), then sealed corpus video over
-      WebTransport — FEC-reassembled in WASM, scheduled by
-      VideoBeatConductor, decoded with WebCodecs, presented with WebGPU.
-      Not live Direct Eye / not full remote desktop (B-6).
-    </p>
-    <div id="status" class="pending">LOADING</div>
-    <pre id="log">Instantiating LyteClientBrowser.wasm…</pre>
-    <div class="frame-wrap">
-      <canvas id="frame-canvas" width="960" height="540" aria-label="WebGPU presented frames"></canvas>
+  <div class="shell">
+    <header class="brand">
+      <h1>Lyte</h1>
+      <div class="tag">browser client · B-6 interaction shell</div>
+    </header>
+
+    <div class="layout">
+      <aside class="panel" id="connect-panel">
+        <h2>Connect</h2>
+        <label for="pin">PIN</label>
+        <input id="pin" name="pin" inputmode="numeric" autocomplete="one-time-code" placeholder="from control peer" />
+        <label for="host-key">Host static (hex)</label>
+        <input id="host-key" name="host-key" spellcheck="false" placeholder="64 hex chars" />
+        <label for="sidecar-url">WebTransport URL</label>
+        <input id="sidecar-url" name="sidecar-url" spellcheck="false" placeholder="https://127.0.0.1:…" />
+        <div class="actions">
+          <button type="button" class="primary" id="connect" disabled>Connect</button>
+          <button type="button" id="rerun" disabled>Re-run proofs</button>
+        </div>
+        <div class="session-line" id="session-line">Loading WASM…</div>
+      </aside>
+
+      <section>
+        <div id="status" class="pending">LOADING</div>
+        <div class="stage">
+          <canvas id="frame-canvas" width="960" height="540" tabindex="0"
+            aria-label="Lyte video surface — click to focus for input"></canvas>
+          <div class="stage-hint">video surface · click to focus · mouse/keys → sealed InputEvent</div>
+        </div>
+        <pre id="log" style="margin-top: 0.85rem">Instantiating LyteClientBrowser.wasm…</pre>
+        <pre id="meta"></pre>
+      </section>
     </div>
-    <pre id="meta"></pre>
-    <button type="button" id="rerun" disabled>Re-run proofs</button>
+
     <p class="note">
-      Safari is deferred. Native Lyte keeps custom UDP; browser Lyte uses
-      WebTransport as the browser-safe carrier. The sidecar never unseals.
-      Standing host UDP 41151 is never used. Media is Wire video-corpus-v1
-      frames 000–009 via lyte-control-peer --emit-corpus (DRM-free).
+      Safari deferred. Native Lyte keeps custom UDP; browser Lyte uses
+      WebTransport. The sidecar never unseals. Standing host UDP 41151 is
+      never used. Media is Wire video-corpus-v1 + Opus tone via
+      lyte-control-peer (DRM-free). Wayland/GNOME host clipboard remains
+      blocked — peer clipboard is in-memory only.
     </p>
-  </main>
+  </div>
+
   <script type="module">
     import {
       loadSidecarMeta,
@@ -124,25 +234,53 @@
       loadControlPeerMeta,
       runConductorVideoProof,
     } from "./conductor-video.js";
+    import { installCanvasInput } from "./interaction.js";
 
     const status = document.getElementById("status");
     const log = document.getElementById("log");
     const metaEl = document.getElementById("meta");
+    const sessionLine = document.getElementById("session-line");
     const rerun = document.getElementById("rerun");
+    const connectBtn = document.getElementById("connect");
     const canvas = document.getElementById("frame-canvas");
+    const pinInput = document.getElementById("pin");
+    const hostKeyInput = document.getElementById("host-key");
+    const sidecarUrlInput = document.getElementById("sidecar-url");
+
+    let disposeInput = null;
+    let harnessSidecar = null;
+    let harnessPeer = null;
 
     function setOutcome(passed, lines, extraMeta) {
       status.textContent = passed ? "PASS" : "FAIL";
       status.className = passed ? "pass" : "fail";
       log.textContent = lines;
       if (extraMeta) metaEl.textContent = extraMeta;
+      globalThis.lyteB6Passed = passed;
       globalThis.lyteB5Passed = passed;
-      globalThis.lyteB4Passed = passed; // B-4 lines remain inside B-5 proof
+      globalThis.lyteB4Passed = passed;
     }
 
-    async function runAll() {
+    function paintSession(peer, sidecar, video) {
+      const st = globalThis.lyteBrowser?.interactionStats?.() || {};
+      sessionLine.textContent =
+        `peer ${peer.bindHost}:${peer.listenPort}\n` +
+        `shape ${sidecar.shape}\n` +
+        `client ${video?.clientStaticPublicKeyHex || "?"}\n` +
+        `input ${st.inputsSent || 0} sent / ${st.inputEchoes || 0} echoes\n` +
+        `clipboard ${st.clipboardSent || 0}→${st.clipboardReceived || 0}\n` +
+        `audio ${st.audioAssembled || 0} Opus packets`;
+    }
+
+    async function runAll(opts = {}) {
+      globalThis.lyteB6Passed = undefined;
       globalThis.lyteB5Passed = undefined;
       globalThis.lyteB4Passed = undefined;
+      if (disposeInput) {
+        disposeInput();
+        disposeInput = null;
+      }
+
       const b1 = globalThis.lyteBrowser?.runFrozenContracts?.();
       if (!b1?.passed) {
         setOutcome(
@@ -159,7 +297,20 @@
       log.textContent = lines + "\n\nDialing WebTransport sidecar…";
 
       try {
-        const sidecar = await loadSidecarMeta("./wt-sidecar.json");
+        const sidecar =
+          opts.sidecar ||
+          harnessSidecar ||
+          (await loadSidecarMeta("./wt-sidecar.json"));
+        const peer =
+          opts.peer ||
+          harnessPeer ||
+          (await loadControlPeerMeta("./control-peer.json"));
+
+        pinInput.value = peer.pin || pinInput.value;
+        hostKeyInput.value =
+          peer.hostStaticPublicKeyHex || hostKeyInput.value;
+        sidecarUrlInput.value = sidecar.url || sidecarUrlInput.value;
+
         const peerMode =
           sidecar.shape === "webtransport-datagram-to-udp-peer";
         let measuredCeiling = null;
@@ -169,7 +320,7 @@
           lines =
             lines +
             "\nSKIP  wt-carrier/* — sidecar in --udp-peer mode " +
-            "(B-2 echo bar landed; running B-3/B-5)";
+            "(B-2 echo bar landed; running B-3…B-6)";
         } else {
           const wt = await runWebTransportCarrierProof(sidecar);
           lines = lines + "\n" + wt.lines;
@@ -181,14 +332,22 @@
           }
         }
 
-        status.textContent = "VIDEO…";
+        status.textContent = "SESSION…";
         log.textContent =
-          lines + "\n\nControl session + Conductor-driven corpus video…";
-        const peer = await loadControlPeerMeta("./control-peer.json");
+          lines + "\n\nControl + Conductor video + interaction organs…";
+        disposeInput = installCanvasInput(canvas, {
+          hostWidth: 2048,
+          hostHeight: 1280,
+          onSend: () => {
+            paintSession(peer, sidecar, {});
+          },
+        });
+
         const video = await runConductorVideoProof({
           sidecar,
-          hostStaticPublicKeyHex: peer.hostStaticPublicKeyHex,
-          pin: peer.pin,
+          hostStaticPublicKeyHex:
+            hostKeyInput.value.trim() || peer.hostStaticPublicKeyHex,
+          pin: pinInput.value.trim() || peer.pin,
           canvas,
         });
         lines = lines + "\n" + video.lines;
@@ -196,6 +355,7 @@
           video.lines.includes("PASS  control-session/noise-pair-caps") &&
           video.lines.includes("PASS  control-session/teardown")
         );
+        paintSession(peer, sidecar, video);
         const meta =
           `adapter=${sidecar.adapter} url=${sidecar.url} shape=${sidecar.shape}\n` +
           `controlPeer=${peer.bindHost}:${peer.listenPort} ` +
@@ -218,17 +378,31 @@
       const { init } = await import("./index.js");
       await init();
       globalThis.lyteB1Passed = !!globalThis.lyteB1Passed;
-      await runAll();
+
+      harnessSidecar = await loadSidecarMeta("./wt-sidecar.json");
+      harnessPeer = await loadControlPeerMeta("./control-peer.json");
+      pinInput.value = harnessPeer.pin || "";
+      hostKeyInput.value = harnessPeer.hostStaticPublicKeyHex || "";
+      sidecarUrlInput.value = harnessSidecar.url || "";
+      sessionLine.textContent =
+        `Harness ready — peer ${harnessPeer.bindHost}:${harnessPeer.listenPort}\n` +
+        `PIN prefilled from control-peer.json`;
+      connectBtn.disabled = false;
       rerun.disabled = false;
-      rerun.addEventListener("click", () => {
-        runAll();
-      });
+
+      // Auto-run for smoke / serve harness (product UI still visible).
+      await runAll({ sidecar: harnessSidecar, peer: harnessPeer });
+
+      connectBtn.addEventListener("click", () => runAll());
+      rerun.addEventListener("click", () => runAll());
     } catch (error) {
       setOutcome(false, String(error?.stack || error));
       globalThis.lyteB1Passed = false;
       globalThis.lyteB3Passed = false;
       globalThis.lyteB4Passed = false;
       globalThis.lyteB5Passed = false;
+      globalThis.lyteB6Passed = false;
+      sessionLine.textContent = "Failed to load harness meta or WASM.";
     }
   </script>
 </body>

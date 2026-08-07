@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Drive system Chrome against the B-5 proof page: frozen WASM contracts,
+// Drive system Chrome against the B-6 proof page: frozen WASM contracts,
 // a control session (Noise / pair / capabilities / teardown) through
 // lyte-wt-sidecar --udp-peer → lyte-control-peer --emit-corpus, then
-// Conductor-scheduled multi-frame WebCodecs + WebGPU present.
+// Conductor-scheduled multi-frame WebCodecs + WebGPU present, plus
+// sealed input echo, clipboard text round-trip, and Opus → AudioWorklet.
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -223,12 +224,19 @@ const requiredLogSnippets = [
   "conductor-video/assemble",
   "conductor-video/schedule",
   "conductor-video/present",
+  "session-input/echo",
+  "clipboard/text-roundtrip",
+  "audio/depacketize",
+  "audio-worklet/ring",
+  "interaction-shell/b6",
 ];
 
 if (
   !existsSync(join(serveDir, "LyteClientBrowser.wasm")) ||
   !existsSync(join(serveDir, "control-session.js")) ||
   !existsSync(join(serveDir, "conductor-video.js")) ||
+  !existsSync(join(serveDir, "interaction.js")) ||
+  !existsSync(join(serveDir, "audio-ring-worklet.js")) ||
   !existsSync(join(serveDir, "corpus", "frame-000-idr.annexb"))
 ) {
   console.log("browser-smoke: building Browser package first…");
@@ -264,6 +272,7 @@ const chromeProc = spawn(
     "--remote-allow-origins=*",
     "--enable-features=WebTransport,WebTransportDraft07,WebGPU",
     "--enable-unsafe-webgpu",
+    "--autoplay-policy=no-user-gesture-required",
     "about:blank",
   ],
   { stdio: "ignore" }
@@ -296,12 +305,14 @@ try {
   while (Date.now() < deadline) {
     const result = await send("Runtime.evaluate", {
       expression: `(() => {
-        if (typeof lyteB5Passed === 'boolean') {
+        if (typeof lyteB6Passed === 'boolean' || typeof lyteB5Passed === 'boolean') {
+          const passed = typeof lyteB6Passed === 'boolean' ? lyteB6Passed : lyteB5Passed;
           return JSON.stringify({
             ready: true,
-            passed: lyteB5Passed,
+            passed,
             b1: typeof lyteB1Passed === 'boolean' ? lyteB1Passed : null,
             b3: typeof lyteB3Passed === 'boolean' ? lyteB3Passed : null,
+            b6: typeof lyteB6Passed === 'boolean' ? lyteB6Passed : null,
             status: document.getElementById('status')?.textContent || '',
             log: document.getElementById('log')?.textContent || '',
             meta: document.getElementById('meta')?.textContent || ''
@@ -360,6 +371,11 @@ try {
         "PASS  conductor-video/assemble",
         "PASS  conductor-video/schedule",
         "PASS  conductor-video/present",
+        "PASS  session-input/echo",
+        "PASS  clipboard/text-roundtrip",
+        "PASS  audio/depacketize",
+        "PASS  audio-worklet/ring",
+        "PASS  interaction-shell/b6",
       ]) {
         if (!payload.log.includes(mustPass)) {
           console.error(`browser-smoke: missing ${mustPass}`);
@@ -370,7 +386,7 @@ try {
       }
       if (failed) break;
       console.log(
-        "browser-smoke: PASS — Chrome reported B-1 + B-3 control + B-5 Conductor video green"
+        "browser-smoke: PASS — Chrome reported B-1…B-6 interaction shell green"
       );
       console.log(payload.log);
       if (payload.meta) console.log(payload.meta);
@@ -412,7 +428,7 @@ try {
     await sleep(250);
   }
   if (!failed && Date.now() >= deadline) {
-    console.error("browser-smoke: timeout waiting for lyteB5Passed");
+    console.error("browser-smoke: timeout waiting for lyteB6Passed");
     failed = true;
   }
   ws.close();

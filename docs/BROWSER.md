@@ -61,8 +61,15 @@ frames 000–009) over WT → WASM FEC assemble → `VideoBeatConductor` schedul
 → WebCodecs → WebGPU. Media shards use **binary ingest**
 (`controlIngestBytes` / `Uint8Array`); hex stays for small control/debug
 only. Peer is DRM-free `lyte-control-peer --emit-corpus` (widened blackout
-silence so missing chan-3 feedback does not FROZEN-suppress video). This is
-**not** live Direct Eye / not full browser remote desktop (B-6).
+silence so missing chan-3 feedback does not FROZEN-suppress video).
+
+**B-6 is green in Chrome:** interaction shell on top of B-3…B-5 — sealed
+`InputEvent` / `InputEcho` on reliable CTRL (peer echoes without uinput),
+capability-gated clipboard text (`clipboardText` + in-memory peer announce
+ack; **not** Wayland OS clipboard), sealed Opus tone → WASM
+`AudioDepacketizer` → WebCodecs → AudioWorklet ring, and a real connect /
+PIN / session / video-surface page. Still **not** live Direct Eye / not
+daily-driver remote desktop.
 
 Logical packets stay transport-independent:
 
@@ -79,13 +86,15 @@ Page JavaScript can call back into WASM via
 `globalThis.lyteBrowser.runFrozenContracts()`,
 `verifyCarrierEcho(...)`, `controlOpen` / `controlBegin` /
 `controlIngestBytes` (media hot path) / `controlIngest` (hex, control),
-`controlTick` / `controlTeardown`, `mediaAnnexBBytes` / `mediaPopDue`,
-`classifyAnnexBBytes`, and related helpers. Headless gate:
-`Browser/Scripts/smoke-chrome.sh` (needs GPU — does not pass
-`--disable-gpu`).
+`controlTick` / `controlTeardown`, `controlSendInput` /
+`controlClipboardSet`, `audioPopPacket` / `interactionStats`,
+`mediaAnnexBBytes` / `mediaPopDue`, `classifyAnnexBBytes`, and related
+helpers. Headless gate: `Browser/Scripts/smoke-chrome.sh` (needs GPU —
+does not pass `--disable-gpu`).
 
 This does **not** yet prove a Direct Eye session against pup's standing
-host, AudioWorklet, input, clipboard, or product UI (B-6).
+host, persistent interactive drive after the smoke teardown, Safari, or
+OS-level host clipboard (GNOME-blocked).
 
 The client policy boundaries are moving in the same direction:
 `LyteClientCore` and `LyteClientSession` now compile on Linux with warnings as
@@ -93,9 +102,10 @@ errors. A browser shell must consume those IO-free boundaries rather than
 reimplementing their policy in JavaScript. B-3 wires `LyteClientSession`
 into the WASM control initiator for capabilities / lifecycle. B-4 keeps
 HEVC decode/present in page JS (platform ports) and Annex-B classification
-in `LyteCore`.
+in `LyteCore`. B-6 maps DOM input and clipboard consent onto the same
+typed CTRL words the Mac client uses.
 
-## Run B-1 … B-5 locally (Chrome)
+## Run B-1 … B-6 locally (Chrome)
 
 Pins match the Wire wasm leg: swiftly toolchain **6.3.3** + SDK
 `swift-6.3.3-RELEASE_wasm` (install commands in
@@ -106,7 +116,8 @@ Pins match the Wire wasm leg: swiftly toolchain **6.3.3** + SDK
 Browser/Scripts/build.sh          # stages Browser/.serve/ (+ corpus 000–009)
 Browser/Scripts/serve.sh          # http://127.0.0.1:8765/ + control-peer --emit-corpus + wt-sidecar
 # Open that URL in Google Chrome — expect PASS for B-1 + control-session/*
-# + conductor-video/{assemble,schedule,present}.
+# + conductor-video/* + session-input/echo + clipboard/text-roundtrip
+# + audio/{depacketize,webcodecs} + audio-worklet/ring + interaction-shell/b6.
 
 # Headless gate (system Chrome + node + openssl + Xcode swift; needs GPU)
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
@@ -116,7 +127,8 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 `serve.sh` / `smoke-chrome.sh` start:
 
 1. `lyte-control-peer --emit-corpus` on a fresh loopback UDP **41xxx**
-   port (never 41151)
+   port (never 41151) — corpus video + Opus tone; input echo; in-memory
+   clipboard ack; declares `clipboardText`
 2. `lyte-wt-sidecar --udp-peer 127.0.0.1:<that-port>`
 3. static file server for `.serve/`
 
@@ -130,12 +142,12 @@ swift-crypto/FoundationEssentials drag — recorded in the scoping doc, not
 fought this slice). `wasm-opt` is optional and not required for the gate.
 
 **Echo vs peer sidecar:** B-2 carrier echoes need the sidecar's built-in UDP
-echo. B-3…B-5 need `--udp-peer`. The combined page SKIPs `wt-carrier/*` when
+echo. B-3…B-6 need `--udp-peer`. The combined page SKIPs `wt-carrier/*` when
 the sidecar is in peer mode (B-2 already landed) and runs control + Conductor
-video.
+video + interaction organs.
 
 **Safari:** deferred. Recent Safari may run the WASM proof page, but Safari
-is not a B-1…B-5 gate. Fleet `serverCertificateHashes` constraints remain a
+is not a B-1…B-6 gate. Fleet `serverCertificateHashes` constraints remain a
 later concern. Do not block Chrome progress on Safari.
 
 ### Optional pup qualification (no DRM)
@@ -264,10 +276,12 @@ independently testable slices (full matrix in the B-0 decision record):
 | **B-3** | Pair, Noise, capabilities, control-only session — **landed** (HostWire peer; pup optional) |
 | **B-4** | One timestamped frame through WebCodecs and WebGPU — **landed** (canned corpus IRAP) |
 | **B-5** | Conductor-driven sealed corpus video over WT — **landed** (not Direct Eye) |
-| **B-6** | AudioWorklet, input, clipboard, product UI — browser client “done” — **next** |
+| **B-6** | AudioWorklet, input, clipboard, product UI — Chrome ladder “done” — **landed** |
 
 Every slice keeps the native Mac/Linux gates and the WASM vector suite green.
-Do not claim a full browser remote-desktop client before B-6.
+B-6 closes the commissioning ladder in Chrome against `lyte-control-peer`.
+Daily-driver browser RD (live Direct Eye, persistent session, Safari, OS
+clipboard) remains deferred — see `TODO.md`.
 
 ## Historical detail
 

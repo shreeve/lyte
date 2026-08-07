@@ -2,8 +2,9 @@ import LyteClientSession
 import LyteCore
 import LyteWire
 
-/// WASM initiator for B-3/B-5: Noise IK → PIN PAKE → capabilities, then
-/// sealed video assemble + Conductor schedule (B-5), then teardown.
+/// WASM initiator for B-3…B-6: Noise IK → PIN PAKE → capabilities, then
+/// sealed video assemble + Conductor schedule, input/clipboard on the
+/// reliable CTRL stream, audio depacketize (B-6), then teardown.
 /// Carriage is injected (JS owns WebTransport + clocks); this type only
 /// speaks LyteWire / LyteClientSession / LyteCore policy.
 final class BrowserControlSession {
@@ -53,12 +54,27 @@ final class BrowserControlSession {
     private var events: [String] = []
     private var failure: String?
     private var video = BrowserVideoPlayout()
+    private var audio = BrowserAudioPlayout()
+    private var nextInputSeq: UInt32 = 0
+    private var inputEventsSent: UInt64 = 0
+    private var inputEchoTuples: UInt64 = 0
+    private var clipboardSetsSent: UInt64 = 0
+    private var clipboardAnnounces: UInt64 = 0
+    private var lastClipboardAnnounce: String?
 
     var clientStaticPublicKeyHex: String { Hex.string(clientStatic.publicKey) }
     var hostStaticPublicKeyHex: String { Hex.string(hostStaticPublicKey) }
 
     var framesAssembled: UInt64 { video.framesAssembled }
     var framesPresented: UInt64 { video.framesPresented }
+    var audioPacketsAssembled: UInt64 { audio.packetsAssembled }
+    var audioPacketsPopped: UInt64 { audio.packetsPopped }
+    var inputsSent: UInt64 { inputEventsSent }
+    var inputEchoes: UInt64 { inputEchoTuples }
+    var clipboardSent: UInt64 { clipboardSetsSent }
+    var clipboardReceived: UInt64 { clipboardAnnounces }
+    var lastClipboardText: String? { lastClipboardAnnounce }
+    var clipboardNegotiated: Bool { control?.clipboardNegotiated ?? false }
 
     func annexBHex(frameNumber: UInt32) -> String? {
         guard let bytes = video.annexB(frameNumber: frameNumber) else {
@@ -81,6 +97,80 @@ final class BrowserControlSession {
 
     func noteDropped(frameNumber: UInt32) {
         video.noteDropped(frameNumber: frameNumber)
+    }
+
+    func popAudioPacket() -> BrowserAudioPlayout.Packet? {
+        audio.popPacket()
+    }
+
+    /// Queue one HS-13 InputEvent on the reliable CTRL stream.
+    func sendInput(body: InputEvent.Body, nowMicros: UInt64) -> Step {
+        guard status == .ready else {
+            // Soft refuse — DOM capture may fire before READY; never
+            // poison the session for a premature pointer event.
+            return Step(
+                outboundHex: [],
+                events: ["input: ignored (status \(status.rawValue))"],
+                status: status,
+                detail: "input ignored until ready",
+                passed: false,
+                scheduled: []
+            )
+        }
+        do {
+            let seq = nextInputSeq
+            let event = InputEvent(
+                seq: seq, clientMicroseconds: nowMicros, body: body
+            )
+            try arq.send(
+                message: event.encode(),
+                now: ClientTimestamp(microseconds: nowMicros)
+            )
+            nextInputSeq &+= 1
+            inputEventsSent += 1
+            note("input: sent seq=\(seq)")
+            return step(outbound: try pollArq(nowMicros: nowMicros))
+        } catch {
+            return failStep("input send: \(error)")
+        }
+    }
+
+    /// Capability-gated ClipboardSet (0x1A) via ClientControlSession.
+    func shareClipboard(text: String, nowMicros: UInt64) -> Step {
+        guard status == .ready else {
+            return Step(
+                outboundHex: [],
+                events: ["clipboard: ignored (status \(status.rawValue))"],
+                status: status,
+                detail: "clipboard ignored until ready",
+                passed: false,
+                scheduled: []
+            )
+        }
+        guard var control else {
+            return failStep("no control session")
+        }
+        let decision = control.shareLocalClipboard(text)
+        self.control = control
+        guard decision.shareOutcome == .shared,
+              let message = decision.outboundReliable.first
+        else {
+            let why = String(describing: decision.shareOutcome)
+            return failStep("clipboard share refused: \(why)")
+        }
+        do {
+            try arq.send(
+                message: message,
+                now: ClientTimestamp(microseconds: nowMicros)
+            )
+            control.noteLocalClipboardSent(text)
+            self.control = control
+            clipboardSetsSent += 1
+            note("clipboard: set sent (\(text.utf8.count) B)")
+            return step(outbound: try pollArq(nowMicros: nowMicros))
+        } catch {
+            return failStep("clipboard send: \(error)")
+        }
     }
 
     init(hostStaticPublicKeyHex: String, pin: String) throws {
@@ -240,9 +330,10 @@ final class BrowserControlSession {
         note("noise: handshake completed")
 
         self.control = ClientControlSession(
-            localCapabilities: .wireDefault,
+            localCapabilities: .wireDefault.declaringClipboardText(),
             machineConfig: SessionMachineConfig(),
             desiredHostAudioRouting: nil,
+            clipboardSharingAtStart: true,
             now: ClientTimestamp(microseconds: nowMicros)
         )
         self.pairing = try PairingPakeInitiator(
@@ -310,7 +401,16 @@ final class BrowserControlSession {
             return step(outbound: [], scheduled: scheduled)
         }
 
-        // Idle-video / audio / feedback: ignore until later organs.
+        if envelope.channel == .audio {
+            for line in audio.ingestShard(
+                envelope: envelope, payload: plaintext[...]
+            ) {
+                note(line)
+            }
+            return step(outbound: [])
+        }
+
+        // Idle-video / feedback: ignore in the browser shell.
         guard envelope.channel == .ctrl else {
             return step(outbound: [])
         }
@@ -366,6 +466,14 @@ final class BrowserControlSession {
             return outbound
         }
 
+        // Input echoes are host→client accounting; not ClientControlSession.
+        if message.first == CtrlMessageType.inputEcho {
+            let echo = try InputEcho.decode(message)
+            inputEchoTuples += UInt64(echo.tuples.count)
+            note("input: echo \(echo.tuples.count) tuple(s)")
+            return outbound
+        }
+
         guard var control else { return outbound }
         if let decision = try control.receiveReliable(message, now: now) {
             for reply in decision.outboundReliable {
@@ -374,10 +482,13 @@ final class BrowserControlSession {
             switch decision.event {
             case .capability(.agreed(let caps)):
                 capabilitiesDone = true
-                note(
+                var detail =
                     "capabilities: agreed codecs=\(caps.videoCodecs) "
-                        + "maxDatagram=\(caps.maxDatagramBytes)"
-                )
+                    + "maxDatagram=\(caps.maxDatagramBytes)"
+                if caps.clipboardText {
+                    detail += " clipboardText=true"
+                }
+                note(detail)
             case .capability(.failed(let err)):
                 self.control = control
                 _ = failStep("capabilities failed: \(err)")
@@ -385,6 +496,12 @@ final class BrowserControlSession {
             case .lifecycle(.sessionTeardown):
                 status = .closed
                 note("teardown: received from host")
+            case .clipboard(.textChanged(let text)):
+                clipboardAnnounces += 1
+                lastClipboardAnnounce = text
+                note("clipboard: announce (\(text.utf8.count) B)")
+            case .clipboard(let other):
+                note("clipboard: \(other)")
             default:
                 break
             }

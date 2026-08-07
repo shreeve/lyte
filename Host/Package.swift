@@ -81,12 +81,14 @@ var targets: [Target] = [
             .product(name: "LyteTestKit", package: "Common"),
         ]
     ),
-    // Browser B-3: real HostWire Noise/pair/caps over UDP without Direct Eye.
+    // Browser B-3…B-6: real HostWire Noise/pair/caps (+ optional corpus /
+    // Opus tone) over UDP without Direct Eye.
     .executableTarget(
         name: "lyte-control-peer",
         dependencies: [
             "HostSession",
             "HostWire",
+            "HostAudio",
             .product(name: "LyteCore", package: "Common"),
             .product(name: "LyteWire", package: "Wire"),
         ]

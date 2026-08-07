@@ -89,8 +89,8 @@ Wire WASM suite green:
 | **B-2** | Opaque datagram round-trip through same-box WT↔UDP sidecar; measured ceiling ≥ 1152 B in Chrome — **landed** | Session |
 | **B-3** | Pair, Noise, capabilities, control-only session (HostWire peer via WT; pup optional) — **landed** | Media |
 | **B-4** | One timestamped frame via WebCodecs + WebGPU (canned corpus IRAP in Chrome) — **landed** | Live stream |
-| **B-5** | Live Conductor-driven video — **next** | Audio / input product surface |
-| **B-6** | AudioWorklet, input capture, clipboard, product UI | “Done” browser client |
+| **B-5** | Conductor-driven sealed corpus video over WT — **landed** | Live Direct Eye |
+| **B-6** | AudioWorklet, input, clipboard, product UI — **landed** (Chrome / control-peer) | Daily-driver RD / Direct Eye / Safari |
 
 **“Browser client done”** for product purposes means B-6 against a real host
 without forking protocol policy. Celebrate intermediate bars honestly;
