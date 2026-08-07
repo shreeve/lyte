@@ -8,6 +8,9 @@ xcuserdata/
 .build/
 .swiftpm/
 
+# Browser PackageToJS stage tree (Browser/Scripts/build.sh)
+.serve/
+
 # macOS
 .DS_Store
 

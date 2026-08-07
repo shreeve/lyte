@@ -9,21 +9,63 @@ Lyte should make a host reachable from an ordinary browser without forking
 the product into a second client. The browser is another platform shell —
 beside Mac, Windows, and Linux — around the same independently owned wire
 contracts, Noise security, session policy, and Conductor that native clients
-use. The platform adapter target is `LyteClientBrowser`; product composition
-lands later as `LyteBrowserApp` under `Applications/`.
+use. The platform adapter target is `LyteClientBrowser` (package
+`Browser/`); product composition lands later as `LyteBrowserApp` under
+`Applications/`.
 
 ## What is proven
 
-`LyteWire` is already a real WebAssembly target. Its complete suite passes 511
-tests under wasmtime on `wasm32-unknown-wasip1`, including the frozen vectors,
-Noise, pairing, FEC, ARQ, and media contracts. This proves that the bytes and
-IO-free protocol machinery are portable; it does **not** yet prove browser
-JavaScript interop, a browser event loop, WebTransport, WebCodecs, or rendering.
+`LyteWire` is already a real WebAssembly target. Its complete suite passes
+under wasmtime on `wasm32-unknown-wasip1` (`Wire/Scripts/wasm-test.sh`),
+including the frozen vectors, Noise, pairing, FEC, ARQ, and media contracts.
+That proves protocol portability; it is **not** the browser client.
+
+**B-1 is green in Chrome:** `Browser/` builds `LyteClientBrowser` with the
+official Swift 6.3.3 Wasm SDK and JavaScriptKit PackageToJS, loads it in
+Google Chrome, and exercises two frozen wire contracts across the
+JavaScript boundary:
+
+- `envelope-v1/nominal-video-shard` — decode + re-encode byte match
+- `noise-v1/snow-ik-25519-chachapoly-sha256` — IK message 1+2 byte match
+
+Page JavaScript can call back into WASM via
+`globalThis.lyteBrowser.runFrozenContracts()` (and
+`verifyEnvelopeHex(...)`). Headless gate:
+`Browser/Scripts/smoke-chrome.sh`.
+
+This does **not** yet prove WebTransport, WebCodecs, rendering, or a
+session against pup.
 
 The client policy boundaries are moving in the same direction:
 `LyteClientCore` and `LyteClientSession` now compile on Linux with warnings as
 errors. A browser shell must consume those IO-free boundaries rather than
 reimplementing their policy in JavaScript.
+
+## Run B-1 locally (Chrome)
+
+Pins match the Wire wasm leg: swiftly toolchain **6.3.3** + SDK
+`swift-6.3.3-RELEASE_wasm` (install commands in
+`Wire/Scripts/wasm-test.sh` / `Browser/Scripts/build.sh`).
+
+```sh
+# From the repository root
+Browser/Scripts/build.sh          # stages Browser/.serve/
+Browser/Scripts/serve.sh          # http://127.0.0.1:8765/
+# Open that URL in Google Chrome — expect PASS for both contracts.
+
+# Optional headless gate (system Chrome + node)
+Browser/Scripts/smoke-chrome.sh
+```
+
+`build.sh` uses PackageToJS `--use-cdn` so the WASI browser shim loads from
+jsDelivr; no local `npm install` is required for the served page. The
+release wasm is large (~72 MB today; swift-crypto/FoundationEssentials drag
+— recorded in the scoping doc, not fought this slice). `wasm-opt` is
+optional and not required for the B-1 gate.
+
+**Safari:** deferred. Recent Safari may run the WASM proof page, but Safari
+is not a B-1 gate. WebTransport / `serverCertificateHashes` fleet constraints
+remain a later concern (B-2+). Do not block Chrome progress on Safari.
 
 ## Intended shape
 
@@ -112,17 +154,15 @@ independently testable slices (full matrix in the B-0 decision record):
 | Stage | Proof |
 |---|---|
 | **B-0** | Naming, WebTransport carrier, capability matrix, ladder — **landed** |
-| **B-1** | Load Lyte WASM in an actual browser; exercise a frozen contract through the JavaScript boundary — **next** |
-| **B-2** | Opaque datagram round-trip through the WebTransport adapter; measure datagram ceiling |
+| **B-1** | Load Lyte WASM in Chrome; exercise frozen contracts through the JS boundary — **landed** |
+| **B-2** | Opaque datagram round-trip through the WebTransport adapter; measure datagram ceiling — **next** |
 | **B-3** | Pair, Noise, capabilities, control-only session against pup |
 | **B-4** | One timestamped frame through WebCodecs and WebGPU |
 | **B-5** | Live Conductor-driven video |
 | **B-6** | AudioWorklet, input, clipboard, product UI — browser client “done” |
 
 Every slice keeps the native Mac/Linux gates and the WASM vector suite green.
-The first browser proof is an integration of already-owned organs, not
-permission to start a parallel implementation. Do not claim a streaming
-browser client before B-5.
+Do not claim a streaming browser client before B-5.
 
 ## Historical detail
 

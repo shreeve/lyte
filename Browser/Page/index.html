@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LyteClientBrowser — B-1</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1a1a1a;
+      --muted: #5a5a5a;
+      --pass: #0b6b2a;
+      --fail: #9b1c1c;
+      --band: #f2f0eb;
+    }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Mono", "SF Mono", ui-monospace, monospace;
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #e8efe6 0%, transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, #ebe4d8 0%, transparent 50%),
+        var(--band);
+      color: var(--ink);
+      min-height: 100vh;
+    }
+    main {
+      max-width: 52rem;
+      margin: 0 auto;
+      padding: 3rem 1.25rem 4rem;
+    }
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin: 0 0 0.35rem;
+    }
+    .sub {
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin-bottom: 1.75rem;
+      line-height: 1.45;
+    }
+    #status {
+      display: inline-block;
+      font-size: 2.4rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      margin-bottom: 1rem;
+    }
+    #status.pass { color: var(--pass); }
+    #status.fail { color: var(--fail); }
+    #status.pending { color: var(--muted); }
+    pre {
+      background: #fff;
+      border: 1px solid #d8d4cb;
+      padding: 1rem 1.1rem;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      line-height: 1.5;
+      font-size: 0.82rem;
+    }
+    #meta { color: var(--muted); margin-top: 1rem; }
+    button {
+      margin-top: 1rem;
+      font: inherit;
+      padding: 0.45rem 0.9rem;
+      border: 1px solid #b8b2a6;
+      background: #fff;
+      cursor: pointer;
+    }
+    button:hover { background: #f7f5f0; }
+    .note {
+      margin-top: 2rem;
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>LyteClientBrowser</h1>
+    <p class="sub">
+      B-1 proof: Swift WASM loaded in the browser, frozen LyteWire contracts
+      exercised across the JavaScript boundary. Chrome-first; not a streaming
+      client.
+    </p>
+    <div id="status" class="pending">LOADING</div>
+    <pre id="log">Instantiating LyteClientBrowser.wasm…</pre>
+    <pre id="meta"></pre>
+    <button type="button" id="rerun" disabled>Re-run via JS bridge</button>
+    <p class="note">
+      Safari is deferred for this slice (WebTransport / WebCodecs come later;
+      this page may still run on recent Safari WASM but is not a gate).
+      B-2 starts opaque WebTransport datagrams — no media yet.
+    </p>
+  </main>
+  <script type="module">
+    const status = document.getElementById("status");
+    const log = document.getElementById("log");
+    const rerun = document.getElementById("rerun");
+
+    try {
+      const { init } = await import("./index.js");
+      await init();
+      // Swift paints #status / #log / lyteB1Passed on main().
+      rerun.disabled = false;
+      rerun.addEventListener("click", () => {
+        const summary = globalThis.lyteBrowser?.runFrozenContracts?.();
+        if (!summary) {
+          status.textContent = "FAIL";
+          status.className = "fail";
+          log.textContent = "lyteBrowser bridge missing";
+          return;
+        }
+        status.textContent = summary.passed ? "PASS" : "FAIL";
+        status.className = summary.passed ? "pass" : "fail";
+        log.textContent = summary.lines + "\n(re-run via globalThis.lyteBrowser)";
+        globalThis.lyteB1Passed = summary.passed;
+      });
+    } catch (error) {
+      status.textContent = "FAIL";
+      status.className = "fail";
+      log.textContent = String(error?.stack || error);
+      globalThis.lyteB1Passed = false;
+    }
+  </script>
+</body>
+</html>
