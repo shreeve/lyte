@@ -9,8 +9,8 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ browser B-2 — WebTransport datagram carrier in Chrome
-  (pull if HEAD moved). Opaque Lyte envelopes / Noise ciphertext round-trip
+- **Tip:** `main` @ #234 — browser B-2 WebTransport datagram carrier (pull
+  if HEAD moved). Opaque Lyte envelopes / Noise ciphertext round-trip
   WT↔UDP via `lyte-wt-sidecar`; measured ceiling ≥ 1152 B (`Browser/`,
   `docs/BROWSER.md`).
 - **Next:** **B-3** — pair, Noise, capabilities, control-only session
