@@ -5,16 +5,16 @@
 // selection-change signals + fd-based transfer, both directions).
 //
 // WHICH RemoteDesktop session: the Mutter-internal one
-// (org.gnome.Mutter.RemoteDesktop) — the same API family HS-13's input
-// injector holds and the CP-5 verdict blessed. The sanctioned xdg
-// portal exposes an identical Clipboard interface, but it hangs off a
-// portal RemoteDesktop session whose Start auto-denies headless on
-// this GNOME (CP-5 Q1) — and on GNOME the portal Clipboard is a thin
-// wrapper over exactly this Mutter session API, so the leaf drives the
-// implementation directly. `wl-clipboard` stays a probe tool, not a
-// carriage (the design doc's ruling). The leaf holds its OWN session
-// on its OWN bus connection, mirroring the injector-vs-capture
-// separation: `--input off` must not kill clipboard, and vice versa.
+// (org.gnome.Mutter.RemoteDesktop). Input left this API family in E2
+// (uinput); clipboard could not — the Wayland-helper /
+// portal-without-Mutter-RD replacement is blocked on Ubuntu GNOME
+// (docs/20260807-015743-wayland-clipboard-gnome-blocker.md): no
+// wlr/ext-data-control, wl-clipboard hangs, portal RD Start still
+// auto-denies headless (CP-5 Q1). On GNOME the portal Clipboard is a
+// thin wrapper over this same Mutter session API, so the leaf drives
+// the implementation directly. `wl-clipboard` stays a probe tool, not
+// a carriage. The leaf holds its OWN session on its OWN bus
+// connection: `--input off` must not kill clipboard, and vice versa.
 //
 // The protocol, proven live on pup before this file was written:
 //   • a foreign copy → SelectionOwnerChanged (mime-types,

@@ -11,13 +11,13 @@
 // lyte-host, Linux-only): the RemoteDesktop-session clipboard API of
 // host build plan §6 — selection-change signals + fd-based transfer
 // both directions — driven on a Mutter-internal RemoteDesktop session
-// (org.gnome.Mutter.RemoteDesktop, the CP-5 input-primary pattern; the
-// xdg portal's own RemoteDesktop Start auto-denies headless on GNOME,
-// and its Clipboard interface is a thin wrapper over this same Mutter
-// API). The gate tests still run a scripted implementation of this
-// protocol everywhere; lyte-host wires the real one behind
-// `--clipboard` and declares capability key 10 only when the leaf came
-// up (the key-9/--no-audio precedent — declaration follows the leaf).
+// (org.gnome.Mutter.RemoteDesktop). Portal RD Start still auto-denies
+// headless on GNOME; a Wayland-helper / data-control leaf is blocked
+// there — docs/20260807-015743-wayland-clipboard-gnome-blocker.md.
+// The gate tests still run a scripted implementation of this protocol
+// everywhere; lyte-host wires the real one behind `--clipboard` and
+// declares capability key 10 only when the leaf came up (the
+// key-9/--no-audio precedent — declaration follows the leaf).
 
 import LyteWire
 

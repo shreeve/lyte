@@ -14,8 +14,9 @@
 // primary). Recover it from git history if archaeology calls. The
 // clipboard's OWN RemoteDesktop session (ClipboardLeaf.swift) is
 // deliberately untouched — it was always an independent session on
-// its own bus connection, and its Wayland-helper replacement is a
-// separate filed follow-up.
+// its own bus connection. The Wayland-helper replacement stays
+// filed and is blocked on GNOME today; see
+// docs/20260807-015743-wayland-clipboard-gnome-blocker.md.
 //
 // The sanctioned xdg-desktop-portal RemoteDesktop path was never
 // here: its combined Start auto-denies headless on this GNOME
