@@ -12,7 +12,10 @@
 - **Tip:** `main` @ #228 — SessionWire under-lock diagnostics through
   `emit` (pull if HEAD moved). Harsh-path close remains the #222 family.
 - **Next** (thin; not another control-plane storm): banked product work in
-  `TODO.md` (browser, native shells, etc.).
+  `TODO.md` (browser, native shells, etc.). Wayland clipboard leaf is
+  **blocked on GNOME** — pin
+  `docs/20260807-015743-wayland-clipboard-gnome-blocker.md`; do not
+  spend another slice inventing a helper until an unlock lands.
 
 ## Live rig
 

@@ -79,6 +79,9 @@ existed when they were authored. Recover its final form with
   the render-thread rule and pacing doctrine.
 - [20260722-231500 clipboard](20260722-231500-lyte-clipboard.md) —
   loop-prevention discipline; the template for every feature channel.
+- [20260807-015743 Wayland clipboard GNOME blocker](20260807-015743-wayland-clipboard-gnome-blocker.md) —
+  pup pin: no compositor-independent host clipboard on Ubuntu GNOME 50;
+  Mutter RD leaf remains; unlock conditions named.
 - [20260728-053300 bulk channel](20260728-053300-lyte-bulk-channel.md) —
   file transfer / drag-and-drop.
 - [20260728-121500 F-5 client roaming](20260728-121500-f5-client-roaming.md).

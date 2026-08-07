@@ -2,8 +2,13 @@
 
 Deferred unfinished work only; see `AGENTS.md`. Current slice and live state live in `HANDOFF.md`.
 
-- **Wayland clipboard leaf:** replace the remaining Mutter session-bus
-  dependency; capture and input are already compositor-independent.
+- **Wayland clipboard leaf (blocked on GNOME):** shipping host clipboard
+  still requires Mutter RemoteDesktop session bus
+  (`MutterClipboardLeaf`). Pup pin 2026-08-07 (GNOME Shell 50.1 /
+  Mutter 50.1): no `wlr-data-control` / `ext-data-control`;
+  `wl-copy`/`wl-paste` hang; portal Clipboard cannot Start headless
+  (CP-5 Q1 reconfirmed). Unlock conditions and probes:
+  `docs/20260807-015743-wayland-clipboard-gnome-blocker.md`.
 - **Posture refinements:** an Opus DTX warm rung, DSP fades, and the 2–5
   second instant-replay ring remain demand-gated. Video cushion stays
   automatic under the Conductor; it is not deferred UI work.
