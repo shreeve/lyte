@@ -69,18 +69,3 @@ it is not active backlog.
   and channels. Add session-key joining and payload decryption only when a
   debugging campaign needs plaintext inspection. See the one-protocol
   decision §7.
-
-## Codec and hardware backlog
-
-- **AV1 (banked):** negotiated codec field, OBU writers/parsers and
-  packetizer boundaries, a hardware encode seat, and the matching client
-  format path. AV1 remains a 4:2:0 WAN-efficiency lane; HEVC Rext remains the
-  4:4:4 text lane. Start only after the direct HEVC path is fully
-  commissioned.
-- **NVENC direct seat:** wait for a machine whose display is physically
-  owned by NVIDIA. Then extract an encoder seam from `DirectEyeLeg`, register
-  the scanout-owned GL resource with CUDA/NVENC without a cross-adapter copy,
-  map the scanout CRTC to the correct CUDA device, restore live encoder
-  recipes, and add an NVENC capability probe. Pup is a no-MUX Optimus system
-  whose connectors belong to Intel, so this work cannot be honestly gated
-  there.
