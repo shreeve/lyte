@@ -2,10 +2,6 @@
 
 Deferred unfinished work only; see `AGENTS.md`. Current slice and live state live in `HANDOFF.md`.
 
-- **Residual under-lock diagnostics**
-  (`Host/Sources/lyte-host/SessionWire.swift`): move the remaining rare
-  path-challenge, peer-gone, bulk-send-failure, and connect-failed prints
-  through the buffered emitter when this seam is next open.
 - **Wayland clipboard leaf:** replace the remaining Mutter session-bus
   dependency; capture and input are already compositor-independent.
 - **Posture refinements:** an Opus DTX warm rung, DSP fades, and the 2–5
