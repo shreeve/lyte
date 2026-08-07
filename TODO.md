@@ -15,14 +15,14 @@ Deferred unfinished work only; see `AGENTS.md`. Current slice and live state liv
 - **Printing:** receive a host print job as PDF and hand it to the client's
   native print flow, with its own negotiated capability and consent.
 - **Browser client (active platform slice):** B-0 naming/carrier, B-1
-  Chrome WASM + frozen-contract JS boundary, and B-2 opaque WebTransport
-  datagram carriage (same-box `lyte-wt-sidecar`, measured ceiling ≥ 1152 B)
-  are landed (`Browser/`, `docs/BROWSER.md`). Next code is **B-3** —
-  control-only pup session (pair/Noise/capabilities) over the WT carrier —
-  then WebCodecs/WebGPU (B-4), live Conductor video (B-5), and
-  AudioWorklet/input/clipboard/UI (B-6). Do not claim streaming before B-5;
-  do not scaffold empty `Applications/` product stubs until composition
-  earns them.
+  Chrome WASM + frozen-contract JS boundary, B-2 opaque WebTransport
+  datagram carriage, and B-3 control-only session (Noise / PIN PAKE /
+  capabilities / teardown via WASM + `lyte-wt-sidecar --udp-peer` +
+  DRM-free `lyte-control-peer`) are landed (`Browser/`, `docs/BROWSER.md`).
+  Next code is **B-4** — one timestamped frame through WebCodecs + WebGPU —
+  then live Conductor video (B-5), and AudioWorklet/input/clipboard/UI
+  (B-6). Do not claim streaming before B-5; do not scaffold empty
+  `Applications/` product stubs until composition earns them.
 - **Native role shells:** after the shared client-session boundary is
   IO-free, add the macOS host role, then the Windows host/client and Linux
   client shells. The Linux host already has one verified image and a coherent

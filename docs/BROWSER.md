@@ -40,6 +40,16 @@ WebTransport:
 - measured usable ceiling **1214 B** ≥ 1152 B (Chrome's reported
   `maxDatagramSize` was 1024 — treat runtime measure as truth)
 
+**B-3 is green in Chrome:** the WASM initiator completes a **control-only**
+session against a DRM-free `lyte-control-peer` (real `HostWire.Session`)
+through the sidecar in `--udp-peer` mode:
+
+- Noise IK handshake (end-to-end; sidecar stays opaque)
+- PIN PAKE pairing (`PairingPakeInitiator` ↔ `PairingResponderService`)
+- capability declaration / agreement via `LyteClientSession`
+- typed `SessionTeardown`
+- media channels ignored (no WebCodecs, no Direct Eye on the peer)
+
 Logical packets stay transport-independent:
 
 ```text
@@ -53,17 +63,20 @@ pretend otherwise. Native Lyte keeps custom UDP.
 
 Page JavaScript can call back into WASM via
 `globalThis.lyteBrowser.runFrozenContracts()`,
-`verifyCarrierEcho(...)`, and related helpers. Headless gate:
+`verifyCarrierEcho(...)`, `controlOpen` / `controlBegin` / `controlIngest`
+/ `controlTick` / `controlTeardown`, and related helpers. Headless gate:
 `Browser/Scripts/smoke-chrome.sh`.
 
-This does **not** yet prove a session against pup, WebCodecs, or rendering.
+This does **not** yet prove WebCodecs, WebGPU presentation, or Conductor
+video against pup's standing Direct Eye host.
 
 The client policy boundaries are moving in the same direction:
 `LyteClientCore` and `LyteClientSession` now compile on Linux with warnings as
 errors. A browser shell must consume those IO-free boundaries rather than
-reimplementing their policy in JavaScript.
+reimplementing their policy in JavaScript. B-3 wires `LyteClientSession`
+into the WASM control initiator for capabilities / lifecycle.
 
-## Run B-1 / B-2 locally (Chrome)
+## Run B-1 / B-2 / B-3 locally (Chrome)
 
 Pins match the Wire wasm leg: swiftly toolchain **6.3.3** + SDK
 `swift-6.3.3-RELEASE_wasm` (install commands in
@@ -72,23 +85,58 @@ Pins match the Wire wasm leg: swiftly toolchain **6.3.3** + SDK
 ```sh
 # From the repository root
 Browser/Scripts/build.sh          # stages Browser/.serve/
-Browser/Scripts/serve.sh          # http://127.0.0.1:8765/ + wt-sidecar
-# Open that URL in Google Chrome — expect PASS for contracts + wt-carrier/*.
+Browser/Scripts/serve.sh          # http://127.0.0.1:8765/ + control-peer + wt-sidecar
+# Open that URL in Google Chrome — expect PASS for B-1 + control-session/*.
 
-# Optional headless gate (system Chrome + node + openssl)
-Browser/Scripts/smoke-chrome.sh
+# Optional headless gate (system Chrome + node + openssl + Xcode swift)
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  Browser/Scripts/smoke-chrome.sh
 ```
+
+`serve.sh` / `smoke-chrome.sh` start:
+
+1. `lyte-control-peer` on a fresh loopback UDP **41xxx** port (never 41151)
+2. `lyte-wt-sidecar --udp-peer 127.0.0.1:<that-port>`
+3. static file server for `.serve/`
 
 `build.sh` uses PackageToJS `--use-cdn` so the WASI browser shim loads from
 jsDelivr; no local `npm install` is required for the served page. The B-2
 sidecar installs `rwebtransport` under `Browser/Harness/` on first run
-(`node_modules/` is gitignored). The release wasm is large (~72 MB today;
+(`node_modules/` is gitignored). The release wasm is large (~76 MB today;
 swift-crypto/FoundationEssentials drag — recorded in the scoping doc, not
 fought this slice). `wasm-opt` is optional and not required for the gate.
 
+**Echo vs peer sidecar:** B-2 carrier echoes need the sidecar's built-in UDP
+echo. B-3 needs `--udp-peer`. The combined page SKIPs `wt-carrier/*` when
+the sidecar is in peer mode (B-2 already landed) and runs the control
+session instead.
+
 **Safari:** deferred. Recent Safari may run the WASM proof page, but Safari
-is not a B-1/B-2 gate. Fleet `serverCertificateHashes` constraints remain a
+is not a B-1/B-2/B-3 gate. Fleet `serverCertificateHashes` constraints remain a
 later concern. Do not block Chrome progress on Safari.
+
+### Optional pup qualification (no DRM)
+
+`lyte-control-peer` builds on Linux too. Against pup, bind a fresh 41xxx
+port and point the Mac sidecar at it — do **not** displace standing
+`lyte-host` on 41151 and do **not** start a second Direct Eye:
+
+```sh
+# on pup (after syncing Host/ Wire/ Common/)
+cd ~/src/lyte-host
+LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat \
+  swift build -c release --product lyte-control-peer
+./.build/release/lyte-control-peer \
+  --listen 41234 --bind 0.0.0.0 --meta-out /tmp/lyte-b3-peer.json --seconds 300
+# note PIN + hostStaticPublicKeyHex from the JSON / console
+
+# on Mac — stage page, then sidecar forward to pup
+Browser/Scripts/build.sh
+# copy peer JSON fields into Browser/.serve/control-peer.json (or edit serve)
+node Browser/Scripts/wt-sidecar.mjs --meta-out Browser/.serve/wt-sidecar.json \
+  --udp-peer 10.0.0.232:41234
+# serve .serve/ and open in Chrome with that meta + peer JSON
+```
 
 ## Intended shape
 
@@ -141,14 +189,18 @@ preserve unreliable, unordered datagram behavior without TCP head-of-line
 blocking. A carrier adapter moves opaque Lyte envelopes between WebTransport
 and the host's UDP session boundary.
 
-**B-2 adapter decision: same-box sidecar** (`lyte-wt-sidecar`) for the
-Chrome proof and local harness. It mints a short-lived ECDSA P-256 cert
-(≤14-day Chrome pin rules), exposes SHA-256 for
-`serverCertificateHashes`, and relays opaque datagrams onto loopback UDP
-(and back). Pairing and Noise remain end-to-end between the browser's WASM
-client and the host; the sidecar sees only ciphertext. An optional in-process
-Linux host leaf remains a later packaging choice — not required to claim B-2.
-Native UDP on standing 41151 is untouched.
+**B-2/B-3 adapter decision: same-box sidecar** (`lyte-wt-sidecar`) for the
+Chrome proof and local harness. Echo mode proves the carrier; `--udp-peer
+host:port` forwards opaque datagrams to a real Lyte UDP peer (refuses
+standing 41151). Pairing and Noise remain end-to-end between the browser's
+WASM client and the host; the sidecar sees only ciphertext. An optional
+in-process Linux host leaf remains a later packaging choice. Native UDP on
+standing 41151 is untouched.
+
+**B-3 host peer:** `lyte-control-peer` (Host package, macOS + Linux) wraps
+`HostWire.Session` + `PairingResponderService` over plain UDP with **no**
+Direct Eye — safe beside the standing DRM seat. Pup qualification uses the
+same binary on a fresh 41xxx port.
 
 Measured datagram ceiling must be consulted (and negotiated downward per
 session if a future path falls short). Do not assume 1152 B from the Lyte
@@ -186,8 +238,8 @@ independently testable slices (full matrix in the B-0 decision record):
 | **B-0** | Naming, WebTransport carrier, capability matrix, ladder — **landed** |
 | **B-1** | Load Lyte WASM in Chrome; exercise frozen contracts through the JS boundary — **landed** |
 | **B-2** | Opaque datagram round-trip through the WebTransport adapter; measure datagram ceiling — **landed** |
-| **B-3** | Pair, Noise, capabilities, control-only session against pup — **next** |
-| **B-4** | One timestamped frame through WebCodecs and WebGPU |
+| **B-3** | Pair, Noise, capabilities, control-only session — **landed** (HostWire peer; pup optional) |
+| **B-4** | One timestamped frame through WebCodecs and WebGPU — **next** |
 | **B-5** | Live Conductor-driven video |
 | **B-6** | AudioWorklet, input, clipboard, product UI — browser client “done” |
 

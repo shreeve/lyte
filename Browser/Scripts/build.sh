@@ -64,9 +64,10 @@ rm -rf "$SERVE_DIR"
 mkdir -p "$SERVE_DIR"
 # PackageToJS output (wasm + JS loader + WASI browser shim via CDN).
 cp -R "${PACKAGE_OUT}/." "$SERVE_DIR/"
-# Diagnostic host page + B-2 WebTransport carrier pump.
+# Diagnostic host page + B-2 carrier pump + B-3 control-session pump.
 cp "${BROWSER_ROOT}/Page/index.html" "$SERVE_DIR/index.html"
 cp "${BROWSER_ROOT}/Page/webtransport-carrier.js" "$SERVE_DIR/webtransport-carrier.js"
+cp "${BROWSER_ROOT}/Page/control-session.js" "$SERVE_DIR/control-session.js"
 
 SIZE="$(wc -c < "${SERVE_DIR}/LyteClientBrowser.wasm" | tr -d ' ')"
 echo "browser-build: staged ${SERVE_DIR}"

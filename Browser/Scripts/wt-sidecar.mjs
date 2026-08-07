@@ -1,10 +1,13 @@
 #!/usr/bin/env node
-// lyte-wt-sidecar — same-box WebTransport ↔ UDP opaque datagram relay for B-2.
+// lyte-wt-sidecar — same-box WebTransport ↔ UDP opaque datagram relay.
 //
 // Browser Chrome speaks WebTransport datagrams; this process relays opaque
-// bytes onto a loopback UDP peer (built-in echo) and back. It never parses
-// Lyte envelopes or Noise — ciphertext-only by construction. Does not bind
-// standing host UDP 41151.
+// bytes onto a UDP peer and back. It never parses Lyte envelopes or Noise —
+// ciphertext-only by construction. Does not bind standing host UDP 41151.
+//
+// Modes:
+//   • echo (default, B-2): loopback UDP echo for carrier proofs
+//   • --udp-peer host:port (B-3): forward to a real Lyte host / control peer
 //
 // Writes JSON metadata (url, cert hash, measured ports) to --meta-out so the
 // proof page can dial with serverCertificateHashes.
@@ -49,12 +52,31 @@ function ensureRwebtransport() {
 const rwebtransportEntry = ensureRwebtransport();
 const { WebTransportServer } = await import(pathToFileURL(rwebtransportEntry).href);
 
+function parsePeer(spec) {
+  const idx = spec.lastIndexOf(":");
+  if (idx <= 0) {
+    throw new Error(`--udp-peer expects host:port, got ${spec}`);
+  }
+  const host = spec.slice(0, idx);
+  const port = Number(spec.slice(idx + 1));
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`--udp-peer expects host:port, got ${spec}`);
+  }
+  if (port === 41151) {
+    throw new Error(
+      "wt-sidecar: refusing standing host UDP 41151 — use a fresh 41xxx test port"
+    );
+  }
+  return { host, port };
+}
+
 function parseArgs(argv) {
   const out = {
     host: "127.0.0.1",
     wtPort: 0,
     metaOut: null,
     path: "/lyte-datagram",
+    udpPeer: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -62,9 +84,11 @@ function parseArgs(argv) {
     else if (a === "--wt-port") out.wtPort = Number(argv[++i]);
     else if (a === "--meta-out") out.metaOut = argv[++i];
     else if (a === "--path") out.path = argv[++i];
+    else if (a === "--udp-peer") out.udpPeer = parsePeer(argv[++i]);
     else if (a === "--help" || a === "-h") {
       console.log(
-        "usage: wt-sidecar.mjs [--host 127.0.0.1] [--wt-port 0] [--meta-out path] [--path /lyte-datagram]"
+        "usage: wt-sidecar.mjs [--host 127.0.0.1] [--wt-port 0] [--meta-out path] " +
+          "[--path /lyte-datagram] [--udp-peer host:port]"
       );
       process.exit(0);
     }
@@ -124,13 +148,14 @@ function listenUdp(host) {
   });
 }
 
-async function relaySession(session, relay, echoPort, host) {
+async function relaySession(session, relay, destination) {
   await session.ready;
   const writer = session.datagrams.writable.getWriter();
   const reader = session.datagrams.readable.getReader();
 
   const onUdp = (msg, rinfo) => {
-    if (rinfo.port !== echoPort) return;
+    // One WT session ↔ one UDP peer port. Opaque bytes only.
+    if (rinfo.port !== destination.port) return;
     writer.write(new Uint8Array(msg)).catch(() => {});
   };
   relay.on("message", onUdp);
@@ -141,7 +166,9 @@ async function relaySession(session, relay, echoPort, host) {
       if (done) break;
       if (!value) continue;
       await new Promise((resolve, reject) => {
-        relay.send(value, echoPort, host, (err) => (err ? reject(err) : resolve()));
+        relay.send(value, destination.port, destination.host, (err) =>
+          err ? reject(err) : resolve()
+        );
       });
     }
   } catch {
@@ -161,11 +188,18 @@ const certDir = mkdtempSync(join(tmpdir(), "lyte-wt-sidecar-"));
 const { keyPath, certPath } = mintCert(certDir);
 const hash = certSha256(certPath);
 
-const echoSock = await listenUdp(args.host);
-const echoPort = echoSock.address().port;
-echoSock.on("message", (msg, rinfo) => {
-  echoSock.send(msg, rinfo.port, rinfo.address);
-});
+let echoSock = null;
+let echoPort = null;
+let peer = args.udpPeer;
+
+if (!peer) {
+  echoSock = await listenUdp(args.host);
+  echoPort = echoSock.address().port;
+  echoSock.on("message", (msg, rinfo) => {
+    echoSock.send(msg, rinfo.port, rinfo.address);
+  });
+  peer = { host: args.host, port: echoPort };
+}
 
 const relaySock = await listenUdp(args.host);
 const relayPort = relaySock.address().port;
@@ -179,14 +213,20 @@ const server = new WebTransportServer({
 await server.ready;
 const wtPort = server.port;
 
+const shape = args.udpPeer
+  ? "webtransport-datagram-to-udp-peer"
+  : "webtransport-datagram-to-udp-echo";
+
 const meta = {
   adapter: "lyte-wt-sidecar",
-  shape: "webtransport-datagram-to-udp-echo",
+  shape,
   url: `https://${args.host}:${wtPort}${args.path}`,
   host: args.host,
   wtPort,
   relayUdpPort: relayPort,
   echoUdpPort: echoPort,
+  udpPeerHost: peer.host,
+  udpPeerPort: peer.port,
   path: args.path,
   hashHex: Buffer.from(hash).toString("hex"),
   hashAlgorithm: "sha-256",
@@ -208,7 +248,7 @@ void (async () => {
     const { value: session, done } = await reader.read();
     if (done) break;
     if (session) {
-      relaySession(session, relaySock, echoPort, args.host);
+      relaySession(session, relaySock, peer);
     }
   }
 })();
@@ -220,7 +260,7 @@ function shutdown() {
     /* ignore */
   }
   try {
-    echoSock.close();
+    echoSock?.close();
   } catch {
     /* ignore */
   }
