@@ -1,8 +1,8 @@
 import XCTest
 import Foundation
-import LyteTransport
 import LyteWire
 import LyteWireTestKit
+@testable import LyteTransport
 
 // THE GATE (build plan CL-7, the ARQ leg — the client half of HS-8's
 // gate): the client's real reliable-CTRL stack — NoiseTransportCrypto
@@ -519,6 +519,37 @@ final class ReliableCtrlGateTests: XCTestCase {
             + "\(harness.beaconSeqsSeen.count) beacons through the peek, "
             + "none retransmitted; \(harness.replayDrops)+\(host.replayDrops) "
             + "replay drops)")
+    }
+
+    // MARK: PTO wake clears armed-deadline book before service
+
+    /// The production one-shot retires before `serviceLocked` runs. If the
+    /// skip bookkeeping were left holding the old target, an unchanged
+    /// PTO deadline would skip `timer.schedule` and sleep forever.
+    func testTimerWakeClearsArmedDeadlineBeforeService() throws {
+        let harness = try Harness()
+        let host = harness.host
+        harness.absorb(try host.beaconDatagram(hostMicros: 100), tMicros: 200)
+        harness.reliable.testingAssumeTimerPresent = true
+
+        let t: UInt64 = 1_000_000
+        try harness.reliable.send(
+            [CtrlMessageType.idrRequest, 0xEE],
+            now: ClientTimestamp(microseconds: t))
+        let armed = harness.reliable.testingArmedDeadlineMicros
+        XCTAssertNotNil(armed, "send must arm a PTO deadline")
+        XCTAssertFalse(
+            harness.reliable.testingRescheduleSkipped,
+            "first arm is never a skip")
+
+        // Wake while the PTO is not yet due — poll re-derives the same
+        // target. Clearing first is what makes re-arm happen.
+        harness.reliable.testingWakeFromTimer(
+            now: ClientTimestamp(microseconds: t))
+        XCTAssertFalse(
+            harness.reliable.testingRescheduleSkipped,
+            "wake must re-arm even when the PTO target is unchanged")
+        XCTAssertEqual(harness.reliable.testingArmedDeadlineMicros, armed)
     }
 
     // MARK: PTO retransmit rides the tick machinery
