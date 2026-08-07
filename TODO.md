@@ -14,14 +14,13 @@ Deferred unfinished work only; see `AGENTS.md`. Current slice and live state liv
   automatic under the Conductor; it is not deferred UI work.
 - **Printing:** receive a host print job as PDF and hand it to the client's
   native print flow, with its own negotiated capability and consent.
-- **Browser client (active platform slice):** B-0…B-4 landed (`Browser/`,
-  `docs/BROWSER.md`): Chrome WASM contracts, WT carrier, control-only
-  session (Noise / PIN PAKE / capabilities / teardown via sidecar +
-  `lyte-control-peer`), and one timestamped canned corpus IRAP through
-  WebCodecs + WebGPU. Next code is **B-5** — live Conductor-driven video —
-  then AudioWorklet/input/clipboard/UI (B-6). Do not claim streaming
-  before B-5; do not scaffold empty `Applications/` product stubs until
-  composition earns them.
+- **Browser client (active platform slice):** B-0…B-5 landed (`Browser/`,
+  `docs/BROWSER.md`): Chrome WASM contracts, WT carrier, control session,
+  and sealed corpus Conductor video (binary media ingest; FEC assemble →
+  Conductor → WebCodecs → WebGPU via `lyte-control-peer --emit-corpus`).
+  Next code is **B-6** — AudioWorklet, input, clipboard, product UI. Not
+  live Direct Eye / not full RD yet. Do not scaffold empty
+  `Applications/` product stubs until composition earns them.
 - **Native role shells:** after the shared client-session boundary is
   IO-free, add the macOS host role, then the Windows host/client and Linux
   client shells. The Linux host already has one verified image and a coherent

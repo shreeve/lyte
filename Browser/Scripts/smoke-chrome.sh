@@ -1,6 +1,7 @@
 #!/bin/sh
-# Headless Chrome smoke for B-1 + B-3 + B-4 (see smoke.mjs).
-# Spawns lyte-control-peer + lyte-wt-sidecar --udp-peer; never uses UDP 41151.
+# Headless Chrome smoke for B-1 + B-3 + B-5 (see smoke.mjs).
+# Spawns lyte-control-peer --emit-corpus + lyte-wt-sidecar --udp-peer;
+# never uses UDP 41151.
 set -eu
 
 BROWSER_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -8,8 +9,8 @@ BROWSER_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 if [ ! -f "${BROWSER_ROOT}/.serve/LyteClientBrowser.wasm" ] \
     || [ ! -f "${BROWSER_ROOT}/.serve/webtransport-carrier.js" ] \
     || [ ! -f "${BROWSER_ROOT}/.serve/control-session.js" ] \
-    || [ ! -f "${BROWSER_ROOT}/.serve/frame-present.js" ] \
-    || [ ! -f "${BROWSER_ROOT}/.serve/frame-000-idr.annexb" ]; then
+    || [ ! -f "${BROWSER_ROOT}/.serve/conductor-video.js" ] \
+    || [ ! -f "${BROWSER_ROOT}/.serve/corpus/frame-000-idr.annexb" ]; then
     echo "browser-smoke: building first…"
     "${BROWSER_ROOT}/Scripts/build.sh"
 fi
