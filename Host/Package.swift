@@ -15,6 +15,8 @@ var products: [Product] = [
     .library(name: "HostSession", targets: ["HostSession"]),
     .library(name: "HostAudio", targets: ["HostAudio"]),
     .library(name: "HostWire", targets: ["HostWire"]),
+    // DRM-free HostWire UDP peer for browser B-3 (macOS + Linux).
+    .executable(name: "lyte-control-peer", targets: ["lyte-control-peer"]),
 ]
 
 var targets: [Target] = [
@@ -77,6 +79,16 @@ var targets: [Target] = [
         name: "HostLayoutTests",
         dependencies: [
             .product(name: "LyteTestKit", package: "Common"),
+        ]
+    ),
+    // Browser B-3: real HostWire Noise/pair/caps over UDP without Direct Eye.
+    .executableTarget(
+        name: "lyte-control-peer",
+        dependencies: [
+            "HostSession",
+            "HostWire",
+            .product(name: "LyteCore", package: "Common"),
+            .product(name: "LyteWire", package: "Wire"),
         ]
     ),
 ]

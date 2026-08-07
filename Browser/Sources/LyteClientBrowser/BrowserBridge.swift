@@ -3,6 +3,9 @@ import LyteCore
 import LyteWire
 
 enum BrowserBridge {
+    // Single-threaded JS↔WASM pump owns this; JavaScriptKit calls are serial.
+    nonisolated(unsafe) private static var controlSession: BrowserControlSession?
+
     static func runFrozenContracts() -> [ContractResult] {
         [
             FrozenEnvelopeContract.verify(),
@@ -11,7 +14,7 @@ enum BrowserBridge {
     }
 
     /// Installs `globalThis.lyteBrowser` so page JavaScript can call into
-    /// Swift/WASM and re-run frozen contracts / carrier checks without a reload.
+    /// Swift/WASM and drive B-1/B-2 proofs plus the B-3 control session.
     static func install() {
         let runContracts = JSClosure { _ in
             resultsToJS(runFrozenContracts())
@@ -30,6 +33,29 @@ enum BrowserBridge {
                 recvHex: recv
             ))
         }
+        let openControl = JSClosure { arguments in
+            controlOpen(
+                hostStaticHex: arguments[0].string ?? "",
+                pin: arguments[1].string ?? ""
+            )
+        }
+        let beginControl = JSClosure { arguments in
+            let now = UInt64(arguments[0].number ?? 0)
+            return controlBegin(nowMicros: now)
+        }
+        let ingestControl = JSClosure { arguments in
+            let hex = arguments[0].string ?? ""
+            let now = UInt64(arguments[1].number ?? 0)
+            return controlIngest(datagramHex: hex, nowMicros: now)
+        }
+        let tickControl = JSClosure { arguments in
+            let now = UInt64(arguments[0].number ?? 0)
+            return controlTick(nowMicros: now)
+        }
+        let teardownControl = JSClosure { arguments in
+            let now = UInt64(arguments[0].number ?? 0)
+            return controlTeardown(nowMicros: now)
+        }
 
         JSObject.global["lyteBrowser"] = [
             "runFrozenContracts": runContracts.jsValue,
@@ -42,11 +68,16 @@ enum BrowserBridge {
                 FrozenEnvelopeContract.vectorName,
                 FrozenNoiseContract.vectorName,
             ].joined(separator: "; ").jsValue,
+            "controlOpen": openControl.jsValue,
+            "controlBegin": beginControl.jsValue,
+            "controlIngest": ingestControl.jsValue,
+            "controlTick": tickControl.jsValue,
+            "controlTeardown": teardownControl.jsValue,
         ].jsValue
     }
 
-    /// Paints B-1 frozen-contract results. The page JS appends B-2 WebTransport
-    /// carrier lines and owns `lyteB2Passed`.
+    /// Paints B-1 frozen-contract results. The page JS appends B-2/B-3 lines
+    /// and owns `lyteB2Passed` / `lyteB3Passed`.
     static func paintProofPage(results: [ContractResult]) {
         let document = JSObject.global.document
         let passed = results.allSatisfy(\.passed)
@@ -61,15 +92,124 @@ enum BrowserBridge {
         if let meta = document.getElementById("meta").object {
             meta.textContent = .string(
                 """
-                LyteClientBrowser B-2 — WASM contracts + WebTransport datagram carrier
+                LyteClientBrowser B-3 — WASM contracts + WT carrier + control session
                 Contracts: \(FrozenEnvelopeContract.vectorName); \(FrozenNoiseContract.vectorName)
                 Carrier: opaque WT datagrams via lyte-wt-sidecar (ciphertext only)
-                Bridge: globalThis.lyteBrowser.{runFrozenContracts,verifyCarrierEcho}
+                Control: Noise IK + PIN PAKE + capabilities via LyteClientSession
+                Bridge: globalThis.lyteBrowser.control{Open,Begin,Ingest,Tick,Teardown}
                 """
             )
         }
 
         JSObject.global.lyteB1Passed = .boolean(passed)
+    }
+
+    // MARK: Control session bridge
+
+    private static func controlOpen(
+        hostStaticHex: String, pin: String
+    ) -> JSValue {
+        do {
+            let session = try BrowserControlSession(
+                hostStaticPublicKeyHex: hostStaticHex, pin: pin
+            )
+            controlSession = session
+            return [
+                "ok": true.jsValue,
+                "clientStaticPublicKeyHex": session.clientStaticPublicKeyHex.jsValue,
+                "hostStaticPublicKeyHex": session.hostStaticPublicKeyHex.jsValue,
+            ].jsValue
+        } catch {
+            controlSession = nil
+            return [
+                "ok": false.jsValue,
+                "error": String(describing: error).jsValue,
+            ].jsValue
+        }
+    }
+
+    private static func controlBegin(nowMicros: UInt64) -> JSValue {
+        guard let session = controlSession else {
+            return stepToJS(
+                outbound: [], events: [], status: "failed",
+                detail: "controlOpen first", passed: false
+            )
+        }
+        do {
+            return stepToJS(try session.begin(nowMicros: nowMicros))
+        } catch {
+            return stepToJS(
+                outbound: [], events: ["FAIL  begin: \(error)"],
+                status: "failed", detail: String(describing: error),
+                passed: false
+            )
+        }
+    }
+
+    private static func controlIngest(
+        datagramHex: String, nowMicros: UInt64
+    ) -> JSValue {
+        guard let session = controlSession else {
+            return stepToJS(
+                outbound: [], events: [], status: "failed",
+                detail: "no session", passed: false
+            )
+        }
+        return stepToJS(session.ingest(
+            datagramHex: datagramHex, nowMicros: nowMicros
+        ))
+    }
+
+    private static func controlTick(nowMicros: UInt64) -> JSValue {
+        guard let session = controlSession else {
+            return stepToJS(
+                outbound: [], events: [], status: "failed",
+                detail: "no session", passed: false
+            )
+        }
+        return stepToJS(session.tick(nowMicros: nowMicros))
+    }
+
+    private static func controlTeardown(nowMicros: UInt64) -> JSValue {
+        guard let session = controlSession else {
+            return stepToJS(
+                outbound: [], events: [], status: "failed",
+                detail: "no session", passed: false
+            )
+        }
+        return stepToJS(session.teardown(nowMicros: nowMicros))
+    }
+
+    private static func stepToJS(_ step: BrowserControlSession.Step) -> JSValue {
+        stepToJS(
+            outbound: step.outboundHex,
+            events: step.events,
+            status: step.status.rawValue,
+            detail: step.detail,
+            passed: step.passed
+        )
+    }
+
+    private static func stepToJS(
+        outbound: [String],
+        events: [String],
+        status: String,
+        detail: String,
+        passed: Bool
+    ) -> JSValue {
+        // Newline-joined hex keeps the bridge free of JSArray kit churn;
+        // page JS splits on '\n' (empty string → zero datagrams).
+        [
+            "outboundHex": outbound.joined(separator: "\n").jsValue,
+            "outboundCount": Double(outbound.count).jsValue,
+            "events": events.joined(separator: "\n").jsValue,
+            "status": status.jsValue,
+            "detail": detail.jsValue,
+            "passed": passed.jsValue,
+            "ready": (status == "ready").jsValue,
+            "closed": (status == "closed").jsValue,
+            "failed": (status == "failed").jsValue,
+        ].jsValue
     }
 
     private static func resultsToJS(_ results: [ContractResult]) -> JSValue {

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Drive system Chrome against the B-2 proof page: frozen WASM contracts plus
-// opaque WebTransport datagram carriage through lyte-wt-sidecar.
-import { spawn } from "node:child_process";
+// Drive system Chrome against the B-3 proof page: frozen WASM contracts plus
+// a control-only session (Noise / pair / capabilities / teardown) through
+// lyte-wt-sidecar --udp-peer → lyte-control-peer.
+import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -13,9 +14,14 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const browserRoot = fileURLToPath(new URL("..", import.meta.url));
+const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const serveDir = join(browserRoot, ".serve");
 const metaOut = join(serveDir, "wt-sidecar.json");
+const peerMetaOut = join(serveDir, "control-peer.json");
 const timeoutMs = Number(process.env.LYTE_BROWSER_SMOKE_TIMEOUT_S || 180) * 1000;
+const peerPort =
+  Number(process.env.LYTE_CONTROL_PEER_PORT || 0) ||
+  41200 + Math.floor(Math.random() * 200);
 
 const chrome =
   process.env.LYTE_CHROME ||
@@ -38,8 +44,7 @@ async function ensureWs() {
   try {
     return require("ws");
   } catch {
-    const { execFileSync } = await import("node:child_process");
-    const prefix = await mkdtemp(join(tmpdir(), "lyte-b2-npm-"));
+    const prefix = await mkdtemp(join(tmpdir(), "lyte-b3-npm-"));
     execFileSync(
       "npm",
       ["install", "--silent", "--no-fund", "--no-audit", "--prefix", prefix, "ws@8"],
@@ -49,14 +54,79 @@ async function ensureWs() {
   }
 }
 
-async function startSidecar() {
+function buildControlPeer() {
+  const env = {
+    ...process.env,
+    DEVELOPER_DIR:
+      process.env.DEVELOPER_DIR ||
+      "/Applications/Xcode.app/Contents/Developer",
+  };
+  execFileSync(
+    "swift",
+    ["build", "-c", "release", "--product", "lyte-control-peer"],
+    { cwd: join(repoRoot, "Host"), stdio: "inherit", env }
+  );
+  const bin = join(repoRoot, "Host", ".build", "release", "lyte-control-peer");
+  if (!existsSync(bin)) {
+    throw new Error(`missing ${bin}`);
+  }
+  return bin;
+}
+
+async function startControlPeer(bin) {
   await mkdir(serveDir, { recursive: true });
+  if (existsSync(peerMetaOut)) {
+    await rm(peerMetaOut, { force: true });
+  }
+  if (peerPort === 41151) {
+    throw new Error("refusing standing host UDP 41151");
+  }
+  const logPath = join(serveDir, "control-peer.log");
+  const logFd = await import("node:fs").then((fs) =>
+    fs.openSync(logPath, "w")
+  );
+  const proc = spawn(
+    bin,
+    [
+      "--listen",
+      String(peerPort),
+      "--bind",
+      "127.0.0.1",
+      "--meta-out",
+      peerMetaOut,
+      "--seconds",
+      "180",
+    ],
+    { stdio: ["ignore", logFd, logFd] }
+  );
+  for (let i = 0; i < 100; i++) {
+    if (existsSync(peerMetaOut)) {
+      const meta = JSON.parse(await readFile(peerMetaOut, "utf8"));
+      return { proc, meta, logPath };
+    }
+    if (proc.exitCode != null) {
+      const log = await readFile(logPath, "utf8").catch(() => "");
+      throw new Error(`control-peer exited early (${proc.exitCode}): ${log}`);
+    }
+    await sleep(50);
+  }
+  proc.kill("SIGTERM");
+  throw new Error(`timed out waiting for ${peerMetaOut}`);
+}
+
+async function startSidecar(peer) {
   if (existsSync(metaOut)) {
     await rm(metaOut, { force: true });
   }
   const proc = spawn(
     process.execPath,
-    [join(browserRoot, "Scripts", "wt-sidecar.mjs"), "--meta-out", metaOut],
+    [
+      join(browserRoot, "Scripts", "wt-sidecar.mjs"),
+      "--meta-out",
+      metaOut,
+      "--udp-peer",
+      `${peer.bindHost || "127.0.0.1"}:${peer.listenPort}`,
+    ],
     { stdio: ["ignore", "pipe", "pipe"] }
   );
   let stderr = "";
@@ -132,21 +202,31 @@ async function cdp(wsUrl, WebSocket) {
 const requiredLogSnippets = [
   "envelope-v1/nominal-video-shard",
   "noise-v1/snow-ik-25519-chachapoly-sha256",
-  "wt-carrier/envelope-echo",
-  "wt-carrier/noise-msg1-echo",
-  "wt-carrier/budget-1152",
-  "wt-carrier/ceiling",
+  "control-session/noise-pair-caps",
+  "control-session/teardown",
 ];
 
+if (!existsSync(join(serveDir, "LyteClientBrowser.wasm")) ||
+    !existsSync(join(serveDir, "control-session.js"))) {
+  console.log("browser-smoke: building Browser package first…");
+  execFileSync(join(browserRoot, "Scripts", "build.sh"), {
+    stdio: "inherit",
+  });
+}
+
 const WebSocket = await ensureWs();
-const { proc: sidecar, meta: sidecarMeta } = await startSidecar();
+console.log("browser-smoke: building lyte-control-peer…");
+const peerBin = buildControlPeer();
+const { proc: peerProc, meta: peerMeta } = await startControlPeer(peerBin);
+const { proc: sidecar, meta: sidecarMeta } = await startSidecar(peerMeta);
 const { server, port } = await startStaticServer();
 const userData = await mkdtemp(join(tmpdir(), "lyte-browser-smoke-"));
 const debugPort = 9200 + Math.floor(Math.random() * 200);
 const pageUrl = `http://127.0.0.1:${port}/index.html`;
 
 console.log(
-  `browser-smoke: sidecar ${sidecarMeta.url} (budget ${sidecarMeta.lyteBudgetBytes} B)`
+  `browser-smoke: sidecar ${sidecarMeta.url} → UDP ${peerMeta.listenPort} ` +
+    `(pin ${peerMeta.pin})`
 );
 
 const chromeProc = spawn(
@@ -159,7 +239,6 @@ const chromeProc = spawn(
     `--user-data-dir=${userData}`,
     `--remote-debugging-port=${debugPort}`,
     "--remote-allow-origins=*",
-    // WebTransport + pinned cert hashes are the B-2 path.
     "--enable-features=WebTransport,WebTransportDraft07",
     "about:blank",
   ],
@@ -171,8 +250,8 @@ try {
   let version;
   for (let i = 0; i < 50; i++) {
     try {
-      version = await fetch(`http://127.0.0.1:${debugPort}/json/version`).then((r) =>
-        r.json()
+      version = await fetch(`http://127.0.0.1:${debugPort}/json/version`).then(
+        (r) => r.json()
       );
       break;
     } catch {
@@ -193,10 +272,10 @@ try {
   while (Date.now() < deadline) {
     const result = await send("Runtime.evaluate", {
       expression: `(() => {
-        if (typeof lyteB2Passed === 'boolean') {
+        if (typeof lyteB3Passed === 'boolean') {
           return JSON.stringify({
             ready: true,
-            passed: lyteB2Passed,
+            passed: lyteB3Passed,
             b1: typeof lyteB1Passed === 'boolean' ? lyteB1Passed : null,
             status: document.getElementById('status')?.textContent || '',
             log: document.getElementById('log')?.textContent || '',
@@ -222,37 +301,38 @@ try {
       }
       for (const snippet of requiredLogSnippets) {
         if (!payload.log.includes(snippet)) {
-          console.error(`browser-smoke: missing expected line containing ${snippet}`);
+          console.error(
+            `browser-smoke: missing expected line containing ${snippet}`
+          );
           console.error(payload.log);
           failed = true;
           break;
         }
       }
       if (failed) break;
-      if (!payload.log.includes("PASS  wt-carrier/ceiling")) {
-        console.error("browser-smoke: ceiling check did not PASS");
+      if (!payload.log.includes("PASS  control-session/noise-pair-caps")) {
+        console.error("browser-smoke: control-session check did not PASS");
         console.error(payload.log);
         failed = true;
         break;
       }
       console.log(
-        "browser-smoke: PASS — Chrome reported B-1 contracts + B-2 WT carrier green"
+        "browser-smoke: PASS — Chrome reported B-1 contracts + B-3 control session green"
       );
       console.log(payload.log);
       if (payload.meta) console.log(payload.meta);
-      // Persist measured ceiling next to the staged tree for docs/HANDOFF.
       try {
-        const measurePath = join(serveDir, "wt-carrier-measure.json");
         await writeFile(
-          measurePath,
+          join(serveDir, "control-session-measure.json"),
           JSON.stringify(
             {
               passed: true,
               adapter: sidecarMeta.adapter,
+              shape: sidecarMeta.shape,
               url: sidecarMeta.url,
-              lyteBudgetBytes: sidecarMeta.lyteBudgetBytes,
-              metaText: payload.meta,
+              controlPeerPort: peerMeta.listenPort,
               log: payload.log,
+              metaText: payload.meta,
             },
             null,
             2
@@ -267,7 +347,8 @@ try {
       (payload.status || "").includes("FAIL") &&
       payload.log &&
       !payload.log.includes("Instantiating") &&
-      !payload.log.includes("Dialing WebTransport")
+      !payload.log.includes("Dialing") &&
+      !payload.log.includes("Opening control")
     ) {
       console.error("browser-smoke: page reported FAIL while loading");
       console.error(payload.log);
@@ -277,7 +358,7 @@ try {
     await sleep(250);
   }
   if (!failed && Date.now() >= deadline) {
-    console.error("browser-smoke: timeout waiting for lyteB2Passed");
+    console.error("browser-smoke: timeout waiting for lyteB3Passed");
     failed = true;
   }
   ws.close();
@@ -287,6 +368,7 @@ try {
 } finally {
   chromeProc.kill("SIGTERM");
   sidecar.kill("SIGTERM");
+  peerProc.kill("SIGTERM");
   server.close();
   await rm(userData, { recursive: true, force: true });
 }

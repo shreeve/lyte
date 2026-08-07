@@ -9,13 +9,12 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ #234 — browser B-2 WebTransport datagram carrier (pull
-  if HEAD moved). Opaque Lyte envelopes / Noise ciphertext round-trip
-  WT↔UDP via `lyte-wt-sidecar`; measured ceiling ≥ 1152 B (`Browser/`,
-  `docs/BROWSER.md`).
-- **Next:** **B-3** — pair, Noise, capabilities, control-only session
-  against pup over the browser WT carrier. No media. Wayland clipboard
-  leaf remains **blocked on GNOME** —
+- **Tip:** `main` @ browser B-3 — control-only Chrome session (pull if HEAD
+  moved). WASM Noise IK + PIN PAKE + capabilities + teardown over
+  `lyte-wt-sidecar --udp-peer` against DRM-free `lyte-control-peer`
+  (`Browser/`, `Host/Sources/lyte-control-peer/`, `docs/BROWSER.md`).
+- **Next:** **B-4** — one timestamped frame through WebCodecs + WebGPU.
+  Wayland clipboard leaf remains **blocked on GNOME** —
   `docs/20260807-015743-wayland-clipboard-gnome-blocker.md`.
 
 ## Live rig
@@ -47,28 +46,33 @@
 displace 41151 — test hosts use a fresh 41xxx port and `--no-advertise`; no
 second Direct Eye while 41151 holds the DRM seat (parallel eyes black the
 glass); hand-run binaries under the home build tree with `setcap` (not
-`/tmp`).
+`/tmp`). B-3 uses `lyte-control-peer` (no DRM) on a fresh 41xxx port.
 
 ## Proof (final bars)
 
-### Browser B-2 — PASS (Chrome)
+### Browser B-3 — PASS (Chrome)
 
 ```sh
 Browser/Scripts/build.sh
-Browser/Scripts/smoke-chrome.sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  Browser/Scripts/smoke-chrome.sh
 # PASS  envelope-v1/nominal-video-shard
 # PASS  noise-v1/snow-ik-25519-chachapoly-sha256
-# PASS  wt-carrier/envelope-echo
-# PASS  wt-carrier/noise-msg1-echo
-# PASS  wt-carrier/budget-1152
-# PASS  wt-carrier/ceiling — measured 1214 B ≥ 1152 B
-#        (reported maxDatagramSize=1024; measure is truth)
+# SKIP  wt-carrier/* — sidecar --udp-peer mode (B-2 already landed)
+# PASS  control-session/noise-pair-caps
+# PASS  control-session/teardown
 ```
 
 Interactive: `Browser/Scripts/serve.sh` → http://127.0.0.1:8765/ in Chrome
-(starts `lyte-wt-sidecar`). Safari not a gate. Adapter decision: same-box
-sidecar for B-2; host leaf packaging deferred. No pup session / media yet
-(B-3…).
+(starts `lyte-control-peer` + `lyte-wt-sidecar --udp-peer`). Safari not a
+gate. No media / no Direct Eye. Optional pup qualification: run
+`lyte-control-peer` on pup 41xxx and point the Mac sidecar at it — never
+41151.
+
+### Browser B-2 — PASS (Chrome)
+
+Opaque Lyte envelopes / Noise ciphertext round-trip WT↔UDP via
+`lyte-wt-sidecar` echo mode; measured ceiling ≥ 1152 B. Landed #234/#235.
 
 ### Harsh-path — PASS (closed)
 
