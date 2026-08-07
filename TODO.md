@@ -2,18 +2,20 @@
 
 Deliberately deferred, actionable work only. Current slice and live
 verification state belong in `HANDOFF.md`; settled decisions belong in
-`AGENTS.md` or `docs/`; completed work belongs in Git history.
+`AGENTS.md` or `docs/`; completed work belongs in Git history — never leave
+“done” narrative here.
 
 ## Verification debt
 
-- **Harsh-path climb (closed as doctrine + #222):** quiet-static 0 upshifts
-  is correct (no delivery trains; do not pad). Sparse one-way ratchet fixed
-  in #222. Motion re-proof: 5 upshifts, final 3208 kbps, 1 IDR / 60 s
-  (`.build/benchmarks/harsh-path-climb-20260806T234411Z/`). Optional later:
-  longer settle / HS-30 cadence A/B under moderate netem.
+- **Owner cursor eyeball (owed from #212):** resize-corner tips tl/tr/br/bl
+  shape/tip match and `cursor derive` with real `plane(x,y)` / non-zero
+  hotspots. Optional; not a control-plane blocker.
 - **Conductor on Ethernet client path:** cue/reserve and static return are
-  PASS on Wi‑Fi (`HANDOFF.md` proof TWO). Repeat when a true Ethernet client
+  already PASS on Wi‑Fi (`HANDOFF.md`). Repeat when a true Ethernet client
   NIC is available.
+- **Longer harsh-path settle (optional):** longer motion settle and/or HS-30
+  probe-cadence A/B under moderate netem once loss-band noise is better
+  characterized. Climb bar itself is closed.
 - **VideoAssembler threshold invariant**
   (`Wire/Sources/LyteWire/Video/VideoAssembler.swift`):
   `sweepLossPresumption` assumes

@@ -192,6 +192,6 @@ belongs in `HANDOFF.md`.
 - `README.md` — public product identity, architecture, and direction.
 - `AGENTS.md` — stable repository and engineering law.
 - `HANDOFF.md` — short, current resume point and live operational state.
-- `TODO.md` — deferred actionable work only.
+- `TODO.md` — deferred unfinished work only; never completed narrative.
 - `LICENSE` — legal terms; never paraphrase or consolidate it.
 - `docs/README.md` — catalog for living decisions and frozen records.
