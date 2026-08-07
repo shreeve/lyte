@@ -9,8 +9,8 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ browser B-5 — sealed corpus Conductor video over WT
-  (pull if HEAD moved). Binary media ingest; DRM-free
+- **Tip:** `main` @ #240 — browser B-5 sealed corpus Conductor video over
+  WT (pull if HEAD moved). Binary media ingest; DRM-free
   `lyte-control-peer --emit-corpus`.
 - **Next:** **B-6** — AudioWorklet, input, clipboard, product UI.
   Wayland clipboard leaf remains **blocked on GNOME** —
