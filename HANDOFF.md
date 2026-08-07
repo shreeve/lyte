@@ -9,15 +9,13 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ PR #222 family — `d0e23de` (pull if HEAD moved).
+- **Tip:** `main` @ #225 — assembler/ARQ pins + TODO prune (pull if HEAD
+  moved). Harsh-path close remains the #222 family.
 - **Next** (thin; not another control-plane storm):
   1. Optional owner eyeball of resize-corner cursor tips (owed from #212) —
      tl/tr/br/bl shape/tip match and `cursor derive` with real `plane(x,y)` /
      non-zero hotspots. Interactive rig may need Connect first.
-  2. Optional later: Conductor numbers on a true Ethernet client path;
-     longer motion settle / HS-30 cadence A/B under moderate netem once
-     loss-band noise is better characterized.
-  3. Banked product work stays in `TODO.md` (AV1, browser, native shells).
+  2. Banked product work stays in `TODO.md` (browser, native shells, etc.).
 
 ## Live rig
 
