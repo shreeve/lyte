@@ -7,9 +7,6 @@ verification state belong in `HANDOFF.md`; settled decisions belong in
 
 ## Verification debt
 
-- **Owner cursor eyeball (owed from #212):** resize-corner tips tl/tr/br/bl
-  shape/tip match and `cursor derive` with real `plane(x,y)` / non-zero
-  hotspots. Optional; not a control-plane blocker.
 - **Residual under-lock diagnostics**
   (`Host/Sources/lyte-host/SessionWire.swift`): move the remaining rare
   path-challenge, peer-gone, bulk-send-failure, and connect-failed prints
