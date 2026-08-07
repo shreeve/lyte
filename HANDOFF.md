@@ -1,6 +1,6 @@
 # Lyte — session handoff
 
-*Current as of 2026-08-06. Live resume only; Git owns completed history.*
+*Current as of 2026-08-07. Live resume only; Git owns completed history.*
 
 ## Resume here
 
@@ -9,13 +9,15 @@
   #220 wire-view IRAP episode close (~114 → 2 IDRs), #222 sparse-evidence
   rate freeze (quiet-static no-climb is doctrine; motion climb proven).
   Living-doc cleanup landed in the #216 family.
-- **Tip:** `main` @ #229 — Wayland clipboard GNOME blocker pinned (pull
-  if HEAD moved). Harsh-path close remains the #222 family.
-- **Next** (thin; not another control-plane storm): banked product work in
-  `TODO.md` (browser, native shells, etc.). Wayland clipboard leaf is
-  **blocked on GNOME** — pin
-  `docs/20260807-015743-wayland-clipboard-gnome-blocker.md`; do not
-  spend another slice inventing a helper until an unlock lands.
+- **Tip:** `main` @ browser-client platform B-0 (pull if HEAD moved) —
+  peer platform slice opened; WebTransport carrier and `LyteClientBrowser`
+  naming frozen in
+  `docs/20260807-021425-browser-client-platform-slice.md`.
+- **Next:** **B-1** — load Lyte WASM in a real browser and exercise one
+  frozen wire contract through the JavaScript boundary. No empty package
+  scaffolding; no bridge binary until B-2. Wayland clipboard leaf remains
+  **blocked on GNOME** —
+  `docs/20260807-015743-wayland-clipboard-gnome-blocker.md`.
 
 ## Live rig
 
@@ -85,6 +87,8 @@ later (`TODO.md`).
 
 - Law and canonical commands: `AGENTS.md`
 - Deferred work: `TODO.md`
+- Browser platform B-0: `docs/20260807-021425-browser-client-platform-slice.md`
+- Browser living direction: `docs/BROWSER.md`
 - Harsh-path control plane: `docs/20260806-115922-harsh-path-control-plane.md`
 - Metronome design: `docs/20260803-050422-metronome-playout-design.md`
 - Direct Eye correction: `docs/20260805-084033-direct-eye-pixel-observation.md`

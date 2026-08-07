@@ -17,9 +17,9 @@ existed when they were authored. Recover its final form with
 
 ## Living
 
-- [BROWSER.md](BROWSER.md) — current browser-client direction: the proven
-  WASM boundary, WebTransport carrier, WebCodecs/WebGPU canvas path,
-  Conductor ownership, and the commissioning ladder.
+- [BROWSER.md](BROWSER.md) — living browser-client platform direction:
+  proven WASM boundary, frozen WebTransport carrier, WebCodecs/WebGPU
+  canvas path, Conductor ownership, and the B-0…B-6 ladder.
 - [DESIGN.md](DESIGN.md) — product and interaction decisions, with shipping
   behavior distinguished from directional intent.
 - [MACOS-SIGNING.md](MACOS-SIGNING.md) — signing, bundling, and
@@ -51,6 +51,10 @@ existed when they were authored. Recover its final form with
   the owner-approved SwiftPM filesystem grammar, cross-platform target
   hierarchy, dependency law, equivalence contract, and always-green move
   sequence; supersedes the v2 ruling's directory/target-shape section only.
+  Extended 2026-08-07 with `Browser` as a client platform identifier.
+- [20260807-021425 browser client platform slice](20260807-021425-browser-client-platform-slice.md) —
+  B-0: peer platform start, `LyteClientBrowser` naming, WebTransport carrier,
+  capability matrix, and B-1…B-6 commissioning ladder.
 - [20260801-105800 direct-eye plan](20260801-105800-direct-eye-plan.md) —
   the capture rearchitecture, phases E0–E5. **COMPLETE** (see banner):
   the portal demolition landed 2026-08-02, tag `self-hosted`.

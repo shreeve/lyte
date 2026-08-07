@@ -80,20 +80,26 @@ and
 The macOS client and Linux host are live end-to-end: HEVC 4:2:0/4:4:4,
 5 ms Opus audio, input, congestion control, targeted repair, clipboard, and
 file transfer. Since the `self-hosted` milestone, the host captures and
-encodes without portals, ffmpeg, or libav.
+encodes without portals, ffmpeg, or libav. The harsh-path control plane and
+Conductor Wi‑Fi bars are closed; that path has earned peer-platform work.
 
 The order ahead:
 
-1. Commission and harden the macOS-client / Linux-host path.
+1. **Browser client platform** — `LyteClientBrowser` over the same IO-free
+   cores, WebTransport datagrams at the browser edge, WebCodecs/WebGPU
+   presentation. Ladder and frozen carrier:
+   [`docs/BROWSER.md`](docs/BROWSER.md) and
+   [`docs/20260807-021425-browser-client-platform-slice.md`](docs/20260807-021425-browser-client-platform-slice.md).
+   The passing WASM wire suite is a portability proof, not yet a browser
+   client.
 2. Add the macOS host (ScreenCaptureKit + VideoToolbox leaves).
 3. Add Windows and Linux client/host shells around the same shared cores.
-4. Consider browser, mobile, and relay surfaces only after the native path
-   earns them.
+4. Mobile and relay surfaces after the peer platforms earn them.
 
-Browser direction lives in [`docs/BROWSER.md`](docs/BROWSER.md); the passing
-WASM wire suite is a portability proof, not a browser client. Remote v1
-means direct UDP on the LAN and Tailscale or an explicit port forward beyond
-it — Lyte does not ship a rendezvous or TURN fleet today.
+Remote v1 means direct UDP on the LAN and Tailscale or an explicit port
+forward beyond it — Lyte does not ship a rendezvous or TURN fleet today.
+The browser path adds an opaque WebTransport ↔ UDP adapter; it does not
+replace Lyte-UDP.
 
 ## Non-goals
 

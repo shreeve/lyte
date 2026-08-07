@@ -1,12 +1,16 @@
 # Browser client direction
 
-*Living direction, not a scheduled implementation plan or a protocol
-amendment. Native commissioning remains first.*
+*Living direction for the peer **browser client platform**. Commissioning
+start and frozen naming/carrier/ladder:
+[`20260807-021425-browser-client-platform-slice.md`](20260807-021425-browser-client-platform-slice.md).
+Not a protocol amendment.*
 
-Lyte should eventually make a host reachable from an ordinary browser without
-forking the product into a second client. The browser is another platform
-shell around the same independently owned wire contracts, Noise security,
-session policy, and Conductor that native clients use.
+Lyte should make a host reachable from an ordinary browser without forking
+the product into a second client. The browser is another platform shell —
+beside Mac, Windows, and Linux — around the same independently owned wire
+contracts, Noise security, session policy, and Conductor that native clients
+use. The platform adapter target is `LyteClientBrowser`; product composition
+lands later as `LyteBrowserApp` under `Applications/`.
 
 ## What is proven
 
@@ -66,18 +70,18 @@ Pointer Lock events onto the existing typed Lyte messages.
 
 ## Carrier and security
 
-Browsers cannot open Lyte's raw UDP socket. WebTransport datagrams are the
-leading browser-edge carrier because they preserve unreliable, unordered
-datagram behavior without imposing TCP head-of-line blocking. A carrier
-adapter moves opaque Lyte envelopes between WebTransport and the host's UDP
-session boundary.
+Browsers cannot open Lyte's raw UDP socket. **WebTransport datagrams over
+HTTP/3 are the frozen browser-edge carrier** (B-0 decision record): they
+preserve unreliable, unordered datagram behavior without TCP head-of-line
+blocking. A carrier adapter moves opaque Lyte envelopes between WebTransport
+and the host's UDP session boundary.
 
 The adapter is not a second protocol endpoint. Pairing and Noise remain
 end-to-end between the browser's WASM client and the host; an optional bridge
 must see only ciphertext. Whether that adapter is an optional Linux host leaf
-or a same-box sidecar remains an explicit implementation decision. Its real
-datagram ceiling must be measured and, if necessary, negotiated downward per
-session rather than assumed.
+or a same-box sidecar remains an explicit B-2 implementation decision. Its
+real datagram ceiling must be measured and, if necessary, negotiated downward
+per session rather than assumed.
 
 ## Codec posture
 
@@ -100,24 +104,25 @@ The browser client must not:
   cushion; or
 - disturb native UDP behavior when browser support is absent or disabled.
 
-## First commissioning ladder
+## Commissioning ladder
 
-When native commissioning earns this work, advance through independently
-testable slices:
+Native harsh-path commissioning has earned this work. Advance through
+independently testable slices (full matrix in the B-0 decision record):
 
-1. Load Lyte WASM in an actual browser and exercise a frozen contract through
-   the JavaScript boundary.
-2. Round-trip opaque datagrams through the selected WebTransport adapter and
-   measure the usable datagram ceiling.
-3. Pair, complete Noise, exchange capabilities, and hold a control-only
-   session against pup.
-4. Decode and present one timestamped frame through WebCodecs and WebGPU.
-5. Commission live Conductor-driven video before adding AudioWorklet playout,
-   input capture, clipboard, and product UI.
+| Stage | Proof |
+|---|---|
+| **B-0** | Naming, WebTransport carrier, capability matrix, ladder — **landed** |
+| **B-1** | Load Lyte WASM in an actual browser; exercise a frozen contract through the JavaScript boundary — **next** |
+| **B-2** | Opaque datagram round-trip through the WebTransport adapter; measure datagram ceiling |
+| **B-3** | Pair, Noise, capabilities, control-only session against pup |
+| **B-4** | One timestamped frame through WebCodecs and WebGPU |
+| **B-5** | Live Conductor-driven video |
+| **B-6** | AudioWorklet, input, clipboard, product UI — browser client “done” |
 
 Every slice keeps the native Mac/Linux gates and the WASM vector suite green.
-The first browser proof is therefore an integration of already-owned organs,
-not permission to start a parallel implementation.
+The first browser proof is an integration of already-owned organs, not
+permission to start a parallel implementation. Do not claim a streaming
+browser client before B-5.
 
 ## Historical detail
 
