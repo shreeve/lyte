@@ -101,6 +101,37 @@ struct WireReader {
 }
 
 extension WireExtension {
+    /// Appends a TLV block: count u8, then type ‖ length ‖ value per
+    /// extension. The caller has checked there are at most 255.
+    static func appendBlock(
+        _ extensions: [WireExtension], to out: inout [UInt8]
+    ) {
+        out.append(UInt8(extensions.count))
+        for ext in extensions {
+            out.append(ext.type)
+            out.append(UInt8(ext.value.count))
+            out.append(contentsOf: ext.value)
+        }
+    }
+
+    /// Reads a TLV block (count u8, then its entries).
+    static func readBlock(
+        from reader: inout WireReader
+    ) throws -> [WireExtension] {
+        let count = Int(try reader.u8())
+        var extensions: [WireExtension] = []
+        extensions.reserveCapacity(count)
+        for _ in 0..<count {
+            let type = try reader.u8()
+            let length = Int(try reader.u8())
+            // One length byte: the value always fits.
+            extensions.append(try WireExtension(
+                type: type, value: Array(try reader.bytes(length))
+            ))
+        }
+        return extensions
+    }
+
     /// The value of the one extension of `type`: nil when absent,
     /// `duplicate` thrown when it appears more than once (reserved TLVs
     /// are single-valued; a repeat is a peer bug to surface).

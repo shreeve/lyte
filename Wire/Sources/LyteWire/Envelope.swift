@@ -86,12 +86,7 @@ public struct Envelope: Hashable, Sendable {
         wireAppendLE(timestamp, to: &out)
         wireAppendLE(fec, to: &out)
         if !extensions.isEmpty {
-            out.append(UInt8(extensions.count))
-            for ext in extensions {
-                out.append(ext.type)
-                out.append(UInt8(ext.value.count))
-                out.append(contentsOf: ext.value)
-            }
+            WireExtension.appendBlock(extensions, to: &out)
         }
         out.append(contentsOf: payload)
         return out
@@ -144,18 +139,8 @@ public struct Envelope: Hashable, Sendable {
             datagram[(base + WireBudget.envelopeByteCount)...],
             truncated: WireError.truncatedExtensions
         )
-        var extensions: [WireExtension] = []
-        if flags & extensionsFlag != 0 {
-            let count = Int(try reader.u8())
-            extensions.reserveCapacity(count)
-            for _ in 0..<count {
-                let type = try reader.u8()
-                let length = Int(try reader.u8())
-                extensions.append(try WireExtension(
-                    type: type, value: Array(try reader.bytes(length))
-                ))
-            }
-        }
+        let extensions = flags & extensionsFlag != 0
+            ? try WireExtension.readBlock(from: &reader) : []
 
         let envelope = Envelope(
             channel: channel,
