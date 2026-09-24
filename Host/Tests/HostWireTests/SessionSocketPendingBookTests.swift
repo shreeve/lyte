@@ -30,7 +30,7 @@ final class SessionSocketPendingBookTests: XCTestCase {
         XCTAssertEqual(PacerClass.freshVideo.sessionChannel, .videoActive)
         XCTAssertEqual(PacerClass.videoTail.sessionChannel, .videoActive)
         XCTAssertEqual(PacerClass.refinement.sessionChannel, .videoActive)
-        XCTAssertEqual(PacerClass.telemetry.sessionChannel, .videoActive)
+        XCTAssertEqual(PacerClass.telemetry.sessionChannel, .feedback)
     }
 
     func testNoteAndRemoveTrackRatesFramesAndAggregatesExactly() {

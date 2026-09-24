@@ -165,6 +165,51 @@ final class ClipboardImageGateTests: XCTestCase {
         .wireDefault.declaringClipboardText().declaringClipboardImages()
     }
 
+    // MARK: One generator, one stream
+
+    /// The session's organs draw from one injected generator. Copies of a
+    /// value-typed one replay each other: the first path-challenge token
+    /// then equalled the first image-cargo id, which the client sees.
+    func testChallengeTokensAndImageIdsNeverReplayOneStream() throws {
+        let (host, clientValue) = try establish(
+            hostCapabilities: imagesTier, clientCapabilities: imagesTier)
+        var client = clientValue
+        var t: UInt64 = 1_000
+        try host.settle(&client, t: &t)
+
+        let roamTuple = FourTuple(
+            localAddress: "10.0.0.249", localPort: 41_183,
+            remoteAddress: "10.0.0.77", remotePort: 62_000)
+        var token: UInt64?
+        for case .path(.sendChallenge(_, let challenge)) in host.session.receive(
+            try client.peer.datagram(
+                body: [0x00], timestamp: t,
+                extensions: [host.session.connectionId.wireExtension]),
+            from: roamTuple, now: t * 1_000, hostMicroseconds: t) {
+            token = challenge.token
+        }
+
+        let sentBefore = host.sent.count
+        _ = host.session.noteHostClipboardImageChanged(
+            makePayload(count: 4_000, seed: 0x1D), now: t * 1_000,
+            hostMicroseconds: t)
+        host.session.pump(now: t * 1_000)
+        var transferId: UInt64?
+        for datagram in host.sent[sentBefore...]
+        where datagram.pacerClass == .bulk {
+            guard case .reliable(_, _, let events) = try client.peer.absorb(
+                datagram.bytes, nowMicros: t)
+            else { continue }
+            for case .message(_, let bytes) in events
+            where bytes.first == CtrlMessageType.clipboardImageCargo {
+                transferId = try ClipboardImageCargo.decode(bytes).transferId
+            }
+        }
+        XCTAssertNotNil(token)
+        XCTAssertNotNil(transferId)
+        XCTAssertNotEqual(token, transferId)
+    }
+
     // MARK: Leg 1 — the gate is 10 ∧ 12, never 11
 
     func testImageGateNegotiatesWithoutFileConsent() throws {

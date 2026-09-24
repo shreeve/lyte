@@ -7,7 +7,13 @@ import LyteWire
 /// remain queued until `Session` successfully admits their message to the
 /// reliable CTRL stream and commits that exact prefix. Peeking is deliberately
 /// nonmutating so a refused send cannot discard input-to-photon evidence.
+/// The book holds at most `capacity` tuples, oldest dropped first: while
+/// reliable CTRL stays backpressured (a peer that sends input but never
+/// acknowledges) the echo evidence, lossy by nature, cannot grow without
+/// bound.
 public struct SessionInputEchoBook: Equatable, Sendable {
+    public static let capacity = 16 * InputEcho.maxTupleCount
+
     public private(set) var lastInjectedSequence: UInt32?
     public var pendingTupleCount: Int { pendingTuples.count }
 
@@ -21,6 +27,9 @@ public struct SessionInputEchoBook: Equatable, Sendable {
         injectedAtMicroseconds: UInt64
     ) {
         lastInjectedSequence = seq
+        if pendingTuples.count == Self.capacity {
+            pendingTuples.removeFirst()
+        }
         pendingTuples.append(InputEchoTuple(
             seq: seq,
             receivedMicroseconds: receivedAtMicroseconds,

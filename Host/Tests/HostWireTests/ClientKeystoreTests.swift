@@ -55,6 +55,11 @@ final class ClientKeystoreTests: XCTestCase {
             String(repeating: "ab", count: 31) + "zz", // non-hex tail
             String(repeating: "AB", count: 32),        // uppercase
             hexA + "extrahexglued",                    // no separator
+            // Digits wearing combining marks: each is one Character
+            // inside "0"..."9" or "a"..."f", and no hex digit at all.
+            "0\u{301}" + String(repeating: "ab", count: 31) + "a",
+            String(repeating: "ab", count: 31) + "b\u{327}c",
+            hexA + "\u{301} note",                    // mark glued on
         ]
         for bad in cases {
             XCTAssertThrowsError(

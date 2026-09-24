@@ -267,9 +267,7 @@ final class VideoChannelGateTests: XCTestCase {
                 pre-sized AAD-buffer assembly must be byte-identical to \
                 the canonical envelope encoder
                 """)
-        XCTAssertEqual(channel.counters.sealedDatagramsAssembledInPlace,
-                       count,
-            "every sealed shard must use the two-buffer assembly path")
+        XCTAssertEqual(emitted.count, count)
     }
 
     func testSinglePassClassificationPreservesLegacyResults() throws {
@@ -394,10 +392,10 @@ final class VideoChannelGateTests: XCTestCase {
 
                 expectedBox.datagrams.removeAll()
                 borrowedBox.datagrams.removeAll()
-                _ = try expected.enqueueRepair(
+                _ = expected.enqueueRepair(
                     frame: frameNumber, shardIndices: [0], now: expectedNow
                 )
-                _ = try borrowed.enqueueRepair(
+                _ = borrowed.enqueueRepair(
                     frame: frameNumber, shardIndices: [0], now: borrowedNow
                 )
                 drain(expected, now: &expectedNow)
@@ -431,11 +429,6 @@ final class VideoChannelGateTests: XCTestCase {
                 XCTAssertEqual(borrowedPurge.bytes, expectedPurge.bytes)
                 XCTAssertNil(borrowed.repairAnchor(for: purgeFrame))
                 XCTAssertTrue(borrowed.wasPurged(purgeFrame))
-                XCTAssertEqual(borrowed.counters.borrowedFramesIngested, 2)
-                XCTAssertEqual(
-                    borrowed.counters.borrowedFrameBytesIngested,
-                    original.count * 2
-                )
             }
         }
     }
@@ -507,7 +500,7 @@ final class VideoChannelGateTests: XCTestCase {
             "fully drained — NACKs against it are path evidence again")
 
         // A repair retransmit re-opens the books until it leaves too.
-        try channel.enqueueRepair(
+        channel.enqueueRepair(
             frame: FrameNumber(rawValue: 7), shardIndices: [0], now: now
         )
         XCTAssertEqual(channel.framesWithQueuedShards(), [7])

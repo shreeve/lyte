@@ -246,6 +246,63 @@ final class PacerTests: XCTestCase {
         XCTAssertEqual(batch.tokens[2].frameID, 7)
     }
 
+    func testUrgentNeverSplitsAStartedFrame() {
+        // 10 Mbps → 1,250 B quantum: one 1,152 B token per batch.
+        let pacer = Pacer(rateBitsPerSecond: 10_000_000, now: 0)
+        for _ in 0..<3 {
+            pacer.enqueue(.freshVideo, bytes: 1152, frameID: 7, now: 0)
+        }
+        pacer.enqueue(.freshVideo, bytes: 1152, frameID: 9, now: 0)
+        XCTAssertEqual(pacer.nextBatch(now: 0)?.tokens.map(\.frameID), [7])
+        // An urgent keyframe arrives mid-frame: frame 7 finishes first,
+        // then the keyframe jumps frame 9, which has not started.
+        for _ in 0..<2 {
+            pacer.enqueue(.freshVideo, bytes: 1152, frameID: 8, urgent: true,
+                          now: 0)
+        }
+        var order: [UInt32?] = []
+        var now: UInt64 = 0
+        while !pacer.isEmpty {
+            now += 1_000_000
+            while let batch = pacer.nextBatch(now: now) {
+                order += batch.tokens.map(\.frameID)
+            }
+        }
+        XCTAssertEqual(order, [7, 7, 8, 8, 9])
+    }
+
+    func testDropExpiredTakesTheStalePrefixOfEachFifoAndKeepsTheRest() {
+        let pacer = Pacer(rateBitsPerSecond: 20_000_000, now: 0)
+        for (tag, at) in [(0, 0), (1, 10), (2, 20)] as [(UInt64, UInt64)] {
+            pacer.enqueue(.videoTail, bytes: 100, tag: tag, now: at)
+            pacer.enqueue(.videoTail, bytes: 200, urgent: true,
+                          tag: 10 + tag, now: at)
+        }
+        XCTAssertTrue(pacer.dropExpired(.videoTail, olderThan: 0).isEmpty)
+        XCTAssertEqual(
+            pacer.dropExpired(.videoTail, olderThan: 15).map(\.tag),
+            [10, 11, 0, 1])
+        XCTAssertEqual(pacer.queuedBytes(.videoTail), 300)
+        XCTAssertEqual(pacer.nextBatch(now: 20)?.tokens.map(\.tag), [12, 2])
+    }
+
+    func testLatencyClassesNeverWaitForAPartlyRefilledBucket() {
+        // 20 Mbps → 2,500 B quantum. Two video shards leave 196 B: less
+        // than an audio datagram, but not a deficit.
+        let pacer = Pacer(rateBitsPerSecond: 20_000_000, now: 0)
+        pacer.enqueue(.freshVideo, bytes: 1152, frameID: 1, now: 0)
+        pacer.enqueue(.freshVideo, bytes: 1152, frameID: 1, now: 0)
+        pacer.enqueue(.freshVideo, bytes: 1152, frameID: 1, now: 0)
+        XCTAssertEqual(pacer.nextBatch(now: 0)?.tokens.count, 2)
+        pacer.enqueue(.audio, bytes: 320, now: 0)
+        XCTAssertEqual(pacer.nextWake(now: 0), 0)
+        XCTAssertEqual(pacer.nextBatch(now: 0)?.tokens.map(\.priorityClass),
+                       [.audio])
+        // The audio charged the bucket: video waits out the deficit.
+        XCTAssertNil(pacer.nextBatch(now: 0))
+        XCTAssertGreaterThan(pacer.nextWake(now: 0)!, 0)
+    }
+
     func testFifoWithinClass() {
         let pacer = Pacer(rateBitsPerSecond: 50_000_000, now: 0)
         for tag in 0..<5 {
