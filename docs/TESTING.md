@@ -13,8 +13,10 @@ run by hand.
   defaults to `/Applications/Xcode.app`).
 - **pup:** Swift 6.1.2 at `/usr/local/bin/swift` and the `LD_LIBRARY_PATH`
   shim described in [OPERATIONS.md](OPERATIONS.md#build-on-pup).
-- **WebAssembly legs (optional):** swiftly, Swift 6.3.3 and the
-  `swift-6.3.3-RELEASE_wasm` SDK, plus `wasmtime` for the Wire leg. Pins
+- **WebAssembly and page legs:** swiftly, Swift 6.3.3 and the
+  `swift-6.3.3-RELEASE_wasm` SDK, `wasmtime` for the Wire leg, and Node
+  for the page tests. The macOS gate fails without them unless
+  `LYTE_GATE_ALLOW_SKIP=1`. Pins
   and install commands: `Scripts/lib/wasm-toolchain.sh`. On an Xcode 27
   Mac the pinned toolchain cannot compile against the macOS 27 SDK; the
   lib selects an older installed SDK, or honor `SDKROOT`.
@@ -107,12 +109,14 @@ In order:
    are allowed. `LYTE_ALLOW_VECTOR_CHANGES=1` overrides, deliberately.
 2. **Package tests** for Common, Wire, Host, Client, SystemTests and
    Browser, as above.
-3. **WebAssembly legs** when the pinned toolchain is installed:
-   `Browser/Scripts/build.sh`, then `Wire/Scripts/wasm-test.sh` when
-   `wasmtime` is present. Otherwise the gate prints `SKIPPED` and
-   continues.
-4. **Browser page tests:** `node --test Browser/Tests/Page/page.test.mjs`
-   (`SKIPPED` without Node).
+3. **WebAssembly legs:** `Browser/Scripts/build.sh`, then
+   `Wire/Scripts/wasm-test.sh`.
+4. **Browser page tests:** `node --test Browser/Tests/Page/page.test.mjs`.
+
+   A leg whose toolchain (pinned Swift Wasm, `wasmtime`, Node) is missing
+   fails the gate. `LYTE_GATE_ALLOW_SKIP=1` skips it instead; the gate
+   then ends with `macOS gate PASSED WITH SKIPPED LEGS:` and the list. The
+   last lines always name the toolchain legs that ran.
 5. **Script tests:** `test-shell-assertions.sh` (every tracked `*.sh`
    parses, and none states a check as a bare `[[ … ]]`, `(( … ))` or
    `! cmd`, which macOS bash 3.2 never fails under `set -e`; tests use

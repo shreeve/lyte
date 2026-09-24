@@ -114,31 +114,48 @@ run_package_tests \
 # session in process).
 run_package_tests "Browser" "$repo_root/Browser" "$repo_root/Browser/.build"
 
-# WebAssembly legs run when the pinned Swift Wasm toolchain is installed
-# (Scripts/lib/wasm-toolchain.sh has the install commands). A subshell keeps
-# the host-SDK choice for that toolchain away from the Xcode legs below.
-echo "==> WebAssembly legs"
-(
+# The WebAssembly and page legs need toolchains Xcode does not ship
+# (docs/TESTING.md#requirements). A missing one fails the gate: "LyteWire
+# stays WebAssembly-compilable" is law, not a best effort. Only
+# LYTE_GATE_ALLOW_SKIP=1 skips a leg, and the summary names it.
+ran_legs=""
+skipped_legs=""
+# The probes run in subshells so swiftly's PATH never reaches the Xcode legs.
+wasm_toolchain_installed() (
     . "$repo_root/Scripts/lib/wasm-toolchain.sh"
-    if ! lyte_wasm_available; then
-        echo "    SKIPPED: Swift ${LYTE_WASM_TOOLCHAIN_VERSION} + ${LYTE_WASM_SDK} not installed"
-        exit 0
-    fi
-    lyte_wasm_select_host_sdk "macOS gate"
-    Browser/Scripts/build.sh
-    if lyte_wasmtime >/dev/null; then
-        Wire/Scripts/wasm-test.sh
-    else
-        echo "    SKIPPED Wire/Scripts/wasm-test.sh: wasmtime not installed"
-    fi
+    lyte_wasm_available
 )
+wasm_suite_runnable() (
+    . "$repo_root/Scripts/lib/wasm-toolchain.sh"
+    lyte_wasm_available && lyte_wasmtime >/dev/null
+)
+node_installed() { command -v node >/dev/null; }
+# optional_leg NAME PROBE COMMAND...
+optional_leg() {
+    local name="$1" probe="$2"
+    shift 2
+    echo "==> $name"
+    if ! "$probe"; then
+        if [[ "${LYTE_GATE_ALLOW_SKIP:-0}" != 1 ]]; then
+            echo "macOS gate FAILED: $name cannot run ($probe failed);" \
+                "install the toolchain (docs/TESTING.md#requirements)" \
+                "or set LYTE_GATE_ALLOW_SKIP=1" >&2
+            exit 1
+        fi
+        echo "    SKIPPED: $probe failed and LYTE_GATE_ALLOW_SKIP=1"
+        skipped_legs="${skipped_legs:+$skipped_legs, }$name"
+        return 0
+    fi
+    "$@"
+    ran_legs="${ran_legs:+$ran_legs, }$name"
+}
 
-echo "==> browser page tests"
-if command -v node >/dev/null; then
+optional_leg "browser WebAssembly build" wasm_toolchain_installed \
+    Browser/Scripts/build.sh
+optional_leg "Wire suite on WebAssembly" wasm_suite_runnable \
+    Wire/Scripts/wasm-test.sh
+optional_leg "browser page tests" node_installed \
     node --test Browser/Tests/Page/page.test.mjs
-else
-    echo "    SKIPPED: node not installed"
-fi
 
 echo "==> shell script lint"
 Scripts/Tests/test-shell-assertions.sh
@@ -228,4 +245,9 @@ Scripts/Tests/test-hermetic-linkage.sh \
     "$ci_app/Contents/MacOS/Lyte" \
     "$ci_app/Contents/MacOS/lyte-helperd"
 
-echo "macOS gate PASSED"
+echo "toolchain legs run: ${ran_legs:-none}"
+if [[ -n "$skipped_legs" ]]; then
+    echo "macOS gate PASSED WITH SKIPPED LEGS: $skipped_legs"
+else
+    echo "macOS gate PASSED"
+fi
