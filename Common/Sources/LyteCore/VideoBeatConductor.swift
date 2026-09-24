@@ -101,9 +101,6 @@ public struct VideoBeatConductor: Sendable {
     private var gridPresentationMicroseconds: UInt64?
     /// The last fresh source capture, for the ordinal step.
     private var previousFreshSourceForStep: UInt64?
-    /// Grid phase zero — the first cued presentation (tests pin that
-    /// every later beat is anchor + k·period).
-    private var anchorMicroseconds: UInt64 = 0
     private var lastPresentationMicroseconds: UInt64?
     private var lastMeasuredCueMicroseconds: UInt64 = 0
     private var lastPathDelayMicroseconds: UInt64 = 0
@@ -141,24 +138,9 @@ public struct VideoBeatConductor: Sendable {
         self.cushionBeatsInForce = config.cushionBeats
     }
 
+    /// A new timebase: every book returns to its initial state.
     public mutating func reset() {
-        lastMeasuredCueMicroseconds = 0
-        lastPathDelayMicroseconds = 0
-        lastReserveMicroseconds = 0
-        gridPresentationMicroseconds = nil
-        previousFreshSourceForStep = nil
-        anchorMicroseconds = 0
-        lastPresentationMicroseconds = nil
-        lastSourceCaptureMicroseconds = nil
-        lastFrameWasRetained = false
-        cushionBeatsInForce = config.cushionBeats
-        resetSlipProof()
-        stretchProofStartMicroseconds = nil
-        lastFreshSourceMicroseconds = nil
-        lastFreshArrivalMicroseconds = nil
-        freshBurstDebtMicroseconds = 0
-        debtRecoveryArmed = true
-        stableFreshFramesAfterDebtRecovery = 0
+        self = VideoBeatConductor(config: config)
     }
 
     /// A decoder reset starts a new dependency episode, not a new
@@ -174,6 +156,9 @@ public struct VideoBeatConductor: Sendable {
         }
     }
 
+    /// Schedules one part. `isRandomAccess` is accepted for callers'
+    /// convenience and ignored: a random-access part plays to the same
+    /// grid as any fresh part (decoder episodes are the handoff's concern).
     public mutating func schedule(
         mappedCaptureMicroseconds: UInt64,
         arrivalMicroseconds: UInt64,
@@ -181,38 +166,65 @@ public struct VideoBeatConductor: Sendable {
         isRandomAccess: Bool = false
     ) -> Decision {
         _ = isRandomAccess
-        let period = config.beatPeriodMicroseconds
-        let sourceCapture = sourceCaptureMicroseconds
-            ?? mappedCaptureMicroseconds
+        let mapped = mappedCaptureMicroseconds
+        let arrival = arrivalMicroseconds
+        let sourceCapture = sourceCaptureMicroseconds ?? mapped
 
-        // chain (retained): the same authored pixels re-encoded ride
-        // a microsecond behind their predecessor — no beat to claim.
         if lastSourceCaptureMicroseconds == sourceCapture {
-            lastFrameWasRetained = true
-            let presentation = max(
-                arrivalMicroseconds,
-                (lastPresentationMicroseconds ?? 0) &+ 1)
-            lastPresentationMicroseconds = presentation
-            return Decision(
-                presentationMicroseconds: presentation,
-                cueMicroseconds: lastMeasuredCueMicroseconds,
-                pathDelayMicroseconds: lastPathDelayMicroseconds,
-                reserveMicroseconds: lastReserveMicroseconds,
-                latenessMicroseconds: 0,
-                shouldFlush: false)
+            return chain(arrival: arrival)
         }
         lastSourceCaptureMicroseconds = sourceCapture
 
-        // Debt (ported verbatim from the adaptive playout): only a
-        // genuinely compressed catch-up train accrues; normal cadence
-        // ends the episode and re-arms after proof.
+        let shouldFlush = accrueDebt(
+            sourceCapture: sourceCapture, arrival: arrival)
+        // The measured path delay is injected evidence; no OS clock enters
+        // this sans-IO policy.
+        let pathDelay = arrival >= mapped ? arrival - mapped : 0
+
+        var presentation = step(
+            sourceCapture: sourceCapture, mapped: mapped,
+            pathDelay: pathDelay)
+        cutToCeiling(&presentation, mapped: mapped, arrival: arrival)
+        recue(&presentation, mapped: mapped, arrival: arrival)
+        slip(&presentation, mapped: mapped, arrival: arrival,
+             pathDelay: pathDelay)
+        return finish(
+            presentation, mapped: mapped, arrival: arrival,
+            pathDelay: pathDelay, shouldFlush: shouldFlush)
+    }
+
+    // MARK: - The laws, in the order one fresh part meets them
+
+    /// chain (retained): the same authored pixels re-encoded ride a
+    /// microsecond behind their predecessor — no beat to claim, no
+    /// lateness minted, the books unchanged.
+    private mutating func chain(arrival: UInt64) -> Decision {
+        lastFrameWasRetained = true
+        let presentation = max(
+            arrival, (lastPresentationMicroseconds ?? 0) &+ 1)
+        lastPresentationMicroseconds = presentation
+        return Decision(
+            presentationMicroseconds: presentation,
+            cueMicroseconds: lastMeasuredCueMicroseconds,
+            pathDelayMicroseconds: lastPathDelayMicroseconds,
+            reserveMicroseconds: lastReserveMicroseconds,
+            latenessMicroseconds: 0,
+            shouldFlush: false)
+    }
+
+    /// Debt (recovery policy, not beat policy): only a genuinely
+    /// compressed catch-up train accrues; normal cadence ends the episode
+    /// and re-arms after proof. Returns whether to flush to await-IDR.
+    private mutating func accrueDebt(
+        sourceCapture: UInt64, arrival: UInt64
+    ) -> Bool {
         if !lastFrameWasRetained,
            let previousFreshSource = lastFreshSourceMicroseconds,
            let previousFreshArrival = lastFreshArrivalMicroseconds {
             let sourceStep = sourceCapture > previousFreshSource
                 ? sourceCapture - previousFreshSource : 0
-            let arrivalStep = arrivalMicroseconds > previousFreshArrival
-                ? arrivalMicroseconds - previousFreshArrival : 0
+            let arrivalStep = arrival > previousFreshArrival
+                ? arrival - previousFreshArrival : 0
             if sourceStep > 0, arrivalStep < sourceStep / 2 {
                 freshBurstDebtMicroseconds &+= sourceStep - arrivalStep
                 if !debtRecoveryArmed {
@@ -233,197 +245,197 @@ public struct VideoBeatConductor: Sendable {
             freshBurstDebtMicroseconds = 0
         }
         lastFreshSourceMicroseconds = sourceCapture
-        lastFreshArrivalMicroseconds = arrivalMicroseconds
+        lastFreshArrivalMicroseconds = arrival
         lastFrameWasRetained = false
-        let excessiveDebt = freshBurstDebtMicroseconds
-            > config.maximumFreshBurstDebtMicroseconds
-        let shouldFlush = excessiveDebt && debtRecoveryArmed
+        let shouldFlush = debtRecoveryArmed
+            && freshBurstDebtMicroseconds
+                > config.maximumFreshBurstDebtMicroseconds
         if shouldFlush { debtRecoveryArmed = false }
+        return shouldFlush
+    }
 
-        // The measured path delay is injected evidence; no OS clock enters
-        // this sans-IO policy.
-        let pathDelay = arrivalMicroseconds >= mappedCaptureMicroseconds
-            ? arrivalMicroseconds - mappedCaptureMicroseconds : 0
-
-        // beat: the grid advances ORDINALLY — each fresh part steps
-        // round(sourceStep / period) beats (never less than one) from
-        // its predecessor. Capture-stamp wobble under half a beat
-        // cannot collide two parts onto one beat or mint a phantom
-        // skip; a true source skip (a genuinely missed capture) steps
-        // the honest number of beats. The residual clock drift this
-        // leaves (fixed period vs the score's crystal) is exactly
-        // what the slip law absorbs.
-        var presentation: UInt64
+    /// beat: the grid advances ORDINALLY — each fresh part steps
+    /// round(sourceStep / period) beats (never less than one) from its
+    /// predecessor. Capture-stamp wobble under half a beat cannot collide
+    /// two parts onto one beat or mint a phantom skip; a true source skip
+    /// steps the honest number of beats. The first fresh part establishes
+    /// the cue: its own delay plus the cushion, under the ceiling.
+    private mutating func step(
+        sourceCapture: UInt64, mapped: UInt64, pathDelay: UInt64
+    ) -> UInt64 {
+        let period = config.beatPeriodMicroseconds
+        defer { previousFreshSourceForStep = sourceCapture }
         if let lastGrid = gridPresentationMicroseconds,
            let previousSource = previousFreshSourceForStep {
             let sourceStep = sourceCapture > previousSource
                 ? sourceCapture - previousSource : 0
             let beats = max(1, (sourceStep &+ period / 2) / period)
-            presentation = lastGrid &+ beats &* period
-        } else {
-            // cue establishment: the first fresh part sets the grid
-            // phase from its own delay plus the cushion, under the
-            // ceiling.
-            let cue = min(
-                pathDelay &+ UInt64(config.cushionBeats) &* period,
-                config.maximumCueMicroseconds)
-            presentation = mappedCaptureMicroseconds &+ cue
-            anchorMicroseconds = presentation
+            return lastGrid &+ beats &* period
         }
-        previousFreshSourceForStep = sourceCapture
+        let cue = min(
+            pathDelay &+ UInt64(config.cushionBeats) &* period,
+            config.maximumCueMicroseconds)
+        return mapped &+ cue
+    }
 
-        // The ceiling is live, with whole-beat hysteresis: a cut fires
-        // only when a FULL beat of excess exists (mapping residual at
-        // a pinned ceiling must not chatter the grid) and only when
-        // the frame stays comfortably on time afterwards (so a re-cue
-        // that the ceiling permitted is never fought back down — the
-        // two moves are mutually exclusive by construction).
-        if let lastGrid = gridPresentationMicroseconds {
-            while presentation > mappedCaptureMicroseconds,
-                  presentation - mappedCaptureMicroseconds
-                      >= config.maximumCueMicroseconds &+ period,
-                  presentation >= lastGrid &+ period,
-                  presentation >= arrivalMicroseconds &+ period {
-                presentation -= period
-                cushionBeatsInForce = max(
-                    cushionBeatsInForce - 1, config.cushionBeats)
-            }
+    /// The ceiling is live, with whole-beat hysteresis: a cut fires only
+    /// while a FULL beat of excess exists (mapping residual at a pinned
+    /// ceiling must not chatter the grid), never below the previous beat,
+    /// and only while the part stays a beat early (so a re-cue the ceiling
+    /// permitted is never fought back down). Each constraint reads
+    /// "presentation − k·period ≥ threshold + period", so the number of
+    /// whole-beat cuts is computed, not looped.
+    private mutating func cutToCeiling(
+        _ presentation: inout UInt64, mapped: UInt64, arrival: UInt64
+    ) {
+        guard let lastGrid = gridPresentationMicroseconds else { return }
+        let period = config.beatPeriodMicroseconds
+        let (ceiling, overflow) = mapped.addingReportingOverflow(
+            config.maximumCueMicroseconds)
+        let threshold = max(overflow ? .max : ceiling, lastGrid, arrival)
+        guard presentation > threshold else { return }
+        let cuts = (presentation - threshold) / period
+        guard cuts > 0 else { return }
+        presentation -= cuts * period
+        cushionBeatsInForce = max(
+            cushionBeatsInForce - Int(clamping: cuts), config.cushionBeats)
+    }
+
+    /// stretch + hole: re-cue forward by WHOLE beats so the newest part
+    /// lands on the next beat, once per episode, within the cue ceiling
+    /// and the cushion ceiling (the remainder stays honest lateness).
+    ///
+    /// hole — the part's beat is already ≥ 1 beat gone.
+    /// stretch — the mirror of slip: EVERY fresh part across an elapsed
+    ///   proof window arrived past its beat. The cue is short by a sub-beat
+    ///   amount (a fast client clock draining it, or a path grown by under
+    ///   a beat) and the late law alone would never show those parts.
+    ///
+    /// A single merely-late part keeps its past beat and is never shown;
+    /// that is the late law, and it does not move the grid.
+    private mutating func recue(
+        _ presentation: inout UInt64, mapped: UInt64, arrival: UInt64
+    ) {
+        let period = config.beatPeriodMicroseconds
+        guard arrival > presentation else {
+            stretchProofStartMicroseconds = nil
+            return
         }
-
-        // stretch: the mirror of slip. When EVERY fresh part across an
-        // elapsed proof window arrives past its beat, the cue is short by
-        // a sub-beat amount (clock skew draining it, or a path that grew
-        // by less than a beat) and the late law alone would never show
-        // those parts. The proof re-cues through the hole law below.
-        let isLate = arrivalMicroseconds > presentation
+        let lag = arrival - presentation
         var stretchProven = false
-        if isLate {
-            if let proofStart = stretchProofStartMicroseconds {
-                stretchProven = arrivalMicroseconds >= proofStart
-                    && arrivalMicroseconds - proofStart
-                        >= config.slipProofMicroseconds
-            } else {
-                stretchProofStartMicroseconds = arrivalMicroseconds
-            }
+        if let proofStart = stretchProofStartMicroseconds {
+            stretchProven = arrival >= proofStart
+                && arrival - proofStart >= config.slipProofMicroseconds
         } else {
-            stretchProofStartMicroseconds = nil
+            stretchProofStartMicroseconds = arrival
         }
+        guard stretchProven || lag >= period else { return }
 
-        // hole: the newest part's beat is already ≥1 beat gone (or a
-        // stretch is proven) — re-cue forward by WHOLE beats so it lands
-        // on the next beat. (A merely-late single part — under one beat
-        // — keeps its past beat and is never shown; that is the late
-        // law, and it must not move the grid.)
-        if isLate,
-           stretchProven || arrivalMicroseconds - presentation >= period {
-            stretchProofStartMicroseconds = nil
-            let lag = arrivalMicroseconds - presentation
-            var beatsBehind = (lag + period - 1) / period
-            // Under a fast client clock the mapped capture can overtake
-            // the grid; the cue in force is then zero, never a wrapped
-            // difference that would erase the ceiling room.
-            let cueNow = presentation > mappedCaptureMicroseconds
-                ? presentation - mappedCaptureMicroseconds : 0
-            let room = config.maximumCueMicroseconds > cueNow
-                ? (config.maximumCueMicroseconds - cueNow) / period : 0
-            let cushionRoom = UInt64(max(
-                config.maximumCushionBeats - cushionBeatsInForce, 0))
-            // The ceiling wins: re-cue as far as allowed, and the
-            // remainder stays honest lateness.
-            beatsBehind = min(beatsBehind, room, cushionRoom)
-            presentation &+= beatsBehind &* period
-            cushionBeatsInForce += Int(beatsBehind)
-            resetSlipProof()
-        }
+        stretchProofStartMicroseconds = nil
+        // Under a fast client clock the mapped capture can overtake the
+        // grid; the cue in force is then zero, never a wrapped difference
+        // that would erase the ceiling room.
+        let cueNow = presentation > mapped ? presentation - mapped : 0
+        let room = config.maximumCueMicroseconds > cueNow
+            ? (config.maximumCueMicroseconds - cueNow) / period : 0
+        let cushionRoom = UInt64(max(
+            config.maximumCushionBeats - cushionBeatsInForce, 0))
+        let beats = min((lag + period - 1) / period, room, cushionRoom)
+        presentation &+= beats &* period
+        cushionBeatsInForce += Int(beats)
+        resetSlipProof()
+    }
 
-        // slip: two elapsed seconds in which EVERY fresh sample proves a
-        // full beat of surplus hands one beat back. Time owns the duration,
-        // so 60 Hz motion, 30 Hz video, and one-Hz static keepalives all
-        // return cushion on the same schedule. The maximum path delay seen
-        // inside this exact proof window replaces the old sample-count p99;
-        // no stale outlier can survive merely because content is sparse.
-        let measuredCue = presentation > mappedCaptureMicroseconds
-            ? presentation - mappedCaptureMicroseconds : 0
+    /// slip: an elapsed proof window in which EVERY fresh sample proves a
+    /// full beat of surplus above the floor hands one beat back. Time owns
+    /// the duration, so 60 Hz motion, 30 Hz video, and one-Hz static
+    /// keepalives all return cushion on the same schedule. The maximum
+    /// path delay seen inside the window keeps the verdict at least as
+    /// strict as every constituent sample; no stale outlier survives
+    /// merely because content is sparse.
+    private mutating func slip(
+        _ presentation: inout UInt64, mapped: UInt64, arrival: UInt64,
+        pathDelay: UInt64
+    ) {
+        let period = config.beatPeriodMicroseconds
         let cushionFloor = UInt64(config.cushionBeats) &* period
-        if measuredCue >= pathDelay &+ cushionFloor &+ period {
-            if let proofStart = slipProofStartMicroseconds,
-               arrivalMicroseconds >= proofStart {
-                slipProofMaximumPathDelayMicroseconds = max(
-                    slipProofMaximumPathDelayMicroseconds, pathDelay)
-            } else {
-                startSlipProof(
-                    at: arrivalMicroseconds, pathDelay: pathDelay)
-            }
-            if let proofStart = slipProofStartMicroseconds,
-               arrivalMicroseconds >= proofStart,
-               arrivalMicroseconds - proofStart
-                   >= config.slipProofMicroseconds {
-                if measuredCue >= slipProofMaximumPathDelayMicroseconds
-                    &+ cushionFloor &+ period {
-                    presentation -= period
-                    cushionBeatsInForce = max(
-                        cushionBeatsInForce - 1, config.cushionBeats)
-                    resetSlipProof()
-
-                    // This same fresh sample may begin the next proof after
-                    // the one-beat return. Reusing the boundary sample makes
-                    // "one beat every two seconds" literal even at one Hz;
-                    // it never authorizes a second return in this call.
-                    let slippedCue = presentation > mappedCaptureMicroseconds
-                        ? presentation - mappedCaptureMicroseconds : 0
-                    if slippedCue >= pathDelay &+ cushionFloor &+ period {
-                        startSlipProof(
-                            at: arrivalMicroseconds, pathDelay: pathDelay)
-                    }
-                } else {
-                    // The window's earlier worst path sample still refutes
-                    // the return. Begin a new exact-duration proof with the
-                    // current qualifying sample; old evidence cannot linger
-                    // by sample count.
-                    startSlipProof(
-                        at: arrivalMicroseconds, pathDelay: pathDelay)
-                }
-            }
-        } else {
+        let measuredCue = presentation > mapped ? presentation - mapped : 0
+        guard measuredCue >= pathDelay &+ cushionFloor &+ period else {
             resetSlipProof()
+            return
         }
+        guard let proofStart = slipProofStartMicroseconds,
+              arrival >= proofStart else {
+            startSlipProof(at: arrival, pathDelay: pathDelay)
+            return
+        }
+        slipProofMaximumPathDelayMicroseconds = max(
+            slipProofMaximumPathDelayMicroseconds, pathDelay)
+        guard arrival - proofStart >= config.slipProofMicroseconds else {
+            return
+        }
+        guard measuredCue >= slipProofMaximumPathDelayMicroseconds
+            &+ cushionFloor &+ period else {
+            // The window's earlier worst path sample still refutes the
+            // return. Begin a new exact-duration proof with the current
+            // qualifying sample; old evidence cannot linger by count.
+            startSlipProof(at: arrival, pathDelay: pathDelay)
+            return
+        }
+        presentation -= period
+        cushionBeatsInForce = max(
+            cushionBeatsInForce - 1, config.cushionBeats)
+        resetSlipProof()
+        // This same fresh sample may begin the next proof after the
+        // one-beat return. Reusing the boundary sample makes "one beat
+        // every two seconds" literal even at one Hz; it never authorizes a
+        // second return in this call.
+        let slippedCue = presentation > mapped ? presentation - mapped : 0
+        if slippedCue >= pathDelay &+ cushionFloor &+ period {
+            startSlipProof(at: arrival, pathDelay: pathDelay)
+        }
+    }
 
-        // late: the beat stands even when it has passed — report the
-        // lateness, never reschedule.
-        let lateness = arrivalMicroseconds > presentation
-            ? arrivalMicroseconds - presentation : 0
+    /// late: the beat stands even when it has passed — report the
+    /// lateness, never reschedule. Strictly increasing PTS is the only
+    /// concession: a transitional collision (slip, ceiling cut) bumps one
+    /// microsecond and the grid itself never moves off-phase.
+    private mutating func finish(
+        _ scheduled: UInt64, mapped: UInt64, arrival: UInt64,
+        pathDelay: UInt64, shouldFlush: Bool
+    ) -> Decision {
+        let period = config.beatPeriodMicroseconds
+        let lateness = arrival > scheduled ? arrival - scheduled : 0
         gridPresentationMicroseconds = max(
-            presentation, gridPresentationMicroseconds ?? 0)
+            scheduled, gridPresentationMicroseconds ?? 0)
 
-        // Strictly increasing PTS is the only concession: a
-        // transitional collision (slip, ceiling cut) bumps one
-        // microsecond and the grid itself never moves off-phase.
+        var presentation = scheduled
         if let previous = lastPresentationMicroseconds,
            presentation <= previous {
             presentation = previous &+ 1
         }
         lastPresentationMicroseconds = presentation
-        let finalCue = presentation > mappedCaptureMicroseconds
-            ? presentation - mappedCaptureMicroseconds : 0
-        let reserve = finalCue > pathDelay ? finalCue - pathDelay : 0
+        let cue = presentation > mapped ? presentation - mapped : 0
+        let reserve = cue > pathDelay ? cue - pathDelay : 0
+
         // The posture never claims more beats than the measured reserve
-        // of an on-time part. A hole lands its part on the NEXT beat, so
-        // a drift-driven hole leaves under one beat of real reserve;
-        // without this, drift holes would spend the ceiling as if they
-        // had banked cushion and the hole law would fall silent.
+        // of an on-time part. A hole lands its part on the NEXT beat, so a
+        // drift-driven hole leaves under one beat of real reserve; without
+        // this, drift holes would spend the ceiling as if they had banked
+        // cushion and the hole law would fall silent.
         if lateness == 0 {
-            let reserveBeats = Int((reserve &+ period &- 1) / period)
+            let reserveBeats = Int(clamping: (reserve &+ period &- 1) / period)
             cushionBeatsInForce = min(
                 cushionBeatsInForce,
                 max(config.cushionBeats, reserveBeats))
         }
-        lastMeasuredCueMicroseconds = finalCue
+        lastMeasuredCueMicroseconds = cue
         lastPathDelayMicroseconds = pathDelay
         lastReserveMicroseconds = reserve
 
         return Decision(
             presentationMicroseconds: presentation,
-            cueMicroseconds: finalCue,
+            cueMicroseconds: cue,
             pathDelayMicroseconds: pathDelay,
             reserveMicroseconds: reserve,
             latenessMicroseconds: lateness,
@@ -442,5 +454,4 @@ public struct VideoBeatConductor: Sendable {
         slipProofStartMicroseconds = arrivalMicroseconds
         slipProofMaximumPathDelayMicroseconds = pathDelay
     }
-
 }
