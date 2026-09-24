@@ -22,6 +22,7 @@ specification.
 | [DESIGN.md](DESIGN.md) | Product and interaction decisions, shipping vs directional |
 | [COMPARISON.md](COMPARISON.md) | Lyte against other remote-display products |
 | [MACOS-SIGNING.md](MACOS-SIGNING.md) | Signing, hardened runtime, the helper's security surface |
+| [RELEASING.md](RELEASING.md) | Homebrew install, Sparkle updates, cutting and verifying a release |
 | [THIRD-PARTY.md](THIRD-PARTY.md) | Dependency licenses and notices |
 | [GLOSSARY.md](GLOSSARY.md) | Slice ids, Conductor terms, Direct Eye, postures |
 | [Wire/Vectors/README.md](../Wire/Vectors/README.md) | Normative byte layouts and the vector inventory |

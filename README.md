@@ -86,7 +86,9 @@ Scripts/launch-app.sh
 
 Client binaries that talk to a host must be signed with a stable identity
 so the Keychain grant for the pairing key survives rebuilds; see
-[docs/MACOS-SIGNING.md](docs/MACOS-SIGNING.md). To install a host, follow
+[docs/MACOS-SIGNING.md](docs/MACOS-SIGNING.md). Released apps install with
+Homebrew and update themselves with Sparkle; cutting a release is in
+[docs/RELEASING.md](docs/RELEASING.md). To install a host, follow
 [Host/INSTALL.md](Host/INSTALL.md), then
 [pair a client](docs/OPERATIONS.md#pairing-a-client).
 

@@ -1,0 +1,175 @@
+# Releasing and updates
+
+`Lyte.app` is installed with Homebrew and then updates itself through
+[Sparkle](https://sparkle-project.org). GitHub Releases on `shreeve/lyte`
+is the only host: no server and no CI step. The Linux host is not part of
+this; it deploys with `Host/Scripts/deploy-host.sh`
+([OPERATIONS.md](OPERATIONS.md)).
+
+## How it fits together
+
+| Piece | Where | Does |
+| --- | --- | --- |
+| Install | `shreeve/homebrew-tap` → `Casks/lyte.rb` | `brew install --cask shreeve/tap/lyte` downloads the release's `Lyte-X.Y.Z.zip` into `/Applications`. `auto_updates true` leaves updating to Sparkle; `livecheck` reads the same feed. |
+| Updater | `Client/Sources/Lyte/AppUpdater.swift` | Starts Sparkle only in a bundle whose Info.plist has `SUFeedURL` and `SUPublicEDKey` and is not a diagnostic build; adds **Lyte → Check for Updates…**. Sparkle owns the rest: the first-run "check automatically?" prompt, the update window, install on quit, relaunch. |
+| Bundle | `Scripts/make-app.sh` | Embeds `Sparkle.framework` (without its XPC services: Lyte is not sandboxed) and signs it with the app's identity. Only `LYTE_RELEASE_VERSION=X.Y.Z` adds the feed URL and the public key, so a development build never checks. |
+| Signing | `Scripts/sign-dev.sh` | Development: the Apple Development identity. Releases: `LYTE_SIGNING_IDENTITY="Developer ID Application: …"`, with a secure timestamp and a team-anchored requirement. |
+| Release | `Scripts/release.sh` | Builds with the Developer ID, notarizes and staples, zips, writes and signs `appcast.xml`, and publishes the tagged GitHub release. |
+| Feed | `appcast.xml` on the latest release | `SUFeedURL` is `https://github.com/shreeve/lyte/releases/latest/download/appcast.xml`. |
+| Key | `Client/Updates/sparkle-public-key.txt` | The public half of the update-signing key; the private half is in the login keychain under the account `lyte`. |
+
+Two signatures, two jobs:
+
+- **Gatekeeper** checks a downloaded app on first launch. Homebrew marks its
+  downloads as quarantined, so the app must be signed with a Developer ID
+  and notarized; the release staples Apple's ticket into the bundle.
+- **Sparkle** accepts an update when its code signature is valid and its
+  EdDSA signature matches the installed copy's `SUPublicEDKey`.
+
+A Developer ID signature is also what keeps the app's identity stable from
+one release to the next: its designated requirement names the team, not a
+per-build hash, so the Local Network permission and the helper's approval
+carry across updates, and `HelperRegistration` re-registers the embedded
+helper when an update replaced it.
+
+Versions: `CFBundleShortVersionString` is the release's `X.Y.Z`;
+`CFBundleVersion` stays `make-app.sh`'s increasing build number, which is
+what Sparkle orders updates by.
+
+## One-time setup
+
+**The Developer ID and notarization** are shared with Transfer: the
+Developer ID Application certificate of team `SD6N7Z8P9P` in the login
+keychain, and the notarytool keychain profile `notary-tool`. Setup and
+recovery are in Transfer's `docs/RELEASING.md`. Check:
+
+```bash
+security find-identity -v -p codesigning   # lists "Developer ID Application: Steve Shreeve (SD6N7Z8P9P)"
+xcrun notarytool history --keychain-profile notary-tool
+```
+
+**The update key** is Lyte's own, under the keychain account `lyte` (Transfer
+uses the default account; never mix them). Sparkle's tools are in
+`.build/artifacts/sparkle/Sparkle/bin` after any `Scripts/make-app.sh`.
+
+```bash
+bin=.build/artifacts/sparkle/Sparkle/bin
+$bin/generate_keys --account lyte                                   # creates the key, prints the public half
+$bin/generate_keys --account lyte -p > Client/Updates/sparkle-public-key.txt
+$bin/generate_keys --account lyte -x /tmp/lyte-sparkle-key           # export a backup
+```
+
+Commit `Client/Updates/sparkle-public-key.txt`. Put the exported private key
+in a password manager and delete the file. Losing it strands every installed
+copy on its version, since a copy trusts only the key it shipped with;
+anyone who has it can sign an update every copy accepts.
+
+## Cutting a release
+
+Add the version's section to `CHANGELOG.md` under `## X.Y.Z — <date>` and
+commit it: it becomes the GitHub release notes and the text in Sparkle's
+update window. Then, from a clean `main` in step with `origin/main`:
+
+```bash
+Scripts/release.sh X.Y.Z --notes     # the notes it would publish
+Scripts/release.sh X.Y.Z --dry-run   # build, notarize and sign under .build/release-X.Y.Z; publish nothing
+Scripts/release.sh X.Y.Z
+```
+
+The script refuses a real release unless the Developer ID, the notary
+profile and the `lyte` key (matching the committed public key) are present,
+`gh` is signed in, no tag or release `vX.Y.Z` exists, the version is higher
+than the latest `v*` tag, and `CHANGELOG.md` has its section. It then:
+
+1. builds `.build/release-X.Y.Z/Lyte.app` with `make-app.sh`
+   (`LYTE_RELEASE_VERSION`, the Developer ID);
+2. notarizes (a few minutes), staples, and checks that Gatekeeper sees a
+   notarized Developer ID app;
+3. zips it as `feed/Lyte-X.Y.Z.zip` beside its notes;
+4. writes `appcast.xml` with Sparkle's `generate_appcast --account lyte`,
+   and stops if the feed came out unsigned or without notes;
+5. creates the release as a draft with the zip and the feed, pushes an
+   annotated tag `vX.Y.Z`, and publishes the draft as the latest release.
+
+A failure before the tag is pushed deletes the draft and the local tag. If
+only publishing the pushed draft fails, the script prints the `gh release
+edit … --draft=false --latest --verify-tag` that finishes it.
+
+Then update the cask (`version` and `sha256` of `Lyte-X.Y.Z.zip`) in
+`shreeve/homebrew-tap` and land it as a pull request. Installed copies need
+nothing: they find the release on their next daily check.
+
+## The cask
+
+`Casks/lyte.rb` in `shreeve/homebrew-tap` (no Homebrew cask is named
+`lyte`). Each release changes only `version` and `sha256`; the app is
+arm64-only and needs macOS 15. Test it the way that repository's other casks
+are tested (`brew style`, `brew audit --cask --online`, `brew livecheck`,
+an install into a scratch `--appdir`) before its pull request lands.
+
+```ruby
+cask "lyte" do
+  version "0.6.0"
+  sha256 "…"
+
+  url "https://github.com/shreeve/lyte/releases/download/v#{version}/Lyte-#{version}.zip"
+  name "Lyte"
+  desc "Low-latency remote desktop for a Linux host"
+  homepage "https://github.com/shreeve/lyte"
+
+  livecheck do
+    url "https://github.com/shreeve/lyte/releases/latest/download/appcast.xml"
+    strategy :sparkle
+  end
+
+  auto_updates true
+  depends_on arch: :arm64
+  depends_on macos: :sequoia
+
+  app "Lyte.app"
+
+  zap trash: [
+    "~/Library/Application Support/Lyte",
+    "~/Library/Caches/dev.shreeve.lyte",
+    "~/Library/HTTPStorages/dev.shreeve.lyte",
+    "~/Library/Preferences/dev.shreeve.lyte.plist",
+  ]
+end
+```
+
+## Verifying a release
+
+```bash
+gh release view vX.Y.Z --repo shreeve/lyte
+curl -fsSL https://github.com/shreeve/lyte/releases/latest/download/appcast.xml | grep -E 'sparkle:(shortVersionString|version)'
+```
+
+## Testing an update before shipping it
+
+1. Dry-run an older version and a newer one: `Scripts/release.sh <old>
+   --dry-run`, then `<new>`. Each is signed and notarized.
+2. Copy the older `.build/release-<old>/Lyte.app` to a scratch folder and
+   quit every other Lyte (one physical copy per bundle identity; see
+   [MACOS-SIGNING.md](MACOS-SIGNING.md)).
+3. Serve the newer `feed/` folder, whose `appcast.xml` names the release
+   URL, after regenerating it for a local URL:
+   `.build/artifacts/sparkle/Sparkle/bin/generate_appcast --account lyte
+   --download-url-prefix http://127.0.0.1:8765/ .build/release-<new>/feed`,
+   then `python3 -m http.server 8765 --bind 127.0.0.1` in that folder.
+4. `defaults write dev.shreeve.lyte SUFeedURL http://127.0.0.1:8765/appcast.xml`,
+   open the older copy, and choose **Check for Updates…**.
+5. Clean up: `defaults delete dev.shreeve.lyte SUFeedURL`, stop the server,
+   delete the scratch copy.
+
+## If something goes wrong
+
+- **The feed is unsigned.** The keychain's `lyte` key does not match
+  `Client/Updates/sparkle-public-key.txt`; compare
+  `generate_keys --account lyte -p` with the file.
+- **Notarization is refused.** The script prints Apple's log, which names
+  each file: usually a piece without the hardened runtime or a secure
+  timestamp, or a new executable `make-app.sh` does not sign.
+- **Installed copies do not see the release.** It must be the repository's
+  latest release, and its `CFBundleVersion` higher than theirs.
+- **A bad release is out.** Publish a fixed, higher version; Sparkle only
+  moves forward.

@@ -49,7 +49,10 @@ Six SwiftPM packages, Swift tools version 6.0, Swift 6 language mode.
   app target links `LyteCorpus` for its diagnostic benchmark. Only a
   diagnostic bundle (`Scripts/make-app.sh --diagnostics`, which
   writes Info.plist `LyteDiagnosticEntryPoints`) obeys the benchmark and
-  witness environment; every other bundle ignores it.
+  witness environment; every other bundle ignores it. Sparkle (in-app
+  updates, [docs/RELEASING.md](docs/RELEASING.md)) is the app target's
+  only third-party dependency, embedded by `Scripts/make-app.sh`; nothing
+  below the app imports it, and only a release bundle starts it.
 - **`Browser/` — `LyteClientBrowser`:** `LyteClientBrowserCore` is the
   browser's sans-IO core over `LyteWire`, `LyteCore`, `LyteClientCore`
   and `LyteClientSession`; `LyteClientBrowser` owns the JS↔WASM boundary

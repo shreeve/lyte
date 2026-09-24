@@ -108,6 +108,27 @@ BUNDLE_VERSION="$(
   Scripts/next-bundle-version.sh \
     "$PREVIOUS_BUNDLE_VERSION" "$SOURCE_VERSION_FLOOR"
 )"
+SHORT_VERSION=0.5.0
+# A release (Scripts/release.sh) sets LYTE_RELEASE_VERSION=X.Y.Z: it becomes
+# the version people see, and only a release bundle carries the update feed
+# and key, so a development build never checks for updates. Sparkle orders
+# updates by CFBundleVersion, the increasing build number above.
+SPARKLE_KEYS=""
+if [ -n "${LYTE_RELEASE_VERSION:-}" ]; then
+  if ! printf '%s\n' "$LYTE_RELEASE_VERSION" \
+      | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    echo "error: LYTE_RELEASE_VERSION must be X.Y.Z: $LYTE_RELEASE_VERSION" >&2
+    exit 1
+  fi
+  SHORT_VERSION="$LYTE_RELEASE_VERSION"
+  if [ ! -s Client/Updates/sparkle-public-key.txt ]; then
+    echo "error: a release needs Client/Updates/sparkle-public-key.txt (docs/RELEASING.md)" >&2
+    exit 1
+  fi
+  SPARKLE_PUBLIC_KEY="$(tr -d '[:space:]' < Client/Updates/sparkle-public-key.txt)"
+  SPARKLE_KEYS="<key>SUFeedURL</key> <string>https://github.com/shreeve/lyte/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key> <string>${SPARKLE_PUBLIC_KEY}</string>"
+fi
 
 swift build \
   --package-path Client \
@@ -132,8 +153,23 @@ trap 'exit 143' TERM
 
 mkdir -p "$STAGED_APP/Contents/MacOS" \
   "$STAGED_APP/Contents/Resources" \
+  "$STAGED_APP/Contents/Frameworks" \
   "$STAGED_APP/Contents/Library/LaunchDaemons"
 cp ".build/$CONFIG/Lyte" "$STAGED_APP/Contents/MacOS/Lyte"
+# Sparkle is a binary framework the app links from @rpath. Lyte is not
+# sandboxed, so Sparkle's XPC services never run (SUEnableInstallerLauncherService
+# is off); they are dropped rather than signed and shipped.
+SPARKLE_FRAMEWORK="$(find .build/artifacts/sparkle -type d -name Sparkle.framework \
+  -path '*macos-arm64*' 2>/dev/null | head -1)"
+if [ -z "$SPARKLE_FRAMEWORK" ]; then
+  echo "error: no Sparkle.framework under .build/artifacts/sparkle" >&2
+  exit 1
+fi
+ditto "$SPARKLE_FRAMEWORK" "$STAGED_APP/Contents/Frameworks/Sparkle.framework"
+rm -rf "$STAGED_APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" \
+  "$STAGED_APP/Contents/Frameworks/Sparkle.framework/XPCServices"
+install_name_tool -add_rpath "@executable_path/../Frameworks" \
+  "$STAGED_APP/Contents/MacOS/Lyte"
 cp ".build/$CONFIG/lyte-helperd" "$STAGED_APP/Contents/MacOS/lyte-helperd"
 cp Client/AppIcon/AppIcon.icns "$STAGED_APP/Contents/Resources/AppIcon.icns"
 cp Common/Sources/COpus/Upstream/opus-1.6.1/COPYING \
@@ -148,6 +184,8 @@ cp .build/checkouts/swift-asn1/LICENSE.txt \
   "$STAGED_APP/Contents/Resources/SwiftASN1-LICENSE.txt"
 cp .build/checkouts/swift-asn1/NOTICE.txt \
   "$STAGED_APP/Contents/Resources/SwiftASN1-NOTICE.txt"
+cp .build/checkouts/Sparkle/LICENSE \
+  "$STAGED_APP/Contents/Resources/Sparkle-LICENSE.txt"
 
 Scripts/normalize-macos-rpaths.sh \
   "$STAGED_APP/Contents/MacOS/Lyte" \
@@ -195,7 +233,7 @@ cat > "$STAGED_APP/Contents/Info.plist" <<EOF
     <key>CFBundleDisplayName</key>      <string>Lyte</string>
     <key>CFBundleIconFile</key>         <string>AppIcon</string>
     <key>CFBundlePackageType</key>      <string>APPL</string>
-    <key>CFBundleShortVersionString</key> <string>0.5.0</string>
+    <key>CFBundleShortVersionString</key> <string>${SHORT_VERSION}</string>
     <key>CFBundleVersion</key>          <string>${BUNDLE_VERSION}</string>
     <key>LyteSourceRevision</key>       <string>${SOURCE_REVISION}</string>
     <key>LSMinimumSystemVersion</key>   <string>15.0</string>
@@ -206,6 +244,8 @@ cat > "$STAGED_APP/Contents/Info.plist" <<EOF
     <string>Lyte discovers and streams from Lyte hosts on your local network.</string>
     <key>NSBonjourServices</key>
     <array><string>_lyte._udp</string></array>
+    <key>SUEnableInstallerLauncherService</key> <false/>
+    ${SPARKLE_KEYS}
     ${DIAGNOSTIC_ENTRY_POINTS}
 </dict>
 </plist>
@@ -214,6 +254,11 @@ EOF
 # Validate and sign the staged bundle; sign-dev.sh fails closed without the
 # stable identity, leaving the published app untouched.
 plutil -lint "$STAGED_APP/Contents/Info.plist" >/dev/null
+SPARKLE_EMBEDDED="$STAGED_APP/Contents/Frameworks/Sparkle.framework"
+"$ROOT/Scripts/sign-dev.sh" --nested \
+  "$SPARKLE_EMBEDDED/Versions/B/Autoupdate" \
+  "$SPARKLE_EMBEDDED/Versions/B/Updater.app" \
+  "$SPARKLE_EMBEDDED"
 "$ROOT/Scripts/sign-dev.sh" \
   "$STAGED_APP/Contents/MacOS/lyte-helperd" "$STAGED_APP"
 

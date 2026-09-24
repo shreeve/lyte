@@ -52,7 +52,7 @@ case "$1" in
                 --sign) hash="$2"; shift 2 ;;
                 --identifier) identifier="$2"; shift 2 ;;
                 --options) options="$2"; shift 2 ;;
-                --timestamp=none|--force) shift ;;
+                --timestamp=none|--timestamp|--force) shift ;;
                 *) target="$1"; shift ;;
             esac
         done
@@ -66,6 +66,9 @@ case "$1" in
             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
                 identity="Apple Development: Ada One (TEAMONE123)"
                 team="TEAMFFFF03" ;;
+            CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC)
+                identity="Developer ID Application: Ada One (TEAMCCCC04)"
+                team="TEAMCCCC04" ;;
             DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD)
                 identity="Lyte Dev"
                 team="" ;;
@@ -112,6 +115,8 @@ case "$1" in
                     correct)
                         if [ "$identity" = "Lyte Dev" ]; then
                             echo "designated => identifier \"$identifier\" and certificate root = H\"$lower_hash\"" >&2
+                        elif [ "${identity#Developer ID Application: }" != "$identity" ]; then
+                            echo "designated => identifier \"$identifier\" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = $team" >&2
                         else
                             echo "designated => identifier \"$identifier\" and anchor apple generic and certificate leaf[subject.CN] = \"$identity\"" >&2
                         fi
@@ -122,6 +127,8 @@ case "$1" in
                         echo "designated => identifier \"$identifier\" and anchor apple generic and certificate leaf[subject.CN] = \"Wrong\"" >&2 ;;
                     missing_dr_identifier)
                         echo "designated => anchor apple generic and certificate leaf[subject.CN] = \"$identity\"" >&2 ;;
+                    devid_wrong_team)
+                        echo "designated => identifier \"$identifier\" and anchor apple generic and certificate leaf[subject.OU] = WRONGTEAM1" >&2 ;;
                     self_wrong_root)
                         echo "designated => identifier \"$identifier\" and certificate root = H\"0000000000000000000000000000000000000000\"" >&2 ;;
                     *)
@@ -158,6 +165,13 @@ write_duplicate_name_apples() {
     printf '%s\n' \
         '  1) AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA "Apple Development: Ada One (TEAMONE123)"' \
         '  2) FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF "Apple Development: Ada One (TEAMONE123)"' \
+        > "$valid_identities"
+}
+
+write_apple_and_developer_id() {
+    printf '%s\n' \
+        '  1) AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA "Apple Development: Ada One (TEAMONE123)"' \
+        '  2) CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC "Developer ID Application: Ada One (TEAMCCCC04)"' \
         > "$valid_identities"
 }
 
@@ -258,10 +272,35 @@ expect_unsigned
 expect_security 'find-identity -v -p codesigning'
 
 reset_logs
-LYTE_SIGNING_IDENTITY='Developer ID Application: Ada One (TEAMONE123)' \
-    expect_failure "not Apple Development or Lyte Dev" run_signer \
-        "$fixture_root/Lyte.app"
+LYTE_SIGNING_IDENTITY='Mac Developer: Ada One (TEAMONE123)' \
+    expect_failure "not Apple Development, Developer ID Application or Lyte Dev" \
+        run_signer "$fixture_root/Lyte.app"
 expect_unsigned
+
+# Releases name the Developer ID; it signs with a secure timestamp and a
+# team-anchored requirement. Without a request, development still picks
+# the Apple Development identity.
+write_apple_and_developer_id
+reset_logs
+LYTE_SIGNING_IDENTITY='Developer ID Application: Ada One (TEAMCCCC04)' \
+    run_signer "$fixture_root/Lyte.app"
+grep -Fq -- "--force --sign CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC --identifier dev.shreeve.lyte --options runtime --timestamp $fixture_root/Lyte.app" "$codesign_log" \
+    || fail "Developer ID signing lacked the identifier, runtime or secure timestamp"
+reset_logs
+LYTE_SIGNING_IDENTITY='Developer ID Application: Ada One (TEAMCCCC04)' \
+FAKE_REQUIREMENT_MODE=devid_wrong_team \
+    expect_failure "unstable code requirement" run_signer "$fixture_root/Lyte.app"
+reset_logs
+run_signer "$fixture_root/Lyte.app"
+grep -Fq -- '--sign AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' "$codesign_log" \
+    || fail "an unrequested build did not pick Apple Development"
+
+# --nested keeps each embedded piece's own identifier.
+reset_logs
+run_signer --nested "$fixture_root/lyte-cli"
+grep -Fq -- "--force --sign AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --options runtime --timestamp=none $fixture_root/lyte-cli" "$codesign_log" \
+    || fail "nested signing did not keep the piece's identifier"
+refute grep -Fq -- "--identifier" "$codesign_log"
 
 reset_logs
 LYTE_SIGNING_IDENTITY='Lyte Dev' run_signer "$fixture_root/Lyte.app"
