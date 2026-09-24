@@ -9,6 +9,7 @@ installer="$repo_root/Host/Scripts/install-host.sh"
 uninstaller="$repo_root/Host/Scripts/uninstall-host.sh"
 stage_script="$repo_root/Host/Scripts/stage-host-image.sh"
 verify_script="$repo_root/Host/Scripts/verify-host-image.sh"
+source "$repo_root/Scripts/lib/assert.sh"
 
 file_mode() {
     if stat -f '%Lp' "$1" >/dev/null 2>&1; then
@@ -26,11 +27,6 @@ sha256_file() {
     fi
 }
 
-fail() {
-    echo "host installer FAILED: $*" >&2
-    return 1
-}
-
 identity_fingerprint() {
     local home="$1" file
     for file in \
@@ -41,6 +37,13 @@ identity_fingerprint() {
     do
         printf '%s %s %s\n' "$file" "$(sha256_file "$file")" "$(file_mode "$file")"
     done
+}
+
+# expect_mode PATH MODE: PATH has octal permission bits MODE.
+expect_mode() {
+    local mode
+    mode="$(file_mode "$1")"
+    [[ "$mode" == "$2" ]] || fail "$1 has mode $mode; want $2"
 }
 
 # Runs the rendered unit's ExecStart script the way systemd would (with
@@ -71,6 +74,10 @@ exercise_image() {
     printf 'legacy paired\n' > "$home/.config/lyte-host/paired_clients"
     chmod 0600 "$home/.config/lyte/"* "$home/.config/lyte-host/"*
     identity_before="$(identity_fingerprint "$home")"
+    expect_identity() {
+        [[ "$identity_before" == "$(identity_fingerprint "$home")" ]] \
+            || fail "host identity changed"
+    }
     systemctl_log="$scratch/systemctl.log"
     fake_systemctl="$scratch/systemctl"
     printf '%s\n' \
@@ -103,10 +110,10 @@ exercise_image() {
     esac
     cmp "$image/doc/MANIFEST.sha256" \
         "$home/.local/share/lyte/doc/MANIFEST.sha256"
-    [[ "$(file_mode "$conf")" == 644 ]]
-    [[ "$(file_mode "$home/.config/lyte")" == 700 ]]
-    [[ "$(file_mode "$home/.local/state/lyte")" == 700 ]]
-    [[ "$(file_mode "$unit")" == 644 ]]
+    expect_mode "$conf" 644
+    expect_mode "$home/.config/lyte" 700
+    expect_mode "$home/.local/state/lyte" 700
+    expect_mode "$unit" 644
     grep -Fq -- '--advertise-interface en-test0' "$conf"
 
     # The unit names the real home: systemd's %h would be /root here.
@@ -136,14 +143,15 @@ exercise_image() {
         HOME="$home" run_exec_start "$unit"
         grep -Fxq 'fake-host --wire-listen 41151 --pair' "$log_dir/host.log" \
             || fail "ExecStart did not run the host with LYTE_HOST_ARGS"
-        [[ "$(file_mode "$log_dir/host.log")" == 600 ]] || fail "log is not 0600"
+        expect_mode "$log_dir/host.log" 600
         # Over 64 MiB rotates to host.log.1 at the next start.
         dd if=/dev/null of="$log_dir/host.log" bs=1024 seek=65537 2>/dev/null
         HOME="$home" run_exec_start "$unit"
         [[ "$(wc -c < "$log_dir/host.log.1" | tr -d ' ')" == $((65537 * 1024)) ]] \
             || fail "oversized log was not rotated"
         grep -Fxq 'fake-host --wire-listen 41151 --pair' "$log_dir/host.log"
-        [[ "$(wc -l < "$log_dir/host.log" | tr -d ' ')" == 1 ]]
+        [[ "$(wc -l < "$log_dir/host.log" | tr -d ' ')" == 1 ]] \
+            || fail "the rotated log was not restarted"
         HOME="$home" run_exec_start "$unit"
         [[ "$(wc -l < "$log_dir/host.log" | tr -d ' ')" == 2 ]] \
             || fail "a small log was rotated"
@@ -154,23 +162,24 @@ exercise_image() {
     chmod 0600 "$conf"
     config_before="$(sha256_file "$conf")"
     LYTE_ADVERTISE_INTERFACE=en-other0 run_installer "$installer" "$image" >/dev/null
-    [[ "$config_before" == "$(sha256_file "$conf")" ]]
-    [[ "$(file_mode "$conf")" == 600 ]]
-    [[ "$identity_before" == "$(identity_fingerprint "$home")" ]]
+    [[ "$config_before" == "$(sha256_file "$conf")" ]] \
+        || fail "a reinstall rewrote the operator's conf"
+    expect_mode "$conf" 600
+    expect_identity
 
     run_installer "$uninstaller" >/dev/null
-    [[ ! -e "$home/.local/bin/lyte-host" && ! -L "$home/.local/bin/lyte-host" ]]
-    [[ ! -e "$home/.local/share/lyte" ]]
-    [[ ! -e "$unit" ]]
-    [[ -f "$conf" ]]
+    [[ ! -e "$home/.local/bin/lyte-host" && ! -L "$home/.local/bin/lyte-host" ]] \
+        || fail "uninstall left the deployed link"
+    [[ ! -e "$home/.local/share/lyte" ]] || fail "uninstall left the versions"
+    [[ ! -e "$unit" ]] || fail "uninstall left the unit"
+    [[ -f "$conf" ]] || fail "uninstall without --purge removed the conf"
     grep -Fxq 'disable --now lyte-host.service' "$systemctl_log"
-    [[ "$identity_before" == "$(identity_fingerprint "$home")" ]]
+    expect_identity
 
     LYTE_ADVERTISE_INTERFACE=en-test0 run_installer "$installer" "$image" >/dev/null
     run_installer "$uninstaller" --purge >/dev/null
-    [[ ! -e "$conf" ]]
-    [[ "$identity_before" == "$(identity_fingerprint "$home")" ]] \
-        || fail "--purge touched identity"
+    [[ ! -e "$conf" ]] || fail "--purge kept the conf"
+    expect_identity
 
     # XDG base directories carry through to the unit.
     env HOME="$home" \
@@ -182,14 +191,15 @@ exercise_image() {
         LYTE_SYSTEMCTL_LOG="$systemctl_log" \
         LYTE_ADVERTISE_INTERFACE=en-test0 \
         "$installer" "$image" >/dev/null
-    [[ -f "$scratch/xdg-config/lyte/host.conf" ]]
+    [[ -f "$scratch/xdg-config/lyte/host.conf" ]] \
+        || fail "XDG_CONFIG_HOME ignored by the installer"
     grep -Fxq "EnvironmentFile=$scratch/xdg-config/lyte/host.conf" "$unit"
     grep -Fxq "Environment=XDG_STATE_HOME=$scratch/xdg-state" "$unit"
     case "$(readlink "$home/.local/bin/lyte-host")" in
         "$scratch/xdg-data/lyte/versions/"*/lyte-host) ;;
         *) fail "XDG_DATA_HOME ignored by the deploy" ;;
     esac
-    [[ "$identity_before" == "$(identity_fingerprint "$home")" ]]
+    expect_identity
 
     find "$scratch" -xdev -depth -delete
     echo "host installer tests PASSED"
@@ -231,7 +241,8 @@ self_test() {
     then
         fail "corrupt image was installed"
     fi
-    [[ -z "$(find "$empty_root" -mindepth 2 -print -quit)" ]]
+    [[ -z "$(find "$empty_root" -mindepth 2 -print -quit)" ]] \
+        || fail "a corrupt image installed files"
 
     # A home the unit cannot carry verbatim is refused before any change.
     unsafe_home="$scratch/home with space"
@@ -241,7 +252,8 @@ self_test() {
     then
         fail "unit-unsafe home was accepted"
     fi
-    [[ -z "$(find "$unsafe_home" "$empty_root" -mindepth 2 -print -quit)" ]]
+    [[ -z "$(find "$unsafe_home" "$empty_root" -mindepth 2 -print -quit)" ]] \
+        || fail "a unit-unsafe home installed files"
 
     "$repo_root/Scripts/Tests/test-host-deploy.sh"
     cleanup_self_test

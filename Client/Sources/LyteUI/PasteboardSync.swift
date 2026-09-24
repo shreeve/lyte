@@ -114,10 +114,18 @@ public final class PasteboardSync: @unchecked Sendable {
         lastChangeCount = pasteboard.changeCount
     }
 
-    private func poll() {
+    /// One watcher tick; the timer drives it, tests call it directly.
+    func poll() {
         lock.lock()
         let count = pasteboard.changeCount
         guard count != lastChangeCount else {
+            lock.unlock()
+            return
+        }
+        // A writer clears (bumping the count) and then writes under that
+        // same count: an empty pasteboard is a write in progress, so look
+        // again next poll instead of consuming the count.
+        guard let types = pasteboard.types, !types.isEmpty else {
             lock.unlock()
             return
         }
@@ -125,9 +133,7 @@ public final class PasteboardSync: @unchecked Sendable {
         // Password managers and secure-input apps mark what must not
         // travel (nspasteboard.org); consent to share the clipboard is
         // never consent to ship those.
-        if pasteboard.types?.contains(where: Self.privateMarkers.contains)
-            == true
-        {
+        if types.contains(where: Self.privateMarkers.contains) {
             lock.unlock()
             return
         }
@@ -141,6 +147,15 @@ public final class PasteboardSync: @unchecked Sendable {
             } else if let tiff = pasteboard.data(forType: .tiff) {
                 image = .tiff(tiff)
             }
+        }
+        // The count cannot see a rewrite under the same count; a marker
+        // that appeared while reading still vetoes what was read.
+        if pasteboard.changeCount != count
+            || pasteboard.types?.contains(where: Self.privateMarkers.contains)
+                == true
+        {
+            lock.unlock()
+            return
         }
         lock.unlock()
         if let text, !text.isEmpty {

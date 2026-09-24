@@ -13,23 +13,29 @@ run by hand.
   defaults to `/Applications/Xcode.app`).
 - **pup:** Swift 6.1.2 at `/usr/local/bin/swift` and the `LD_LIBRARY_PATH`
   shim described in [OPERATIONS.md](OPERATIONS.md#build-on-pup).
-- **WebAssembly legs (optional):** swiftly, Swift 6.3.3 and the
-  `swift-6.3.3-RELEASE_wasm` SDK, plus `wasmtime` for the Wire leg. Pins
+- **WebAssembly and page legs:** swiftly, Swift 6.3.3 and the
+  `swift-6.3.3-RELEASE_wasm` SDK, `wasmtime` for the Wire leg, and Node
+  for the page tests. The macOS gate fails without them unless
+  `LYTE_GATE_ALLOW_SKIP=1`. Pins
   and install commands: `Scripts/lib/wasm-toolchain.sh`. On an Xcode 27
   Mac the pinned toolchain cannot compile against the macOS 27 SDK; the
   lib selects an older installed SDK, or honor `SDKROOT`.
 - **Browser smoke (optional):** Google Chrome, a GPU, Node 24 or 26,
   `openssl`, and network access for the first `npm install` of
   `rwebtransport` under `Browser/Harness/`.
-- **Python analyzer tests:** Python 3.9–3.12 (the gate builds a venv in
-  `.build/ci-python` from `Scripts/requirements.txt`, NumPy 2.0.2); set
-  `LYTE_CI_PYTHON` to pick the interpreter.
+- **Python analyzer tests:** Python 3.9 or later (the gate builds a venv
+  in `.build/ci-python` from `Scripts/requirements.txt`: NumPy 2, the
+  newest release the interpreter supports); set `LYTE_CI_PYTHON` to pick
+  the interpreter.
 
 ## Package tests
 
 Run from the repository root. These are the gate's exact commands; the gate
 also runs `swift package resolve` first and `swift package clean` when the
-build graph changed.
+package's build graph changed: its manifest, pins or file list, or the
+manifest, pins or `Sources` file list of a package it depends on by path
+(`Scripts/lib/build-graph.sh`). Adding a file cleans only that package and
+its dependents.
 
 ```sh
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -108,21 +114,27 @@ fakes:
 In order:
 
 1. **Frozen vectors.** Fails when any file under `Wire/Vectors/` other than
-   `README.md` is modified, deleted, renamed or retyped relative to
+   a `README.md` (at any depth) is modified, deleted, renamed or retyped
+   relative to
    `LYTE_GATE_BASE_SHA` (default: merge base with `origin/main`). New files
    are allowed. `LYTE_ALLOW_VECTOR_CHANGES=1` overrides, deliberately.
 2. **Package tests** for Common, Wire, Host, Client, SystemTests and
    Browser, as above.
-3. **WebAssembly legs** when the pinned toolchain is installed:
-   `Browser/Scripts/build.sh`, then `Wire/Scripts/wasm-test.sh` when
-   `wasmtime` is present. Otherwise the gate prints `SKIPPED` and
-   continues.
-4. **Browser page tests:** `node --test Browser/Tests/Page/page.test.mjs`
-   (`SKIPPED` without Node).
-5. **Script tests:** `test-benchmark-safety.sh`,
+3. **WebAssembly legs:** `Browser/Scripts/build.sh`, then
+   `Wire/Scripts/wasm-test.sh`.
+4. **Browser page tests:** `node --test Browser/Tests/Page/page.test.mjs`.
+
+   A leg whose toolchain (pinned Swift Wasm, `wasmtime`, Node) is missing
+   fails the gate. `LYTE_GATE_ALLOW_SKIP=1` skips it instead; the gate
+   then ends with `macOS gate PASSED WITH SKIPPED LEGS:` and the list. The
+   last lines always name the toolchain legs that ran.
+5. **Script tests:** `test-shell-assertions.sh` (every tracked `*.sh`
+   parses, and none states a check as a bare `[[ … ]]`, `(( … ))` or
+   `! cmd`, which macOS bash 3.2 never fails under `set -e`; tests use
+   `Scripts/lib/assert.sh`), `test-build-graph.sh`, `test-benchmark-safety.sh`,
    `test-host-release-posture.sh`, `test-host-package-image.sh --self-test`,
    `test-host-installer.sh --self-test` (which also runs
-   `test-host-deploy.sh`), `test-sign-dev.sh`.
+   `test-host-deploy.sh`), `test-sign-dev.sh`, `test-setup-dev-signing.sh`.
 6. **Python:** `test_analyze_app_benchmark.py`, `test_motion_preflight.py`,
    then `test-app-identity.sh`.
 7. **Signed debug CLI:** `Scripts/build-cli.sh debug`,
@@ -135,17 +147,24 @@ In order:
 
 ## The pup gate — `Scripts/CI/test-all-pup.sh`
 
-Mirrors Browser, Client, Common, Wire, Host and SystemTests to
-`~/src/lyte-gates/deterministic/` on `LYTE_PUP_HOST` (default `pup`) under a
-lock, then:
+One ssh session to `LYTE_PUP_HOST` (default `pup`) takes an `flock` on
+`~/src/lyte-gates/.deterministic.flock`, which then names the holder; a
+second gate fails at once with that name. The lock lives as long as the
+session's processes, and the session terminates its whole process tree
+when the local gate goes away, so an interrupted gate leaves nothing
+running. Under the lock the local side mirrors Client, Common, Wire, Host
+and `Scripts/` to `~/src/lyte-gates/deterministic/`, then the session:
 
 1. Fingerprints protected state: `~/.config/lyte/{noise_static.key,
-   paired_clients,host.conf}` (required), the pre-XDG copies when present,
+   paired_clients,host.conf}` (required: a missing one fails the gate
+   before any build), the pre-XDG copies when present,
    `/etc/systemd/system/lyte-host.service`, and the `~/.local/bin/lyte-host`
    link target.
 2. Package tests (`swift test -Xswiftc -warnings-as-errors`) for Common,
-   Wire and Host; `swift build --target LyteClientCore` and
-   `--target LyteClientSession` for Client.
+   Wire, Client and Host. Off macOS the Client manifest keeps only
+   `LyteClientCore`, `LyteClientSession` and their suites.
+   Each package is cleaned by the same per-package build-graph rule as on
+   the Mac.
 3. Plain and release Host builds with `-warnings-as-errors`.
 4. Stages a host image and runs `test-host-package-image.sh`,
    `test-host-installer.sh IMAGE` and `--self-test`, and
@@ -156,8 +175,8 @@ lock, then:
 7. Verifies the protected-state fingerprint is unchanged.
 
 The pup gate never deploys or restarts the standing service. Browser is
-mirrored and hashed but not built on pup: its JavaScriptKit dependency
-needs Swift 6.2 or later.
+not mirrored or built on pup: its JavaScriptKit dependency needs Swift 6.2
+or later. SystemTests composes the macOS client and is not mirrored either.
 
 ## WebAssembly
 
@@ -221,8 +240,10 @@ run, and read the safety rules in [OPERATIONS.md](OPERATIONS.md#safety)
 first.
 
 `Scripts/benchmark-app.sh [--no-build] [--seconds N] [--out DIR]
-static|motion|quality-static|handshake-only|all` builds and launches the
-real `Lyte.app` against the standing host, drives
+static|motion|quality-static|handshake-only|all` builds a diagnostic
+`Lyte.app` (`LYTE_APP_DIAGNOSTICS=1 Scripts/make-app.sh release`; with
+`--no-build` it refuses a bundle whose Info.plist lacks
+`LyteDiagnosticEntryPoints`), launches it against the standing host, drives
 `Scripts/motion-presenter.py` on pup's glass for motion legs, and judges the
 run with `Scripts/analyze-app-benchmark.py`. `all` runs each leg in its own
 process. It takes the app-artifact lock and refuses to run while the
@@ -230,7 +251,9 @@ owner's interactive app is open.
 
 `Scripts/benchmark-netem.sh moderate` shapes one host→client flow with
 `Scripts/netem/port-netem.sh` (20 ms delay, 10 ms jitter, 1 % loss) around
-one motion leg and judges the impairment SLOs. See
+one motion leg and judges the impairment SLOs (`analyze-app-benchmark.py
+--netem-profile`: presentation-gap p99, decoded fps, renderer, audio
+continuity). See
 [`Scripts/netem/README.md`](../Scripts/netem/README.md).
 
 | Variable | Used by | Meaning |

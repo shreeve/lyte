@@ -58,10 +58,19 @@ if find "$image" -type l -print -quit | grep -q .; then
     echo "host image verification FAILED: image contains a symlink" >&2
     exit 1
 fi
-[[ -x "$image/bin/lyte-host" ]]
-[[ "$(file_mode "$image/bin/lyte-host")" == 755 ]]
+[[ -x "$image/bin/lyte-host" ]] || {
+    echo "host image verification FAILED: bin/lyte-host is not executable" >&2
+    exit 1
+}
+[[ "$(file_mode "$image/bin/lyte-host")" == 755 ]] || {
+    echo "host image verification FAILED: bin/lyte-host mode is not 755" >&2
+    exit 1
+}
 while IFS= read -r file; do
-    [[ "$(file_mode "$file")" == 644 ]]
+    [[ "$(file_mode "$file")" == 644 ]] || {
+        echo "host image verification FAILED: mode is not 644: $file" >&2
+        exit 1
+    }
 done < <(find "$image/etc" "$image/systemd" "$image/doc" -type f)
 
 unit="$image/systemd/lyte-host.service"
@@ -81,13 +90,19 @@ fi
 
 manifest="$image/doc/MANIFEST.sha256"
 while read -r digest path; do
-    [[ -n "$digest" && "$path" == ./* && -f "$image/${path#./}" ]]
+    [[ -n "$digest" && "$path" == ./* && -f "$image/${path#./}" ]] || {
+        echo "host image verification FAILED: bad manifest entry: $path" >&2
+        exit 1
+    }
     actual_digest="$(sha256_file "$image/${path#./}")"
     [[ "$digest" == "$actual_digest" ]] || {
         echo "host image verification FAILED: manifest mismatch: $path" >&2
         exit 1
     }
 done < "$manifest"
-[[ "$(wc -l < "$manifest" | tr -d ' ')" == 11 ]]
+[[ "$(wc -l < "$manifest" | tr -d ' ')" == 11 ]] || {
+    echo "host image verification FAILED: manifest does not list 11 files" >&2
+    exit 1
+}
 
 echo "host image verification PASSED"

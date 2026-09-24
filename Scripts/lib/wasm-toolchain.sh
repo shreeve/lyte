@@ -54,9 +54,23 @@ lyte_wasm_available() {
         . "$HOME/.swiftly/env.sh"
     fi
     command -v swiftly >/dev/null 2>&1 || return 1
-    swiftly list 2>/dev/null | grep -q "Swift ${LYTE_WASM_TOOLCHAIN_VERSION}" || return 1
-    swiftly run swift sdk list "+${LYTE_WASM_TOOLCHAIN_VERSION}" 2>/dev/null \
-        | grep -qx "$LYTE_WASM_SDK"
+    # Matched as strings, not `| grep -q`: under a caller's pipefail, grep
+    # exiting early can SIGPIPE swiftly and turn a match into a miss.
+    toolchains="$(swiftly list 2>/dev/null)" || return 1
+    case "$toolchains" in
+        *"Swift ${LYTE_WASM_TOOLCHAIN_VERSION}"*) ;;
+        *) return 1 ;;
+    esac
+    sdks="$(swiftly run swift sdk list "+${LYTE_WASM_TOOLCHAIN_VERSION}" \
+        2>/dev/null)" || return 1
+    case "
+$sdks
+" in
+        *"
+$LYTE_WASM_SDK
+"*) return 0 ;;
+    esac
+    return 1
 }
 
 # Fails with the install commands unless the toolchain is usable, and
@@ -74,7 +88,8 @@ lyte_wasm_require() {
 
 # Manifests compile for the host with the macOS SDK. A macOS SDK newer than
 # the pinned toolchain can crash the manifest compile, so probe the default
-# SDK first and fall back to installed older ones. A caller's SDKROOT wins.
+# SDK first, then the installed Command Line Tools SDKs newest first. A
+# caller's SDKROOT wins.
 lyte_wasm_select_host_sdk() {
     label="$1"
     [ -z "${SDKROOT:-}" ] || return 0
@@ -87,8 +102,9 @@ let package = Package(
     name: ProcessInfo.processInfo.environment["LYTE_PROBE"] ?? "Probe"
 )
 EOF
-    for candidate in "" \
-        /Library/Developer/CommandLineTools/SDKs/MacOSX[0-9]*.[0-9]*.sdk
+    for candidate in "" $(ls -d \
+        /Library/Developer/CommandLineTools/SDKs/MacOSX[0-9]*.[0-9]*.sdk \
+        2>/dev/null | sort -rV)
     do
         [ -z "$candidate" ] || [ -d "$candidate" ] || continue
         if [ -n "$candidate" ]; then
