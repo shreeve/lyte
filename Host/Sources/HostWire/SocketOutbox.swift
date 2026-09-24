@@ -152,10 +152,11 @@ public struct SocketOutbox {
         }
 
         // Challenges to unvalidated tuples travel on the exact probed
-        // tuple — that is what they prove.
+        // tuple — that is what they prove. A refusal there says nothing
+        // about the peer on the primary path: the challenge is simply
+        // lost, and the validator's timeout abandons the probe.
         if queued.contains(where: { $0.destination != nil }) {
             let primary = ledger.primaryTuple
-            var peerGone = false
             queued.removeAll { datagram in
                 guard let destination = datagram.destination,
                       destination != primary
@@ -168,7 +169,7 @@ public struct SocketOutbox {
                     counters.bytesSent += datagram.bytes.count
                     log("path: challenge sent to \(target) (off-primary sendto)")
                 case .peerGone:
-                    peerGone = true
+                    log("path: challenge to \(target) refused (port unreachable)")
                 case .failed(let why):
                     log("path: challenge to \(target) failed: \(why)")
                 case .wouldBlock, .noBuffer, .transient:
@@ -176,7 +177,6 @@ public struct SocketOutbox {
                 }
                 return true
             }
-            if peerGone { return .peerGone }
         }
         Session.prioritizeLatency(&queued)
 
