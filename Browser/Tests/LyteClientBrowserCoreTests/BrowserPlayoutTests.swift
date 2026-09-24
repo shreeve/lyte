@@ -75,6 +75,126 @@ final class BrowserPlayoutTests: XCTestCase {
         })
     }
 
+    /// A backgrounded tab stops presenting: the handoff overflows and asks
+    /// for an IDR, whose arrival closes the request episode. The tab is
+    /// still stalled, so the IDR's own chain overflows and discards it —
+    /// the stream must ask again, or it stays frozen when the tab returns.
+    func testRecoveryIdrDiscardedByAStalledHandoffIsRequestedAgain() throws {
+        try stallThroughRecovery(holdingIdrEarly: false)
+    }
+
+    /// The same stall after the page popped the recovery IDR early (held
+    /// until its beat): handing that IDR off later cannot close the
+    /// episode its discarded chain reopened, so the IDR is asked for again.
+    func testRecoveryIdrHeldEarlyWhileItsChainOverflowsIsRequestedAgain() throws {
+        try stallThroughRecovery(holdingIdrEarly: true)
+    }
+
+    private func stallThroughRecovery(holdingIdrEarly: Bool) throws {
+        let host = BrowserHostPeer()
+        let (client, _) = try host.readyClient()
+        let corpus = try Self.corpus()
+        var capture: UInt64 = 0
+        // One frame per beat: `send` itself spends a few milliseconds
+        // delivering shards, so every frame arrives on time.
+        func sendAtCadence(keyframe: Bool, _ index: Int) throws {
+            host.advance(microseconds: Self.beatMicros - 4_000)
+            capture += Self.beatMicros
+            let frame = keyframe ? corpus[0] : corpus[1 + index % (corpus.count - 1)]
+            let scheduled = try send(frame, keyframe: keyframe, capture: capture, host, client)
+            XCTAssertEqual(scheduled.map(\.shouldPresent), [true], "on time")
+        }
+        func requestDueIdr() {
+            var notes: [String] = []
+            host.deliver(client.tick(nowMicros: host.nowMicros), notes: &notes)
+        }
+
+        try sendAtCadence(keyframe: true, 0)
+        for index in 1...12 { try sendAtCadence(keyframe: false, index) }
+        requestDueIdr()
+        XCTAssertEqual(client.counters.idrRequestsSent, 1)
+
+        try sendAtCadence(keyframe: true, 0) // the answer, accepted
+        if holdingIdrEarly {
+            XCTAssertNil(client.popDueFrame(nowMicros: host.nowMicros), "not due yet")
+        }
+        for index in 1...(holdingIdrEarly ? 13 : 12) {
+            try sendAtCadence(keyframe: false, index)
+        }
+        requestDueIdr()
+        XCTAssertEqual(
+            client.counters.idrRequestsSent, 2,
+            "the discarded recovery IDR must be asked for again")
+
+        // The tab returns; the fresh IDR presents and its chain follows.
+        try sendAtCadence(keyframe: true, 0)
+        try sendAtCadence(keyframe: false, 1)
+        let far = host.nowMicros + 10_000_000
+        var presented: [Bool] = []
+        while let frame = client.popDueFrame(nowMicros: far) {
+            presented.append(frame.isRandomAccess)
+        }
+        XCTAssertEqual(presented, holdingIdrEarly ? [true, true, false] : [true, false])
+    }
+
+    /// A catch-up burst flushes presentation while nothing is queued: the
+    /// flush still owes the stream an IDR, or every later frame is refused.
+    func testFlushWithNothingQueuedStillRequestsIdr() throws {
+        let host = BrowserHostPeer()
+        let (client, _) = try host.readyClient()
+        let corpus = try Self.corpus()
+        let far: UInt64 = 1 << 40
+
+        _ = try send(corpus[0], keyframe: true, capture: 0, host, client)
+        while client.popDueFrame(nowMicros: far) != nil {}
+        // Frames arrive a few milliseconds apart for 16.7 ms of capture
+        // each: fresh-burst debt accrues until the Conductor flushes.
+        for index in 1..<40 {
+            let frame = corpus[1 + (index - 1) % (corpus.count - 1)]
+            _ = try send(
+                frame, keyframe: false, capture: UInt64(index) * Self.beatMicros,
+                host, client)
+            while client.popDueFrame(nowMicros: far) != nil {}
+        }
+        XCTAssertGreaterThan(
+            client.videoCounters.framesNotPresentable, 0,
+            "the burst should flush to await-IDR")
+        var notes: [String] = []
+        host.deliver(client.tick(nowMicros: host.nowMicros), notes: &notes)
+        XCTAssertEqual(client.counters.idrRequestsSent, 1, notes.joined(separator: " | "))
+    }
+
+    /// An IDR whose own arrival trips the flush answers that flush: the
+    /// stream owes nothing more, so no IDR is requested.
+    func testIdrThatTripsTheFlushAnswersIt() throws {
+        let corpus = try Self.corpus()
+        var playout = BrowserVideoPlayout()
+        var packetizer = VideoPacketizer()
+        let far: UInt64 = 1 << 40
+        // A catch-up burst: one frame per 16.7 ms of capture, arriving
+        // 1 ms apart. Debt restarts when the first IDR is handed off and
+        // accrues 15.7 ms a frame from the third, so it passes the 200 ms
+        // ceiling on frame 14 — an IDR.
+        for index in 0...14 {
+            let idr = index == 0 || index == 14
+            let shards = try packetizer.packetize(
+                frame: idr ? corpus[0] : corpus[1 + (index - 1) % (corpus.count - 1)],
+                frameNumber: FrameNumber(rawValue: UInt32(index)),
+                captureTimestamp: HostTimestamp(
+                    microseconds: 1_000_000 + UInt64(index) * Self.beatMicros),
+                isIDR: idr,
+                regime: .clean)
+            for shard in shards {
+                _ = playout.ingestShard(
+                    envelope: shard.envelope, payload: shard.payload[...],
+                    arrivalMicroseconds: 1_000_000 + UInt64(index) * 1_000)
+            }
+            while playout.popDue(nowMicros: far) != nil {}
+        }
+        XCTAssertEqual(playout.framesAssembled, 15)
+        XCTAssertNil(playout.idrRequestDue(nowMicros: far))
+    }
+
     /// When the page stops taking decode input, the backlog is bounded and
     /// the loss opens a recovery episode.
     func testUndrainedDecodeBacklogIsBounded() throws {

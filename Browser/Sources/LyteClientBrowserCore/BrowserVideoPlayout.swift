@@ -289,15 +289,22 @@ public struct BrowserVideoPlayout {
             shouldPresent: decision.latenessMicroseconds == 0,
             annexBByteCount: unit.annexB.count
         )
-        if unit.isIDR {
-            // A usable IRAP answers any open recovery episode.
-            recovery.noteUsableIrapAccepted()
-        }
         storeForDecode(frame.frameNumber, unit.annexB)
 
         if decision.shouldFlush {
             pendingEarly = nil
-            absorb(handoff.failEpisode())
+            let flushed = handoff.failEpisode()
+            absorb(flushed)
+            // The queue may have been empty (or held only an early frame):
+            // the flush still owes the stream an IRAP.
+            if flushed.recoveryRequested {
+                demandRecovery(frame: frame.frameNumber)
+            }
+        }
+        if unit.isIDR {
+            // A usable IRAP answers any open recovery episode, including
+            // one its own arrival just opened.
+            recovery.noteUsableIrapAccepted()
         }
         let outcome = handoff.offer(
             frame.frameNumber,

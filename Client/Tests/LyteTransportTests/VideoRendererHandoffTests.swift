@@ -133,6 +133,35 @@ final class VideoRendererHandoffTests: XCTestCase {
         XCTAssertEqual(rig.renderer.enqueuedFrames(), [6, 7])
     }
 
+    /// The recovery IRAP's own chain overflows while the renderer is still
+    /// blocked: the IRAP goes with it, so the sink asks for another one at
+    /// once instead of leaving the stream to the requester's retry.
+    func testOverflowDiscardingThePendingIrapAsksAgain() throws {
+        let rig = Rig()
+        rig.renderer.ready = false
+        rig.renderer.holdRecoveryFlush = true
+        try rig.submit(frame: 1, idr: true, bytes: corpus[0])
+        for frame in 2...5 {
+            try rig.submit(frame: UInt32(frame), idr: false, bytes: corpus[frame - 1])
+        }
+        try rig.submit(frame: 6, idr: true, bytes: corpus[0])
+        for frame in 7...10 {
+            try rig.submit(frame: UInt32(frame), idr: false, bytes: corpus[frame - 6])
+        }
+        rig.barrier()
+        XCTAssertEqual(rig.peer.recoveryRequests.map(\.frame), [5, 10])
+
+        try rig.submit(frame: 11, idr: true, bytes: corpus[0])
+        rig.renderer.completeRecoveryFlush()
+        rig.renderer.ready = true
+        rig.renderer.becomeReady()
+        rig.barrier()
+        XCTAssertEqual(rig.renderer.enqueuedFrames(), [11])
+        XCTAssertTrue(rig.renderer.lastEnqueueResetDecoder)
+        XCTAssertEqual(rig.peer.irapsEnqueued, [11])
+        XCTAssertEqual(rig.peer.recoveryRequests.count, 2)
+    }
+
     func testAStaleQueuedEntryExpiresIntoRecovery() throws {
         let rig = Rig(deadlineMicroseconds: 50_000)
         rig.renderer.ready = false
