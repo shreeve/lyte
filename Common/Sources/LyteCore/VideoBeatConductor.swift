@@ -108,7 +108,9 @@ public struct VideoBeatConductor: Sendable {
     private var lastFrameWasRetained = false
     /// The quantized reserve posture currently in force. It starts at the
     /// configured floor, grows only through the hole law, and returns one
-    /// beat at a time through ceiling cuts or sustained slip proof.
+    /// beat at a time through ceiling cuts or sustained slip proof. An
+    /// on-time part caps it at its measured reserve (in whole beats, never
+    /// below the floor), so it counts reserve actually held, not moves.
     private var cushionBeatsInForce: Int
 
     // Video's slip proof is elapsed-time policy, not sample-count policy:
@@ -376,6 +378,17 @@ public struct VideoBeatConductor: Sendable {
         let finalCue = presentation > mappedCaptureMicroseconds
             ? presentation - mappedCaptureMicroseconds : 0
         let reserve = finalCue > pathDelay ? finalCue - pathDelay : 0
+        // The posture never claims more beats than the measured reserve
+        // of an on-time part. A hole lands its part on the NEXT beat, so
+        // a drift-driven hole leaves under one beat of real reserve;
+        // without this, drift holes would spend the ceiling as if they
+        // had banked cushion and the hole law would fall silent.
+        if lateness == 0 {
+            let reserveBeats = Int((reserve &+ period &- 1) / period)
+            cushionBeatsInForce = min(
+                cushionBeatsInForce,
+                max(config.cushionBeats, reserveBeats))
+        }
         lastMeasuredCueMicroseconds = finalCue
         lastPathDelayMicroseconds = pathDelay
         lastReserveMicroseconds = reserve

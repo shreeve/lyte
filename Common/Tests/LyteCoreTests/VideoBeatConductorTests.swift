@@ -538,4 +538,15 @@ final class VideoBeatConductorTests: XCTestCase {
                 "\(ppm) ppm for an hour must never leave a frame a full beat late")
         }
     }
+
+    /// Each drift-driven hole lands the newest part on the NEXT beat, so
+    /// the real reserve after it is under one beat. The cushion posture
+    /// must follow that measured reserve; counting moves instead would
+    /// exhaust the ceiling after three drift holes and leave every later
+    /// frame drifting unboundedly late.
+    func testDriftHolesDoNotExhaustTheCushionCeiling() {
+        XCTAssertLessThan(
+            worstLatenessUnderSkew(ppm: 50, minutes: 60), period,
+            "50 ppm for an hour must never leave a frame a full beat late")
+    }
 }
