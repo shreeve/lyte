@@ -120,7 +120,10 @@ sealed traffic, both ways; each side's first ARQ message is 0x0F
   possession: its first authenticated transport datagram. Until then a
   verbatim repeat of the answered message 1 gets the same message 2 again
   (on the tuple that sent it), and a newer message 1 that authenticates
-  replaces the unconfirmed handshake. The listening host also drops any
+  replaces the unconfirmed handshake. An unconfirmed host sends nothing
+  timer-driven: the session-start beacon and its capability declaration
+  leave once with message 2, and the 1 Hz beacons and ARQ retransmits
+  start only after the client's first authenticated datagram. The listening host also drops any
   message 1 it already answered earlier in the process, so a captured one
   replays at most once per host run and cannot hold the host against a
   real client's next dial.
@@ -259,7 +262,7 @@ negotiated, so both ends share it. A message past it poisons its group:
 a one-shot group is dropped, and a poisoned ordered stream can never
 deliver in order again, so the endpoint reports it
 (`isOrderedStreamPoisoned`, `.orderedStreamPoisoned`) and the session
-should end. Incomplete one-shot receive groups share a 1 MiB receive
+should end; the host ends it with a `shuttingDown` teardown. Incomplete one-shot receive groups share a 1 MiB receive
 budget; a segment past it is refused unacknowledged unless it completes
 its message.
 
