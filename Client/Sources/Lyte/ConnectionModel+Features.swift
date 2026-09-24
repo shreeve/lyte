@@ -10,6 +10,8 @@ import UniformTypeIdentifiers
 /// each control it gates exists exactly while its flag holds. Reset
 /// whenever the session goes away.
 struct NegotiatedFeatures: Equatable {
+    /// The session's agreement has arrived; the flags below are its verdict.
+    var agreed = false
     /// Key 9: the host-speaker mute control.
     var hostAudioRouting = false
     /// Key 14 (mode 0x03): the wire audio-off control.
@@ -27,6 +29,7 @@ struct NegotiatedFeatures: Equatable {
 
 extension NegotiatedFeatures {
     init(_ agreed: Capabilities) {
+        self.agreed = true
         hostAudioRouting = agreed.hostAudioRouting
         audioStreamOff = agreed.audioStreamOff
         clipboardText = agreed.clipboardText

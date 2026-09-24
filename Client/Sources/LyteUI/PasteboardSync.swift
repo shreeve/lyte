@@ -80,6 +80,9 @@ public final class PasteboardSync: @unchecked Sendable {
         timer = source
     }
 
+    /// True while the watcher polls.
+    public var isWatching: Bool { lock.withLock { timer != nil } }
+
     /// Stops polling. The pasteboard is never read again until the
     /// next `start()` re-baselines.
     public func stop() {

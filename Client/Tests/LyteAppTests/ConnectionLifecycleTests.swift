@@ -100,6 +100,84 @@ final class ConnectionLifecycleTests: XCTestCase {
                        "the probe dial must target where the host was reached")
     }
 
+    // MARK: - Capability agreement
+
+    /// The core receives before `startSession` returns, so the host's
+    /// agreement can land before the window attaches the session. The
+    /// features it enables must still start: the clipboard watcher and
+    /// the file-drop leg.
+    func testAgreementBeforeAttachStillStartsTheSessionFeatures() async throws {
+        let harness = LifecycleHarness()
+        harness.consentToClipboard()
+        harness.startPlan = [.hold]
+        let model = ConnectionModel(services: harness.services)
+
+        let connect = Task { await model.connectLyte(harness.host) }
+        try await harness.waitForStarts(1)
+        model.handleLyteEvent(.capabilitiesAgreed(harness.agreement))
+        model.handleLyteEvent(.hostAudioRoutingStatus(.hostMuted))
+        harness.resolveStart(0, with: .success(()))
+        await connect.value
+        defer { model.disconnect() }
+
+        XCTAssertTrue(model.lyteSession === harness.started[0])
+        XCTAssertEqual(model.hostAudioPosture, .hostMuted,
+                       "the host's first status was wiped at attach")
+        XCTAssertEqual(model.pasteboardSync?.isWatching, true,
+                       "clipboard sharing never started")
+        XCTAssertEqual(
+            model.bulkCoordinator?.drop(urls: [harness.missingFile]),
+            .accepted(count: 1), "file drops refused on a fresh connect")
+    }
+
+    /// The same race on a roaming re-dial: the replacement session's
+    /// agreement beats its adoption.
+    func testAgreementBeforeRoamingAdoptionStillStartsTheSessionFeatures() async throws {
+        let harness = LifecycleHarness()
+        harness.consentToClipboard()
+        harness.startPlan = [.succeed, .hold]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+        model.handleLyteEvent(.capabilitiesAgreed(harness.agreement))
+        defer { model.disconnect() }
+
+        model.reconnectNow()
+        try await harness.waitForStarts(2)
+        XCTAssertNil(model.pasteboardSync)
+        model.handleLyteEvent(.capabilitiesAgreed(harness.agreement))
+        harness.resolveStart(1, with: .success(()))
+        try await harness.waitUntil { model.lyteSession != nil }
+
+        XCTAssertTrue(model.lyteSession === harness.started[1])
+        XCTAssertEqual(model.pasteboardSync?.isWatching, true,
+                       "clipboard sharing never restarted after the re-dial")
+    }
+
+    /// An orphaned dial's agreement belongs to that session alone: the
+    /// next connect waits for its own.
+    func testOrphanedDialAgreementNeverReachesTheNextSession() async throws {
+        let harness = LifecycleHarness()
+        harness.consentToClipboard()
+        harness.startPlan = [.hold, .succeed]
+        let model = ConnectionModel(services: harness.services)
+
+        let stale = Task { await model.connectLyte(harness.host) }
+        try await harness.waitForStarts(1)
+        model.handleLyteEvent(.capabilitiesAgreed(harness.agreement))
+        model.disconnect()
+        harness.resolveStart(0, with: .success(()))
+        await stale.value
+
+        await model.connectLyte(harness.host)
+        defer { model.disconnect() }
+        XCTAssertTrue(model.lyteSession === harness.started[1])
+        XCTAssertEqual(model.negotiated, .none)
+        XCTAssertEqual(model.pasteboardSync?.isWatching, false)
+        XCTAssertEqual(
+            model.bulkCoordinator?.drop(urls: [harness.missingFile]),
+            .notConnected)
+    }
+
     // MARK: - Roaming fencing
 
     func testCurrentRoamingDialIsAdopted() async throws {
@@ -260,6 +338,20 @@ final class LifecycleHarness: @unchecked Sendable {
         host = DiscoveredLyteHost(
             name: "pup", address: "10.9.9.9", port: 41_999, wireVersion: nil,
             publicKeyHash: LyteDiscovery.publicKeyHash(ofStaticPublicKey: key))
+    }
+
+    /// What the host agrees to: clipboard text and file drops.
+    let agreement = Capabilities.wireDefault
+        .declaringClipboardText().declaringBulkTransfer()
+    /// A drop target that never exists; its preparation fails off-main.
+    let missingFile = URL(fileURLWithPath: "/nonexistent/lyte-harness-drop")
+
+    /// The pinned host's default: share the clipboard.
+    func consentToClipboard() {
+        locked {
+            _ = pins.setShareClipboard(
+                publicKeyHash: host.publicKeyHash!, share: true)
+        }
     }
 
     var started: [LyteUdpSession] { locked { _started } }
