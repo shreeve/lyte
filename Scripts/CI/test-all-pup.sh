@@ -227,7 +227,9 @@ build_graph_hash="$({
         "$gate_root/Host/Package.swift" \
         "$gate_root/Host/Package.resolved" \
         "$gate_root/SystemTests/Package.swift" \
-        "$gate_root/SystemTests/Package.resolved"
+        "$gate_root/SystemTests/Package.resolved" \
+        "$gate_root/Browser/Package.swift" \
+        "$gate_root/Browser/Package.resolved"
     do
         if [[ -f "$manifest" ]]; then
             sha256sum "$manifest"
@@ -239,7 +241,7 @@ build_graph_hash="$({
     # the structural source graph so the shared Linux mirror invalidates that
     # stale state before testing dependents.
     cd "$gate_root"
-    for package_root in Client Common Wire Host SystemTests; do
+    for package_root in Client Common Wire Host SystemTests Browser; do
         for tree in Sources Tests Plugins; do
             source_root="$package_root/$tree"
             if [[ -d "$source_root" ]]; then
