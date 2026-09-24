@@ -274,15 +274,8 @@ public final class BulkReceiveShell {
             return []
         }
         var events: [BulkReceiveShellEvent] = []
-        // The offer's name is UNTRUSTED input: sanitize (path
-        // separators, dotfiles, control bytes), then number around
-        // whatever already owns the name.
-        let finalName = BulkFileNaming.collisionFree(
-            BulkFileNaming.sanitized(offer.name),
-            exists: store.finalNameExists
-        )
-        do {
-            try store.promoteStaging(toName: finalName)
+        switch promote(offer) {
+        case .success(let finalName):
             store.removeResumeState(transferId: offer.transferId)
             book.removeAll { $0.transferId == offer.transferId }
             counters.filesCompleted += 1
@@ -291,14 +284,46 @@ public final class BulkReceiveShell {
                 path: store.directoryPath + "/\(finalName)",
                 byteCount: offer.totalByteCount
             ))
-        } catch {
+        case .failure(let failure):
             // Verified and complete on the wire, but the promotion
             // failed — loud, staging kept (the bytes are sha-good).
             counters.storageFailures += 1
-            events.append(.storageFailure("promote: \(error)"))
+            events.append(.storageFailure("promote: \(failure.detail)"))
         }
         rearm()
         return events
+    }
+
+    private struct PromotionFailure: Error {
+        let detail: String
+    }
+
+    /// The offer's name is UNTRUSTED input: sanitized (path separators,
+    /// dotfiles, control bytes), then numbered around whatever owns it.
+    /// The store never replaces an existing file, so a name taken after
+    /// the check (another writer, or one the client planted) fails the
+    /// promotion and the next number is tried on the reopened staging
+    /// file. Past the last number the promotion fails; it never lands
+    /// on a taken name.
+    private func promote(_ offer: BulkOffer) -> Result<String, PromotionFailure> {
+        for candidate in BulkFileNaming.candidates(
+            BulkFileNaming.sanitized(offer.name)
+        ) where !store.finalNameExists(candidate) {
+            do {
+                try store.promoteStaging(toName: candidate)
+                return .success(candidate)
+            } catch {
+                guard store.finalNameExists(candidate) else {
+                    return .failure(PromotionFailure(detail: "\(error)"))
+                }
+            }
+            do {
+                try store.openStaging(transferId: offer.transferId)
+            } catch {
+                return .failure(PromotionFailure(detail: "reopen: \(error)"))
+            }
+        }
+        return .failure(PromotionFailure(detail: "no free name"))
     }
 
     private func cleanUpAborted(
@@ -424,20 +449,24 @@ public enum BulkFileNaming {
         return name
     }
 
-    /// Numbers around whatever already owns the name:
-    /// "photo.png" → "photo (1).png" → "photo (2).png"…
+    /// The highest collision number tried before a promotion fails.
+    public static let maxCollisionNumber = 9_999
+
+    /// Every name a file may land under, in preference order: "photo.png",
+    /// then "photo (1).png" … "photo (9999).png".
+    public static func candidates(_ name: String) -> some Sequence<String> {
+        let (stem, ext) = splitExtension(name)
+        return (0...maxCollisionNumber).lazy.map {
+            $0 == 0 ? name : "\(stem) (\($0))\(ext)"
+        }
+    }
+
+    /// The first candidate `exists` does not claim; nil once every
+    /// number is taken.
     public static func collisionFree(
         _ name: String, exists: (String) -> Bool
-    ) -> String {
-        guard exists(name) else { return name }
-        let (stem, ext) = splitExtension(name)
-        var counter = 1
-        var candidate = "\(stem) (\(counter))\(ext)"
-        while exists(candidate) && counter < 10_000 {
-            counter += 1
-            candidate = "\(stem) (\(counter))\(ext)"
-        }
-        return candidate
+    ) -> String? {
+        candidates(name).first { !exists($0) }
     }
 
     /// "archive.tar.gz" → ("archive.tar", ".gz"); a leading dot is
