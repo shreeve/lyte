@@ -628,7 +628,9 @@ final class ConnectionModel {
     /// loop): fold new recorder frames into their event-second buckets,
     /// then publish the exact sum of the live 60-bucket window.
     func tickLinkHealth() {
-        for f in videoFlightRecorder.recentFrames() {
+        for f in videoFlightRecorder.frames(
+            after: linkHealthMeter.highWaterOrdinal
+        ) {
             let outcome: LinkHealthMeter.Outcome
             if f.rendererFailed {
                 outcome = .rendererFailure
@@ -712,8 +714,8 @@ final class ConnectionModel {
         // (p90 − min), which is what "jitter" means to every reader.
         // Window: the last 10 beacons ≈ 10 s at 1 Hz — the shortest
         // window that still feeds the p90 enough samples.
-        let rtts = core.echoResponder.snapshotClockSamples()
-            .suffix(10).map(\.rttMicroseconds).sorted()
+        let rtts = core.clockModel.recentSamples(10)
+            .map(\.rttMicroseconds).sorted()
         if let minRtt = rtts.first {
             let p90 = rtts[min(rtts.count - 1, (rtts.count * 9) / 10)]
             wire += String(
@@ -938,9 +940,7 @@ final class ConnectionModel {
             elapsedSeconds: elapsedSeconds,
             phase: phaseName,
             flight: videoFlightRecorder.snapshot(),
-            frames: videoFlightRecorder.recentFrames().filter {
-                $0.ordinal > afterOrdinal
-            },
+            frames: videoFlightRecorder.frames(after: afterOrdinal),
             video: .init(
                 framesDecoded: pipeline?.framesDecoded ?? 0,
                 framesSkipped: pipeline?.framesSkipped ?? 0,

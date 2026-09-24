@@ -35,8 +35,8 @@ public enum ChromaTier: String, CaseIterable, Hashable, Sendable {
     }
 
     /// Whether the control can select this tier today. Better renders
-    /// visible but disabled ("Not offered by this host") until the
-    /// yuv422 wire append lands AND a host declares it.
+    /// visible but disabled ("— not yet available") on every host until
+    /// the yuv422 wire append lands and a host declares it.
     public var isSelectable: Bool { declaredChromaModes != nil }
 
     /// The control's row title.

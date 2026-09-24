@@ -16,24 +16,20 @@ public final class BeaconEchoResponder: @unchecked Sendable {
         public var clockSamples: UInt64 = 0
     }
 
-    /// Raw samples retained for CL-10; minutes of 1 Hz history.
-    public static let maxRetainedSamples = 256
-
     private let emit: @Sendable (BeaconEcho) -> Void
     private let now: @Sendable () -> ClientTimestamp
     private let onClockSample: (@Sendable (ClockSample) -> Void)?
 
     private let lock = NSLock()
     private var stats = Stats()
-    private var samples: [ClockSample] = []
     private var book = ClientBeaconEchoBook()
 
     /// - Parameters:
     ///   - emit: sends one echo (TransportSender via CTRL in production,
     ///     a capture closure in tests).
     ///   - onClockSample: fires once per closed sample, outside the lock —
-    ///     CL-10's HostClockModel.ingest in production. The retained ring
-    ///     stays regardless (the CLI's summary reads it).
+    ///     HostClockModel.ingest in production, which retains the window
+    ///     every reader uses.
     public init(
         now: @escaping @Sendable () -> ClientTimestamp = {
             ClientTimestamp(microseconds: SystemMonotonicClock.nowMicroseconds)
@@ -78,11 +74,7 @@ public final class BeaconEchoResponder: @unchecked Sendable {
         let (echo, closed) = book.answer(beacon, receivedAt: t2, sendingAt: t3)
         stats.beaconsReceived += 1
         stats.echoesSent += 1
-        if let closed {
-            samples.append(closed)
-            if samples.count > Self.maxRetainedSamples {
-                samples.removeFirst(samples.count - Self.maxRetainedSamples)
-            }
+        if closed != nil {
             stats.clockSamples += 1
         }
         lock.unlock()
@@ -90,14 +82,6 @@ public final class BeaconEchoResponder: @unchecked Sendable {
         if let closed { onClockSample?(closed) }
         emit(echo)
         return true
-    }
-
-    /// The retained raw samples, oldest first — CL-10's HostClockModel
-    /// input; unfiltered by design.
-    public func snapshotClockSamples() -> [ClockSample] {
-        lock.lock()
-        defer { lock.unlock() }
-        return samples
     }
 
     public func snapshotStats() -> Stats {

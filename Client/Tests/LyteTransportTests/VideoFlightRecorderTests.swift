@@ -335,6 +335,32 @@ final class VideoFlightRecorderTests: XCTestCase {
             rendererFailed: false)
     }
 
+    /// The incremental read equals the full ring filtered past the
+    /// ordinal, across the ring's wrap.
+    func testFramesAfterAnOrdinalMatchTheFilteredRing() {
+        let recorder = makeRecorder(capacity: 4)
+        for i: UInt32 in 0..<6 {
+            let ready = UInt64(i) * 16_000_000
+            let token = recorder.frameReady(
+                frame: i, hostMicroseconds: UInt64(i) * 16_000,
+                nowNanoseconds: ready)
+            recorder.frameEnqueued(
+                token,
+                enqueueStartedNanoseconds: ready + 100_000,
+                enqueueFinishedNanoseconds: ready + 200_000,
+                rendererReady: true,
+                rendererFailed: false)
+        }
+        for after: UInt64 in [0, 2, 3, 5, 6, 9] {
+            XCTAssertEqual(
+                recorder.frames(after: after).map(\.ordinal),
+                recorder.recentFrames().filter { $0.ordinal > after }
+                    .map(\.ordinal),
+                "after \(after)")
+        }
+        XCTAssertEqual(recorder.frames(after: 3).map(\.ordinal), [4, 5, 6])
+    }
+
     private func makeRecorder(
         capacity: Int = 360,
         nowMicroseconds: @escaping @Sendable () -> UInt64 = { 0 }

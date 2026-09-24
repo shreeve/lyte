@@ -124,6 +124,14 @@ public final class HostClockModel: @unchecked Sendable {
         }
     }
 
+    /// The newest `limit` samples still in the window, in arrival order —
+    /// the overlay's RTT line and wire-view's last-sample print read these.
+    public func recentSamples(_ limit: Int) -> [ClockSample] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(window.suffix(max(0, limit)))
+    }
+
     /// The current fit, or nil before the first sample. Computed once
     /// per window change (≤ ~30 samples at 1 Hz) and served from cache.
     public func estimate() -> Estimate? {

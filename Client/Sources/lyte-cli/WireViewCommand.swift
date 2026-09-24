@@ -600,7 +600,7 @@ final class WireViewStatsPrinter: Sendable {
                    "(\(idr.verdicts) verdicts)"
         if echo.clockSamples > 0 {
             back += ", \(echo.clockSamples) clock samples"
-            if let last = core.echoResponder.snapshotClockSamples().last {
+            if let last = core.clockModel.recentSamples(1).last {
                 // Interpolation, not %d: varargs %d truncates Int64 to 32
                 // bits and boot-epoch offsets are ~10¹⁰ µs (found live —
                 // the printed offset disagreed with the clock fit by 2·2³²).

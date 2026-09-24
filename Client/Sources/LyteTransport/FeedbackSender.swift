@@ -25,6 +25,7 @@
 import LyteIO
 import Dispatch
 import Foundation
+import LyteCore
 import LyteWire
 
 public final class FeedbackSender: @unchecked Sendable {
@@ -62,7 +63,7 @@ public final class FeedbackSender: @unchecked Sendable {
     /// NACK entries awaiting the next report (CL-12). Bounded: the
     /// policy's dedupe keeps volume low; past the cap the OLDEST drop —
     /// their frames are closest to stale and rule 4 backstops them.
-    private var pendingNacks: [FeedbackReport.NackEntry] = []
+    private var pendingNacks = Deque<FeedbackReport.NackEntry>()
     private static let pendingNackCap = 24
 
     public init(

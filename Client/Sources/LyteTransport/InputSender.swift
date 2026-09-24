@@ -62,14 +62,18 @@ public struct InputSenderStats: Sendable {
     /// The newest lastInputSeq stamp seen on any video shard.
     public var lastStampSeen: UInt32?
     /// input→inject: capture → host injection, mapped onto the client
-    /// clock via the CL-10 model (µs).
-    public var inputToInject = Histogram<UInt64>(retention: .rolling)
+    /// clock via the CL-10 model (µs). Every input gauge rolls over the
+    /// last 360 samples — the queue-wait gauge's window.
+    public var inputToInject = Histogram<UInt64>(
+        capacity: 360, retention: .rolling)
     /// input→photon: capture → the first delivered sample stamped at or
     /// past the event's seq (µs; see the file comment's honesty caveat).
-    public var inputToPhoton = Histogram<UInt64>(retention: .rolling)
+    public var inputToPhoton = Histogram<UInt64>(
+        capacity: 360, retention: .rolling)
     /// The host's own receive→inject edge (host µs, no clock mapping)
     /// — HS-13's gate figure, echoed back for free.
-    public var hostReceiveToInject = Histogram<UInt64>(retention: .rolling)
+    public var hostReceiveToInject = Histogram<UInt64>(
+        capacity: 360, retention: .rolling)
 }
 
 extension InputSenderStats {
@@ -125,10 +129,10 @@ public final class InputSender: @unchecked Sendable {
     private var awaitingPhoton: [UInt32: UInt64] = [:]
     /// Insertion-ordered seqs for bounded eviction (one order serves
     /// both books — seqs are allocated ascending).
-    private var pendingOrder: [UInt32] = []
+    private var pendingOrder = Deque<UInt32>()
     /// frame number → lastInputSeq stamp, from shard TLVs.
     private var frameStamps: [UInt32: UInt32] = [:]
-    private var frameStampOrder: [UInt32] = []
+    private var frameStampOrder = Deque<UInt32>()
     private var stats = InputSenderStats()
     /// True while either pending book holds an event — the video hot
     /// path's fast-out. Every video shard used to pay a TLV decode

@@ -71,7 +71,9 @@ public final class LinkHealthMeter {
     private var buckets = Array(
         repeating: Bucket(), count: LinkHealthMeter.windowBucketCount)
     private var lastEpisode: Episode?
-    private var highWaterOrdinal: UInt64 = 0
+    /// The newest recorder ordinal already folded; a reader feeds only
+    /// frames past it.
+    public private(set) var highWaterOrdinal: UInt64 = 0
     private var epochFirstEventMicroseconds: UInt64?
     private var sessionStallCount = 0
     private var sessionWorstMilliseconds = 0.0

@@ -68,8 +68,9 @@ public struct BrowserVideoPlayout {
     private var clientZero: UInt64?
 
     private var annexBByFrame: [UInt32: [UInt8]] = [:]
-    private var decodeOrder: [UInt32] = []
-    private var decodeOrderHead = 0
+    /// Frame numbers in decode order; entries already taken are skipped
+    /// when they reach the front.
+    private var decodeOrder = Deque<UInt32>()
     private var scheduledByFrame: [UInt32: ScheduledFrame] = [:]
     private var pendingEarly: ScheduledFrame?
     public private(set) var counters = Counters()
@@ -247,23 +248,17 @@ public struct BrowserVideoPlayout {
         // Evict the oldest undrained entries past the bound; entries already
         // taken are skipped as the head advances.
         while annexBByFrame.count > Self.decodeBacklogCapacity,
-              decodeOrderHead < decodeOrder.count
+              let oldest = decodeOrder.popFirst()
         {
-            let oldest = decodeOrder[decodeOrderHead]
-            decodeOrderHead += 1
             if annexBByFrame.removeValue(forKey: oldest) != nil {
                 counters.decodeBacklogEvicted &+= 1
                 demandRecovery(frame: oldest)
             }
         }
-        // Compact the order log once its consumed prefix dominates.
-        if decodeOrderHead > 256, decodeOrderHead * 2 > decodeOrder.count {
-            decodeOrder.removeFirst(decodeOrderHead)
-            decodeOrderHead = 0
-        }
+        // Frames the page took leave dead entries behind; drop them once
+        // they dominate so the log stays bounded.
         if decodeOrder.count > 4 * Self.decodeBacklogCapacity {
-            decodeOrder = decodeOrder.filter { annexBByFrame[$0] != nil }
-            decodeOrderHead = 0
+            decodeOrder.removeAll { annexBByFrame[$0] == nil }
         }
     }
 
@@ -279,8 +274,7 @@ public struct BrowserVideoPlayout {
         let decision = conductor.schedule(
             mappedCaptureMicroseconds: mapped,
             arrivalMicroseconds: arrival,
-            sourceCaptureMicroseconds: capture,
-            isRandomAccess: unit.isIDR
+            sourceCaptureMicroseconds: capture
         )
         let frame = ScheduledFrame(
             frameNumber: unit.frameNumber.rawValue,

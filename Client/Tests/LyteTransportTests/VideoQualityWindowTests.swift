@@ -13,7 +13,9 @@ final class VideoQualityWindowTests: XCTestCase {
             window.record(bytes: 1_000 + index % 7, now: now)
         }
         XCTAssertEqual(window.liveCount, 300)
-        XCTAssertLessThanOrEqual(window.storedCount, 2 * 300 + 2)
+        // The Deque reclaims its dead prefix; retained storage stays
+        // within about twice the live count plus array-growth slack.
+        XCTAssertLessThanOrEqual(window.storedCount, 4 * 300)
         let quality = try XCTUnwrap(window.snapshot(now: now))
         XCTAssertEqual(quality.framesPerSecond, 60, accuracy: 0.5)
         XCTAssertEqual(quality.frameBytesMax, 1_006)
