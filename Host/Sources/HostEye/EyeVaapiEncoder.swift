@@ -53,7 +53,7 @@ public final class EyeVaapiEncoder {
     /// which no pen writes yet: open() refuses rather than guesses.
     public private(set) var gpb = true
     /// Input surfaces — the GL blit's render targets, exported via
-    /// `exportSurface` exactly like the libavcodec pool was.
+    /// `exportSurface`.
     public private(set) var inputSurfaces: [VASurfaceID] = []
 
     private let drmFd: Int32

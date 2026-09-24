@@ -7,11 +7,11 @@
 //   lyte-eye capture [--device D] [--render R] [--seconds N]
 //            [--out PATH] [--qp N]                   — the full loop
 //     (milestone 2): screen beat → GPU change detection → GL blit
-//     RGB→NV12 into exported VAAPI surfaces → hevc_vaapi (vendored
-//     libavcodec) → Annex-B file. Needs privileges (GETFB2).
+//     RGB→NV12 into exported VAAPI surfaces → the native VAAPI HEVC
+//     encoder → Annex-B file. Needs privileges (GETFB2).
 //
-// Swift-first is the point: libdrm/GBM/EGL/GL/libva/libavcodec all
-// arrive through module maps — no .c files anywhere in the eye.
+// Swift-first is the point: libdrm/GBM/EGL/GL/libva all arrive through
+// module maps — no .c files anywhere in the eye.
 
 import Foundation
 

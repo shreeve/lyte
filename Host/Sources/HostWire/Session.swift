@@ -1653,9 +1653,9 @@ public final class Session {
     /// a content-cropped BGRA shape or the hidden state. Judges the
     /// agreement, the dedupe slot, and the wire contract before a
     /// 0x24 leaves. Silently a no-op unless the agreed set carries
-    /// cursorShape (the noteAudioRoutingApplied rule: a legacy or
-    /// portal-era peer neither asked for the key nor knows the
-    /// byte). Pixels never appear in events or logs — counts only.
+    /// cursorShape (the noteAudioRoutingApplied rule: a peer that did
+    /// not declare the key does not know the byte). Pixels never appear
+    /// in events or logs — counts only.
     public func noteCursorShapeChanged(
         _ shape: CursorShape, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
