@@ -327,13 +327,15 @@ struct WireView: AsyncParsableCommand {
         if clipboard || clipboardImages {
             let sync = PasteboardSync(onLocalChange: { [weak session] text in
                 guard let session else { return }
-                let outcome = session.shareLocalClipboard(text)
+                let outcome = session.core?.shareLocalClipboard(text)
+                    ?? .sendRefused("not started")
                 print("wire-view: local copy (\(text.utf8.count) B) — \(outcome)")
             })
             if clipboardImages {
                 sync.onLocalImageChange = { [weak session] data in
                     guard let session else { return }
-                    let outcome = session.shareLocalClipboardImage(data)
+                    let outcome = session.core?.shareLocalClipboardImage(data)
+                        ?? .sendRefused("not started")
                     print("wire-view: local image copy (\(data.count) B) "
                         + "— \(outcome)")
                 }

@@ -539,7 +539,7 @@ final class ConnectionModel {
                 send: { [weak session] bytes in
                     // A refused send is a teardown race — the ARQ state is
                     // dying with the session; resume covers.
-                    try? session?.sendBulkMessage(bytes)
+                    try? session?.core?.sendBulkMessage(bytes)
                 })
         case .bulkMessageReceived(let message):
             bulkCoordinator?.ingest(message)

@@ -35,7 +35,6 @@ public protocol VideoRecoveryPeer: AnyObject, Sendable {
     func noteVideoIrapEnqueued(frame: FrameNumber)
 }
 
-extension LyteUdpSession: VideoRecoveryPeer {}
 
 /// The client's production video sink: serial, bounded ownership of
 /// compressed samples between the sample-build worker and the renderer.

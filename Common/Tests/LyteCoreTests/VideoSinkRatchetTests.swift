@@ -28,16 +28,26 @@ final class VideoSinkRatchetTests: XCTestCase {
                 + violations.map(\.path).sorted().joined(separator: "\n"))
     }
 
+    /// The session core decides on decoded wire units; CoreMedia stays in
+    /// the sink adapter. Found by declaration, not by path, so the files
+    /// can move.
     func testSessionPolicyStaysNativeMediaTypeFree() throws {
-        let core = try source(
-            "Client/Sources/LyteTransport/LyteUdpSession.swift")
-        let sink = try source(
-            "Client/Sources/LyteTransport/VideoSink.swift")
-
-        XCTAssertFalse(core.contains("import CoreMedia"))
-        XCTAssertFalse(core.contains("CMSampleBuffer"))
-        XCTAssertFalse(core.contains("class SessionVideoSink"))
-        XCTAssertTrue(sink.contains("class SessionVideoSink"))
+        let sources = try swiftSources()
+        let cores = sources.filter {
+            $0.source.contains("final class LyteUdpSessionCore")
+        }
+        XCTAssertEqual(cores.count, 1, "one file declares LyteUdpSessionCore")
+        for core in cores {
+            XCTAssertFalse(
+                SwiftSourceScanner.importedModules(in: core.source)
+                    .contains("CoreMedia"),
+                core.path)
+            XCTAssertFalse(core.source.contains("CMSampleBuffer"), core.path)
+        }
+        XCTAssertEqual(
+            sources.filter { $0.source.contains("class SessionVideoSink") }
+                .map(\.path),
+            ["Client/Sources/LyteTransport/VideoSink.swift"])
     }
 
     private func swiftSources() throws -> [(path: String, source: String)] {
