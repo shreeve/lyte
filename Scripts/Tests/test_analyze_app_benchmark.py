@@ -207,6 +207,22 @@ class AnalyzerTests(unittest.TestCase):
             result["motion"]["firstJaggedBoundary"],
             "host_to_client_delivery")
 
+    def test_motion_without_transit_evidence_fails(self):
+        fixture = sample("motion", 0, ["freshCapture"] * 4)
+        for frame in fixture["frames"]:
+            frame.pop("transitStretchMilliseconds", None)
+        result = self.analyze(fixture)
+        self.assertIn(
+            "motion_transport_evidence_missing", result["failures"])
+
+    def test_motion_without_presentation_evidence_fails(self):
+        fixture = sample("motion", 0, ["freshCapture"] * 4)
+        for frame in fixture["frames"]:
+            frame.pop("scheduledPresentationMicroseconds", None)
+        result = self.analyze(fixture)
+        self.assertIn(
+            "motion_presentation_evidence_missing", result["failures"])
+
     def test_motion_client_presentation_jitter_is_first_boundary(self):
         fixture = sample("motion", 0, ["freshCapture"] * 4)
         fixture["frames"][-1]["presentationLatenessMilliseconds"] = 12.0
