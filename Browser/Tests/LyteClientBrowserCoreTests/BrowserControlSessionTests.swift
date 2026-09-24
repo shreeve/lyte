@@ -140,7 +140,7 @@ final class BrowserControlSessionTests: XCTestCase {
         XCTAssertEqual(client.currentStatus, .ready, notes.joined(separator: " | "))
         let hostConnectionId = try XCTUnwrap(host.session.connectionId)
         let send = client.sendInput(
-            body: .pointerMotionAbsolute(x: 1, y: 2), nowMicros: host.nowMicros
+            body: .keyKeycode(keycode: 30, pressed: true), nowMicros: host.nowMicros
         )
         let (envelope, _) = try Envelope.decode(try XCTUnwrap(send.outbound.first))
         XCTAssertEqual(
@@ -228,30 +228,6 @@ final class BrowserControlSessionTests: XCTestCase {
         host.deliver(try client.begin(nowMicros: host.nowMicros), notes: &notes)
         host.run(client, notes: &notes) { $0.currentStatus == .ready }
         XCTAssertTrue(client.paired, notes.joined(separator: " | "))
-    }
-
-    // MARK: Backpressure
-
-    /// A full reliable queue refuses one input event without failing the
-    /// session: the host stopped acknowledging, which the lifecycle judges.
-    func testFullReliableQueueDropsInputWithoutFailingTheSession() throws {
-        let host = BrowserHostPeer()
-        let (client, _) = try host.readyClient()
-        var dropped: BrowserControlSession.Step?
-        for index in 0..<(ArqBounds.maxQueuedSegmentsPerGroup + 64) {
-            let step = client.sendInput(
-                body: .pointerMotionAbsolute(x: Double(index), y: 0),
-                nowMicros: host.nowMicros
-            )
-            if client.counters.inputsRefused > 0 {
-                dropped = step
-                break
-            }
-        }
-        let step = try XCTUnwrap(dropped, "the queue never filled")
-        XCTAssertEqual(step.status, .ready)
-        XCTAssertTrue(step.events.contains { $0.contains("queue full") })
-        XCTAssertEqual(client.counters.inputsRefused, 1)
     }
 
     // MARK: Helpers

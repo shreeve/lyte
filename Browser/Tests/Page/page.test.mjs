@@ -9,7 +9,7 @@ import { SessionPump } from "../../Page/session-pump.js";
 import { VideoSink } from "../../Page/video-sink.js";
 
 /** Replays DOM events into installCanvasInput; returns what the host saw. */
-function replay(events) {
+function replay(events, { kinds = ["keyKeycode", "pointerButton"] } = {}) {
   const listeners = {};
   const canvas = {
     addEventListener: (type, fn) => (listeners[type] = fn),
@@ -21,10 +21,14 @@ function replay(events) {
   const sent = [];
   const held = new Map();
   installCanvasInput(canvas, {
-    sendInput: (kind, _now, code, pressed) => {
-      if (kind !== "keyKeycode" && kind !== "pointerButton") return;
-      sent.push(`${kind}:${code}:${pressed ? "down" : "up"}`);
-      held.set(`${kind}:${code}`, pressed);
+    sendInput: (kind, _now, a, b) => {
+      if (!kinds.includes(kind)) return;
+      if (kind === "pointerMotionAbsolute") {
+        sent.push(`${kind}:${a}:${b}`);
+        return;
+      }
+      sent.push(`${kind}:${a}:${b ? "down" : "up"}`);
+      held.set(`${kind}:${a}`, b);
     },
     hostSize: () => ({ width: 100, height: 100 }),
   });
@@ -77,6 +81,34 @@ test("chorded buttons that arrive as pointermove balance on the host", () => {
   assert.deepEqual(sent, [
     "pointerButton:272:down", "pointerButton:273:down",
     "pointerButton:272:up", "pointerButton:273:up",
+  ]);
+});
+
+test("the JIS Kana and Eisu keys reach the host as the native client sends them", () => {
+  const { sent } = replay([
+    ["keydown", { code: "Lang1" }],
+    ["keyup", { code: "Lang1" }],
+    ["keydown", { code: "Lang2" }],
+    ["keyup", { code: "Lang2" }],
+  ]);
+  assert.deepEqual(sent, [
+    "keyKeycode:92:down", "keyKeycode:92:up", "keyKeycode:94:down", "keyKeycode:94:up",
+  ]);
+});
+
+test("a drag that leaves the canvas keeps moving the host pointer to its edge", () => {
+  const { sent } = replay(
+    [
+      ["pointerdown", { button: 0, buttons: 1, clientX: 50, clientY: 50 }],
+      ["pointermove", { buttons: 1, clientX: 180, clientY: -20 }],
+      ["pointerup", { button: 0, buttons: 0, clientX: 180, clientY: -20 }],
+      ["pointermove", { buttons: 0, clientX: 180, clientY: -20 }],
+    ],
+    { kinds: ["pointerMotionAbsolute", "pointerButton"] }
+  );
+  assert.deepEqual(sent, [
+    "pointerMotionAbsolute:50:50", "pointerButton:272:down",
+    "pointerMotionAbsolute:100:0", "pointerButton:272:up",
   ]);
 });
 

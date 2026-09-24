@@ -71,8 +71,11 @@ public final class BrowserControlSession {
         /// 0x23 refusals: the host will not repair a NACKed frame.
         public var repairRefusals: UInt64 = 0
         public var idrRequestsSent: UInt64 = 0
-        /// Input events dropped because the reliable queue was full.
+        /// Input events refused: a non-finite coordinate, or the input
+        /// queue full.
         public var inputsRefused: UInt64 = 0
+        /// Flushes the full reliable queue stopped; the edge waited.
+        public var inputsDeferred: UInt64 = 0
         public var feedbackReportsSent: UInt64 = 0
         /// Reports that did not encode or seal (the next beat rebuilds).
         public var feedbackReportsFailed: UInt64 = 0
@@ -113,6 +116,7 @@ public final class BrowserControlSession {
     private var video = BrowserVideoPlayout()
     private var audio = BrowserAudioPlayout()
     private var nextInputSeq: UInt32 = 0
+    private var input = BrowserInputQueue()
     /// Receive ledgers per channel, cumulative since establishment: every
     /// authenticated datagram counts, whichever organ consumes it.
     private var ledgers: [ChannelId: SeqGapTracker] = [:]
@@ -147,6 +151,8 @@ public final class BrowserControlSession {
     public var audioPacketsPopped: UInt64 { audio.packetsPopped }
     public var audioPacketsDroppedStale: UInt64 { audio.packetsDroppedStale }
     public var clipboardNegotiated: Bool { control?.clipboardNegotiated ?? false }
+    /// Input events captured but not yet on the reliable stream.
+    public var inputsPending: Int { input.count }
     /// The client lifecycle machine's state (FROZEN is a local overlay).
     public var sessionState: SessionState? { control?.state }
     /// True when every reliable CTRL word sent has been acknowledged.
@@ -254,6 +260,9 @@ public final class BrowserControlSession {
                 if !isDraining, nowMicros >= nextFeedbackMicros {
                     outbound += feedbackReport(nowMicros: nowMicros)
                 }
+                if status == .ready {
+                    try flushInput(nowMicros: nowMicros)
+                }
             }
             outbound += try pollArq(nowMicros: nowMicros)
             return step(outbound: outbound)
@@ -286,32 +295,54 @@ public final class BrowserControlSession {
         }
     }
 
-    /// Queues one InputEvent on the reliable CTRL stream.
+    /// Queues one input event captured at `nowMicros`. Key and button edges
+    /// and a scroll's finish leave at once; motion and mid-gesture scroll
+    /// coalesce and leave on the next tick. An edge the full reliable queue
+    /// refuses waits, in order, and is retried every tick.
     public func sendInput(body: InputEvent.Body, nowMicros: UInt64) -> Step {
         guard status == .ready else {
             // Soft refusal: DOM capture may fire before READY.
             note("input: ignored (status \(status.rawValue))")
             return step(outbound: [])
         }
-        do {
-            let event = InputEvent(
-                seq: nextInputSeq, clientMicroseconds: nowMicros, body: body
-            )
-            try arq.send(
-                message: event.encode(),
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
-            nextInputSeq &+= 1
-            inputsSent += 1
-            return step(outbound: try pollArq(nowMicros: nowMicros))
-        } catch ArqSendError.queueFull {
-            // Backpressure: the host has not acknowledged a full queue of
-            // segments. Drop this event; the liveness clock judges the path.
+        guard body.isFinite else {
             counters.inputsRefused += 1
-            note("input: dropped (reliable queue full)")
+            note("input: refused (non-finite coordinate)")
             return step(outbound: [])
+        }
+        guard input.enqueue(body, capturedMicros: nowMicros) else {
+            counters.inputsRefused += 1
+            note("input: dropped (\(BrowserInputQueue.capacity) events waiting)")
+            return step(outbound: [])
+        }
+        guard !body.coalesces else { return step(outbound: []) }
+        do {
+            try flushInput(nowMicros: nowMicros)
+            return step(outbound: try pollArq(nowMicros: nowMicros))
         } catch {
             return failStep("input send: \(error)")
+        }
+    }
+
+    /// Hands queued input to the reliable stream until it refuses.
+    private func flushInput(nowMicros: UInt64) throws {
+        while let entry = input.first {
+            let event = InputEvent(
+                seq: nextInputSeq, clientMicroseconds: entry.capturedMicros,
+                body: entry.body)
+            do {
+                try arq.send(
+                    message: event.encode(),
+                    now: ClientTimestamp(microseconds: nowMicros))
+            } catch ArqSendError.queueFull {
+                // The host has not acknowledged a full queue of segments;
+                // the liveness clock judges the path, the edge waits.
+                counters.inputsDeferred += 1
+                return
+            }
+            input.removeFirst()
+            nextInputSeq &+= 1
+            inputsSent += 1
         }
     }
 
