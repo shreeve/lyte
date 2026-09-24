@@ -37,4 +37,16 @@ final class HexTests: XCTestCase {
         XCTAssertNil(Hex.uint64(""))
         XCTAssertNil(Hex.uint64("10000000000000000"))
     }
+
+    /// Both parsers speak one grammar: ASCII hex digits only. Fullwidth
+    /// or other Unicode digits and a sign are refused by each.
+    func testBothParsersRefuseNonAsciiDigitsAndSigns() {
+        for text in ["\u{FF10}\u{FF11}", "\u{FF21}0", "+1", "-1", "0x+1", "\u{0661}\u{0662}"] {
+            XCTAssertNil(Hex.bytes(text), text)
+            XCTAssertNil(Hex.uint64(text), text)
+        }
+        XCTAssertEqual(Hex.bytes("fF"), [0xFF])
+        XCTAssertEqual(Hex.uint64("fF"), 0xFF)
+        XCTAssertEqual(Hex.uint64("0xFFFFFFFFFFFFFFFF"), .max)
+    }
 }

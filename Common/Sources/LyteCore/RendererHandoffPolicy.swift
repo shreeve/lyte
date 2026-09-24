@@ -74,7 +74,7 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
         // An accepted IRAP awaiting enqueue heads the queue; its inter
         // frames queue behind it under the same capacity and deadline.
         let expired = entries.first.map {
-            frame.submittedMicroseconds &- $0.frame.submittedMicroseconds
+            Self.age(of: $0, at: frame.submittedMicroseconds)
                 >= config.deadlineMicroseconds
         } ?? false
         if entries.count >= config.capacity || expired {
@@ -125,7 +125,7 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
 
     public mutating func expire(nowMicroseconds: UInt64) -> Outcome {
         guard let first = entries.first,
-              nowMicroseconds &- first.frame.submittedMicroseconds
+              Self.age(of: first, at: nowMicroseconds)
                 >= config.deadlineMicroseconds else {
             return Outcome(
                 accepted: false,
@@ -133,6 +133,13 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
                 discarded: [])
         }
         return failEpisode()
+    }
+
+    /// How long `entry` has waited at `now`. Stamps come from different
+    /// threads, so `now` may trail the entry's; that is no wait at all.
+    private static func age(of entry: Entry, at now: UInt64) -> UInt64 {
+        now > entry.frame.submittedMicroseconds
+            ? now - entry.frame.submittedMicroseconds : 0
     }
 
     /// Enters await-random-access with no IRAP in hand; returns whether
