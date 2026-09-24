@@ -120,12 +120,7 @@ public final class FeedbackSender: Sendable {
                 duplicates: $0.stats.seqDuplicates,
                 missing: $0.stats.seqMissing)
         }
-        let arrivals = demux.drainArrivalSamples().map {
-            ClientFeedbackReporter.Arrival(
-                channel: ChannelId(rawValue: $0.channel),
-                seq: ChannelSeq(rawValue: $0.seq),
-                arrivalMicroseconds: $0.arrivalMicroseconds)
-        }
+        let arrivals = demux.drainArrivalSamples()
         return books.withLock {
             $0.reporter.report(ledgers: ledgers, arrivals: arrivals, now: now)
         }

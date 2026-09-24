@@ -87,7 +87,6 @@ public struct ClientControlSession: Sendable {
 
     public var state: SessionState { lifecycle.state }
     public var wireMode: SessionWireMode { lifecycle.wireMode }
-    public var isFrozen: Bool { lifecycle.isFrozen }
     public var agreedCapabilities: Capabilities? { capabilities.agreed }
     public var hostAudioRoutingPosture: HostAudioRoutingMode? {
         audioRouting.posture
