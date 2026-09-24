@@ -75,6 +75,68 @@ final class BrowserPlayoutTests: XCTestCase {
         })
     }
 
+    /// A backgrounded tab stops presenting: the handoff overflows and asks
+    /// for an IDR, whose arrival closes the request episode. The tab is
+    /// still stalled, so the IDR's own chain overflows and discards it —
+    /// the stream must ask again, or it stays frozen when the tab returns.
+    func testRecoveryIdrDiscardedByAStalledHandoffIsRequestedAgain() throws {
+        try stallThroughRecovery(holdingIdrEarly: false)
+    }
+
+    /// The same stall after the page popped the recovery IDR early (held
+    /// until its beat): handing that IDR off later cannot close the
+    /// episode its discarded chain reopened, so the IDR is asked for again.
+    func testRecoveryIdrHeldEarlyWhileItsChainOverflowsIsRequestedAgain() throws {
+        try stallThroughRecovery(holdingIdrEarly: true)
+    }
+
+    private func stallThroughRecovery(holdingIdrEarly: Bool) throws {
+        let host = BrowserHostPeer()
+        let (client, _) = try host.readyClient()
+        let corpus = try Self.corpus()
+        var capture: UInt64 = 0
+        // One frame per beat: `send` itself spends a few milliseconds
+        // delivering shards, so every frame arrives on time.
+        func sendAtCadence(keyframe: Bool, _ index: Int) throws {
+            host.advance(microseconds: Self.beatMicros - 4_000)
+            capture += Self.beatMicros
+            let frame = keyframe ? corpus[0] : corpus[1 + index % (corpus.count - 1)]
+            let scheduled = try send(frame, keyframe: keyframe, capture: capture, host, client)
+            XCTAssertEqual(scheduled.map(\.shouldPresent), [true], "on time")
+        }
+        func requestDueIdr() {
+            var notes: [String] = []
+            host.deliver(client.tick(nowMicros: host.nowMicros), notes: &notes)
+        }
+
+        try sendAtCadence(keyframe: true, 0)
+        for index in 1...12 { try sendAtCadence(keyframe: false, index) }
+        requestDueIdr()
+        XCTAssertEqual(client.counters.idrRequestsSent, 1)
+
+        try sendAtCadence(keyframe: true, 0) // the answer, accepted
+        if holdingIdrEarly {
+            XCTAssertNil(client.popDueFrame(nowMicros: host.nowMicros), "not due yet")
+        }
+        for index in 1...(holdingIdrEarly ? 13 : 12) {
+            try sendAtCadence(keyframe: false, index)
+        }
+        requestDueIdr()
+        XCTAssertEqual(
+            client.counters.idrRequestsSent, 2,
+            "the discarded recovery IDR must be asked for again")
+
+        // The tab returns; the fresh IDR presents and its chain follows.
+        try sendAtCadence(keyframe: true, 0)
+        try sendAtCadence(keyframe: false, 1)
+        let far = host.nowMicros + 10_000_000
+        var presented: [Bool] = []
+        while let frame = client.popDueFrame(nowMicros: far) {
+            presented.append(frame.isRandomAccess)
+        }
+        XCTAssertEqual(presented, holdingIdrEarly ? [true, true, false] : [true, false])
+    }
+
     /// When the page stops taking decode input, the backlog is bounded and
     /// the loss opens a recovery episode.
     func testUndrainedDecodeBacklogIsBounded() throws {

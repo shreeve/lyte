@@ -16,7 +16,8 @@ public struct RendererFrameDescriptor: Sendable, Equatable {
 /// discarded individually: pressure or failure discards the whole dependency
 /// episode, enters await-random-access, and asks for one recovery. The IRAP
 /// that ends the wait heads a new episode; its inter frames queue behind it
-/// even before the shell has handed it to the renderer.
+/// even before the shell has handed it to the renderer. Invariant: while
+/// awaiting with no IRAP pending, a recovery request is outstanding.
 public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
     public struct Config: Sendable, Equatable {
         public var capacity: Int
@@ -91,14 +92,9 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
                     discarded: discarded)
             }
             discarded.append(incoming)
-            // One recovery per episode: an overflow of a pending IRAP's
-            // chain belongs to the episode already asking for one.
-            let startsRecovery = !awaitingRandomAccess
-            awaitingRandomAccess = true
-            randomAccessPending = false
             return Outcome(
                 accepted: false,
-                recoveryRequested: startsRecovery,
+                recoveryRequested: awaitRandomAccess(),
                 discarded: discarded)
         }
 
@@ -123,12 +119,9 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
     public mutating func failEpisode() -> Outcome {
         let discarded = entries
         entries.removeAll(keepingCapacity: true)
-        let startsRecovery = !awaitingRandomAccess
-        awaitingRandomAccess = true
-        randomAccessPending = false
         return Outcome(
             accepted: false,
-            recoveryRequested: startsRecovery,
+            recoveryRequested: awaitRandomAccess(),
             discarded: discarded)
     }
 
@@ -142,6 +135,19 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
                 discarded: [])
         }
         return failEpisode()
+    }
+
+    /// Enters await-random-access with no IRAP in hand; returns whether
+    /// that starts a recovery. One recovery per episode: an episode still
+    /// waiting for its IRAP has already asked. But an episode whose IRAP
+    /// was pending has just lost its answer — whether the IRAP was
+    /// discarded here or is held by the shell, it can no longer close
+    /// the episode — so it asks again.
+    private mutating func awaitRandomAccess() -> Bool {
+        let startsRecovery = !awaitingRandomAccess || randomAccessPending
+        awaitingRandomAccess = true
+        randomAccessPending = false
+        return startsRecovery
     }
 
     public mutating func reset() -> [Entry] {
