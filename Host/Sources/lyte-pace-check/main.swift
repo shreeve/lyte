@@ -264,7 +264,7 @@ func run() throws {
             ? Double(Int64(bitPattern: stamp &- prevStamp)) : Double.nan
         let members = packets.filter { $0.batchIndex == b.index }
         let classes = members.map {
-            ($0.urgent ? "!" : "") + $0.cls.name
+            ($0.urgent ? "!" : "") + "\($0.cls)"
         }.joined(separator: ",")
         let isIdrBatch = members.contains { $0.urgent }
         if isIdrBatch, stamp != 0 {
