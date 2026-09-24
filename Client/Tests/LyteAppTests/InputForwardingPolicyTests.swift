@@ -62,6 +62,22 @@ final class InputForwardingPolicyTests: XCTestCase {
                        .passThrough)
     }
 
+    /// Holding D on the host (auto-repeating) and touching ⌘: the next
+    /// repeat carries ⌘ and ⌘D is Disconnect. It must stay the host's.
+    func testHostHeldKeysRepeatNeverFiresALocalShortcut() {
+        var policy = InputForwardingPolicy()
+        let keyD: UInt32 = 32
+        XCTAssertEqual(policy.keyDown(keyD, isRepeat: false, commandHeld: false,
+                                      isLocalShortcut: false).sends, [down(keyD)])
+        XCTAssertEqual(policy.modifier(leftMeta, pressed: true), .swallow)
+        XCTAssertEqual(policy.keyDown(keyD, isRepeat: true, commandHeld: true,
+                                      isLocalShortcut: true), .swallow)
+        XCTAssertEqual(policy.keyUp(keyD, commandHeld: true).sends, [up(keyD)])
+        // A fresh ⌘D press is the human's local chord again.
+        XCTAssertEqual(policy.keyDown(keyD, isRepeat: false, commandHeld: true,
+                                      isLocalShortcut: true), .passThrough)
+    }
+
     // MARK: - ⌘ as Super, only for host chords
 
     func testLocalOnlyChordNeverTapsSuperOnTheHost() {

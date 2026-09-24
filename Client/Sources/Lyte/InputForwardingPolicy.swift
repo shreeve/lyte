@@ -15,7 +15,8 @@ import LyteWire
 ///   used only for local (AppKit) shortcuts is never seen by the host, so
 ///   no lone Super tap (GNOME's Activities toggle) leaks out.
 /// - Local shortcuts stay local; auto-repeats never cross (the wire has
-///   no repeat value — a down without its up wedges a key).
+///   no repeat value — a down without its up wedges a key), and a key the
+///   host holds never becomes a local shortcut by repeating under ⌘.
 /// - A key or click's own modifier flags are the truth about ⌘: menu
 ///   tracking and title-bar drags can swallow a ⌘ release, and a stale
 ///   ⌘ must neither ride the next key out as Super nor stay down.
@@ -47,6 +48,9 @@ struct InputForwardingPolicy {
         _ code: UInt32?, isRepeat: Bool, commandHeld: Bool,
         isLocalShortcut: Bool
     ) -> Verdict {
+        // A key the host holds is the host's to repeat, whatever modifier
+        // joined since: its repeats never fire a local shortcut.
+        if isRepeat, let code, heldKeys.contains(code) { return .swallow }
         if commandHeld, isLocalShortcut { return .passThrough }
         if isRepeat { return .swallow }
         guard let code else { return .passThrough }
