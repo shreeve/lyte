@@ -267,7 +267,7 @@ public func makeVideoVectorFile(corpusDirectory: String) throws -> VideoVectorFi
     return VideoVectorFile(
         format: VideoVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         frames: frames,
         scenarios: scenarios
     )

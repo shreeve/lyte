@@ -33,8 +33,10 @@ clock); do not read them as the current contract.
 | Wire payload (ciphertext + 16 B tag) | ≤ 1128 | `WireBudget.maxWirePayloadByteCount` |
 | Datagram | ≤ 1152 | `WireBudget.maxDatagramByteCount` |
 
-The datagram ceiling can be raised per session only through capability key
-8 (`maxDatagramBytes`), host-proposed at an IDR boundary.
+Capability key 8 (`maxDatagramBytes`) declares and renegotiates a larger
+ceiling, host-proposed at an IDR boundary, but the raise is dormant in v1:
+every layer enforces the constants above and no end applies an agreed
+value past 1152.
 
 ## Envelope
 
@@ -46,7 +48,8 @@ or FEC group id; `timestamp` is microseconds in the sender's monotonic
 domain.
 
 TLV types: `0x00` invalid, `0x01` connection id (migration), `0x02` wire
-major version, `0x03` last input seq. Unknown TLV types are skipped by
+major version (reserved, unused in v1: the major rides the first Noise
+handshake payload byte and must match exactly), `0x03` last input seq. Unknown TLV types are skipped by
 consumers and preserved by the codec.
 
 Pinned by `envelope-v1.json`, `session-v1.json` (conn-id TLV),
@@ -60,7 +63,7 @@ Pinned by `envelope-v1.json`, `session-v1.json` (conn-id TLV),
 | 1 | audio | unreliable, RS-FEC | audio |
 | 2 | video-active | unreliable, RS-FEC + NACK repair | fresh video (repairs: video tail) |
 | 3 | feedback | unreliable, 25–50 ms reports | telemetry |
-| 4 | video-idle | ARQ one-shot groups | video tail |
+| 4 | video-idle | registered, unused in v1 | video tail |
 | 5–7 | reserved | never sent; dropped on receive | — |
 | 8 | bulk transfer | ARQ ordered stream | bulk (last) |
 | 9–255 | feature channels | ARQ | feature |
@@ -129,8 +132,9 @@ The receiver keeps a 64-deep replay window per channel and commits window
 state only after the tag verifies. After eight consecutive open failures it
 also tries the next four forward wraps, so a long one-way gap cannot kill a
 channel; the tag arbitrates, so a forgery never moves the anchor. Rekey is
-Noise REKEY plus an epoch increment, with the previous epoch kept as a
-grace key.
+a pinned primitive: Noise REKEY plus an epoch increment, with the previous
+epoch kept as a grace key. Wire v1 has no CTRL message that triggers it,
+so no v1 end rekeys and every session runs at epoch 0.
 
 Pinned by `noise-v1.json`.
 
@@ -211,8 +215,8 @@ after the handshake unless noted).
 | 0x12 | CapabilityUpdateAck | client → host | ARQ | `capabilities-v1.json` |
 | 0x13 | RetryChallenge | host → client | bare, unsealed | `retry-v1.json` |
 | 0x14 | RetryHandshake1 | client → host | bare, unsealed | `retry-v1.json` |
-| 0x15 | IdleFrame | host → client | ARQ one-shot group | `control-v1.json` |
-| 0x16 | InputEvent | client → host | ARQ | `control-v1.json` |
+| 0x15 | IdleFrame | host → client | CTRL ARQ one-shot group; not sent by the v1 host | `control-v1.json` |
+| 0x16 | InputEvent | client → host | ARQ | `control-v1.json`, `input-coordinates-v1.json` |
 | 0x17 | InputEcho | host → client | ARQ | `control-v1.json` |
 | 0x18 | AudioRoutingRequest | client → host | ARQ, key 9 | `control-v1.json` |
 | 0x19 | AudioRoutingStatus | host → client | ARQ, key 9 | `control-v1.json` |
@@ -238,16 +242,28 @@ groups are independent one-shot messages allocated by the endpoint
 (`ArqEndpoint.sendOneShot`). Segments are retransmitted byte-identical in
 fresh datagrams (fresh seq, fresh nonce). An ACK describes at most 256
 segments past its cumulative point, which is also the widest receive
-window; a sender never exceeds the peer's window. One send group holds at
-most 32,512 segments; past that `send` throws `ArqSendError.queueFull`,
-which every shell treats as backpressure, not as a fatal error.
+window; a sender never exceeds the peer's window. A sender bounds each
+group's queue locally (LyteWire: 32,512 segments, a memory bound, not wire
+contract); past it `send` throws `ArqSendError.queueFull`, which every
+shell treats as backpressure, not as a fatal error.
+
+A reassembled message is at most 262,144 bytes. The ceiling is not
+negotiated, so both ends share it. A message past it poisons its group:
+a one-shot group is dropped, and a poisoned ordered stream can never
+deliver in order again, so the endpoint reports it
+(`isOrderedStreamPoisoned`, `.orderedStreamPoisoned`) and the session
+should end. Incomplete one-shot receive groups share a 1 MiB receive
+budget; a segment past it is refused unacknowledged unless it completes
+its message.
 
 Pinned by `arq-v1.json`.
 
 ## Session lifecycle
 
 - Wire modes are ACTIVE and IDLE (0x09). FROZEN and RECOVERY are local
-  path-loss overlays and never appear on the wire.
+  path-loss overlays and never appear on the wire. IDLE is dormant in v1:
+  it follows a converged ratchet frame the host never produces, so the host
+  stays ACTIVE and never sends mode IDLE.
 - Teardown (0x0A) carries `takenOver` (0x01) or `shuttingDown` (0x02). The
   macOS client roams (re-dials) on `shuttingDown` and ends the window on
   `takenOver`.
@@ -282,7 +298,8 @@ Pinned by `beacon-v1.json`.
 - **Audio:** Opus, 5 ms packets, hard CBR, RS 4+2 groups on chan 1. The
   host may gate transmission during announced silence (0x25) and replays a
   pre-roll ring on wake.
-- **Cursor:** shape and hotspot as metadata (0x24), up to 256 × 256 BGRA.
+- **Cursor:** shape and hotspot as metadata (0x24), BGRA with sides ≤ 256
+  and area ≤ 16,384 px (65,536 B); a larger crop is suppressed.
 
 Pinned by `video-v1.json` + `video-corpus-v1/`, `postures-v1.json`,
 `cursor-v1.json`; the audio interior composes the envelope and FEC formats
@@ -298,6 +315,11 @@ and is pinned by hand-built bytes in `AudioInteriorTests`.
 | File transfer | 0x1C–0x21 | 8 | 11 | [bulk channel](decisions/20260728-053300-lyte-bulk-channel.md) |
 | Clipboard images | 0x22 + a bulk transfer | 8 | 10 ∧ 12 | [clipboard](decisions/20260722-231500-lyte-clipboard.md) |
 
+InputEvent pointer coordinates and scroll deltas are f64 and must be
+finite: a NaN or ±Inf coordinate rejects the event
+(`input-coordinates-v1.json`). Finite values of any magnitude decode;
+bounding them to the screen is the host injector's job.
+
 Bulk transfers are chunked, resumable across sessions and credit-driven;
 the sender reads at most 128 unconfirmed chunks ahead, and the receive
 window is clamped to 256 chunks.
@@ -310,8 +332,9 @@ window is clamped to 256 chunks.
   fails if a committed vector file is modified, deleted, renamed or
   retyped; new files and README prose may be added. Changed semantics need
   a new versioned file and a wire-version decision.
-- `VectorRegenerationTests` rebuilds every committed file from its builder
-  in `LyteWireVectorGen`, so builders cannot drift from the bytes.
+- `VectorRegenerationTests` fails unless every committed file is
+  byte-for-byte its builder's output in `LyteWireVectorGen` (one named
+  escaping exemption, `cursor-v1.json`).
 - The same vectors verify byte-for-byte on macOS, Linux (pup) and
   wasm32-wasip1 (`Wire/Scripts/wasm-test.sh`).
 - A banked set of wire-v2 changes is recorded in the

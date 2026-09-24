@@ -26,7 +26,9 @@ public struct WireExtension: Hashable, Sendable {
         /// Connection ID for path migration: identifies the session
         /// independent of the 4-tuple.
         public static let connectionId: UInt8 = 0x01
-        /// Wire major version, carried in the first handshake datagram.
+        /// Wire major version. Reserved and unused in v1: nothing sends
+        /// it, because the major rides the first Noise handshake payload
+        /// byte (`NoiseSession`).
         public static let wireVersion: UInt8 = 0x02
         /// u32 LE: the seq of the last input event injected before this
         /// frame's capture, stamped per shard; codec in `LastInputSeqTlv`.

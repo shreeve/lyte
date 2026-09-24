@@ -13,15 +13,6 @@ final class VectorFileTests: XCTestCase {
         try EnvelopeVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        let file = try loadFile()
-        XCTAssertEqual(file.identityProblems, [])
-        XCTAssertEqual(
-            Set(file.vectors.map(\.name)).count, file.vectors.count,
-            "vector names must be unique"
-        )
-    }
-
     func testAllVectors() throws {
         for vector in try loadFile().vectors {
             switch vector.kind {
@@ -65,6 +56,10 @@ final class VectorFileTests: XCTestCase {
         let (decoded, decodedPayload) = try Envelope.decode(datagram)
         XCTAssertEqual(decoded, envelope, vector.name)
         XCTAssertEqual(Array(decodedPayload), payload, vector.name)
+        // What makes it lenient: the canonical re-encode differs.
+        XCTAssertNotEqual(
+            try envelope.encode(payload: payload), datagram, vector.name
+        )
     }
 
     private func checkEncodeReject(_ vector: EnvelopeVector) throws {

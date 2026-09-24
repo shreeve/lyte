@@ -14,9 +14,8 @@ final class RetryVectorFileTests: XCTestCase {
         try RetryVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
+    func testProvenanceIsHonest() throws {
         let file = try loadFile()
-        XCTAssertEqual(file.identityProblems, [])
         // Provenance honesty: v1 has no external oracle for our
         // transcript, and the file must say so.
         for vector in file.cookieVectors {

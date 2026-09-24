@@ -68,7 +68,8 @@ public struct VideoAssemblerConfig: Hashable, Sendable {
     ) {
         self.holdbackFrameCount = holdbackFrameCount
         self.staleAfterMicroseconds = staleAfterMicroseconds
-        self.maxTrackedGroups = maxTrackedGroups
+        // At least the frame being assembled must be trackable.
+        self.maxTrackedGroups = max(maxTrackedGroups, 1)
         self.reorderThresholdPackets = reorderThresholdPackets
         // Write-off must never be looser than NACK presumption: a seq
         // cannot be written off before it is NACK-worthy. Clamp rather
@@ -96,7 +97,8 @@ public enum VideoShardDropReason: Hashable, Sendable {
     /// the group. (A different seq base with matching geometry is a repair
     /// shard, accepted.)
     case inconsistentGroup(FrameNumber)
-    /// This shard index already arrived (duplicate datagram).
+    /// This shard index already arrived (duplicate datagram), or the
+    /// group already decoded and waits its turn — the shard adds nothing.
     case duplicateShard(FrameNumber, shardIndex: UInt8)
 }
 
@@ -230,18 +232,6 @@ public struct VideoAssembler: Sendable {
         )
     }
 
-    /// Leading present-slot count for a tracked frame — the sweep's
-    /// clean-path early-out anchor. Nil when untracked.
-    func testingContiguousPrefix(of frame: FrameNumber) -> Int? {
-        groups[frame.rawValue]?.contiguousPrefix
-    }
-
-    /// Whether the loss sweep has latched out further events for a
-    /// tracked frame. Nil when untracked.
-    func testingSweepSettled(of frame: FrameNumber) -> Bool? {
-        groups[frame.rawValue]?.sweepSettled
-    }
-
     /// Ingests one received datagram's (envelope, payload) and returns
     /// every event it caused, decoded frames included, in order. `now` is
     /// the receiver's clock (sans-IO rule: time is injected).
@@ -367,8 +357,8 @@ public struct VideoAssembler: Sendable {
     private mutating func makeRoom(
         for frame: FrameNumber, into events: inout [VideoAssemblerEvent]
     ) -> [VideoAssemblerEvent]? {
-        guard groups.count >= config.maxTrackedGroups else { return nil }
-        let lowest = groups.keys.min()!
+        guard groups.count >= config.maxTrackedGroups,
+              let lowest = groups.keys.min() else { return nil }
         guard frame.rawValue > lowest else {
             return events + [.shardDropped(.staleFrame(frame))]
         }

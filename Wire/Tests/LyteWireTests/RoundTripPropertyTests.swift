@@ -44,7 +44,7 @@ final class RoundTripPropertyTests: XCTestCase {
     func testDecodeNeverTrapsOnArbitraryBytes() {
         var rng = SplitMix64(seed: 0x57_1D_E0_02)
         for _ in 0..<20_000 {
-            let length = Int.random(in: 0...1300, using: &rng)
+            let length = rng.int(in: 0...1300)
             var bytes = rng.bytes(length)
             // Bias toward the parser's own edges: valid-looking headers
             // with hostile TLV blocks.
@@ -71,7 +71,7 @@ final class RoundTripPropertyTests: XCTestCase {
                 envelope.extensions = []
             }
             let datagram = try envelope.encode(payload: rng.bytes(64))
-            let cut = Int.random(in: 0..<datagram.count, using: &rng)
+            let cut = rng.int(in: 0..<datagram.count)
             _ = try? Envelope.decode(Array(datagram.prefix(cut)))
         }
     }
@@ -79,11 +79,11 @@ final class RoundTripPropertyTests: XCTestCase {
     private func randomExtensions(
         using rng: inout SplitMix64
     ) throws -> [WireExtension] {
-        let count = Int.random(in: 0...4, using: &rng)
+        let count = rng.int(in: 0...4)
         return try (0..<count).map { _ in
             try WireExtension(
                 type: UInt8.random(in: 0...255, using: &rng),
-                value: rng.bytes(Int.random(in: 0...32, using: &rng))
+                value: rng.bytes(rng.int(in: 0...32))
             )
         }
     }

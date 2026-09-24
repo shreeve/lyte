@@ -122,7 +122,7 @@ public func makePostureVectorFile() throws -> PostureVectorFile {
     return PostureVectorFile(
         format: PostureVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         vectors: vectors
     )
 }

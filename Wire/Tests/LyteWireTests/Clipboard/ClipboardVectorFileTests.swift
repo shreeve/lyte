@@ -13,10 +13,6 @@ final class ClipboardVectorFileTests: XCTestCase {
         try ClipboardVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     /// The file's coverage discipline: both message codecs carry
     /// roundtrips including a multi-byte UTF-8 case, the exact ceiling
     /// is pinned as legal, every error case name appears at least

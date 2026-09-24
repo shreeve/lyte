@@ -16,12 +16,12 @@
 //
 // The envelope wrap (chan 0 plus the connection-ID TLV) is the caller's job.
 
-public enum PathMessageError: Error, Equatable {
+public enum PathMessageError: Error, Hashable, Sendable {
     case truncated(Int)
     case unexpectedType(UInt8)
 }
 
-public struct PathChallenge: Hashable, Sendable {
+public struct PathChallenge: Hashable, Sendable, SliceDecodable {
     public let token: UInt64
 
     public init(token: UInt64) {
@@ -35,14 +35,14 @@ public struct PathChallenge: Hashable, Sendable {
                           token: token)
     }
 
-    public static func decode(_ payload: [UInt8]) throws -> PathChallenge {
+    public static func decode(_ payload: ArraySlice<UInt8>) throws -> PathChallenge {
         PathChallenge(token: try decodePathMessage(
             payload, expecting: CtrlMessageType.pathChallenge
         ))
     }
 }
 
-public struct PathResponse: Hashable, Sendable {
+public struct PathResponse: Hashable, Sendable, SliceDecodable {
     public let token: UInt64
 
     public init(token: UInt64) {
@@ -56,7 +56,7 @@ public struct PathResponse: Hashable, Sendable {
                           token: token)
     }
 
-    public static func decode(_ payload: [UInt8]) throws -> PathResponse {
+    public static func decode(_ payload: ArraySlice<UInt8>) throws -> PathResponse {
         PathResponse(token: try decodePathMessage(
             payload, expecting: CtrlMessageType.pathResponse
         ))
@@ -79,15 +79,18 @@ private func encodePathMessage(type: UInt8, token: UInt64) -> [UInt8] {
     return out
 }
 
+/// Any length but exactly 10 — short or long — throws `truncated`, the
+/// name session-v1.json pins for both.
 private func decodePathMessage(
-    _ payload: [UInt8], expecting type: UInt8
+    _ payload: ArraySlice<UInt8>, expecting type: UInt8
 ) throws -> UInt64 {
     guard payload.count == PathChallenge.encodedByteCount else {
         throw PathMessageError.truncated(payload.count)
     }
-    guard payload[0] == type else {
-        throw PathMessageError.unexpectedType(payload[0])
+    let base = payload.startIndex
+    guard payload[base] == type else {
+        throw PathMessageError.unexpectedType(payload[base])
     }
-    // payload[1] is flags: reserved bits ignored on receive.
-    return wireReadLE(payload[...], at: 2)
+    // payload[base + 1] is flags: reserved bits ignored on receive.
+    return wireReadLE(payload, at: base + 2)
 }
