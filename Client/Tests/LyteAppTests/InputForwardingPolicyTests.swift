@@ -1,3 +1,4 @@
+import AppKit
 import LyteWire
 import XCTest
 @testable import Lyte
@@ -76,6 +77,44 @@ final class InputForwardingPolicyTests: XCTestCase {
         // A fresh ⌘D press is the human's local chord again.
         XCTAssertEqual(policy.keyDown(keyD, isRepeat: false, commandHeld: true,
                                       isLocalShortcut: true), .passThrough)
+    }
+
+    /// Shift held across a focus return: focus loss released it on the
+    /// host, the next key's own flags say it is still down.
+    func testModifierHeldAcrossFocusReturnIsPressedAgainFirst() {
+        var policy = InputForwardingPolicy()
+        XCTAssertEqual(policy.modifier(leftShift, pressed: true).sends,
+                       [down(leftShift)])
+        XCTAssertEqual(policy.releaseAll(), [up(leftShift)])
+        XCTAssertEqual(
+            policy.keyDown(keyS, isRepeat: false, commandHeld: false,
+                           isLocalShortcut: false, modifiersDown: [leftShift]).sends,
+            [down(leftShift), down(keyS)])
+        XCTAssertEqual(policy.heldKeys, [leftShift, keyS])
+    }
+
+    /// A Shift release the app never saw (menu tracking) must not leave
+    /// the host typing capitals.
+    func testStaleModifierIsReleasedBeforeTheNextKeyOrClick() {
+        var policy = InputForwardingPolicy()
+        _ = policy.modifier(leftShift, pressed: true)
+        XCTAssertEqual(
+            policy.button(buttonLeft, pressed: true, onVideo: true,
+                          commandHeld: false, modifiersDown: []).sends,
+            [up(leftShift), .pointerButton(button: buttonLeft, pressed: true)])
+        XCTAssertFalse(policy.heldKeys.contains(leftShift))
+    }
+
+    @MainActor
+    func testEventFlagsNameTheModifierSides() {
+        let rightShiftBit: UInt = 0x0000_0004
+        let rightShift = NSEvent.ModifierFlags(
+            rawValue: NSEvent.ModifierFlags.shift.rawValue | rightShiftBit)
+        XCTAssertEqual(LyteInputCapture.modifiersDown(rightShift), [54])
+        XCTAssertEqual(LyteInputCapture.modifiersDown([.option]), [56],
+                       "a flag without device bits counts as the left key")
+        XCTAssertEqual(LyteInputCapture.modifiersDown([.command]), [],
+                       "⌘ has its own resync")
     }
 
     /// macOS reports Caps Lock only as a lock-state flip; each flip is one

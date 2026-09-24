@@ -166,7 +166,8 @@ final class LyteInputCapture {
                 MacEvdevKeyMap.evdevButton(
                     forMacButtonNumber: event.buttonNumber),
                 pressed: pressed, onVideo: onVideo,
-                commandHeld: event.modifierFlags.contains(.command)), event)
+                commandHeld: event.modifierFlags.contains(.command),
+                modifiersDown: Self.modifiersDown(event.modifierFlags)), event)
         default:
             break
         }
@@ -226,7 +227,8 @@ final class LyteInputCapture {
             return execute(forwarding.keyDown(
                 code, isRepeat: event.isARepeat, commandHeld: commandHeld,
                 isLocalShortcut: commandHeld
-                    && Self.isLocalShortcut(event)), event)
+                    && Self.isLocalShortcut(event),
+                modifiersDown: Self.modifiersDown(event.modifierFlags)), event)
 
         case .keyUp:
             let code = MacEvdevKeyMap.evdevKeycode(
@@ -248,6 +250,29 @@ final class LyteInputCapture {
         default:
             return event
         }
+    }
+
+    /// The plain modifier keys (evdev) physically down per this event's
+    /// flags: the device bits name the side; a flag without them counts as
+    /// the left key.
+    static func modifiersDown(_ flags: NSEvent.ModifierFlags) -> Set<UInt32> {
+        let groups: [(flag: NSEvent.ModifierFlags, left: UInt16, right: UInt16)] = [
+            (.shift, 0x38, 0x3C), (.control, 0x3B, 0x3E), (.option, 0x3A, 0x3D),
+        ]
+        var down = Set<UInt32>()
+        for group in groups where flags.contains(group.flag) {
+            let sides = [group.left, group.right].compactMap { keyCode in
+                MacEvdevKeyMap.modifierKeys[keyCode].flatMap {
+                    flags.rawValue & $0.deviceMask != 0 ? $0.evdev : nil
+                }
+            }
+            if sides.isEmpty, let left = MacEvdevKeyMap.modifierKeys[group.left] {
+                down.insert(left.evdev)
+            } else {
+                down.formUnion(sides)
+            }
+        }
+        return down
     }
 
     /// True when a menu item (the app's own commands, which own every

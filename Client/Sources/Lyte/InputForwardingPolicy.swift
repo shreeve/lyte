@@ -17,9 +17,12 @@ import LyteWire
 /// - Local shortcuts stay local; auto-repeats never cross (the wire has
 ///   no repeat value — a down without its up wedges a key), and a key the
 ///   host holds never becomes a local shortcut by repeating under ⌘.
-/// - A key or click's own modifier flags are the truth about ⌘: menu
-///   tracking and title-bar drags can swallow a ⌘ release, and a stale
-///   ⌘ must neither ride the next key out as Super nor stay down.
+/// - A key or click's own modifier flags are the truth about every
+///   modifier: menu tracking and title-bar drags can swallow a release,
+///   and focus loss releases what is still physically held. A stale ⌘
+///   must neither ride the next key out as Super nor stay down, and
+///   Shift, Control and Option are pressed or released to match before
+///   the key or click goes out.
 struct InputForwardingPolicy {
     struct Verdict: Equatable {
         /// Wire events to send, in order.
@@ -34,6 +37,9 @@ struct InputForwardingPolicy {
 
     /// KEY_LEFTMETA and KEY_RIGHTMETA — the evdev face of ⌘.
     static let commandKeycodes: Set<UInt32> = [125, 126]
+    /// Left and right Shift, Control and Option — the modifiers that ride
+    /// to the host as themselves.
+    static let plainModifierKeycodes: Set<UInt32> = [42, 54, 29, 97, 56, 100]
 
     /// evdev key codes the host believes are down.
     private(set) var heldKeys: Set<UInt32> = []
@@ -43,10 +49,12 @@ struct InputForwardingPolicy {
     private(set) var pendingCommandKeys: Set<UInt32> = []
 
     /// A key press. `code` is nil for keys with no evdev mapping;
-    /// `isLocalShortcut` says an app shortcut owns this ⌘ chord.
+    /// `isLocalShortcut` says an app shortcut owns this ⌘ chord;
+    /// `modifiersDown` is the event's own record of which plain modifier
+    /// keys are physically down (nil when unknown).
     mutating func keyDown(
         _ code: UInt32?, isRepeat: Bool, commandHeld: Bool,
-        isLocalShortcut: Bool
+        isLocalShortcut: Bool, modifiersDown: Set<UInt32>? = nil
     ) -> Verdict {
         // A key the host holds is the host's to repeat, whatever modifier
         // joined since: its repeats never fire a local shortcut.
@@ -54,7 +62,8 @@ struct InputForwardingPolicy {
         if commandHeld, isLocalShortcut { return .passThrough }
         if isRepeat { return .swallow }
         guard let code else { return .passThrough }
-        var sends = resyncCommand(held: commandHeld)
+        var sends = resyncModifiers(modifiersDown)
+        sends += resyncCommand(held: commandHeld)
         sends.append(.keyKeycode(keycode: code, pressed: true))
         heldKeys.insert(code)
         return Verdict(sends: sends, consumed: true)
@@ -110,12 +119,14 @@ struct InputForwardingPolicy {
     /// A mouse button edge. `onVideo` is the hit test: true when the
     /// point belongs to the video surface rather than an overlay.
     mutating func button(
-        _ code: UInt32?, pressed: Bool, onVideo: Bool, commandHeld: Bool
+        _ code: UInt32?, pressed: Bool, onVideo: Bool, commandHeld: Bool,
+        modifiersDown: Set<UInt32>? = nil
     ) -> Verdict {
         guard let code else { return .passThrough }
         if pressed {
             guard onVideo else { return .passThrough }
-            var sends = resyncCommand(held: commandHeld)
+            var sends = resyncModifiers(modifiersDown)
+            sends += resyncCommand(held: commandHeld)
             sends.append(.pointerButton(button: code, pressed: true))
             heldButtons.insert(code)
             return Verdict(sends: sends, consumed: true)
@@ -141,6 +152,23 @@ struct InputForwardingPolicy {
         heldButtons.removeAll()
         pendingCommandKeys.removeAll()
         return sends
+    }
+
+    /// The Shift/Control/Option edges that make the host's view match the
+    /// physical keys ahead of a forwarded press: stale ones released, ones
+    /// held since before focus returned pressed.
+    private mutating func resyncModifiers(
+        _ down: Set<UInt32>?
+    ) -> [InputEvent.Body] {
+        guard let down = down?.intersection(Self.plainModifierKeycodes)
+        else { return [] }
+        let held = heldKeys.intersection(Self.plainModifierKeycodes)
+        let stale = held.subtracting(down).sorted()
+        let missing = down.subtracting(held).sorted()
+        heldKeys.subtract(stale)
+        heldKeys.formUnion(missing)
+        return stale.map { .keyKeycode(keycode: $0, pressed: false) }
+            + missing.map { .keyKeycode(keycode: $0, pressed: true) }
     }
 
     /// The ⌘ edges to send ahead of a forwarded press: with ⌘ down, the
