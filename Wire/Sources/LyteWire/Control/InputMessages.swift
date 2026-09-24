@@ -22,7 +22,8 @@
 //                             bytes reject)
 //
 // Kinds and bodies (coordinates are f64 IEEE-754 bit patterns, LE, and
-// must be finite: a NaN or ±Inf coordinate rejects):
+// must be finite: a NaN or ±Inf coordinate rejects, and encode refuses
+// one):
 //
 //   0x01 keyKeycode             keycode u32 (evdev), pressed u8 (0/1)
 //   0x02 pointerMotionAbsolute  x f64, y f64 — pixels in the host's
@@ -86,8 +87,11 @@ public struct InputEvent: Hashable, Sendable, SliceDecodable {
 
     public static let headerByteCount = 14
 
-    /// Encodes the whole message, type byte included. Cannot fail.
-    public func encode() -> [UInt8] {
+    /// Encodes the whole message, type byte included. Throws
+    /// `nonFiniteCoordinate` for a NaN or ±Inf coordinate: the decoder
+    /// rejects one, so a sender bug surfaces at the sender instead of as
+    /// a protocol break at the peer.
+    public func encode() throws -> [UInt8] {
         var out = [UInt8]()
         out.reserveCapacity(Self.headerByteCount + 17)
         out.append(CtrlMessageType.inputEvent)
@@ -100,23 +104,32 @@ public struct InputEvent: Hashable, Sendable, SliceDecodable {
             out.append(pressed ? 1 : 0)
         case .pointerMotionAbsolute(let x, let y):
             out.append(Self.kindPointerMotionAbsolute)
-            wireAppendLE(x.bitPattern, to: &out)
-            wireAppendLE(y.bitPattern, to: &out)
+            try Self.appendCoordinate(x, to: &out)
+            try Self.appendCoordinate(y, to: &out)
         case .pointerMotionRelative(let dx, let dy):
             out.append(Self.kindPointerMotionRelative)
-            wireAppendLE(dx.bitPattern, to: &out)
-            wireAppendLE(dy.bitPattern, to: &out)
+            try Self.appendCoordinate(dx, to: &out)
+            try Self.appendCoordinate(dy, to: &out)
         case .pointerButton(let button, let pressed):
             out.append(Self.kindPointerButton)
             wireAppendLE(button, to: &out)
             out.append(pressed ? 1 : 0)
         case .pointerAxis(let dx, let dy, let finish):
             out.append(Self.kindPointerAxis)
-            wireAppendLE(dx.bitPattern, to: &out)
-            wireAppendLE(dy.bitPattern, to: &out)
+            try Self.appendCoordinate(dx, to: &out)
+            try Self.appendCoordinate(dy, to: &out)
             out.append(finish ? 1 : 0)
         }
         return out
+    }
+
+    private static func appendCoordinate(
+        _ value: Double, to out: inout [UInt8]
+    ) throws {
+        guard value.isFinite else {
+            throw InputMessageError.nonFiniteCoordinate(value.bitPattern)
+        }
+        wireAppendLE(value.bitPattern, to: &out)
     }
 
     /// Decodes a whole ARQ-delivered message (type byte first). Throws

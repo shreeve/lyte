@@ -51,9 +51,10 @@ Never point Client's scratch path at the repository root `.build`: it holds
 the published `Lyte.app`, and `swift package clean` would delete it while it
 runs.
 
-Which suites to run after a change: Wire → all packages; Common → Host,
-Client, SystemTests, Browser; Host → SystemTests, Browser; Client →
-SystemTests, Browser.
+Which suites to run after a change: the changed package, Common (its lints
+read every package's sources), and every package that depends on the
+changed one: Common or Wire → all packages; Host or Client → SystemTests
+and Browser.
 
 Iterate with `--filter <TestClass>`. Environment knobs read by the suites:
 
@@ -82,7 +83,7 @@ fakes:
 |---|---|
 | Common | `LyteCoreTests`, `LyteIOTests`, `LyteTestKitTests` (the sans-IO lint and the single-owner ratchets), `COpusTests` |
 | Wire | `LyteWireTests` — codecs, vector files, `VectorRegenerationTests`, ARQ/FEC/Noise/pairing simulations |
-| Host | `HostCoreTests`, `HostSessionTests`, `HostWireTests` (session gates), `HostAudioTests`, `HostLayoutTests`; Linux only: `HostEyeTests`, `CNetIOTests`, `CPipeWireAudioTests` (against a silent PipeWire socket in a temp runtime dir, never the desktop's server), `LyteHostIntegrationTests` |
+| Host | `HostCoreTests`, `HostSessionTests`, `HostWireTests` (session gates and HostIO), `HostAudioTests`, `HostLayoutTests` (the seeded `host.conf`); Linux only: `HostEyeTests`, `CNetIOTests`, `CPipeWireAudioTests` (against a silent PipeWire socket in a temp runtime dir, never the desktop's server), `LyteHostIntegrationTests` |
 | Client | `LyteTransportTests`, `LyteClientSessionTests`, `LyteClientCoreTests`, `LyteCorpusTests` (slow corpus legs), `LyteAppTests` (app lifecycle under injected services), `LyteHelperTests` |
 | SystemTests | `LyteClientHostTests` — real client and host composed in one process |
 | Browser | `LyteClientBrowserCoreTests` — the browser core against an in-process `HostWire.Session`; page input rules in `Browser/Tests/Page/page.test.mjs` (Node, not SwiftPM) |
@@ -105,9 +106,19 @@ fakes:
   host lifecycle machine are spelled only by their owners. The Opus leaf
   ratchet (`LyteCoreTests/COpusDeclarationRatchetTests`) scans every
   package manifest.
-- Layout tests (`HostLayoutTests`, `ClientLayoutTests`,
-  `SystemTestsLayoutTests`) check the `Sources/<Target>` /
-  `Tests/<Target>Tests` grammar and role boundaries, not file lists.
+
+Boundary tests in the other packages:
+
+- `ClientLayoutTests` (`LyteTransportTests`): every Client manifest target
+  owns exactly `Sources/<Target>/` (tests `Tests/<Target>Tests/`), the
+  shipping client has no plaintext transport mode, and each control
+  concept is reached from one `LyteClientSession` owner.
+- `SystemTestsLayoutTests`: the client and host roles meet only in
+  SystemTests and the Browser tests (an import scan that attributes and
+  qualifiers cannot evade), and shipping client code carries no test
+  equipment.
+- `WireLayoutTests`: every Wire target files its sources under
+  `LyteWire`'s domain directories.
 
 ## The macOS gate — `Scripts/CI/test-all-macos.sh`
 
@@ -152,8 +163,9 @@ One ssh session to `LYTE_PUP_HOST` (default `pup`) takes an `flock` on
 second gate fails at once with that name. The lock lives as long as the
 session's processes, and the session terminates its whole process tree
 when the local gate goes away, so an interrupted gate leaves nothing
-running. Under the lock the local side mirrors Client, Common, Wire, Host
-and `Scripts/` to `~/src/lyte-gates/deterministic/`, then the session:
+running. Under the lock the local side mirrors Client, Common, Wire, Host,
+`Scripts/`, `LICENSE` and `docs/THIRD-PARTY.md` (the host image carries
+both) to `~/src/lyte-gates/deterministic/`, then the session:
 
 1. Fingerprints protected state: `~/.config/lyte/{noise_static.key,
    paired_clients,host.conf}` (required: a missing one fails the gate
@@ -243,7 +255,8 @@ first.
 static|motion|quality-static|handshake-only|all` builds a diagnostic
 `Lyte.app` (`LYTE_APP_DIAGNOSTICS=1 Scripts/make-app.sh release`; with
 `--no-build` it refuses a bundle whose Info.plist lacks
-`LyteDiagnosticEntryPoints`), launches it against the standing host, drives
+`LyteDiagnosticEntryPoints`; only such a bundle obeys the benchmark and
+witness environment below), launches it against the standing host, drives
 `Scripts/motion-presenter.py` on pup's glass for motion legs, and judges the
 run with `Scripts/analyze-app-benchmark.py`. `all` runs each leg in its own
 process. It takes the app-artifact lock and refuses to run while the
@@ -259,7 +272,7 @@ continuity). See
 | Variable | Used by | Meaning |
 |---|---|---|
 | `LYTE_PUP_HOST` | both, pup gate | ssh host (default `pup`); `PUP` and `LYTE_BENCHMARK_PUP` are refused |
-| `LYTE_BENCHMARK_HOST` | both | address the app dials (default `10.0.0.232`, the wired leg; use `10.0.0.249` while pup is on Wi-Fi only) |
+| `LYTE_BENCHMARK_HOST` | both | address the app dials (default `10.0.0.232`, pup's wired leg; the address in use is in [HANDOFF.md](../HANDOFF.md)) |
 | `LYTE_BENCHMARK_PORT` | both | UDP port `lyte-host.service` must own (app default 41151; netem requires it) |
 | `LYTE_BENCHMARK_ALLOW_STANDING_PORT` | netem | `1` to impair the standing 41151 flow |
 | `LYTE_BENCHMARK_SECONDS` | app | leg length (default 30) |
@@ -274,5 +287,7 @@ continuity). See
 - Reproduce a bug with a test that fails before the fix.
 - Test behavior. Do not pin source spellings, private member names or
   file lists; see [AGENTS.md](../AGENTS.md#change-discipline).
-- New wire bytes need a new vector file (or new cases appended in a new
-  file) plus a builder in `LyteWireVectorGen`.
+- New wire bytes go in a new vector file with a builder in
+  `LyteWireVectorGen`, registered in `vectorFileBuilders`
+  (`VectorRegenerationTests` fails on an unregistered file); see
+  [Wire/Vectors/README.md](../Wire/Vectors/README.md).

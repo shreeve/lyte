@@ -6,10 +6,9 @@ authorization for the client pairing key survives every rebuild — one
 
 ## The problem
 
-Lyte's pairing identity lives *inside* the login Keychain — today the X25519
-Noise static (`ClientNoiseIdentity`, a generic-password item via `SecItemAdd`);
-originally the GameStream era's RSA-2048 mutual-TLS key, where this lesson was
-learned. The first time a binary touches that item, macOS shows:
+Lyte's pairing identity lives *inside* the login Keychain: the X25519 Noise
+static (`ClientNoiseIdentity`, a generic-password item via `SecItemAdd`). The
+first time a binary touches that item, macOS shows:
 
 > "lyte-cli" wants to sign using key "…" in your keychain.
 
@@ -163,9 +162,10 @@ Scripts/sign-dev.sh .build/debug/lyte-cli
 Scripts/sign-dev.sh .build/Lyte.app
 ```
 
-Prefer these over `swift build --package-path Client --scratch-path "$PWD/.build"`
-whenever the binary will talk to a host, so the signature (and thus the
-keychain grant) stays intact.
+A bare `swift build --package-path Client --scratch-path .build` rewrites
+`.build/<configuration>/lyte-cli` as an ad-hoc-signed executable, replacing
+the stable signature and so the keychain grant. Run the signing script again
+before any CLI command that touches the client identity.
 
 ## How `sign-dev.sh` picks the identifier
 
@@ -290,7 +290,7 @@ it is byte-for-byte the signed app's designated requirement, proves the app
 satisfies it, and proves both the same-signed helper (wrong identifier) and an
 Apple platform binary (wrong identity) fail it.
 
-## Gotchas (learned the hard way)
+## Gotchas
 
 - **`security find-identity -v` hides the fallback.** Apple selection uses
   `security find-identity -v -p codesigning`. The valid-only filter omits the
@@ -313,8 +313,3 @@ Apple platform binary (wrong identity) fail it.
   identity from the user's search list, or Lyte Dev from the dedicated
   keychain). A stable signing identity and DR keep the pairing key's ACL grant
   valid.
-- **A later bare `swift build --package-path Client --scratch-path .build`
-  overwrites the CLI artifact.** SwiftPM emits an
-  ad-hoc-signed executable at `.build/<configuration>/lyte-cli`, replacing the
-  stable signature installed by `Scripts/build-cli.sh`. Run the signing script
-  again immediately before any CLI command that touches the client identity.

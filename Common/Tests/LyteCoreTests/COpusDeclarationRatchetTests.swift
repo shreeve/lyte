@@ -131,6 +131,6 @@ final class COpusDeclarationRatchetTests: XCTestCase {
     }
 
     private func relative(_ file: URL, to root: URL) -> String {
-        String(file.path.dropFirst(root.path.count + 1))
+        RepositorySourceTree.relativePath(of: file, below: root)
     }
 }
