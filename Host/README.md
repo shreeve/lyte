@@ -25,14 +25,13 @@ touches hardware or the OS is Linux-only (`#if os(Linux)` in
 | `HostAudio` | all | 5 ms hard-CBR Opus over Common's pinned `COpus` |
 | `HostWireTestKit` | all | Test-only: `HostSessionHarness`, a shipping `Session` in virtual time |
 | `HostEye` | Linux | Direct Eye: GETFB2 scanout ticket, dmabuf import, 16×16-tile GPU pixel fingerprint, NV12/AYUV EGL blit (BT.709 limited range), VAAPI encoder seat, cursor plane |
-| `CDRM` `CGBM` `CEGL` `CVA` `CPipeWire` `CDBus` `CNvEnc` `CCuda` | Linux | System-library module maps |
+| `CDRM` `CGBM` `CEGL` `CVA` `CPipeWire` `CDBus` | Linux | System-library module maps |
 | `CPipeWireAudio` | Linux | Default-sink monitor capture at the 5 ms quantum |
 | `CNetIO` | Linux | UDP sockets: `sendmmsg`/`recvmmsg`, per-packet TOS, kernel timestamps |
 | `CInputUinput` | Linux | Virtual evdev devices, the only input backend |
 | `lyte-host` | Linux | The composition root (`HostApplication`): Direct Eye leg, session wiring, service loop, Avahi, pairing, audio, clipboard (Mutter RemoteDesktop session), files, input |
 | `lyte-control-peer` | all | DRM-free `HostWire.Session` over UDP for the browser proof |
 | `lyte-eye` | Linux | Standalone Direct Eye probe |
-| `lyte-nvenc` | Linux | Banked NVENC probe |
 | `lyte-netio-check`, `lyte-pace-check`, `lyte-audio-check`, `lyte-uinput-check` | Linux | On-host verification harnesses |
 
 C lives only at hardware and OS leaves, per the doctrine in

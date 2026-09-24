@@ -7,7 +7,7 @@ import PackageDescription
 // those mechanisms to LyteWire codecs — HS-5), and their tests build
 // everywhere, including macOS. The
 // capture/encode leaves exist only on Linux: they bind PipeWire, D-Bus,
-// DRM/GBM/EGL/VAAPI, CUDA/NVENC, uinput, and UDP through narrow C or
+// DRM/GBM/EGL/VAAPI, uinput, and UDP through narrow C or
 // system-library targets.
 
 var products: [Product] = [
@@ -129,7 +129,6 @@ var targets: [Target] = [
 #if os(Linux)
 products.append(.executable(name: "lyte-host", targets: ["lyte-host"]))
 products.append(.executable(name: "lyte-eye", targets: ["lyte-eye"]))
-products.append(.executable(name: "lyte-nvenc", targets: ["lyte-nvenc"]))
 
 targets += [
     .systemLibrary(
@@ -182,21 +181,6 @@ targets += [
         name: "CVA",
         pkgConfig: "libva",
         providers: [.apt(["libva-dev"])]
-    ),
-    // E6a: the NVENC SDK surface (vendored nvEncodeAPI.h — FFmpeg's
-    // nv-codec-headers n12.2, MIT; runtime = the driver's own
-    // libnvidia-encode) and the CUDA-context sliver it needs.
-    .systemLibrary(name: "CNvEnc"),
-    .systemLibrary(name: "CCuda"),
-    // E6a milestone 1: the NVENC-native probe — infinite GOP, one
-    // demanded IDR, mid-stream NvEncReconfigureEncoder with zero
-    // reset — the two levers that retire the vendored no-reset patch.
-    .executableTarget(
-        name: "lyte-nvenc",
-        dependencies: [
-            "CNvEnc", "CCuda",
-            .product(name: "LyteIO", package: "Common"),
-        ]
     ),
     // The eye's organs as a LIBRARY (E1): the identity/ticket DRM layer,
     // whole-screen GPU observation, EGL/GL import+blit, and VAAPI pens —

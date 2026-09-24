@@ -1,5 +1,0 @@
-module CNvEnc {
-    header "shim.h"
-    link "nvidia-encode"
-    export *
-}
