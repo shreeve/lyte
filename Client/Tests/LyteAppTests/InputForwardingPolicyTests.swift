@@ -120,14 +120,58 @@ final class InputForwardingPolicyTests: XCTestCase {
     /// macOS reports Caps Lock only as a lock-state flip; each flip is one
     /// full press on the host, never a held key the host could repeat.
     func testCapsLockFlipIsOneTapOnTheHost() {
-        let policy = InputForwardingPolicy()
+        var policy = InputForwardingPolicy()
         let capsLock: UInt32 = 58
-        for _ in 0..<2 {
-            let verdict = policy.lockToggled(capsLock)
+        for on in [true, false] {
+            let verdict = policy.capsLockChanged(on: on)
             XCTAssertEqual(verdict.sends, [down(capsLock), up(capsLock)])
             XCTAssertTrue(verdict.consumed)
             XCTAssertTrue(policy.heldKeys.isEmpty)
         }
+    }
+
+    /// Caps Lock already on when the stream starts: the host's is off, and
+    /// flipping on every lock event would keep the two inverted for good.
+    /// The first key syncs the host; later lock events follow the state.
+    func testCapsLockOnAtStreamStartIsSyncedBeforeTheFirstKey() {
+        var policy = InputForwardingPolicy()
+        let capsLock: UInt32 = 58
+        XCTAssertEqual(
+            policy.keyDown(keyS, isRepeat: false, commandHeld: false,
+                           isLocalShortcut: false, capsLockOn: true).sends,
+            [down(capsLock), up(capsLock), down(keyS)])
+        XCTAssertEqual(policy.keyUp(keyS, commandHeld: false).sends, [up(keyS)])
+        XCTAssertEqual(
+            policy.keyDown(keyS, isRepeat: false, commandHeld: false,
+                           isLocalShortcut: false, capsLockOn: true).sends,
+            [down(keyS)], "an agreeing state taps nothing")
+        XCTAssertEqual(policy.capsLockChanged(on: false).sends,
+                       [down(capsLock), up(capsLock)])
+        XCTAssertEqual(policy.capsLockChanged(on: false).sends, [],
+                       "a lock event the host already matches taps nothing")
+    }
+
+    /// The ISO key-type read happens per event; if it changes between a
+    /// key's press and release (a keyboard swap mid-hold), the release
+    /// maps to another code and the pressed one would stay down.
+    func testAReleaseGoesOutAsTheCodeItsPressDid() {
+        var policy = InputForwardingPolicy()
+        let grave: UInt32 = 41
+        let key102nd: UInt32 = 86
+        let section: UInt16 = 0x0A
+        XCTAssertEqual(
+            policy.keyDown(grave, macKeyCode: section, isRepeat: false,
+                           commandHeld: false, isLocalShortcut: false).sends,
+            [down(grave)])
+        XCTAssertEqual(
+            policy.keyDown(key102nd, macKeyCode: section, isRepeat: true,
+                           commandHeld: false, isLocalShortcut: false),
+            .swallow, "the held key's repeat stays the host's")
+        XCTAssertEqual(
+            policy.keyUp(key102nd, macKeyCode: section, commandHeld: false)
+                .sends, [up(grave)])
+        XCTAssertTrue(policy.heldKeys.isEmpty)
+        XCTAssertTrue(policy.pressedAs.isEmpty)
     }
 
     // MARK: - ⌘ as Super, only for host chords

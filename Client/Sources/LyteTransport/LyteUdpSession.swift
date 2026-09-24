@@ -244,7 +244,16 @@ extension LyteUdpSession: VideoRecoveryPeer {
         core?.requestVideoRecovery(after: frame, cause: cause)
     }
 
-    public func noteVideoIrapEnqueued(frame: FrameNumber) {
-        core?.noteVideoIrapEnqueued(frame: frame)
+    public func noteVideoIrapEnqueued(
+        frame: FrameNumber, closesRecovery: Bool
+    ) {
+        core?.noteVideoIrapEnqueued(
+            frame: frame, closesRecovery: closesRecovery)
+    }
+
+    public func ensureVideoRecoveryOpen(
+        after frame: FrameNumber, cause: VideoRecoveryCause
+    ) {
+        core?.ensureVideoRecoveryOpen(after: frame, cause: cause)
     }
 }

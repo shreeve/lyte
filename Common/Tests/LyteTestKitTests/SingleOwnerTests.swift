@@ -99,6 +99,70 @@ final class SingleOwnerTests: XCTestCase {
         ("VideoFlightRecorder", ["SystemMonotonicClock"]),
     ]
 
+    /// ARQ carrier packing lives only in Wire: its segment, ack and frame
+    /// codecs are Wire's, and no role decodes and re-cuts what Wire's
+    /// endpoint packed (a second, downstream packer).
+    private let arqCodecTypes = ["ArqFrame", "ArqSegment", "ArqAck"]
+
+    func testArqCarrierPackingLivesOnlyInWire() throws {
+        let sources = try productionSources()
+        let rules = arqCodecTypes.map {
+            ConfinedUse(tokens: [$0], owner: .directory("Wire/Sources/"))
+        }
+        XCTAssertEqual(
+            Self.confinedUseViolations(rules, in: sources), [],
+            "ARQ frames were packed or re-cut outside Wire")
+        let wireTypes = Set(sources
+            .filter { $0.path.hasPrefix("Wire/Sources/") }
+            .flatMap(\.topLevelTypes))
+        XCTAssertEqual(arqCodecTypes.filter { !wireTypes.contains($0) }, [],
+                       "a renamed codec would pass this rule vacuously")
+    }
+
+    /// Only the Browser package's test targets depend on Host products:
+    /// the browser client meets the host role in its tests alone. Read from
+    /// the evaluated manifest's target graph, not the manifest's text.
+    func testOnlyBrowserTestTargetsDependOnHost() throws {
+        let root = RepositorySourceTree().repositoryRoot
+        let host = try Self.dumpPackage(root.appendingPathComponent("Host"))
+        let browser = try Self.dumpPackage(
+            root.appendingPathComponent("Browser"))
+        let hostProducts = Set(host.products.map(\.name))
+        XCTAssertFalse(hostProducts.isEmpty)
+
+        let dependents = browser.targets.filter { target in
+            target.dependencies.contains {
+                $0.dependsOnPackage("host", products: hostProducts)
+            }
+        }
+        XCTAssertFalse(dependents.isEmpty,
+                       "the browser tests drive a real host session")
+        XCTAssertEqual(
+            dependents.filter { $0.type != "test" }.map(\.name), [],
+            "a shipping Browser target depends on Host")
+    }
+
+    func testDependsOnPackageReadsProductAndByNameEdges() throws {
+        let json = Data(#"""
+            {"name": "X", "products": [], "targets": [
+              {"name": "A", "type": "regular", "dependencies": [
+                {"product": ["HostWire", "Host", null, null]}]},
+              {"name": "B", "type": "regular", "dependencies": [
+                {"byName": ["HostSession", null]}]},
+              {"name": "C", "type": "regular", "dependencies": [
+                {"product": ["LyteWire", "Wire", null, null]},
+                {"byName": ["C2", null]},
+                {"target": ["HostWire", null]}]}]}
+            """#.utf8)
+        let manifest = try JSONDecoder().decode(DumpedPackage.self, from: json)
+        let products: Set<String> = ["HostWire", "HostSession"]
+        XCTAssertEqual(manifest.targets.filter { target in
+            target.dependencies.contains {
+                $0.dependsOnPackage("host", products: products)
+            }
+        }.map(\.name), ["A", "B"])
+    }
+
     func testOwnedVocabulariesHaveNoTwins() throws {
         let sources = try productionSources()
         XCTAssertEqual(
@@ -204,6 +268,68 @@ final class SingleOwnerTests: XCTestCase {
     }
 
     // MARK: - Engine
+
+    /// The fields of `swift package dump-package` the graph rule reads.
+    fileprivate struct DumpedPackage: Decodable {
+        struct Product: Decodable { let name: String }
+        struct Target: Decodable {
+            let name: String
+            let type: String
+            let dependencies: [Dependency]
+        }
+        /// One target dependency: `product` is [name, package, …],
+        /// `byName` is [name, …], `target` is [name, …].
+        struct Dependency: Decodable {
+            let product: [String?]?
+            let byName: [String?]?
+
+            func dependsOnPackage(
+                _ identity: String, products: Set<String>
+            ) -> Bool {
+                if let product, product.count > 1,
+                   product[1]?.lowercased() == identity {
+                    return true
+                }
+                if let name = byName?.first ?? nil {
+                    return products.contains(name)
+                }
+                return false
+            }
+        }
+        let products: [Product]
+        let targets: [Target]
+    }
+
+    /// Evaluates `package`'s manifest with SwiftPM, in a private scratch
+    /// path so no other build's lock is touched.
+    fileprivate static func dumpPackage(_ package: URL) throws -> DumpedPackage {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lyte-dump-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = [
+            "swift", "package", "--package-path", package.path,
+            "--scratch-path", scratch.path, "dump-package",
+        ]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw DumpPackageFailed(
+                package: package.lastPathComponent,
+                status: process.terminationStatus)
+        }
+        return try JSONDecoder().decode(DumpedPackage.self, from: data)
+    }
+
+    private struct DumpPackageFailed: Error {
+        let package: String
+        let status: Int32
+    }
 
     private func productionSources() throws -> [Source] {
         let tree = RepositorySourceTree()

@@ -60,8 +60,15 @@ final class HelperClient {
         let requirement = helperRequirement
         let embeddedHelper = Bundle.main.bundleURL
             .appendingPathComponent("Contents/MacOS/lyte-helperd")
+        // The embedded helper's build; an unreadable one matches no answer,
+        // so validation (which then refuses it) decides.
+        let expectedVersion = (try? HelperCodeIdentity.codeHash(
+            ofCodeAt: embeddedHelper)).map {
+                HelperCodeIdentity.versionAnswer(
+                    protocolVersion: LyteHelper.version, codeHash: $0)
+            } ?? ""
         let outcome = HelperRegistration(
-            expectedVersion: LyteHelper.version,
+            expectedVersion: expectedVersion,
             status: {
                 switch service.status {
                 case .enabled: .enabled

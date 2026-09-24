@@ -5,8 +5,9 @@ import Synchronization
 public typealias NackPolicyConfig = ClientNackPolicy.Config
 
 /// The native shell over the IO-free ClientNackPolicy: one lock, the RTT
-/// read before it is taken, and the decision's exits run after it is
-/// released — `emit` sends entries down the feedback path promptly (the
+/// read before it is taken (only for the NACK candidates that use it —
+/// every shard's signal passes here), and the decision's exits run after
+/// it is released — `emit` sends entries down the feedback path promptly (the
 /// host's freeze budget is cadence-derived), `escalate` feeds the
 /// coalesced IDR recovery.
 public final class NackPolicy: Sendable {
@@ -37,7 +38,8 @@ public final class NackPolicy: Sendable {
     }
 
     public func handle(_ signal: VideoRepairSignal, now: ClientTimestamp) {
-        let rtt = rtt()
+        var rtt: Int64?
+        if case .nackCandidates = signal { rtt = self.rtt() }
         execute(policy.withLock {
             $0.handle(signal, rttMicroseconds: rtt, now: now)
         }, now: now)

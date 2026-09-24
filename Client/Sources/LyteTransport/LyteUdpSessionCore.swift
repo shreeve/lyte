@@ -368,14 +368,39 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     }
 
     /// The sole close seam: AVFoundation accepted the IRAP into its queue.
+    /// Only an IRAP that closed the handoff's own gate closes the episode:
+    /// one enqueued before the handoff has learned of the damage leaves
+    /// the episode (and its retries) open for the gate that follows.
     public func noteVideoIrapEnqueued(
-        frame: FrameNumber = FrameNumber(rawValue: 0)
+        frame: FrameNumber = FrameNumber(rawValue: 0),
+        closesRecovery: Bool = true
     ) {
+        guard closesRecovery else {
+            onVideoRecoveryTrace(.init(
+                kind: "coreIrapEnqueuedOutsideRendererGate",
+                frame: frame,
+                isRandomAccess: true))
+            return
+        }
         idrRequester.noteUsableIrapAccepted()
         onVideoRecoveryTrace(.init(
             kind: "coreRecoveryClosedAfterIrapEnqueue",
             frame: frame,
             isRandomAccess: true))
+    }
+
+    /// The handoff opened an await-IRAP gate for this core's demand: an
+    /// episode closed meanwhile reopens, with an IDR request due now.
+    public func ensureVideoRecoveryOpen(
+        after frame: FrameNumber, cause: VideoRecoveryCause
+    ) {
+        guard idrRequester.reopenIfClosed(frame: frame, now: now()) else {
+            return
+        }
+        onVideoRecoveryTrace(.init(
+            kind: "coreRecoveryReopenedForRendererGate",
+            frame: frame,
+            cause: cause))
     }
 
     private func beginVideoRecovery(
@@ -1052,6 +1077,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         onEvent(.protocolNote(
             "\(lane) ordered stream poisoned by an over-budget host "
             + "message — session ends"))
+        onEvent(.orderedStreamPoisoned)
         applyMachine(.teardownRequest(.shuttingDown), now: now())
     }
 
@@ -1060,3 +1086,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         onEvent(.protocolNote("malformed \(what) dropped"))
     }
 }
+
+/// The core is the recovery peer behind `LyteUdpSession`'s forwarding
+/// conformance; a handoff may bind it directly.
+extension LyteUdpSessionCore: VideoRecoveryPeer {}

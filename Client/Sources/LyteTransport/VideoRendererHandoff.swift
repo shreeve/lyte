@@ -28,9 +28,20 @@ extension AVSampleBufferVideoRenderer: VideoRendererPort {}
 /// The session side of renderer recovery: a damaged or backed-up
 /// renderer asks for a fresh IRAP, and an IRAP that actually reached the
 /// renderer closes the episode.
+///
+/// Invariant: while the handoff awaits an IRAP, the session's episode is
+/// open, so its IDR request keeps retrying. The session closes its episode
+/// only for an IRAP that closed the handoff's gate (`closesRecovery`), and
+/// the handoff re-asserts the episode whenever it opens a gate for a
+/// session demand that the session may have closed meanwhile.
 public protocol VideoRecoveryPeer: AnyObject, Sendable {
     func requestVideoRecovery(after frame: FrameNumber, cause: VideoRecoveryCause)
-    func noteVideoIrapEnqueued(frame: FrameNumber)
+    /// An IRAP reached the renderer; `closesRecovery` says it closed the
+    /// handoff's await-IRAP gate rather than landing outside one.
+    func noteVideoIrapEnqueued(frame: FrameNumber, closesRecovery: Bool)
+    /// The handoff opened a gate for a session demand: reopen the
+    /// session's episode (and its IDR request) if it has closed since.
+    func ensureVideoRecoveryOpen(after frame: FrameNumber, cause: VideoRecoveryCause)
 }
 
 
@@ -207,11 +218,18 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
                 awaitingRandomAccess: awaiting,
                 randomAccessPending: policy.randomAccessPending,
                 pendingCount: policy.count)
+            let outcome = policy.failEpisode()
             process(
-                policy.failEpisode(),
+                outcome,
                 recoveryFrame: frame,
                 cause: cause,
                 requestRecovery: false)
+            // An IRAP that closed the previous gate after this demand was
+            // raised may have closed the session's episode with it.
+            if outcome.recoveryRequested {
+                peer.withLock { $0.value }?.ensureVideoRecoveryOpen(
+                    after: frame, cause: cause)
+            }
         }
     }
 
@@ -423,7 +441,8 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
                 policy.noteRandomAccessEnqueued()
                 playout.withLock { $0.noteRandomAccessEnqueued() }
                 peer.withLock { $0.value }?.noteVideoIrapEnqueued(
-                    frame: pending.unit.frameNumber)
+                    frame: pending.unit.frameNumber,
+                    closesRecovery: closesRecovery)
                 if closesRecovery {
                     forcedMetricsProbes = 3
                     recorder.recordRecoveryLifecycle(

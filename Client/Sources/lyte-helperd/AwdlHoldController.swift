@@ -92,10 +92,14 @@ final class AwdlHoldController: @unchecked Sendable {
         }
     }
 
+    /// An end with nothing held — a respawned daemon hearing the app end
+    /// the stream its killed predecessor held — still starts the idle
+    /// linger, or that daemon would never exit.
     func streamEnded(_ owner: Owner) {
         queue.async { [self] in
-            guard let count = holds[owner] else { return }
-            holds[owner] = count > 1 ? count - 1 : nil
+            if let count = holds[owner] {
+                holds[owner] = count > 1 ? count - 1 : nil
+            }
             releaseIfIdle()
         }
     }

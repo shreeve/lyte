@@ -159,7 +159,10 @@ extension ConnectionModel {
             shareClipboard: clipboardSharing,
             shareClipboardImages: clipboardImageSharing,
             chroma: chromaTier)
+        // A newer dial supersedes one still in flight.
+        abandonDial()
         let lyte = makeLyteSession(crypto: crypto, config: config)
+        beginDial(lyte)
         let generation = lifecycleGeneration
         let start = services.startSession
         let endSession = services.endSession
@@ -167,15 +170,19 @@ extension ConnectionModel {
             do {
                 try await start(lyte)
             } catch {
+                guard let self else { return endSession(lyte, .silent) }
+                // Abandoned: whoever abandoned it ended it.
+                guard self.claimDial(lyte) else { return }
                 endSession(lyte, .silent)
-                guard let self, self.isCurrent(generation) else { return }
+                guard self.isCurrent(generation) else { return }
                 self.roamingInput { policy, now in policy.dialFailed(now: now) }
                 return
             }
+            guard let self else { return endSession(lyte, .goodbye) }
+            guard self.claimDial(lyte) else { return }
             // The window disconnected (and perhaps connected afresh)
             // while this dial ran: the session has no owner.
-            guard let self, self.isCurrent(generation),
-                  self.lyteSession == nil else {
+            guard self.isCurrent(generation), self.lyteSession == nil else {
                 endSession(lyte, .goodbye)
                 return
             }

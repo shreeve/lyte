@@ -42,6 +42,20 @@ public final class IdrRequester: Sendable {
         return joined
     }
 
+    /// Opens an episode for `frame` only when none is outstanding, emitting
+    /// its first request; true when it opened one.
+    @discardableResult
+    public func reopenIfClosed(frame: FrameNumber, now: ClientTimestamp) -> Bool {
+        let request = recovery.withLock { recovery -> IdrRequest? in
+            guard !recovery.isOutstanding else { return nil }
+            recovery.recordDemand(frame: frame)
+            return recovery.requestDue(now: now)
+        }
+        guard let request else { return false }
+        emit(request)
+        return true
+    }
+
     /// The feedback-cadence timer's retry wake. Quiet when no episode is
     /// outstanding or before its retry boundary.
     public func flushIfDue(now: ClientTimestamp) {

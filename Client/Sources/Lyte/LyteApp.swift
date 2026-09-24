@@ -18,7 +18,7 @@ struct LyteApp: App {
            })
         {
             NSLog("lyte: diagnostic environment ignored — this bundle was "
-                + "built without LYTE_APP_DIAGNOSTICS=1")
+                + "built without make-app.sh --diagnostics")
         }
         do {
             _ = try DiagnosticRunIdentity.publishIfRequested()
