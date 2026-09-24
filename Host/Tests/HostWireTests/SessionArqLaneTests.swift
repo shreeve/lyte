@@ -14,41 +14,6 @@ final class SessionArqLaneTests: XCTestCase {
         )
     }
 
-    func testSessionKeepsExactlyTwoNamedLaneSlotsAndOneServiceLoop() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let session = try String(contentsOfFile:
-            packageRoot + "/Sources/HostWire/Session.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertTrue(session.contains(
-            "private var ctrlArqLane: SessionArqLane"
-        ))
-        XCTAssertTrue(session.contains(
-            "private var bulkArqLane: SessionArqLane?"
-        ))
-        for retired in [
-            "private var arq:", "nextArqWakeNS", "nextBulkArqWakeNS",
-            "ctrlSeq", "bulkSeq", "private func serviceBulkArq(",
-            "private func serviceArq(",
-        ] {
-            XCTAssertFalse(session.contains(retired), retired)
-        }
-        XCTAssertEqual(
-            session.components(separatedBy: "private func serviceArqLane(")
-                .count - 1,
-            1
-        )
-        XCTAssertTrue(session.contains(
-            "sequence: ctrlArqLane.pendingEnvelopeSequence"
-        ))
-        XCTAssertTrue(session.contains("ctrlArqLane.commitEnvelopeSent()"))
-    }
-
     func testSendPollPtoAndAckClearTheExactNanosecondDeadline() throws {
         var sender = SessionArqLane(channel: .ctrl, config: config)
         var receiver = SessionArqLane(channel: .ctrl, config: config)

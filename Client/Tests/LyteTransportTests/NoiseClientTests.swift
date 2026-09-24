@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import LyteClientTestKit
 @testable import LyteTransport
 import LyteWire
 
@@ -186,7 +187,7 @@ final class NoiseClientTests: XCTestCase {
 
     func testClientToHostSealedRoundTripThroughSender() throws {
         let (crypto, host) = try makeEstablishedPair()
-        let captured = LockedDatagrams()
+        let captured = LockedBytePile()
         let sender = TransportSender(crypto: crypto,
                                      transmit: { captured.append($0); return true })
         let echoBody: [UInt8] = Array(0..<29)
@@ -404,13 +405,6 @@ final class NoiseClientTests: XCTestCase {
         else {
             return XCTFail("the byte-identical resend must reject as replay")
         }
-    }
-
-    private final class LockedDatagrams: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [[UInt8]] = []
-        func append(_ d: [UInt8]) { lock.lock(); stored.append(d); lock.unlock() }
-        var all: [[UInt8]] { lock.lock(); defer { lock.unlock() }; return stored }
     }
 
     private final class LockedCryptoResults: @unchecked Sendable {

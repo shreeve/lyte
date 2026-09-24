@@ -93,120 +93,46 @@ final class ClipboardClientGateTests: XCTestCase {
             + "core default declares, consent defaults off")
     }
 
-    // MARK: - The scripted host (the RoutingHostStandIn shape)
+    // MARK: - The scripted host
 
     /// A key-10-capable host stand-in: Noise responder, host-clock
     /// ARQ, capability negotiator (declaration = first reliable word),
     /// and the host's clipboard rules — consumed 0x1A bytes recorded
     /// verbatim, announces scripted by the test. No video/beacons.
-    private final class ClipboardHostStandIn: NoiseHandshakeIO {
-        let staticKeys = NoiseKeyPair.generate()
-        let connectionId: ConnectionId
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var arq: ArqEndpoint<HostClock>
-        var negotiator: CapabilityNegotiator
-        var capabilitiesDeclared = false
-        private var handshakeOutbox: [[UInt8]] = []
+    fileprivate final class ClipboardHostStandIn: ScriptedHost {
+        var peer: SealedCtrlPeer<HostClock>
+        var handshakeOutbox: [[UInt8]] = []
+        let localCapabilities: Capabilities
 
         // Evidence.
         var agreed: Capabilities?
         var setsReceived: [[UInt8]] = []
         var receivedReliableTypes: [UInt8] = []
 
+        var progressMark: Int { receivedReliableTypes.count }
+
         init(localCapabilities: Capabilities) {
             var rng = SplitMix64(seed: 0xC1_15)
-            connectionId = ConnectionId.random(using: &rng)
-            var config = ArqConfig()
-            config.maxDatagramPayloadByteCount =
-                WireBudget.maxConnectionIdTaggedPlaintextByteCount
-            arq = ArqEndpoint(channel: .ctrl, config: config)
-            negotiator = CapabilityNegotiator(
-                role: .host, local: localCapabilities)
+            peer = SealedCtrlPeer(
+                connectionId: ConnectionId.random(using: &rng))
+            peer.openChannels = [.ctrl]
+            self.localCapabilities = localCapabilities
         }
 
-        // NoiseHandshakeIO — answered in-process.
-
-        func sendToHost(_ datagram: [UInt8]) throws {
-            guard let (envelope, payload) = try? Envelope.decode(datagram[...]),
-                  envelope.channel == .ctrl,
-                  payload.first == CtrlMessageType.noiseHandshake1
-            else { return }
-            var responder = try NoiseSession(
-                role: .responder, staticKeys: staticKeys)
-            _ = try responder.readMessage1(payload.dropFirst())
-            let message2 = try responder.writeMessage2()
-            transport = try responder.makeTransport()
-            // HS-11's first-word rule, load-bearing (the CL-13 harness
-            // lesson): the declaration queues at establishment, before
-            // any client word could be consumed.
-            capabilitiesDeclared = true
-            try arq.send(
-                message: try XCTUnwrap(negotiator.start()).encode(),
-                now: HostTimestamp(microseconds: 0)
-            )
-            let carriage = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: 0,
-                fec: 0,
-                extensions: [connectionId.wireExtension]
-            )
-            ctrlSeq &+= 1
-            handshakeOutbox.append(try carriage.encode(
-                payload: [CtrlMessageType.noiseHandshake2] + message2))
-        }
-
-        func receiveDatagram(timeoutMilliseconds: Int) throws -> [UInt8]? {
-            handshakeOutbox.isEmpty ? nil : handshakeOutbox.removeFirst()
-        }
-
-        private func sealedCtrl(
-            body: [UInt8], hostMicros: UInt64
-        ) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: hostMicros,
-                fec: 0,
-                extensions: [connectionId.wireExtension]
-            )
-            ctrlSeq &+= 1
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
+        /// HS-11's first-word rule, load-bearing: the declaration queues
+        /// at establishment, before any client word could be consumed.
+        func didEstablish() throws {
+            try declare(localCapabilities)
         }
 
         /// One client datagram: unseal → ARQ ingest → record.
         func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            guard envelope.channel == .ctrl else { return }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
-                return
-            }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: HostTimestamp(microseconds: nowMicros)
-                ) {
-                    if case .message(_, let message) = event {
-                        receivedReliableTypes.append(message.first ?? 0)
-                        try dispatchReliable(message)
-                    }
-                }
-            default:
-                break
+            guard case .reliable(_, _, let events) =
+                try peer.absorb(bytes, nowMicros: nowMicros)
+            else { return }
+            for case .message(_, let message) in events {
+                receivedReliableTypes.append(message.first ?? 0)
+                try dispatchReliable(message)
             }
         }
 
@@ -217,7 +143,7 @@ final class ClipboardClientGateTests: XCTestCase {
                     try? CapabilityDeclaration.decode(message)
                 else { return XCTFail("malformed client declaration") }
                 if case .agreed(let intersection) =
-                    try negotiator.receive(declaration) {
+                    try peer.negotiator!.receive(declaration) {
                     agreed = intersection
                 }
             case CtrlMessageType.clipboardSet:
@@ -226,121 +152,11 @@ final class ClipboardClientGateTests: XCTestCase {
                 break
             }
         }
-
-        /// A scripted host action: a raw reliable message onto the
-        /// ordered stream (genuine announces AND the hostile legs).
-        func injectReliable(_ message: [UInt8], nowMicros: UInt64) throws {
-            try arq.send(
-                message: message,
-                now: HostTimestamp(microseconds: nowMicros))
-        }
-
-        /// One host beat: due ARQ output, sealed.
-        func advance(nowMicros: UInt64) throws -> [[UInt8]] {
-            guard transport != nil else { return [] }
-            let (payloads, _) = arq.poll(
-                now: HostTimestamp(microseconds: nowMicros))
-            return try payloads.map {
-                try sealedCtrl(body: $0, hostMicros: nowMicros)
-            }
-        }
     }
 
-    // MARK: - The client harness (the AudioRoutingClientGateTests shape)
+    // MARK: - The client harness
 
-    /// The REAL production core minus the socket, on a virtual clock,
-    /// piped directly to the stand-in.
-    private final class Harness: @unchecked Sendable {
-        let host: ClipboardHostStandIn
-        let crypto: NoiseTransportCrypto
-        let demux: ReceiveDemux
-        var core: LyteUdpSessionCore!
-        private var outbound: [[UInt8]] = []
-        private var forwarded = 0
-        let clock = VirtualClock()
-
-        var events: [LyteUdpSessionEvent] = []
-
-        init(
-            host: ClipboardHostStandIn,
-            coreConfig: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig()
-        ) throws {
-            self.host = host
-            let crypto = try NoiseTransportCrypto(
-                hostAddress: "10.0.0.249", hostPort: 41_131,
-                hostStaticPublicKey: host.staticKeys.publicKey,
-                staticKeys: NoiseKeyPair.generate(),
-                attempts: 3, attemptTimeoutMilliseconds: 200)
-            try crypto.performHandshake(io: host)
-            self.crypto = crypto
-            self.demux = ReceiveDemux(crypto: crypto)
-            let clock = self.clock
-            let sender = TransportSender(crypto: crypto, transmit: {
-                [weak self] datagram in
-                self?.outbound.append(datagram)
-                return true
-            })
-            self.core = LyteUdpSessionCore(
-                demux: demux,
-                sender: sender,
-                config: coreConfig,
-                now: { ClientTimestamp(microseconds: clock.value) },
-                videoSink: HeadlessVideoSink(),
-                onEvent: { [weak self] event in
-                    self?.events.append(event)
-                })
-        }
-
-        func absorb(_ bytes: [UInt8], tMicros: UInt64) {
-            let outcome = demux.ingest(
-                datagram: bytes[...], arrivalMicroseconds: tMicros)
-            if case .accepted = outcome {
-                core.handleDatagram(outcome, arrivalMicroseconds: tMicros)
-            }
-        }
-
-        /// Direct-pipe beats 2 ms apart until both ends quiesce.
-        func settle(t: inout UInt64) throws {
-            var idle = 0
-            while idle < 3 {
-                t += 2_000
-                clock.value = t
-                let before = (forwarded, host.receivedReliableTypes.count,
-                              events.count)
-                core.tick(now: ClientTimestamp(microseconds: t))
-                while forwarded < outbound.count {
-                    try host.absorb(outbound[forwarded], nowMicros: t)
-                    forwarded += 1
-                }
-                for datagram in try host.advance(nowMicros: t) {
-                    absorb(datagram, tMicros: t)
-                }
-                core.tick(now: ClientTimestamp(microseconds: t))
-                while forwarded < outbound.count {
-                    try host.absorb(outbound[forwarded], nowMicros: t)
-                    forwarded += 1
-                }
-                idle = (forwarded, host.receivedReliableTypes.count,
-                        events.count) == before ? idle + 1 : 0
-            }
-        }
-
-        var clipboardEvents: [String] {
-            events.compactMap {
-                if case .hostClipboardChanged(let text) = $0 { return text }
-                return nil
-            }
-        }
-    }
-
-    private final class VirtualClock: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: UInt64 = 1_000
-        var value: UInt64 {
-            get { lock.lock(); defer { lock.unlock() }; return stored }
-            set { lock.lock(); stored = newValue; lock.unlock() }
-        }
-    }
+    private typealias Harness = ClientCoreHarness<ClipboardHostStandIn>
 
     // MARK: Leg 3 — the negotiated round trip + the boomerang proof
 
@@ -590,5 +406,22 @@ final class ClipboardClientGateTests: XCTestCase {
         // The setter refuses hashes it has never pinned.
         XCTAssertFalse(repaired.setShareClipboard(
             publicKeyHash: "0000", share: true))
+    }
+}
+
+fileprivate extension ClientCoreHarness
+where Host == ClipboardClientGateTests.ClipboardHostStandIn {
+    convenience init(
+        host: Host,
+        coreConfig: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig()
+    ) throws {
+        try self.init(host: host, hostPort: 41_131, coreConfig: coreConfig)
+    }
+
+    var clipboardEvents: [String] {
+        events.compactMap {
+            if case .hostClipboardChanged(let text) = $0 { return text }
+            return nil
+        }
     }
 }

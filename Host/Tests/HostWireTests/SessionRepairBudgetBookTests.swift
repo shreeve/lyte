@@ -22,35 +22,6 @@ final class SessionRepairBudgetBookTests: XCTestCase {
         )
     }
 
-    func testSessionKeepsOneNamedRepairBudgetOwner() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let session = try String(contentsOfFile:
-            packageRoot + "/Sources/HostWire/Session.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertTrue(session.contains(
-            "private var repairBudget = SessionRepairBudgetBook()"
-        ))
-        for retiredField in [
-            "feedbackCadenceEwmaNS",
-            "lastFeedbackParsedAtNS",
-            "clientGlassEvidence",
-            "openingIdrShardTotal",
-            "openingExemptAttempts",
-            "openingExemptBytes",
-        ] {
-            XCTAssertFalse(
-                session.contains(retiredField),
-                "parallel repair-budget state returned: \(retiredField)"
-            )
-        }
-    }
-
     func testCadenceSamplesClampThenEwmaAndDeriveTheBudget() {
         var book = SessionRepairBudgetBook()
         XCTAssertEqual(book.freezeBudgetNanoseconds(

@@ -2,6 +2,7 @@ import XCTest
 import HostCore
 import HostSession
 @_spi(Testing) import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
@@ -34,14 +35,8 @@ final class ArqCtrlGateTests: XCTestCase {
 
     /// The client role, sans-IO: Noise initiator, unseal, a client-clock
     /// ArqEndpoint, and the bookkeeping the gate asserts against.
-    private struct ArqClient {
-        var noise: NoiseSession
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var arq = ArqEndpoint<ClientClock>(channel: .ctrl)
-        let staticKeys: NoiseKeyPair
-
-        var received: [(group: ArqGroupId, bytes: [UInt8])] = []
+    private struct ArqClient: PeerBackedClient {
+        var peer: SealedCtrlPeer<ClientClock>
         var oneShotAcks: [ArqGroupId] = []
         var beaconSeqsSeen: [UInt32] = []
         var arqIgnored = 0
@@ -50,36 +45,7 @@ final class ArqCtrlGateTests: XCTestCase {
         var replayDrops = 0
 
         init(hostStaticPublicKey: [UInt8]) throws {
-            staticKeys = NoiseKeyPair.generate()
-            noise = try NoiseSession(
-                role: .initiator,
-                staticKeys: staticKeys,
-                remoteStaticPublicKey: hostStaticPublicKey
-            )
-        }
-
-        mutating func message1Datagram(clientMicros: UInt64) throws -> [UInt8] {
-            let message1 = try noise.writeMessage1()
-            return try ctrlDatagram(
-                body: [CtrlMessageType.noiseHandshake1] + message1,
-                sealed: false,
-                clientMicros: clientMicros
-            )
-        }
-
-        mutating func ctrlDatagram(
-            body: [UInt8], sealed: Bool, clientMicros: UInt64
-        ) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: clientMicros,
-                fec: 0
-            )
-            ctrlSeq &+= 1
-            guard sealed else { return try envelope.encode(payload: body) }
-            return try transport!.sealDatagram(envelope, plaintext: body)
+            peer = try SealedCtrlPeer(initiatorTo: hostStaticPublicKey)
         }
 
         /// One host datagram: unseal (bare message 2 completes the
@@ -90,57 +56,33 @@ final class ArqCtrlGateTests: XCTestCase {
                 bytes.count, WireBudget.maxDatagramByteCount,
                 "host datagram over the 1152 B budget"
             )
-            let (envelope, payload) = try Envelope.decode(bytes)
-            XCTAssertEqual(envelope.channel, .ctrl)
-            if transport == nil {
-                XCTAssertEqual(payload.first, CtrlMessageType.noiseHandshake2)
-                _ = try noise.readMessage2(payload.dropFirst())
-                transport = try noise.makeTransport()
-                return
-            }
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.openDatagram(bytes).plaintext
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
+            XCTAssertEqual(try Envelope.decode(bytes).0.channel, .ctrl)
+            switch try peer.absorb(bytes, nowMicros: nowMicros) {
+            case .duplicate:
                 replayDrops += 1
-                return
-            }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
+            case .reliable(_, let plaintext, let events):
                 XCTAssertLessThanOrEqual(
                     plaintext.count,
                     WireBudget.maxConnectionIdTaggedPlaintextByteCount,
                     "ARQ payload over the session's TLV+tag-adjusted budget"
                 )
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: ClientTimestamp(microseconds: nowMicros)
-                ) {
+                for event in events {
                     switch event {
-                    case .message(let group, let bytes):
-                        received.append((group, bytes))
+                    case .message:
+                        break // in `received`
                     case .oneShotAcknowledged(let group):
                         oneShotAcks.append(group)
                     case .ignored:
                         arqIgnored += 1
                     }
                 }
-            case CtrlMessageType.clockBeacon:
+            case .plain(_, let plaintext)
+                where plaintext.first == CtrlMessageType.clockBeacon:
                 beaconSeqsSeen.append(try ClockBeacon.decode(plaintext).beaconSeq)
-            default:
+            case .plain(_, let plaintext):
                 XCTFail("unexpected host CTRL type \(plaintext.first ?? 0)")
-            }
-        }
-
-        /// Drains the client endpoint's due output into sealed CTRL
-        /// datagrams (no conn-id TLV client-side, so poll's bare-budget
-        /// packing already fits: 24 + 1112 + 16 = 1152 exactly).
-        mutating func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
-            let (payloads, _) = arq.poll(
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
-            return try payloads.map {
-                try ctrlDatagram(body: $0, sealed: true, clientMicros: nowMicros)
+            case .handshakeCompleted, .unopened:
+                break
             }
         }
     }

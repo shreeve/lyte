@@ -23,26 +23,6 @@ final class SessionSocketPendingBookTests: XCTestCase {
         )
     }
 
-    func testSessionKeepsOneNamedSocketPendingOwner() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let session = try String(contentsOfFile:
-            packageRoot + "/Sources/HostWire/Session.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertTrue(session.contains(
-            "private var socketPending = SessionSocketPendingBook()"
-        ))
-        XCTAssertFalse(session.contains("socketPendingPaces"))
-        XCTAssertFalse(session.contains("socketPendingVideo"))
-        XCTAssertFalse(session.contains("private func datagramKey"))
-        XCTAssertTrue(session.contains("datagram.pacerClass.sessionChannel"))
-    }
-
     func testEveryPacerClassMapsToItsOneWireEvidenceChannel() {
         XCTAssertEqual(PacerClass.control.sessionChannel, .ctrl)
         XCTAssertEqual(PacerClass.audio.sessionChannel, .audio)

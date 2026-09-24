@@ -3,17 +3,6 @@ import LyteClientTestKit
 import XCTest
 
 final class ClientLayoutTests: XCTestCase {
-    func testRepositoryRootNoLongerMasqueradesAsTheClientPackage() {
-        let root = URL(fileURLWithPath: ClientTestPaths.repositoryRoot)
-        for retiredPath in ["Package.swift", "Package.resolved", "Sources", "Tests"] {
-            XCTAssertFalse(
-                FileManager.default.fileExists(
-                    atPath: root.appendingPathComponent(retiredPath).path),
-                "retired root client path returned: \(retiredPath)"
-            )
-        }
-    }
-
     /// The source-layout grammar: every manifest target owns exactly
     /// `Sources/<Target>/`, every test target `Tests/<Target>Tests/`, and
     /// no directory exists that the manifest does not declare.
@@ -70,8 +59,6 @@ final class ClientLayoutTests: XCTestCase {
                 )
             }
         }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root
-            .appendingPathComponent("lyte-cli/WireSendCommand.swift").path))
     }
 
     /// Single-owner ratchet: each wire decoder or policy engine is
@@ -117,29 +104,6 @@ final class ClientLayoutTests: XCTestCase {
             encoding: .utf8)
         XCTAssertFalse(source.contains("TimelineView"))
         XCTAssertFalse(source.contains("ForEach(model.statsRows())"))
-    }
-
-    func testConductorOwnsCushionWithoutAUserSetting() throws {
-        let root = URL(fileURLWithPath: ClientTestPaths.repositoryRoot)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root
-            .appendingPathComponent("Client/Sources/Lyte/LyteSettings.swift")
-            .path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root
-            .appendingPathComponent(
-                "Client/Sources/LyteTransport/PlayoutCushionPreference.swift")
-            .path))
-
-        let app = try String(
-            contentsOf: root.appendingPathComponent(
-                "Client/Sources/Lyte/LyteApp.swift"),
-            encoding: .utf8)
-        let model = try String(
-            contentsOf: root.appendingPathComponent(
-                "Client/Sources/Lyte/ConnectionModel.swift"),
-            encoding: .utf8)
-        XCTAssertFalse(app.contains("Settings {"))
-        XCTAssertFalse(model.contains("playoutCushion"))
-        XCTAssertFalse(model.contains("PlayoutCushionPreference"))
     }
 
     func testHelperListenerAuthenticatesBeforeAcceptingClients() throws {

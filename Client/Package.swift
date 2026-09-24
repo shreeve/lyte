@@ -67,8 +67,10 @@ let package = Package(
             name: "LyteClientTestKit",
             dependencies: [
                 "LyteTransport",
+                .product(name: "LyteCore", package: "Common"),
                 .product(name: "LyteTestKit", package: "Common"),
                 .product(name: "LyteWire", package: "Wire"),
+                .product(name: "LyteWireTestKit", package: "Wire"),
             ]
         ),
         .executableTarget(

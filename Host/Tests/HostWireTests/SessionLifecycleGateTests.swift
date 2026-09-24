@@ -2,6 +2,7 @@ import XCTest
 import HostCore
 import HostSession
 import HostWire
+import HostWireTestKit
 import LyteWire
 import LyteWireTestKit
 
@@ -38,130 +39,42 @@ final class SessionLifecycleGateTests: XCTestCase {
 
     // MARK: The lifecycle-aware loopback client
 
-    private struct LifecycleClient {
-        var noise: NoiseSession
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var feedbackSeq: UInt16 = 0
-        var arq = ArqEndpoint<ClientClock>(channel: .ctrl)
-        let staticKeys: NoiseKeyPair
-
-        var received: [(group: ArqGroupId, bytes: [UInt8])] = []
+    private struct LifecycleClient: PeerBackedClient {
+        var peer: SealedCtrlPeer<ClientClock>
         var videoDatagrams = 0
 
         init(hostStaticPublicKey: [UInt8]) throws {
-            staticKeys = NoiseKeyPair.generate()
-            noise = try NoiseSession(
-                role: .initiator,
-                staticKeys: staticKeys,
-                remoteStaticPublicKey: hostStaticPublicKey
-            )
-        }
-
-        mutating func message1Datagram(clientMicros: UInt64) throws -> [UInt8] {
-            let message1 = try noise.writeMessage1()
-            return try datagram(
-                channel: .ctrl,
-                body: [CtrlMessageType.noiseHandshake1] + message1,
-                sealed: false,
-                clientMicros: clientMicros
-            )
-        }
-
-        mutating func datagram(
-            channel: ChannelId, body: [UInt8], sealed: Bool,
-            clientMicros: UInt64
-        ) throws -> [UInt8] {
-            let seq: UInt16
-            if channel == .feedback {
-                seq = feedbackSeq
-                feedbackSeq &+= 1
-            } else {
-                seq = ctrlSeq
-                ctrlSeq &+= 1
-            }
-            let envelope = Envelope(
-                channel: channel,
-                seq: ChannelSeq(rawValue: seq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: clientMicros,
-                fec: 0
-            )
-            guard sealed else { return try envelope.encode(payload: body) }
-            return try transport!.sealDatagram(envelope, plaintext: body)
+            peer = try SealedCtrlPeer(initiatorTo: hostStaticPublicKey)
         }
 
         /// The 25–50 ms chan-3 report the client emits continuously —
-        /// media-path evidence for the blackout detector AND, since
-        /// HS-16, the estimator's diet: a real (empty) FeedbackReport,
-        /// the shape FeedbackSender builds when a window saw nothing
-        /// worth sampling. No ledgers, no loss — reads clean.
+        /// media-path evidence for the blackout detector AND the
+        /// estimator's diet: a real (empty) FeedbackReport, the shape
+        /// FeedbackSender builds when a window saw nothing worth
+        /// sampling. No ledgers, no loss — reads clean.
         mutating func feedbackDatagram(clientMicros: UInt64) throws -> [UInt8] {
-            try datagram(
+            try peer.datagram(
                 channel: .feedback,
                 body: try FeedbackReport(
                     clientTimestamp: ClientTimestamp(
                         microseconds: clientMicros
                     )
                 ).encode(),
-                sealed: true,
-                clientMicros: clientMicros
+                timestamp: clientMicros
             )
         }
 
         mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            if envelope.channel == .videoActive {
+            if try Envelope.decode(bytes).0.channel == .videoActive {
                 videoDatagrams += 1
                 return
             }
-            XCTAssertEqual(envelope.channel, .ctrl)
-            if transport == nil {
-                XCTAssertEqual(payload.first, CtrlMessageType.noiseHandshake2)
-                _ = try noise.readMessage2(payload.dropFirst())
-                transport = try noise.makeTransport()
-                return
-            }
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.openDatagram(bytes).plaintext
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
-                return // network duplicate; routine
-            }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: ClientTimestamp(microseconds: nowMicros)
-                ) {
-                    if case .message(let group, let bytes) = event {
-                        received.append((group, bytes))
-                    }
-                }
-            case CtrlMessageType.clockBeacon:
-                break // 1 Hz weather
-            default:
+            XCTAssertEqual(try Envelope.decode(bytes).0.channel, .ctrl)
+            if case .plain(_, let plaintext) =
+                try peer.absorb(bytes, nowMicros: nowMicros),
+               plaintext.first != CtrlMessageType.clockBeacon { // 1 Hz weather
                 XCTFail("unexpected host CTRL type \(plaintext.first ?? 0)")
             }
-        }
-
-        mutating func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
-            let (payloads, _) = arq.poll(
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
-            return try payloads.map {
-                try datagram(
-                    channel: .ctrl, body: $0, sealed: true,
-                    clientMicros: nowMicros
-                )
-            }
-        }
-
-        /// Reliable messages of one CTRL type, drained.
-        mutating func take(type: UInt8) -> [[UInt8]] {
-            let hits = received.filter { $0.bytes.first == type }.map(\.bytes)
-            received.removeAll { $0.bytes.first == type }
-            return hits
         }
     }
 

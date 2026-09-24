@@ -220,17 +220,28 @@ final class FeedbackPathTests: XCTestCase {
                                      transmit: { capture.append($0) })
         let feedback = FeedbackSender(demux: demux, sender: sender,
                                       intervalMilliseconds: 25)
+        // The only test of the real DispatchSourceTimer (every other
+        // cadence test drives tick(now:)): wait for a few beats instead
+        // of a fixed sleep, then bound the count by the elapsed time —
+        // "never fires" and "fires faster than the 25 ms floor" both
+        // fail, scheduler judder does not.
+        let started = DispatchTime.now()
         feedback.start()
         defer { feedback.stop() }
-
-        // 500 ms at a 25 ms cadence is nominally 20 reports; assert a
-        // loose band that catches "never fires" and "fires per-ms" while
-        // tolerating CI scheduling judder.
-        Thread.sleep(forTimeInterval: 0.5)
+        let deadline = started + .seconds(5)
+        while feedback.snapshotStats().reportsSent < 3,
+              DispatchTime.now() < deadline {
+            usleep(1_000)
+        }
         feedback.stop()
+        let elapsedMilliseconds =
+            (DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds)
+            / 1_000_000
         let sent = feedback.snapshotStats().reportsSent
-        XCTAssertGreaterThanOrEqual(sent, 5, "cadence timer must actually fire")
-        XCTAssertLessThanOrEqual(sent, 25, "cadence must respect the 25 ms floor")
+        XCTAssertGreaterThanOrEqual(sent, 3, "cadence timer must actually fire")
+        XCTAssertLessThanOrEqual(
+            sent, elapsedMilliseconds / 25 + 1,
+            "cadence must respect the 25 ms floor")
 
         // Every datagram left on chan=3 with monotonically increasing seq.
         let datagrams = capture.datagrams

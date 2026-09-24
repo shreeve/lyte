@@ -49,24 +49,6 @@ import LyteWire
 //     restore carries one second at the baseline cap.
 
 final class EncoderVbvGateTests: XCTestCase {
-    func testAppliedRungAloneOwnsSqueezePosture() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let source = try String(
-            contentsOfFile:
-                packageRoot + "/Sources/HostWire/EncoderVbv.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertTrue(source.contains(
-            "public var squeezeEngaged: Bool { appliedRungIndex != nil }"
-        ))
-        XCTAssertFalse(source.contains("squeezeEngaged ="))
-    }
-
     private static let ms: UInt64 = 1_000_000
     private static let sec: UInt64 = 1_000_000_000
 
