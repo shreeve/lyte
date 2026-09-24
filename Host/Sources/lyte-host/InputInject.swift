@@ -22,11 +22,12 @@ protocol InputInjector: AnyObject {
     /// The recorded monitor's pixel size, once capture reads it (the
     /// uinput tablet scales absolute moves against it).
     func noteMonitorExtent(width: UInt32, height: UInt32)
-    /// Releases every key and button still held and returns how many:
-    /// the client can no longer send their releases (its path went dark
-    /// or the session ended). The devices stay up.
+    /// Releases what `scope` covers of the keys and buttons still held
+    /// (see HeldInputBook) and returns how many: the client cannot send
+    /// their releases (its path went silent, or the session ended). The
+    /// devices stay up.
     @discardableResult
-    func releaseHeld() -> Int
+    func releaseHeld(_ scope: HeldInputBook.Scope) -> Int
     func stop()
 }
 
@@ -38,13 +39,12 @@ final class UinputInjector: InputInjector {
 
     private let handle: OpaquePointer
     static let pixelsPerDetent = 15.0
-    /// Every key/button currently held down, by evdev code. A kernel
-    /// device never releases latched keys itself. inject() and a
-    /// session's releaseHeld() (FROZEN, session close) run under
+    /// Every key/button currently held down. inject() and a session's
+    /// releaseHeld() (input silence, session close) run under
     /// SessionWire's session lock; the end-of-session releaseHeld() and
     /// stop() run on main after the session's threads have stopped —
     /// never concurrently.
-    private var heldCodes: Set<UInt32> = []
+    private var held = HeldInputBook()
     private var stopped = false
 
     init() throws {
@@ -76,8 +76,11 @@ final class UinputInjector: InputInjector {
             rc = lyte_uinput_key(
                 handle, code, pressed ? 1 : 0, &err, err.count)
             if rc == 0 {
-                if pressed { heldCodes.insert(code) }
-                else { heldCodes.remove(code) }
+                if case .pointerButton = event.body {
+                    held.noteButton(code, pressed: pressed)
+                } else {
+                    held.noteKey(code, pressed: pressed)
+                }
             }
         case .moveAbsolute(let x, let y):
             rc = lyte_uinput_move_abs(handle, x, y, &err, err.count)
@@ -129,19 +132,18 @@ final class UinputInjector: InputInjector {
     }
 
     @discardableResult
-    func releaseHeld() -> Int {
-        guard !stopped, !heldCodes.isEmpty else { return 0 }
+    func releaseHeld(_ scope: HeldInputBook.Scope) -> Int {
+        guard !stopped else { return 0 }
+        let released = held.takeReleases(scope)
         var err = [CChar](repeating: 0, count: 256)
-        for code in heldCodes {
+        for code in released {
             _ = lyte_uinput_key(handle, code, 0, &err, err.count)
         }
-        let released = heldCodes.count
-        heldCodes.removeAll()
-        return released
+        return released.count
     }
 
     func stop() {
-        let released = releaseHeld()
+        let released = releaseHeld(.everything)
         if released > 0 { print("input: released \(released) held key(s)") }
         stopped = true
     }

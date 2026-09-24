@@ -38,7 +38,9 @@ typedef struct lyte_netio lyte_netio;
 #define LYTE_NETIO_TRANSIENT (-4)
 
 /* Maps a send/receive errno to 0 (would block, or EINTR: retry), one of
-   the codes above, or -1 (fatal). Exposed so the mapping is testable. */
+   the codes above, or -1 (fatal). Exposed so the mapping is testable.
+   The send and receive calls below retry EINTR themselves, so none of
+   them reports a signal as a would-block. */
 int lyte_netio_errno_class(int err);
 
 /* One datagram to send. `tos` is the raw IPv4 TOS byte (DSCP << 2):

@@ -15,6 +15,19 @@ final class AvahiInterfaceTests: XCTestCase {
         XCTAssertNotNil(AvahiAdvertiser.interfaceIndex(named: "lo"))
     }
 
+    /// A named interface missing at startup (a USB NIC plugged in later)
+    /// is waited for: the advertiser comes up unfiled, without touching
+    /// the bus, and keeps retrying instead of disabling discovery.
+    func testAnInterfaceMissingAtStartupLeavesTheAdvertiserWaiting() {
+        let advertiser = AvahiAdvertiser(
+            port: 41_997, staticPublicKey: [UInt8](repeating: 7, count: 32),
+            name: "lyte-test-missing-interface",
+            interfaceName: "lytenone\(getpid() % 1_000)")
+        XCTAssertFalse(advertiser.isFiled)
+        advertiser.service()
+        XCTAssertFalse(advertiser.isFiled)
+    }
+
     func testARecordIsFiledAgainWhenItsInterfaceChanges() {
         XCTAssertNil(AvahiAdvertiser.refileReason(
             interfaceName: "enx0", filed: 7, current: 7))

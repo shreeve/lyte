@@ -304,6 +304,8 @@ public struct RateEstimatorStats: Equatable, Sendable {
     public var reportsIngested = 0
     public var dispersionSamplesMatched = 0
     public var dispersionSamplesUnmatched = 0
+    /// Matched samples of datagrams sent before the latest path change.
+    public var dispersionSamplesFromOldPath = 0
     public var deliverySamples = 0
     public var downshifts = 0
     public var upshifts = 0
@@ -483,6 +485,10 @@ public final class RateEstimator {
     }
     /// Per-channel rolling baselines (see the header).
     private var delayBaselineWindows: [UInt8: [DelaySample]] = [:]
+    /// The latest path promotion. A report still in flight describes
+    /// datagrams sent on the old path; those samples measure that path
+    /// and never seed the new one's baseline, trains or belief.
+    private var pathChangedAtNS: UInt64?
     private var consecutiveInflatedReports = 0
     /// The inflation at the current streak's opening report: a real
     /// standing queue grows past it (`queueGrew`).
@@ -758,6 +764,7 @@ public final class RateEstimator {
     /// a path with more base delay reads as standing inflation, and the
     /// rate falls every 500 ms until the old baseline ages out.
     public func notePathChanged(now: UInt64) {
+        pathChangedAtNS = now
         forgetPathEvidence(belief: rateBitsPerSecond)
         delayBaselineWindows.removeAll(keepingCapacity: true)
         consecutiveInflatedReports = 0
@@ -1019,6 +1026,10 @@ public final class RateEstimator {
             guard let slot = ledgerIndex[key], let record = ledger[slot],
                   record.key == key else {
                 stats.dispersionSamplesUnmatched += 1
+                continue
+            }
+            if let pathChangedAtNS, record.sendNS < pathChangedAtNS {
+                stats.dispersionSamplesFromOldPath += 1
                 continue
             }
             stats.dispersionSamplesMatched += 1

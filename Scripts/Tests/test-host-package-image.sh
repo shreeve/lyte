@@ -58,7 +58,9 @@ self_test() {
         'sed "s| \./etc/host\.conf$| etc/host.conf|" doc/MANIFEST.sha256 > m && mv m doc/MANIFEST.sha256 && chmod 0644 doc/MANIFEST.sha256' \
         'printf "extra\n" > etc/extra.conf' \
         'rm doc/THIRD-PARTY.md' \
-        'printf "corruption\n" >> etc/host.conf'
+        'printf "corruption\n" >> etc/host.conf' \
+        'grep -v " \./bin/lyte-host$" doc/MANIFEST.sha256 > m && tail -n 1 m > t && cat t >> m && rm t && mv m doc/MANIFEST.sha256 && chmod 0644 doc/MANIFEST.sha256 && printf "#!/bin/sh\nexit 1\n" > bin/lyte-host' \
+        'grep -v " \./bin/lyte-host$" doc/MANIFEST.sha256 > m && mv m doc/MANIFEST.sha256 && chmod 0644 doc/MANIFEST.sha256'
     do
         case_image="$scratch/case"
         cp -Rp "$image" "$case_image"

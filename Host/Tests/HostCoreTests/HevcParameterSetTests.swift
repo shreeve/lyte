@@ -140,16 +140,16 @@ final class HevcParameterSetTests: XCTestCase {
     func testSizesOffTheCodingBlockCarryAConformanceWindow() {
         let cases: [(UInt32, UInt32, Bool, Geometry)] = [
             (1366, 768, false, Geometry(
-                levelIdc: 120, codedWidth: 1368, codedHeight: 768,
+                levelIdc: 150, codedWidth: 1368, codedHeight: 768,
                 window: [0, 1, 0, 0])),
             (1600, 900, false, Geometry(
-                levelIdc: 123, codedWidth: 1600, codedHeight: 904,
+                levelIdc: 150, codedWidth: 1600, codedHeight: 904,
                 window: [0, 0, 0, 2])),
             (1366, 768, true, Geometry(
-                levelIdc: 120, codedWidth: 1368, codedHeight: 768,
+                levelIdc: 150, codedWidth: 1368, codedHeight: 768,
                 window: [0, 2, 0, 0])),
             (1440, 900, true, Geometry(
-                levelIdc: 123, codedWidth: 1440, codedHeight: 904,
+                levelIdc: 150, codedWidth: 1440, codedHeight: 904,
                 window: [0, 0, 0, 4])),
             (2048, 1280, false, Geometry(
                 levelIdc: 150, codedWidth: 2048, codedHeight: 1280,
@@ -165,16 +165,43 @@ final class HevcParameterSetTests: XCTestCase {
         }
     }
 
-    /// general_level_idc is the lowest level whose picture size and luma
-    /// sample rate cover the stream — 4K60 needs 5.1, 1080p60 fits 4.1 —
-    /// and the VPS carries the same level as the SPS.
+    /// An odd display dimension at 4:2:0 cannot be cropped to exactly (the
+    /// window counts whole chroma samples): the decoded picture is the
+    /// even size below it, never one with a padding column. At 4:4:4 the
+    /// window is exact.
+    func testOddSizesAt420CropToTheEvenSizeBelow() {
+        let cases: [(UInt32, UInt32, Bool, UInt32, UInt32)] = [
+            (1367, 769, false, 1366, 768),
+            (1921, 1080, false, 1920, 1080),
+            (1367, 769, true, 1367, 769),
+        ]
+        for (width, height, chroma444, shownWidth, shownHeight) in cases {
+            let recipe = HevcHeaderRecipe(
+                width: width, height: height, chroma444: chroma444)
+            XCTAssertEqual(recipe.displayedWidth, shownWidth)
+            XCTAssertEqual(recipe.displayedHeight, shownHeight)
+            let window = try? XCTUnwrap(geometry(recipe)?.window)
+            let sub: UInt32 = chroma444 ? 1 : 2
+            XCTAssertEqual(
+                recipe.codedWidth - sub * (window?[1] ?? 0), shownWidth,
+                "\(width)×\(height) 4:4:4 \(chroma444) decoded width")
+            XCTAssertEqual(
+                recipe.codedHeight - sub * (window?[3] ?? 0), shownHeight,
+                "\(width)×\(height) 4:4:4 \(chroma444) decoded height")
+        }
+    }
+
+    /// general_level_idc is the lowest level at or above 5.0 whose picture
+    /// size and luma sample rate cover the stream — 4K60 needs 5.1, and
+    /// 1080p60 still signals 5.0, whose bit-rate bound the session's rate
+    /// ceiling needs — and the VPS carries the same level as the SPS.
     func testLevelFollowsPictureSizeAndFrameRate() {
         let cases: [(UInt32, UInt32, UInt32, UInt32)] = [
             (2048, 1280, 60, 150),
-            (1920, 1080, 60, 123),
-            (1920, 1080, 30, 120),
-            (1280, 720, 60, 120),
-            (1366, 768, 60, 120),
+            (1920, 1080, 60, 150),
+            (1920, 1080, 30, 150),
+            (1280, 720, 60, 150),
+            (1366, 768, 60, 150),
             (3840, 2160, 30, 150),
             (3840, 2160, 60, 153),
             (3840, 2160, 120, 156),

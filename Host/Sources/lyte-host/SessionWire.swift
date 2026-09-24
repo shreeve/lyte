@@ -113,12 +113,6 @@ final class SessionWire {
     private(set) var handshakesSuperseded = 0
     /// Answered handshakes discarded unconfirmed.
     private(set) var handshakesAbandoned = 0
-    /// When the unconfirmed session's message 1 was answered.
-    private var answeredAtNS: UInt64?
-    /// A client retransmits message 1 five times a second apart and
-    /// confirms within a round trip of message 2, so an answer still
-    /// unconfirmed after this has no client behind it.
-    static let unconfirmedLifetimeNS: UInt64 = 6_000_000_000
     private var session: Session!
     /// Guards the Session and the outbox (see the header). Held across
     /// service passes, released across sleeps.
@@ -266,7 +260,8 @@ final class SessionWire {
         capacity: audioMailboxDwellWindow, retention: .rolling
     )
     /// Split video path timing: prepare (Annex-B + RS-FEC) is off-lock;
-    /// commit (seq allocation, sealing, pacer insertion) is under it.
+    /// commit (pacer insertion) is under it. Seq allocation and sealing
+    /// happen later, under the lock, as the pacer releases each shard.
     private(set) var videoPrepareMaxNS: UInt64 = 0
     private(set) var videoCommitLockWaitMaxNS: UInt64 = 0
     private(set) var videoCommitLockHoldMaxNS: UInt64 = 0
@@ -291,6 +286,9 @@ final class SessionWire {
     private(set) var receiveTransientErrors = 0
     /// ICMP refusals that arrived while the session was live, ignored.
     private(set) var refusalsWhileLive = 0
+    /// ICMP refusals for a tuple other than the primary (a path probe's
+    /// challenge), ignored: they say nothing about the client's path.
+    private(set) var offPrimaryRefusals = 0
     private var currentVideoSocketOutqBytes = 0
     private var currentLatencySocketOutqBytes = 0
     /// When the send queues were last sampled. While the outbox is empty
@@ -736,10 +734,8 @@ final class SessionWire {
                     ) {
                         execute(event)
                     }
-                    let abandoned = answeredAtNS.map {
-                        SystemMonotonicClock.nowNanoseconds &- $0
-                            >= Self.unconfirmedLifetimeNS
-                    } ?? false
+                    let abandoned = session.isUnconfirmedAnswerAbandoned(
+                        now: SystemMonotonicClock.nowNanoseconds)
                     if !session.isPeerConfirmed,
                        abandoned || session.lifecycleState == .closed {
                         emit("""
@@ -846,9 +842,6 @@ final class SessionWire {
         }
         if let answered = session.answeredMessage1 {
             listener.answeredHandshakes.record(message1: answered)
-            if answeredAtNS == nil {
-                answeredAtNS = SystemMonotonicClock.nowNanoseconds
-            }
         }
         if !wasConfirmed, session.isPeerConfirmed {
             emit("noise: client confirmed — it holds the session keys")
@@ -879,7 +872,6 @@ final class SessionWire {
         noBufferBackoff = false
         peerGone = false
         session = nil
-        answeredAtNS = nil
     }
 
     /// The session port (the kernel's pick when bound to port 0).
@@ -1007,9 +999,10 @@ final class SessionWire {
                 """)
     }
 
-    /// One encoded Annex-B packet → sealed shards, on the capture thread.
+    /// One encoded Annex-B packet → paced shards, on the capture thread.
     /// Validation and RS-FEC run off the session lock (they can starve
-    /// audio); sealing and pacer insertion run under it.
+    /// audio); pacer insertion runs under it, and each shard is sealed
+    /// under the lock only as the pacer releases it.
     func sendFrame(
         data: UnsafePointer<UInt8>, size: Int, isKeyframe: Bool,
         captureMicros: UInt64
@@ -1507,19 +1500,29 @@ final class SessionWire {
     /// the session only when authenticated silence already says the
     /// client is gone: FROZEN, 350 ms without the feedback a live client
     /// sends every 40 ms. On a live session it is counted loss, and the
-    /// liveness clock and the client's typed 0x0A decide.
-    static func refusalEndsSession(lifecycle: SessionState?) -> Bool {
-        lifecycle == .frozen
+    /// liveness clock and the client's typed 0x0A decide. A refusal for
+    /// any other tuple (a path probe's challenge to where a roaming
+    /// client might be) never ends the session: a FROZEN session is
+    /// exactly the one probing for its client's new path.
+    static func refusalEndsSession(
+        lifecycle: SessionState?, onPrimaryPath: Bool
+    ) -> Bool {
+        onPrimaryPath && lifecycle == .frozen
     }
 
     /// Requires `lock`. One refusal: the session ends cleanly (no
     /// teardown is sent) or it is counted as a transient loss. Returns
     /// whether the session ended.
-    private func noteRefused() -> Bool {
+    private func noteRefused(onPrimaryPath: Bool) -> Bool {
         guard !peerGone else { return true }
-        guard Self.refusalEndsSession(lifecycle: session?.lifecycleState)
+        guard Self.refusalEndsSession(
+            lifecycle: session?.lifecycleState, onPrimaryPath: onPrimaryPath)
         else {
-            refusalsWhileLive += 1
+            if onPrimaryPath {
+                refusalsWhileLive += 1
+            } else {
+                offPrimaryRefusals += 1
+            }
             return false
         }
         peerGone = true
@@ -1712,7 +1715,10 @@ final class SessionWire {
                                   &recvError, recvError.count)
         }
         if got == LYTE_NETIO_REFUSED {
-            _ = noteRefused()
+            // Once the media sockets carry the primary, the listening
+            // socket sends only to other tuples.
+            _ = noteRefused(
+                onPrimaryPath: socket != listenNetio || videoNetio == nil)
             return
         }
         if got == LYTE_NETIO_TRANSIENT {
@@ -1927,7 +1933,6 @@ final class SessionWire {
                     lifecycle: FROZEN — 350 ms of media-path silence; \
                     datagram video suspended, CTRL stays alive
                     """)
-                releaseHeldInput("the client's path went dark")
             case .recovery:
                 emit("""
                     lifecycle: RECOVERY — evidence returned; fresh IDR \
@@ -1940,9 +1945,14 @@ final class SessionWire {
             }
         case .sessionClosed(let reason):
             emit("session: CLOSED (\(reason))")
-            releaseHeldInput("the session closed")
+            releaseHeldInput(.everything, "the session closed")
         case .inputReceived(let event, let rxMicros):
             injectInput(event, receivedAtMicroseconds: rxMicros)
+        case .inputSilenceElapsed:
+            releaseHeldInput(.autorepeatingKeys, """
+                \(Session.inputSilenceReleaseNS / 1_000_000_000) s without \
+                word from the client
+                """)
         case .videoBacklogPurged(let datagrams, let bytes, let staleWireMs):
             outbox.purgeVideo(ledger: session)
             emit("""
@@ -2135,7 +2145,10 @@ final class SessionWire {
             try injector.inject(event)
         } catch {
             inputInjectFailures += 1
-            emit("input: inject seq \(event.seq) failed: \(error)")
+            // A client can cause one per event.
+            emitLimited(
+                "input: inject failed",
+                "input: inject seq \(event.seq) failed: \(error)")
             return
         }
         let injectMicros = SystemMonotonicClock.nowMicroseconds
@@ -2159,11 +2172,12 @@ final class SessionWire {
 
     /// Requires `lock`. A client whose path is dark cannot send the
     /// release of a key it holds, and the compositor autorepeats a held
-    /// key until it sees one, so nothing stays pressed past FROZEN or
-    /// the session's close. A key the user really is still holding is
-    /// released too, which is the safe direction.
-    private func releaseHeldInput(_ why: String) {
-        guard let released = inputInjector?.releaseHeld(), released > 0
+    /// key until it sees one: a long silence releases the keys that
+    /// repeat, and the session's close releases everything. Modifiers
+    /// and pointer buttons ride out any silence the session survives, so
+    /// a held Shift or a drag outlasts a Wi-Fi hitch.
+    private func releaseHeldInput(_ scope: HeldInputBook.Scope, _ why: String) {
+        guard let released = inputInjector?.releaseHeld(scope), released > 0
         else { return }
         emit("input: released \(released) held key(s) — \(why)")
     }
@@ -2214,11 +2228,16 @@ final class SessionWire {
         lane == .latency ? latencyNetio : videoNetio
     }
 
-    private func writeResult(_ rc: Int32) -> SocketWriteResult {
+    /// `onPrimaryPath`: whether a refusal this socket reports can be
+    /// about the client's primary tuple (see `refusalEndsSession`).
+    private func writeResult(
+        _ rc: Int32, onPrimaryPath: Bool
+    ) -> SocketWriteResult {
         switch rc {
         case 0: .wouldBlock
         case LYTE_NETIO_NO_BUFFER: .noBuffer
-        case LYTE_NETIO_REFUSED: noteRefused() ? .peerGone : .transient
+        case LYTE_NETIO_REFUSED:
+            noteRefused(onPrimaryPath: onPrimaryPath) ? .peerGone : .transient
         case LYTE_NETIO_TRANSIENT: .transient
         case let accepted where accepted > 0: .accepted(Int(accepted))
         default: .failed(String(cBuffer: sendError))
@@ -2239,7 +2258,10 @@ final class SessionWire {
                 destination.remoteAddress, destination.remotePort,
                 &sendError, sendError.count)
         }
-        return writeResult(rc)
+        // The unconnected listening socket reports refusals for any tuple
+        // it sent to; once the media sockets carry the primary, those are
+        // other tuples'.
+        return writeResult(rc, onPrimaryPath: videoNetio == nil)
     }
 
     /// One lane's batch staged into `scratch`, each datagram with its
@@ -2270,6 +2292,6 @@ final class SessionWire {
                 socket, buf.baseAddress, Int32(buf.count), nil,
                 &sendError, sendError.count)
         }
-        return writeResult(rc)
+        return writeResult(rc, onPrimaryPath: true)
     }
 }

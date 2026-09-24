@@ -253,6 +253,11 @@ public enum SessionEvent: Equatable, Sendable {
     /// keypress in IDLE is the WAKE; one during FROZEN persists until
     /// RECOVERY's IDR consumes it.
     case inputReceived(InputEvent, receivedAtMicroseconds: UInt64)
+    /// `Session.inputSilenceReleaseNS` passed with no authenticated
+    /// arrival: the shell releases the held keys a compositor would
+    /// autorepeat (`HeldInputBook.Scope.autorepeatingKeys`). Once per
+    /// silence; the next arrival re-arms it.
+    case inputSilenceElapsed
     /// The estimator moved the pacer rate (feedback evidence or an
     /// IdrPacing policy); the pacer is already re-capped.
     case rateChanged(bitsPerSecond: Int, reason: RateChangeReason)
@@ -656,6 +661,32 @@ public final class Session {
     /// The message 1 this session answered; nil before its handshake and
     /// once the initiator is confirmed.
     public var answeredMessage1: [UInt8]? { answeredHandshake?.message1 }
+    /// When message 2 last left for the unconfirmed handshake: its first
+    /// answer or the latest verbatim resend.
+    private var lastAnswerNS: UInt64?
+    /// How long an unconfirmed answer outlives its latest send. The
+    /// client's longest message-1 retransmit span is a connect's first
+    /// dial, 5 × 2 s = 10 s (`ClientHandshakeInitiator.Retry.firstDial`
+    /// in LyteClientSession); 2 s more covers the confirming round trip.
+    /// Every verbatim resend restarts the span, so a client whose early
+    /// message 2s were lost is still answered on its last retransmit.
+    public static let unconfirmedAnswerLifetimeNS: UInt64 = 12_000_000_000
+    /// How long the client may go without an authenticated arrival before
+    /// the keys it holds that a compositor autorepeats are released: long
+    /// enough to ride out a Wi-Fi scan, an AWDL channel hop or a roam
+    /// (each far past the 350 ms FROZEN detector), short enough to bound a
+    /// runaway autorepeat when the path is gone.
+    public static let inputSilenceReleaseNS: UInt64 = 2_000_000_000
+    /// The latest authenticated arrival; nil before the first.
+    private var lastAuthenticatedArrivalNS: UInt64?
+    private var inputSilenceReported = false
+    /// True once an answered handshake has gone unconfirmed for
+    /// `unconfirmedAnswerLifetimeNS` since message 2 last left: no client
+    /// is behind it (a replay, a spoofed source, an abandoned dial).
+    public func isUnconfirmedAnswerAbandoned(now: UInt64) -> Bool {
+        guard !isPeerConfirmed, let lastAnswerNS else { return false }
+        return now &- lastAnswerNS >= Self.unconfirmedAnswerLifetimeNS
+    }
     private var supersedingHandshake: SupersedingHandshake?
     /// Whether the flood dial currently demands a retry cookie.
     public var handshakeCookieMode: Bool { handshakeGate.cookieMode }
@@ -934,8 +965,11 @@ public final class Session {
             // Key possession proven: the session is committed.
             isPeerConfirmed = true
             answeredHandshake = nil
+            lastAnswerNS = nil
             supersedingHandshake = nil
         }
+        lastAuthenticatedArrivalNS = now
+        inputSilenceReported = false
 
         // The demux trigger: only an authenticated arrival may
         // probe a new tuple. The conn-id TLV is readable by anyone who
@@ -946,6 +980,7 @@ public final class Session {
             validator.datagramReceived(
                 from: tuple,
                 connectionId: claimed,
+                position: (envelope.channel, envelope.seq),
                 byteCount: datagram.count,
                 now: now
             ),
@@ -1141,6 +1176,7 @@ public final class Session {
         let decision = handshakeGate.admitMessage1(
             presentedCookie: presentedCookie,
             clientTuple: Self.cookieTuple(tuple),
+            clientAddress: HandshakeGate.addressShareKey(tuple.remoteAddress),
             message1: message1,
             now: now
         )
@@ -1229,6 +1265,7 @@ public final class Session {
                     body: answered.message2Body, sealed: false,
                     now: now, hostMicroseconds: hostMicroseconds)
                 counters.handshakeMessage2Resends += 1
+                lastAnswerNS = now
                 return []
             } catch {
                 return [.sendFailed(String(describing: error))]
@@ -1410,17 +1447,13 @@ public final class Session {
     /// frame-number advancement, one critical section with every other
     /// Session mutation. No seal runs here: chan-2 seqs and seals are
     /// assigned as `pump` releases each shard, so the first quantum can
-    /// leave on the next pump. `interleave` is never called (nothing long
-    /// runs here any more) and `isBorrowed` is not read; both stay only
-    /// for source compatibility.
+    /// leave on the next pump.
     @discardableResult
     public func commitPreparedVideoFrame(
         _ prepared: PreparedVideoFrame,
         context: SessionVideoFramePreparationContext,
         captureTimestampMicroseconds: UInt64,
-        interleave: (() -> Void)? = nil,
-        now: UInt64,
-        isBorrowed: Bool = false
+        now: UInt64
     ) throws -> Int {
         guard phase == .established else {
             throw SessionError.notEstablished
@@ -2672,6 +2705,14 @@ public final class Session {
         return events
     }
 
+    /// When the current silence earns `.inputSilenceElapsed`; nil once it
+    /// has, or before any arrival.
+    private var inputSilenceDeadline: UInt64? {
+        guard !inputSilenceReported, let lastAuthenticatedArrivalNS
+        else { return nil }
+        return lastAuthenticatedArrivalNS &+ Self.inputSilenceReleaseNS
+    }
+
     private func serviceConfirmedTimers(
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -2688,6 +2729,10 @@ public final class Session {
             )
         }
         events += flushInputEchoes(now: now, hostMicroseconds: hostMicroseconds)
+        if let due = inputSilenceDeadline, now >= due {
+            inputSilenceReported = true
+            events.append(.inputSilenceElapsed)
+        }
         if let due = ctrlArqLane.nextDeadlineNanoseconds, now >= due {
             events += serviceArqLane(
                 .control, now: now, hostMicroseconds: hostMicroseconds
@@ -2782,6 +2827,7 @@ public final class Session {
         }
         if isPeerConfirmed {
             fold(beaconClock.nextDeadlineNanoseconds)
+            fold(inputSilenceDeadline)
             fold(ctrlArqLane.nextDeadlineNanoseconds)
             fold(bulkArqLane?.nextDeadlineNanoseconds)
         }
@@ -2938,6 +2984,7 @@ public final class Session {
             )
             transport = try responder.makeTransport()
             answeredHandshake = (Array(message1), message2Body)
+            lastAnswerNS = now
         } catch {
             return [.dropped(.handshakeFailed(String(describing: error)))]
         }

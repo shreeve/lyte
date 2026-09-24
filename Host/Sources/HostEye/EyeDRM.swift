@@ -12,11 +12,13 @@ import Glibc
 /// a compositor starting after that (the greeter at boot, the user's
 /// shell at login) could not take the display. Observation needs no
 /// master: GETFB2 needs CAP_SYS_ADMIN, and the fd stays authenticated.
-/// Returns -1 with `errno` set when the open fails.
-public func openCardWithoutMaster(_ path: String) -> Int32 {
+/// Returns -1 with `errno` set when the open fails. `keptMaster` is set
+/// when this opener became master and could not drop it: until the fd
+/// closes, no compositor can take the display, so the caller says so.
+public func openCardWithoutMaster(_ path: String, keptMaster: inout Bool) -> Int32 {
     let fd = open(path, O_RDWR | O_CLOEXEC)
     guard fd >= 0 else { return -1 }
-    if drmIsMaster(fd) != 0 { _ = drmDropMaster(fd) }
+    keptMaster = drmIsMaster(fd) != 0 && drmDropMaster(fd) != 0
     return fd
 }
 

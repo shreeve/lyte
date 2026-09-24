@@ -29,8 +29,9 @@ public enum BulkStoreError: Error, Equatable, Sendable {
     case writeFailed(String)
     case readFailed(String)
     case renameFailed(String)
-    /// A final name carrying a path separator. Upstream sanitization
-    /// makes this unreachable; refused anyway at the filesystem seam.
+    /// A final name that is empty, starts with a 0x2E byte, or carries a
+    /// 0x2F, 0x5C or 0x00 byte. Upstream sanitization makes this
+    /// unreachable; refused anyway at the filesystem seam.
     case invalidFinalName(String)
     case noStagingOpen
 }
@@ -125,8 +126,10 @@ public final class BulkFileStore: BulkReceiveStore {
         guard let transferId = openTransferId, fd >= 0 else {
             throw BulkStoreError.noStagingOpen
         }
-        guard !name.isEmpty, !name.contains("/"), !name.contains("\\"),
-              !name.hasPrefix(".")
+        // Judged on the bytes the kernel sees: a Character-level test
+        // misses a "/" or "." that carries a combining mark.
+        guard let first = name.utf8.first, first != 0x2E,
+              !name.utf8.contains(where: { $0 == 0x2F || $0 == 0x5C || $0 == 0x00 })
         else {
             throw BulkStoreError.invalidFinalName(name)
         }

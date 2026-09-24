@@ -188,8 +188,10 @@ targets += [
             .product(name: "LyteIO", package: "Common"),
         ]
     ),
-    // Pure HostEye bookkeeping (GEM-handle and cursor-plane transitions)
-    // — unit tests that never open a device.
+    // HostEye bookkeeping (GEM-handle and cursor-plane transitions) and
+    // render-node naming. They never take a card node or its master; the
+    // render-node test opens a render node when one exists, which touches
+    // no display state.
     .testTarget(name: "HostEyeTests", dependencies: ["HostEye"]),
     // The standalone eye: doorbell mode (framebuffer flips, unprivileged)
     // and capture mode (the full loop into an Annex-B file).

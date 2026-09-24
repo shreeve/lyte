@@ -263,7 +263,13 @@ int lyte_netio_send_batch(lyte_netio *n, const lyte_netio_pkt *pkts, int count,
         memcpy(CMSG_DATA(cm), &tos, sizeof(tos));
     }
 
-    int sent = sendmmsg(n->fd, msgs, (unsigned int)count, 0);
+    /* A signal is not socket pressure: retried here, so EINTR never
+       reaches the caller as a would-block (which the kernel-pressure
+       governor would count against the socket). */
+    int sent;
+    do {
+        sent = sendmmsg(n->fd, msgs, (unsigned int)count, 0);
+    } while (sent < 0 && errno == EINTR);
     if (sent < 0) {
         int class = lyte_netio_errno_class(errno);
         if (class == -1 || class == LYTE_NETIO_TRANSIENT)
@@ -309,7 +315,10 @@ int lyte_netio_send_to(lyte_netio *n, const lyte_netio_pkt *pkt,
     int tos = pkt->tos;
     memcpy(CMSG_DATA(cm), &tos, sizeof(tos));
 
-    ssize_t sent = sendmsg(n->fd, &msg, 0);
+    ssize_t sent;
+    do {
+        sent = sendmsg(n->fd, &msg, 0);
+    } while (sent < 0 && errno == EINTR);
     if (sent < 0) {
         int class = lyte_netio_errno_class(errno);
         if (class == -1 || class == LYTE_NETIO_TRANSIENT)
@@ -352,7 +361,10 @@ int lyte_netio_recv_batch(lyte_netio *n, lyte_netio_slot *slots, int count,
         msgs[i].msg_hdr.msg_namelen = sizeof(srcs[i]);
     }
 
-    int got = recvmmsg(n->fd, msgs, (unsigned int)count, 0, NULL);
+    int got;
+    do {
+        got = recvmmsg(n->fd, msgs, (unsigned int)count, 0, NULL);
+    } while (got < 0 && errno == EINTR);
     if (got < 0) {
         int class = lyte_netio_errno_class(errno);
         /* ENOBUFS has no receive meaning; keep it fatal-and-loud. */

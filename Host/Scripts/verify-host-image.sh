@@ -32,7 +32,8 @@ file_mode() {
 
 actual="$(mktemp)"
 expected="$(mktemp)"
-cleanup() { rm -f -- "$actual" "$expected"; }
+listed="$(mktemp)"
+cleanup() { rm -f -- "$actual" "$expected" "$listed"; }
 trap cleanup EXIT
 (
     cd "$image"
@@ -89,6 +90,18 @@ then
 fi
 
 manifest="$image/doc/MANIFEST.sha256"
+# The manifest lists every image file but itself, each exactly once: a
+# digest check over only the listed entries would pass a manifest that
+# drops bin/lyte-host and repeats another line.
+awk '{ print $2 }' "$manifest" | LC_ALL=C sort > "$listed"
+if [[ -n "$(uniq -d "$listed")" ]]; then
+    echo "host image verification FAILED: manifest lists a file twice" >&2
+    exit 1
+fi
+grep -Fvx './doc/MANIFEST.sha256' "$expected" | cmp -s - "$listed" || {
+    echo "host image verification FAILED: manifest does not list exactly the image's files" >&2
+    exit 1
+}
 while read -r digest path; do
     [[ -n "$digest" && "$path" == ./* && -f "$image/${path#./}" ]] || {
         echo "host image verification FAILED: bad manifest entry: $path" >&2
@@ -100,9 +113,5 @@ while read -r digest path; do
         exit 1
     }
 done < "$manifest"
-[[ "$(wc -l < "$manifest" | tr -d ' ')" == 11 ]] || {
-    echo "host image verification FAILED: manifest does not list 11 files" >&2
-    exit 1
-}
 
 echo "host image verification PASSED"

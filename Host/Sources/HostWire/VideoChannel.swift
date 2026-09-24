@@ -258,6 +258,9 @@ public final class VideoChannel {
     /// frames still draining measure our pacer, not the path.
     private var queuedShardsByFrame: [UInt32: Int] = [:]
     private var queuedFreshShardsByFrame: [UInt32: Int] = [:]
+    /// Frames one of whose shards the seal refused, while shards of them
+    /// are still queued.
+    private var sealRefusedFrames: Set<UInt32> = []
     private var activeFrameTelemetry: [UInt32: VideoFrameTransmitTelemetry] = [:]
     private var completedFrameTelemetry = Deque<VideoFrameTransmitTelemetry>()
     private static let frameTelemetryCapacity = 256
@@ -806,12 +809,23 @@ public final class VideoChannel {
                 case .sealed(let sealed):
                     datagram = sealed
                 case .video(let video):
-                    guard let released = release(video) else {
-                        let frame = video.frameNumber.rawValue
-                        Self.countDown(&queuedShardsByFrame, frame)
-                        if video.pacerClass == .freshVideo {
-                            Self.countDown(&queuedFreshShardsByFrame, frame)
+                    let frame = video.frameNumber.rawValue
+                    // A frame missing a shard the seal refused cannot
+                    // decode: the rest of it is dropped unsent (no seq
+                    // spent) and no repair of it is offered.
+                    guard !sealRefusedFrames.contains(frame),
+                          let released = release(video) else {
+                        sealRefusedFrames.insert(frame)
+                        invalidateStoredFrame(frame)
+                        let last = Self.countDown(&queuedShardsByFrame, frame)
+                        if video.pacerClass == .freshVideo,
+                           Self.countDown(&queuedFreshShardsByFrame, frame),
+                           var telemetry =
+                            activeFrameTelemetry.removeValue(forKey: frame) {
+                            telemetry.purged = true
+                            appendCompletedTelemetry(telemetry)
                         }
+                        if last { sealRefusedFrames.remove(frame) }
                         continue
                     }
                     datagram = released
@@ -899,6 +913,7 @@ public final class VideoChannel {
         }
         queuedShardsByFrame.removeAll(keepingCapacity: true)
         queuedFreshShardsByFrame.removeAll(keepingCapacity: true)
+        sealRefusedFrames.removeAll()
         for frame in frames {
             invalidateStoredFrame(frame)
             rememberPurgedFrame(frame)
@@ -923,7 +938,9 @@ public final class VideoChannel {
                 pending.removeValue(forKey: token.tag)
             else { continue }
             frames.insert(video.frameNumber.rawValue)
-            Self.countDown(&queuedShardsByFrame, video.frameNumber.rawValue)
+            if Self.countDown(&queuedShardsByFrame, video.frameNumber.rawValue) {
+                sealRefusedFrames.remove(video.frameNumber.rawValue)
+            }
             counters.repairShardsExpiredQueued += 1
         }
         for frame in frames { invalidateStoredFrame(frame) }

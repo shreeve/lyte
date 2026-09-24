@@ -2535,6 +2535,44 @@ final class RateEstimatorGateTests: XCTestCase {
         )
     }
 
+    /// Reports still in flight at a path change describe datagrams sent on
+    /// the old path. A fast old path (0 ms standing delay) followed by a
+    /// slower new one (30 ms): if those reports seeded the new path's
+    /// baseline, every new-path report would read 30 ms inflated and fall.
+    func testReportsOfOldPathSendsDoNotSeedTheNewPathsBaseline() {
+        let estimator = makeEstimator()
+        let driver = EstimatorDriver(self, estimator)
+        for _ in 0..<10 { driver.beat(bottleneckMbps: 10) }
+
+        var inFlight: [FeedbackReport] = []
+        for index in 0..<3 {
+            let sendStart = driver.now + UInt64(index) * 5 * Self.ms
+            let samples = train(
+                estimator, seqStart: 10_000 + index * 12, count: 12,
+                sendStartNS: sendStart, bottleneckBitsPerSecond: 10e6)
+            inFlight.append(report(
+                samples: samples, clientMicros: sendStart / 1_000 + 1_000))
+        }
+        let promotion = driver.now + 20 * Self.ms
+        estimator.notePathChanged(now: promotion)
+        for (index, late) in inFlight.enumerated() {
+            let verdict = estimator.ingest(
+                late, now: promotion + UInt64(index + 1) * Self.ms,
+                inRecovery: false)
+            XCTAssertFalse(verdict.overuse)
+        }
+        XCTAssertEqual(estimator.stats.dispersionSamplesFromOldPath, 36)
+
+        driver.now = promotion + 10 * Self.ms
+        for beat in 0..<20 {
+            let verdict = driver.beat(
+                bottleneckMbps: 10, extraDelayMicros: 30_000)
+            XCTAssertFalse(verdict.overuse, "new-path beat \(beat)")
+            XCTAssertNotEqual(verdict.change, .overuse)
+        }
+        XCTAssertLessThanOrEqual(estimator.queuingDelayMicroseconds ?? 0, 1_000)
+    }
+
     func testRecoveryReanchorsNinetyMegabitBeliefBeforeFiveMegabitPath() {
         var config = RateEstimatorConfig(
             ceilingBitsPerSecond: 100_000_000,

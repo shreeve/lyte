@@ -77,6 +77,12 @@ public final class DirectScreenSource: ScreenSource {
     /// The render node of the same GPU, which imports, blits and
     /// encodes this card's scanout.
     public let renderNode: String
+    /// The driver named no render node for the card, so `renderNode` is
+    /// `fallbackRenderNode`, which may belong to another GPU.
+    public let renderNodeIsFallback: Bool
+    /// This source is the card's DRM master and could not drop it (see
+    /// `openCardWithoutMaster`).
+    public let keptMaster: Bool
 
     private let primaryPlaneId: UInt32
     private var identityTracker = FramebufferIdentityTracker()
@@ -90,7 +96,8 @@ public final class DirectScreenSource: ScreenSource {
     public static let fallbackRenderNode = "/dev/dri/renderD128"
 
     public init(device: String) throws {
-        let fd = openCardWithoutMaster(device)
+        var keptMaster = false
+        let fd = openCardWithoutMaster(device, keptMaster: &keptMaster)
         guard fd >= 0 else {
             throw DirectScreenSourceError.openDevice(
                 path: device, errno: errno)
@@ -112,7 +119,10 @@ public final class DirectScreenSource: ScreenSource {
 
         fileDescriptor = fd
         self.device = device
-        renderNode = HostEye.renderNode(forCard: fd) ?? Self.fallbackRenderNode
+        let named = HostEye.renderNode(forCard: fd)
+        renderNode = named ?? Self.fallbackRenderNode
+        renderNodeIsFallback = named == nil
+        self.keptMaster = keptMaster
         primaryPlaneId = planes.primary.id
         width = Int32(probe.width)
         height = Int32(probe.height)

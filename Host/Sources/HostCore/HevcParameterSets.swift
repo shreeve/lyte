@@ -3,13 +3,14 @@
 //
 // Scope: the iHD encode dialect only — Main 8-bit 4:2:0, or Rext Main
 // 4:4:4 8-bit with recipe.chroma444 — one temporal layer, IPPP with one
-// reference, CTB 64, no tiles/PCM/scaling lists. NVENC writes its own
-// headers.
+// reference, CTB 64, no tiles/PCM/scaling lists.
 //
 // Any display size is conforming: the coded picture is the display size
 // rounded up to MinCbSizeY (8), and the SPS conformance window crops the
-// padding back off. general_level_idc is the lowest Main-tier level whose
-// picture size and luma sample rate (Table A.8) cover the recipe.
+// padding back off (at 4:2:0 to the even size at or below the display
+// size — the window counts whole chroma samples). general_level_idc is
+// the lowest Main-tier level, never below 5.0, whose picture size and
+// luma sample rate (Table A.8) cover the recipe.
 
 import LyteCore
 
@@ -56,17 +57,36 @@ public struct HevcHeaderRecipe: Hashable, Sendable {
     /// pic_height_in_luma_samples: `height` rounded up to MinCbSizeY.
     public var codedHeight: UInt32 { Self.roundedUp(height) }
 
+    /// The picture the conformance window leaves: the display size at
+    /// 4:4:4; at 4:2:0 the even size at or below it (at least 2), because
+    /// the window's offsets count chroma samples (SubWidthC = SubHeightC
+    /// = 2), so an odd display dimension loses its last column or row
+    /// rather than showing a column or row of padding.
+    public var displayedWidth: UInt32 { displayed(width) }
+    public var displayedHeight: UInt32 { displayed(height) }
+
+    private func displayed(_ size: UInt32) -> UInt32 {
+        chroma444 ? size : max(size & ~1, 2)
+    }
+
+    /// The level every session signals at least: 5.0. Table A.9 bounds
+    /// the bit rate by level too (Main tier 4.1 = 20 Mbit/s), and the
+    /// session's rate ceiling (50 Mbit/s by default) is not part of the
+    /// recipe, so the floor keeps small pictures from under-signalling it
+    /// further than 5.0 always has.
+    public static let minimumLevelIdc: UInt32 = 150
+
     /// general_level_idc (30 × the level number): the lowest Main-tier
-    /// level of Table A.8 whose MaxLumaPs, dimension bound
-    /// (sqrt(8 × MaxLumaPs)) and MaxLumaSr cover the coded picture at this
-    /// frame rate; 6.2 when nothing does.
+    /// level of Table A.8, at least `minimumLevelIdc`, whose MaxLumaPs,
+    /// dimension bound (sqrt(8 × MaxLumaPs)) and MaxLumaSr cover the
+    /// coded picture at this frame rate; 6.2 when nothing does.
     public var levelIdc: UInt32 {
         let width = UInt64(codedWidth), height = UInt64(codedHeight)
         let samples = width * height
         let denominator = UInt64(max(fpsDenominator, 1))
         let sampleRate = (samples * UInt64(fpsNumerator) + denominator - 1)
             / denominator
-        for level in Self.levels {
+        for level in Self.levels where level.idc >= Self.minimumLevelIdc {
             let maxSquare = 8 * level.maxLumaPs
             if samples <= level.maxLumaPs, width * width <= maxSquare,
                height * height <= maxSquare, sampleRate <= level.maxLumaSr {
@@ -195,18 +215,18 @@ public enum HevcParameterSets {
         }
         w.ue(recipe.codedWidth)  // pic_width_in_luma_samples
         w.ue(recipe.codedHeight) // pic_height_in_luma_samples
-        if recipe.codedWidth == recipe.width,
-           recipe.codedHeight == recipe.height {
+        if recipe.codedWidth == recipe.displayedWidth,
+           recipe.codedHeight == recipe.displayedHeight {
             w.u(0, 1)  // conformance_window_flag
         } else {
             // Offsets count chroma samples: SubWidthC = SubHeightC = 2
-            // at 4:2:0, 1 at 4:4:4.
+            // at 4:2:0, 1 at 4:4:4; the displayed size divides exactly.
             let sub: UInt32 = recipe.chroma444 ? 1 : 2
             w.u(1, 1)  // conformance_window_flag
             w.ue(0)    // conf_win_left_offset
-            w.ue((recipe.codedWidth - recipe.width) / sub)   // right
+            w.ue((recipe.codedWidth - recipe.displayedWidth) / sub)   // right
             w.ue(0)    // conf_win_top_offset
-            w.ue((recipe.codedHeight - recipe.height) / sub) // bottom
+            w.ue((recipe.codedHeight - recipe.displayedHeight) / sub) // bottom
         }
         w.ue(0)        // bit_depth_luma_minus8
         w.ue(0)        // bit_depth_chroma_minus8

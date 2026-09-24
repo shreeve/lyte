@@ -485,6 +485,54 @@ final class SessionLifecycleGateTests: XCTestCase {
             """)
     }
 
+    // MARK: Input silence — held keys outlive a hitch, not a long silence
+
+    /// FROZEN is not input silence: a 400 ms hitch freezes video but asks
+    /// for no release. Only `inputSilenceReleaseNS` without any
+    /// authenticated arrival does, once, at that instant (the wake names
+    /// it); the next arrival re-arms it.
+    func testGateInputSilenceElapsesOnlyAfterTheLongSilence() throws {
+        let (loopValue, _) = try establish()
+        var loop = loopValue
+        func silenceEvents() -> Int {
+            loop.hostEvents.filter { $0 == .inputSilenceElapsed }.count
+        }
+        func advance(to micros: UInt64) {
+            loop.hostEvents += loop.session.advance(
+                now: micros * 1_000, hostMicroseconds: micros)
+        }
+
+        var t: UInt64 = 300_000
+        for _ in 0..<10 {
+            t += 40_000
+            try loop.feedback(t: t)
+        }
+        t += 400_000
+        advance(to: t)
+        XCTAssertEqual(loop.session.lifecycleState, .frozen)
+        try loop.feedback(t: t)
+        XCTAssertEqual(silenceEvents(), 0, "a hitch is not input silence")
+
+        let lastArrival = t
+        let due = lastArrival * 1_000 + Session.inputSilenceReleaseNS
+        XCTAssertLessThanOrEqual(try XCTUnwrap(loop.session.nextWake(
+            now: lastArrival * 1_000 + 1)), due)
+        while t * 1_000 + 10_000_000 < due {
+            t += 10_000
+            advance(to: t)
+        }
+        XCTAssertEqual(silenceEvents(), 0, "not before the silence is long")
+        advance(to: due / 1_000)
+        XCTAssertEqual(silenceEvents(), 1)
+        advance(to: due / 1_000 + 500_000)
+        XCTAssertEqual(silenceEvents(), 1, "once per silence")
+
+        t = due / 1_000 + 600_000
+        try loop.feedback(t: t)
+        advance(to: t + Session.inputSilenceReleaseNS / 1_000)
+        XCTAssertEqual(silenceEvents(), 2, "the next silence counts again")
+    }
+
     // MARK: Teardown — orderly, peer-initiated, and liveness
 
     func testGateShutdownDeliversTypedTeardown() throws {

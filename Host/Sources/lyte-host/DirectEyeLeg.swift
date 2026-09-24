@@ -192,7 +192,21 @@ final class DirectEyeLeg {
     /// reaches the input injector before the first client event can.
     static func openScreen(device: String) throws -> DirectScreenSource {
         do {
-            return try DirectScreenSource(device: device)
+            let screen = try DirectScreenSource(device: device)
+            if screen.renderNodeIsFallback {
+                print("""
+                    direct: \(device) names no render node — using \
+                    \(screen.renderNode), which may be another GPU's
+                    """)
+            }
+            if screen.keptMaster {
+                print("""
+                    direct: could not drop DRM master on \(device) — a \
+                    compositor starting now cannot take the display while \
+                    the host runs
+                    """)
+            }
+            return screen
         } catch DirectScreenSourceError.openDevice(let path, let code) {
             throw HostError("direct: open(\(path)) errno \(code)")
         } catch DirectScreenSourceError.noActivePrimaryPlane {

@@ -581,20 +581,12 @@ final class SessionHost {
 
         // Up before the first handshake wait; the advertiser re-files
         // the record whenever it is withdrawn (`serviceOrgans`).
-        var published: AvahiAdvertiser?
-        if opts.advertise, let listenPort = opts.wireListen {
-            do {
-                published = try AvahiAdvertiser(
-                    port: listenPort,
-                    staticPublicKey: keys.publicKey,
-                    interfaceName: opts.advertiseInterface
-                )
-            } catch {
-                print(
-                    "discovery: off (\(error)) — manual host:port still works")
-            }
-        }
-        advertiser = published
+        advertiser = opts.advertise ? opts.wireListen.map {
+            AvahiAdvertiser(
+                port: $0,
+                staticPublicKey: keys.publicKey,
+                interfaceName: opts.advertiseInterface)
+        } : nil
 
         // Injection is ready before any client connects and stays up
         // across sessions; each session's end releases what it held.
@@ -916,7 +908,7 @@ static func serveSession(
     w.shutdown(reason: .shuttingDown)
     // The devices and the leaf outlive the session: nothing its client
     // held may stay pressed, and the leaf stops reporting into it.
-    if let released = host.injector?.releaseHeld(), released > 0 {
+    if let released = host.injector?.releaseHeld(.everything), released > 0 {
         print("input: released \(released) held key(s) at session end")
     }
     host.clipboardLeaf?.detach()
@@ -1040,7 +1032,8 @@ static func printSessionBooks(
     \(o.videoNoBufferCount)/\
     \(o.latencyNoBufferCount), transient send/receive errors \
     \(o.transientErrors)/\(wire.receiveTransientErrors), ICMP refusals \
-    ignored on a live path \(wire.refusalsWhileLive), stale fresh shed \
+    ignored on a live path \(wire.refusalsWhileLive) and off the \
+    primary \(wire.offPrimaryRefusals), stale fresh shed \
     \(o.freshVideoShedDatagrams) datagrams / \
     \(o.freshVideoShedBytes) B
     session: \(s.beaconsSent) beacons, \(s.beaconEchoes) echoes \
