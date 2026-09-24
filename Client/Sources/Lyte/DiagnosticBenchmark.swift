@@ -105,8 +105,8 @@ struct DiagnosticBenchmarkSample: Codable {
     var quality: Quality? = nil
     var motionSource: MotionSource? = nil
     var motionLeg: String? = nil
-    /// V-5: the wire's observed chroma ("4:2:0"/"4:4:4", SPS-audit
-    /// truth) — the analyzer selects its commissioned floors by it.
+    /// The wire's observed chroma ("4:2:0"/"4:4:4", from the SPS audit);
+    /// the analyzer selects its floors by it.
     var streamChroma: String? = nil
 }
 

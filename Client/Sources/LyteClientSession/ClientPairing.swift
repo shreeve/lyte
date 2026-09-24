@@ -1,39 +1,33 @@
 // The client's half of PIN pairing, IO-free: drives LyteWire's
-// PairingPakeInitiator (CPace) over the reliable CTRL stream. The mirror
-// of the host's PairingResponderService, with the client's smaller duties
-// — no guess budget or throttle (those defend the PIN's owner, the host),
-// just the run's lifecycle and the wire's no-oracle rules:
+// PairingPakeInitiator (CPace) over the reliable CTRL stream. No guess
+// budget or throttle (those defend the host's PIN), just the run's
+// lifecycle and the wire's no-oracle rules:
 //
-//   • share A (0x0B) opens the run; share B (0x0C) carries the host's
-//     confirmation tag Tb, so a wrong PIN is learned here, one message
-//     early — the client aborts with a typed 0x0E and never sends a
-//     confirm the host would have to refuse.
-//   • wrong PIN and tampered binding are deliberately one event
-//     (`pinMismatch` = PairingPakeError.confirmationFailed): the CPace
-//     binding makes them indistinguishable by design, and surfacing a
-//     difference would invent an oracle the wire refuses to be.
-//   • the machine is dead after any terminal event — a retry is a new
-//     machine on a new Noise session (fresh sid), matching the host's
-//     fresh-responder-per-share-A discipline.
+//   • share B (0x0C) carries the host's confirmation tag, so a wrong PIN
+//     is learned one message early — the client aborts with a typed 0x0E
+//     and never sends a confirm the host would have to refuse.
+//   • wrong PIN and tampered binding are one event (`pinMismatch`): the
+//     CPace binding makes them indistinguishable by design.
+//   • the machine is dead after any terminal event; a retry is a new
+//     machine on a new Noise session.
 //
-// Replies come back as encoded CTRL bodies for the shell's reliable
-// stream; pinning the host static is the shell's move on `.paired`.
+// Replies are encoded CTRL bodies for the shell's reliable stream;
+// pinning the host static is the shell's move on `.paired`.
 
 import LyteWire
 
 public struct ClientPairing: Sendable {
     /// What the shell must react to, in delivery order.
     public enum Event: Equatable, Sendable {
-        /// The host's tag verified — pin this static now. The key is the
-        /// same one this session dialed; pairing's confirmation is what
-        /// promotes it from trust-on-first-use to trusted.
+        /// The host's tag verified — pin this static (the one this
+        /// session dialed) now.
         case paired(hostStaticPublicKey: [UInt8])
-        /// Share B's tag failed against OUR pin entry: wrong PIN (or a
-        /// tampered session — indistinguishable on purpose). A typed
-        /// 0x0E reject went back; the run is dead.
+        /// Share B's tag failed against our PIN entry: wrong PIN or a
+        /// tampered session, indistinguishable on purpose. A typed 0x0E
+        /// went back; the run is dead.
         case pinMismatch
-        /// Share B carried a low-order point (G.I abort, draft §7.2).
-        /// A typed 0x0E went back; the run is dead.
+        /// Share B carried a low-order point. A typed 0x0E went back;
+        /// the run is dead.
         case invalidShare
         /// The host sent 0x0E: our guess was spent host-side (wrong
         /// PIN), the PIN burned, or our share was refused. The run is
@@ -79,15 +73,11 @@ public struct ClientPairing: Sendable {
     }
 
     /// - Parameters:
-    ///   - pin: the PIN the operator read off the host's console, as
-    ///     entered — digits' ASCII bytes (both ends feed CPace the same
-    ///     trivial RFC 8265 profile).
-    ///   - clientStaticPublicKey / hostStaticPublicKey: the two statics
-    ///     this run decides to pin — MUST be the same keys the carrying
-    ///     Noise session used, or confirmation fails (that is the
-    ///     binding working, not a bug).
-    ///   - noiseHandshakeHash: the carrying session's transcript hash
-    ///     (sid — the §8.2 binding).
+    ///   - pin: the PIN as entered — the digits' ASCII bytes.
+    ///   - clientStaticPublicKey / hostStaticPublicKey: the statics this
+    ///     run pins — MUST be the carrying Noise session's keys, or
+    ///     confirmation fails.
+    ///   - noiseHandshakeHash: the carrying session's transcript hash.
     public init(
         pin: [UInt8],
         clientStaticPublicKey: [UInt8],

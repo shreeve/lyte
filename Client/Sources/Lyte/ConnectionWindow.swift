@@ -2,7 +2,7 @@ import Foundation
 import LyteTransport
 import SwiftUI
 
-/// One window = one connection (D6). Starts in the connect state; becomes a
+/// One window = one connection. Starts in the connect state; becomes a
 /// pure stream when a session launches.
 struct ConnectionWindow: View {
     var autoconnect: String?
@@ -19,9 +19,6 @@ struct ConnectionWindow: View {
             case .pickHost, .connecting, .failed:
                 ConnectView(model: model)
             case .streaming:
-                // CL-13: the stream + its overlays (FROZEN pill, stats
-                // readout, the auto-hiding control strip) live in
-                // StreamContainer.
                 StreamContainer(model: model)
                     .task {
                         await DiagnosticBenchmark.run(model: model)
@@ -74,11 +71,9 @@ struct ConnectionWindow: View {
                     || $0.address == requested
             })
             // An IP-shaped request whose address no pin remembers is a
-            // transport override — the host moved roads (Wi-Fi→wire)
-            // while the pin kept the old one. With exactly one pin
-            // there is no ambiguity about WHO we mean, and Noise still
-            // enforces the identity at the requested address; only the
-            // route differs.
+            // transport override (the host changed networks). With
+            // exactly one pin there is no ambiguity about who we mean,
+            // and Noise still enforces the identity.
             let fallback = (matched == nil && requestedIsAddress
                 && store.hosts.count == 1) ? store.hosts.values.first : nil
             guard let pinned = matched ?? fallback,

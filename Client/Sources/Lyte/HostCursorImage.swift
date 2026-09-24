@@ -1,9 +1,8 @@
 import AppKit
 import LyteWire
 
-/// E3: the 0x24 wire shape → the NSCursor the stream view wears.
-/// Pixels arrive BGRA premultiplied, rows top-to-bottom (the DRM
-/// ARGB8888 little-endian order) — exactly CGImage's
+/// The 0x24 wire shape → the NSCursor the stream view wears. Pixels
+/// arrive BGRA premultiplied, rows top-to-bottom — exactly CGImage's
 /// premultipliedFirst + byteOrder32Little reading.
 enum HostCursorImage {
     /// `scale` maps host device pixels to view points so the worn

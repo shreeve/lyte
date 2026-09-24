@@ -1,13 +1,9 @@
-// ChromaTier: chroma mode selection is declaration-as-choice, surfaced
-// as a three-tier "Chroma" control: Good = 4:2:0 / Better = 4:2:2 /
-// Best = 4:4:4. The client declares exactly ONE chroma mode per the
-// chosen tier (the agreed intersection is a singleton and the singleton
-// IS the choice — ChromaPosture's mirror on the host). Better is
-// dormant: no yuv422 wire id exists and no host encoder offers 4:2:2,
-// so the control renders it visible but disabled. An empty
-// intersection (Best against a 4:2:0-only host) is the typed
-// `noCommonChromaMode` failure; `ChromaFallbackPolicy` below is the
-// re-dial-at-Good verdict the app executes, never silently.
+// ChromaTier: the three-tier "Chroma" control — Good 4:2:0 / Better
+// 4:2:2 / Best 4:4:4. The client declares exactly one chroma mode per
+// tier; the agreed singleton is the choice. Better is dormant (no yuv422
+// wire id, no host encoder), so it renders visible but disabled. An
+// empty intersection is the typed `noCommonChromaMode` failure, which
+// `ChromaFallbackPolicy` turns into a re-dial at Good.
 
 import LyteCore
 import LyteWire
@@ -21,8 +17,7 @@ public enum ChromaTier: String, CaseIterable, Hashable, Sendable {
     case best
 
     /// The chroma singleton this tier declares (capability key 3), or
-    /// nil for the dormant Better tier — no yuv422 id exists in wire
-    /// v1, so Better cannot be declared at all yet.
+    /// nil for the dormant Better tier.
     public var declaredChromaModes: [UInt64]? {
         switch self {
         case .good: return [CapabilityChroma.yuv420]
@@ -32,9 +27,7 @@ public enum ChromaTier: String, CaseIterable, Hashable, Sendable {
         }
     }
 
-    /// Whether the control can select this tier today. Better renders
-    /// visible but disabled ("— not yet available") on every host until
-    /// the yuv422 wire append lands and a host declares it.
+    /// Whether the control can select this tier today (Better cannot).
     public var isSelectable: Bool { declaredChromaModes != nil }
 
     /// The control's row title.
@@ -57,12 +50,8 @@ public enum ChromaTier: String, CaseIterable, Hashable, Sendable {
 }
 
 extension Capabilities {
-    /// A copy of this set declaring exactly the tier's chroma
-    /// singleton (declaration-as-choice: the host maps the agreed
-    /// singleton straight to an encoder posture, so a multi-mode list
-    /// is never sent). The dormant Better tier has nothing to declare
-    /// and returns the set unchanged — the control never lets it
-    /// through; this is belt-and-suspenders, not policy.
+    /// A copy of this set declaring exactly the tier's chroma singleton.
+    /// The dormant Better tier returns the set unchanged.
     public func declaringChroma(tier: ChromaTier) -> Capabilities {
         guard let modes = tier.declaredChromaModes else { return self }
         var declared = self
@@ -71,16 +60,12 @@ extension Capabilities {
     }
 }
 
-// MARK: - The fallback verdict (the pillar's named degradation)
+// MARK: - The fallback verdict
 
-/// What the app does when the capability exchange fails: a Best (or
-/// any non-Good) declaration meeting a host without that tier draws
-/// the typed `noCommonChromaMode` — the verdict is re-dial at Good
-/// with a banner, never a silent failure and never a hang (V-4's host
-/// holds frames ≤2 s awaiting agreement, so the failure is prompt).
-/// Every other negotiation failure stays a failure: there is no lower
-/// tier to fall back to below Good, and a codec mismatch is not a
-/// chroma problem.
+/// What the app does when the capability exchange fails: a non-Good
+/// declaration drawing `noCommonChromaMode` re-dials at Good with a
+/// banner. Every other failure stays a failure — there is no tier below
+/// Good, and a codec mismatch is not a chroma problem.
 public enum ChromaFallbackVerdict: Equatable, Sendable {
     /// Tear down cleanly, re-dial declaring Good (4:2:0), and say so
     /// in a non-modal banner.
@@ -99,15 +84,13 @@ public enum ChromaFallbackPolicy {
     }
 }
 
-// MARK: - The stream audit (stream chroma == negotiated posture)
+// MARK: - The stream audit
 
-/// The negotiated-posture audit: the client asserts what the wire
-/// actually carries against what the capability exchange agreed —
-/// SPS `chroma_format_idc` parsed off every IDR (the parameter sets
-/// ride in-band on IDRs) against the agreed chroma singleton. One
-/// confirmation line on the first sighting, a DOCTOR line on any
-/// mismatch edge — never spam, never silent. Sans-IO by construction;
-/// the session core owns an instance behind its lock.
+/// Asserts what the wire carries against what the capability exchange
+/// agreed: SPS `chroma_format_idc` off every IDR against the agreed
+/// singleton. One confirmation line on the first sighting, a DOCTOR line
+/// on each mismatch edge. Sans-IO; the session core owns an instance
+/// behind its lock.
 public struct ChromaStreamAudit: Sendable {
     /// idc → agreed CapabilityChroma id (idc 1 = 4:2:0 ↔ yuv420,
     /// idc 3 = 4:4:4 ↔ yuv444; idc 0/2 have no wire id and are
@@ -153,9 +136,7 @@ public struct ChromaStreamAudit: Sendable {
         let streamLabel = Self.describe(idc: idc)
         guard let agreed = agreedChromaModes, agreed.count == 1,
               let first = agreed.first else {
-            // No agreed singleton (pre-agreement IDR, or a
-            // never-declaring peer): report the sighting, judge
-            // nothing.
+            // No agreed singleton yet: report the sighting, judge nothing.
             return "stream chroma \(streamLabel) (no agreed singleton)"
         }
         if Self.chromaId(forIdc: idc) == first {

@@ -1,15 +1,8 @@
-// MacEvdevKeyMap (CL-9): macOS virtual key code (Carbon kVK_*) → Linux
-// evdev keycode (input-event-codes.h) for the Lyte-UDP input path. The
-// wire carries evdev POSITION codes on purpose (HS-13's ruling, the
-// plan's risk table): the host session's XKB map owns layout; the
-// client never guesses keysyms. ANSI layout, the MacKeyMap precedent —
-// unmapped keys (media keys, Fn, JIS/ISO extras) are dropped, and the
-// key-repeat/modifier POLICY stays deferred per the HS-13 row (this is
-// the position-code table only).
-//
-// Pure data, no AppKit: LyteTransport owns it so the codec tests can
-// pin the table and both the app's NSEvent capture and any scripted
-// surface read the same rows.
+// MacEvdevKeyMap: macOS virtual key code (Carbon kVK_*) → Linux evdev
+// keycode (input-event-codes.h). The wire carries evdev position codes:
+// the host session's XKB map owns layout, and the client never guesses
+// keysyms. ANSI layout; unmapped keys (media keys, Fn, JIS/ISO extras)
+// are dropped. Pure data, no AppKit.
 
 public enum MacEvdevKeyMap {
     /// evdev keycode for one macOS virtual key code; nil = deliberately
@@ -19,8 +12,8 @@ public enum MacEvdevKeyMap {
     }
 
     /// evdev codes for left/right modifier keys plus the NX device
-    /// mask that says whether that PHYSICAL key is down in a
-    /// flagsChanged event (the MacKeyMap shape, retargeted at evdev).
+    /// mask that says whether that physical key is down in a
+    /// flagsChanged event.
     public static let modifierKeys: [UInt16: (evdev: UInt32, deviceMask: UInt)] = [
         0x38: (42, 0x0000_0002),    // kVK_Shift        → KEY_LEFTSHIFT
         0x3C: (54, 0x0000_0004),    // kVK_RightShift   → KEY_RIGHTSHIFT

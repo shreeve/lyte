@@ -114,19 +114,15 @@ struct WireView: AsyncParsableCommand {
         let host = try resolvedHost()
         let crypto: any TransportCrypto
         if let hostKey {
-            // Explicit key: throwaway client static, exactly as before —
-            // the debug-harness posture (a --require-paired host will
-            // refuse the unpinned static; that refusal is the feature).
+            // Explicit key: a throwaway client static (a --require-paired
+            // host refuses it by design).
             crypto = try NoiseTransportCrypto(
                 hostAddress: host,
                 hostPort: hostPort == 0 ? port : hostPort,
                 hostStaticPublicKey: NoiseTransportCrypto.parseKeyHex(hostKey))
         } else {
-            // The zero-UI reconnect: no key argued, so the pinned
-            // store supplies the host static and the Keychain supplies
-            // OUR persistent identity — plain 1-RTT Noise IK, which a
-            // --require-paired host admits because pairing pinned this
-            // exact static pair on both ends.
+            // No key argued: the pinned store supplies the host static and
+            // the Keychain our persistent identity — plain 1-RTT Noise IK.
             guard let pinned = PinnedHostStore.load().host(address: host),
                   let key = pinned.staticPublicKey
             else {
@@ -170,19 +166,14 @@ struct WireView: AsyncParsableCommand {
         window.contentView = videoView
         window.center()
 
-        // Idempotent, and named: four paths converge here and the smoke
-        // evidence must say which one ended the run. Late-bound because
-        // the session's event hook needs it and finish needs the session.
+        // Idempotent, and named: four paths converge here and the output
+        // must say which one ended the run.
         let finished = LockedCell(false)
         let finishBox = LockedCell<(@Sendable (String) -> Void)?>(nil)
 
-        // The production session object, event-printed. Every event
-        // fires off-main (receive/timer threads) — printing is safe.
-        //
-        // Debug-shell posture: host audio stays NEUTRAL unless
-        // --host-audio asks (the app asks for muted), --clipboard-images
-        // implies --clipboard (images never move without text consent),
-        // and --chroma is the declaration.
+        // The production session object, event-printed; events fire
+        // off-main. Host audio stays neutral unless --host-audio asks,
+        // and --clipboard-images implies --clipboard.
         var sessionConfig = LyteUdpSession.Config(
             hostAudioRouting: hostAudio.flatMap(Self.parseHostAudio),
             shareClipboard: clipboard || clipboardImages,
@@ -192,9 +183,9 @@ struct WireView: AsyncParsableCommand {
         sessionConfig.bindAddress = bind
         // Audio playback is opt-in here so unattended gate runs stay silent.
         sessionConfig.audioPlayback = audio
-        // --audio-prime forces the drain scenario: playout waits for N
-        // packets, so the pipe opens ~N×5 ms deep and the controller and
-        // accelerate earn their way back down on the live wire.
+        // --audio-prime: playout waits for N packets, so the pipe opens
+        // ~N×5 ms deep and the controller and accelerate earn their way
+        // back down.
         if audioPrime > 0 {
             sessionConfig.core.audioJitter.initialTargetPackets = audioPrime
             sessionConfig.core.audioJitter.maxTargetPackets = max(
@@ -261,29 +252,24 @@ struct WireView: AsyncParsableCommand {
                                               : "AUDIBLE (host speakers playing)")
                         + " (0x19-confirmed)")
                 case .hostClipboardChanged(let text):
-                    // Payloads never print — the byte count is the
-                    // live-leg evidence.
+                    // Payloads never print — byte counts only.
                     print("wire-view: host clipboard → pasteboard "
                         + "(\(text.utf8.count) B, 0x1B)")
                     pasteboardBox.value?.apply(text)
                 case .hostCursorShapeChanged(let shape):
-                    // E3: the dev CLI has no cursor to dress — the
-                    // print IS the live-leg evidence.
                     print("wire-view: host cursor shape "
                         + (shape.isHidden ? "HIDDEN"
                             : "\(shape.width)x\(shape.height) hotspot "
                             + "(\(shape.hotspotX),\(shape.hotspotY))")
                         + " (0x24)")
                 case .hostClipboardImageChanged(let data, let mime):
-                    // Sha-verified image cargo off chan 8. Byte
-                    // count only, same rule.
+                    // Sha-verified image cargo; byte count only.
                     print("wire-view: host clipboard image → pasteboard "
                         + "(\(data.count) B, \(mime), 0x22 cargo)")
                     pasteboardBox.value?.apply(imageData: data)
                 case .bulkMessageReceived(let message):
-                    // F-4: the debug shell never offers files (the app
-                    // owns the drop UX), so a chan-8 answer here is
-                    // weather worth a line, nothing more.
+                    // The debug shell never offers files, so a chan-8
+                    // answer is only worth a line.
                     print("wire-view: bulk message (transfer "
                         + "\(message.transferId)) — no transfer running")
                 case .idleFrameReceived(let frame, let outcome):
@@ -322,10 +308,8 @@ struct WireView: AsyncParsableCommand {
         print("wire-view: capability declaration sent (0x0F, first reliable word); "
             + "feedback cadence \(core.feedback.cadenceMilliseconds) ms")
 
-        // The pasteboard watcher — the same LyteUI glue the app
-        // runs; every local copy funnels through the core's gates
-        // (negotiated → enabled → sync book → ceiling), and every
-        // verdict prints as evidence. Byte counts only, never content.
+        // The pasteboard watcher — the app's LyteUI glue; every verdict
+        // prints. Byte counts only, never content.
         if clipboard || clipboardImages {
             let sync = PasteboardSync(onLocalChange: { [weak session] text in
                 guard let session else { return }
@@ -351,9 +335,7 @@ struct WireView: AsyncParsableCommand {
                 + (clipboardImages ? "∧12" : "") + " pending agreement)")
         }
 
-        // Scripted synthetic input through the
-        // production sendInput path (seq, capture stamp, reliable
-        // stream) — the same bytes the app's NSEvent capture sends.
+        // Scripted synthetic input through the production sendInput path.
         if let inputScript {
             let entries = try InputScript.parse(inputScript)
             print("wire-view: input script armed — \(entries.count) event(s), "
@@ -372,9 +354,8 @@ struct WireView: AsyncParsableCommand {
             }
         }
 
-        // The renderer's own verdict is the honest render evidence: it
-        // goes .failed (with the VideoToolbox error) if enqueued samples
-        // don't actually decode — enqueue counts alone can't lie-detect.
+        // The renderer's own verdict is the render evidence: it goes
+        // .failed if enqueued samples don't decode.
         let printer = WireViewStatsPrinter(
             session: session,
             recorder: recorder,
@@ -571,9 +552,8 @@ final class WireViewStatsPrinter: Sendable {
         if echo.clockSamples > 0 {
             back += ", \(echo.clockSamples) clock samples"
             if let last = core.clockModel.recentSamples(1).last {
-                // Interpolation, not %d: varargs %d truncates Int64 to 32
-                // bits and boot-epoch offsets are ~10¹⁰ µs (found live —
-                // the printed offset disagreed with the clock fit by 2·2³²).
+                // Interpolation, not %d: varargs %d truncates Int64 to
+                // 32 bits and boot-epoch offsets are ~10¹⁰ µs.
                 let sign = last.offsetMicroseconds >= 0 ? "+" : ""
                 back += " (last offset \(sign)\(last.offsetMicroseconds) µs, " +
                         "rtt \(last.rttMicroseconds) µs)"
@@ -581,8 +561,7 @@ final class WireViewStatsPrinter: Sendable {
         }
         print(back)
 
-        // The targeted-repair line, whenever the policy stirred:
-        // asks out, repairs back, frames healed, staleness → IDR.
+        // The targeted-repair line, whenever the policy stirred.
         let nack = core.nackPolicy.snapshotStats()
         if nack.pastParityFrames + nack.repairShardsReceived
             + nack.whollyLostEscalations > 0 {
@@ -611,8 +590,7 @@ final class WireViewStatsPrinter: Sendable {
             if nack.fecImpossibleDeferred > 0 {
                 line += ", \(nack.fecImpossibleDeferred) idr-deferred"
             }
-            // Answers the frame no longer needed — the live-books
-            // reconciliation against the host's repair ledger.
+            // Answers for frames no longer needed.
             if nack.repairsLate + nack.repairsDuplicate
                 + nack.repairsSuperseded > 0 {
                 line += ", answers unneeded \(nack.repairsLate) late/" +
@@ -635,7 +613,7 @@ final class WireViewStatsPrinter: Sendable {
             print(line)
         }
 
-        // The clock model line: the T gate reads the residual here.
+        // The clock model line.
         if let fit = core.clockModel.estimate() {
             let sign = fit.offsetMicroseconds >= 0 ? "+" : ""
             print("\(prefix)   clock: offset \(sign)\(fit.offsetMicroseconds) µs, " +
@@ -646,8 +624,7 @@ final class WireViewStatsPrinter: Sendable {
                   "(min rtt \(fit.minRttMicroseconds) µs)")
         }
 
-        // The audio line: depacketizer/FEC + jitter buffer +
-        // playback evidence, whenever the channel carried anything.
+        // The audio line, whenever the channel carried anything.
         let audio = core.audio.snapshotStats()
         if audio.depacketizer.datagramsIngested > 0 {
             let d = audio.depacketizer
@@ -683,8 +660,7 @@ final class WireViewStatsPrinter: Sendable {
                 if p.underrunFrames > 0 {
                     line += ", underrun \(p.underrunFrames) frames"
                 }
-                // The accelerate books: WSOLA ops + backlog drained, the
-                // engage count, and route-change survivals.
+                // The accelerate books.
                 if p.accelerate.removalOps > 0
                     || audio.accelerateEngagements > 0 {
                     line += ", accel \(p.accelerate.removalOps) ops "
@@ -706,8 +682,7 @@ final class WireViewStatsPrinter: Sendable {
             print(line)
         }
 
-        // The input line: sender books + both latency loops, when
-        // any input rode this session.
+        // The input line, when any input rode this session.
         let input = core.input.snapshotStats()
         if input.eventsSent > 0 || input.echoTuplesReceived > 0 {
             var line = "\(prefix)   input: \(input.eventsSent) sent, " +

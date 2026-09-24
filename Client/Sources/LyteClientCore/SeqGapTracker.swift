@@ -1,8 +1,7 @@
 // Per-channel (chan, u16 seq) gap accounting over LyteWire's serial
 // arithmetic. A sliding seen-window distinguishes a reordered late arrival
 // (fills a previously counted gap) from a duplicate, so `datagramsMissing`
-// converges to the true loss count under reordering — the property the
-// CL-1 demux test pins with seeded shuffles across the 0xFFFF wrap.
+// converges to the true loss count under reordering, across the 0xFFFF wrap.
 
 import LyteWire
 

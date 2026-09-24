@@ -1,22 +1,13 @@
-// The NSPasteboard glue (design doc
-// docs/decisions/20260722-231500-lyte-clipboard.md §8) — deliberately thin:
-// NSPasteboard has no change notification, so a ~200 ms `changeCount`
-// poll watches for local copies while active, and `apply` writes host
-// content and swallows its own bump. ALL policy (the negotiated/
-// enabled gates, the loop-prevention book, the ceilings, the counters)
-// lives in the sans-IO session core; this class only reads content,
-// applies content, and keeps quiet about its own writes. Shared by the
-// app's ConnectionModel and wire-view's --clipboard leg. Payloads
-// never appear in logs here or anywhere.
+// The NSPasteboard glue (docs/decisions/20260722-231500-lyte-clipboard.md
+// §8), deliberately thin: a ~200 ms `changeCount` poll watches for local
+// copies while active, and `apply` writes host content and swallows its
+// own bump. All policy lives in the sans-IO session core. Payloads never
+// appear in logs.
 //
-// Images, when the images rung is on: text wins when a change carries
-// both flavors (the host leaf's read order, mirrored); an image-only
-// change (a screenshot, a "Copy Image") is read as PNG — transcoded from
-// TIFF when the copying app never provided public.png, outside the lock
-// — and handed to the image callback. `apply(imageData:)` writes the
-// host's PNG and PROMISES a TIFF rendition (older AppKit paste targets
-// ask for TIFF first), rendered only if a paste target asks, so a large
-// host image never decodes on the caller's thread.
+// Images: text wins when a change carries both flavors; an image-only
+// change is read as PNG (transcoded from TIFF outside the lock when
+// needed). `apply(imageData:)` writes the host's PNG and promises a TIFF
+// rendition, rendered only if a paste target asks.
 
 import AppKit
 
@@ -24,17 +15,13 @@ public final class PasteboardSync: @unchecked Sendable {
     private let pasteboard: NSPasteboard
     private let intervalMilliseconds: Int
     private let onLocalChange: @Sendable (String) -> Void
-    /// P-1: fired (on the poll queue) with PNG bytes when the user
-    /// copies an image while the watcher is active AND the images
-    /// rung is on. The session core judges it; this class never does.
+    /// Fired on the poll queue with PNG bytes when the user copies an
+    /// image while the watcher is active and the images rung is on.
     public var onLocalImageChange: (@Sendable ([UInt8]) -> Void)?
 
     private let lock = NSLock()
     private var timer: DispatchSourceTimer?
-    /// The images rung's local mirror: while false the poll never
-    /// reads image flavors at all (consent-shaped, like `start`'s
-    /// re-baseline — content the user never opted into sharing is
-    /// never even read).
+    /// While false the poll never reads image flavors at all.
     private var imagesOn = false
     /// The last changeCount this class has accounted for — poll
     /// baseline AND the self-write swallow.
@@ -43,10 +30,8 @@ public final class PasteboardSync: @unchecked Sendable {
     /// promise outlives the pasteboard item's own bookkeeping.
     private var tiffPromise: TiffRendition?
 
-    /// - Parameter onLocalChange: fired (on the poll queue) with the
-    ///   pasteboard's string whenever the user copies while the
-    ///   watcher is active. The session core judges it; this class
-    ///   never does.
+    /// - Parameter onLocalChange: fired on the poll queue with the
+    ///   pasteboard's string whenever the user copies while active.
     public init(
         pasteboard: NSPasteboard = .general,
         intervalMilliseconds: Int = 200,
@@ -93,20 +78,18 @@ public final class PasteboardSync: @unchecked Sendable {
         source?.cancel()
     }
 
-    /// Flips the images rung's local mirror (P-1). Consent-shaped
-    /// like `start`: enabling re-baselines nothing — only changes
-    /// AFTER the flip are read as images.
+    /// Flips the images rung's local mirror; only changes after the
+    /// flip are read as images.
     public func setImagesEnabled(_ enabled: Bool) {
         lock.lock()
         imagesOn = enabled
         lock.unlock()
     }
 
-    /// Applies host text to the pasteboard and swallows the resulting
-    /// changeCount bump — the local half of loop prevention (the
-    /// session core's book is the authoritative second guard). Known
-    /// v1 gap, accepted in the design doc: a user copy racing this
-    /// apply inside one poll window is superseded at the OS clipboard.
+    /// Applies host text and swallows the resulting changeCount bump —
+    /// the local half of loop prevention (the session core's book is the
+    /// second guard). A user copy racing this apply inside one poll
+    /// window is superseded at the OS clipboard.
     public func apply(_ text: String) {
         lock.lock()
         defer { lock.unlock() }
@@ -115,9 +98,8 @@ public final class PasteboardSync: @unchecked Sendable {
         lastChangeCount = pasteboard.changeCount
     }
 
-    /// Applies a host clipboard image (sha-verified PNG bytes) and
-    /// swallows its bump. The TIFF rendition is promised, not rendered:
-    /// paste targets that never ask for public.png still get the image.
+    /// Applies a host clipboard image (sha-verified PNG) and swallows
+    /// its bump. The TIFF rendition is promised, not rendered.
     public func apply(imageData: [UInt8]) {
         let png = Data(imageData)
         let promise = TiffRendition(png: png)

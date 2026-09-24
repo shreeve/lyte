@@ -150,11 +150,8 @@ final class AwdlHoldController: @unchecked Sendable {
         idleExit = timer
     }
 
-    /// Event-driven counter-punch: re-down awdl0 the moment the kernel
-    /// reports it up again, before its channel scan starts (a polling
-    /// watchdog eats a latency spike on every re-raise). Only awdl0's own
-    /// up-edges act — our own down-edge and every other interface's
-    /// traffic are ignored.
+    /// Re-downs awdl0 the moment the kernel reports it up again, before
+    /// its channel scan starts. Only awdl0's own up-edges act.
     private func startRouteWatcher() {
         guard routeWatcher == nil else { return }
         let fd = socket(PF_ROUTE, SOCK_RAW, 0)

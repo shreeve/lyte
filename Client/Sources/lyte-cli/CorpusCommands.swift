@@ -1,17 +1,9 @@
-// corpus-gen / corpus-gate: the corpus harness's two CLI halves over
-// LyteCorpus:
-//
-//   corpus-gen   writes the deterministic in-repo corpus (CorpusFrames)
-//                as raw BGRX frames + manifest.json (+ PNG previews) for
-//                the host encode leg (lyte-encode-check on the host);
-//   corpus-gate  runs the acceptance math (CorpusGates — thresholds
-//                pinned in code) over decode-probe's VideoToolbox BGRA
-//                readback: text-region RGB PSNR, SSIM, range round-trip,
-//                grating fidelity, ratchet convergence from the encoder's
-//                size books, and the visual-golden diff.
-//
-// Orchestration (which encode leg, which chroma, the host transport) is
-// the operator's; these commands are the measurement seams.
+// corpus-gen / corpus-gate: the corpus harness's CLI halves over
+// LyteCorpus. corpus-gen writes the deterministic corpus as raw BGRX
+// frames + manifest.json (+ PNG previews) for the host encode leg;
+// corpus-gate runs the CorpusGates acceptance math over decode-probe's
+// BGRA readback. Orchestration is the operator's; these are the
+// measurement seams.
 
 import LyteCorpus
 import ArgumentParser
@@ -194,9 +186,9 @@ struct CorpusGate: ParsableCommand {
                  pass: textConverged.minChannel >= CorpusGates.textConvergedMinDB)
             resultFields.append("text_active_db=\(fmt(textActive.minChannel))")
             resultFields.append("text_conv_db=\(fmt(textConverged.minChannel))")
-            // Diagnostics: the white-on-black block survives 4:2:0 in
-            // luma; the saturated syntax block is what chroma
-            // subsampling kills — split them so the story is visible.
+            // Diagnostics: split the white-on-black block (survives 4:2:0
+            // in luma) from the saturated syntax block (what chroma
+            // subsampling kills).
             if spec.textRegions.count == 2 {
                 for (label, region) in [("white", spec.textRegions[0]),
                                         ("syntax", spec.textRegions[1])] {
@@ -221,7 +213,7 @@ struct CorpusGate: ParsableCommand {
             resultFields.append(String(format: "ssim=%.5f", ssim))
         }
 
-        // (b) Gratings: per-channel error ≤ ±2 codes, post-ratchet.
+        // (b) Gratings: per-channel error, post-ratchet.
         if !spec.gratings.isEmpty {
             var worst = 0
             for grating in spec.gratings {
@@ -238,10 +230,8 @@ struct CorpusGate: ParsableCommand {
             resultFields.append("grating_max=\(worst)")
         }
 
-        // (d) Patches: the range round-trip, post-ratchet. The bar is
-        // the pillar's byte-exact one under --range-posture full; the
-        // shipped limited601 posture (owner decision 2) allows the
-        // quantization round trip's one code and queues exactness.
+        // (d) Patches: the range round-trip, post-ratchet — byte-exact
+        // under --range-posture full; limited601 allows one code.
         if !spec.patches.isEmpty {
             let allowance = rangePosture == "limited601"
                 ? CorpusGates.limited601PatchAllowance : 0
@@ -271,7 +261,7 @@ struct CorpusGate: ParsableCommand {
         }
 
         // Ratchet convergence from the encoder's size books, plus the
-        // shape numbers V-4 compares recipes on (IDR mass, keepalive).
+        // shape numbers (IDR mass, keepalive).
         if let sizes {
             let book = CorpusGates.parseSizeBook(
                 try String(contentsOfFile: sizes, encoding: .utf8))

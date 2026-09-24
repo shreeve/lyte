@@ -20,11 +20,9 @@ final class HelperClient {
     private(set) var engaged = false
     private var promptedThisRun = false
 
-    /// The ground truth the watchdog trusts: awdl0's own UP flag, read
-    /// directly via getifaddrs (no privileges needed). The XPC call is
-    /// fire-and-forget — a daemon that failed to spawn produces no
-    /// error, only an interface that never went down; asking the
-    /// interface is the only claim that cannot lie.
+    /// awdl0's own UP flag, read via getifaddrs (no privileges needed).
+    /// The XPC call is fire-and-forget, so a daemon that failed to spawn
+    /// shows only as an interface that never went down.
     nonisolated static func awdlIsUp() -> Bool {
         var addrs: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&addrs) == 0 else { return false }
@@ -41,17 +39,13 @@ final class HelperClient {
         return false
     }
 
-    /// App-launch refresh: every rebuild re-signs the helper, and the
-    /// lightweight code requirement (LWCR) BTM stored at registration
-    /// goes stale — launchd then refuses the spawn with EX_CONFIG
-    /// ("needs LWCR update" in launchctl print). Unregister + re-register
-    /// refreshes the LWCR; BTM keys the user's approval by identifier, so
-    /// the toggle normally survives the cycle.
+    /// App-launch refresh: every rebuild re-signs the helper and stales
+    /// the code requirement BTM stored at registration (launchd then
+    /// refuses the spawn with EX_CONFIG). Unregister + re-register
+    /// refreshes it; the user's approval normally survives the cycle.
     nonisolated static func refreshRegistration() {
-        // SMAppService performs synchronous BTM/XPC work and emits Apple's
-        // main-thread performance diagnostic when called from app launch.
-        // Registration is process-global; a local service handle keeps this
-        // blocking refresh completely outside the MainActor.
+        // SMAppService does synchronous BTM/XPC work; keep it off the
+        // MainActor with a local service handle.
         let refreshService = SMAppService.daemon(
             plistName: LyteHelper.plistName)
         try? refreshService.unregister()
@@ -70,9 +64,8 @@ final class HelperClient {
     func streamBegan(
         registration: RegistrationPosture = .ensure
     ) -> String? {
-        // Registration is app-lifecycle work, never stream-lifecycle work.
-        // A stream may begin after an external build has removed the running
-        // bundle from disk; querying status is safe, but registration is not.
+        // Registration is app-lifecycle work: a stream may begin after an
+        // external build removed the running bundle, so only query here.
         switch service.status {
         case .enabled:
             proxy()?.streamBegan()

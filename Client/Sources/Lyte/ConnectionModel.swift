@@ -50,10 +50,8 @@ final class ConnectionModel {
         self.services = services
     }
 
-    /// Fresh-connect patience (the respawn-gap hunt in connectLyte):
-    /// silence keeps re-dialing until this budget runs out. Sized to
-    /// cover a full host restart and hardware initialization
-    /// (10–15 s observed) with margin, not to camp forever.
+    /// Fresh-connect patience: silence keeps re-dialing until this budget
+    /// runs out — a full host restart (10–15 s observed) with margin.
     static let freshConnectBudgetMicroseconds: UInt64 = 45_000_000
 
     /// Advances on every lifecycle edge — a connect begins, the human
@@ -151,10 +149,8 @@ final class ConnectionModel {
     private let videoDeliveryQueue = DispatchQueue(
         label: "lyte.video.delivery", qos: .userInteractive)
     private let videoDeliveryBooks = VideoDeliveryBooks()
-    /// Source cadence, receive cadence, delivery queue, renderer enqueue,
-    /// and Apple's decode/display books. Bounded to six seconds at 60 fps
-    /// and always on — visual failures cannot depend on the stats overlay
-    /// being open.
+    /// Always on and bounded (six seconds at 60 fps): visual failures
+    /// cannot depend on the stats overlay being open.
     private let videoFlightRecorder = VideoFlightRecorder(
         nowMicroseconds: { SystemMonotonicClock.nowMicroseconds })
     /// The link-health fold over the recorder's ring. Ticked at 1 Hz; its
@@ -284,14 +280,11 @@ final class ConnectionModel {
         clipboardSharing = sessionConfig.core.shareClipboard
         clipboardImageSharing = sessionConfig.core.shareClipboardImages
 
-        // The respawn-gap patience: a paired host that answered discovery
-        // moments ago but is SILENT now is almost always restarting — its
-        // boot takes 10–15 s while a single dial gives up in ~10. So
-        // silence hunts instead of dead-ending: short dials (the roaming
-        // shape, 3 × 700 ms), a 2 s re-browse between them (the reborn
-        // host re-registers — follow its freshest address), inside one
-        // budget. Every OTHER failure — crypto rejection, unpaired,
-        // socket errors — fails immediately: patience is only for silence.
+        // Silence from a host that answered discovery moments ago almost
+        // always means it is restarting (10–15 s boot; one dial gives up
+        // in ~10 s). So silence hunts — short dials with a 2 s re-browse
+        // between them, following the freshest address, inside one
+        // budget. Every other failure fails immediately.
         let deadline = services.now() + Self.freshConnectBudgetMicroseconds
         var dialAddress = host.address
         var dialPort = host.port
@@ -437,10 +430,8 @@ final class ConnectionModel {
     }
 
     /// A started session becomes the window's — the one attach path for
-    /// the first connect and every roaming re-dial. The capability
-    /// agreement drives the rest; the core receives before
-    /// `startSession` returns, so an agreement that arrived first is
-    /// applied here.
+    /// the first connect and every roaming re-dial. The core receives
+    /// before `startSession` returns, so an early agreement applies here.
     func attach(_ lyte: LyteUdpSession, address: String) {
         lyteSession = lyte
         hostAddress = address
@@ -474,11 +465,10 @@ final class ConnectionModel {
     }
 
     /// Roaming-preserving teardown: the wire session goes away; the
-    /// window and everything per-HOST stays for the re-dial — live
-    /// consent, the confirmed posture (the re-dial asks for it), the
-    /// input capture (its sends route through `lyteSession` live and
-    /// drop while nil), and the bulk coordinator (its next
-    /// `sessionReady` re-offers the same id).
+    /// window and all per-host state stay for the re-dial (live consent,
+    /// confirmed posture, input capture — whose sends drop while
+    /// `lyteSession` is nil — and the bulk coordinator, which re-offers
+    /// the same id).
     func detachWireSession(_ end: ConnectionServices.SessionEnd) {
         guard let lyte = lyteSession else { return }
         lyteSession = nil
@@ -541,10 +531,9 @@ final class ConnectionModel {
         phase = reason.map { .failed(.ordinary($0)) } ?? .pickHost
     }
 
-    /// The human's exit, whatever the phase: the connecting screen's
-    /// Cancel, Disconnect, ⌘W. In-flight work is invalidated first — a
-    /// dial that completes afterward closes its session and walks away —
-    /// then whatever stands (session, roaming hunt) ends.
+    /// The human's exit, whatever the phase (Cancel, Disconnect, ⌘W).
+    /// In-flight work is invalidated first — a dial that completes
+    /// afterward closes its session — then whatever stands ends.
     func disconnect() {
         advanceLifecycle()
         if case .connecting = phase { phase = .pickHost }
@@ -628,11 +617,9 @@ final class ConnectionModel {
         }
     }
 
-    /// Wears the host's announced cursor over the stream. The scale maps
-    /// host device pixels onto the video's on-glass points through the
-    /// aspect-fit rect, so the worn shape matches the video's
-    /// magnification; before the first sample (no video size) 0.75
-    /// approximates the host's 1.333 logical scale.
+    /// Wears the host's announced cursor, scaled from host device pixels
+    /// to the video's on-glass points through the aspect-fit rect; 0.75
+    /// approximates the host's 1.333 logical scale before the first sample.
     private func applyHostCursor(_ shape: CursorShape) {
         guard let view = lyteVideoView else { return }
         var scale: CGFloat = 0.75
@@ -679,12 +666,8 @@ final class ConnectionModel {
 
     // MARK: - The stats readout
 
-    /// 1_734_567 → "1.73M"; 41_200 → "41.2k"; small counts stay exact.
-    /// Only ever used for denominators — deficits always print exact.
-    /// The overlay's rows: the shared SessionStatsFormatter over the
-    /// session's books plus what only the window knows (capture, the
-    /// radio watchdog, the delivery gauges, the flight recorder, bulk
-    /// progress). Sampled once per second while the overlay is visible.
+    /// The overlay's rows: SessionStatsFormatter over the session's books
+    /// plus window-only state. Sampled once per second while visible.
     func statsRows() -> [SessionStatsRow] {
         guard let session = lyteSession, let core = session.core else {
             return []

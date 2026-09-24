@@ -1,14 +1,10 @@
-/// The radio watchdog's debounce, extracted pure so it can be pinned
-/// (the loop that drives it lives in the app target, out of any test
-/// bundle's reach). Semantics — one `check` per 5 s tick while a
-/// stream is active, fed awdl0's own UP flag:
+/// The radio watchdog's debounce, pure so it can be tested. One `check`
+/// per 5 s tick while a stream is active, fed awdl0's own UP flag:
 ///
 /// - radio DOWN (held): healthy; the strike count and alarm clear.
-/// - radio UP (loose): first sighting asks the caller to RE-ENGAGE
-///   (a crashed daemon's connection already invalidated, so a fresh
-///   engage respawns it via launchd); three consecutive loose checks
-///   latch the alarm — the hold is NOT working and the overlay must
-///   say so instead of pretending.
+/// - radio UP (loose): the first sighting asks the caller to re-engage
+///   (a fresh engage respawns a crashed daemon via launchd); three
+///   consecutive loose checks latch the alarm.
 public struct RadioHoldPolicy: Sendable, Equatable {
     public private(set) var looseChecks = 0
     /// Latched while loose ≥ 3 consecutive checks; clears the moment
