@@ -301,6 +301,7 @@ targets += [
             "CNetIO",
             "HostCore",
             "HostIO",
+            "HostSession",
             "HostWire",
             .product(name: "LyteWire", package: "Wire"),
         ]

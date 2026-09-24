@@ -66,10 +66,9 @@ struct Options {
     /// directory defaults to ~/Downloads, created if missing.
     var acceptFiles = false
     var acceptFilesDirectory: String?
-    /// Arm the retry-cookie dial: a random cookie secret is minted and
-    /// require-cookie mode engages when the msg1 rate crosses the enter
-    /// threshold, clearing at the exit threshold. Off = token bucket only.
-    var requireCookie = false
+    /// The retry-cookie dial's thresholds (message 1s per second):
+    /// require-cookie mode engages at `cookieEnter` and clears at
+    /// `cookieExit`, which must be lower.
     var cookieEnter = 20
     var cookieExit = 5
     /// Debug only: false = never arm the EncoderVbvPolicy; the encoder
@@ -167,8 +166,6 @@ struct Options {
                     throw HostError("--accept-files= needs a directory")
                 }
                 opts.acceptFilesDirectory = dir
-            case "--require-cookie":
-                opts.requireCookie = true
             case "--cookie-enter":
                 i += 1
                 guard i < args.count, let v = Int(args[i]), v >= 1 else {
@@ -234,6 +231,11 @@ struct Options {
                   --require-paired  only clients already in paired_clients
                                     may complete the Noise handshake
                                     (reconnects are plain 1-RTT IK)
+                  --cookie-enter N  message 1s per second at which the
+                                    handshake demands a stateless retry
+                                    cookie (default 20)
+                  --cookie-exit N   the rate at which that demand clears
+                                    (default 5, below --cookie-enter)
                   --input MODE      injection backend for client input
                                     events: auto/uinput (kernel
                                     uinput, compositor-agnostic;
@@ -300,7 +302,31 @@ struct Options {
             }
             i += 1
         }
+        guard opts.cookieExit < opts.cookieEnter else {
+            throw HostError("""
+                --cookie-exit (\(opts.cookieExit)) must be below \
+                --cookie-enter (\(opts.cookieEnter))
+                """)
+        }
         return opts
+    }
+
+    /// The handshake gate every run arms. The retry-cookie dial is always
+    /// armed: it costs nothing until a message-1 flood crosses the enter
+    /// threshold, and without it a spoofed flood starves every honest dial
+    /// from the shared token bucket. The secret is process-random: the
+    /// host both mints and verifies, and no cookie outlives the process.
+    func handshakeGateConfig(
+        using rng: inout some RandomNumberGenerator
+    ) -> HandshakeGate.Config {
+        var secret = [UInt8](repeating: 0, count: RetryCookie.secretByteCount)
+        for i in secret.indices {
+            secret[i] = UInt8.random(in: 0...255, using: &rng)
+        }
+        return HandshakeGate.Config(
+            cookieSecret: secret,
+            cookieEnterThreshold: cookieEnter,
+            cookieExitThreshold: cookieExit)
     }
 }
 
@@ -530,23 +556,12 @@ final class SessionHost {
         }
         self.declared = declared
 
-        // A process-scoped random secret: the host both mints and
-        // verifies, and no cookie needs to survive a restart.
-        var gateConfig = HandshakeGate.Config()
-        if opts.requireCookie {
-            var secret = [UInt8](repeating: 0, count: RetryCookie.secretByteCount)
-            for i in secret.indices { secret[i] = UInt8.random(in: 0...255) }
-            gateConfig = HandshakeGate.Config(
-                cookieSecret: secret,
-                cookieEnterThreshold: opts.cookieEnter,
-                cookieExitThreshold: opts.cookieExit
-            )
-            print("""
-                handshake: retry-cookie dial ARMED (require-cookie engages \
-                at \(opts.cookieEnter) msg1/s, clears at \(opts.cookieExit)/s)
-                """)
-        }
-        self.gateConfig = gateConfig
+        var rng = SystemRandomNumberGenerator()
+        gateConfig = opts.handshakeGateConfig(using: &rng)
+        print("""
+            handshake: retry-cookie dial armed (require-cookie engages \
+            at \(opts.cookieEnter) msg1/s, clears at \(opts.cookieExit)/s)
+            """)
 
         // Binds once for the whole run, so the port stays bound between
         // sessions.
