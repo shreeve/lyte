@@ -214,6 +214,26 @@ public struct LyteUdpSessionCounters: Sendable {
     public var bulkDropsLoud: UInt64 = 0
 }
 
+extension LyteUdpSessionCounters {
+    mutating func bump(_ counter: ClientControlCounter) {
+        switch counter {
+        case .modeTransitionReceived: modeTransitionsReceived += 1
+        case .capabilityUpdateAnswered: capabilityUpdatesAnswered += 1
+        case .audioRoutingStatusReceived: audioRoutingStatusesReceived += 1
+        case .audioRoutingRequestSent: audioRoutingRequestsSent += 1
+        case .audioRoutingDropLoud: audioRoutingDropsLoud += 1
+        case .clipboardAnnounceReceived: clipboardAnnouncesReceived += 1
+        case .clipboardIgnoredDisabled: clipboardIgnoredDisabled += 1
+        case .clipboardDropLoud: clipboardDropsLoud += 1
+        case .cursorShapeReceived: cursorShapesReceived += 1
+        case .unknownReliableType: unknownReliableTypes += 1
+        case .audioTrackStateReceived: audioTrackStatesReceived += 1
+        case .videoPostureStateReceived: videoPostureStatesReceived += 1
+        case .malformedReliableMessage: malformedReliableMessages += 1
+        }
+    }
+}
+
 // MARK: - Config
 
 public struct LyteUdpSessionCoreConfig: Sendable {
@@ -1335,8 +1355,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         }
     }
 
-    /// The composed IO-free control session owns routing, decoding, and
-    /// cross-organ judgment. The shell keeps counters and external effects.
+    /// The composed IO-free control session owns routing, decoding,
+    /// cross-organ judgment, and the decision's books and note. The shell
+    /// bumps the counters, performs the sends, surfaces typed events, and
+    /// executes the effects and lifecycle actions.
     private func receiveControlWord(
         _ bytes: [UInt8], now: ClientTimestamp
     ) {
@@ -1350,38 +1372,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 "control response encoding refused: \(error)"))
             return
         }
-        if case .lifecycle(.modeTransition) = decision?.event {
-            counters.modeTransitionsReceived += 1
-        }
-        if case .capability(.updateAnswered) = decision?.event {
-            counters.capabilityUpdatesAnswered += 1
-        }
-        switch decision?.event {
-        case .audioRouting(.status(_, startup: let startup)):
-            counters.audioRoutingStatusesReceived += 1
-            if case .requested = startup {
-                counters.audioRoutingRequestsSent += 1
-            }
-        case .audioRouting(.unnegotiatedStatus),
-             .audioRouting(.roleConfusedRequest):
-            counters.audioRoutingDropsLoud += 1
-        case .clipboard(.textChanged):
-            counters.clipboardAnnouncesReceived += 1
-        case .clipboard(.textIgnoredDisabled):
-            counters.clipboardIgnoredDisabled += 1
-        case .clipboard(.unnegotiatedTextAnnounce),
-             .clipboard(.roleConfusedTextSet):
-            counters.clipboardDropsLoud += 1
-        case .cursor(.shape):
-            counters.cursorShapesReceived += 1
-        case .cursor(.unnegotiatedShape):
-            counters.unknownReliableTypes += 1
-        case .mediaPosture(.audioState):
-            counters.audioTrackStatesReceived += 1
-        case .mediaPosture(.videoState):
-            counters.videoPostureStatesReceived += 1
-        default:
-            break
+        for counter in decision?.counters ?? [] {
+            counters.bump(counter)
         }
         if let lifecycle = decision?.lifecycle {
             machineFrozen.store(
@@ -1411,99 +1403,25 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             }
         }
 
+        if let note = decision.note {
+            onEvent(.protocolNote(note))
+        }
         switch decision.event {
-        case .lifecycle:
-            break
-        case .malformedLifecycle(.modeTransition):
-            noteMalformed("mode transition")
-        case .malformedLifecycle(.sessionTeardown):
-            noteMalformed("session teardown")
         case .capability(.agreed(let intersection)):
             onEvent(.capabilitiesAgreed(intersection))
         case .capability(.failed(let failure)):
             onEvent(.capabilitiesFailed(failure))
         case .capability(.updateAnswered(let accepted)):
             onEvent(.capabilityUpdateAnswered(accepted: accepted))
-        case .capability(.malformed(.declaration)):
-            noteMalformed("capability declaration")
-        case .capability(.malformed(.update)):
-            noteMalformed("capability update")
-        case .capability(.refused(.declaration, let failure)):
-            onEvent(.protocolNote(
-                "capability declaration refused: \(failure)"))
-        case .capability(.refused(.update, let failure)):
-            onEvent(.protocolNote(
-                "capability update refused: \(failure)"))
-        case .audioRouting(.status(
-            let hostMode, startup: .requested(let desired)
-        )):
-            onEvent(.protocolNote(
-                "session-start posture: asked host for \(desired) "
-                + "(host default \(hostMode))"))
-        case .audioRouting(.status(
-            _, startup: .refused(_, let error)
-        )):
-            onEvent(.protocolNote(
-                "session-start posture ask refused: \(error)"))
-        case .audioRouting(.status(_, startup: .none)):
-            break
-        case .audioRouting(.malformedStatus):
-            noteMalformed("audio-routing status")
-        case .audioRouting(.unnegotiatedStatus):
-            onEvent(.protocolNote(
-                "audio-routing 0x19 without negotiated key 9 — dropped"))
-        case .audioRouting(.roleConfusedRequest):
-            onEvent(.protocolNote(
-                "audio-routing 0x18 arrived AT the client "
-                + "(role confusion) — dropped"))
         case .clipboard(.textChanged(let text)):
             onEvent(.hostClipboardChanged(text))
-        case .clipboard(.malformedTextAnnounce):
-            noteMalformed("clipboard announce")
-        case .clipboard(.unnegotiatedTextAnnounce):
-            onEvent(.protocolNote(
-                "clipboard 0x1B without negotiated key 10 — dropped"))
-        case .clipboard(.textIgnoredDisabled(let byteCount)):
-            onEvent(.protocolNote(
-                "clipboard 0x1B while sharing is off — ignored "
-                    + "(\(byteCount) B never applied)"))
-        case .clipboard(.roleConfusedTextSet):
-            onEvent(.protocolNote(
-                "clipboard 0x1A arrived AT the client "
-                    + "(role confusion) — dropped"))
-        case .clipboard(.malformedImageCargo),
-             .clipboard(.unnegotiatedImageCargo),
-             .clipboard(.image):
-            break   // Image words ride the bulk channel, not this seam.
         case .cursor(.shape(let shape)):
             onEvent(.hostCursorShapeChanged(shape))
-        case .cursor(.malformedShape):
-            noteMalformed("cursor shape")
-        case .cursor(.unnegotiatedShape):
-            onEvent(.protocolNote(
-                "cursor 0x24 without negotiated key 13 — dropped"))
-        case .mediaPosture(.audioState(let state)):
-            if state.state == .quiet {
-                audio.noteAnnouncedQuiet()
-                relaxDetectorForAnnouncedQuiet(now: now)
-            }
-        case .mediaPosture(.videoState(let state, changed: let changed)):
-            if changed {
-                onEvent(.protocolNote(state.posture == .quiet
-                    ? "video quiet — keepalive \(state.keepaliveSeconds)s "
-                        + "announced"
-                    : "video active — keepalive 1 s"))
-            }
-        case .mediaPosture(.malformedAudioState):
-            noteMalformed("audio track state")
-        case .mediaPosture(.malformedVideoState):
-            noteMalformed("video posture state")
-        case .mediaPosture(.unnegotiatedAudioState):
-            onEvent(.protocolNote(
-                "audio track-state 0x25 without negotiated key 15 — dropped"))
-        case .mediaPosture(.unnegotiatedVideoState):
-            onEvent(.protocolNote(
-                "video posture 0x26 without negotiated key 16 — dropped"))
+        case .mediaPosture(.audioState(let state)) where state.state == .quiet:
+            audio.noteAnnouncedQuiet()
+            relaxDetectorForAnnouncedQuiet(now: now)
+        default:
+            break
         }
         if let lifecycle = decision.lifecycle {
             executeLifecycle(lifecycle, now: now)
