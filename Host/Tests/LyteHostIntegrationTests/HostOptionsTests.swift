@@ -23,6 +23,7 @@ final class HostOptionsTests: XCTestCase {
             let message1 = [UInt8](repeating: UInt8(i), count: 96)
             if case .challenge = gate.admitMessage1(
                 presentedCookie: nil, clientTuple: tuple,
+                clientAddress: tuple,
                 message1: message1[...],
                 now: UInt64(i) * 1_000_000).admission {
                 challenged = true
