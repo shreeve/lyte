@@ -56,20 +56,20 @@ exercise_image() {
     [[ "$(file_mode "$install_root/usr/local/bin/lyte-host")" == 755 ]]
     [[ "$(file_mode "$install_root/etc/lyte/lyte-host.conf")" == 644 ]]
     [[ "$(file_mode "$install_root/etc/systemd/system/lyte-host.service")" == 644 ]]
-    rg -Fq -- '--advertise-interface en-test0' \
+    grep -Fq -- '--advertise-interface en-test0' \
         "$install_root/etc/lyte/lyte-host.conf"
-    rg -Fq 'User=lyte-test-user' \
+    grep -Fq 'User=lyte-test-user' \
         "$install_root/etc/systemd/system/lyte-host.service"
-    rg -Fq 'XDG_RUNTIME_DIR=/run/user/4242' \
+    grep -Fq 'XDG_RUNTIME_DIR=/run/user/4242' \
         "$install_root/etc/systemd/system/lyte-host.service"
-    rg -Fq 'exec /usr/local/bin/lyte-host $LYTE_HOST_ARGS' \
+    grep -Fq 'exec /usr/local/bin/lyte-host $LYTE_HOST_ARGS' \
         "$install_root/etc/systemd/system/lyte-host.service"
     cmp "$image/usr/local/share/doc/lyte/MANIFEST.sha256" \
         "$install_root/usr/local/share/doc/lyte/MANIFEST.sha256"
-    rg -Fxq 'daemon-reload' "$systemctl_log"
-    rg -Fxq 'enable lyte-host.service' "$systemctl_log"
-    rg -Fxq 'is-active --quiet lyte-host.service' "$systemctl_log"
-    if rg -n '(^| )(start|restart)( |$)' "$systemctl_log"; then
+    grep -Fxq 'daemon-reload' "$systemctl_log"
+    grep -Fxq 'enable lyte-host.service' "$systemctl_log"
+    grep -Fxq 'is-active --quiet lyte-host.service' "$systemctl_log"
+    if grep -nE '(^| )(start|restart)( |$)' "$systemctl_log"; then
         echo "host installer FAILED: installer started or restarted the service" >&2
         return 1
     fi
@@ -98,7 +98,7 @@ exercise_image() {
     [[ ! -e "$install_root/usr/local/share/doc/lyte" ]]
     [[ ! -e "$install_root/etc/systemd/system/lyte-host.service" ]]
     [[ -f "$install_root/etc/lyte/lyte-host.conf" ]]
-    rg -Fxq 'disable --now lyte-host.service' "$systemctl_log"
+    grep -Fxq 'disable --now lyte-host.service' "$systemctl_log"
     [[ "$identity_before" == "$(sha256_file "$identity")" ]]
 
     LYTE_INSTALL_ROOT="$install_root" \

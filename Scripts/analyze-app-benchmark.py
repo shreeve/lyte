@@ -103,13 +103,20 @@ def motion_cadence_analysis(source, observations):
             or percentile(capture_gaps, 99) > 25:
         first_boundary = "pipewire_capture"
         failure = "motion_capture_cadence_failed"
-    elif (percentile(transit, 99) or 0) > 8:
+    elif percentile(transit, 99) is None:
+        # Missing evidence is a failure, never a pass.
+        first_boundary = "host_to_client_delivery"
+        failure = "motion_transport_evidence_missing"
+    elif percentile(transit, 99) > 8:
         # Endpoint captures localize the recurring live tail after Host
         # interface capture and before client packet delivery. The flight
         # metric remains broader in synthetic/unit fixtures, so name the
         # observed boundary without falsely assigning it to the encoder.
         first_boundary = "host_to_client_delivery"
         failure = "motion_transport_burst"
+    elif not presentations:
+        first_boundary = "client_presentation"
+        failure = "motion_presentation_evidence_missing"
     elif (
         (percentile(queue_wait, 99) or 0) > 8
         or (percentile(gated_lateness, 99) or 0) > 8

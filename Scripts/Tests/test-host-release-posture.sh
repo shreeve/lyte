@@ -17,7 +17,7 @@ files=(
     Scripts/benchmark-app.sh
 )
 
-if rg -n '\.build/debug/lyte-host' "${files[@]}"; then
+if grep -nE '\.build/debug/lyte-host' "${files[@]}"; then
     echo "host release posture FAILED: owner-facing debug host path returned" >&2
     exit 1
 fi
@@ -30,7 +30,7 @@ for file in "${files[@]}"; do
 done
 
 grep -Fq '/usr/local/bin/lyte-host' Host/Systemd/lyte-host.service
-if rg -n 'LYTE_HOST_BIN|\.build/(debug|release)/lyte-host|/home/CHANGE_ME' \
+if grep -rnE 'LYTE_HOST_BIN|\.build/(debug|release)/lyte-host|/home/CHANGE_ME' \
     Host/Systemd Host/Scripts/install-host.sh
 then
     echo "host release posture FAILED: installed service regained a checkout path" >&2

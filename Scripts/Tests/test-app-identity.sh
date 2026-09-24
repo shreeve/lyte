@@ -243,5 +243,8 @@ if grep -Fq 'tccutil' "$launch_app"; then
     exit 1
 fi
 
-sh -n "$next_version" "$launch_app" "$make_app" "$app_artifact"
+# `sh -n a b` checks only `a`; check each file on its own.
+for script in "$next_version" "$launch_app" "$make_app" "$app_artifact"; do
+    sh -n "$script"
+done
 echo "app identity tests PASSED"
