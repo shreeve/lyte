@@ -668,23 +668,10 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
                 cumulative = closed
             } else if let state = recvGroups[gid] {
                 cumulative = state.cumulative
-                var bytes = [UInt8](
-                    repeating: 0,
-                    count: ArqBounds.maxAckBitmapByteCount
+                bitmap = Self.receivedBitmap(
+                    buffered: state.buffered, above: cumulative,
+                    window: config.receiveWindowSegments
                 )
-                var highestBit = -1
-                for seq in state.buffered.keys {
-                    let distance = Int16(bitPattern: seq &- cumulative)
-                    guard distance > 0,
-                          Int(distance) <= config.receiveWindowSegments
-                    else { continue }
-                    let offset = Int(distance) - 1
-                    bytes[offset / 8] |= 1 << (offset % 8)
-                    highestBit = offset
-                }
-                if highestBit >= 0 {
-                    bitmap = Array(bytes[0...(highestBit / 8)])
-                }
             } else {
                 continue
             }
@@ -706,6 +693,24 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
             }
             start = end
         }
+    }
+
+    /// The canonical ACK bitmap for a receive state: bit n set when
+    /// `cumulative + 1 + n` is buffered, sized by the highest set bit.
+    /// Walks offsets in serial order so the result never depends on the
+    /// buffer's iteration order.
+    private static func receivedBitmap(
+        buffered: [UInt16: (endOfMessage: Bool, body: [UInt8])],
+        above cumulative: UInt16, window: Int
+    ) -> [UInt8] {
+        guard !buffered.isEmpty else { return [] }
+        var bytes: [UInt8] = []
+        for offset in 0..<window
+        where buffered[cumulative &+ 1 &+ UInt16(offset)] != nil {
+            while bytes.count <= offset / 8 { bytes.append(0) }
+            bytes[offset / 8] |= 1 << (offset % 8)
+        }
+        return bytes
     }
 
     private mutating func appendSegmentFrames(
