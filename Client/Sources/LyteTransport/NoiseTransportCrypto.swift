@@ -1,24 +1,24 @@
-// The client's Noise leg (CL-1's noisePending slice, closed): the
-// initiator side of W5's Noise IK over LyteWire.NoiseSession, plugged
-// into the TransportCrypto seam so ReceiveDemux/TransportSender need no
-// changes — the exact mirror of the host's HS-7 Session discipline:
+// The client's Noise IK initiator over LyteWire.NoiseSession, plugged into
+// the TransportCrypto seam so ReceiveDemux and TransportSender need no
+// changes:
 //
-//   • config carries the host's pinned static public key (hex-argued for
-//     now; pairing UX — W6 PIN-PAKE — is H1's slice) and the host's
-//     address, because the initiator speaks first.
-//   • the handshake rides the promoted CTRL carriage: message 1 leaves as
-//     one CTRL datagram whose payload is 0x05 ‖ raw IK message 1,
-//     UNSEALED (self-protecting; version byte inside per W5); message 2
-//     comes back as 0x06 ‖ raw message 2. The client owns the retry
-//     timer — a fresh NoiseSession per attempt, so a stale message 2
-//     can never complete a newer attempt.
-//   • after Split, every payload both ways seals under the transport
-//     with the exact envelope header bytes as AAD and the (chan, seq)
-//     extended-counter ROC discipline — all inside
-//     LyteWire.NoiseTransport; this file only holds the state and lock.
+//   • config carries the host's pinned static public key (from pairing or
+//     an operator-supplied key) and the host's address, because the
+//     initiator speaks first.
+//   • the handshake rides the CTRL carriage: message 1 leaves as one CTRL
+//     datagram whose payload is 0x05 ‖ raw IK message 1, unsealed
+//     (self-protecting; version byte inside); message 2 comes back as
+//     0x06 ‖ raw message 2. The client owns the retry timer and resends
+//     the same message 1 verbatim from one session, so a late host answer
+//     to any copy still completes this transcript. A 0x13 retry challenge
+//     is answered with that same message 1 plus the echoed cookie (0x14).
+//   • after Split, every payload both ways seals under the transport with
+//     the exact envelope header bytes as AAD and the (chan, seq)
+//     extended-counter discipline — all inside LyteWire.NoiseTransport;
+//     this file only holds the state and locks.
 //
-// The socket is the endpoint's; the handshake needs it before the
-// receive thread exists, so `HandshakingTransportCrypto` is the seam
+// The socket is the endpoint's; the handshake needs it before the receive
+// thread exists, so `HandshakingTransportCrypto` is the seam
 // UdpReceiveEndpoint drives between bind and thread start, handing this
 // object blocking datagram IO aimed at the configured host.
 
@@ -151,10 +151,10 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
 
     /// - Parameters:
     ///   - hostStaticPublicKey: the host's pinned 32-byte X25519 static
-    ///     (printed by lyte-host at start; hand-carried until W6 pairing).
+    ///     (from the pinned-host store, or printed by lyte-host at start).
     ///   - staticKeys: the client's Noise static identity. nil mints a
     ///     throwaway pair for this connection — fine for debug harnesses,
-    ///     but pairing (CL-6) and `--require-paired` reconnects need the
+    ///     but pairing and `--require-paired` reconnects need the
     ///     PERSISTENT identity here: the host pins/authenticates exactly
     ///     the static message 1 delivers.
     ///   - attempts/attemptTimeoutMilliseconds: the client-owned retry

@@ -1,48 +1,33 @@
-// The client's reliable CTRL sublayer (CL-7's ARQ leg) — the exact
-// mirror of the host's HS-8 seam, so reliable CTRL messages flow both
-// directions between HostWire.Session and this endpoint through the
-// same W3 frame codecs the frozen arq-v1 vectors pin:
+// The client's reliable sublayer over one channel, the mirror of the
+// host's, speaking the frame codecs the frozen arq-v1 vectors pin:
 //
-//   • one ArqEndpoint<ClientClock> owns the reliable CTRL channel in
+//   • one ArqEndpoint<ClientClock> owns the channel's reliable traffic in
 //     both directions: `send` queues on the ordered stream (group 0),
 //     `sendOneShot` on a fresh serially-ascending group; inbound sealed
-//     CTRL payloads whose first byte is 0x07/0x08 route WHOLLY here
-//     (the one-byte peek — such a payload is a sequence of
-//     self-delimiting ARQ frames, never a single typed message).
-//   • every ARQ datagram is sealed CTRL like everything else the client
-//     sends — TransportSender's envelope-header-as-AAD discipline, a
-//     fresh channel seq per datagram (a retransmitted SEGMENT rides a
-//     fresh datagram and a fresh nonce; ArqFrames.swift on why) — and
-//     is tagged with the session's connection ID once the host's
-//     datagrams have taught it (the HS-12 every-packet rule; the client
-//     learns the id from the TLV the host mints, it never invents one).
-//   • the ARQ endpoint packs once at the carrier's REAL plaintext
-//     ceiling — 1101 B with the conn-id TLV (11 B) and the AEAD tag
-//     (16 B) both on the datagram (24 + 11 + 1101 + 16 = 1152 exactly).
-//     The ceiling is configured before the first datagram, before the
-//     conn-id is even learned, so geometry never depends on runtime
-//     state and the transport shell never decodes/re-cuts ARQ output.
-//   • the PTO deadline rides the client's tick machinery: every
-//     send/ingest pass re-arms a timer at the endpoint's reported
-//     deadline (the client-side analogue of the host folding the ARQ
-//     wake into nextWake and servicing it from the idle-floor tick).
-//     Tests never start the timer and drive `tick(now:)` with a virtual
-//     clock — the FeedbackSender pattern.
+//     payloads whose first byte is 0x07/0x08 route wholly here (the
+//     one-byte peek — such a payload is a sequence of self-delimiting ARQ
+//     frames, never a single typed message).
+//   • every ARQ datagram is sealed like everything else the client sends
+//     (header-as-AAD, a fresh channel seq and nonce per datagram, so a
+//     retransmitted segment rides a fresh datagram) and is tagged with the
+//     session's connection ID once the host's datagrams have taught it;
+//     the client learns the id, it never invents one.
+//   • the ARQ endpoint packs once at the carrier's real plaintext ceiling
+//     — 1101 B with the conn-id TLV (11 B) and the AEAD tag (16 B) both
+//     on the datagram (24 + 11 + 1101 + 16 = 1152 exactly) — configured
+//     before the first datagram, so geometry never depends on runtime
+//     state and the shell never re-cuts ARQ output.
+//   • the PTO deadline rides a timer re-armed after every send/ingest
+//     pass. Tests never start it and drive `tick(now:)` with a virtual
+//     clock.
 //
-// The ARQ-exempt registry traffic stays exempt by construction: beacons,
-// echoes, path messages, handshake carriage, and IDR requests never pass
-// through here (their type bytes are not 0x07/0x08, and their senders —
-// BeaconEchoResponder, IdrRequester — keep their own fire-and-forget
-// paths).
+// ARQ-exempt traffic stays exempt by construction: beacons, echoes, path
+// messages, handshake carriage and IDR requests have other type bytes and
+// their own fire-and-forget senders.
 //
-// F-4: the endpoint is channel-generic now (the ArqEndpoint beneath it
-// always was — W10 named this exact day). The default stays `.ctrl`;
-// the bulk-transfer channel (chan 8, `ChannelId.bulkTransfer`) runs a
-// SECOND instance of this same class so a file transfer and a keystroke
-// never share a stream — the transport pillar's independent-lanes rule,
-// now real. The budget arithmetic is channel-independent (same envelope
-// geometry on every channel); a chan-8 instance never sees non-ARQ
-// payloads (the whole channel is ARQ carriage by design).
+// The session runs two instances: `.ctrl`, and the bulk-transfer channel
+// (chan 8), so a file transfer and a keystroke never share a stream. A
+// chan-8 instance never sees non-ARQ payloads.
 
 import LyteIO
 import Dispatch
@@ -75,8 +60,10 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// session's control stream, `.bulkTransfer` for chan 8).
     public let channel: ChannelId
     private let now: @Sendable () -> ClientTimestamp
-    /// Every ARQ event, in ingest order, fired outside the lock —
-    /// delivered messages, one-shot acknowledgments, ignore verdicts.
+    /// Every ARQ event, in ingest order, fired outside the lock on the
+    /// thread that called `handleCtrlDatagram` (the receive thread in
+    /// production) — delivered messages, one-shot acknowledgments,
+    /// ignore verdicts.
     private let onEvent: (@Sendable (ArqEvent) -> Void)?
 
     private let lock = NSLock()
