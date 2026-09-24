@@ -159,6 +159,68 @@ final class PathValidatorTests: XCTestCase {
         XCTAssertEqual(validator.primary.tuple, Self.tupleB)
     }
 
+    // MARK: Returning to the fallback
+
+    /// A→B→A inside the retention window, the usual Wi-Fi flap: the
+    /// client's next authenticated datagram from A puts media back on A
+    /// at once, with a fresh keyframe and no probe round trip; B becomes
+    /// the fallback and can come back the same way. Past the window A is
+    /// a stranger again and must answer a probe.
+    func testDatagramFromTheRetainedFallbackRepromotesIt() throws {
+        let connId = makeConnectionId()
+        let millisecond: UInt64 = 1_000_000
+        var validator = PathValidator(
+            connectionId: connId,
+            initialPath: Self.tupleA,
+            now: 0,
+            rng: SplitMix64(seed: 0xAB)
+        )
+        guard case .sendChallenge(_, let challenge)? = validator.datagramReceived(
+            from: Self.tupleB, connectionId: connId,
+            byteCount: Self.fullDatagramBytes, now: millisecond
+        ).first else { return XCTFail("B must be probed") }
+        XCTAssertEqual(validator.pathResponseReceived(
+            from: Self.tupleB, response: PathResponse(echoing: challenge),
+            now: 2 * millisecond
+        ).count, 2)
+        XCTAssertTrue(validator.takeFreshKeyframeRequest())
+        let promotedB = validator.primary
+
+        let back = validator.datagramReceived(
+            from: Self.tupleA, connectionId: connId,
+            byteCount: Self.fullDatagramBytes, now: 3 * millisecond
+        )
+        XCTAssertEqual(back, [
+            .promoted(primary: SessionPath(tuple: Self.tupleA, validatedAt: 0),
+                      fallback: promotedB),
+            .freshKeyframeNeeded,
+        ])
+        XCTAssertEqual(validator.primary.tuple, Self.tupleA)
+        XCTAssertEqual(validator.fallback, promotedB)
+        XCTAssertTrue(validator.takeFreshKeyframeRequest())
+        XCTAssertEqual(validator.nextDeadline,
+                       3 * millisecond + validator.config.fallbackRetentionNS,
+                       "the demoted path gets a fresh retention window")
+
+        // A foreign conn-id from the fallback is still not ours.
+        XCTAssertTrue(validator.datagramReceived(
+            from: Self.tupleB, connectionId: makeConnectionId(seed: 0xFEED),
+            byteCount: Self.fullDatagramBytes, now: 4 * millisecond
+        ).isEmpty)
+        XCTAssertEqual(validator.primary.tuple, Self.tupleA)
+
+        let expiry = 3 * millisecond + validator.config.fallbackRetentionNS
+        XCTAssertEqual(validator.advance(now: expiry),
+                       [.fallbackExpired(Self.tupleB)])
+        guard case .sendChallenge(let on, _)? = validator.datagramReceived(
+            from: Self.tupleB, connectionId: connId,
+            byteCount: Self.fullDatagramBytes, now: expiry + millisecond
+        ).first else { return XCTFail("an expired fallback is probed again") }
+        XCTAssertEqual(on, Self.tupleB)
+        XCTAssertEqual(validator.primary.tuple, Self.tupleA)
+        XCTAssertFalse(validator.takeFreshKeyframeRequest())
+    }
+
     // MARK: Foreign traffic
 
     func testUnknownConnIdAndBareDatagramsNeverProbe() throws {
