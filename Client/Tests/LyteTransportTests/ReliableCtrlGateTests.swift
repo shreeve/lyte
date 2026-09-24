@@ -750,26 +750,27 @@ final class ReliableCtrlGateTests: XCTestCase {
         )
     }
 
-    /// The one-shot allocator skips 0 (the ordered stream's id) at the
-    /// wrap: 0xFFFF is followed by 1, the peer receives both, and later
-    /// one-shots keep flowing.
-    func testOneShotGroupAllocatorWrapsPastZero() throws {
+    /// One-shot groups come from ArqEndpoint's allocator (its own tests
+    /// pin the wrap past 0): ids ascend from 1, a refused send consumes
+    /// none, and the peer receives every group.
+    func testOneShotGroupsComeFromTheArqAllocator() throws {
         let harness = try Harness()
         let host = harness.host
         harness.absorb(try host.beaconDatagram(hostMicros: 100), tMicros: 200)
-        harness.reliable.testingSeedNextOneShotGroup(0xFFFE)
+        let now = ClientTimestamp(microseconds: 1_000_000)
         var groups: [ArqGroupId] = []
-        for index in 0..<4 {
+        groups.append(try harness.reliable.sendOneShot(
+            [CtrlMessageType.idleFrame, 0], now: now))
+        XCTAssertThrowsError(try harness.reliable.sendOneShot([], now: now))
+        for index in 1..<3 {
             groups.append(try harness.reliable.sendOneShot(
-                [CtrlMessageType.idleFrame, UInt8(index)],
-                now: ClientTimestamp(microseconds: 1_000_000)))
+                [CtrlMessageType.idleFrame, UInt8(index)], now: now))
         }
-        XCTAssertEqual(groups.map(\.rawValue), [0xFFFE, 0xFFFF, 1, 2])
+        XCTAssertEqual(groups.map(\.rawValue), [1, 2, 3])
         for datagram in harness.outbound.all {
             try host.absorb(datagram, nowMicros: 1_000_000)
         }
-        XCTAssertEqual(
-            host.received.map(\.group.rawValue), [0xFFFE, 0xFFFF, 1, 2])
+        XCTAssertEqual(host.received.map(\.group.rawValue), [1, 2, 3])
     }
 
     /// Before the first host datagram there is no conn-id to echo; the

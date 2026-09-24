@@ -110,4 +110,41 @@ final class LyteUdpSessionStartTests: XCTestCase {
         XCTAssertEqual(
             session.endpoint?.demux.snapshotTotals().accepted, 1)
     }
+
+    /// The stats rows both readers print: state first, the always-on
+    /// input and network rows, and only the alarms in capitals.
+    func testStatsRowsDescribeAFreshSession() throws {
+        var config = LyteUdpSession.Config()
+        config.bindAddress = "127.0.0.1"
+        config.audioPlayback = false
+        config.teardownLingerMilliseconds = 0
+        let session = LyteUdpSession(
+            crypto: try EagerHostCrypto(),
+            config: config,
+            videoSink: HeadlessVideoSink(),
+            onEvent: { _ in })
+        XCTAssertEqual(SessionStatsFormatter.rows(session: session), [])
+        try session.start()
+        defer { session.stop() }
+        let core = try XCTUnwrap(session.core)
+        let deadline = Date(timeIntervalSinceNow: 2)
+        while core.echoResponder.snapshotStats().beaconsReceived == 0,
+              Date() < deadline {
+            usleep(5_000)
+        }
+
+        let rows = SessionStatsFormatter.rows(session: session)
+        XCTAssertEqual(rows.map(\.label), ["session", "user", "network"])
+        XCTAssertEqual(rows[0].value, "active")
+        XCTAssertEqual(rows[1].value, "0 events sent to host")
+        XCTAssertEqual(rows[2].value, "lost 0 of 1 host packets")
+
+        var context = SessionStatsContext()
+        context.inputCaptured = false
+        context.radioLoose = true
+        XCTAssertEqual(
+            SessionStatsFormatter.rows(session: session, context: context)
+                .first?.value,
+            "active · keys+mouse NOT CAPTURED · AWDL LOOSE")
+    }
 }

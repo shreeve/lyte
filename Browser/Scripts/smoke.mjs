@@ -253,7 +253,11 @@ const WebSocket = await ensureWs();
 console.log("browser-smoke: building lyte-control-peer…");
 const peerBin = buildControlPeer();
 const { proc: peerProc, meta: peerMeta } = await startControlPeer(peerBin);
-const { proc: sidecar, meta: sidecarMeta } = await startSidecar(peerMeta);
+const {
+  proc: sidecar,
+  meta: sidecarMeta,
+  stderr: sidecarStderr,
+} = await startSidecar(peerMeta);
 const { server, port } = await startStaticServer();
 const userData = await mkdtemp(join(tmpdir(), "lyte-browser-smoke-"));
 const debugPort = 9200 + Math.floor(Math.random() * 200);
@@ -332,7 +336,7 @@ try {
       if (payload.meta) console.error(payload.meta);
       for (const [label, text] of [
         ["control-peer.log", await readFile(join(serveDir, "control-peer.log"), "utf8").catch(() => "")],
-        ["wt-sidecar stderr", sidecar.stderr?.() || ""],
+        ["wt-sidecar stderr", sidecarStderr()],
       ]) {
         if (text.trim()) {
           console.error(`--- ${label} ---`);

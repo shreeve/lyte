@@ -49,7 +49,7 @@ extension ConnectionModel {
     /// flip visibly snaps back. A refusal is a teardown race — weather.
     func setHostMuted(_ muted: Bool) {
         guard negotiated.hostAudioRouting else { return }
-        try? lyteSession?.requestHostAudioRouting(muted ? .hostMuted : .hostAudible)
+        try? lyteSession?.core?.requestHostAudioRouting(muted ? .hostMuted : .hostAudible)
     }
 
     /// Mute-at-source: off → 0x03, the whole track leaves the wire; on →
@@ -57,7 +57,7 @@ extension ConnectionModel {
     /// setHostMuted — the button renders the 0x19 answer, never the ask.
     func setHostAudioOff(_ off: Bool) {
         guard negotiated.audioStreamOff else { return }
-        try? lyteSession?.requestHostAudioRouting(
+        try? lyteSession?.core?.requestHostAudioRouting(
             off ? .streamOff : lastStreamingAudioPosture)
     }
 
@@ -68,7 +68,7 @@ extension ConnectionModel {
     func setClipboardSharing(_ enabled: Bool) {
         guard negotiated.clipboardText else { return }
         clipboardSharing = enabled
-        lyteSession?.setClipboardSharing(enabled)
+        lyteSession?.core?.setClipboardSharing(enabled)
         updatePasteboardWatcher()
     }
 
@@ -77,7 +77,7 @@ extension ConnectionModel {
     func setClipboardImageSharing(_ enabled: Bool) {
         guard negotiated.clipboardImages else { return }
         clipboardImageSharing = enabled
-        lyteSession?.setClipboardImageSharing(enabled)
+        lyteSession?.core?.setClipboardImageSharing(enabled)
         updatePasteboardWatcher()
     }
 
@@ -98,10 +98,10 @@ extension ConnectionModel {
     /// judges.
     func makePasteboardSync(for lyte: LyteUdpSession) -> PasteboardSync {
         let sync = PasteboardSync(onLocalChange: { [weak lyte] text in
-            lyte?.shareLocalClipboard(text)
+            lyte?.core?.shareLocalClipboard(text)
         })
         sync.onLocalImageChange = { [weak lyte] data in
-            lyte?.shareLocalClipboardImage(data)
+            lyte?.core?.shareLocalClipboardImage(data)
         }
         return sync
     }

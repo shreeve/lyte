@@ -8,6 +8,12 @@ final class ClientClipboardSessionTests: XCTestCase {
         text.declaringClipboardImages()
     }
 
+    private struct FixedDigest: ClipboardImageHasher {
+        let digest: [UInt8]
+        mutating func absorb(_ bytes: ArraySlice<UInt8>) {}
+        mutating func finish() -> [UInt8] { digest }
+    }
+
     private struct CountingRng: RandomNumberGenerator {
         var nextValue: UInt64
 
@@ -158,12 +164,13 @@ final class ClientClipboardSessionTests: XCTestCase {
             .notNegotiated)
         XCTAssertNil(session.prejudgeLocalImage(byteCount: 16, agreed: images),
                      "within the ceiling the digest decides")
-        XCTAssertNil(session.prejudgeLocalImage(byteCount: 0, agreed: images),
-                     "the empty verdict stays the channel's")
+        XCTAssertEqual(
+            session.prejudgeLocalImage(byteCount: 0, agreed: images)?.events,
+            [.image(.suppressed(.emptyImage))])
         let over = session.prejudgeLocalImage(byteCount: 17, agreed: images)
         XCTAssertEqual(over?.shareOutcome, .overBudget(17))
         XCTAssertEqual(over?.events, [.image(.suppressed(.overBudget(17)))])
-        XCTAssertEqual(session.imageCounters.sharesSuppressed, 1)
+        XCTAssertEqual(session.imageCounters.sharesSuppressed, 2)
 
         XCTAssertEqual(
             session.shareLocalImage(
@@ -182,7 +189,7 @@ final class ClientClipboardSessionTests: XCTestCase {
             session.prejudgeLocalImage(byteCount: 17, agreed: images)?
                 .shareOutcome,
             .sharingDisabled)
-        XCTAssertEqual(session.imageCounters.sharesSuppressed, 2)
+        XCTAssertEqual(session.imageCounters.sharesSuppressed, 3)
     }
 
     func testInboundImageMarkerOwnsCapabilityAndConsentJudgment() throws {
@@ -236,7 +243,9 @@ final class ClientClipboardSessionTests: XCTestCase {
             session.receiveImageCargo(cargo.encode(), agreed: images),
             ClientClipboardSessionDecision())
         XCTAssertTrue(session.claimsBulk(message))
-        let decision = session.receiveBulk(message) { _ in digest }
+        let decision = session.receiveBulk(message) {
+            FixedDigest(digest: digest)
+        }
         XCTAssertFalse(decision.outboundBulk.isEmpty)
         XCTAssertTrue(session.claimsBulk(message))
     }

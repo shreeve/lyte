@@ -1,3 +1,4 @@
+import LyteClientCore
 import LyteTransport
 import ServiceManagement
 import SwiftUI
@@ -41,8 +42,8 @@ final class AgentState {
     /// The watchdog's alarm: streams are active but awdl0 is UP and two
     /// re-engage attempts didn't cure it — the radio hold is NOT
     /// working. Drives the overlay's caps-alarm token. The debounce
-    /// itself is RadioHoldPolicy (LyteTransport), pinned in
-    /// RadioHoldPolicyTests; this is its rendered face.
+    /// itself is RadioHoldPolicy (LyteClientCore); this is its
+    /// rendered face.
     private(set) var radioAlarm = false
     private var radioWatchdog: Task<Void, Never>?
     private var radioPolicy = RadioHoldPolicy()

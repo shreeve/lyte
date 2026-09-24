@@ -465,17 +465,15 @@ public final class LyteVideoPipeline: @unchecked Sendable {
 }
 
 /// The receive-side quality window: (decode instant, Annex-B byte count)
-/// per decoded frame over the last five seconds. Live entries start at
-/// `head`; pruning advances it and compacts only once the dead prefix
-/// outgrows the live part, so a frame costs O(1) amortized.
+/// per decoded frame over the last five seconds, on a LyteCore Deque so a
+/// frame costs O(1) amortized.
 struct VideoQualityWindow {
     static let spanMicroseconds: Int64 = 5_000_000
 
-    private var entries: [(at: ClientTimestamp, bytes: Int)] = []
-    private var head = 0
+    private var entries = Deque<(at: ClientTimestamp, bytes: Int)>()
 
-    var liveCount: Int { entries.count - head }
-    var storedCount: Int { entries.count }
+    var liveCount: Int { entries.count }
+    var storedCount: Int { entries.retainedCapacity }
 
     mutating func record(bytes: Int, now: ClientTimestamp) {
         entries.append((at: now, bytes: bytes))
@@ -483,14 +481,9 @@ struct VideoQualityWindow {
     }
 
     mutating func prune(now: ClientTimestamp) {
-        while head < entries.count,
-              now.microseconds(since: entries[head].at)
-                  > Self.spanMicroseconds {
-            head += 1
-        }
-        if head > 64, head * 2 > entries.count {
-            entries.removeFirst(head)
-            head = 0
+        while let oldest = entries.first,
+              now.microseconds(since: oldest.at) > Self.spanMicroseconds {
+            entries.removeFirst()
         }
     }
 
@@ -499,12 +492,12 @@ struct VideoQualityWindow {
     /// over their sizes; nil when no frame decoded inside the window.
     mutating func snapshot(now: ClientTimestamp) -> VideoQualitySnapshot? {
         prune(now: now)
-        guard head < entries.count else { return nil }
-        let sizes = entries[head...].map(\.bytes).sorted()
+        guard let oldest = entries.first else { return nil }
+        let sizes = entries.map(\.bytes).sorted()
         func pct(_ q: Double) -> Int {
             sizes[max(Int((q * Double(sizes.count)).rounded(.up)), 1) - 1]
         }
-        let span = max(now.microseconds(since: entries[head].at), 1_000_000)
+        let span = max(now.microseconds(since: oldest.at), 1_000_000)
         let bytes = sizes.reduce(0, +)
         return VideoQualitySnapshot(
             framesPerSecond: Double(sizes.count) * 1e6 / Double(span),

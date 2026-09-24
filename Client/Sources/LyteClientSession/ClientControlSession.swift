@@ -140,7 +140,7 @@ public struct ClientControlSession: Sendable {
 
     public mutating func shareLocalClipboardImage(
         _ data: [UInt8],
-        sha256: [UInt8],
+        sha256: () -> [UInt8],
         rng: inout some RandomNumberGenerator
     ) -> ClientClipboardSessionDecision {
         clipboard.shareLocalImage(
@@ -159,9 +159,9 @@ public struct ClientControlSession: Sendable {
 
     public mutating func receiveClipboardBulk(
         _ message: BulkMessage,
-        sha256: ([UInt8]) -> [UInt8]
+        hasher: () -> any ClipboardImageHasher
     ) -> ClientClipboardSessionDecision {
-        clipboard.receiveBulk(message, sha256: sha256)
+        clipboard.receiveBulk(message, hasher: hasher)
     }
 
     public mutating func noteAudioEvidence() {

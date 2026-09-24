@@ -156,16 +156,13 @@ public struct VideoBeatConductor: Sendable {
         }
     }
 
-    /// Schedules one part. `isRandomAccess` is accepted for callers'
-    /// convenience and ignored: a random-access part plays to the same
-    /// grid as any fresh part (decoder episodes are the handoff's concern).
+    /// Schedules one part. A random-access part plays to the same grid as
+    /// any fresh part; decoder episodes are the handoff's concern.
     public mutating func schedule(
         mappedCaptureMicroseconds: UInt64,
         arrivalMicroseconds: UInt64,
-        sourceCaptureMicroseconds: UInt64? = nil,
-        isRandomAccess: Bool = false
+        sourceCaptureMicroseconds: UInt64? = nil
     ) -> Decision {
-        _ = isRandomAccess
         let mapped = mappedCaptureMicroseconds
         let arrival = arrivalMicroseconds
         let sourceCapture = sourceCaptureMicroseconds ?? mapped

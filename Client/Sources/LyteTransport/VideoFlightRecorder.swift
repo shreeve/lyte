@@ -153,8 +153,8 @@ public final class VideoFlightRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private let capacity: Int
     private let nowMicroseconds: @Sendable () -> UInt64
-    private var ring: [FrameObservation] = []
-    private var ringIndex = 0
+    /// The retained frames, oldest first.
+    private var ring: BoundedRing<FrameObservation>
     private var ordinal: UInt64 = 0
     private var pending = 0
     private var maximumPending = 0
@@ -163,7 +163,8 @@ public final class VideoFlightRecorder: @unchecked Sendable {
     private var rendererFailures: UInt64 = 0
     private var rendererRecoveries: UInt64 = 0
     private var recoveryCauses: [String: UInt64] = [:]
-    private var recoveryLifecycle: [RecoveryLifecycleEvent] = []
+    private var recoveryLifecycle =
+        BoundedRing<RecoveryLifecycleEvent>(capacity: 1_024)
     private var recoveryEventSequence: UInt64 = 0
     private var cadenceStalls: UInt64 = 0
     private var rendererMetrics: RendererMetrics?
@@ -184,7 +185,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
     ) {
         self.capacity = max(1, capacity)
         self.nowMicroseconds = nowMicroseconds
-        ring.reserveCapacity(self.capacity)
+        self.ring = BoundedRing(capacity: self.capacity)
     }
 
     public func frameReady(
@@ -293,12 +294,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
             presentationLatenessMilliseconds:
                 presentationLatenessMicroseconds.map { Double($0) / 1_000 },
             rendererRecovery: rendererRecovery)
-        if ring.count < capacity {
-            ring.append(observation)
-        } else {
-            ring[ringIndex] = observation
-            ringIndex = (ringIndex + 1) % capacity
-        }
+        ring.append(observation)
         pending = max(0, pending - 1)
         if cadenceStall { cadenceStalls &+= 1 }
         if !rendererReady { rendererNotReady &+= 1 }
@@ -361,10 +357,6 @@ public final class VideoFlightRecorder: @unchecked Sendable {
             corruptedFrames: corruptedFrames,
             corruptedDelta: corruptedDelta,
             rendererTotalFrames: rendererTotalFrames))
-        if recoveryLifecycle.count > 1_024 {
-            recoveryLifecycle.removeFirst(
-                recoveryLifecycle.count - 1_024)
-        }
         lock.unlock()
     }
 
@@ -395,10 +387,6 @@ public final class VideoFlightRecorder: @unchecked Sendable {
             corruptedFrames: metrics.corruptedFrames,
             corruptedDelta: delta,
             rendererTotalFrames: metrics.totalFrames))
-        if recoveryLifecycle.count > 1_024 {
-            recoveryLifecycle.removeFirst(
-                recoveryLifecycle.count - 1_024)
-        }
         lock.unlock()
     }
 
@@ -448,7 +436,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
             recentRendererFailures: UInt64(
                 ring.lazy.filter(\.rendererFailed).count),
             recoveryCauses: recoveryCauses,
-            recoveryLifecycle: recoveryLifecycle,
+            recoveryLifecycle: Array(recoveryLifecycle),
             rendererMetrics: rendererMetrics,
             recentRendererMetrics: recentRendererMetricDelta())
     }
@@ -456,8 +444,15 @@ public final class VideoFlightRecorder: @unchecked Sendable {
     public func recentFrames() -> [FrameObservation] {
         lock.lock()
         defer { lock.unlock() }
-        guard ring.count == capacity, ringIndex != 0 else { return ring }
-        return Array(ring[ringIndex...]) + Array(ring[..<ringIndex])
+        return Array(ring)
+    }
+
+    /// The retained frames newer than `ordinal`, in recording order — a
+    /// periodic reader's incremental view: only the new frames are copied.
+    public func frames(after ordinal: UInt64) -> [FrameObservation] {
+        lock.lock()
+        defer { lock.unlock() }
+        return ring.filter { $0.ordinal > ordinal }
     }
 
     public func summaryJSONLine() throws -> String {
@@ -469,7 +464,6 @@ public final class VideoFlightRecorder: @unchecked Sendable {
     public func reset() {
         lock.lock()
         ring.removeAll(keepingCapacity: true)
-        ringIndex = 0
         ordinal = 0
         pending = 0
         maximumPending = 0
@@ -501,9 +495,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
     }
 
     private var latestObservation: FrameObservation? {
-        guard !ring.isEmpty else { return nil }
-        if ring.count < capacity || ringIndex == 0 { return ring.last }
-        return ring[(ringIndex + capacity - 1) % capacity]
+        ring.last
     }
 
     private func appendRendererMetricSample(
@@ -512,7 +504,7 @@ public final class VideoFlightRecorder: @unchecked Sendable {
     ) {
         rendererMetricSamples.append(.init(ordinal: ordinal, metrics: metrics))
         rendererMetricSamples.sort { $0.ordinal < $1.ordinal }
-        guard let oldest = recentFramesLocked().first?.ordinal else { return }
+        guard let oldest = ring.first?.ordinal else { return }
         rendererMetricSamples.removeAll { $0.ordinal < oldest }
     }
 
@@ -529,11 +521,6 @@ public final class VideoFlightRecorder: @unchecked Sendable {
             accumulatedDelayMilliseconds: max(
                 0, last.accumulatedDelayMilliseconds
                     - first.accumulatedDelayMilliseconds))
-    }
-
-    private func recentFramesLocked() -> [FrameObservation] {
-        guard ring.count == capacity, ringIndex != 0 else { return ring }
-        return Array(ring[ringIndex...]) + Array(ring[..<ringIndex])
     }
 
     private func percentile(

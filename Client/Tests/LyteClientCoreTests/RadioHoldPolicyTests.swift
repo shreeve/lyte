@@ -1,30 +1,10 @@
+import LyteClientCore
 import XCTest
-import Foundation
-import LyteTransport
 
 // The radio watchdog's 3-strike debounce behaves exactly as the AWDL
-// choppiness verdict demands. The shared overlay gauge arithmetic now lives
-// and is pinned beside its sans-IO LyteCore policy.
+// choppiness verdict demands.
 
 final class RadioHoldPolicyTests: XCTestCase {
-
-    func testLooseCheckCountAloneOwnsAlarmPosture() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let source = try String(
-            contentsOfFile:
-                packageRoot + "/Sources/LyteTransport/RadioHoldPolicy.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertTrue(source.contains(
-            "public var alarm: Bool { looseChecks >= 3 }"
-        ))
-        XCTAssertFalse(source.contains("alarm ="))
-    }
 
     func testHeldRadioIsHealthy() {
         var policy = RadioHoldPolicy()

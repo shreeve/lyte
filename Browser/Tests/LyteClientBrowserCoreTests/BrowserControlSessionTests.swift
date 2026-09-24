@@ -212,6 +212,48 @@ final class BrowserControlSessionTests: XCTestCase {
         XCTAssertTrue(repeatShare.events.contains { $0.hasPrefix("clipboard: not shared") })
     }
 
+    // MARK: PIN
+
+    /// Only six ASCII digits reach CPace: chunking separators are
+    /// ignored, and other digit forms are refused before any guess is spent.
+    func testPinIsNormalizedToTheHostsSixAsciiDigits() throws {
+        let host = BrowserHostPeer()
+        for refused in ["２４６８１０", "24681", "2468100", "246a10"] {
+            XCTAssertThrowsError(try host.makeClient(pin: refused), refused) {
+                XCTAssertEqual($0 as? BrowserControlError, .badPin)
+            }
+        }
+        let client = try host.makeClient(pin: "246-810")
+        var notes: [String] = []
+        host.deliver(try client.begin(nowMicros: host.nowMicros), notes: &notes)
+        host.run(client, notes: &notes) { $0.currentStatus == .ready }
+        XCTAssertTrue(client.paired, notes.joined(separator: " | "))
+    }
+
+    // MARK: Backpressure
+
+    /// A full reliable queue refuses one input event without failing the
+    /// session: the host stopped acknowledging, which the lifecycle judges.
+    func testFullReliableQueueDropsInputWithoutFailingTheSession() throws {
+        let host = BrowserHostPeer()
+        let (client, _) = try host.readyClient()
+        var dropped: BrowserControlSession.Step?
+        for index in 0..<(ArqBounds.maxQueuedSegmentsPerGroup + 64) {
+            let step = client.sendInput(
+                body: .pointerMotionAbsolute(x: Double(index), y: 0),
+                nowMicros: host.nowMicros
+            )
+            if client.counters.inputsRefused > 0 {
+                dropped = step
+                break
+            }
+        }
+        let step = try XCTUnwrap(dropped, "the queue never filled")
+        XCTAssertEqual(step.status, .ready)
+        XCTAssertTrue(step.events.contains { $0.contains("queue full") })
+        XCTAssertEqual(client.counters.inputsRefused, 1)
+    }
+
     // MARK: Helpers
 
     private func carriagePayload(_ datagram: [UInt8]) throws -> [UInt8] {

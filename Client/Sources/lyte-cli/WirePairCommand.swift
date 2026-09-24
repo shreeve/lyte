@@ -38,7 +38,7 @@ struct WirePair: AsyncParsableCommand {
     var timeout: Double = 20
 
     func validate() throws {
-        guard pin.count == 6, pin.allSatisfy(\.isNumber) else {
+        guard PairingPin.isValid(pin) else {
             throw ValidationError("--pin must be the host's 6 digits, got \"\(pin)\"")
         }
     }

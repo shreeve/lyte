@@ -23,6 +23,7 @@
 // (frame 1 after idle must be mappable without a warm-up wait).
 
 import Foundation
+import LyteClientSession
 import LyteWire
 
 public final class HostClockModel: @unchecked Sendable {
@@ -121,6 +122,14 @@ public final class HostClockModel: @unchecked Sendable {
             let horizon = newestMicroseconds &- UInt64(config.windowMicroseconds)
             window.removeAll { $0.measuredAt.microseconds < horizon }
         }
+    }
+
+    /// The newest `limit` samples still in the window, in arrival order —
+    /// the overlay's RTT line and wire-view's last-sample print read these.
+    public func recentSamples(_ limit: Int) -> [ClockSample] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(window.suffix(max(0, limit)))
     }
 
     /// The current fit, or nil before the first sample. Computed once

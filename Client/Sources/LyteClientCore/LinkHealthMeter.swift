@@ -1,5 +1,3 @@
-import Foundation
-
 /// The delivery path's user-visible failure verdict. The flight recorder
 /// retains every internal disturbance for diagnosis, but this meter is
 /// deliberately narrower: a recovered transit or queue delay is success and
@@ -73,14 +71,19 @@ public final class LinkHealthMeter {
     private var buckets = Array(
         repeating: Bucket(), count: LinkHealthMeter.windowBucketCount)
     private var lastEpisode: Episode?
-    private var highWaterOrdinal: UInt64 = 0
+    /// The newest recorder ordinal already folded; a reader feeds only
+    /// frames past it.
+    public private(set) var highWaterOrdinal: UInt64 = 0
     private var epochFirstEventMicroseconds: UInt64?
     private var sessionStallCount = 0
     private var sessionWorstMilliseconds = 0.0
-    private let debugTrace = ProcessInfo.processInfo
-        .environment["LYTE_LINK_HEALTH_DEBUG"] == "1"
+    /// Receives one line per new episode (the app wires it to stdout
+    /// under LYTE_LINK_HEALTH_DEBUG=1); nil stays silent.
+    private let trace: ((String) -> Void)?
 
-    public init() {}
+    public init(trace: ((String) -> Void)? = nil) {
+        self.trace = trace
+    }
 
     /// Feed one recorded frame. `eventMicroseconds` is the client's
     /// monotonic ready timestamp, so recorder batches still put an episode
@@ -142,16 +145,20 @@ public final class LinkHealthMeter {
                 worstMilliseconds: worst,
                 stage: stage)
             sessionStallCount += 1
-            if debugTrace {
-                print(String(format: "link-health: episode #%d %@ "
-                    + "%.0f ms at client-t %.3f (ordinal %d)",
-                    sessionStallCount, stage, worst,
-                    Double(eventMicroseconds) / 1_000_000,
-                    ordinal))
-                fflush(stdout)
-            }
+            trace?("""
+                link-health: episode #\(sessionStallCount) \(stage) \
+                \(Int(worst.rounded())) ms at client-t \
+                \(eventMicroseconds / 1_000_000).\
+                \(Self.millisecondDigits(eventMicroseconds)) (ordinal \(ordinal))
+                """)
         }
         sessionWorstMilliseconds = max(sessionWorstMilliseconds, worst)
+    }
+
+    /// The three millisecond digits of a µs instant, zero-padded.
+    private static func millisecondDigits(_ micros: UInt64) -> String {
+        let millis = String(micros / 1_000 % 1_000)
+        return String(repeating: "0", count: 3 - millis.count) + millis
     }
 
     public func resetSessionBooks() {

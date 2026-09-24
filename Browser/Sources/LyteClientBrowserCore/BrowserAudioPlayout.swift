@@ -1,3 +1,4 @@
+import LyteCore
 import LyteWire
 
 /// Sans-IO browser audio organ: LyteWire `AudioDepacketizer` plus a bounded
@@ -19,19 +20,18 @@ public struct BrowserAudioPlayout {
     public static let defaultCapacity = 20
 
     private var depacketizer = AudioDepacketizer()
-    private var ring: [Packet?]
-    private var head = 0
-    private var count = 0
+    private let capacity: Int
+    private var queue = Deque<Packet>()
 
     public private(set) var packetsAssembled: UInt64 = 0
     public private(set) var packetsPopped: UInt64 = 0
     public private(set) var packetsDroppedStale: UInt64 = 0
 
     public init(capacity: Int = BrowserAudioPlayout.defaultCapacity) {
-        ring = Array(repeating: nil, count: max(1, capacity))
+        self.capacity = max(1, capacity)
     }
 
-    public var pendingCount: Int { count }
+    public var pendingCount: Int { queue.count }
 
     /// Ingests one unsealed audio payload. Returns notes.
     public mutating func ingestShard(
@@ -57,24 +57,17 @@ public struct BrowserAudioPlayout {
     }
 
     public mutating func popPacket() -> Packet? {
-        guard count > 0 else { return nil }
-        let packet = ring[head]
-        ring[head] = nil
-        head = (head + 1) % ring.count
-        count -= 1
+        guard let packet = queue.popFirst() else { return nil }
         packetsPopped += 1
         return packet
     }
 
     private mutating func push(_ packet: Packet) {
-        if count == ring.count {
+        if queue.count == capacity {
             // Full: the oldest packet is the stalest; drop it.
-            ring[head] = nil
-            head = (head + 1) % ring.count
-            count -= 1
+            queue.removeFirst()
             packetsDroppedStale += 1
         }
-        ring[(head + count) % ring.count] = packet
-        count += 1
+        queue.append(packet)
     }
 }

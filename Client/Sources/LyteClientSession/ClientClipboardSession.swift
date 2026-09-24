@@ -57,9 +57,6 @@ public struct ClientClipboardSession: Sendable {
     private var imageSharingOn: Bool
     private var book = ClipboardSyncBook()
     private var imageChannel: ClipboardImageChannel
-    /// Shares refused by `prejudgeLocalImage` before the channel saw
-    /// them; folded into `imageCounters.sharesSuppressed`.
-    private var prejudgedSuppressions = 0
 
     public init(
         textSharingAtStart: Bool,
@@ -77,9 +74,7 @@ public struct ClientClipboardSession: Sendable {
         textSharingOn && imageSharingOn
     }
     public var imageCounters: ClipboardImageChannelCounters {
-        var counters = imageChannel.counters
-        counters.sharesSuppressed += prejudgedSuppressions
-        return counters
+        imageChannel.counters
     }
 
     public mutating func setTextSharing(_ enabled: Bool) {
@@ -158,16 +153,49 @@ public struct ClientClipboardSession: Sendable {
     }
 
     /// The local-image gates that need no digest: negotiation, consent,
-    /// and the byte ceiling. Returns the refusal when one applies, or nil
-    /// when the image must be hashed and passed to `shareLocalImage`.
-    /// Shells call this first so a refused image is never hashed.
-    ///
-    /// An image over the ceiling can match neither the echo ring nor the
-    /// dedupe slot (both hold only text keys or digests of images within
-    /// the ceiling), so the channel's verdict for it is always busy or
-    /// over budget — decided here without the digest, in the same order.
+    /// then the channel's empty → lane busy → ceiling. Returns the refusal
+    /// when one applies, or nil when the image must be hashed and passed
+    /// to `shareLocalImage`. Shells call this first so a refused image is
+    /// never hashed, and hash outside their lock.
     public mutating func prejudgeLocalImage(
         byteCount: Int,
+        agreed: Capabilities?
+    ) -> ClientClipboardSessionDecision? {
+        if let refusal = imageConsentRefusal(agreed: agreed) {
+            return refusal
+        }
+        return imageChannel.refuseLocalImageBeforeDigest(byteCount: byteCount)
+            .map(interpretImageEvents)
+    }
+
+    /// Judges one local PNG copy and advances the bounded image lane.
+    /// `sha256` is asked for only once every digest-free gate passed; the
+    /// caller also supplies the transfer-id randomness.
+    public mutating func shareLocalImage(
+        _ data: [UInt8],
+        sha256: () -> [UInt8],
+        rng: inout some RandomNumberGenerator,
+        agreed: Capabilities?
+    ) -> ClientClipboardSessionDecision {
+        if let refusal = imageConsentRefusal(agreed: agreed) {
+            return refusal
+        }
+        return interpretImageEvents(imageChannel.shareLocalImage(
+            data, sha256: sha256, book: &book, rng: &rng
+        ))
+    }
+
+    /// The eager-digest form of `shareLocalImage(_:sha256:rng:agreed:)`.
+    public mutating func shareLocalImage(
+        _ data: [UInt8],
+        sha256: [UInt8],
+        rng: inout some RandomNumberGenerator,
+        agreed: Capabilities?
+    ) -> ClientClipboardSessionDecision {
+        shareLocalImage(data, sha256: { sha256 }, rng: &rng, agreed: agreed)
+    }
+
+    private func imageConsentRefusal(
         agreed: Capabilities?
     ) -> ClientClipboardSessionDecision? {
         guard agreed?.clipboardImagesAgreed == true else {
@@ -178,30 +206,7 @@ public struct ClientClipboardSession: Sendable {
             return ClientClipboardSessionDecision(
                 shareOutcome: .sharingDisabled)
         }
-        guard byteCount > imageChannel.imageByteCeiling else { return nil }
-        prejudgedSuppressions += 1
-        let reason: ClipboardImageSuppressReason = imageChannel.isSendActive
-            ? .sendBusy
-            : .overBudget(byteCount)
-        return interpretImageEvents([.suppressed(reason)])
-    }
-
-    /// Judges one local PNG copy and advances the bounded image lane. The
-    /// caller supplies the digest and transfer-id randomness.
-    public mutating func shareLocalImage(
-        _ data: [UInt8],
-        sha256: [UInt8],
-        rng: inout some RandomNumberGenerator,
-        agreed: Capabilities?
-    ) -> ClientClipboardSessionDecision {
-        if let refusal = prejudgeLocalImage(
-            byteCount: data.count, agreed: agreed
-        ) {
-            return refusal
-        }
-        return interpretImageEvents(imageChannel.shareLocalImage(
-            data, sha256: sha256, book: &book, rng: &rng
-        ))
+        return nil
     }
 
     /// Routes a clipboard-image marker through capability, consent, MIME, and
@@ -231,14 +236,16 @@ public struct ClientClipboardSession: Sendable {
         imageChannel.claims(message)
     }
 
-    /// Advances one already-claimed image-lane message. Hashing is injected so
-    /// the session package remains mechanism-free and deterministic in tests.
+    /// Advances one already-claimed image-lane message. The hasher is
+    /// injected so the session package stays mechanism-free and
+    /// deterministic in tests; an incoming image feeds it one chunk at a
+    /// time, so no single message hashes the whole blob.
     public mutating func receiveBulk(
         _ message: BulkMessage,
-        sha256: ([UInt8]) -> [UInt8]
+        hasher: () -> any ClipboardImageHasher
     ) -> ClientClipboardSessionDecision {
         interpretImageEvents(imageChannel.ingest(
-            message, book: &book, sha256: sha256))
+            message, book: &book, hasher: hasher))
     }
 
     private func interpretImageEvents(

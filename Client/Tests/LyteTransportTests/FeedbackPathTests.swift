@@ -2,6 +2,7 @@ import LyteCore
 import LyteClientTestKit
 import XCTest
 import Foundation
+import LyteClientSession
 import LyteTransport
 import LyteWire
 import LyteWireTestKit
@@ -479,20 +480,21 @@ final class FeedbackPathTests: XCTestCase {
         XCTAssertEqual(sample.rttMicroseconds, example.rttMicroseconds)
     }
 
-    func testBeaconMirrorYieldsRetainedClockSamples() {
+    func testBeaconMirrorClosesSamplesIntoTheClockModel() {
         // Deterministic client clock, advancing per call.
         let clock = TickingClock(start: 1_253_500)
         let echoes = LockedEchoes()
+        let model = HostClockModel()
         let responder = BeaconEchoResponder(
             now: { clock.next() },
+            onClockSample: { model.ingest($0) },
             emit: { echoes.append($0) })
 
         // Beacon 0: no mirror yet. t1=1,000,000, t2=1,253,000, t3=1,253,500.
         let first = ClockBeacon(
             beaconSeq: 0, hostSend: HostTimestamp(microseconds: 1_000_000))
         responder.handleCtrlPayload(first.encode(), arrivalMicroseconds: 1_253_000)
-        XCTAssertTrue(responder.snapshotClockSamples().isEmpty,
-                      "no mirror, no sample")
+        XCTAssertTrue(model.recentSamples(10).isEmpty, "no mirror, no sample")
 
         // Beacon 1 mirrors echo 0 with the host-measured t4 = 1,008,500
         // (the worked example's numbers → offset 249,000, rtt 8,000).
@@ -505,7 +507,7 @@ final class FeedbackPathTests: XCTestCase {
                 hostReceive: HostTimestamp(microseconds: 1_008_500)))
         responder.handleCtrlPayload(second.encode(), arrivalMicroseconds: 2_253_000)
 
-        let samples = responder.snapshotClockSamples()
+        let samples = model.recentSamples(10)
         XCTAssertEqual(samples.count, 1)
         XCTAssertEqual(samples[0].beaconSeq, 0)
         XCTAssertEqual(samples[0].offsetMicroseconds, 249_000)

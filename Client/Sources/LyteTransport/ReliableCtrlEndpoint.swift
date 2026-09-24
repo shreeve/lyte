@@ -32,6 +32,7 @@
 import LyteIO
 import Dispatch
 import Foundation
+import LyteClientSession
 import LyteWire
 
 public final class ReliableCtrlEndpoint: @unchecked Sendable {
@@ -73,14 +74,9 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     private let transmitLock = NSLock()
     private var arq: ArqEndpoint<ClientClock>
     /// Learned from the first host datagram carrying the TLV; tags every
-    /// ARQ datagram from then on. Nil only in the pre-first-beacon
+    /// ARQ datagram from then on. Empty only in the pre-first-beacon
     /// window (the host's session-start beacon teaches it immediately).
-    private var connectionId: ConnectionId?
-    /// One-shot group ids are endpoint-allocated, serially ascending
-    /// from 1 and never 0 (the ordered stream's id): the successor of
-    /// 0xFFFF is 1, which ArqEndpoint's serial comparison still reads
-    /// as ascending.
-    private var nextOneShotGroup: UInt16 = 1
+    private var connectionId = ClientConnectionIdBook()
     private var stats = Stats()
     /// The production PTO wake; nil until `start()`. Re-scheduled to the
     /// endpoint's reported deadline after every service pass.
@@ -130,6 +126,14 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// acknowledged. The message must start with its own CTRL type byte
     /// (the registry rule). Throws `ArqSendError` for an empty or
     /// over-budget message; fresh segments leave in this same call.
+    ///
+    /// `ArqSendError.queueFull` is backpressure, and every session caller
+    /// treats it as a refused send: input counts a failed event, clipboard
+    /// returns `.sendRefused`, control replies and the teardown surface a
+    /// protocol note. On CTRL a group that deep means the host stopped
+    /// acknowledging, and the lifecycle's liveness clock ends the session;
+    /// on chan 8 the bulk and clipboard read-ahead caps keep honest
+    /// traffic far below the bound.
     public func send(_ message: [UInt8]) throws {
         try send(message, now: now())
     }
@@ -147,9 +151,8 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         serviceAndUnlock(now: now)
     }
 
-    /// Queues one one-shot message on a fresh group (allocated here,
-    /// serially ascending — this endpoint is the sole allocator of its
-    /// own group ids). Full acknowledgment surfaces as
+    /// Queues one one-shot message on a fresh group (ArqEndpoint
+    /// allocates it: serially ascending, never 0, wrap-safe). Full acknowledgment surfaces as
     /// `.oneShotAcknowledged` through `onEvent`. Returns the group.
     @discardableResult
     public func sendOneShot(_ message: [UInt8]) throws -> ArqGroupId {
@@ -161,14 +164,13 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         _ message: [UInt8], now: ClientTimestamp
     ) throws -> ArqGroupId {
         lock.lock()
-        let group = ArqGroupId(rawValue: nextOneShotGroup)
+        let group: ArqGroupId
         do {
-            try arq.sendOneShot(message: message, group: group, now: now)
+            group = try arq.sendOneShot(message: message, now: now)
         } catch {
             lock.unlock()
             throw error
         }
-        nextOneShotGroup = nextOneShotGroup == .max ? 1 : nextOneShotGroup + 1
         stats.messagesSent += 1
         serviceAndUnlock(now: now)
         return group
@@ -194,10 +196,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         envelope: Envelope, payload: [UInt8], now: ClientTimestamp
     ) -> Bool {
         lock.lock()
-        if connectionId == nil,
-           let claimed = try? ConnectionId.decode(extensions: envelope.extensions) {
-            connectionId = claimed
-        }
+        connectionId.learn(from: envelope)
         guard let type = payload.first,
               type == CtrlMessageType.arqSegment || type == CtrlMessageType.arqAck
         else {
@@ -267,13 +266,6 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         wakeFromTimerAndUnlock(now: now)
     }
 
-    /// Seeds the one-shot allocator — the wrap pin's probe.
-    func testingSeedNextOneShotGroup(_ group: UInt16) {
-        lock.lock()
-        nextOneShotGroup = group
-        lock.unlock()
-    }
-
     /// The absolute µs the re-arm book currently holds, nil when nothing
     /// is armed — the sleep-forever pin's probe.
     var testingArmedDeadlineMicros: UInt64? {
@@ -318,7 +310,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     public var learnedConnectionId: ConnectionId? {
         lock.lock()
         defer { lock.unlock() }
-        return connectionId
+        return connectionId.learned
     }
 
     /// Adopts a connection ID learned elsewhere (F-4: the chan-8
@@ -328,7 +320,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     public func adoptConnectionId(_ id: ConnectionId?) {
         guard let id else { return }
         lock.lock()
-        if connectionId == nil { connectionId = id }
+        connectionId.adopt(id)
         lock.unlock()
     }
 
@@ -355,7 +347,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
             lock.unlock()
             return
         }
-        let extensions = connectionId.map { [$0.wireExtension] } ?? []
+        let extensions = connectionId.extensions
         transmitLock.lock()
         lock.unlock()
         var sent: UInt64 = 0

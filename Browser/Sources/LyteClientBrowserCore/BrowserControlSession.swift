@@ -2,11 +2,12 @@ import LyteClientSession
 import LyteCore
 import LyteWire
 
-/// The browser's sans-IO session initiator: Noise IK over bare CTRL
-/// carriage (with retry-challenge answers and message-1 retransmit), PIN
-/// PAKE, capabilities and lifecycle via `ClientControlSession`, the reliable
-/// CTRL stream, beacon echo, and demux of sealed video/audio to the playout
-/// organs.
+/// The browser's sans-IO session: LyteClientSession's initiator pieces —
+/// `ClientHandshakeInitiator`, `ClientPairing`, `ClientControlSession`,
+/// `ClientBeaconEchoBook`, the envelope sequencer and conn-id book, the
+/// lifecycle effects — composed over one reliable CTRL stream, plus the
+/// demux of sealed video/audio to the playout organs. The native client
+/// drives the same pieces behind its locks.
 ///
 /// The page owns WebTransport and clocks; every call takes injected time and
 /// returns a `Step` of datagrams to send and notes to log. Per-datagram
@@ -38,25 +39,16 @@ public final class BrowserControlSession {
         }
     }
 
-    /// Message-1 retransmit schedule. The same message 1 is resent verbatim
-    /// (a late host answer stays valid for this transcript), matching the
-    /// native initiator's defaults.
-    public struct HandshakeRetry: Sendable {
-        public var attempts: Int
-        public var intervalMicroseconds: UInt64
-
-        public init(attempts: Int = 5, intervalMicroseconds: UInt64 = 1_000_000) {
-            self.attempts = max(1, attempts)
-            self.intervalMicroseconds = max(1, intervalMicroseconds)
-        }
-    }
+    /// Message-1 retransmit schedule (the native initiator's defaults).
+    public typealias HandshakeRetry = ClientHandshakeInitiator.Retry
 
     public struct Counters: Sendable, Equatable {
         /// Datagrams whose envelope did not decode.
         public var undecodableDatagrams: UInt64 = 0
         /// Sealed datagrams that failed authentication or the replay window.
         public var unsealFailures: UInt64 = 0
-        /// Authenticated CTRL words that did not decode (dropped).
+        /// Authenticated CTRL words (and retry challenges) that did not
+        /// decode (dropped).
         public var malformedControl: UInt64 = 0
         /// Message-2 candidates the handshake rejected.
         public var rejectedMessage2: UInt64 = 0
@@ -64,6 +56,8 @@ public final class BrowserControlSession {
         public var message1Transmissions: UInt64 = 0
         public var retryChallengesAnswered: UInt64 = 0
         public var idrRequestsSent: UInt64 = 0
+        /// Input events dropped because the reliable queue was full.
+        public var inputsRefused: UInt64 = 0
 
         public init() {}
     }
@@ -74,12 +68,11 @@ public final class BrowserControlSession {
     private let handshakeRetry: HandshakeRetry
 
     private var status: Status = .idle
-    private var handshake: NoiseSession?
-    private var message1: [UInt8]?
-    private var lastMessage1SentMicros: UInt64 = 0
+    private var initiator: ClientHandshakeInitiator?
     private var transport: NoiseTransport?
-    private var ctrlSeq = ChannelSeq(rawValue: 0)
-    private var connectionId: ConnectionId?
+    private var sequencer = ClientEnvelopeSequencer()
+    private var connectionIds = ClientConnectionIdBook()
+    private var echoBook = ClientBeaconEchoBook()
     private var arq = ArqEndpoint<ClientClock>(
         channel: .ctrl,
         config: {
@@ -90,8 +83,7 @@ public final class BrowserControlSession {
         }()
     )
     private var control: ClientControlSession?
-    private var pairing: PairingPakeInitiator?
-    private var pairingAwaitingShareB = false
+    private var pairing: ClientPairing?
     private var pendingEvidenceMicros: UInt64?
     private var events: [String] = []
     private var failure: String?
@@ -138,11 +130,12 @@ public final class BrowserControlSession {
         else {
             throw BrowserControlError.badHostStatic
         }
-        let digits = pin.filter(\.isNumber)
-        guard !digits.isEmpty else { throw BrowserControlError.badPin }
+        guard let pinBytes = PairingPin.normalize(pin) else {
+            throw BrowserControlError.badPin
+        }
         self.hostStaticPublicKey = hostKey
         self.clientStatic = NoiseKeyPair.generate()
-        self.pin = Array(digits.utf8)
+        self.pin = pinBytes
         self.handshakeRetry = handshakeRetry
     }
 
@@ -178,17 +171,17 @@ public final class BrowserControlSession {
         guard status == .idle else {
             return failStep("begin called in status \(status.rawValue)")
         }
-        var session = try NoiseSession(
-            role: .initiator,
-            staticKeys: clientStatic,
-            remoteStaticPublicKey: hostStaticPublicKey
+        var initiator = try ClientHandshakeInitiator(
+            hostStaticPublicKey: hostStaticPublicKey,
+            clientStatic: clientStatic,
+            retry: handshakeRetry
         )
-        let msg1 = try session.writeMessage1()
-        handshake = session
-        message1 = msg1
+        let carriage = try initiator.begin(nowMicros: nowMicros)
+        self.initiator = initiator
         status = .handshaking
-        note("noise: msg1 sent (\(msg1.count) B)")
-        return step(outbound: [try message1Carriage(nowMicros: nowMicros)])
+        syncHandshakeCounters()
+        note("noise: msg1 sent (\(initiator.message1ByteCount) B)")
+        return step(outbound: [carriage])
     }
 
     /// Ingests one opaque datagram from the host.
@@ -208,7 +201,7 @@ public final class BrowserControlSession {
     public func tick(nowMicros: UInt64) -> Step {
         switch status {
         case .handshaking:
-            return retransmitMessage1IfDue(nowMicros: nowMicros)
+            return handshakeTick(nowMicros: nowMicros)
         case .established, .ready, .closed:
             break
         case .idle, .failed:
@@ -270,6 +263,12 @@ public final class BrowserControlSession {
             nextInputSeq &+= 1
             inputsSent += 1
             return step(outbound: try pollArq(nowMicros: nowMicros))
+        } catch ArqSendError.queueFull {
+            // Backpressure: the host has not acknowledged a full queue of
+            // segments. Drop this event; the liveness clock judges the path.
+            counters.inputsRefused += 1
+            note("input: dropped (reliable queue full)")
+            return step(outbound: [])
         } catch {
             return failStep("input send: \(error)")
         }
@@ -301,6 +300,10 @@ public final class BrowserControlSession {
             clipboardSent += 1
             note("clipboard: set sent (\(text.utf8.count) B)")
             return step(outbound: try pollArq(nowMicros: nowMicros))
+        } catch ArqSendError.queueFull {
+            // Backpressure, as for input: the next local change retries.
+            note("clipboard: not shared (reliable queue full)")
+            return step(outbound: [])
         } catch {
             return failStep("clipboard send: \(error)")
         }
@@ -308,94 +311,61 @@ public final class BrowserControlSession {
 
     // MARK: Handshake
 
-    private func message1Carriage(nowMicros: UInt64) throws -> [UInt8] {
-        guard let message1 else { throw BrowserControlError.notEstablished }
-        counters.message1Transmissions += 1
-        lastMessage1SentMicros = nowMicros
-        return try encodeBareCarriage(
-            payload: [CtrlMessageType.noiseHandshake1] + message1,
-            nowMicros: nowMicros
-        )
-    }
-
-    private func retransmitMessage1IfDue(nowMicros: UInt64) -> Step {
-        guard nowMicros &- lastMessage1SentMicros
-            >= handshakeRetry.intervalMicroseconds
-        else {
+    private func handshakeTick(nowMicros: UInt64) -> Step {
+        guard var initiator else { return failStep("handshake state missing") }
+        let tick = initiator.tick(nowMicros: nowMicros)
+        self.initiator = initiator
+        syncHandshakeCounters()
+        switch tick {
+        case .wait:
             return step(outbound: [])
-        }
-        guard counters.message1Transmissions < UInt64(handshakeRetry.attempts) else {
+        case .retransmit(let carriage):
+            note("noise: msg1 retransmit #\(counters.message1Transmissions)")
+            return step(outbound: [carriage])
+        case .exhausted:
             return failStep(
                 "noise: no answer after \(handshakeRetry.attempts) message-1 attempts"
             )
-        }
-        do {
-            let carriage = try message1Carriage(nowMicros: nowMicros)
-            note("noise: msg1 retransmit #\(counters.message1Transmissions)")
-            return step(outbound: [carriage])
-        } catch {
-            return failStep("noise: retransmit: \(error)")
         }
     }
 
     private func ingestHandshake(
         _ datagram: [UInt8], nowMicros: UInt64
     ) -> Step {
-        guard let handshake, let message1 else {
-            return failStep("handshake state missing")
-        }
-        guard let (envelope, payload) = try? Envelope.decode(datagram) else {
-            counters.undecodableDatagrams += 1
+        guard var initiator else { return failStep("handshake state missing") }
+        let outcome = initiator.ingest(datagram[...], nowMicros: nowMicros)
+        self.initiator = initiator
+        syncHandshakeCounters()
+        switch outcome {
+        case .ignored, .rejectedMessage2:
             return step(outbound: [])
-        }
-        guard envelope.channel == .ctrl, let type = payload.first else {
-            return step(outbound: [])
-        }
-
-        if type == CtrlMessageType.retryChallenge {
-            // Answering does not consume an attempt: the challenge is the
-            // host's liveness. The answer echoes the same message 1.
-            guard let challenge = try? RetryChallenge.decode(payload),
-                  let resubmission = try? RetryHandshake1(
-                      echoing: challenge, message1: message1
-                  ).encode(),
-                  let carriage = try? encodeBareCarriage(
-                      payload: resubmission, nowMicros: nowMicros
-                  )
-            else {
-                counters.malformedControl += 1
-                return step(outbound: [])
-            }
-            counters.retryChallengesAnswered += 1
+        case .reply(let carriage):
             note("noise: answered retry challenge")
             return step(outbound: [carriage])
-        }
-
-        guard type == CtrlMessageType.noiseHandshake2 else {
-            return step(outbound: [])
-        }
-        // A rejected candidate leaves the stored handshake untouched, so a
-        // later genuine message 2 still completes it.
-        var candidate = handshake
-        do {
-            _ = try candidate.readMessage2(payload.dropFirst())
-        } catch {
-            counters.rejectedMessage2 += 1
-            return step(outbound: [])
-        }
-        do {
-            return try establish(candidate, nowMicros: nowMicros)
-        } catch {
-            return failStep("handshake: \(error)")
+        case .established(let made):
+            do {
+                return try establish(made, nowMicros: nowMicros)
+            } catch {
+                return failStep("handshake: \(error)")
+            }
         }
     }
 
+    /// Folds the initiator's books into the session counters.
+    private func syncHandshakeCounters() {
+        guard let books = initiator?.counters else { return }
+        counters.message1Transmissions = books.message1Transmissions
+        counters.retryChallengesAnswered = books.retryChallengesAnswered
+        counters.rejectedMessage2 = books.rejectedMessage2
+        counters.undecodableDatagrams = books.undecodableDatagrams
+        counters.malformedControl = books.malformedRetryChallenges
+    }
+
     private func establish(
-        _ completed: NoiseSession, nowMicros: UInt64
+        _ made: NoiseTransport, nowMicros: UInt64
     ) throws -> Step {
-        let made = try completed.makeTransport()
         let now = ClientTimestamp(microseconds: nowMicros)
-        handshake = nil
+        initiator = nil
         transport = made
         status = .established
         handshakeCompleted = true
@@ -408,14 +378,12 @@ public final class BrowserControlSession {
             clipboardSharingAtStart: true,
             now: now
         )
-        let pairing = try PairingPakeInitiator(
+        var pairing = try ClientPairing(
             pin: pin,
             clientStaticPublicKey: clientStatic.publicKey,
             hostStaticPublicKey: hostStaticPublicKey,
             noiseHandshakeHash: made.handshakeHash
         )
-        self.pairing = pairing
-        pairingAwaitingShareB = true
 
         // First reliable words: capability declaration, then pairing share A.
         if let declaration = try control.start() {
@@ -423,7 +391,8 @@ public final class BrowserControlSession {
             note("capabilities: client declaration queued")
         }
         self.control = control
-        try arq.send(message: try pairing.makeShareA().encode(), now: now)
+        try arq.send(message: try pairing.start(), now: now)
+        self.pairing = pairing
         note("pairing: share A queued")
         return step(outbound: try pollArq(nowMicros: nowMicros))
     }
@@ -434,19 +403,13 @@ public final class BrowserControlSession {
         _ datagram: [UInt8], nowMicros: UInt64
     ) -> Step {
         guard var transport else { return failStep("no transport") }
-        guard let (envelope, wirePayload) = try? Envelope.decode(datagram) else {
-            counters.undecodableDatagrams += 1
-            return step(outbound: [])
-        }
-        // The exact received header bytes are the AAD (fixed envelope + TLVs).
-        let aad = datagram[datagram.startIndex..<wirePayload.startIndex]
+        let envelope: Envelope
         let plaintext: [UInt8]
         do {
-            plaintext = try transport.unseal(
-                wirePayload: wirePayload,
-                aad: aad,
-                envelope: envelope
-            )
+            (envelope, plaintext) = try transport.openDatagram(datagram)
+        } catch is WireError {
+            counters.undecodableDatagrams += 1
+            return step(outbound: [])
         } catch {
             counters.unsealFailures += 1
             return step(outbound: [])
@@ -456,10 +419,7 @@ public final class BrowserControlSession {
 
         // Learned only from an authenticated datagram: a forged first
         // datagram must not choose the conn-id every later send carries.
-        if connectionId == nil,
-           let claimed = try? ConnectionId.decode(extensions: envelope.extensions)
-        {
-            connectionId = claimed
+        if connectionIds.learn(from: envelope) {
             note("conn-id: learned")
         }
 
@@ -524,12 +484,8 @@ public final class BrowserControlSession {
                 counters.malformedControl += 1
                 return step(outbound: [])
             }
-            let echo = BeaconEcho(
-                beaconSeq: beacon.beaconSeq,
-                hostSend: beacon.hostSend,
-                clientReceive: now,
-                clientSend: now
-            )
+            let (echo, _) = echoBook.answer(
+                beacon, receivedAt: now, sendingAt: now)
             return step(outbound: [
                 try sealCtrl(plaintext: echo.encode(), nowMicros: nowMicros),
             ])
@@ -544,8 +500,25 @@ public final class BrowserControlSession {
         let now = ClientTimestamp(microseconds: nowMicros)
 
         // Pairing words first (ClientControlSession does not claim them).
-        if let type = message.first, (0x0B...0x0E).contains(type) {
-            try handlePairing(message, nowMicros: nowMicros)
+        if let output = pairing?.handleReliableCtrl(message) {
+            for reply in output.replies {
+                try arq.send(message: reply, now: now)
+            }
+            for event in output.events {
+                switch event {
+                case .paired:
+                    paired = true
+                    note("pairing: PAIRED — host static pinned")
+                case .pinMismatch:
+                    _ = failStep("pairing: PIN mismatch")
+                case .invalidShare:
+                    _ = failStep("pairing: invalid share")
+                case .hostRejected(let reason):
+                    _ = failStep("pairing: host rejected (\(reason))")
+                case .malformed:
+                    counters.malformedControl += 1
+                }
+            }
             promoteIfReady()
             return
         }
@@ -565,6 +538,12 @@ public final class BrowserControlSession {
         for reply in decision.outboundReliable {
             try arq.send(message: reply, now: now)
         }
+        if decision.counters.contains(.malformedReliableMessage) {
+            counters.malformedControl += 1
+        }
+        if let line = decision.note {
+            note("control: \(line)")
+        }
         switch decision.event {
         case .capability(.agreed(let caps)):
             capabilitiesAgreed = true
@@ -583,8 +562,6 @@ public final class BrowserControlSession {
             clipboardReceived += 1
             lastClipboardText = text
             note("clipboard: announce (\(text.utf8.count) B)")
-        case .clipboard(let other):
-            note("clipboard: \(other)")
         default:
             break
         }
@@ -592,42 +569,6 @@ public final class BrowserControlSession {
             try apply(lifecycle, nowMicros: nowMicros)
         }
         promoteIfReady()
-    }
-
-    private func handlePairing(_ message: [UInt8], nowMicros: UInt64) throws {
-        let now = ClientTimestamp(microseconds: nowMicros)
-        guard pairingAwaitingShareB, var pairing else { return }
-        switch message.first {
-        case CtrlMessageType.pairingShareB:
-            let shareB = try PairingShareB.decode(message)
-            do {
-                let confirm = try pairing.receiveShareB(shareB)
-                try arq.send(message: try confirm.encode(), now: now)
-                paired = true
-                pairingAwaitingShareB = false
-                self.pairing = pairing
-                note("pairing: PAIRED — host static pinned")
-            } catch PairingPakeError.confirmationFailed {
-                try arq.send(
-                    message: PairingReject(reason: .confirmationFailed).encode(),
-                    now: now
-                )
-                pairingAwaitingShareB = false
-                _ = failStep("pairing: PIN mismatch")
-            } catch PairingPakeError.invalidPeerShare {
-                try arq.send(
-                    message: PairingReject(reason: .invalidShare).encode(),
-                    now: now
-                )
-                pairingAwaitingShareB = false
-                _ = failStep("pairing: invalid share")
-            }
-        case CtrlMessageType.pairingReject:
-            pairingAwaitingShareB = false
-            _ = failStep("pairing: host rejected")
-        default:
-            break
-        }
     }
 
     private func promoteIfReady() {
@@ -661,21 +602,19 @@ public final class BrowserControlSession {
     private func apply(
         _ decision: ClientSessionLifecycleDecision, nowMicros: UInt64
     ) throws {
-        for action in decision.actions {
-            switch action {
-            case .sendTeardownMessage(let reason):
+        for effect in decision.effects {
+            switch effect {
+            case .sendTeardown(_, let message):
                 try arq.send(
-                    message: SessionTeardown(reason: reason).encode(),
+                    message: message,
                     now: ClientTimestamp(microseconds: nowMicros)
                 )
-            case .sessionClosed(let reason):
+            case .closed(let reason):
                 if status != .failed, status != .closed {
                     status = .closed
                     closeReason = reason
                     note("session: closed (\(reason))")
                 }
-            default:
-                break
             }
         }
     }
@@ -706,37 +645,14 @@ public final class BrowserControlSession {
         guard var transport else {
             throw BrowserControlError.notEstablished
         }
-        let seq = ctrlSeq
-        ctrlSeq = ctrlSeq.next
-        let envelope = Envelope(
+        let envelope = sequencer.envelope(
             channel: .ctrl,
-            seq: seq,
-            frame: FrameNumber(rawValue: 0),
             timestamp: nowMicros,
-            fec: 0,
-            extensions: connectionId.map { [$0.wireExtension] } ?? []
+            extensions: connectionIds.extensions
         )
-        let header = try envelope.encode(payload: [])
-        let sealed = try transport.seal(
-            plaintext: plaintext[...],
-            aad: header[...],
-            envelope: envelope
-        )
+        let datagram = try transport.sealDatagram(envelope, plaintext: plaintext)
         self.transport = transport
-        return try envelope.encode(payload: sealed)
-    }
-
-    private func encodeBareCarriage(
-        payload: [UInt8], nowMicros: UInt64
-    ) throws -> [UInt8] {
-        let envelope = Envelope(
-            channel: .ctrl,
-            seq: ChannelSeq(rawValue: 0),
-            frame: FrameNumber(rawValue: 0),
-            timestamp: nowMicros,
-            fec: 0
-        )
-        return try envelope.encode(payload: payload)
+        return datagram
     }
 
     private func note(_ line: String) {

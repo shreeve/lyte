@@ -31,6 +31,36 @@ public struct ClientSessionLifecycleDecision: Hashable, Sendable {
     }
 }
 
+/// A lifecycle action a client shell executes. Sender-role actions (mode
+/// messages, final frames, IDR pacing, datagram freezes) never reach a
+/// media receiver, so they have no effect here.
+public enum ClientLifecycleEffect: Hashable, Sendable {
+    /// Queue `message` (the encoded SessionTeardown) on the reliable
+    /// ordered stream.
+    case sendTeardown(SessionTeardownReason, message: [UInt8])
+    /// The session reached closed.
+    case closed(SessionCloseReason)
+}
+
+extension ClientSessionLifecycleDecision {
+    /// The decision's actions as client effects, in action order.
+    public var effects: [ClientLifecycleEffect] {
+        actions.compactMap { action in
+            switch action {
+            case .sendTeardownMessage(let reason):
+                return .sendTeardown(
+                    reason, message: SessionTeardown(reason: reason).encode())
+            case .sessionClosed(let reason):
+                return .closed(reason)
+            case .sendModeMessage, .sendFinalFrameReliably,
+                 .armNextDamageAsIdr, .forceIdr,
+                 .freezeDatagramSends, .resumeDatagramSends:
+                return nil
+            }
+        }
+    }
+}
+
 /// The result of offering one reliable word to the lifecycle organ. `nil`
 /// means another client-session organ owns that control type.
 public enum ClientLifecycleIngress: Hashable, Sendable {

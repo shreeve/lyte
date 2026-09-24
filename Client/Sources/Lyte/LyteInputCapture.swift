@@ -26,6 +26,7 @@
 // strip's reveal is a dwell-near-the-edge verdict (StripRevealPolicy).
 
 import AppKit
+import LyteClientCore
 import LyteTransport
 import LyteWire
 

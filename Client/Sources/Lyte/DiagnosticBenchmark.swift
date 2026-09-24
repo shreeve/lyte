@@ -83,10 +83,9 @@ struct DiagnosticBenchmarkSample: Codable {
         var packetsFed: UInt64
         var plcPacketsFed: UInt64
         var ringDepthFrames: Int
+        /// Every underrun frame passes AudioPcmRing's decay / silence /
+        /// crossfade path; no alternate zero-fill seam exists.
         var underrunFrames: UInt64
-        /// Every active-flow underrun frame passes AudioPcmRing's decay /
-        /// silence / crossfade path; no alternate zero-fill seam exists.
-        var declickProtectedUnderrunFrames: UInt64
         var decodeFailures: UInt64
         var routeChangeFailures: UInt64
         /// True while the host's 0x25 quiet announcement stands: the

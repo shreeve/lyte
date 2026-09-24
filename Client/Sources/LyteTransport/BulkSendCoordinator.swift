@@ -28,6 +28,7 @@
 // themselves (the LyteUdpSessionEvent contract).
 
 import Foundation
+import LyteCore
 import LyteWire
 
 /// What became of one drop, for immediate UI feedback.
@@ -107,7 +108,7 @@ public final class BulkSendCoordinator: @unchecked Sendable {
     /// Key 11 in the agreed set — the offer gate.
     private var negotiated = false
 
-    private var entries: [Entry] = []
+    private var entries = Deque<Entry>()
     private var shell: BulkSendShell?
     /// Bumped per shell; a discarded shell's late events (a pending
     /// read completing after cancel/teardown) must never pop the

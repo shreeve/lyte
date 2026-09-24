@@ -29,11 +29,13 @@ public struct AudioReceiverStats: Sendable {
     /// constant offset (graph epoch AND host↔client offset), leaving
     /// exactly the receive pipeline's added delay. Absolute
     /// capture→render = this + the path floor (≲ the beacon min RTT).
-    public var captureToFeed = Histogram<UInt64>(retention: .rolling)
+    public var captureToFeed = Histogram<UInt64>(
+        capacity: 600, retention: .rolling)
     /// The same edge extended by the caller-reported render pipeline
     /// (PCM ring depth + device latency at feed time) — the honest
     /// capture→render-above-floor estimate.
-    public var captureToRender = Histogram<UInt64>(retention: .rolling)
+    public var captureToRender = Histogram<UInt64>(
+        capacity: 600, retention: .rolling)
     /// TOTAL buffered audio at each pull, in packets: jitter-buffer
     /// pending + whatever the caller reports still queued toward the
     /// speaker — the gate's "buffer depth" figure.
@@ -63,8 +65,10 @@ public final class AudioReceiver: @unchecked Sendable {
     private let depacketizer: AudioDepacketizer
     private let buffer: AudioJitterBuffer
 
-    private var captureToFeed = Histogram<UInt64>(retention: .rolling)
-    private var captureToRender = Histogram<UInt64>(retention: .rolling)
+    private var captureToFeed = Histogram<UInt64>(
+        capacity: 600, retention: .rolling)
+    private var captureToRender = Histogram<UInt64>(
+        capacity: 600, retention: .rolling)
     private var bufferDepthPackets = Histogram<UInt64>(
         capacity: 600, retention: .rolling)
     /// The floor: the smallest capture→feed delta seen (signed —

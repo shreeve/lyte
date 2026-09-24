@@ -59,8 +59,7 @@ struct LytePairingSheet: View {
     }
 
     private var canPair: Bool {
-        effectiveHostKey != nil && pin.count == 6
-            && pin.allSatisfy(\.isNumber)
+        effectiveHostKey != nil && PairingPin.isValid(pin)
     }
 
     var body: some View {

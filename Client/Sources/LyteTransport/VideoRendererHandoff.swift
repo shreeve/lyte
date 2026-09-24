@@ -35,7 +35,6 @@ public protocol VideoRecoveryPeer: AnyObject, Sendable {
     func noteVideoIrapEnqueued(frame: FrameNumber)
 }
 
-extension LyteUdpSession: VideoRecoveryPeer {}
 
 /// The client's production video sink: serial, bounded ownership of
 /// compressed samples between the sample-build worker and the renderer.
@@ -84,7 +83,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     /// Submission instants of the policy's entries, oldest first: entries
     /// only ever leave the policy from the front or all at once, so
     /// trimming this to `policy.count` from the front keeps it exact.
-    private var pendingSubmissions: [UInt64] = []
+    private var pendingSubmissions = Deque<UInt64>()
     private var expiryTimer: DispatchSourceTimer?
     private var expiryDeadline: UInt64?
     private var requesting = false
@@ -155,8 +154,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
         let decision = playout.schedule(
             mappedCaptureMicroseconds: mapped,
             arrivalMicroseconds: arrival,
-            sourceCaptureMicroseconds: unit.timestamp.microseconds,
-            isRandomAccess: unit.isIDR)
+            sourceCaptureMicroseconds: unit.timestamp.microseconds)
         if PipelineWitness.isEnabled {
             PipelineWitness.record("frameReady", fields: [
                 "frame": String(unit.frameNumber.rawValue),

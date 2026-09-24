@@ -100,9 +100,37 @@ public final class ReceiveDemux: @unchecked Sendable {
         arrivalMicroseconds: UInt64
     ) -> IngestOutcome {
         let envelope: Envelope
-        let payload: ArraySlice<UInt8>
+        let plaintext: [UInt8]
         do {
-            (envelope, payload) = try Envelope.decode(datagram)
+            // Envelope.openDatagram decodes, hands the received header
+            // bytes to the unseal as AAD, and lets the reserved-channel
+            // check run before any AEAD work.
+            (envelope, plaintext) = try Envelope.openDatagram(datagram) {
+                envelope, wirePayload, aad in
+                guard !envelope.channel.isReserved else {
+                    throw ReservedChannel(envelope: envelope)
+                }
+                do {
+                    return try crypto.unseal(
+                        wirePayload: wirePayload, aad: aad, envelope: envelope)
+                } catch {
+                    throw UnsealFailure(envelope: envelope, underlying: error)
+                }
+            }
+        } catch let reserved as ReservedChannel {
+            lock.lock()
+            totals.datagrams += 1
+            totals.reservedDropped += 1
+            lock.unlock()
+            return .reservedChannel(reserved.envelope.channel.rawValue)
+        } catch let failure as UnsealFailure {
+            lock.lock()
+            totals.datagrams += 1
+            totals.unsealFailures += 1
+            channels[failure.envelope.channel.rawValue, default: ChannelAccount()]
+                .stats.unsealFailures += 1
+            lock.unlock()
+            return .unsealFailed(failure.underlying)
         } catch {
             let wireError = error as? WireError ?? .truncatedEnvelope
             lock.lock()
@@ -110,29 +138,6 @@ public final class ReceiveDemux: @unchecked Sendable {
             totals.malformed += 1
             lock.unlock()
             return .malformed(wireError)
-        }
-
-        guard !envelope.channel.isReserved else {
-            lock.lock()
-            totals.datagrams += 1
-            totals.reservedDropped += 1
-            lock.unlock()
-            return .reservedChannel(envelope.channel.rawValue)
-        }
-
-        // The header rides as AAD: exactly the received bytes ahead of the
-        // payload, fixed envelope + TLV block.
-        let aad = datagram[datagram.startIndex..<payload.startIndex]
-        let plaintext: [UInt8]
-        do {
-            plaintext = try crypto.unseal(wirePayload: payload, aad: aad, envelope: envelope)
-        } catch {
-            lock.lock()
-            totals.datagrams += 1
-            totals.unsealFailures += 1
-            channels[envelope.channel.rawValue, default: ChannelAccount()].stats.unsealFailures += 1
-            lock.unlock()
-            return .unsealFailed(error)
         }
 
         lock.lock()
@@ -184,6 +189,10 @@ public final class ReceiveDemux: @unchecked Sendable {
         return channels[channel]?.stats
     }
 }
+
+/// Sentinels that carry a refusal out of the `openDatagram` closure.
+private struct ReservedChannel: Error { var envelope: Envelope }
+private struct UnsealFailure: Error { var envelope: Envelope; var underlying: Error }
 
 /// One channel's live accounting: the gap tracker plus last-seen state the
 /// snapshot derives deltas from.
