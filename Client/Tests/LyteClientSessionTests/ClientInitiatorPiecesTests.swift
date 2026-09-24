@@ -84,6 +84,31 @@ final class ClientInitiatorPiecesTests: XCTestCase {
                        "answering spends no attempt")
     }
 
+    /// A real host challenges each message 1 at most once; answering
+    /// every challenge would reflect a flood at the host's tuple. One
+    /// answer per transmission, the rest counted.
+    func testOneChallengeAnswerPerMessage1Transmission() throws {
+        var handshake = try initiator()
+        _ = try handshake.begin(nowMicros: 0)
+        let challenge = try carriage(
+            try RetryChallenge(cookie: [7]).encode())
+        var replies = 0
+        for _ in 0..<10 {
+            if case .reply = handshake.ingest(challenge[...], nowMicros: 10) {
+                replies += 1
+            }
+        }
+        XCTAssertEqual(replies, 1)
+        XCTAssertEqual(handshake.counters.retryChallengesIgnored, 9)
+
+        guard case .retransmit = handshake.tick(nowMicros: 100_000) else {
+            return XCTFail("the window closed without a retransmit")
+        }
+        guard case .reply = handshake.ingest(challenge[...], nowMicros: 100_010)
+        else { return XCTFail("a fresh transmission earns a fresh answer") }
+        XCTAssertEqual(handshake.counters.retryChallengesAnswered, 2)
+    }
+
     func testFaultsAreCountedAndTheGenuineMessage2StillCompletes() throws {
         var handshake = try initiator()
         let first = try handshake.begin(nowMicros: 0)

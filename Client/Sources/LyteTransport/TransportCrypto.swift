@@ -43,7 +43,7 @@ public struct HandshakeExhausted: Error, Equatable, Sendable,
     /// Datagrams that came back from the host's address, of every kind.
     public var datagramsReceived: UInt64 {
         counters.retryChallengesAnswered + counters.malformedRetryChallenges
-            + counters.rejectedMessage2 + counters.undecodableDatagrams
+            + counters.retryChallengesIgnored + counters.rejectedMessage2 + counters.undecodableDatagrams
             + counters.otherDatagrams
     }
 

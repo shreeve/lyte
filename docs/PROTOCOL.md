@@ -105,7 +105,8 @@ sealed traffic, both ways; each side's first ARQ message is 0x0F
   transmissions 1 s apart; a connect's first dial allows 5 × 2 s
   (`.firstDial`), its later rounds and roaming probes 3 × 700 ms
   (`.redial`) — so a late answer to any copy completes the transcript.
-  Answering a retry challenge spends no attempt.
+  Answering a retry challenge spends no attempt; the client answers at
+  most one challenge per message-1 transmission.
 - The host rate-limits message 1 (`HostSession.HandshakeGate`). Under a
   flood it switches to cookie mode: a stateless 24-byte HMAC cookie binds
   the client tuple, a timestamp (30 s lifetime) and message 1 verbatim.
