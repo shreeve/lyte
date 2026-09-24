@@ -3,9 +3,10 @@ import LyteTestKit
 import XCTest
 
 /// The repository boundaries only this package can see whole: the client
-/// and host roles meet here and nowhere else, nothing depends on the
-/// system-test package, shipping client code carries no test equipment,
-/// and ARQ carrier packing has one owner (LyteWire).
+/// and host roles meet here (and in the browser package's tests, recorded
+/// below), nothing depends on the system-test package, shipping client
+/// code carries no test equipment, and ARQ carrier packing has one owner
+/// (LyteWire).
 final class SystemTestsLayoutTests: XCTestCase {
     private let sourceTree = RepositorySourceTree()
 
@@ -38,6 +39,36 @@ final class SystemTestsLayoutTests: XCTestCase {
             XCTAssertFalse(
                 try source(at: "\(package)/Package.swift").contains("../SystemTests"),
                 "\(package) must not depend on the system-test package")
+        }
+    }
+
+    /// The one other place the roles meet is the browser package's tests:
+    /// they drive the browser client against a real in-process HostWire
+    /// session, the engine lyte-control-peer serves to Chrome. Browser
+    /// sources import no host module, and only the test target depends on
+    /// Host products.
+    func testBrowserMeetsTheHostRoleOnlyInItsTests() throws {
+        XCTAssertEqual(
+            try importers(below: "Browser/Sources") {
+                belongsToRole($0, role: .host)
+            }, [],
+            "Browser/Sources must not import host modules")
+        let manifest = try source(at: "Browser/Package.swift")
+        let testTarget = try XCTUnwrap(
+            manifest.range(of: ".testTarget("),
+            "the Browser package declares its test target")
+        XCTAssertNil(
+            manifest.range(of: ".testTarget(", range: testTarget.upperBound
+                ..< manifest.endIndex),
+            "one Browser test target")
+        var cursor = manifest.startIndex
+        while let hostProduct = manifest.range(
+            of: "package: \"Host\"", range: cursor..<manifest.endIndex
+        ) {
+            XCTAssertGreaterThan(
+                hostProduct.lowerBound, testTarget.lowerBound,
+                "only the Browser test target may depend on Host products")
+            cursor = hostProduct.upperBound
         }
     }
 
