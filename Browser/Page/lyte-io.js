@@ -12,10 +12,6 @@ export function bytesFromHex(hex) {
   return out;
 }
 
-export function hexFromBytes(bytes) {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 /** Monotonic µs since navigation start — the client clock domain. */
 export function nowMicros() {
   return Math.floor(performance.now() * 1000);

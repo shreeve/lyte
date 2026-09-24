@@ -1,8 +1,7 @@
 #!/usr/bin/env node
-// lyte-wt-sidecar — same-box WebTransport ↔ UDP opaque datagram relay. It
-// never parses Lyte envelopes or Noise, and never binds the standing host
-// UDP 41151. Modes: echo (default, loopback UDP echo for carrier proofs) or
-// --udp-peer host:port (forward to a Lyte host / control peer). Each
+// lyte-wt-sidecar — same-box WebTransport ↔ UDP opaque datagram relay to
+// --udp-peer host:port (a Lyte host or control peer). It never parses Lyte
+// envelopes or Noise, and never relays to the standing host UDP 41151. Each
 // WebTransport session gets its own UDP socket. Writes JSON metadata (url,
 // cert hash, ports) to --meta-out for serverCertificateHashes dialing.
 
@@ -83,10 +82,13 @@ function parseArgs(argv) {
     else if (a === "--help" || a === "-h") {
       console.log(
         "usage: wt-sidecar.mjs [--host 127.0.0.1] [--wt-port 0] [--meta-out path] " +
-          "[--path /lyte-datagram] [--udp-peer host:port]"
+          "[--path /lyte-datagram] --udp-peer host:port"
       );
       process.exit(0);
     }
+  }
+  if (!out.udpPeer) {
+    throw new Error("wt-sidecar: --udp-peer host:port is required");
   }
   return out;
 }
@@ -257,21 +259,11 @@ const certDir = mkdtempSync(join(tmpdir(), "lyte-wt-sidecar-"));
 const { keyPath, certPath } = mintCert(certDir);
 const hash = certSha256(certPath);
 
-let echoSock = null;
-let echoPort = null;
-let peer = args.udpPeer;
-
-if (!peer) {
-  echoSock = await listenUdp(args.host);
-  echoPort = echoSock.address().port;
-  echoSock.on("message", (msg, rinfo) => {
-    echoSock.send(msg, rinfo.port, rinfo.address);
-  });
-  peer = { host: args.host, port: echoPort };
-}
-
 // Replies are matched on the peer's resolved address as well as its port.
-peer = { ...peer, address: (await lookup(peer.host, { family: 4 })).address };
+const peer = {
+  ...args.udpPeer,
+  address: (await lookup(args.udpPeer.host, { family: 4 })).address,
+};
 
 const server = new WebTransportServer({
   host: args.host,
@@ -282,23 +274,16 @@ const server = new WebTransportServer({
 await server.ready;
 const wtPort = server.port;
 
-const shape = args.udpPeer
-  ? "webtransport-datagram-to-udp-peer"
-  : "webtransport-datagram-to-udp-echo";
-
 const meta = {
   adapter: "lyte-wt-sidecar",
-  shape,
   url: `https://${args.host}:${wtPort}${args.path}`,
   host: args.host,
   wtPort,
-  echoUdpPort: echoPort,
   udpPeerHost: peer.host,
   udpPeerPort: peer.port,
   path: args.path,
   hashHex: Buffer.from(hash).toString("hex"),
   hashAlgorithm: "sha-256",
-  lyteBudgetBytes: 1152,
   note:
     "Opaque bytes only. Pairing/Noise stay end-to-end in WASM↔host; this sidecar never unseals.",
 };
@@ -328,11 +313,6 @@ void (async () => {
 function shutdown() {
   try {
     server.close();
-  } catch {
-    /* ignore */
-  }
-  try {
-    echoSock?.close();
   } catch {
     /* ignore */
   }

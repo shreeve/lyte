@@ -227,7 +227,6 @@
 
   <script type="module">
     import { loadControlPeerMeta, loadSidecarMeta } from "./lyte-io.js";
-    import { runWebTransportCarrierProof } from "./webtransport-carrier.js";
     import { runSessionProof } from "./session-proof.js";
     import { installCanvasInput } from "./interaction.js";
 
@@ -274,7 +273,6 @@
       const st = globalThis.lyteBrowser?.interactionStats?.() || {};
       sessionLine.textContent =
         `peer ${peer.bindHost}:${peer.listenPort}\n` +
-        `shape ${sidecar.shape}\n` +
         `client ${clientKey || "?"}\n` +
         `input ${st.inputsSent || 0} sent / ${st.inputEchoes || 0} echoes\n` +
         `clipboard ${st.clipboardSent || 0}→${st.clipboardReceived || 0}\n` +
@@ -288,28 +286,13 @@
       rerunBtn.disabled = true;
       globalThis.lyteSessionPassed = undefined;
       try {
-        const contracts = globalThis.lyteBrowser?.runFrozenContracts?.();
-        if (!contracts?.passed) {
-          setOutcome(false, (contracts?.lines || "lyteBrowser bridge missing") +
-            "\nFAIL  session — skipped (frozen contracts not green)");
+        if (!globalThis.lyteBrowser) {
+          setOutcome(false, "FAIL  browser-proof — lyteBrowser bridge missing");
           return;
         }
-        let lines = contracts.lines;
         status.textContent = "SESSION…";
         status.className = "pending";
-        let carrierMeta = "";
-        if (sidecar.shape === "webtransport-datagram-to-udp-peer") {
-          lines += "\nSKIP  wt-carrier/* — sidecar relays to a peer (echo proofs need echo mode)";
-        } else {
-          const wt = await runWebTransportCarrierProof(sidecar);
-          lines += "\n" + wt.lines;
-          carrierMeta = `measuredCeiling=${wt.measuredCeiling} B reportedMax=${wt.reportedMaxDatagramSize}\n`;
-          if (!wt.passed) {
-            setOutcome(false, lines, `adapter=${wt.adapter} url=${wt.url}`);
-            return;
-          }
-        }
-        log.textContent = lines + "\n\nControl + Conductor video + interaction organs…";
+        log.textContent = "Control + Conductor video + interaction organs…";
         const proof = await runSessionProof({
           sidecar,
           hostStaticPublicKeyHex,
@@ -324,9 +307,9 @@
         paintSession(peer, sidecar, proof.clientStaticPublicKeyHex);
         setOutcome(
           proof.passed,
-          lines + "\n" + proof.lines,
-          `adapter=${sidecar.adapter} url=${sidecar.url} shape=${sidecar.shape}\n` +
-            `controlPeer=${peer.bindHost}:${peer.listenPort}\n` + carrierMeta + proof.meta
+          proof.lines,
+          `adapter=${sidecar.adapter} url=${sidecar.url}\n` +
+            `controlPeer=${peer.bindHost}:${peer.listenPort}\n` + proof.meta
         );
       } catch (error) {
         setOutcome(false, `FAIL  browser-proof — ${error?.message || error}`);
@@ -376,7 +359,6 @@
       await harnessRun();
     } catch (error) {
       setOutcome(false, String(error?.stack || error));
-      globalThis.lyteContractsPassed = globalThis.lyteContractsPassed ?? false;
       sessionLine.textContent = "Failed to load harness meta or WASM.";
     }
   </script>

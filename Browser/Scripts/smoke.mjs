@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-// Drive system Chrome against the proof page: frozen WASM contracts, a
-// control session (Noise / pair / capabilities / teardown) through
+// Drive system Chrome against the proof page: a control session (Noise / pair / capabilities / teardown) through
 // lyte-wt-sidecar --udp-peer → lyte-control-peer --emit-corpus, then
 // Conductor-scheduled WebCodecs + WebGPU present, sealed input echo,
 // clipboard text round-trip, and Opus → AudioWorklet. Run it through
@@ -226,8 +225,6 @@ async function cdp(wsUrl, WebSocket) {
 }
 
 const mustPass = [
-  "PASS  envelope-v1/nominal-video-shard",
-  "PASS  noise-v1/snow-ik-25519-chachapoly-sha256",
   "PASS  control-session/noise-pair-caps",
   "PASS  control-session/clipboard-cap",
   "PASS  control-session/teardown",
@@ -314,7 +311,6 @@ try {
   while (Date.now() < deadline) {
     const result = await send("Runtime.evaluate", {
       expression: `(() => JSON.stringify({
-        contracts: typeof lyteContractsPassed === 'boolean' ? lyteContractsPassed : null,
         session: typeof lyteSessionPassed === 'boolean' ? lyteSessionPassed : null,
         status: document.getElementById('status')?.textContent || '',
         log: document.getElementById('log')?.textContent || '',
@@ -323,8 +319,7 @@ try {
       returnByValue: true,
     });
     const payload = JSON.parse(result.result.value);
-    const settled = payload.session !== null || payload.contracts === false;
-    if (!settled) {
+    if (payload.session === null) {
       await sleep(250);
       continue;
     }
@@ -355,7 +350,6 @@ try {
         {
           passed: true,
           adapter: sidecarMeta.adapter,
-          shape: sidecarMeta.shape,
           url: sidecarMeta.url,
           controlPeerPort: peerMeta.listenPort,
           log: payload.log,

@@ -102,7 +102,6 @@ public struct BrowserVideoPlayout {
     public init() {}
 
     public var framesAssembled: UInt64 { counters.framesAssembled }
-    public var framesPresented: UInt64 { counters.framesPresented }
     /// Frames whose Annex-B is still waiting for the page to take it.
     public var decodeBacklogCount: Int { annexBByFrame.count }
     /// Frames whose presentation metadata is still held.

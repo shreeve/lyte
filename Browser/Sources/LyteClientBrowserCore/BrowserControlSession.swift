@@ -139,7 +139,6 @@ public final class BrowserControlSession {
     public var clientStaticPublicKeyHex: String { Hex.string(clientStatic.publicKey) }
     public var hostStaticPublicKeyHex: String { Hex.string(hostStaticPublicKey) }
     public var framesAssembled: UInt64 { video.framesAssembled }
-    public var framesPresented: UInt64 { video.framesPresented }
     public var videoCounters: BrowserVideoPlayout.Counters { video.counters }
     public var nackStats: ClientNackPolicy.Stats { video.nackStats }
     /// Assembled frames whose Annex-B the page has not taken yet.

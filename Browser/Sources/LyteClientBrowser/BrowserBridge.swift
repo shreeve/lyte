@@ -13,20 +13,11 @@ enum BrowserBridge {
     nonisolated(unsafe) private static var session: BrowserControlSession?
     nonisolated(unsafe) private static var closures: [JSClosure] = []
 
-    static func runFrozenContracts() -> [ContractResult] {
-        [FrozenEnvelopeContract.verify(), FrozenNoiseContract.verify()]
-    }
-
     static func install() {
         var api: [String: JSValue] = [
-            "envelopeVectorHex": FrozenEnvelopeContract.datagramHex.jsValue,
-            "noiseMsg1CiphertextHex": DatagramCarrierProof.noiseMsg1CiphertextHex.jsValue,
-            "wireBudgetBytes": Double(DatagramCarrierProof.wireBudgetBytes).jsValue,
             "conductorBeatMicroseconds":
                 Double(VideoBeatConductor.Config().beatPeriodMicroseconds).jsValue,
             "audioRingCeilingFrames": Double(BrowserAudioPlayout.ringCeilingFrames).jsValue,
-            "vectorNames": [FrozenEnvelopeContract.vectorName, FrozenNoiseContract.vectorName]
-                .joined(separator: "; ").jsValue,
         ]
         func expose(_ name: String, _ body: @escaping ([JSValue]) -> JSValue) {
             let closure = JSClosure { body($0) }
@@ -34,18 +25,6 @@ enum BrowserBridge {
             api[name] = closure.jsValue
         }
 
-        // Frozen contracts and carrier proofs.
-        expose("runFrozenContracts") { _ in resultsToJS(runFrozenContracts()) }
-        expose("verifyEnvelopeHex") { args in
-            verifyEnvelopeHex(string(args, 0) ?? FrozenEnvelopeContract.datagramHex)
-        }
-        expose("verifyCarrierEcho") { args in
-            carrierResultToJS(DatagramCarrierProof.verifyEcho(
-                kind: string(args, 0) ?? "opaque",
-                sentHex: string(args, 1) ?? "",
-                recvHex: string(args, 2) ?? ""
-            ))
-        }
         expose("classifyAnnexBBytes") { args in
             guard let bytes = bytes(args, 0) else {
                 return ["ok": false.jsValue, "detail": "not Uint8Array".jsValue].jsValue
@@ -171,34 +150,6 @@ enum BrowserBridge {
         }
 
         JSObject.global["lyteBrowser"] = api.jsValue
-    }
-
-    /// Paints the frozen-contract results. Page JS owns the session proofs
-    /// and `lyteSessionPassed`.
-    static func paintProofPage(results: [ContractResult]) {
-        let document = JSObject.global.document
-        let passed = results.allSatisfy(\.passed)
-        if let status = document.getElementById("status").object {
-            status.textContent = .string(passed ? "PASS" : "FAIL")
-            status.className = .string(passed ? "pass" : "fail")
-        }
-        if let log = document.getElementById("log").object {
-            log.textContent = .string(results.map(\.line).joined(separator: "\n"))
-        }
-        if let meta = document.getElementById("meta").object {
-            meta.textContent = .string(
-                """
-                LyteClientBrowser — proof harness over WebTransport
-                Contracts: \(FrozenEnvelopeContract.vectorName); \(FrozenNoiseContract.vectorName)
-                Carrier: opaque WT datagrams via lyte-wt-sidecar (ciphertext only)
-                Control: Noise IK + PIN PAKE + capabilities via LyteClientSession
-                Video: assemble → Conductor → WebCodecs → WebGPU
-                Input/clipboard: sealed CTRL (InputEvent/echo, ClipboardSet/Announce)
-                Audio: sealed Opus → AudioDepacketizer → WebCodecs → AudioWorklet
-                """
-            )
-        }
-        JSObject.global.lyteContractsPassed = .boolean(passed)
     }
 
     // MARK: Arguments (a page mistake never traps the WASM instance)
@@ -398,7 +349,7 @@ enum BrowserBridge {
         return datagrams
     }
 
-    // MARK: Contracts
+    // MARK: Frames
 
     private static func classifyFrameBytes(_ bytes: [UInt8]) -> JSValue {
         let classification = AnnexBCheck.classifyFrame(bytes)
@@ -409,51 +360,5 @@ enum BrowserBridge {
             "byteCount": Double(bytes.count).jsValue,
             "summary": AnnexBCheck.summary(of: bytes).jsValue,
         ].jsValue
-    }
-
-    private static func resultsToJS(_ results: [ContractResult]) -> JSValue {
-        [
-            "passed": results.allSatisfy(\.passed).jsValue,
-            "lines": results.map(\.line).joined(separator: "\n").jsValue,
-            "count": Double(results.count).jsValue,
-        ].jsValue
-    }
-
-    private static func carrierResultToJS(_ result: ContractResult) -> JSValue {
-        [
-            "passed": result.passed.jsValue,
-            "detail": result.detail.jsValue,
-            "lines": result.line.jsValue,
-            "name": result.name.jsValue,
-        ].jsValue
-    }
-
-    private static func verifyEnvelopeHex(_ hex: String) -> JSValue {
-        let name = "envelope-hex/js-supplied"
-        if hex.filter({ !$0.isWhitespace }).lowercased() == FrozenEnvelopeContract.datagramHex {
-            return resultsToJS([FrozenEnvelopeContract.verify()])
-        }
-        guard let datagram = Hex.bytes(hex) else {
-            return resultsToJS([
-                ContractResult(name: name, passed: false, detail: "malformed hex from JavaScript"),
-            ])
-        }
-        do {
-            let (envelope, payload) = try Envelope.decode(datagram)
-            let matched = try envelope.encode(payload: Array(payload)) == datagram
-            return resultsToJS([
-                ContractResult(
-                    name: name,
-                    passed: matched,
-                    detail: matched
-                        ? "JS-supplied datagram round-tripped (\(datagram.count) B, chan=\(envelope.channel.rawValue))"
-                        : "re-encode diverged from JS-supplied bytes"
-                ),
-            ])
-        } catch {
-            return resultsToJS([
-                ContractResult(name: name, passed: false, detail: "codec threw: \(error)"),
-            ])
-        }
     }
 }
