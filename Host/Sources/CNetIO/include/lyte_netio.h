@@ -29,15 +29,16 @@ typedef struct lyte_netio lyte_netio;
 #define LYTE_NETIO_NO_BUFFER (-3)
 /* A soft network error: EHOSTUNREACH / EHOSTDOWN (a neighbor stopped
    answering ARP — a sleeping or roaming client), ENETUNREACH / ENETDOWN
-   (a route or link flap), EPERM (a netfilter drop). On a connected UDP
+   (a route or link flap), EPERM (a netfilter drop), EMSGSIZE (a learned
+   path MTU below the datagram). On a connected UDP
    socket Linux reports these through the pending socket error on the
    next send or receive, which consumes it. The caller counts it as loss
    and keeps the session; the liveness clock decides whether the peer is
    gone. */
 #define LYTE_NETIO_TRANSIENT (-4)
 
-/* Maps a send/receive errno to 0 (would block), one of the codes above,
-   or -1 (fatal). Exposed so the mapping is testable. */
+/* Maps a send/receive errno to 0 (would block, or EINTR: retry), one of
+   the codes above, or -1 (fatal). Exposed so the mapping is testable. */
 int lyte_netio_errno_class(int err);
 
 /* One datagram to send. `tos` is the raw IPv4 TOS byte (DSCP << 2):

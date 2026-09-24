@@ -210,6 +210,7 @@ int lyte_netio_errno_class(int err)
 #if EWOULDBLOCK != EAGAIN
     case EWOULDBLOCK:
 #endif
+    case EINTR: /* a signal interrupted the call: retry it */
         return 0;
     case ENOBUFS:
         return LYTE_NETIO_NO_BUFFER;
@@ -220,6 +221,7 @@ int lyte_netio_errno_class(int err)
     case ENETUNREACH:
     case ENETDOWN:
     case EPERM:
+    case EMSGSIZE: /* a learned path MTU below this datagram */
         return LYTE_NETIO_TRANSIENT;
     default:
         return -1;
