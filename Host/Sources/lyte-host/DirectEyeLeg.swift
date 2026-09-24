@@ -112,6 +112,7 @@ final class DirectEyeLeg {
     private(set) var postureAnnouncements = 0
     /// True once the encoder runs Rext 4:4:4 (what actually ran).
     private(set) var chroma444Active = false
+    private var lateBestAgreementNoted = false
     /// The display's geometry changed under the leg: a clean exit, not
     /// an error.
     private(set) var modeChangeEnded = false
@@ -397,26 +398,19 @@ final class DirectEyeLeg {
                     SystemMonotonicClock.nowMicroseconds - cursorStart
             }
 
-            // A late Best agreement reopens the encoder in 4:4:4 (once);
-            // resetting sampling and identity makes the current screen
-            // fresh, so the new encoder's first IDR carries it.
-            if !pipeline.chroma444,
+            // Chroma is fixed when the encoder opens: a Best agreement
+            // that lands after the opening wait keeps this session in
+            // 4:2:0, and a clean reconnect opens in 4:4:4. Never a
+            // mid-stream encoder dial.
+            if !lateBestAgreementNoted, !pipeline.chroma444,
                ChromaPosture.from(
                    agreedChromaModes: snapshot?.agreedChromaModes
                ) == .yuv444 {
-                do {
-                    try pipeline.reopen(chroma444: true)
-                    chroma444Active = true
-                    samplingCadence.reset()
-                    screen.resetIdentityObservation()
-                    print("""
-                        direct: Best tier agreed — encoder reopened as Rext \
-                        4:4:4 (AYUV, one-pass blit)
-                        """)
-                } catch {
-                    lastError = "direct: 4:4:4 reopen: \(error)"
-                    return
-                }
+                lateBestAgreementNoted = true
+                print("""
+                    direct: Best tier agreed after the encoder opened — \
+                    this session stays 4:2:0; a reconnect opens 4:4:4
+                    """)
             }
 
             // The cap becomes the next frame's VBR envelope; no reset.

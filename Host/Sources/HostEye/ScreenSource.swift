@@ -23,7 +23,6 @@ public protocol ScreenSource: AnyObject {
 
     func observe() -> ScreenSourceObservation?
     func capture(_ observation: ScreenSourceObservation) -> ScanoutTicket?
-    func resetIdentityObservation()
 }
 
 public enum DirectScreenSourceError: Error, CustomStringConvertible {
@@ -108,10 +107,6 @@ public final class DirectScreenSource: ScreenSource {
     ) -> ScanoutTicket? {
         grabTicket(
             fd: fileDescriptor, fbId: observation.framebufferIdentity)
-    }
-
-    public func resetIdentityObservation() {
-        identityTracker.reset()
     }
 }
 

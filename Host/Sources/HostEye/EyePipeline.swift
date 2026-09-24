@@ -37,9 +37,6 @@ public final class EyePipeline {
     private let renderNode: String
     private let qp: Int32
     private let bitrateBitsPerSecond: Int64
-    /// The rate control in force, carried across a chroma reopen.
-    private var rateBitsPerSecond: Int64
-    private var hrdBufferBits: Int64?
     /// The opening HRD buffer, restored for every new session.
     private let openingHrdBufferBits: Int64?
     private var nv12Targets: [VASurfaceID: NV12Target] = [:]
@@ -58,8 +55,6 @@ public final class EyePipeline {
         self.renderNode = renderNode
         self.qp = qp
         self.bitrateBitsPerSecond = bitrateBitsPerSecond
-        self.rateBitsPerSecond = bitrateBitsPerSecond
-        self.hrdBufferBits = hrdBufferBits
         self.openingHrdBufferBits = hrdBufferBits
         self.chroma444 = chroma444
         gl = try EyeGL(renderNode: renderNode)
@@ -192,26 +187,17 @@ public final class EyePipeline {
     public func setRateControl(
         bitsPerSecond: Int64, hrdBufferBits: Int64? = nil
     ) {
-        rateBitsPerSecond = bitsPerSecond
-        self.hrdBufferBits = hrdBufferBits
         encoder.setRateControl(
             bitsPerSecond: bitsPerSecond, hrdBufferBits: hrdBufferBits)
     }
 
     /// Starts the next session's stream on the warm GL context: the
     /// encoder reopens at the opening rate control in the session's
-    /// chroma (first frame an IDR with VPS/SPS/PPS), and no per-session
-    /// GPU state survives.
+    /// chroma (first frame an IDR with VPS/SPS/PPS). Every GPU target and
+    /// the scanout import are rebuilt and the retained surface is
+    /// forgotten, so no per-session state survives. This is the only
+    /// reopen: chroma never changes mid-stream.
     public func beginSession(chroma444: Bool) throws {
-        rateBitsPerSecond = bitrateBitsPerSecond
-        hrdBufferBits = openingHrdBufferBits
-        try reopen(chroma444: chroma444)
-    }
-
-    /// Reopens the encoder in the other chroma posture. Every GPU target
-    /// and the scanout import are rebuilt, and the retained surface is
-    /// forgotten, so the next observation encodes fresh as an IDR.
-    public func reopen(chroma444: Bool) throws {
         releaseGPUState()
         retainedSurface = nil
         freshEncodes = 0
@@ -219,12 +205,8 @@ public final class EyePipeline {
             width: width, height: height, fps: 60, qp: qp,
             renderNode: renderNode,
             bitrateBitsPerSecond: bitrateBitsPerSecond,
-            hrdBufferBits: hrdBufferBits,
+            hrdBufferBits: openingHrdBufferBits,
             chroma444: chroma444)
-        if rateBitsPerSecond != bitrateBitsPerSecond {
-            encoder.setRateControl(
-                bitsPerSecond: rateBitsPerSecond, hrdBufferBits: hrdBufferBits)
-        }
         self.chroma444 = chroma444
     }
 
