@@ -111,6 +111,19 @@ final class NoiseHandshakeTests: XCTestCase {
             )
         }
         XCTAssertNil(host.negotiatedVersion)
+        // The rejected message left no trace: the responder cannot
+        // answer it or derive keys from it, and a genuine message 1
+        // still completes.
+        XCTAssertThrowsError(try host.writeMessage2())
+        XCTAssertThrowsError(try host.makeTransport())
+        var client = try NoiseSession(
+            role: .initiator, staticKeys: clientStatic,
+            remoteStaticPublicKey: hostStatic.publicKey
+        )
+        _ = try host.readMessage1(try client.writeMessage1()[...])
+        _ = try client.readMessage2(try host.writeMessage2()[...])
+        XCTAssertEqual(try client.makeTransport().handshakeHash,
+                       try host.makeTransport().handshakeHash)
     }
 
     func testVersionMismatchRejectedByInitiator() throws {
@@ -131,6 +144,10 @@ final class NoiseHandshakeTests: XCTestCase {
                 .versionMismatch(received: 0, expected: WireVersion.major)
             )
         }
+        // Keys never exist for a mismatched answer.
+        XCTAssertFalse(client.isComplete)
+        XCTAssertNil(client.negotiatedVersion)
+        XCTAssertThrowsError(try client.makeTransport())
     }
 
     func testEmptyFirstPayloadRejected() throws {
