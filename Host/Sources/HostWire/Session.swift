@@ -978,25 +978,13 @@ public final class Session {
 
         // Established: open against the exact received header bytes.
         // Channel and conn-id refusals happen before the AEAD is paid.
-        var events: [SessionEvent] = []
+        var claimed: ConnectionId?
         let envelope: Envelope
         let plaintext: [UInt8]
         do {
             (envelope, plaintext) = try Envelope.openDatagram(datagram) {
                 envelope, wirePayload, aad in
-                let claimed = try admitHeader(envelope)
-                // The HS-12 demux trigger fires on the raw arrival,
-                // before any unseal.
-                events = process(
-                    validator.datagramReceived(
-                        from: tuple,
-                        connectionId: claimed,
-                        byteCount: datagram.count,
-                        now: now
-                    ),
-                    now: now,
-                    hostMicroseconds: hostMicroseconds
-                )
+                claimed = try admitHeader(envelope)
                 do {
                     return try unsealPayload(
                         wirePayload, aad: aad, envelope: envelope
@@ -1008,8 +996,24 @@ public final class Session {
                 }
             }
         } catch {
-            return events + [refuse(error)]
+            return [refuse(error)]
         }
+
+        // The HS-12 demux trigger: only an authenticated arrival may
+        // probe a new tuple. The conn-id TLV is readable by anyone who
+        // saw one datagram, and the validator has one probe slot; the
+        // AEAD, which does not depend on the source address, is what
+        // proves the sender holds the session keys.
+        var events = process(
+            validator.datagramReceived(
+                from: tuple,
+                connectionId: claimed,
+                byteCount: datagram.count,
+                now: now
+            ),
+            now: now,
+            hostMicroseconds: hostMicroseconds
+        )
 
         switch envelope.channel {
         case .ctrl:

@@ -88,6 +88,10 @@ final class SessionGateTests: XCTestCase {
         localAddress: "10.0.0.249", localPort: 47_998,
         remoteAddress: "172.16.4.9", remotePort: 40_112
     )
+    private static let tupleC = FourTuple(
+        localAddress: "10.0.0.249", localPort: 47_998,
+        remoteAddress: "203.0.113.66", remotePort: 4_444
+    )
 
     // MARK: The loopback client (LyteWire initiator + unseal side)
 
@@ -481,6 +485,21 @@ final class SessionGateTests: XCTestCase {
             clientMicros: t3 + 900_400,
             extensions: [session.connectionId.wireExtension]
         )
+        // An off-path sender who saw the plaintext conn-id cannot seal:
+        // its datagram is refused at the AEAD and never takes the one
+        // probe slot a genuine roam needs.
+        let forged = try client.ctrlDatagram(
+            body: [UInt8](repeating: 0xEE, count: 48), sealed: false,
+            clientMicros: t3 + 900_000,
+            extensions: [session.connectionId.wireExtension]
+        )
+        let forgedEvents = session.receive(
+            forged, from: Self.tupleC,
+            now: 1_099_000_000, hostMicroseconds: t4 + 899_000
+        )
+        XCTAssertEqual(forgedEvents, [.dropped(.unsealFailed(0))],
+                       "an unauthenticated datagram must not probe")
+
         let preChallengeCount = sent.count
         let roamEvents = session.receive(
             roamDatagram, from: Self.tupleB,

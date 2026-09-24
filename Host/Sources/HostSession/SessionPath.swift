@@ -16,7 +16,7 @@
 //
 // The state machine, per candidate 4-tuple relative to one session:
 //
-//   unknown ──datagram bearing the session's conn-id──▶ PROBING
+//   unknown ──authenticated datagram bearing the conn-id──▶ PROBING
 //       (challenge with a fresh random token sent on the new tuple,
 //        subject to the anti-amplification budget)
 //   PROBING ──PathResponse from that tuple, token matches──▶ PRIMARY
@@ -163,9 +163,11 @@ public struct PathValidator {
 
     // MARK: Inputs
 
-    /// The demux trigger: any received datagram, after envelope decode,
-    /// reports its source tuple, the connection ID its TLV carried (nil
-    /// when absent), and its wire size. Returns the actions to take.
+    /// The demux trigger: every authenticated datagram (unsealed under
+    /// the session keys) reports its source tuple, the connection ID its
+    /// TLV carried (nil when absent), and its wire size. Unauthenticated
+    /// arrivals must not reach here: the TLV is plaintext, and a forged
+    /// one would hold the single probe slot. Returns the actions to take.
     public mutating func datagramReceived(
         from tuple: FourTuple,
         connectionId claimed: ConnectionId?,
