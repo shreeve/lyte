@@ -528,10 +528,6 @@ final class AudioGateTests: XCTestCase {
         XCTAssertEqual(session.counters.audioPacketsIngested, packets.count)
         XCTAssertEqual(session.counters.audioDatagramsEnqueued, 12)
         XCTAssertEqual(session.counters.audioGroupsCompleted, 2)
-        XCTAssertEqual(
-            session.counters.audioSealedDatagramsAssembledInPlace, 12,
-            "every audio datagram must avoid the final envelope copy"
-        )
 
         // Every unsealed data shard is its packet byte-verbatim, with
         // packet number = frame + shardIndex and its own capture µs.
@@ -831,10 +827,6 @@ final class AudioGateTests: XCTestCase {
         // And the batches themselves held the ≤1 ms quantum.
         XCTAssertLessThanOrEqual(
             session.pacerTelemetry.maxBatchWireTimeNS, ms
-        )
-        XCTAssertEqual(
-            session.counters.audioSealedDatagramsAssembledInPlace,
-            session.counters.audioDatagramsEnqueued
         )
 
         print("""

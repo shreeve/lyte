@@ -181,14 +181,6 @@ public struct VideoChannelCounters: Sendable {
     /// Released chan-2 datagrams the seal refused (dropped unsent; no seq
     /// consumed). Unreachable while the transport is established.
     public var releaseSealFailures = 0
-    /// Sealed datagrams assembled by growing the pre-sized AAD header
-    /// buffer in place (one final wire buffer, rather than encoding a
-    /// third header+payload array after sealing).
-    public var sealedDatagramsAssembledInPlace = 0
-    /// Frames admitted directly from a caller-owned synchronous buffer,
-    /// without first materializing a full-frame Array.
-    public var borrowedFramesIngested = 0
-    public var borrowedFrameBytesIngested = 0
 
     public init() {}
 }
@@ -420,7 +412,7 @@ public final class VideoChannel {
             frame: annexB, frameNumber: frameNumber,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
             isKeyframe: isKeyframe, lastInputSeq: lastInputSeq,
-            now: now, isBorrowed: false
+            now: now
         )
     }
 
@@ -439,7 +431,7 @@ public final class VideoChannel {
             frame: annexB, frameNumber: frameNumber,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
             isKeyframe: isKeyframe, lastInputSeq: lastInputSeq,
-            now: now, isBorrowed: true
+            now: now
         )
     }
 
@@ -449,8 +441,7 @@ public final class VideoChannel {
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
         lastInputSeq: UInt32?,
-        now: UInt64,
-        isBorrowed: Bool
+        now: UInt64
     ) throws -> Int
     where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         let prepared = try Self.prepareFrame(
@@ -463,8 +454,7 @@ public final class VideoChannel {
             frameNumber: frameNumber,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
             lastInputSeq: lastInputSeq,
-            now: now,
-            isBorrowed: isBorrowed
+            now: now
         )
     }
 
@@ -477,8 +467,7 @@ public final class VideoChannel {
         frameNumber: FrameNumber,
         captureTimestampMicroseconds: UInt64,
         lastInputSeq: UInt32?,
-        now: UInt64,
-        isBorrowed: Bool = false
+        now: UInt64
     ) -> Int {
         let queuedBytesBeforeAdmission =
             pacer.queuedBytes(.freshVideo) + pacer.queuedBytes(.videoTail)
@@ -533,10 +522,6 @@ public final class VideoChannel {
         if prepared.isKeyframe { lastKeyframeNumber = frameNumber }
         counters.framesIngested += 1
         if prepared.isKeyframe { counters.keyframesIngested += 1 }
-        if isBorrowed {
-            counters.borrowedFramesIngested += 1
-            counters.borrowedFrameBytesIngested += prepared.encodedByteCount
-        }
         counters.shardsEnqueued += prepared.shards.count
         return prepared.shards.count
     }
@@ -1015,10 +1000,8 @@ public final class VideoChannel {
         guard let seal else {
             return try envelope.encode(plaintextShard: plaintext)
         }
-        let datagram = try envelope.sealedDatagram(plaintext[...]) {
+        return try envelope.sealedDatagram(plaintext[...]) {
             plaintext, aad in try seal(plaintext, aad, envelope)
         }
-        counters.sealedDatagramsAssembledInPlace += 1
-        return datagram
     }
 }

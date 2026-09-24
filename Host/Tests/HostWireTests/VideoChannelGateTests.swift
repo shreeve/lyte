@@ -267,9 +267,7 @@ final class VideoChannelGateTests: XCTestCase {
                 pre-sized AAD-buffer assembly must be byte-identical to \
                 the canonical envelope encoder
                 """)
-        XCTAssertEqual(channel.counters.sealedDatagramsAssembledInPlace,
-                       count,
-            "every sealed shard must use the two-buffer assembly path")
+        XCTAssertEqual(emitted.count, count)
     }
 
     func testSinglePassClassificationPreservesLegacyResults() throws {
@@ -431,11 +429,6 @@ final class VideoChannelGateTests: XCTestCase {
                 XCTAssertEqual(borrowedPurge.bytes, expectedPurge.bytes)
                 XCTAssertNil(borrowed.repairAnchor(for: purgeFrame))
                 XCTAssertTrue(borrowed.wasPurged(purgeFrame))
-                XCTAssertEqual(borrowed.counters.borrowedFramesIngested, 2)
-                XCTAssertEqual(
-                    borrowed.counters.borrowedFrameBytesIngested,
-                    original.count * 2
-                )
             }
         }
     }

@@ -234,10 +234,6 @@ final class UnprotectableFrameGateTests: XCTestCase {
             }
         }
         XCTAssertEqual(decoded.map(\.annexB), [original])
-        XCTAssertEqual(session.videoCounters.borrowedFramesIngested, 1)
-        XCTAssertEqual(
-            session.videoCounters.borrowedFrameBytesIngested, original.count
-        )
     }
 
     // MARK: Leg 4 — the channel seam stays loud (the W2 backstop)

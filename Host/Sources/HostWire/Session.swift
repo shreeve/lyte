@@ -542,9 +542,6 @@ public struct SessionCounters: Equatable, Sendable {
     /// Audio FEC groups closed without parity because the Opus packet
     /// size changed mid-group (a bitrate step under hard CBR).
     public var audioGroupsAbandoned: UInt64 = 0
-    /// Audio datagrams assembled by extending their pre-sized AAD header
-    /// in place after sealing, avoiding a third header+payload array.
-    public var audioSealedDatagramsAssembledInPlace = 0
     /// Audio packets refused because the session is closed. FROZEN and
     /// IDLE never count here: audio is the path probe and keeps flowing.
     public var audioPacketsSuppressed = 0
@@ -1324,7 +1321,7 @@ public final class Session {
     ) throws -> Int {
         try ingestVideoFrameBytes(
             annexB, captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe, now: now, isBorrowed: false)
+            isKeyframe: isKeyframe, now: now)
     }
 
     /// Borrowed encoder-buffer ingress. The pointer is consumed
@@ -1338,15 +1335,14 @@ public final class Session {
     ) throws -> Int {
         try ingestVideoFrameBytes(
             annexB, captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe, now: now, isBorrowed: true)
+            isKeyframe: isKeyframe, now: now)
     }
 
     private func ingestVideoFrameBytes<C>(
         _ annexB: C,
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
-        now: UInt64,
-        isBorrowed: Bool
+        now: UInt64
     ) throws -> Int
     where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
         guard let context = try beginVideoFramePreparation(
@@ -1359,8 +1355,7 @@ public final class Session {
             prepared,
             context: context,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
-            now: now,
-            isBorrowed: isBorrowed
+            now: now
         )
     }
 
@@ -1419,7 +1414,8 @@ public final class Session {
     /// Session mutation. No seal runs here: chan-2 seqs and seals are
     /// assigned as `pump` releases each shard, so the first quantum can
     /// leave on the next pump. `interleave` is never called (nothing long
-    /// runs here any more); it stays only for source compatibility.
+    /// runs here any more) and `isBorrowed` is not read; both stay only
+    /// for source compatibility.
     @discardableResult
     public func commitPreparedVideoFrame(
         _ prepared: PreparedVideoFrame,
@@ -1444,8 +1440,7 @@ public final class Session {
             frameNumber: context.frameNumber,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
             lastInputSeq: context.lastInputSeq,
-            now: now,
-            isBorrowed: isBorrowed
+            now: now
         )
         // The opening exemption's glass proxy needs the first
         // IDR's group size — "received everything through this group"
@@ -1512,12 +1507,9 @@ public final class Session {
     private func encodeSealedAudio(
         envelope: Envelope, plaintext: [UInt8]
     ) throws -> [UInt8] {
-        let datagram = try envelope.sealedDatagram(plaintext[...]) {
-            plaintext, aad in
+        try envelope.sealedDatagram(plaintext[...]) { plaintext, aad in
             try sealPayload(plaintext, aad: aad, envelope: envelope)
         }
-        counters.audioSealedDatagramsAssembledInPlace += 1
-        return datagram
     }
 
     /// Audio datagrams still waiting in the shared pacer — the audio
