@@ -66,6 +66,38 @@ final class PasteboardSyncTests: XCTestCase {
         XCTAssertEqual(NSBitmapImageRep(data: Data(png))?.pixelsWide, 5)
         XCTAssertEqual(Array(png.prefix(4)), [0x89, 0x50, 0x4E, 0x47])
     }
+
+    /// A password manager's copy carries a nspasteboard.org marker; it
+    /// must never reach the host. The next ordinary copy still does.
+    func testMarkedCopiesNeverLeaveTheMac() throws {
+        let texts = Received()
+        let images = Received()
+        let sync = PasteboardSync(
+            pasteboard: pasteboard, intervalMilliseconds: 10,
+            onLocalChange: { texts.append(Array($0.utf8)) })
+        sync.onLocalImageChange = { images.append($0) }
+        sync.setImagesEnabled(true)
+        sync.start()
+        defer { sync.stop() }
+
+        for marker in PasteboardSync.privateMarkers {
+            let item = NSPasteboardItem()
+            item.setString("hunter2", forType: .string)
+            item.setData(Data(try pngBytes()), forType: .png)
+            item.setData(Data(), forType: marker)
+            pasteboard.clearContents()
+            pasteboard.writeObjects([item])
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        pasteboard.clearContents()
+        pasteboard.setString("ordinary", forType: .string)
+        let deadline = Date().addingTimeInterval(2)
+        while texts.all.isEmpty, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(texts.all, [Array("ordinary".utf8)])
+        XCTAssertTrue(images.all.isEmpty)
+    }
 }
 
 private final class Received: @unchecked Sendable {
