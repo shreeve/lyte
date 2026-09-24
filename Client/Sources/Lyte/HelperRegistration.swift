@@ -5,8 +5,10 @@
 /// - Registration records whatever helper binary is on disk as trusted to
 ///   run as root, so it happens only when needed: the service is not
 ///   registered, or it is enabled but the registered helper does not answer
-///   the current version (a rebuild stales the stored launch requirement,
-///   and launchd then refuses the spawn).
+///   the embedded helper's version — its protocol version and code hash, so
+///   a helper still running from an earlier build reads as stale (a rebuild
+///   stales the stored launch requirement, and launchd then refuses the
+///   spawn).
 /// - Nothing is ever registered until the embedded helper validates
 ///   against the app's own designated requirement with the helper's
 ///   identifier. A helper signed by anyone else is refused, and an existing

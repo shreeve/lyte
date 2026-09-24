@@ -21,8 +21,18 @@ final class ConnectionHandler: NSObject, LyteHelperCommands, @unchecked Sendable
     func streamEnded() { AwdlHoldController.shared.streamEnded(owner) }
 
     func version(reply: @escaping @Sendable (String) -> Void) {
-        reply(LyteHelper.version)
+        reply(HelperVersion.answer)
     }
+}
+
+/// This build's `version` answer (HelperCodeIdentity), taken once: main
+/// logs it at startup, so a rebuild that replaces the bundle under a
+/// running daemon cannot change what that daemon answers.
+enum HelperVersion {
+    static let answer = HelperCodeIdentity.versionAnswer(
+        protocolVersion: LyteHelper.version,
+        codeHash: (try? HelperCodeIdentity.currentProcessCodeHash())
+            ?? "unsigned")
 }
 
 final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
@@ -62,7 +72,7 @@ termination.setEventHandler {
 }
 termination.resume()
 
-NSLog("lyte-helperd: starting (v\(LyteHelper.version))")
+NSLog("lyte-helperd: starting (v\(HelperVersion.answer))")
 AwdlHoldController.shared.reconcileAfterUncleanExit()
 let listener = NSXPCListener(machServiceName: LyteHelper.machServiceName)
 let delegate = ListenerDelegate()
