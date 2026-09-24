@@ -4,7 +4,7 @@ User-visible changes to the Lyte macOS app and the Linux host, newest
 first. Each release's section is its GitHub release notes and the notes
 Sparkle shows in the update window (`Scripts/release.sh`).
 
-## 0.6.0 — unreleased
+## 0.6.0 — 2026-09-24
 
 The first release installed with Homebrew and updated in place.
 
