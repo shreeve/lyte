@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
 # Verify the complete Linux host image before any privileged installation.
-# Every check fails through `fail`: bash 3.2 (macOS) does not errexit on a
-# failing bare [[ ]].
 set -euo pipefail
-
-fail() {
-    echo "host image verification FAILED: $*" >&2
-    exit 1
-}
 
 [[ $# -eq 1 ]] || {
     echo "usage: Host/Scripts/verify-host-image.sh IMAGE" >&2
@@ -15,7 +8,10 @@ fail() {
 }
 
 image="$1"
-[[ -d "$image" && ! -L "$image" ]] || fail "not a real directory: $image"
+[[ -d "$image" && ! -L "$image" ]] || {
+    echo "host image verification FAILED: not a real directory: $image" >&2
+    exit 1
+}
 image="$(cd "$image" && pwd -P)"
 
 sha256_file() {
@@ -56,44 +52,57 @@ cat > "$expected" <<'FILES'
 ./etc/host.conf
 ./systemd/lyte-host.service
 FILES
-diff -u "$expected" "$actual" || fail "the image's file list is not the expected one"
+diff -u "$expected" "$actual"
 
 if find "$image" -type l -print -quit | grep -q .; then
-    fail "image contains a symlink"
+    echo "host image verification FAILED: image contains a symlink" >&2
+    exit 1
 fi
-[[ -x "$image/bin/lyte-host" ]] || fail "bin/lyte-host is not executable"
-[[ "$(file_mode "$image/bin/lyte-host")" == 755 ]] \
-    || fail "bin/lyte-host is not mode 755"
+[[ -x "$image/bin/lyte-host" ]] || {
+    echo "host image verification FAILED: bin/lyte-host is not executable" >&2
+    exit 1
+}
+[[ "$(file_mode "$image/bin/lyte-host")" == 755 ]] || {
+    echo "host image verification FAILED: bin/lyte-host mode is not 755" >&2
+    exit 1
+}
 while IFS= read -r file; do
-    [[ "$(file_mode "$file")" == 644 ]] || fail "not mode 644: $file"
+    [[ "$(file_mode "$file")" == 644 ]] || {
+        echo "host image verification FAILED: mode is not 644: $file" >&2
+        exit 1
+    }
 done < <(find "$image/etc" "$image/systemd" "$image/doc" -type f)
 
 unit="$image/systemd/lyte-host.service"
 for token in '@USER@' '@UID@' '@HOME@' '@CONFIG_HOME@' '@STATE_HOME@'; do
-    grep -Fq "$token" "$unit" || fail "the unit template lacks $token"
+    grep -Fq "$token" "$unit"
 done
-grep -Fq 'exec @HOME@/.local/bin/lyte-host $$LYTE_HOST_ARGS' "$unit" \
-    || fail "the unit does not exec the linked lyte-host"
-grep -Fq 'EnvironmentFile=@CONFIG_HOME@/lyte/host.conf' "$unit" \
-    || fail "the unit does not read host.conf"
-grep -Fq 'AmbientCapabilities=CAP_SYS_ADMIN' "$unit" \
-    || fail "the unit grants no CAP_SYS_ADMIN"
-grep -Fq 'LYTE_HOST_ARGS=' "$image/etc/host.conf" \
-    || fail "etc/host.conf sets no LYTE_HOST_ARGS"
+grep -Fq 'exec @HOME@/.local/bin/lyte-host $$LYTE_HOST_ARGS' "$unit"
+grep -Fq 'EnvironmentFile=@CONFIG_HOME@/lyte/host.conf' "$unit"
+grep -Fq 'AmbientCapabilities=CAP_SYS_ADMIN' "$unit"
+grep -Fq 'LYTE_HOST_ARGS=' "$image/etc/host.conf"
 if grep -En 'LYTE_HOST_BIN|\.build/|/home/CHANGE_ME|/tmp/' \
     "$image/etc/host.conf" "$unit"
 then
-    fail "development path survived"
+    echo "host image verification FAILED: development path survived" >&2
+    exit 1
 fi
 
 manifest="$image/doc/MANIFEST.sha256"
 while read -r digest path; do
-    [[ -n "$digest" && "$path" == ./* && -f "$image/${path#./}" ]] \
-        || fail "malformed manifest line: $digest $path"
+    [[ -n "$digest" && "$path" == ./* && -f "$image/${path#./}" ]] || {
+        echo "host image verification FAILED: bad manifest entry: $path" >&2
+        exit 1
+    }
     actual_digest="$(sha256_file "$image/${path#./}")"
-    [[ "$digest" == "$actual_digest" ]] || fail "manifest mismatch: $path"
+    [[ "$digest" == "$actual_digest" ]] || {
+        echo "host image verification FAILED: manifest mismatch: $path" >&2
+        exit 1
+    }
 done < "$manifest"
-[[ "$(wc -l < "$manifest" | tr -d ' ')" == 11 ]] \
-    || fail "the manifest does not list exactly 11 files"
+[[ "$(wc -l < "$manifest" | tr -d ' ')" == 11 ]] || {
+    echo "host image verification FAILED: manifest does not list 11 files" >&2
+    exit 1
+}
 
 echo "host image verification PASSED"

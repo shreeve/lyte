@@ -67,6 +67,34 @@ final class PasteboardSyncTests: XCTestCase {
         XCTAssertEqual(Array(png.prefix(4)), [0x89, 0x50, 0x4E, 0x47])
     }
 
+    /// A writer clears (bumping the count) and fills the pasteboard under
+    /// that same count. A tick that lands in between must neither consume
+    /// the count (the copy would never be read) nor judge markers on the
+    /// empty board (a concealed item written next would be read unvetted).
+    func testATickBetweenClearAndWriteNeitherLosesNorLeaksTheCopy() throws {
+        let texts = Received()
+        let sync = PasteboardSync(
+            pasteboard: pasteboard,
+            onLocalChange: { texts.append(Array($0.utf8)) })
+
+        pasteboard.clearContents()
+        sync.poll()
+        let concealed = NSPasteboardItem()
+        concealed.setString("hunter2", forType: .string)
+        concealed.setData(Data(), forType: .init("org.nspasteboard.ConcealedType"))
+        pasteboard.writeObjects([concealed])
+        sync.poll()
+        XCTAssertTrue(texts.all.isEmpty)
+
+        pasteboard.clearContents()
+        sync.poll()
+        let ordinary = NSPasteboardItem()
+        ordinary.setString("ordinary", forType: .string)
+        pasteboard.writeObjects([ordinary])
+        sync.poll()
+        XCTAssertEqual(texts.all, [Array("ordinary".utf8)])
+    }
+
     /// A password manager's copy carries a nspasteboard.org marker; it
     /// must never reach the host. The next ordinary copy still does.
     func testMarkedCopiesNeverLeaveTheMac() throws {

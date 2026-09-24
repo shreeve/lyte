@@ -20,7 +20,7 @@ lyte_benchmark_claim_matches() {
   [[ "$command_line" == "$executable"* ]] || return 1
   remainder="${command_line#"$executable"}"
   [[ -z "$remainder" || "$remainder" == " "* ]] || return 1
-  [[ " $remainder " == *" --lyte-benchmark-run-id $run_id "* ]]
+  [[ " $remainder " == *" --lyte-benchmark-run-id $run_id "* ]] || return 1
 }
 
 lyte_benchmark_claim_file_matches() {
@@ -32,7 +32,7 @@ lyte_benchmark_claim_file_matches() {
   [[ -s "$claim_file" ]] || return 1
   read -r claimed_pid claimed_run_id extra < "$claim_file" || return 1
   [[ -z "$extra" && "$claimed_pid" == "$expected_pid" \
-      && "$claimed_run_id" == "$expected_run_id" ]]
+      && "$claimed_run_id" == "$expected_run_id" ]] || return 1
 }
 
 lyte_benchmark_terminate_claimed() {

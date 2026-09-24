@@ -511,10 +511,10 @@ final class BulkCodecTests: XCTestCase {
                 + [0, 0, 0, 0, 0, 0, 0, 0]
                 + [UInt8](repeating: 0xFF, count: 8) + [1, 0] + [0x01]
         )
-        XCTAssertEqual(ack.possession.contiguousCount, .max)
+        XCTAssertEqual(ack.possession.contiguousCount, UInt64.max)
         XCTAssertEqual(ack.possession.bitmapChunkIndices, [])
-        XCTAssertTrue(ack.possession.holds(.max - 1))
-        XCTAssertFalse(ack.possession.holds(.max))
+        XCTAssertTrue(ack.possession.holds(UInt64.max - 1))
+        XCTAssertFalse(ack.possession.holds(UInt64.max))
     }
 
     func testPossessionArithmetic() {

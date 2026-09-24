@@ -231,6 +231,45 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(
             result["motion"]["firstJaggedBoundary"], "client_presentation")
 
+    def test_motion_without_queue_or_lateness_evidence_fails(self):
+        for key in (
+            "queueWaitMilliseconds", "presentationLatenessMilliseconds"
+        ):
+            fixture = sample("motion", 0, ["freshCapture"] * 4)
+            for frame in fixture["frames"]:
+                frame.pop(key)
+            result = self.analyze(fixture)
+            self.assertIn(
+                "motion_presentation_evidence_missing", result["failures"],
+                key)
+
+    def test_motion_with_one_presentation_has_no_gap_evidence(self):
+        result = self.analyze(sample("motion", 0, ["freshCapture"]))
+        self.assertIn(
+            "motion_presentation_evidence_missing", result["failures"])
+
+    def test_truncated_final_line_reads_as_an_unfinished_run(self):
+        with tempfile.NamedTemporaryFile(mode="w", delete=False) as stream:
+            stream.write(json.dumps(sample("static", 0, ["freshCapture"])))
+            stream.write('\n{"type": "sam')
+            path = stream.name
+        try:
+            with self.assertRaisesRegex(ValueError, "did not finish"):
+                ANALYZER.analyze(path)
+        finally:
+            Path(path).unlink()
+
+    def test_malformed_middle_line_is_an_error(self):
+        with tempfile.NamedTemporaryFile(mode="w", delete=False) as stream:
+            stream.write('{"type": "sam\n')
+            stream.write(json.dumps({"type": "end"}) + "\n")
+            path = stream.name
+        try:
+            with self.assertRaises(json.JSONDecodeError):
+                ANALYZER.analyze(path)
+        finally:
+            Path(path).unlink()
+
     def test_pts_regression_with_apple_drops_fails(self):
         fixture = sample("motion", 1, ["freshCapture", "freshCapture"])
         fixture["frames"][1]["scheduledPresentationMicroseconds"] = 1
@@ -277,7 +316,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("audio_steady_state_late_or_plc", result["failures"])
 
     def test_bounded_steady_blackout_at_ceiling_is_mitigated(self):
-        warmup = sample("motion", 0, ["freshCapture"])
+        warmup = sample("motion", 0, ["freshCapture", "freshCapture"])
         warmup["elapsedSeconds"] = 2.0
         warmup["quality"]["elapsedSeconds"] = 2.0
         warmup["audio"]["targetPackets"] = 20
@@ -505,6 +544,57 @@ class AnalyzerTests(unittest.TestCase):
         steady["audio"]["underrunFrames"] = 15_070
         result = self.analyze(steady, samples=[warmup, steady])
         self.assertIn("audio_steady_state_late_or_plc", result["failures"])
+
+
+class NetemSloTests(unittest.TestCase):
+    def verdict(self, **changes):
+        fixture = {
+            "runID": "netem",
+            "verdict": "FAIL",
+            "failures": ["motion_transport_burst"],
+            "motion": {"presentationGapP99Milliseconds": 34.0},
+            "renderer": {"appFailures": 0, "appleCorruptedFrames": 0},
+            "quality": {"decodedProgressFPS": 59.5},
+            "audio": {
+                "continuityClassification": "bounded_path_tail_concealed",
+                "intervalAnalysis": {"steadyState": {
+                    "plcInvocations": 12, "underrunFrames": 960,
+                }},
+            },
+        }
+        for path, value in changes.items():
+            section, key = path.split("__")
+            if section == "top":
+                fixture[key] = value
+            else:
+                fixture[section][key] = value
+        return ANALYZER.netem_slo_verdict(fixture, "moderate")
+
+    def test_impaired_run_within_slo_passes_despite_clean_air_failures(self):
+        result = self.verdict()
+        self.assertEqual(result["verdict"], "PASS", result["failures"])
+        self.assertEqual(
+            result["cleanAirFailuresForReference"], ["motion_transport_burst"])
+
+    def test_each_slo_fails_on_its_own(self):
+        cases = {
+            "motion__presentationGapP99Milliseconds": 51.0,
+            "renderer__appleCorruptedFrames": 1,
+            "quality__decodedProgressFPS": 29.0,
+            "audio__continuityClassification": "continuity_failure",
+            "top__failures": ["audio_output_failure"],
+        }
+        for path, value in cases.items():
+            self.assertEqual(
+                self.verdict(**{path: value})["verdict"], "FAIL", path)
+
+    def test_missing_evidence_fails_instead_of_raising(self):
+        for path in (
+            "motion__presentationGapP99Milliseconds",
+            "quality__decodedProgressFPS",
+        ):
+            self.assertEqual(
+                self.verdict(**{path: None})["verdict"], "FAIL", path)
 
 
 class TwinRendererPinTests(unittest.TestCase):
