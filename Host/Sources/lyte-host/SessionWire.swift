@@ -260,7 +260,8 @@ final class SessionWire {
         capacity: audioMailboxDwellWindow, retention: .rolling
     )
     /// Split video path timing: prepare (Annex-B + RS-FEC) is off-lock;
-    /// commit (seq allocation, sealing, pacer insertion) is under it.
+    /// commit (pacer insertion) is under it. Seq allocation and sealing
+    /// happen later, under the lock, as the pacer releases each shard.
     private(set) var videoPrepareMaxNS: UInt64 = 0
     private(set) var videoCommitLockWaitMaxNS: UInt64 = 0
     private(set) var videoCommitLockHoldMaxNS: UInt64 = 0
@@ -995,9 +996,10 @@ final class SessionWire {
                 """)
     }
 
-    /// One encoded Annex-B packet → sealed shards, on the capture thread.
+    /// One encoded Annex-B packet → paced shards, on the capture thread.
     /// Validation and RS-FEC run off the session lock (they can starve
-    /// audio); sealing and pacer insertion run under it.
+    /// audio); pacer insertion runs under it, and each shard is sealed
+    /// under the lock only as the pacer releases it.
     func sendFrame(
         data: UnsafePointer<UInt8>, size: Int, isKeyframe: Bool,
         captureMicros: UInt64

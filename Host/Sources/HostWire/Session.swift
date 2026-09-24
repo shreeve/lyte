@@ -1447,17 +1447,13 @@ public final class Session {
     /// frame-number advancement, one critical section with every other
     /// Session mutation. No seal runs here: chan-2 seqs and seals are
     /// assigned as `pump` releases each shard, so the first quantum can
-    /// leave on the next pump. `interleave` is never called (nothing long
-    /// runs here any more) and `isBorrowed` is not read; both stay only
-    /// for source compatibility.
+    /// leave on the next pump.
     @discardableResult
     public func commitPreparedVideoFrame(
         _ prepared: PreparedVideoFrame,
         context: SessionVideoFramePreparationContext,
         captureTimestampMicroseconds: UInt64,
-        interleave: (() -> Void)? = nil,
-        now: UInt64,
-        isBorrowed: Bool = false
+        now: UInt64
     ) throws -> Int {
         guard phase == .established else {
             throw SessionError.notEstablished
