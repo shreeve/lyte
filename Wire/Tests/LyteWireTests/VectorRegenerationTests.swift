@@ -56,6 +56,26 @@ final class VectorRegenerationTests: XCTestCase {
         }
     }
 
+    /// A file's identity follows the versions its type pins, not the live
+    /// wire major, so raising `WireVersion.major` cannot invalidate the
+    /// committed v1 files and a later file version can exist beside them.
+    func testIdentityFollowsTheTypesPinnedVersions() {
+        struct Later: FrozenVectorFile {
+            static let expectedFormat = "later"
+            static let fileName = "later-v2.json"
+            static let expectedFormatVersion = 2
+            static let expectedWireVersion = 2
+            var format = "later"
+            var formatVersion = 2
+            var wireVersion = 2
+            var vectorNameGroups: [[String]] { [["only"]] }
+        }
+        XCTAssertEqual(Later().identityProblems, [])
+        var stale = Later()
+        stale.wireVersion = 1
+        XCTAssertEqual(stale.identityProblems, ["wireVersion 1, expected 2"])
+    }
+
     /// The exemption is live: without it the cursor file would differ.
     func testSlashExemptionIsStillNeeded() throws {
         for fileName in Self.unescapedSlashFiles {

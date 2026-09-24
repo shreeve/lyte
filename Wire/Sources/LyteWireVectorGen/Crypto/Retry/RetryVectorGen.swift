@@ -363,7 +363,7 @@ public func makeRetryVectorFile() throws -> RetryVectorFile {
     return RetryVectorFile(
         format: RetryVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         cookieVectors: cookieVectors,
         messageVectors: messageVectors
     )

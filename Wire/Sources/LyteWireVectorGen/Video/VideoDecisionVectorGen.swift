@@ -15,7 +15,7 @@ public func makeVideoDecisionVectorFile(
     return VideoDecisionVectorFile(
         format: VideoDecisionVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         scenarioFile: VideoVectorFile.fileName,
         provenance: "pinned-self-consistent",
         scenarios: replays.map {

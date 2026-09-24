@@ -82,7 +82,7 @@ public func makeInputCoordinateVectorFile() throws -> InputCoordinateVectorFile 
     return InputCoordinateVectorFile(
         format: InputCoordinateVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         vectors: vectors
     )
 }
