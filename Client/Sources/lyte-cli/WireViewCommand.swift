@@ -8,51 +8,45 @@ import LyteTransport
 import LyteUI
 import LyteWire
 
-/// CL-2: wire-listen grows eyes. CL-3: the mouth (feedback, beacon
-/// echoes, coalesced IDR requests). CL-7: the reliable CTRL sublayer.
-/// CL-8: the whole assembly moves behind LyteUdpSession — the client's
-/// production session object — and wire-view becomes its debug shell:
-/// window + printer around the same object the app's ConnectionModel
-/// drives. New in the CL-8 surface: the capability declaration as the
-/// first reliable word, the mediaReceiver lifecycle machine (mode label
-/// ACTIVE/IDLE from 0x09, the FROZEN pill from the local silence
-/// detector), reliable 0x15 idle frames rendered through the shared
-/// factory, and typed teardown both directions (0x0A out on ⌃C/window
-/// close/duration; 0x0A in ends the run with the host's reason).
+/// The debug shell around the app's own streaming objects: the same
+/// LyteUdpSession and the same VideoRendererHandoff the app's
+/// ConnectionModel drives, in a bare window, with every session event and
+/// a per-second stats snapshot printed. Typed teardown runs both ways:
+/// 0x0A out on ⌃C, window close, or --duration; 0x0A in ends the run with
+/// the host's reason.
 ///
-/// AppKit rule (HANDOFF, hard-won): NSApplication.run() must own the raw
-/// C main thread — Main.main treats every subcommand not on its non-UI
-/// list as a UI command, so this file only has to keep its `run()` off
-/// the main-thread-blocking paths and let the window live.
+/// NSApplication.run() must own the raw C main thread (Main.main hands it
+/// over for this subcommand), so `run()` stays off main-thread-blocking
+/// paths and lets the window live.
 struct WireView: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "wire-view",
-        abstract: "Render an incoming Lyte-UDP video stream in a window (wire-listen + eyes).")
+        abstract: "Stream from a Lyte-UDP host into a debug window, printing session events and stats.")
 
     @Argument(help: "UDP port to bind (0 picks a free port; also the host's listen port unless --host-port)") var port: UInt16
     @Option(name: .long, help: "Address to bind") var bind: String = "0.0.0.0"
-    @Option(name: .long, help: "Noise mode: the host's static public key, 64 hex digits (printed by lyte-host at start). Omit it once paired — the pinned key + Keychain identity take over (CL-6)")
+    @Option(name: .long, help: "The host's static public key, 64 hex digits (printed by lyte-host at start). Omit it once paired — the pinned key + Keychain identity take over")
     var hostKey: String?
-    @Option(name: .long, help: "Noise mode: the host's address")
-    var host: String = "10.0.0.249"
+    @Option(name: .long, help: "The host's address or pinned name (default: the only pinned host)")
+    var host: String?
     @Option(name: .long, help: "Noise mode: the host's --wire-listen port (default: the bind port)")
     var hostPort: UInt16 = 0
     @Option(name: .long, help: "Auto-exit after this many seconds (default: until the window closes)")
     var duration: Int = 0
-    @Flag(name: .long, help: "CL-11: decode + play the audio channel (AVAudioEngine) and print the audio stats line")
+    @Flag(name: .long, help: "Decode + play the audio channel (AVAudioEngine) and print the audio stats line")
     var audio = false
-    @Option(name: .long, help: "CL-17 forcing surface: prime the adaptive jitter target at N packets (~N×5 ms of initial depth) — the percentile controller then decays and WSOLA accelerate drains the surplus; the audio line's depth/accel books are the evidence. 0 = off")
+    @Option(name: .long, help: "Forcing surface: prime the adaptive jitter target at N packets (~N×5 ms of initial depth) — the percentile controller then decays and WSOLA accelerate drains the surplus; the audio line's depth/accel books are the evidence. 0 = off")
     var audioPrime: Int = 0
-    @Option(name: .long, help: "CL-13: the session-start posture for the HOST's own speakers — audible|muted. Needs capability key 9 on both ends; against a no-key-9 host the ask is refused client-side (that refusal is the evidence). Omitted = NEUTRAL: take the host's default without asking (the debug-shell posture; the APP defaults to muted since CL-18)")
+    @Option(name: .long, help: "The session-start posture for the HOST's own speakers — audible|muted. Needs capability key 9 on both ends; against a no-key-9 host the ask is refused client-side (that refusal is the evidence). Omitted = NEUTRAL: take the host's default without asking (the debug-shell posture; the app asks for muted)")
     var hostAudio: String?
-    @Flag(name: .long, help: "CL-15: share the clipboard (UTF-8 text, both ways) — real NSPasteboard glue behind the sans-IO core's gates. Needs capability key 10 on both ends; against a no-key-10 host every local copy reports notNegotiated (that refusal is the evidence). Payloads are never printed — byte counts only")
+    @Flag(name: .long, help: "Share the clipboard (UTF-8 text, both ways) — real NSPasteboard glue behind the sans-IO core's gates. Needs capability key 10 on both ends; against a no-key-10 host every local copy reports notNegotiated (that refusal is the evidence). Payloads are never printed — byte counts only")
     var clipboard = false
-    @Flag(name: .long, help: "P-1: the images rung on top of --clipboard (the Text + images tier) — clipboard PNGs ride chan 8 as 0x22 cargo, both ways. Needs keys 10 AND 12 on both ends (a --clipboard=text host declines with abort). Byte counts only, as ever")
+    @Flag(name: .long, help: "The images rung on top of --clipboard (the Text + images tier) — clipboard PNGs ride chan 8 as 0x22 cargo, both ways. Needs keys 10 AND 12 on both ends (a --clipboard=text host declines with abort). Byte counts only, as ever")
     var clipboardImages = false
-    @Option(name: .long, help: "V-5: the chroma tier this client DECLARES — 420 (Good, the default) or 444 (Best). Declaration-as-choice: the singleton is the ask; a host without the tier answers the typed noCommonChromaMode teardown (that refusal is the harness's fallback evidence — the debug shell never auto-re-dials; the app does)")
+    @Option(name: .long, help: "The chroma tier this client DECLARES — 420 (Good, the default) or 444 (Best). Declaration-as-choice: the singleton is the ask; a host without the tier answers the typed noCommonChromaMode teardown (that refusal is the harness's fallback evidence — the debug shell never auto-re-dials; the app does)")
     var chroma: String = "420"
     @Option(name: .long, help: """
-        CL-9 gating: scripted synthetic input, semicolon-separated \
+        Scripted synthetic input, semicolon-separated \
         "<at_ms> <kind> <args>" entries sent on the reliable stream. Kinds: \
         `move X Y` (host pixels), `rel DX DY`, `key CODE down|up` (evdev), \
         `button CODE down|up`, `axis DX DY [finish]`. \
@@ -75,6 +69,18 @@ struct WireView: AsyncParsableCommand {
         }
     }
 
+    /// The dial target: --host as given, else the one pinned host.
+    private func resolvedHost() throws -> String {
+        if let host { return host }
+        let pinned = PinnedHostStore.load().hosts.values
+        guard pinned.count == 1, let only = pinned.first else {
+            throw ValidationError(pinned.isEmpty
+                ? "no host: pass --host (nothing is pinned)"
+                : "--host is required: \(pinned.count) hosts are pinned")
+        }
+        return only.address
+    }
+
     static func parseHostAudio(_ word: String) -> HostAudioRoutingMode? {
         switch word {
         case "audible": return .hostAudible
@@ -95,15 +101,15 @@ struct WireView: AsyncParsableCommand {
     func run() async throws {
         setvbuf(stdout, nil, _IOLBF, 0)   // line-buffer even when piped
 
-        // HS-20's morning finding, fixed at the source: App Nap
-        // throttled a locked-screen wire-view into garbage evidence
-        // (recenter storms, nonsense delivery samples). A live media
+        // App Nap throttles a locked-screen session into garbage evidence
+        // (recenter storms, nonsense delivery samples): a live media
         // session is latency-critical for exactly as long as it runs.
         let activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .latencyCritical],
             reason: "wire-view live session")
         defer { ProcessInfo.processInfo.endActivity(activity) }
 
+        let host = try resolvedHost()
         let crypto: any TransportCrypto
         if let hostKey {
             // Explicit key: throwaway client static, exactly as before —
@@ -114,7 +120,7 @@ struct WireView: AsyncParsableCommand {
                 hostPort: hostPort == 0 ? port : hostPort,
                 hostStaticPublicKey: NoiseTransportCrypto.parseKeyHex(hostKey))
         } else {
-            // CL-6, the zero-UI reconnect: no key argued, so the pinned
+            // The zero-UI reconnect: no key argued, so the pinned
             // store supplies the host static and the Keychain supplies
             // OUR persistent identity — plain 1-RTT Noise IK, which a
             // --require-paired host admits because pairing pinned this
@@ -266,7 +272,7 @@ struct WireView: AsyncParsableCommand {
                             + "(\(shape.hotspotX),\(shape.hotspotY))")
                         + " (0x24)")
                 case .hostClipboardImageChanged(let data, let mime):
-                    // P-1: sha-verified image cargo off chan 8. Byte
+                    // Sha-verified image cargo off chan 8. Byte
                     // count only, same rule.
                     print("wire-view: host clipboard image → pasteboard "
                         + "(\(data.count) B, \(mime), 0x22 cargo)")
@@ -313,7 +319,7 @@ struct WireView: AsyncParsableCommand {
         print("wire-view: capability declaration sent (0x0F, first reliable word); "
             + "feedback cadence \(core.feedback.cadenceMilliseconds) ms")
 
-        // CL-15: the pasteboard watcher — the same LyteUI glue the app
+        // The pasteboard watcher — the same LyteUI glue the app
         // runs; every local copy funnels through the core's gates
         // (negotiated → enabled → sync book → ceiling), and every
         // verdict prints as evidence. Byte counts only, never content.
@@ -340,7 +346,7 @@ struct WireView: AsyncParsableCommand {
                 + (clipboardImages ? "∧12" : "") + " pending agreement)")
         }
 
-        // The CL-9 gating surface: scripted synthetic input through the
+        // Scripted synthetic input through the
         // production sendInput path (seq, capture stamp, reliable
         // stream) — the same bytes the app's NSEvent capture sends.
         if let inputScript {
@@ -377,9 +383,9 @@ struct WireView: AsyncParsableCommand {
         ticker.resume()
 
         let finish: @Sendable (String) -> Void = { trigger in
-            let already = finished.value
-            finished.value = true
-            guard !already else { return }
+            // SIGINT, the window, the duration timer, and a session close
+            // can race here; exactly one of them finishes.
+            guard !finished.exchange(true) else { return }
             print("wire-view: finishing (\(trigger))")
             ticker.cancel()
             pasteboardBox.value?.stop()
@@ -427,24 +433,11 @@ struct WireView: AsyncParsableCommand {
     }
 }
 
-/// The CL-1 demux stats plus the CL-2 render stats plus the CL-3
-/// return-path stats plus the CL-8 session line (mode, pill, idle
-/// frames, agreed capabilities) — one tick per second with new
-/// arrivals, full summary at exit.
-///
-/// MACHINE-PARSE CONTRACT (item 19, ruled 2026-07-30): this printer
-/// deliberately keeps the pre-rename stats dialect (`wire:`,
-/// `render:`, the `…` per-second tick prefix) while the app overlay
-/// moved to session/user/network/audio/video — because
-/// Host/Scripts/quality-probe.sh's parse_wire GREPS these lines.
-/// The load-bearing shapes are:
-///   `… ` (tick prefix — cadence comes from tick-to-tick deltas),
-///   `wire: <N> dg, … <N> missing` and
-///   `render: <N> decoded, <N> skipped`.
-/// Rename a field, reorder these clauses, or change the tick prefix
-/// ONLY together with parse_wire in the same commit — the probe's
-/// greps rot silently otherwise (the estimator `delivery` grep did
-/// exactly that once).
+/// The session's books for a human reading a terminal: demux totals,
+/// render, quality, session state, the return path, repair, the reliable
+/// sublayer, the clock model, audio, and input — one tick per second with
+/// new arrivals (prefixed `…`), a full summary at exit. Nothing parses
+/// this output; the app's overlay has its own, terser rows.
 final class WireViewStatsPrinter: Sendable {
     private let session: LyteUdpSession
     private let rendererState: @Sendable () -> String
@@ -503,7 +496,7 @@ final class WireViewStatsPrinter: Sendable {
         render += " | layer \(rendererState())"
         print(render)
 
-        // The HS-22 quality line: the wire-view-side derivation of the
+        // The quality line: the receive-side derivation of the
         // host's per-second `quality:` books — frame cadence, video
         // bitrate, frame-size percentiles over the last ~5 s. Host QP
         // and the encoder's reconfigured posture stay host-log truth
@@ -517,18 +510,18 @@ final class WireViewStatsPrinter: Sendable {
                   "\(q.frameBytesP95) B / max \(q.frameBytesMax) B")
         }
 
-        // The CL-8 session line: the machine's verdicts.
+        // The session line: the machine's verdicts.
         let counters = core.snapshotCounters()
         var sess = "\(prefix)   session: mode \(core.wireMode == .active ? "ACTIVE" : "IDLE")"
         sess += core.isFrozen ? ", PILL (frozen)" : ""
         if core.state == .closed { sess += ", CLOSED" }
         sess += ", caps \(core.agreedCapabilities != nil ? "agreed" : "pending")"
-        // V-5: what the wire actually carries (SPS-parsed off IDRs) —
+        // What the wire actually carries (SPS-parsed off IDRs) —
         // the live leg's negotiated-posture evidence.
         if let chroma = core.streamChromaDescription {
             sess += ", stream chroma \(chroma)"
         }
-        // CL-13: the host-speaker posture — key 9 + the 0x19-confirmed
+        // The host-speaker posture — key 9 + the 0x19-confirmed
         // truth (never optimistic; "pending" between agreement and the
         // host's first status).
         if core.hostAudioRoutingNegotiated {
@@ -561,7 +554,7 @@ final class WireViewStatsPrinter: Sendable {
         if counters.audioRoutingDropsLoud > 0 {
             sess += ", \(counters.audioRoutingDropsLoud) routing-drops"
         }
-        // CL-15: the clipboard state + books (byte counts and verdicts
+        // The clipboard state + books (byte counts and verdicts
         // only — payloads never print).
         if core.clipboardNegotiated {
             sess += ", clipboard \(core.clipboardSharingEnabled ? "ON" : "off")"
@@ -582,7 +575,7 @@ final class WireViewStatsPrinter: Sendable {
         if counters.clipboardDropsLoud > 0 {
             sess += ", \(counters.clipboardDropsLoud) clip-drops"
         }
-        // P-1: the image lane's books, while it has any.
+        // The image lane's books, while it has any.
         let images = core.clipboardImageCounters
         let imageActivity = images.sharesStarted + images.imagesApplied
             + images.sharesSuppressed + images.receivesRefused
@@ -594,7 +587,7 @@ final class WireViewStatsPrinter: Sendable {
         }
         print(sess)
 
-        // The CL-3 return leg: what went back to the host.
+        // The return leg: what went back to the host.
         let fb = core.feedback.snapshotStats()
         let echo = core.echoResponder.snapshotStats()
         let idr = core.idrRequester.snapshotStats()
@@ -607,7 +600,7 @@ final class WireViewStatsPrinter: Sendable {
             if let last = core.echoResponder.snapshotClockSamples().last {
                 // Interpolation, not %d: varargs %d truncates Int64 to 32
                 // bits and boot-epoch offsets are ~10¹⁰ µs (found live —
-                // the printed offset disagreed with CL-10's fit by 2·2³²).
+                // the printed offset disagreed with the clock fit by 2·2³²).
                 let sign = last.offsetMicroseconds >= 0 ? "+" : ""
                 back += " (last offset \(sign)\(last.offsetMicroseconds) µs, " +
                         "rtt \(last.rttMicroseconds) µs)"
@@ -615,7 +608,7 @@ final class WireViewStatsPrinter: Sendable {
         }
         print(back)
 
-        // The CL-12 targeted-repair line, whenever the policy stirred:
+        // The targeted-repair line, whenever the policy stirred:
         // asks out, repairs back, frames healed, staleness → IDR.
         let nack = core.nackPolicy.snapshotStats()
         if nack.pastParityFrames + nack.repairShardsReceived
@@ -633,7 +626,7 @@ final class WireViewStatsPrinter: Sendable {
             if nack.whollyLostEscalations > 0 {
                 line += ", \(nack.whollyLostEscalations) whole-loss→IDR"
             }
-            // HS-32: explicit host refusals — acted asks skip the
+            // Explicit host refusals — acted asks skip the
             // 250 ms deadline entirely.
             if nack.refusalsReceived > 0 {
                 line += ", \(nack.refusalsReceived) refusals rx " +
@@ -656,7 +649,7 @@ final class WireViewStatsPrinter: Sendable {
             print(line)
         }
 
-        // The CL-7 reliable sublayer, when it has done anything at all.
+        // The reliable sublayer, when it has done anything at all.
         let arq = core.reliable.snapshotStats()
         if arq.messagesSent + arq.messagesDelivered + arq.datagramsSent > 0 {
             var line = "\(prefix)   arq: \(arq.messagesSent) sent, " +
@@ -669,7 +662,7 @@ final class WireViewStatsPrinter: Sendable {
             print(line)
         }
 
-        // The CL-10 model line: the T gate reads the residual here.
+        // The clock model line: the T gate reads the residual here.
         if let fit = core.clockModel.estimate() {
             let sign = fit.offsetMicroseconds >= 0 ? "+" : ""
             print("\(prefix)   clock: offset \(sign)\(fit.offsetMicroseconds) µs, " +
@@ -680,7 +673,7 @@ final class WireViewStatsPrinter: Sendable {
                   "(min rtt \(fit.minRttMicroseconds) µs)")
         }
 
-        // The CL-11 audio line: depacketizer/FEC + jitter buffer +
+        // The audio line: depacketizer/FEC + jitter buffer +
         // playback evidence, whenever the channel carried anything.
         let audio = core.audio.snapshotStats()
         if audio.depacketizer.datagramsIngested > 0 {
@@ -722,7 +715,7 @@ final class WireViewStatsPrinter: Sendable {
                 if p.underrunFrames > 0 {
                     line += ", underrun \(p.underrunFrames) frames"
                 }
-                // The CL-17 books: WSOLA ops + backlog drained, the
+                // The accelerate books: WSOLA ops + backlog drained, the
                 // engage count, and route-change survivals.
                 if p.accelerate.removalOps > 0
                     || audio.accelerateEngagements > 0 {
@@ -745,7 +738,7 @@ final class WireViewStatsPrinter: Sendable {
             print(line)
         }
 
-        // The CL-9 input line: sender books + both latency loops, when
+        // The input line: sender books + both latency loops, when
         // any input rode this session.
         let input = core.input.snapshotStats()
         if input.eventsSent > 0 || input.echoTuplesReceived > 0 {
@@ -784,7 +777,7 @@ final class WireViewStatsPrinter: Sendable {
     }
 }
 
-/// The --input-script DSL (CL-9's synthetic gating surface): semicolon-
+/// The --input-script DSL (the synthetic input surface): semicolon-
 /// separated "<at_ms> <kind> <args>" entries. Parsed up front so a typo
 /// fails the command, never a mid-run surprise.
 enum InputScript {
@@ -876,14 +869,21 @@ final class WindowCloser: NSObject, NSWindowDelegate {
 /// alive for the life of the process.
 @MainActor var streamRetainer: [Any] = []
 
-/// Lock-boxed value for cross-queue state (WireListen's LockedBox
-/// sibling; file-private types don't travel between files).
+/// Lock-boxed value for cross-queue state.
 final class LockedCell<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: T
     init(_ value: T) { stored = value }
     var value: T {
-        get { lock.lock(); defer { lock.unlock() }; return stored }
-        set { lock.lock(); stored = newValue; lock.unlock() }
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
+
+    /// Stores `new` and returns the previous value, atomically.
+    func exchange(_ new: T) -> T {
+        lock.withLock {
+            defer { stored = new }
+            return stored
+        }
     }
 }
