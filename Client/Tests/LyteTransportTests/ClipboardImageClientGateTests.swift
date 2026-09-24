@@ -96,8 +96,8 @@ final class ClipboardImageClientGateTests: XCTestCase {
             + "`0C F5`; agreed gate is 10∧12 (never 11); consent off")
     }
 
-    // MARK: - The scripted images-tier host (the BulkHostStandIn
-    // shape, grown the REAL Wire ClipboardImageChannel)
+    // MARK: - The scripted images-tier host (the REAL Wire
+    // ClipboardImageChannel)
 
     fileprivate final class ImageHostStandIn: ScriptedHost {
         var peer: SealedCtrlPeer<HostClock>

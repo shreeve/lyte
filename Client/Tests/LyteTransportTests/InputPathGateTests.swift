@@ -684,7 +684,7 @@ final class InputPathGateTests: XCTestCase {
 
     }
 
-    // MARK: - The client harness (the CL-8 shape: real core, no socket)
+    // MARK: - The client harness (real core, no socket)
 
     private final class Harness: @unchecked Sendable {
         let host: HostInputStandIn

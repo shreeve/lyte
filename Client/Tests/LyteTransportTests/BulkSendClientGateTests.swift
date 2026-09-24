@@ -729,7 +729,7 @@ final class BulkSendClientGateTests: XCTestCase {
             + "re-preparation → sha-exact completion")
     }
 
-    // MARK: - The scripted key-11 host (the ClipboardHostStandIn shape)
+    // MARK: - The scripted key-11 host
 
     /// A bulk-capable host stand-in: Noise responder, capability
     /// negotiator, and TWO host-clock ArqEndpoints — CTRL for the

@@ -151,7 +151,7 @@ final class AudioRoutingGateTests: XCTestCase {
         XCTAssertFalse(declared.intersecting(refusing).hostAudioRouting)
     }
 
-    // MARK: The negotiated loopback client (the InputGateTests shape)
+    // MARK: The negotiated loopback client
 
     /// Handshake + capability exchange, direct pipe. The host always
     /// declares key 9 (the audio leg exists); the client's declaration

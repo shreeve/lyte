@@ -157,7 +157,7 @@ final class InputGateTests: XCTestCase {
         XCTAssertNil(try LastInputSeqTlv.decode(extensions: []))
     }
 
-    // MARK: The input-capable loopback client (the CL-9 shape)
+    // MARK: The input-capable loopback client
 
     private struct InputClient: PeerBackedClient {
         var peer: SealedCtrlPeer<ClientClock>

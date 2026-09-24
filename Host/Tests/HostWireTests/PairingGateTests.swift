@@ -28,7 +28,7 @@ final class PairingGateTests: XCTestCase {
         remoteAddress: "10.0.0.23", remotePort: 61_000
     )
 
-    // MARK: The pairing-capable loopback client (the CL-6 shape)
+    // MARK: The pairing-capable loopback client
 
     private struct PakeClient: PeerBackedClient {
         var peer: SealedCtrlPeer<ClientClock>

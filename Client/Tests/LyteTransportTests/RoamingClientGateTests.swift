@@ -117,9 +117,9 @@ final class RoamingClientGateTests: XCTestCase {
         print("F-5 gate (path): baseline silent, change loud")
     }
 
-    // MARK: - The roam-capable host stand-in (the F-4 shape, with the
-    // ONE F-5 difference: the Noise static is INJECTED — the same
-    // identity must answer at "address B" that answered at "A")
+    // MARK: - The roam-capable host stand-in: the Noise static is
+    // INJECTED — the same identity must answer at "address B" that
+    // answered at "A"
 
     fileprivate final class RoamHostStandIn: ScriptedHost {
         var peer: SealedCtrlPeer<HostClock>

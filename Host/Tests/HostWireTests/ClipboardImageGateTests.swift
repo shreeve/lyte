@@ -51,9 +51,8 @@ final class ClipboardImageGateTests: XCTestCase {
         return bytes
     }
 
-    // MARK: The client end (the BulkClient shape, grown the REAL
-    // Wire ClipboardImageChannel — both ends of this gate run the
-    // production lane logic)
+    // MARK: The client end (the REAL Wire ClipboardImageChannel — both
+    // ends of this gate run the production lane logic)
 
     private struct ImageClient: PeerBackedClient {
         var peer: SealedCtrlPeer<ClientClock>
