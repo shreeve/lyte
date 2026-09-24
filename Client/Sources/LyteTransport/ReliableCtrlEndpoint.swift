@@ -80,6 +80,10 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     private let onEvent: (@Sendable (ArqEvent) -> Void)?
 
     private let lock = NSLock()
+    /// Orders transmissions: taken while `lock` is still held, so polled
+    /// batches reach the sender in poll order. Never held while taking
+    /// `lock`.
+    private let transmitLock = NSLock()
     private var arq: ArqEndpoint<ClientClock>
     /// Learned from the first host datagram carrying the TLV; tags every
     /// ARQ datagram from then on. Nil only in the pre-first-beacon
@@ -153,8 +157,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
             throw error
         }
         stats.messagesSent += 1
-        serviceLocked(now: now)
-        lock.unlock()
+        serviceAndUnlock(now: now)
     }
 
     /// Queues one one-shot message on a fresh group (allocated here,
@@ -180,8 +183,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         }
         nextOneShotGroup = nextOneShotGroup == .max ? 1 : nextOneShotGroup + 1
         stats.messagesSent += 1
-        serviceLocked(now: now)
-        lock.unlock()
+        serviceAndUnlock(now: now)
         return group
     }
 
@@ -223,8 +225,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
             case .ignored: stats.ingestIgnored += 1
             }
         }
-        serviceLocked(now: now)
-        lock.unlock()
+        serviceAndUnlock(now: now)
         for event in events {
             onEvent?(event)
         }
@@ -237,8 +238,10 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// owns the clock and drives `tick(now:)` (tests, always).
     public func start() {
         lock.lock()
-        defer { lock.unlock() }
-        guard timer == nil else { return }
+        guard timer == nil else {
+            lock.unlock()
+            return
+        }
         let source = DispatchSource.makeTimerSource(
             queue: .global(qos: .userInitiated))
         source.setEventHandler { [weak self] in
@@ -249,7 +252,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         timer = source
         // Work may already be pending from a pre-start send: service it
         // (a bare re-arm could see a due timer and push it a full PTO).
-        serviceLocked(now: self.now())
+        serviceAndUnlock(now: self.now())
     }
 
     public func stop() {
@@ -266,8 +269,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// or an unchanged deadline would skip the re-arm and sleep forever.
     private func timerFired() {
         lock.lock()
-        wakeFromTimerLocked(now: now())
-        lock.unlock()
+        wakeFromTimerAndUnlock(now: now())
     }
 
     /// Virtual-time wake — same clear-then-service order as production
@@ -275,8 +277,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// DispatchSource, so the skip bookkeeping is unused.
     func testingWakeFromTimer(now: ClientTimestamp) {
         lock.lock()
-        wakeFromTimerLocked(now: now)
-        lock.unlock()
+        wakeFromTimerAndUnlock(now: now)
     }
 
     /// Seeds the one-shot allocator — the wrap pin's probe.
@@ -294,17 +295,16 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         return armedDeadlineMicros
     }
 
-    private func wakeFromTimerLocked(now: ClientTimestamp) {
+    private func wakeFromTimerAndUnlock(now: ClientTimestamp) {
         armedDeadlineMicros = nil
-        serviceLocked(now: now)
+        serviceAndUnlock(now: now)
     }
 
     /// One timer beat: fires due PTO retransmits and re-arms. The wake
     /// timer calls this; tests call it directly with their clock.
     public func tick(now: ClientTimestamp) {
         lock.lock()
-        serviceLocked(now: now)
-        lock.unlock()
+        serviceAndUnlock(now: now)
     }
 
     /// True when the sublayer has nothing left to send, retransmit, or
@@ -353,35 +353,56 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
 
     // MARK: Interior
 
-    /// Polls the endpoint and puts its already carrier-sized output on
-    /// the wire. Each datagram seals through the TransportSender like
-    /// every other CTRL send (fresh channel seq, header-as-AAD, conn-id
-    /// TLV once learned). Re-arms the PTO wake. Runs under the lock.
-    private func serviceLocked(now: ClientTimestamp) {
-        let (payloads, deadline) = arq.poll(now: now)
-        if !payloads.isEmpty {
-            let extensions = connectionId.map { [$0.wireExtension] } ?? []
-            do {
-                for payload in payloads {
-                    let sent = try sender.send(
-                        channel: channel,
-                        timestamp: now,
-                        plaintext: payload,
-                        extensions: extensions
-                    )
-                    if sent {
-                        stats.datagramsSent += 1
-                    } else {
-                        // No peer yet / kernel refused: the segments the
-                        // poll marked sent stay armed on their PTO
-                        // timers — a refused send heals like loss.
-                        stats.sendFailures += 1
-                    }
-                }
-            } catch {
-                stats.sendFailures += 1
-            }
+    /// Polls the endpoint, re-arms the PTO wake, and puts the poll's
+    /// already carrier-sized output on the wire. Entered with `lock` held;
+    /// returns with it released. Each datagram seals through the
+    /// TransportSender like every other send (fresh channel seq,
+    /// header-as-AAD, conn-id TLV once learned).
+    ///
+    /// The seal and `sendto` run outside `lock`, so ingest, stats and
+    /// quiescence readers never wait on a syscall. `transmitLock` is taken
+    /// before `lock` is released, so batches leave in poll order.
+    private func serviceAndUnlock(now: ClientTimestamp) {
+        let payloads = serviceLocked(now: now)
+        guard !payloads.isEmpty else {
+            lock.unlock()
+            return
         }
+        let extensions = connectionId.map { [$0.wireExtension] } ?? []
+        transmitLock.lock()
+        lock.unlock()
+        var sent: UInt64 = 0
+        var failed: UInt64 = 0
+        do {
+            for payload in payloads {
+                if try sender.send(
+                    channel: channel,
+                    timestamp: now,
+                    plaintext: payload,
+                    extensions: extensions
+                ) {
+                    sent += 1
+                } else {
+                    // No peer yet / kernel refused: the segments the
+                    // poll marked sent stay armed on their PTO timers —
+                    // a refused send heals like loss.
+                    failed += 1
+                }
+            }
+        } catch {
+            failed += 1
+        }
+        transmitLock.unlock()
+        lock.lock()
+        stats.datagramsSent += sent
+        stats.sendFailures += failed
+        lock.unlock()
+    }
+
+    /// Polls the endpoint and re-arms the production wake. Runs under
+    /// `lock`; returns the payloads to transmit.
+    private func serviceLocked(now: ClientTimestamp) -> [[UInt8]] {
+        let (payloads, deadline) = arq.poll(now: now)
         // Re-schedule the production wake to the endpoint's reported
         // deadline (poll already accounts for what this pass sent) —
         // unless the armed deadline already sits within 1 ms of it
@@ -410,6 +431,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
                 armedDeadlineMicros = nil
             }
         }
+        return payloads
     }
 
 }
