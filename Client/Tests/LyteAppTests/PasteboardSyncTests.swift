@@ -84,6 +84,7 @@ final class PasteboardSyncTests: XCTestCase {
         concealed.setData(Data(), forType: .init("org.nspasteboard.ConcealedType"))
         pasteboard.writeObjects([concealed])
         sync.poll()
+        sync.poll()
         XCTAssertTrue(texts.all.isEmpty)
 
         pasteboard.clearContents()
@@ -92,7 +93,37 @@ final class PasteboardSyncTests: XCTestCase {
         ordinary.setString("ordinary", forType: .string)
         pasteboard.writeObjects([ordinary])
         sync.poll()
+        sync.poll()
         XCTAssertEqual(texts.all, [Array("ordinary".utf8)])
+    }
+
+    /// A password manager that writes its string and then, in a separate
+    /// call under the same count, adds the concealed marker: a tick in
+    /// between must not ship the string before the marker lands.
+    func testATickBetweenStringAndMarkerNeverShipsTheSecret() throws {
+        let texts = Received()
+        let sync = PasteboardSync(
+            pasteboard: pasteboard,
+            onLocalChange: { texts.append(Array($0.utf8)) })
+
+        pasteboard.clearContents()
+        pasteboard.setString("hunter2", forType: .string)
+        sync.poll()
+        pasteboard.setData(Data(), forType: .init("org.nspasteboard.ConcealedType"))
+        sync.poll()
+        sync.poll()
+        sync.poll()
+        XCTAssertTrue(texts.all.isEmpty, "the secret left before its marker")
+
+        // An ordinary sequential copy still arrives, one tick later.
+        pasteboard.clearContents()
+        pasteboard.setString("ordinary", forType: .string)
+        sync.poll()
+        XCTAssertTrue(texts.all.isEmpty)
+        sync.poll()
+        XCTAssertEqual(texts.all, [Array("ordinary".utf8)])
+        sync.poll()
+        XCTAssertEqual(texts.all.count, 1, "a consumed change was read twice")
     }
 
     /// A password manager's copy carries a nspasteboard.org marker; it

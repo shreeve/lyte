@@ -26,6 +26,11 @@ public final class PasteboardSync: @unchecked Sendable {
     /// The last changeCount this class has accounted for — poll
     /// baseline AND the self-write swallow.
     private var lastChangeCount: Int
+    /// A new changeCount and the types it showed, seen once and not yet
+    /// consumed. Writers fill a board under one count in several calls
+    /// (clear, then the string, then a concealed marker), so a count is
+    /// read only once a second poll finds it with the same types.
+    private var candidate: (count: Int, types: [NSPasteboard.PasteboardType])?
     /// The TIFF promise behind the last applied image; held so the
     /// promise outlives the pasteboard item's own bookkeeping.
     private var tiffPromise: TiffRendition?
@@ -55,6 +60,7 @@ public final class PasteboardSync: @unchecked Sendable {
         defer { lock.unlock() }
         guard timer == nil else { return }
         lastChangeCount = pasteboard.changeCount
+        candidate = nil
         let source = DispatchSource.makeTimerSource(
             queue: .global(qos: .utility))
         source.schedule(
@@ -96,6 +102,7 @@ public final class PasteboardSync: @unchecked Sendable {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         lastChangeCount = pasteboard.changeCount
+        candidate = nil
     }
 
     /// Applies a host clipboard image (sha-verified PNG) and swallows
@@ -112,23 +119,35 @@ public final class PasteboardSync: @unchecked Sendable {
         pasteboard.writeObjects([item])
         tiffPromise = promise
         lastChangeCount = pasteboard.changeCount
+        candidate = nil
     }
 
     /// One watcher tick; the timer drives it, tests call it directly.
+    /// A change is consumed on the second consecutive tick that finds the
+    /// same count with the same non-empty types — one tick of latency, so
+    /// a marker a writer adds after its content is seen before the read.
     func poll() {
         lock.lock()
         let count = pasteboard.changeCount
         guard count != lastChangeCount else {
+            candidate = nil
             lock.unlock()
             return
         }
         // A writer clears (bumping the count) and then writes under that
-        // same count: an empty pasteboard is a write in progress, so look
-        // again next poll instead of consuming the count.
+        // same count: an empty pasteboard is a write in progress.
         guard let types = pasteboard.types, !types.isEmpty else {
+            candidate = nil
             lock.unlock()
             return
         }
+        guard let seen = candidate, seen.count == count, seen.types == types
+        else {
+            candidate = (count, types)
+            lock.unlock()
+            return
+        }
+        candidate = nil
         lastChangeCount = count
         // Password managers and secure-input apps mark what must not
         // travel (nspasteboard.org); consent to share the clipboard is
