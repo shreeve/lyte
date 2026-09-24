@@ -1,9 +1,7 @@
-// Displacement-bounded reorder for network simulation: real links
-// reorder by a few packets (the resiliency plan's G4 gate models 2–4),
-// not by whole frames, and the assembler's QUIC-shaped loss presumption
-// (packet-threshold 3) is calibrated for exactly that. Tests asserting
-// presumption precision use this; tests asserting byte-exact recovery
-// may still shuffle without bound, because recovery is order-blind.
+// Displacement-bounded reorder: real links reorder by a few packets, not
+// whole frames, which is what the assembler's packet-threshold-3 loss
+// presumption is calibrated for. Byte-exact recovery tests may still
+// shuffle without bound, because recovery is order-blind.
 
 public enum Reorder {
     /// Reorders `items` so no element moves more than `maxDisplacement`

@@ -1,14 +1,8 @@
-// Access-unit splitting for corpus tooling: a captured Annex-B stream in,
-// per-frame byte ranges out. This is test/authoring machinery, not wire
-// contract — the live host packetizes per encoder callback and never
-// needs to split a stream — but the corpus and the round-trip harness
-// both need frame boundaries reconstructed from bytes alone.
-//
-// The rule (H.265 §7.4.2.4.4, reduced to what our encoder emits): a new
-// access unit begins at the first leading NAL — VPS/SPS/PPS/AUD/prefix
-// SEI or a VCL NAL — after the previous access unit's VCL NAL. Splits
-// land on start-code boundaries, so concatenating the ranges reproduces
-// the stream byte-exact.
+// Access-unit splitting for corpus tooling (not wire contract): a captured
+// Annex-B stream in, per-frame byte ranges out. A new access unit begins at
+// the first leading NAL (VPS/SPS/PPS/AUD/prefix SEI or VCL) after the
+// previous unit's VCL NAL; splits land on start codes, so concatenating
+// the ranges reproduces the stream byte-exact.
 
 import LyteCore
 

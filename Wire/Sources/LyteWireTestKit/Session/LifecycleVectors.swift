@@ -1,7 +1,6 @@
 // The lifecycle-codec vector-file model and loader:
-// `Wire/Vectors/lifecycle-v1.json` — the W4b session-lifecycle CTRL
-// messages (mode transition 0x09, session teardown 0x0A). Same doctrine
-// as the other loaders: TestKit may import Foundation, LyteWire may not.
+// `Wire/Vectors/lifecycle-v1.json` — mode transition 0x09 and session
+// teardown 0x0A.
 
 import Foundation
 import LyteWire

@@ -1,9 +1,7 @@
 // The capability vector-file model and loader:
-// `Wire/Vectors/capabilities-v1.json` — the W7 layer top to bottom:
-// the deterministic CBOR profile, the typed capability set, the
-// intersect algebra as data, and the CTRL message codecs 0x0F/0x11/
-// 0x12. Same doctrine as the other loaders: TestKit may import
-// Foundation, LyteWire may not.
+// `Wire/Vectors/capabilities-v1.json` — the deterministic CBOR profile,
+// the typed capability set, the intersect algebra, and the CTRL message
+// codecs 0x0F/0x11/0x12.
 
 import Foundation
 import LyteWire
@@ -168,9 +166,8 @@ public struct CapabilitySetVector: Codable, Sendable {
     }
 }
 
-/// One intersect vector — the W-G8 algebra as frozen data: decoding
-/// `aHex` and `bHex` and intersecting IN BOTH ORDERS must produce
-/// exactly `agreedHex` (commutativity is pinned by construction).
+/// One intersect vector: decoding `aHex` and `bHex` and intersecting in
+/// both orders must produce exactly `agreedHex`.
 public struct CapabilityIntersectVector: Codable, Sendable {
     public var name: String
     public var description: String

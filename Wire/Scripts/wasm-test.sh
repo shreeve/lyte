@@ -1,25 +1,16 @@
 #!/bin/sh
-# The wasm attestation leg: cross-build the ENTIRE Wire test suite for
-# wasm32-unknown-wasip1 and execute it under wasmtime. wasm32 is the third
-# platform (after macOS and Linux) on which every codec, FEC, Noise, PAKE,
-# ARQ, video, session and bulk suite runs and every frozen vector file under
-# Vectors/ verifies byte-exact. LyteWire being sans-IO and Foundation-free is
-# what makes this a build-and-run rather than a port.
-#
-# Toolchain pins, host-SDK selection and install commands:
-# Scripts/lib/wasm-toolchain.sh. Nothing is auto-installed.
-#
-# Usage: Wire/Scripts/wasm-test.sh   (no arguments; exits nonzero on any
-# missing tool, build failure, test failure, or an empty test run)
+# Cross-build the entire Wire test suite for wasm32-unknown-wasip1 and run
+# it under wasmtime, so every suite and frozen vector file verifies on a
+# third platform. Toolchain pins: Scripts/lib/wasm-toolchain.sh; nothing is
+# auto-installed. No arguments; exits nonzero on any missing tool, build
+# failure, test failure, or an empty test run.
 set -eu
 
 TRIPLE="wasm32-unknown-wasip1"
 
-# Resolve the package root PHYSICALLY (pwd -P): the tests locate the frozen
-# vectors via #filePath, and on macOS a symlinked working directory (/tmp →
-# /private/tmp is the classic) bakes paths into the binary that a WASI
-# preopen of the logical path never satisfies. Building from — and
-# preopening — the resolved path closes that gap.
+# Resolve the package root physically (pwd -P): the tests locate vectors
+# via #filePath, and a symlinked working directory (/tmp → /private/tmp)
+# bakes paths a WASI preopen of the logical path never satisfies.
 WIRE_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 REPO_ROOT="$(cd "${WIRE_ROOT}/.." && pwd -P)"
 . "${REPO_ROOT}/Scripts/lib/wasm-toolchain.sh"

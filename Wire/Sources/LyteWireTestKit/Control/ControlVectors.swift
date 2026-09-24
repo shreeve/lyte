@@ -1,10 +1,6 @@
 // The control-codec vector-file model and loader:
-// `Wire/Vectors/control-v1.json` — the CTRL/TLV/capability codecs that
-// were pinned end-side under mirror-and-flag during H2 (HS-11's idle
-// frame, HS-13/CL-9's input pair + lastInputSeq TLV, HS-18/CL-13's
-// audio-routing pair + capability key 9) and promoted into LyteWire by
-// the second codec-promotion slice. Same doctrine as the other
-// loaders: TestKit may import Foundation, LyteWire may not.
+// `Wire/Vectors/control-v1.json` — the idle frame, the input pair and
+// lastInputSeq TLV, the audio-routing pair, and capability key 9.
 
 import LyteCore
 import Foundation
@@ -53,15 +49,12 @@ public struct ControlEchoTuple: Codable, Sendable {
 }
 
 /// One control-codec vector. `codec` names the codec under test; kinds
-/// match the session file (`roundtrip` encodes the typed fields to
-/// exactly `messageHex` and decodes back; `decodeReject` throws
-/// `error`, a case name of the codec's error type). For
-/// `lastInputSeqTlv`, `messageHex` is a whole envelope datagram (the
-/// conn-id TLV precedent): decode must yield exactly `lastInputSeq`,
-/// and the datagram re-encodes byte-exactly. For `capabilitySet`,
-/// `messageHex` is a declaration's CBOR map: decode must answer
-/// exactly `hostAudioRouting` through the key-9 accessor and re-encode
-/// byte-exactly.
+/// match the session file (`error` is a case name of the codec's error
+/// type). For `lastInputSeqTlv`, `messageHex` is a whole envelope datagram:
+/// decode must yield exactly `lastInputSeq` and re-encode byte-exactly.
+/// For `capabilitySet`, `messageHex` is a declaration's CBOR map: decode
+/// must answer exactly `hostAudioRouting` through the key-9 accessor and
+/// re-encode byte-exactly.
 public struct ControlVector: Codable, Sendable {
     public var name: String
     public var description: String

@@ -1,8 +1,6 @@
 // The session-codec vector-file model and loader:
-// `Wire/Vectors/session-v1.json` — the CTRL/TLV codecs that were pinned
-// end-side (HS-12's conn-id TLV + path pair, HS-7/CL-3's IDR request) and
-// promoted into LyteWire by the codec-unification slice. Same doctrine as
-// the other loaders: TestKit may import Foundation, LyteWire may not.
+// `Wire/Vectors/session-v1.json` — the conn-id TLV, the path pair, and the
+// IDR request.
 
 import Foundation
 import LyteWire
@@ -36,12 +34,10 @@ public struct SessionVectorFile: FrozenVectorFile {
 }
 
 /// One session-codec vector. `codec` names the codec under test; kinds
-/// match the envelope file (`roundtrip` encodes fields to exactly
-/// `messageHex` and decodes back; `decodeReject` throws `error`, a case
-/// name of the codec's error type). For `connectionIdTlv`, `messageHex`
-/// is a whole envelope datagram: decode must yield the conn-id whose
-/// bytes are `connectionIdHex` (roundtrip: re-encoding the decoded
-/// envelope + payload reproduces the datagram byte-exactly).
+/// match the envelope file (`error` is a case name of the codec's error
+/// type). For `connectionIdTlv`, `messageHex` is a whole envelope datagram:
+/// decode must yield the conn-id `connectionIdHex` and re-encode
+/// byte-exactly.
 public struct SessionVector: Codable, Sendable {
     public var name: String
     public var description: String

@@ -32,12 +32,10 @@ public struct PostureVectorFile: FrozenVectorFile {
     }
 }
 
-/// One posture vector. `roundtrip` encodes the typed fields to exactly
-/// `messageHex` and decodes back; `decodeReject` throws `error`, the
-/// codec's error case name. `state` (audioTrackState) and `posture`
-/// (videoPostureState) are the enum case names; for `capabilitySet`,
-/// `messageHex` is a declaration's CBOR map and the two flags are what
-/// the key-15/16 accessors must read.
+/// One posture vector. `roundtrip`/`decodeReject` as elsewhere (`error` is
+/// the codec's error case name). `state`/`posture` are enum case names; for
+/// `capabilitySet`, `messageHex` is a declaration's CBOR map and the two
+/// flags are what the key-15/16 accessors must read.
 public struct PostureVector: Codable, Sendable {
     public var name: String
     public var description: String
