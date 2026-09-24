@@ -178,8 +178,10 @@ public enum AnnexBCheck {
     }
 
     /// Visits every NAL unit of length ≥ 2 in order. A start code is
-    /// `00 00 01`; a zero byte before it (a four-byte start code) is not
-    /// part of the preceding unit. Offsets are relative to `data`.
+    /// `00 00 01`; the zero bytes before it (a four-byte start code's, and
+    /// any trailing_zero_8bits, §B.2) are not part of the preceding unit —
+    /// a NAL unit never ends in 0x00 (§7.4.2). Offsets are relative to
+    /// `data`.
     private static func walkNalUnits(
         in data: UnsafeBufferPointer<UInt8>,
         _ visit: (HevcNalUnit) -> Void
@@ -195,7 +197,7 @@ public enum AnnexBCheck {
                 let nextStart = i + 3
                 if let start = pendingStart {
                     var end = i
-                    if end > start, data[end - 1] == 0 { end -= 1 }
+                    while end > start, data[end - 1] == 0 { end -= 1 }
                     let length = end - start
                     if length >= 2 {
                         visit(HevcNalUnit(
