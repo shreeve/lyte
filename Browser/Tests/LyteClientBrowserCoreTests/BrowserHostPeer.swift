@@ -70,7 +70,7 @@ final class BrowserHostPeer {
 
     func makeClient(
         pin: String = BrowserHostPeer.pin,
-        retry: BrowserControlSession.HandshakeRetry = .init()
+        retry: BrowserControlSession.HandshakeRetry = .firstDial
     ) throws -> BrowserControlSession {
         try BrowserControlSession(
             hostStaticPublicKeyHex: hostStaticHex, pin: pin,

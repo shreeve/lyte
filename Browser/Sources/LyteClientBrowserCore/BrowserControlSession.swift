@@ -39,7 +39,7 @@ public final class BrowserControlSession {
         }
     }
 
-    /// Message-1 retransmit schedule (the native initiator's defaults).
+    /// Message-1 retransmit schedule; a page dial is a first dial.
     public typealias HandshakeRetry = ClientHandshakeInitiator.Retry
 
     /// The chan-3 report cadence, the native shell's: inside the 25–50 ms
@@ -155,7 +155,7 @@ public final class BrowserControlSession {
     public init(
         hostStaticPublicKeyHex: String,
         pin: String,
-        handshakeRetry: HandshakeRetry = HandshakeRetry()
+        handshakeRetry: HandshakeRetry = .firstDial
     ) throws {
         guard let hostKey = Hex.bytes(hostStaticPublicKeyHex),
               hostKey.count == 32

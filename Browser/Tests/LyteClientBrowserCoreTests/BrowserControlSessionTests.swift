@@ -70,7 +70,7 @@ final class BrowserControlSessionTests: XCTestCase {
         var notes: [String] = []
         let lost = try client.begin(nowMicros: host.nowMicros)
 
-        host.advance(microseconds: 999_000)
+        host.advance(microseconds: 1_999_000)
         XCTAssertTrue(client.tick(nowMicros: host.nowMicros).outbound.isEmpty)
         host.advance(microseconds: 1_000)
         let resent = host.deliver(client.tick(nowMicros: host.nowMicros), notes: &notes)
