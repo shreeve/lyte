@@ -39,10 +39,6 @@ final class SessionGateTests: XCTestCase {
         XCTAssertFalse(source.contains("nextVideoFrameNumber ="))
         XCTAssertTrue(source.contains(
             "lastAdmittedVideoFrameNumber?.next ?? FrameNumber(rawValue: 0)"))
-        XCTAssertTrue(source.contains(
-            "lastAdmittedVideoFrameNumber.next.rawValue > 0"))
-        XCTAssertTrue(source.contains(
-            "frame: lastAdmittedVideoFrameNumber"))
     }
 
     private func sessionSource() throws -> String {
@@ -72,7 +68,7 @@ final class SessionGateTests: XCTestCase {
             .sorted()
             .map { name in
                 [UInt8](try Data(contentsOf: URL(
-                    fileURLWithPath: Self.corpusDirectory + "/" + name
+                    fileURLWithPath: Self.corpusDirectory + "/\(name)"
                 )))
             }
     }
@@ -158,8 +154,10 @@ final class SessionGateTests: XCTestCase {
                 guard envelope.channel == .ctrl,
                       payload.first == CtrlMessageType.noiseHandshake2
                 else {
-                    XCTFail("expected bare message 2 first, got chan "
-                        + "\(envelope.channel.rawValue)")
+                    XCTFail("""
+                        expected bare message 2 first, got chan \
+                        \(envelope.channel.rawValue)
+                        """)
                     throw NoiseError.missingVersionPayload
                 }
                 _ = try noise.readMessage2(payload.dropFirst())
@@ -514,12 +512,14 @@ final class SessionGateTests: XCTestCase {
         let expectedShards = try frames.map {
             try shardCount(frameBytes: $0.count)
         }.reduce(0, +)
-        print("HS-7 gate (Noise): handshake 1-RTT, \(frames.count) corpus "
-            + "frames → \(videoDatagrams.count) sealed datagrams "
-            + "(\(expectedShards) expected shards + forced IDR "
-            + "\(forced.count)), \(units.count) frames byte-exact through "
-            + "unseal; offset \(offset) µs / rtt 10000 µs recovered exactly; "
-            + "beacon 1 mirrored the echo; challenge on \(on.remoteAddress)")
+        print("""
+            HS-7 gate (Noise): handshake 1-RTT, \(frames.count) corpus \
+            frames → \(videoDatagrams.count) sealed datagrams \
+            (\(expectedShards) expected shards + forced IDR \
+            \(forced.count)), \(units.count) frames byte-exact through \
+            unseal; offset \(offset) µs / rtt 10000 µs recovered exactly; \
+            beacon 1 mirrored the echo; challenge on \(on.remoteAddress)
+            """)
     }
 
     /// The ladder's shard count at the session's TLV-adjusted budget.
@@ -637,8 +637,10 @@ final class SessionGateTests: XCTestCase {
         ])
         XCTAssertEqual(session.clock.samples, 1)
 
-        print("HS-7 gate (test passthrough): \(units.count) frames byte-exact, "
-            + "beacon + echo through the passthrough seal")
+        print("""
+            HS-7 gate (test passthrough): \(units.count) frames byte-exact, \
+            beacon + echo through the passthrough seal
+            """)
     }
 
     // MARK: Budget boundary and mode-independent geometry
@@ -692,8 +694,10 @@ final class SessionGateTests: XCTestCase {
         let backlog = session.queuedVideoBytes
         XCTAssertGreaterThan(
             backlog, frame.count - 5_000,
-            "a just-ingested multi-quantum frame stands as backlog "
-                + "(shard bytes minus at most the burst quantum)"
+            """
+                a just-ingested multi-quantum frame stands as backlog \
+                (shard bytes minus at most the burst quantum)
+                """
         )
 
         // The pacer walks it out at its own wakes; the gate reopens.

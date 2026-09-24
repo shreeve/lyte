@@ -27,6 +27,18 @@ typedef struct lyte_netio lyte_netio;
 /* Local UDP send-buffer exhaustion (ENOBUFS), retryable like EAGAIN but
    distinct for telemetry. */
 #define LYTE_NETIO_NO_BUFFER (-3)
+/* A soft network error: EHOSTUNREACH / EHOSTDOWN (a neighbor stopped
+   answering ARP — a sleeping or roaming client), ENETUNREACH / ENETDOWN
+   (a route or link flap), EPERM (a netfilter drop). On a connected UDP
+   socket Linux reports these through the pending socket error on the
+   next send or receive, which consumes it. The caller counts it as loss
+   and keeps the session; the liveness clock decides whether the peer is
+   gone. */
+#define LYTE_NETIO_TRANSIENT (-4)
+
+/* Maps a send/receive errno to 0 (would block), one of the codes above,
+   or -1 (fatal). Exposed so the mapping is testable. */
+int lyte_netio_errno_class(int err);
 
 /* One datagram to send. `tos` is the raw IPv4 TOS byte (DSCP << 2):
    audio 0xC0 (CS6/DSCP 48), video 0xA0 (CS5/DSCP 40). Every packet in a
@@ -93,7 +105,8 @@ int lyte_netio_enable_tx_timestamps(lyte_netio *n, char *err, size_t errlen);
 /* Sends up to `count` (≤ LYTE_NETIO_MAX_BATCH) datagrams in one sendmmsg
    call, each carrying its own IP_TOS control message. Returns the number
    actually sent — 0 if the socket would block, possibly short on a partial
-   send (caller retries the tail) — or -1 with `err` filled. If
+   send (caller retries the tail) — a negative LYTE_NETIO_* code, or -1
+   with `err` filled (see lyte_netio_errno_class). If
    `first_pkt_id` is non-NULL and TX timestamps are armed, it receives the
    pkt_id of the first datagram of this batch. */
 int lyte_netio_send_batch(lyte_netio *n, const lyte_netio_pkt *pkts, int count,
@@ -106,14 +119,16 @@ int lyte_netio_send_batch(lyte_netio *n, const lyte_netio_pkt *pkts, int count,
    socket (sendmsg with msg_name overrides the peer for that datagram).
    Carries the same per-packet IP_TOS cmsg as send_batch and counts
    against the TX-timestamp pkt_id stream. Returns 1 on success, 0 if
-   the socket would block, -1 with `err` filled. */
+   the socket would block, a negative LYTE_NETIO_* code, or -1 with `err`
+   filled. */
 int lyte_netio_send_to(lyte_netio *n, const lyte_netio_pkt *pkt,
                        const char *ip, uint16_t port,
                        char *err, size_t errlen);
 
 /* Receives up to `count` (≤ LYTE_NETIO_MAX_BATCH) datagrams in one
    recvmmsg call. Returns the number received (0 if the socket would
-   block), -1 with `err` filled. */
+   block), LYTE_NETIO_PEER_GONE or LYTE_NETIO_TRANSIENT, or -1 with `err`
+   filled. */
 int lyte_netio_recv_batch(lyte_netio *n, lyte_netio_slot *slots, int count,
                           char *err, size_t errlen);
 
@@ -124,6 +139,23 @@ int lyte_netio_poll_txstamps(lyte_netio *n, lyte_netio_txstamp *out, int max,
                              char *err, size_t errlen);
 
 void lyte_netio_free(lyte_netio *n);
+
+/* The socket's file descriptor, for readiness waits only (the caller
+   never reads, writes, or closes it). */
+int lyte_netio_fd(const lyte_netio *n);
+
+/* A nonblocking eventfd the sender thread waits on beside its sockets:
+   _signal makes it readable, _drain resets it. -1 on failure. */
+int lyte_netio_wake_new(void);
+void lyte_netio_wake_signal(int wake_fd);
+void lyte_netio_wake_drain(int wake_fd);
+
+/* Waits (ppoll) until one of up to 8 `fds` is ready for its `events`
+   (POLLIN/POLLOUT bits) or `timeout_ns` elapses (negative = forever).
+   Fills `revents`. Returns the number ready, 0 on timeout or a signal,
+   -1 on error. */
+int lyte_netio_wait(const int *fds, const short *events, short *revents,
+                    int count, int64_t timeout_ns);
 
 /* Re-arm dumpability after file-capability startup (prctl is variadic
  * and unreachable from Swift). A cap-tagged binary starts non-dumpable,

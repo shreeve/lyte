@@ -1,57 +1,30 @@
-// SessionWire: lyte-host's Lyte-UDP session leg (HS-7's Linux half, thin
-// over HostWire.Session — which owns the Noise responder handshake, the
-// seal discipline, the 1 Hz beacon, the conn-id TLV, path validation, and
-// the shared pacer). This file is only syscalls and scheduling: CNetIO
-// bind/connect, recvmmsg → Session.receive with real source tuples,
-// Session's paced datagrams → sendmmsg with per-class TOS (HostCore's
-// WireTos policy: ctrl/audio/repairs 0xC0 CS6, video 0xA0 CS5 — DSCP 40
-// per packet is J-G1's tcpdump check), and the forced-IDR + VBV polls
-// the encoder consults before each frame.
+// SessionWire: lyte-host's Lyte-UDP session shell over HostWire.Session
+// (which owns the Noise responder handshake, sealing, beacons, the
+// conn-id TLV, path validation, the pacer, and the estimator). This file
+// is syscalls, threads, and scheduling: CNetIO sockets, recvmmsg into
+// Session.receive with real source tuples, Session's paced datagrams
+// through SocketOutbox into sendmmsg with per-class TOS (HostCore's
+// WireTos: control/audio/repairs 0xC0, video 0xA0), and the per-poll
+// snapshot the capture leg reads.
 //
-// Mode (extending HS-5's --wire-out into a real session):
-//   • Noise: bind, print the host static public key, block
-//     until a client's IK message 1 arrives (that datagram's source is
-//     the session's initial validated tuple), connect() to it, complete
-//     the handshake, then stream. `--wire-listen PORT` binds a fixed
-//     port; `--wire-out HOST:PORT` pre-connects and still awaits msg1.
+// Sockets: one listening socket bound to the session port and never
+// connected — it hears message 1 from any client and a migrated client's
+// new path, and carries every explicitly addressed datagram. When a
+// handshake completes, a video socket (SO_PRIORITY 4) and a latency
+// socket (control and audio, 6) join the port via SO_REUSEPORT and
+// connect to the authenticated client; a path promotion re-connects them.
 //
-// Threading honesty, amended at HS-15 and again at the fps-ceiling fix:
-// the VIDEO PipeWire loop thread runs capture → encode → sendFrame
-// (ingest only) and the idle-floor tick's service pass; audio arrives on
-// ITS OWN PipeWire loop thread (CPipeWireAudio owns a separate
-// pw_main_loop) at the 5 ms cadence — a cadence the ~16.7 ms video tick
-// could never honor, which is exactly why audio cannot funnel through
-// the video thread. One NSLock therefore guards the (single-threaded by
-// design) Session and the outbox. Audio capture never waits for that
-// broad lock: it publishes each 5 ms packet into a narrow FIFO mailbox
-// and wakes the elevated sender. Sequence allocation, Noise sealing,
-// pacer insertion, and socket flush still happen under the Session lock,
-// preserving one mutation order. Large video ingests cooperatively drain
-// the mailbox between small shard groups, so packetize/FEC/seal cannot
-// monopolize the lock across an audio deadline.
-//
-// THE FPS-CEILING FIX (Q-1's red row, hunted 2026-07-29): sendFrame
-// used to drain the pacer to empty before returning — the capture
-// thread paid the frame's full wire serialization time (~8·bytes/rate:
-// ~11 ms for a 61 KB motion frame at 50 Mbps) IN SERIES with the ~7 ms
-// NVENC encode, so the loop cycled at ~21 ms and the compositor only
-// got a buffer back ~48 times a second. The drain now runs on a
-// DEDICATED SENDER THREAD (`drainLoop`, parked on a condition variable
-// while the pacer is idle): sendFrame ingests, signals, and returns in
-// ~1.5 ms, so capture+encode of frame N+1 overlaps the wire time of
-// frame N. Backpressure moved with it: the capture loop consults
-// `videoBacklogWireTimeNS` pre-encode and SKIPS a capture frame while
-// more than the resiliency bound of video wire-time is queued — the
-// same frame the old synchronous drain silently starved out of the
-// PipeWire buffer pool, now counted and cheap (no encode is spent on
-// it). `--no-idle-floor` still stalls beacons between damage frames
-// while the pacer is empty (the documented stub limitation).
-//
-// HS-12 rebind wiring: media re-routing executes .promoted by
-// connect()ing to the new tuple, and challenges to unvalidated tuples
-// ride lyte_netio_send_to (per-datagram address + TOS on the connected
-// socket) — the exact-tuple rule §6 demands. The live G7 roam run is
-// still owed when a second client address exists to roam to.
+// Threads: the capture thread (DirectEyeLeg) calls sendFrame and
+// takeLegSnapshot; the audio thread only publishes into a narrow mailbox
+// (packets and track states) and tries the session lock without waiting;
+// the janitor runs service() every 10 ms for shell work (clipboard, bulk
+// files, audio routing, pairing) off the lock; the SCHED_RR sender thread
+// waits in ppoll on its wake eventfd, the sockets, and the session's next
+// timer, then services and flushes. One NSLock guards the Session and the
+// outbox, so sequence allocation, sealing, pacer insertion, and socket
+// flush keep one order; console lines are formatted under it and printed
+// after it is released. The agreed capability flags the audio and capture
+// threads poll live under a separate narrow config lock.
 
 import LyteIO
 import LyteCore
@@ -82,12 +55,16 @@ func elevateCurrentThread(_ label: String, rtPriority: Int32) {
     // On Linux, who == 0 with PRIO_PROCESS is the calling task —
     // per-thread nice.
     if setpriority(__priority_which_t(PRIO_PROCESS.rawValue), 0, -10) == 0 {
-        print("sched: \(label) thread nice -10 (no rtprio rlimit — "
-            + "SCHED_RR refused; see Host/README to grant it)")
+        print("""
+            sched: \(label) thread nice -10 (no rtprio rlimit — \
+            SCHED_RR refused; see Host/README to grant it)
+            """)
         return
     }
-    print("sched: \(label) thread NOT elevated (unprivileged, no "
-        + "RLIMIT_NICE) — running at default CFS priority")
+    print("""
+        sched: \(label) thread NOT elevated (unprivileged, no \
+        RLIMIT_NICE) — running at default CFS priority
+        """)
     #endif
 }
 
@@ -97,8 +74,20 @@ final class SessionWire {
         case terminationRequested
     }
 
-    private let netio: OpaquePointer
+    /// The listening socket: bound to the session port and never
+    /// connected, so it receives every tuple no connected socket claims —
+    /// message 1 from any client, and a migrated client's new path. It
+    /// also carries every datagram addressed explicitly (path challenges,
+    /// pre-establishment replies).
+    private let listenNetio: OpaquePointer
+    /// The media sockets, connected to the client's primary tuple once it
+    /// is known (SO_REUSEPORT members of the listening port, so the wire
+    /// 4-tuple is one): video at SO_PRIORITY 4, control and audio at 6,
+    /// each with its own kernel send buffer. Nil until then.
+    private var videoNetio: OpaquePointer?
     private var latencyNetio: OpaquePointer?
+    /// wire-out mode: only this peer may complete a handshake.
+    private let requiredPeer: (host: String, port: UInt16)?
     private let handshakeWitness: FileHandle? = {
         guard let path = ProcessInfo.processInfo.environment[
             "LYTE_HANDSHAKE_WITNESS_JSONL"] else { return nil }
@@ -129,12 +118,15 @@ final class SessionWire {
 
     /// Datagrams handed over by the session's paced sink, flushed as
     /// sendmmsg batches.
-    private var outbox: [VideoChannelDatagram] = []
+    private var outbox = SocketOutbox()
 
     /// Scratch for one sendmmsg batch: pointers must stay valid for the
     /// duration of the call, so datagrams are staged here.
     private let scratch: UnsafeMutablePointer<UInt8>
     private static let scratchCapacity = Int(LYTE_NETIO_MAX_BATCH) * 1_200
+    /// One batch's packet descriptors, reused across flushes.
+    private var sendPackets: [lyte_netio_pkt] = []
+    private var sendError = [CChar](repeating: 0, count: 256)
 
     /// One flat region for recv_batch slots (stable pointers, one slot
     /// stride per batch position).
@@ -229,6 +221,9 @@ final class SessionWire {
     /// The posture the audio leaf is actually running (main seeds it;
     /// applied flips move it). Mutated under `lock`.
     private(set) var currentAudioRouting: HostAudioRoutingMode = .hostAudible
+    /// Pairing outcomes delivered under the lock, executed (keystore
+    /// write, console lines) outside it by `service()`.
+    private var pendingPairingEvents: [PairingResponderService.Event] = []
     /// 0x18 requests delivered by the session, awaiting the shell's
     /// flip outside the lock (drained by `service()`).
     private var pendingAudioRouting: [HostAudioRoutingMode] = []
@@ -265,25 +260,20 @@ final class SessionWire {
     private var cursorAnnounceOwed = false
 
     private(set) var framesSent = 0
-    /// Stage books for the fps-ceiling hunt (Q-1's red row): the last
-    /// sendFrame's packetize+FEC+seal time and its pacer-drain time,
-    /// split so the Sink's 5 s stage window can say where the frame
-    /// period went. Written and read on the video loop thread only.
-    private(set) var lastFrameIngestNanos: UInt64 = 0
-    private(set) var lastFrameDrainNanos: UInt64 = 0
     /// Most recent successfully admitted frame, for the synchronous
     /// encoder callback to attach QP/IDR-cause fields to its flight.
     private var lastFrameForTelemetry: FrameNumber?
-    private struct PendingAudioPacket {
-        var bytes: [UInt8]
-        var captureMicros: UInt64
-        var offeredAtNS: UInt64
+    /// What the audio capture thread publishes, in capture order: 5 ms
+    /// packets and the tripwire's track-state announcements.
+    private enum AudioMailboxEntry {
+        case packet(bytes: [UInt8], captureMicros: UInt64, offeredAtNS: UInt64)
+        case trackState(AudioTrackState.State)
     }
     /// The audio capture thread owns only this narrow publication lock.
     /// The Session owner swaps the whole FIFO out before doing any
     /// framing/sealing work, so capture never waits for video.
     private let audioMailboxLock = NSLock()
-    private var audioMailbox: [PendingAudioPacket] = []
+    private var audioMailbox: [AudioMailboxEntry] = []
     private static let audioMailboxCapacity = 64
     private(set) var audioMailboxMaxDepth = 0
     private(set) var audioMailboxOverflows = 0
@@ -302,42 +292,32 @@ final class SessionWire {
     private(set) var audioPacketsSent = 0
     private(set) var audioSendFailures = 0
     private(set) var audioPacketsDroppedPreSession = 0
-    private(set) var datagramsSent = 0
-    private(set) var bytesSent = 0
-    private(set) var socketWouldBlockCount = 0
-    private(set) var socketPendingMaxDatagrams = 0
-    private(set) var socketPendingMaxBytes = 0
-    private(set) var audioSocketWouldBlockCount = 0
-    private(set) var audioSocketOutboxMaxNS: UInt64 = 0
-    private(set) var audioSocketWorstSeq: UInt16?
-    private(set) var audioSocketWorstEnqueuedAtNS: UInt64?
-    private(set) var audioSocketWorstAcceptedAtNS: UInt64?
-    private(set) var audioSocketWorstBlockedByVideo = false
+    /// The socket outbox's own books (sends, would-blocks, ENOBUFS,
+    /// shedding, audio outbox delay). Read after shutdown.
+    var outboxCounters: SocketOutboxCounters { outbox.counters }
     private(set) var socketSendBufferBytes = 0
     private(set) var latencySocketSendBufferBytes = 0
     private(set) var latencySocketOutqMaxBytes = 0
     private(set) var socketOutqMaxBytes = 0
     private(set) var socketOutqQueryFailures = 0
-    private(set) var socketENOBUFSCount = 0
-    private(set) var videoSocketWouldBlockCount = 0
-    private(set) var latencySocketWouldBlockCount = 0
-    private(set) var videoSocketENOBUFSCount = 0
-    private(set) var latencySocketENOBUFSCount = 0
-    private(set) var socketFreshVideoShedDatagrams = 0
-    private(set) var socketFreshVideoShedBytes = 0
+    private(set) var receiveTransientErrors = 0
     private var currentVideoSocketOutqBytes = 0
     private var currentLatencySocketOutqBytes = 0
     private var kernelPressureGovernor = KernelPressureGovernor()
     private var kernelPressureDecision: KernelPressureDecision?
-    private struct AudioOutboxTrace {
-        var enqueuedAtNS: UInt64
-        var blockedByVideo: Bool
-    }
-    private var audioOutboxTrace: [UInt16: AudioOutboxTrace] = [:]
-    private var freshVideoReleasedAtNS: [UInt64: UInt64] = [:]
-    private var freshVideoFramesPartiallyAccepted: Set<UInt32> = []
-    private(set) var challengesSentOffPrimary = 0
     private(set) var lastSendError: String?
+    private(set) var sendErrors = 0
+    /// The agreed capability flags the capture and audio threads poll,
+    /// published once at agreement (the agreement never changes after
+    /// it lands). Read and written under `configLock`, never the session
+    /// lock, so the 5 ms audio path and the 1 ms capture poll never wait
+    /// behind a video commit.
+    private struct AgreedMediaPosture {
+        var audioQuiet = false
+        var videoQuiet = false
+        var chromaModes: [UInt64]?
+    }
+    private var _agreedPosture = AgreedMediaPosture()
     /// HS-16 log throttle: the last rate a `rate:` line reported.
     private var lastPrintedRate: Int?
     /// HS-20: the encoder-VBV policy (armed by main once the encoder's
@@ -371,29 +351,62 @@ final class SessionWire {
     /// is closed — session-ending, not an I/O failure (HS-11).
     private(set) var peerGone = false
 
-    /// The sender thread (the fps-ceiling fix): parks on `drainCondition`
-    /// while the pacer is idle; `signalDrain()` wakes it whenever bytes
-    /// were enqueued. It runs the exact drainToIdle loop the capture
-    /// thread used to run inline.
+    /// The sender thread's wake (an eventfd): capture, audio, and the
+    /// janitor signal it when bytes were enqueued; it also wakes on socket
+    /// readability and at the session's next timer (drainLoop).
+    private let wakeFd: Int32
+    /// Guards the sender thread's lifecycle flags below. Lock order:
+    /// `lock` → `drainCondition` (takeLegSnapshot), never the reverse.
     private let drainCondition = NSCondition()
-    private var drainWork = false
     private var drainStop = false
     private var drainExited = false
+    /// The last flush ended on a full socket buffer (the lane to wait on
+    /// for POLLOUT) or on ENOBUFS (a short back-off). Under `lock`.
+    private var blockedLane: SocketLane?
+    private var noBufferBackoff = false
     /// A drain-thread send failure (not peer-gone — that has its own
     /// flag): recorded loud and session-ending, mirroring what a thrown
     /// sendFrame used to do to the capture loop.
     private var drainFailed = false
 
-    /// True once nothing more can usefully happen: the peer's socket is
-    /// closed, or the lifecycle machine reached `closed` (teardown either
-    /// way, or the 30 s liveness timeout). The capture loop quits on it.
-    var sessionEnded: Bool {
+    /// Everything the capture loop consults per poll, taken with one
+    /// session-lock acquisition (the agreed flags and the input stamp come
+    /// from the narrow config lock). Taking it consumes the pending IDR
+    /// demand and rate directive.
+    struct LegSnapshot {
+        /// Nothing more can usefully happen: the peer's socket is closed,
+        /// the lifecycle reached `closed` (teardown or the 30 s liveness
+        /// timeout), or the drain thread failed. The capture loop quits.
+        var ended: Bool
+        var agreedChromaModes: [UInt64]?
+        var videoQuietPostureAgreed: Bool
+        /// Monotonic ns of the last client input (the video posture's wake).
+        var lastInputActivityNS: UInt64
+        /// A rate-control move the encoder must apply before its next frame.
+        var directive: EncoderRateDirective?
+        /// A forced IDR owed on the next encode, with its causes.
+        var demand: FreshKeyframeDemand
+    }
+
+    func takeLegSnapshot() -> LegSnapshot {
+        let (posture, inputNS) = withConfigLock {
+            (_agreedPosture, _lastInputActivityNS)
+        }
         lock.lock()
         defer { lock.unlock() }
-        if peerGone || session?.lifecycleState == .closed { return true }
-        drainCondition.lock()
-        defer { drainCondition.unlock() }
-        return drainFailed
+        var ended = peerGone || session?.lifecycleState == .closed
+        if !ended {
+            drainCondition.lock()
+            ended = drainFailed
+            drainCondition.unlock()
+        }
+        return LegSnapshot(
+            ended: ended,
+            agreedChromaModes: posture.chromaModes,
+            videoQuietPostureAgreed: posture.videoQuiet,
+            lastInputActivityNS: inputNS,
+            directive: takeEncoderRateDirectiveLocked(),
+            demand: session?.takeFreshKeyframeDemand() ?? [])
     }
 
     var counters: VideoChannelCounters { session.videoCounters }
@@ -409,9 +422,7 @@ final class SessionWire {
     /// lands — or forever, for a grandfathered pre-W7 peer). The Sink
     /// branches the encoder posture on it at open.
     var agreedChromaModes: [UInt64]? {
-        lock.lock()
-        defer { lock.unlock() }
-        return session?.agreedCapabilities?.chromaModes
+        withConfigLock { _agreedPosture.chromaModes }
     }
     /// HS-21: whether the flood dial currently demands a retry cookie.
     var handshakeCookieMode: Bool { session?.handshakeCookieMode ?? false }
@@ -485,28 +496,25 @@ final class SessionWire {
         self.pairing = pairing
         self.onPairingEvent = onPairingEvent
 
+        self.requiredPeer = peer
         var err = [CChar](repeating: 0, count: 256)
         guard let n = lyte_netio_new("0.0.0.0", listenPort ?? 0,
                                      &err, err.count) else {
             throw HostError("session socket open failed: \(errString(err))")
         }
-        netio = n
-        guard lyte_netio_set_priority(n, 4) == 0 else {
+        listenNetio = n
+        guard lyte_netio_set_priority(n, 6) == 0 else {
             lyte_netio_free(n)
-            throw HostError("video socket SO_PRIORITY failed")
+            throw HostError("listening socket SO_PRIORITY failed")
         }
-        socketSendBufferBytes = max(
-            Int(lyte_netio_send_buffer_bytes(n)), 0)
-        if let peer {
-            guard lyte_netio_set_peer(n, peer.host, peer.port,
-                                      &err, err.count) == 0 else {
-                lyte_netio_free(n)
-                throw HostError("connect to \(peer.host):\(peer.port) "
-                    + "failed: " + errString(err))
-            }
+        wakeFd = lyte_netio_wake_new()
+        guard wakeFd >= 0 else {
+            lyte_netio_free(n)
+            throw HostError("sender wake eventfd failed (errno \(errno))")
         }
         scratch = UnsafeMutablePointer<UInt8>.allocate(
             capacity: Self.scratchCapacity)
+        sendPackets.reserveCapacity(Int(LYTE_NETIO_MAX_BATCH))
         let recvBatchSize = Int(LYTE_NETIO_MAX_BATCH)
         let recvSlotCapacity = Self.recvSlotCapacity
         let recvBuffer = UnsafeMutablePointer<UInt8>.allocate(
@@ -522,14 +530,14 @@ final class SessionWire {
         }
         recvSlots = slots
         if let peer {
-            try openLatencyLane(peerHost: peer.host, peerPort: peer.port)
+            try connectMedia(host: peer.host, port: peer.port)
         }
 
         // The sender thread comes up parked (no work until the first
         // ingest signals it); it holds `self` for its lifetime, so the
         // shell must stop it (shutdown does) before the process lets
         // the SessionWire go. SessionWire is cross-thread by design
-        // (video loop, audio loop, sender thread) with `lock` as the
+        // (capture, audio, janitor, sender threads) with `lock` as the
         // discipline — the unsafe capture states that fact to the
         // compiler, exactly like the audio thread's Unmanaged
         // trampoline does implicitly.
@@ -550,7 +558,11 @@ final class SessionWire {
         if let latencyNetio {
             lyte_netio_free(latencyNetio)
         }
-        lyte_netio_free(netio)
+        if let videoNetio {
+            lyte_netio_free(videoNetio)
+        }
+        lyte_netio_free(listenNetio)
+        close(wakeFd)
     }
 
     private func traceHandshake(
@@ -567,30 +579,42 @@ final class SessionWire {
         handshakeWitness.write(Data([0x0A]))
     }
 
-    private func openLatencyLane(
-        peerHost: String, peerPort: UInt16
-    ) throws {
-        guard latencyNetio == nil else { return }
+    /// Points the media sockets at the client: opens them on first use
+    /// (bound to the listening port) or re-connects them (a path
+    /// promotion).
+    private func connectMedia(host: String, port: UInt16) throws {
         var err = [CChar](repeating: 0, count: 256)
-        let localPort = lyte_netio_local_port(netio)
-        guard let lane = lyte_netio_new(
-            "0.0.0.0", localPort, &err, err.count
-        ) else {
-            throw HostError("latency socket open failed: \(errString(err))")
+        func open(priority: Int32, _ what: String) throws -> OpaquePointer {
+            guard let socket = lyte_netio_new(
+                "0.0.0.0", lyte_netio_local_port(listenNetio), &err, err.count
+            ) else {
+                throw HostError("\(what) socket open failed: \(errString(err))")
+            }
+            guard lyte_netio_set_priority(socket, priority) == 0 else {
+                lyte_netio_free(socket)
+                throw HostError("\(what) socket SO_PRIORITY failed")
+            }
+            return socket
         }
-        guard lyte_netio_set_peer(
-            lane, peerHost, peerPort, &err, err.count
-        ) == 0 else {
-            lyte_netio_free(lane)
-            throw HostError("latency socket connect failed: \(errString(err))")
+        if videoNetio == nil {
+            let video = try open(priority: 4, "video")
+            videoNetio = video
+            socketSendBufferBytes = max(
+                Int(lyte_netio_send_buffer_bytes(video)), 0)
         }
-        guard lyte_netio_set_priority(lane, 6) == 0 else {
-            lyte_netio_free(lane)
-            throw HostError("latency socket SO_PRIORITY failed")
+        if latencyNetio == nil {
+            let latency = try open(priority: 6, "latency")
+            latencyNetio = latency
+            latencySocketSendBufferBytes = max(
+                Int(lyte_netio_send_buffer_bytes(latency)), 0)
         }
-        latencyNetio = lane
-        latencySocketSendBufferBytes = max(
-            Int(lyte_netio_send_buffer_bytes(lane)), 0)
+        for (socket, what) in [(videoNetio!, "video"), (latencyNetio!, "latency")] {
+            guard lyte_netio_set_peer(socket, host, port, &err, err.count) == 0
+            else {
+                throw HostError(
+                    "\(what) connect to \(host):\(port) failed: \(errString(err))")
+            }
+        }
     }
 
     private func makeSession(crypto: SessionCryptoMode, clientTuple: FourTuple) {
@@ -604,38 +628,19 @@ final class SessionWire {
             ),
             clientTuple: clientTuple,
             now: SystemMonotonicClock.nowNanoseconds,
+            rng: SystemRandomNumberGenerator(),
             sendAccounting: .socketConfirmed
         ) { [weak self] datagram in
-            self?.appendOutbox(datagram)
+            self?.outbox.enqueue(
+                datagram, now: SystemMonotonicClock.nowNanoseconds)
         }
-    }
-
-    private func appendOutbox(_ datagram: VideoChannelDatagram) {
-        if datagram.pacerClass == .audio {
-            let blockedByVideo = outbox.contains {
-                $0.pacerClass == .freshVideo
-                    || $0.pacerClass == .videoTail
-                    || $0.pacerClass == .refinement
-            }
-            audioOutboxTrace[datagram.seq.rawValue] = AudioOutboxTrace(
-                enqueuedAtNS: SystemMonotonicClock.nowNanoseconds, blockedByVideo: blockedByVideo)
-        }
-        if datagram.pacerClass == .freshVideo {
-            freshVideoReleasedAtNS[datagramTraceKey(datagram)] = SystemMonotonicClock.nowNanoseconds
-        }
-        outbox.append(datagram)
-    }
-
-    private func datagramTraceKey(_ datagram: VideoChannelDatagram) -> UInt64 {
-        UInt64(datagram.frameNumber.rawValue) << 16
-            | UInt64(datagram.seq.rawValue)
     }
 
     @discardableResult
     private func observeKernelPressure(
         _ session: Session, now: UInt64
     ) -> KernelPressureDecision {
-        let videoOutq = Int(lyte_netio_outq_bytes(netio))
+        let videoOutq = Int(lyte_netio_outq_bytes(videoNetio ?? listenNetio))
         if videoOutq >= 0 {
             currentVideoSocketOutqBytes = videoOutq
             socketOutqMaxBytes = max(socketOutqMaxBytes, videoOutq)
@@ -660,10 +665,10 @@ final class SessionWire {
                 latencyKernelBytes: currentLatencySocketOutqBytes,
                 videoSendBufferBytes: socketSendBufferBytes,
                 latencySendBufferBytes: latencySocketSendBufferBytes,
-                videoWouldBlockCount: videoSocketWouldBlockCount,
-                latencyWouldBlockCount: latencySocketWouldBlockCount,
-                videoENOBUFSCount: videoSocketENOBUFSCount,
-                latencyENOBUFSCount: latencySocketENOBUFSCount,
+                videoWouldBlockCount: outbox.counters.videoWouldBlockCount,
+                latencyWouldBlockCount: outbox.counters.latencyWouldBlockCount,
+                videoENOBUFSCount: outbox.counters.videoNoBufferCount,
+                latencyENOBUFSCount: outbox.counters.latencyNoBufferCount,
                 pacerRateBitsPerSecond: session.pacerRateBitsPerSecond,
                 videoQueueBudgetNS: session.videoQueueBudgetNS,
                 frameBudgetBytes: session.frameByteCeiling(fps: 60)))
@@ -671,54 +676,13 @@ final class SessionWire {
         return decision
     }
 
-    private func shedOldestStaleFreshVideo(
-        now: UInt64, budgetNS: UInt64
-    ) {
-        guard let session else { return }
-        var oldest: (frame: UInt32, releasedAt: UInt64)?
-        for datagram in outbox
-        where datagram.pacerClass == .freshVideo {
-            let frame = datagram.frameNumber.rawValue
-            guard !freshVideoFramesPartiallyAccepted.contains(frame)
-            else { continue }
-            guard let releasedAt = freshVideoReleasedAtNS[
-                datagramTraceKey(datagram)],
-                KernelPressureGovernor.shouldShedAtSocket(
-                    priorityClass: datagram.pacerClass,
-                    releasedAtNS: releasedAt,
-                    nowNS: now,
-                    videoQueueBudgetNS: budgetNS)
-            else { continue }
-            if oldest == nil || releasedAt < oldest!.releasedAt {
-                oldest = (frame, releasedAt)
-            }
-        }
-        guard let oldest else { return }
-        var droppedDatagrams = 0
-        var droppedBytes = 0
-        outbox.removeAll { datagram in
-            guard datagram.pacerClass == .freshVideo,
-                  datagram.frameNumber.rawValue == oldest.frame
-            else { return false }
-            freshVideoReleasedAtNS.removeValue(
-                forKey: datagramTraceKey(datagram))
-            session.discardPendingDatagram(datagram)
-            droppedDatagrams += 1
-            droppedBytes += datagram.bytes.count
-            return true
-        }
-        session.noteKernelPressureFreshVideoShed(
-            datagrams: droppedDatagrams, bytes: droppedBytes)
-        socketFreshVideoShedDatagrams += droppedDatagrams
-        socketFreshVideoShedBytes += droppedBytes
-    }
-
     private func pumpForSocketState(_ session: Session) {
         let now = SystemMonotonicClock.nowNanoseconds
         let pressure = observeKernelPressure(session, now: now)
         if pressure.state == .latencyOnly {
-            shedOldestStaleFreshVideo(
-                now: now, budgetNS: session.videoQueueBudgetNS)
+            outbox.shedOldestStaleFreshVideo(
+                ledger: session, now: now,
+                budgetNS: session.videoQueueBudgetNS)
         }
         if outbox.isEmpty, pressure.allowVideoPump {
             session.pump(now: now)
@@ -728,100 +692,86 @@ final class SessionWire {
     }
 
     /// Noise mode: block until a client completes message 1 (the session
-    /// establishes inside `receive`), up to `timeoutSeconds`. Prints the
+    /// establishes inside `receive`), for up to `timeoutSeconds` (nil = as
+    /// long as it takes, the listening service's posture). Prints the
     /// static public key the client must hold. Call before capture opens
     /// so no video is encoded for nobody.
+    ///
+    /// Until a handshake completes the host is bound to no client: only
+    /// plausible handshake initiations reach the session, from any tuple
+    /// (a wire-out host accepts only its peer), and the one that
+    /// authenticates names the client's path — the media sockets connect
+    /// there. A spoofed, unpaired, or abandoned message 1 cannot lock out
+    /// the next client.
     func awaitClient(
         hostStatic: NoiseKeyPair,
-        timeoutSeconds: Double,
+        timeoutSeconds: Double?,
         stopRequested: () -> Bool = { false }
     ) throws -> ClientAwaitOutcome {
-        print("noise: host static public key "
-            + Hex.string(hostStatic.publicKey))
-        print("noise: awaiting client handshake on port "
-            + "\(lyte_netio_local_port(netio)) …")
+        print("""
+            noise: host static public key \
+            \(Hex.string(hostStatic.publicKey))
+            """)
+        print("""
+            noise: awaiting client handshake on port \
+            \(lyte_netio_local_port(listenNetio)) …
+            """)
         traceHandshake("awaitClientBegin", fields: [
             "pid": String(getpid()),
-            "primaryLocalPort": String(lyte_netio_local_port(netio)),
-            "latencySocketExists": String(latencyNetio != nil),
+            "primaryLocalPort": String(lyte_netio_local_port(listenNetio)),
         ])
 
-        let deadline = SystemMonotonicClock.nowNanoseconds + UInt64(timeoutSeconds * 1e9)
-        while SystemMonotonicClock.nowNanoseconds < deadline {
+        let deadline = timeoutSeconds.map {
+            SystemMonotonicClock.nowNanoseconds + UInt64($0 * 1e9)
+        }
+        while deadline.map({ SystemMonotonicClock.nowNanoseconds < $0 }) ?? true {
             if stopRequested() {
                 return .terminationRequested
             }
             var established = false
             lock.lock()
             do {
-                try receiveAll(from: netio) { [weak self] datagram, tuple in
+                let handle: ([UInt8], FourTuple) -> Void = { [weak self]
+                    datagram, tuple in
                     guard let self else { return }
+                    guard self.session?.phase != .established else {
+                        self.receiveEstablished(datagram, from: tuple)
+                        return
+                    }
+                    self.awaitPrimaryDatagrams += 1
+                    // Shape check, not trust: the gate still authenticates.
+                    // A relaunched host also hears the previous session's
+                    // sealed feedback from the client's old port; only an
+                    // initiation is worth a session's attention.
+                    let plausible = Session.looksLikeHandshakeInitiation(datagram)
+                        && self.admitsPeer(tuple)
+                    let payloadType: UInt8? = (try? Envelope.decode(
+                        datagram[...]))?.1.first
+                    self.traceHandshake("primaryDatagram", fields: [
+                        "ordinal": String(self.awaitPrimaryDatagrams),
+                        "bytes": String(datagram.count),
+                        "remoteAddress": tuple.remoteAddress,
+                        "remotePort": String(tuple.remotePort),
+                        "shapeAccepted": String(plausible),
+                        "payloadType": payloadType.map(String.init) ?? "",
+                    ])
+                    guard plausible else { return }
                     if self.session == nil {
-                        self.awaitPrimaryDatagrams += 1
-                        // Only a plausible handshake initiation may pick
-                        // the tuple the socket and session pin to. A host
-                        // relaunched under a live client (the F-5 restart
-                        // rung) binds while the client's dead session is
-                        // still spraying sealed feedback from its OLD
-                        // source port — latching onto that first arrival
-                        // connect()s the socket to a tuple that will never
-                        // handshake, and the kernel then filters the real
-                        // re-dial (fresh ephemeral port) forever. Shape
-                        // check, not trust: the gate still authenticates.
-                        let plausible =
-                            Self.looksLikeHandshakeInitiation(datagram)
-                        let payloadType: UInt8? = (try? Envelope.decode(
-                            datagram[...]))?.1.first
-                        self.traceHandshake("primaryDatagram", fields: [
-                            "ordinal": String(self.awaitPrimaryDatagrams),
-                            "bytes": String(datagram.count),
-                            "remoteAddress": tuple.remoteAddress,
-                            "remotePort": String(tuple.remotePort),
-                            "shapeAccepted": String(plausible),
-                            "payloadType": payloadType.map(String.init) ?? "",
-                            "latencySocketExists":
-                                String(self.latencyNetio != nil),
-                        ])
-                        guard plausible else { return }
-                        // Its source is the session's initial tuple;
-                        // connect() so the send path has a peer.
-                        var err = [CChar](repeating: 0, count: 256)
-                        guard lyte_netio_set_peer(
-                            self.netio, tuple.remoteAddress, tuple.remotePort,
-                            &err, err.count) == 0 else {
-                            self.emit(
-                                "session: connect to \(tuple.remoteAddress):"
-                                    + "\(tuple.remotePort) failed: "
-                                    + "\(errString(err))")
-                            return
-                        }
-                        do {
-                            try self.openLatencyLane(
-                                peerHost: tuple.remoteAddress,
-                                peerPort: tuple.remotePort)
-                            self.traceHandshake(
-                                "latencySocketOpened", fields: [
-                                    "remoteAddress": tuple.remoteAddress,
-                                    "remotePort": String(tuple.remotePort),
-                                ])
-                        } catch {
-                            self.emit("session: \(error)")
-                            return
-                        }
                         self.makeSession(
                             crypto: .noise(hostStatic: hostStatic),
                             clientTuple: tuple
                         )
                     }
-                    let events = self.session.receive(
+                    for event in self.session.receive(
                         datagram, from: tuple,
-                        now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-                    )
-                    for event in events {
-                        self.log(event)
+                        now: SystemMonotonicClock.nowNanoseconds,
+                        hostMicroseconds: SystemMonotonicClock.nowMicroseconds
+                    ) {
+                        self.execute(event)
                         if case .handshakeCompleted = event { established = true }
                     }
                 }
+                try receiveFromAll(handle)
                 // A pre-establishment pump is what lets HS-21's 0x13
                 // RetryChallenge (enqueued into the pacer by
                 // Session.receive under flood) actually leave the box:
@@ -841,7 +791,9 @@ final class SessionWire {
             lock.unlock()
             flushLogLines()
             if done {
-                try drainToIdle()
+                // The sender thread owns the established session's pacing
+                // from here.
+                signalDrain()
                 return .established
             }
             usleep(2_000)
@@ -849,31 +801,46 @@ final class SessionWire {
         if stopRequested() {
             return .terminationRequested
         }
-        throw HostError("no client handshake within \(Int(timeoutSeconds))s "
-            + "— is lyte-cli wire-view pointed at this host and holding "
-            + "the printed static key?")
+        throw HostError("""
+            no client handshake within \(Int(timeoutSeconds ?? 0))s \
+            — is lyte-cli wire-view pointed at this host and holding \
+            the printed static key?
+            """)
     }
 
-    /// True when `datagram` is shaped like a client handshake initiation:
-    /// a bare CTRL carriage whose payload is typed 0x05 (Noise message 1)
-    /// or 0x14 (the W8 cookie resubmission). This is a pre-latch shape
-    /// check only — admission, cookies, and Noise still judge the bytes.
-    static func looksLikeHandshakeInitiation(_ datagram: [UInt8]) -> Bool {
-        guard let (envelope, payload) = try? Envelope.decode(datagram),
-              envelope.channel == .ctrl
-        else { return false }
-        return payload.first == CtrlMessageType.noiseHandshake1
-            || payload.first == CtrlMessageType.retryHandshake1
+    /// The session port (the kernel's pick when bound to port 0).
+    var localPort: UInt16 { lyte_netio_local_port(listenNetio) }
+
+    /// wire-out mode admits only its configured peer.
+    private func admitsPeer(_ tuple: FourTuple) -> Bool {
+        guard let requiredPeer else { return true }
+        return tuple.remoteAddress == requiredPeer.host
+            && tuple.remotePort == requiredPeer.port
     }
 
-    /// The encoder-loop poll (HS-12 promotion, a client 0x10, or the
-    /// lifecycle machine's WAKE/RECOVERY demand): consult before each
-    /// encode; a non-empty demand forces the next frame to IDR, and
-    /// carries WHY (the IDR books' cause tags).
-    func takeForcedIdrDemand() -> FreshKeyframeDemand {
-        lock.lock()
-        defer { lock.unlock() }
-        return session?.takeFreshKeyframeDemand() ?? []
+    /// One receive batch from every socket that can hold inbound
+    /// datagrams.
+    private func receiveFromAll(
+        _ handle: ([UInt8], FourTuple) -> Void
+    ) throws {
+        try receiveAll(from: listenNetio, handle)
+        if let videoNetio { try receiveAll(from: videoNetio, handle) }
+        if let latencyNetio { try receiveAll(from: latencyNetio, handle) }
+    }
+
+    /// Requires `lock`. One datagram into an established session.
+    private func receiveEstablished(_ datagram: [UInt8], from tuple: FourTuple) {
+        guard let session else { return }
+        for event in session.receive(
+            datagram, from: tuple,
+            now: SystemMonotonicClock.nowNanoseconds,
+            hostMicroseconds: SystemMonotonicClock.nowMicroseconds
+        ) {
+            execute(event)
+        }
+        // A recvmmsg burst can contain many feedback/control packets.
+        // Do not let parsing the whole burst consume an audio period.
+        drainAudioMailboxLocked()
     }
 
     /// HS-20: arm the encoder-VBV policy once the encoder's opening
@@ -886,13 +853,10 @@ final class SessionWire {
         vbvPolicy = EncoderVbvPolicy(config: config)
     }
 
-    /// HS-20: the encoder-loop's second poll (with takeForcedIdr, once
-    /// per encode): the estimator's LIVE frameByteCeiling into the
-    /// policy; a non-nil directive must reach the encoder leaf before
-    /// this frame is sent.
-    func takeEncoderRateDirective() -> EncoderRateDirective? {
-        lock.lock()
-        defer { lock.unlock() }
+    /// Requires `lock`. The estimator's LIVE frameByteCeiling into the
+    /// VBV policy; a non-nil directive must reach the encoder before the
+    /// next frame is sent.
+    private func takeEncoderRateDirectiveLocked() -> EncoderRateDirective? {
         guard let vbvPolicy, let session, session.phase == .established
         else { return nil }
         guard let directive = vbvPolicy.note(
@@ -903,49 +867,6 @@ final class SessionWire {
         vbvDirectivesIssued += 1
         lastVbvDirective = directive
         return directive
-    }
-
-    /// HS-11: a FRESH damage frame arrived from capture (never the
-    /// idle-floor repeats). In IDLE this is the WAKE — mode=active on
-    /// the reliable stream, the damage frame owed as an IDR; in ACTIVE
-    /// it aborts a pending idle flip.
-    func noteDamage() {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return }
-        for event in session.noteDamage(
-            now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            log(event)
-        }
-    }
-
-    /// HS-11: the ratchet converged (the all-skip stop). The final
-    /// converged frame rides a reliable one-shot; its acknowledgment
-    /// flips the wire mode to IDLE and datagram video stops. HS-22:
-    /// the session holds the handoff until damage has been quiet for
-    /// its idle-flip holdoff (3 s) — a desktop metronome (1 Hz clock,
-    /// blinking cursor) stays ACTIVE on small P-frames instead of
-    /// paying a full-frame WAKE IDR every beat — so the one-shot may
-    /// leave on a later service pass, not necessarily this one.
-    func noteRatchetConverged(finalFrame: [UInt8], captureMicros: UInt64) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return }
-        for event in session.noteRatchetConverged(
-            finalFrame: finalFrame,
-            captureTimestampMicroseconds: captureMicros,
-            now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            log(event)
-        }
-        // The one-shot leaves now, not at the next tick.
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
-        }
     }
 
     /// HS-11: the orderly close — SessionTeardown 0x0A on the reliable
@@ -963,6 +884,7 @@ final class SessionWire {
         // from here (and the thread holds `self` — this is also its
         // lifetime end).
         stopDrain()
+        runPendingPairingEvents()
         lock.lock()
         guard let session, session.phase == .established,
               session.lifecycleState != .closed, !peerGone else {
@@ -973,7 +895,7 @@ final class SessionWire {
             reason: reason,
             now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
         ) {
-            log(event)
+            execute(event)
         }
         lock.unlock()
         let deadline = SystemMonotonicClock.nowNanoseconds + UInt64(lingerSeconds * 1e9)
@@ -987,7 +909,7 @@ final class SessionWire {
                 try serviceOnce()
                 try flushOutbox()
             } catch {
-                lastSendError = String(describing: error)
+                noteSendError(error)
                 lock.unlock()
                 break
             }
@@ -995,19 +917,23 @@ final class SessionWire {
             usleep(2_000)
         }
         flushLogLines()
+        runPendingPairingEvents()
         print(session.arqIsQuiescent
             ? "session: teardown acknowledged — clean close"
-            : "session: teardown sent, unacknowledged after "
-                + "\(Int(lingerSeconds * 1000)) ms — closing anyway")
+            : """
+                session: teardown sent, unacknowledged after \
+                \(Int(lingerSeconds * 1000)) ms — closing anyway
+                """)
     }
 
     /// One encoded Annex-B packet → sealed shards on the wire. Runs on
-    /// the PipeWire loop thread; returns once the pacer fully drained.
+    /// the capture thread: validation and RS-FEC happen off the session
+    /// lock, sealing and pacer insertion under it; the first quantum
+    /// leaves on this stack and the sender thread paces out the rest.
     func sendFrame(
         data: UnsafePointer<UInt8>, size: Int, isKeyframe: Bool,
         captureMicros: UInt64
     ) throws {
-        let ingestStart = SystemMonotonicClock.nowNanoseconds
         let frame = UnsafeBufferPointer(start: data, count: size)
         borrowedFrameBytesIngested &+= UInt64(size)
 
@@ -1092,18 +1018,7 @@ final class SessionWire {
             videoCommitLockHoldMaxNS, SystemMonotonicClock.nowNanoseconds - commitHoldStart
         )
         lock.unlock()
-        lastFrameIngestNanos = SystemMonotonicClock.nowNanoseconds - ingestStart
-        lastFrameDrainNanos = 0 // the capture thread no longer waits
         signalDrain()
-    }
-
-    /// Debug/evidence drain for the synthetic motion leg. The underlying
-    /// telemetry is populated by the unchanged production admission and
-    /// sender paths.
-    func takeFrameTransmitTelemetry() -> [VideoFrameTransmitTelemetry] {
-        lock.lock()
-        defer { lock.unlock() }
-        return session.takeFrameTransmitTelemetry()
     }
 
     func annotateLastVideoFrame(
@@ -1117,42 +1032,47 @@ final class SessionWire {
         )
     }
 
-    /// Atomic pre-encode admission posture. The queue's wire time and
-    /// clean/impaired budget come from the same locked Session snapshot,
-    /// so a regime/rate move cannot mix eras in the admission decision.
-    var videoAdmissionPosture: (
-        backlogWireTimeNS: UInt64, budgetNS: UInt64, regime: FecRegime,
-        kernelState: KernelPressureState
-    ) {
+    /// The capture leg's pre-encode admission inputs (VideoAdmissionGate):
+    /// the queued video's wire time and the budget in force, from one
+    /// locked Session snapshot so a regime or rate move cannot mix eras.
+    var videoAdmissionPosture: (backlogWireTimeNS: UInt64, budgetNS: UInt64) {
         lock.lock()
         defer { lock.unlock() }
-        guard let session else {
-            return (0, 50_000_000, .clean, .calm)
-        }
+        guard let session else { return (0, UInt64.max) }
         let pressure = observeKernelPressure(
             session, now: SystemMonotonicClock.nowNanoseconds)
-        return (
-            pressure.totalVideoServiceDebtNS,
-            pressure.admissionBudgetNS,
-            session.fecRegime,
-            pressure.state)
+        return (pressure.totalVideoServiceDebtNS, pressure.admissionBudgetNS)
     }
 
     /// HS-15: one encoded 5 ms Opus packet from the AUDIO capture
-    /// thread. Publication uses only the narrow mailbox lock; it never
-    /// waits behind video packetize/FEC/seal or broad session service.
-    /// The elevated sender (or a cooperative video-ingest checkpoint)
-    /// performs ordered framing, Noise sealing, pacing, and send.
-    /// Audio deliberately flows in IDLE and FROZEN (the 5 ms path
+    /// thread. Audio deliberately flows in IDLE and FROZEN (the 5 ms path
     /// probe — Session's ruling; only `closed` suppresses).
     func sendAudioPacket(_ packet: [UInt8], captureMicros: UInt64) {
-        let pending = PendingAudioPacket(
+        publishAudio(.packet(
             bytes: packet, captureMicros: captureMicros,
-            offeredAtNS: SystemMonotonicClock.nowNanoseconds
-        )
+            offeredAtNS: SystemMonotonicClock.nowNanoseconds))
+    }
+
+    /// Tripwire: one 0x25 track-state announcement onto the reliable
+    /// stream (a no-op at the session layer unless key 15 was agreed).
+    /// It rides the audio mailbox, so it stays ordered with the packets
+    /// around it and the audio thread never waits for the session lock.
+    func sendAudioTrackState(_ state: AudioTrackState.State) {
+        publishAudio(.trackState(state))
+    }
+
+    /// The audio thread's only entry into the session. Publication takes
+    /// the narrow mailbox lock; it never waits behind video
+    /// packetize/FEC/seal or broad session service. The elevated sender
+    /// (or a cooperative video-ingest checkpoint) performs ordered
+    /// framing, Noise sealing, pacing, and send.
+    private func publishAudio(_ entry: AudioMailboxEntry) {
         audioMailboxLock.lock()
-        if audioMailbox.count < Self.audioMailboxCapacity {
-            audioMailbox.append(pending)
+        if case .trackState = entry {
+            // Rare and stateful: an announcement is never dropped.
+            audioMailbox.append(entry)
+        } else if audioMailbox.count < Self.audioMailboxCapacity {
+            audioMailbox.append(entry)
             audioMailboxMaxDepth = max(audioMailboxMaxDepth, audioMailbox.count)
         } else {
             audioMailboxOverflows += 1
@@ -1163,8 +1083,9 @@ final class SessionWire {
         // Use that wake directly whenever the Session owner is between
         // bounded critical sections; this avoids making audio depend solely
         // on a default-CFS sender thread being scheduled after signal().
-        // try() never blocks the capture loop. Sequence allocation, Noise
-        // sealing, pacer insertion, and send still happen under `lock`.
+        // try() never blocks the capture loop, and the lines this pass
+        // formats are printed later by the janitor or the drain thread —
+        // the audio thread never does console I/O.
         if lock.try() {
             drainAudioMailboxLocked()
             if let session, session.phase == .established, !peerGone {
@@ -1173,11 +1094,10 @@ final class SessionWire {
                     try flushOutbox()
                 } catch {
                     audioSendFailures += 1
-                    lastSendError = String(describing: error)
+                    noteSendError(error)
                 }
             }
             lock.unlock()
-            flushLogLines()
         }
         signalDrain()
     }
@@ -1187,32 +1107,48 @@ final class SessionWire {
     /// after audio capture is free to publish its next quantum.
     private func drainAudioMailboxLocked() {
         audioMailboxLock.lock()
-        var pending: [PendingAudioPacket] = []
+        var pending: [AudioMailboxEntry] = []
         swap(&pending, &audioMailbox)
         audioMailboxLock.unlock()
         guard !pending.isEmpty else { return }
 
-        for packet in pending {
+        for entry in pending {
             guard let session, session.phase == .established, !peerGone else {
-                audioPacketsDroppedPreSession += 1
+                if case .packet = entry { audioPacketsDroppedPreSession += 1 }
                 continue
             }
             let now = SystemMonotonicClock.nowNanoseconds
-            let dwell = now &- packet.offeredAtNS
-            audioMailboxMaxDwellNS = max(audioMailboxMaxDwellNS, dwell)
-            audioMailboxDwell.record(dwell)
-            do {
-                _ = try session.ingestAudioPacket(
-                    packet.bytes,
-                    captureTimestampMicroseconds: packet.captureMicros,
-                    now: now
-                )
+            switch entry {
+            case .packet(let bytes, let captureMicros, let offeredAtNS):
+                let dwell = now &- offeredAtNS
+                audioMailboxMaxDwellNS = max(audioMailboxMaxDwellNS, dwell)
+                audioMailboxDwell.record(dwell)
+                do {
+                    _ = try session.ingestAudioPacket(
+                        bytes,
+                        captureTimestampMicroseconds: captureMicros,
+                        now: now
+                    )
+                    pumpForSocketState(session)
+                    try flushOutbox()
+                    audioPacketsSent += 1
+                } catch {
+                    audioSendFailures += 1
+                    noteSendError(error)
+                }
+            case .trackState(let state):
+                for event in session.noteAudioTrackState(
+                    state, now: now,
+                    hostMicroseconds: SystemMonotonicClock.nowMicroseconds
+                ) {
+                    execute(event)
+                }
                 pumpForSocketState(session)
-                try flushOutbox()
-                audioPacketsSent += 1
-            } catch {
-                audioSendFailures += 1
-                lastSendError = String(describing: error)
+                do {
+                    try flushOutbox()
+                } catch {
+                    noteSendError(error)
+                }
             }
         }
     }
@@ -1226,12 +1162,7 @@ final class SessionWire {
             lock.unlock()
             return
         }
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
-        }
+        serviceAndFlushLocked()
         // Anything this pass enqueued but could not emit inside one
         // quantum (repair retransmits from a NACK, a burst of ARQ
         // segments) belongs to the sender thread, not the next tick.
@@ -1250,9 +1181,14 @@ final class SessionWire {
         pendingClipboardImageApplies.removeAll()
         let bulk = pendingBulkMessages
         pendingBulkMessages.removeAll()
+        let pairingEvents = pendingPairingEvents
+        pendingPairingEvents.removeAll()
         lock.unlock()
         flushLogLines()
         if leftovers { signalDrain() }
+        for event in pairingEvents {
+            onPairingEvent(event)
+        }
 
         // The starting-posture 0x19 (capabilities just agreed) and any
         // client flips — both re-take the lock per send, neither holds
@@ -1299,21 +1235,31 @@ final class SessionWire {
                 case .send(let reply):
                     replies.append(reply)
                 case .offerAccepted(let id, let name, let bytes, let resuming):
-                    print("files: offer \(Hex.string(id)) accepted — "
-                        + "\"\(BulkFileNaming.sanitized(name))\" "
-                        + "(\(bytes) B\(resuming ? ", RESUMING" : ""))")
+                    print("""
+                        files: offer \(Hex.string(id)) accepted — \
+                        \"\(BulkFileNaming.sanitized(name))\" \
+                        (\(bytes) B\(resuming ? ", RESUMING" : ""))
+                        """)
                 case .offerRefusedBusy(let id):
-                    print("files: offer \(Hex.string(id)) refused — "
-                        + "busy (one transfer at a time in v1)")
+                    print("""
+                        files: offer \(Hex.string(id)) refused — \
+                        busy (one transfer at a time in v1)
+                        """)
                 case .insufficientDiskSpace(let needed, let free):
-                    print("files: offer refused — needs \(needed) B, "
-                        + "\(free) B free")
+                    print("""
+                        files: offer refused — needs \(needed) B, \
+                        \(free) B free
+                        """)
                 case .fileCompleted(let name, let path, let bytes):
-                    print("files: COMPLETE — \"\(name)\" (\(bytes) B, "
-                        + "sha-verified) → \(path)")
+                    print("""
+                        files: COMPLETE — \"\(name)\" (\(bytes) B, \
+                        sha-verified) → \(path)
+                        """)
                 case .transferAborted(let reason, let byRemote):
-                    print("files: transfer aborted (\(reason), "
-                        + (byRemote ? "remote" : "local") + ")")
+                    print("""
+                        files: transfer aborted (\(reason), \
+                        \(byRemote ? "remote" : "local"))
+                        """)
                 case .storageFailure(let detail):
                     print("files: STORAGE FAILURE — \(detail)")
                 case .violated(let violation):
@@ -1322,29 +1268,18 @@ final class SessionWire {
             }
         }
         guard !replies.isEmpty else { return }
-        lock.lock()
-        guard let session, session.phase == .established else {
-            lock.unlock()
-            return
-        }
-        for reply in replies {
-            do {
-                try session.sendBulk(
-                    reply.encode(),
-                    now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-                )
-            } catch {
-                lastSendError = String(describing: error)
-                emit("files: bulk send failed: \(error)")
+        withEstablishedSession { session, now, hostMicroseconds in
+            for reply in replies {
+                do {
+                    try session.sendBulk(
+                        reply.encode(), now: now,
+                        hostMicroseconds: hostMicroseconds)
+                } catch {
+                    emit("files: bulk send failed: \(error)")
+                }
             }
+            return []
         }
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
-        }
-        lock.unlock()
         flushLogLines()
     }
 
@@ -1354,20 +1289,8 @@ final class SessionWire {
     /// 0x24 (or the suppression verdict) happens inside the core; a
     /// no-key-13 session stays silent (the rule-3 gate).
     func noteCursorShape(_ shape: CursorShape) {
-        lock.lock()
-        defer { lock.unlock() }
-        standingCursorShape = shape
-        guard let session, session.phase == .established else { return }
-        for event in session.noteCursorShapeChanged(
-            shape, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            log(event)
-        }
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
+        withEstablishedSession(before: { standingCursorShape = shape }) {
+            $0.noteCursorShapeChanged(shape, now: $1, hostMicroseconds: $2)
         }
     }
 
@@ -1388,19 +1311,8 @@ final class SessionWire {
     /// suppression verdict) happens inside the core; a no-key-10
     /// session stays silent (the rule-3 gate).
     func noteHostClipboardChanged(_ text: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return }
-        for event in session.noteHostClipboardChanged(
-            text, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            log(event)
-        }
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
+        withEstablishedSession {
+            $0.noteHostClipboardChanged(text, now: $1, hostMicroseconds: $2)
         }
     }
 
@@ -1410,19 +1322,8 @@ final class SessionWire {
     /// apart. Cargo (or the suppression verdict) happens inside the
     /// core; an ungated session stays silent (the keys-10∧12 gate).
     func noteHostClipboardImageChanged(_ data: [UInt8]) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return }
-        for event in session.noteHostClipboardImageChanged(
-            data, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            log(event)
-        }
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
+        withEstablishedSession {
+            $0.noteHostClipboardImageChanged(data, now: $1, hostMicroseconds: $2)
         }
     }
 
@@ -1431,6 +1332,16 @@ final class SessionWire {
         lock.lock()
         defer { lock.unlock() }
         currentAudioRouting = mode
+    }
+
+    /// A pairing that completed in the final service window still gets
+    /// its keystore write.
+    private func runPendingPairingEvents() {
+        lock.lock()
+        let events = pendingPairingEvents
+        pendingPairingEvents.removeAll()
+        lock.unlock()
+        for event in events { onPairingEvent(event) }
     }
 
     /// One 0x18 answered: flip the leaf via the shell's handler, then
@@ -1445,8 +1356,10 @@ final class SessionWire {
             return
         }
         guard let handler = audioRoutingHandler else {
-            print("audio-routing: \(mode) requested but no flip surface "
-                + "is active this run — posture stays \(standing)")
+            print("""
+                audio-routing: \(mode) requested but no flip surface \
+                is active this run — posture stays \(standing)
+                """)
             noteAudioRoutingApplied(standing)
             return
         }
@@ -1457,8 +1370,10 @@ final class SessionWire {
             print("audio-routing: flipped to \(mode)")
             noteAudioRoutingApplied(mode)
         } else {
-            print("audio-routing: flip to \(mode) FAILED — posture "
-                + "stays \(standing)")
+            print("""
+                audio-routing: flip to \(mode) FAILED — posture \
+                stays \(standing)
+                """)
             noteAudioRoutingApplied(standing)
         }
     }
@@ -1466,19 +1381,8 @@ final class SessionWire {
     /// The applied-posture 0x19 onto the reliable stream (a no-op at
     /// the session layer unless hostAudioRouting was negotiated).
     func noteAudioRoutingApplied(_ mode: HostAudioRoutingMode) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return }
-        for event in session.noteAudioRoutingApplied(
-            mode, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            log(event)
-        }
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
+        withEstablishedSession {
+            $0.noteAudioRoutingApplied(mode, now: $1, hostMicroseconds: $2)
         }
     }
 
@@ -1486,70 +1390,69 @@ final class SessionWire {
     /// The audio thread asks per packet before ever gating — a legacy
     /// client keeps the always-on contract, silence included.
     func audioQuietPostureAgreed() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return false }
-        return session.agreedAudioQuietPosture
-    }
-
-    /// Video posture: whether THIS session agreed key 16. The video
-    /// leg asks per poll before ever backing off its keepalive.
-    func videoQuietPostureAgreed() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return false }
-        return session.agreedVideoQuietPosture
+        withConfigLock { _agreedPosture.audioQuiet }
     }
 
     /// Video posture: one 0x26 announcement onto the reliable stream
     /// (a no-op at the session layer unless key 16 was agreed).
     func sendVideoPostureState(quiet: Bool, keepaliveSeconds: UInt8) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return }
         let state = VideoPostureState(
             posture: quiet ? .quiet : .active,
             keepaliveSeconds: keepaliveSeconds)
-        for event in session.noteVideoPostureState(
-            state, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            log(event)
-        }
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
+        withEstablishedSession {
+            $0.noteVideoPostureState(state, now: $1, hostMicroseconds: $2)
         }
     }
 
     /// The wake-on-input half of the video posture: the drain thread
     /// stamps every injected input event; the video leg reads the
-    /// stamp each poll — an input packet IS the wake, zero added
-    /// latency (postures design). Monotonic ns, atomic via configLock
-    /// (cold: one store per input event, one load per poll).
+    /// stamp each poll (LegSnapshot) — an input packet IS the wake, zero
+    /// added latency. Monotonic ns under configLock.
     private var _lastInputActivityNS: UInt64 = 0
-    var lastInputActivityNS: UInt64 {
+    private var lastInputActivityNS: UInt64 {
         get { withConfigLock { _lastInputActivityNS } }
         set { withConfigLock { _lastInputActivityNS = newValue } }
     }
 
-    /// Tripwire: one 0x25 track-state announcement onto the reliable
-    /// stream (a no-op at the session layer unless key 15 was agreed).
-    func sendAudioTrackState(_ state: AudioTrackState.State) {
+    /// One session note from a shell thread, under `lock`: skipped
+    /// unless the session is established; its events execute, then one
+    /// service pass and flush so the note's sends leave now rather than
+    /// on the next tick. `before` runs under the lock either way.
+    private func withEstablishedSession(
+        before: () -> Void = {},
+        _ note: (Session, _ now: UInt64, _ hostMicroseconds: UInt64)
+            -> [SessionEvent]
+    ) {
         lock.lock()
         defer { lock.unlock() }
+        before()
         guard let session, session.phase == .established else { return }
-        for event in session.noteAudioTrackState(
-            state, now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
+        for event in note(
+            session, SystemMonotonicClock.nowNanoseconds,
+            SystemMonotonicClock.nowMicroseconds
         ) {
-            log(event)
+            execute(event)
         }
+        serviceAndFlushLocked()
+    }
+
+    /// Requires `lock`. A failure is recorded and printed; the drain
+    /// thread's own pass decides whether it ends the session.
+    private func serviceAndFlushLocked() {
         do {
             try serviceOnce()
             try flushOutbox()
         } catch {
-            lastSendError = String(describing: error)
+            noteSendError(error)
+        }
+    }
+
+    /// Requires `lock`.
+    private func noteSendError(_ error: Error) {
+        sendErrors += 1
+        lastSendError = String(describing: error)
+        if sendErrors <= 3 {
+            emit("session: send path error (\(sendErrors)): \(error)")
         }
     }
 
@@ -1564,52 +1467,59 @@ final class SessionWire {
     private func notePeerGone() {
         guard !peerGone else { return }
         peerGone = true
-        emit("session: client unreachable (ICMP port closed — it exited) "
-            + "— closing cleanly")
+        emit("""
+            session: client unreachable (ICMP port closed — it exited) \
+            — closing cleanly
+            """)
     }
 
     /// Wakes the sender thread: bytes were enqueued (or leftovers were
     /// observed) and the pacer needs pumping at its own wake instants.
-    /// Never call while holding `lock` — the lock order is
-    /// `lock` → `drainCondition` (sessionEnded) and must stay acyclic.
     private func signalDrain() {
-        drainCondition.lock()
-        drainWork = true
-        drainCondition.signal()
-        drainCondition.unlock()
+        lyte_netio_wake_signal(wakeFd)
     }
 
     /// Stops the sender thread and waits for it to exit (it holds
     /// `self` and shares the send scratch, so teardown must not race
-    /// it). Idempotent; a parked thread exits within one signal, a
-    /// draining thread within its current drain.
+    /// it). Idempotent; the thread exits within its current pass.
     private func stopDrain() {
         drainCondition.lock()
         drainStop = true
-        drainCondition.signal()
+        drainCondition.unlock()
+        signalDrain()
+        drainCondition.lock()
         while !drainExited { drainCondition.wait() }
         drainCondition.unlock()
     }
 
-    /// The sender thread's whole life: park until signaled, drain the
-    /// pacer to idle at its own wake instants, park again. A send
-    /// failure is recorded and ends the session (mirroring what a
-    /// thrown sendFrame used to do to the capture loop) — the thread
-    /// itself parks and stays stoppable.
+    /// What the sender thread waits for between passes.
+    private struct DrainWait {
+        /// Nil = until signaled (no established session, or it ended).
+        var timeoutNS: Int64?
+        /// Sockets whose readability ends the wait, with POLLOUT on the
+        /// one whose buffer was full.
+        var sockets: [(fd: Int32, pollOut: Bool)] = []
+    }
+
+    /// The sender thread's whole life: one service pass (receive, timers,
+    /// pacer, flush), then wait — on its wake eventfd, the sockets'
+    /// readability (an inbound datagram, e.g. input, is read at once),
+    /// POLLOUT on a full socket, or the session's next timer — and again.
+    /// A send failure is recorded and ends the session (the capture loop
+    /// reads it); the thread itself stays stoppable.
     private func drainLoop() {
         while true {
             drainCondition.lock()
-            while !drainWork && !drainStop { drainCondition.wait() }
-            if drainStop {
+            let stop = drainStop
+            if stop {
                 drainExited = true
                 drainCondition.broadcast()
-                drainCondition.unlock()
-                return
             }
-            drainWork = false
             drainCondition.unlock()
+            if stop { return }
+            let wait: DrainWait
             do {
-                try drainToIdle()
+                wait = try drainPass()
             } catch {
                 lock.lock()
                 lastSendError = String(describing: error)
@@ -1619,47 +1529,67 @@ final class SessionWire {
                 drainFailed = true
                 drainCondition.unlock()
                 if firstFailure {
-                    print("session: wire drain failed (\(error)) — "
-                        + "closing")
+                    print("session: wire drain failed (\(error)) — closing")
                 }
+                wait = DrainWait()
             }
+            block(until: wait)
         }
     }
 
-    /// Callers must NOT hold `lock`: each pass takes it for the service
-    /// work and releases it across the sleep, so the audio thread's
-    /// 5 ms sends interleave with a long video drain (the structural
-    /// half of the 5 ms ± 2 ms bound; the pacer's class order is the
-    /// other half).
-    private func drainToIdle() throws {
-        while true {
-            lock.lock()
-            guard session != nil else {
-                lock.unlock()
-                return
-            }
-            do {
-                try serviceOnce()
-                try flushOutbox()
-            } catch {
-                lock.unlock()
-                flushLogLines()
-                throw error
-            }
-            let done = peerGone || (session.isIdle && outbox.isEmpty)
-            let now = SystemMonotonicClock.nowNanoseconds
-            let wake = session.nextWake(now: now)
-            let socketRetry = !outbox.isEmpty
+    /// Callers must NOT hold `lock`: the pass takes it for the service
+    /// work and the wait happens outside it, so the audio thread's 5 ms
+    /// sends interleave with a long video drain (the structural half of
+    /// the 5 ms ± 2 ms bound; the pacer's class order is the other half).
+    private func drainPass() throws -> DrainWait {
+        lock.lock()
+        guard let session, session.phase == .established, !peerGone else {
             lock.unlock()
             flushLogLines()
-            if done { return }
-            if socketRetry {
-                // Nonblocking UDP backpressure: retry outside the Session
-                // lock so 5 ms audio can still enter and preempt video.
-                usleep(200)
-            } else if let wake, wake > now {
-                usleep(UInt32(min((wake - now) / 1_000 + 1, 2_000)))
-            }
+            return DrainWait()
+        }
+        do {
+            try serviceOnce()
+            try flushOutbox()
+        } catch {
+            lock.unlock()
+            flushLogLines()
+            throw error
+        }
+        let now = SystemMonotonicClock.nowNanoseconds
+        let wake = session.nextWake(now: now)
+        let blocked = outbox.isEmpty ? nil : blockedLane
+        let backoff = !outbox.isEmpty && noBufferBackoff
+        var sockets: [(fd: Int32, pollOut: Bool)] = [
+            (lyte_netio_fd(listenNetio), false)
+        ]
+        if let videoNetio {
+            sockets.append((lyte_netio_fd(videoNetio), blocked == .video))
+        }
+        if let latencyNetio {
+            sockets.append((lyte_netio_fd(latencyNetio), blocked == .latency))
+        }
+        lock.unlock()
+        flushLogLines()
+
+        return DrainWait(
+            timeoutNS: SenderWait.timeoutNS(
+                nowNS: now, nextWakeNS: wake, noBufferBackoff: backoff),
+            sockets: sockets)
+    }
+
+    private func block(until wait: DrainWait) {
+        var fds: [Int32] = [wakeFd]
+        var events: [Int16] = [Int16(POLLIN)]
+        for socket in wait.sockets {
+            fds.append(socket.fd)
+            events.append(Int16(socket.pollOut ? POLLIN | POLLOUT : POLLIN))
+        }
+        var revents = [Int16](repeating: 0, count: fds.count)
+        _ = lyte_netio_wait(
+            fds, events, &revents, Int32(fds.count), wait.timeoutNS ?? -1)
+        if revents[0] != 0 {
+            lyte_netio_wake_drain(wakeFd)
         }
     }
 
@@ -1673,27 +1603,13 @@ final class SessionWire {
         // Always service the scheduling island before lower-frequency
         // receive/timer/stat work under this lock.
         drainAudioMailboxLocked()
-        let receive: ([UInt8], FourTuple) -> Void = { [weak self]
-            datagram, tuple in
-            guard let self, let session = self.session else { return }
-            for event in session.receive(
-                datagram, from: tuple,
-                now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-            ) {
-                self.log(event)
-            }
-            // A recvmmsg burst can contain many feedback/control packets.
-            // Do not let parsing the whole burst consume an audio period.
-            self.drainAudioMailboxLocked()
-        }
-        try receiveAll(from: netio, receive)
-        if let latencyNetio {
-            try receiveAll(from: latencyNetio, receive)
+        try receiveFromAll { [weak self] datagram, tuple in
+            self?.receiveEstablished(datagram, from: tuple)
         }
         for event in session.advance(
             now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
         ) {
-            log(event)
+            execute(event)
         }
         // A nonempty outbox means the previous socket write hit EAGAIN.
         // Releasing another VIDEO quantum before retrying would turn kernel
@@ -1713,42 +1629,42 @@ final class SessionWire {
                 receiveAllMaxNS, SystemMonotonicClock.nowNanoseconds - receiveStart
             )
         }
-        while true {
-            let got = recvSlots.withUnsafeMutableBufferPointer { slots in
-                lyte_netio_recv_batch(socket, slots.baseAddress,
-                                      Int32(slots.count),
-                                      &recvError, recvError.count)
-            }
-            if got == LYTE_NETIO_PEER_GONE {
-                notePeerGone()
-                return
-            }
-            if got < 0 {
-                throw HostError("recv failed: \(errString(recvError))")
-            }
-            if got == 0 { return }
-            let localPort = lyte_netio_local_port(socket)
-            for i in 0..<Int(got) {
-                let slot = recvSlots[i]
-                let datagram = Array(UnsafeBufferPointer(
-                    start: recvScratch.advanced(by: i * Self.recvSlotCapacity),
-                    count: slot.len
-                ))
-                var ip = slot.src_ip
-                let source = withUnsafeBytes(of: &ip) { raw -> String in
-                    String(decoding: raw.prefix(while: { $0 != 0 }),
-                           as: UTF8.self)
-                }
-                handle(datagram, FourTuple(
-                    localAddress: "0.0.0.0", localPort: localPort,
-                    remoteAddress: source, remotePort: slot.src_port
-                ))
-            }
-            // One recvmmsg batch per critical section. A continuously full
-            // feedback socket must not turn `receiveAll` into an unbounded
-            // broad-lock owner; the sender loop immediately takes another
-            // pass, with an unlock/service opportunity between batches.
+        // One recvmmsg batch per call: a continuously full socket must not
+        // turn a receive into an unbounded hold of the session lock; the
+        // sender takes another pass after releasing it.
+        let got = recvSlots.withUnsafeMutableBufferPointer { slots in
+            lyte_netio_recv_batch(socket, slots.baseAddress,
+                                  Int32(slots.count),
+                                  &recvError, recvError.count)
+        }
+        if got == LYTE_NETIO_PEER_GONE {
+            notePeerGone()
             return
+        }
+        if got == LYTE_NETIO_TRANSIENT {
+            // A consumed ICMP soft error: loss, not session death.
+            receiveTransientErrors += 1
+            return
+        }
+        if got < 0 {
+            throw HostError("recv failed: \(errString(recvError))")
+        }
+        let localPort = lyte_netio_local_port(socket)
+        for i in 0..<Int(got) {
+            let slot = recvSlots[i]
+            let datagram = Array(UnsafeBufferPointer(
+                start: recvScratch.advanced(by: i * Self.recvSlotCapacity),
+                count: slot.len
+            ))
+            var ip = slot.src_ip
+            let source = withUnsafeBytes(of: &ip) { raw -> String in
+                String(decoding: raw.prefix(while: { $0 != 0 }),
+                       as: UTF8.self)
+            }
+            handle(datagram, FourTuple(
+                localAddress: "0.0.0.0", localPort: localPort,
+                remoteAddress: source, remotePort: slot.src_port
+            ))
         }
     }
 
@@ -1775,11 +1691,32 @@ final class SessionWire {
         for line in lines { print(line) }
     }
 
-    private func log(_ event: SessionEvent) {
+    /// Executes one session event: prints go through `emit`, side
+    /// effects (input injection, path rebinds, pairing, outbox purges,
+    /// buffered shell work) run here under `lock`.
+    private func execute(_ event: SessionEvent) {
         switch event {
         case .handshakeCompleted(let remote):
-            emit("noise: handshake complete — client static "
-                + Hex.string(remote))
+            emit("""
+                noise: handshake complete — client static \
+                \(Hex.string(remote))
+                """)
+            // The authenticated client's path: the media sockets connect
+            // there before message 2 is flushed. Should that fail, sends
+            // still leave through the listening socket, addressed.
+            let client = session.validator.primary.tuple
+            do {
+                try connectMedia(host: client.remoteAddress, port: client.remotePort)
+                traceHandshake("mediaSocketsConnected", fields: [
+                    "remoteAddress": client.remoteAddress,
+                    "remotePort": String(client.remotePort),
+                ])
+            } catch {
+                emit("""
+                    session: \(error) — sending addressed from the \
+                    listening socket
+                    """)
+            }
             // HS-9: the pairing run binds to THIS session's transcript
             // and statics; a re-handshake rebinds (and keeps the guess
             // budget — reconnecting never refills it).
@@ -1813,48 +1750,52 @@ final class SessionWire {
                         emit("pairing: reply send failed: \(error)")
                     }
                 }
-                for pairingEvent in output.events {
-                    onPairingEvent(pairingEvent)
-                }
+                // The keystore write and its prints run off the lock
+                // (service() drains these), never on the drain thread
+                // under it.
+                pendingPairingEvents.append(contentsOf: output.events)
                 return
             }
-            emit("ctrl-arq: message group \(group.rawValue) "
-                + "(\(message.count) B, type "
-                + "\(Hex.string(message.first ?? 0, prefix: true)))")
+            emit("""
+                ctrl-arq: message group \(group.rawValue) \
+                (\(message.count) B, type \
+                \(Hex.string(message.first ?? 0, prefix: true)))
+                """)
         case .reliableOneShotAcknowledged(let group):
             emit("ctrl-arq: one-shot group \(group.rawValue) acknowledged")
         case .arqIgnored(let reason):
             emit("ctrl-arq: ignored \(reason)")
         case .idrRequested(let request):
-            emit("ctrl: IDR request seq \(request.requestSeq) "
-                + "(frame \(request.frame.rawValue), "
-                + "coalesced \(request.coalescedCount))")
+            emit("""
+                ctrl: IDR request seq \(request.requestSeq) \
+                (frame \(request.frame.rawValue), \
+                coalesced \(request.coalescedCount))
+                """)
         case .path(let pathEvent):
             emit("path: \(pathEvent)")
             if case .promoted(let primary, _) = pathEvent {
                 // Execute the rebind: media now targets the new tuple.
-                var err = [CChar](repeating: 0, count: 256)
-                if lyte_netio_set_peer(
-                    netio, primary.tuple.remoteAddress,
-                    primary.tuple.remotePort, &err, err.count) != 0 {
-                    emit("path: rebind connect failed: \(errString(err))")
-                }
-                if let latencyNetio,
-                   lyte_netio_set_peer(
-                    latencyNetio, primary.tuple.remoteAddress,
-                    primary.tuple.remotePort, &err, err.count) != 0 {
-                    emit("path: latency rebind failed: \(errString(err))")
+                do {
+                    try connectMedia(
+                        host: primary.tuple.remoteAddress,
+                        port: primary.tuple.remotePort)
+                } catch {
+                    emit("path: rebind failed: \(error)")
                 }
             }
         case .handshakeCookieModeChanged(let requireCookie):
             // HS-21: the observable dial. Loud on purpose — this is the
             // live evidence the flip happened and cleared.
             emit(requireCookie
-                ? "handshake: FLOOD — require-cookie mode ENGAGED "
-                    + "(msg1 rate crossed the enter threshold; "
-                    + "un-cookied msg1s now answered with 0x13, no Noise)"
-                : "handshake: pressure cleared — require-cookie mode "
-                    + "DISENGAGED (back to the token-bucket posture)")
+                ? """
+                    handshake: FLOOD — require-cookie mode ENGAGED \
+                    (msg1 rate crossed the enter threshold; \
+                    un-cookied msg1s now answered with 0x13, no Noise)
+                    """
+                : """
+                    handshake: pressure cleared — require-cookie mode \
+                    DISENGAGED (back to the token-bucket posture)
+                    """)
         case .handshakeChallenged:
             // A flood would print per datagram; the final stats line
             // carries the handshakeChallengesMinted count instead.
@@ -1870,11 +1811,19 @@ final class SessionWire {
         case .sendFailed(let what):
             emit("send-failed: \(what)")
         case .capabilitiesAgreed(let agreed):
-            emit("capabilities: agreed — wire minor \(agreed.wireMinor), "
-                + "codecs \(agreed.videoCodecs), chroma \(agreed.chromaModes), "
-                + "idle-silence \(agreed.idleSilence), "
-                + "host-audio-routing \(agreed.hostAudioRouting), "
-                + "max datagram \(agreed.maxDatagramBytes) B")
+            emit("""
+                capabilities: agreed — wire minor \(agreed.wireMinor), \
+                codecs \(agreed.videoCodecs), chroma \(agreed.chromaModes), \
+                idle-silence \(agreed.idleSilence), \
+                host-audio-routing \(agreed.hostAudioRouting), \
+                max datagram \(agreed.maxDatagramBytes) B
+                """)
+            withConfigLock {
+                _agreedPosture = AgreedMediaPosture(
+                    audioQuiet: agreed.audioQuietPosture,
+                    videoQuiet: agreed.videoQuietPosture,
+                    chromaModes: agreed.chromaModes)
+            }
             // HS-18: both ends declared key 9 — the client is owed one
             // starting-posture 0x19 (its control strip renders it).
             // Buffered; the next service pass sends it off this stack.
@@ -1887,27 +1836,34 @@ final class SessionWire {
                 cursorAnnounceOwed = true
             }
         case .capabilitiesFailed(let why):
-            emit("capabilities: NO WORKABLE INTERSECTION (\(why)) — "
-                + "typed teardown follows")
+            emit("""
+                capabilities: NO WORKABLE INTERSECTION (\(why)) — \
+                typed teardown follows
+                """)
         case .capabilityUpdateAcknowledged(let accepted):
-            emit("capabilities: update "
-                + (accepted ? "accepted" : "rejected") + " by the client")
+            emit("""
+                capabilities: update \
+                \(accepted ? "accepted" : "rejected") by the client
+                """)
         case .modeTransitionSent(let mode):
-            emit("mode: → \(mode == .idle ? "IDLE" : "ACTIVE") "
-                + "(0x09 on the reliable stream)")
-        case .finalFrameSent(let group):
-            emit("mode: converged frame riding one-shot group "
-                + "\(group.rawValue) — its ack is the idle flip")
+            emit("""
+                mode: → \(mode == .idle ? "IDLE" : "ACTIVE") \
+                (0x09 on the reliable stream)
+                """)
         case .teardownSent(let reason):
             emit("session: teardown 0x0A queued (\(reason))")
         case .lifecycleChanged(let state):
             switch state {
             case .frozen:
-                emit("lifecycle: FROZEN — 350 ms of media-path silence; "
-                    + "datagram video suspended, CTRL stays alive")
+                emit("""
+                    lifecycle: FROZEN — 350 ms of media-path silence; \
+                    datagram video suspended, CTRL stays alive
+                    """)
             case .recovery:
-                emit("lifecycle: RECOVERY — evidence returned; fresh IDR "
-                    + "at the half-stale rate, sends resume")
+                emit("""
+                    lifecycle: RECOVERY — evidence returned; fresh IDR \
+                    at the half-stale rate, sends resume
+                    """)
             case .active, .idle:
                 emit("lifecycle: \(state)")
             case .closed:
@@ -1918,10 +1874,12 @@ final class SessionWire {
         case .inputReceived(let event, let rxMicros):
             injectInput(event, receivedAtMicroseconds: rxMicros)
         case .videoBacklogPurged(let datagrams, let bytes, let staleWireMs):
-            purgeSocketPendingVideo()
-            emit("rate: fall purge — \(datagrams) queued video datagrams "
-                + "(\(bytes) B, ~\(staleWireMs) ms stale at the new rate) "
-                + "dropped, fresh IDR armed")
+            outbox.purgeVideo(ledger: session)
+            emit("""
+                rate: fall purge — \(datagrams) queued video datagrams \
+                (\(bytes) B, ~\(staleWireMs) ms stale at the new rate) \
+                dropped, fresh IDR armed
+                """)
         case .rateChanged(let bps, let reason):
             // HS-16: downshifts and pacing policies always print (the
             // live gate's evidence); the ≤10%/s evidence climb prints
@@ -1942,34 +1900,38 @@ final class SessionWire {
                 // self-reference gate nor the stall gate held it.
                 var forensics = ""
                 if let f = session?.lastOveruseFallForensics {
-                    let train = f.lastFullTrainBitsPerSecond.map {
-                        "\($0 / 1_000) kbps "
-                            + "\((f.lastFullTrainAgeNS ?? 0) / 1_000_000) ms ago"
+                    func text<T>(_ value: T?) -> String {
+                        value.map { "\($0)" } ?? "—"
+                    }
+                    let belief = f.capacityBeliefBitsPerSecond.map {
+                        "\($0 / 1_000)"
+                    } ?? "—"
+                    let honest = f.honestAnchorBitsPerSecond.map {
+                        "\($0 / 1_000) kbps"
                     } ?? "none"
-                    forensics = " [anchor \(f.anchorBitsPerSecond / 1_000)"
-                        + " kbps from \(f.rateBeforeBitsPerSecond / 1_000)"
-                        + " kbps; belief "
-                        + (f.capacityBeliefBitsPerSecond.map {
-                            "\($0 / 1_000)"
-                        } ?? "—")
-                        + " kbps, honest "
-                        + (f.honestAnchorBitsPerSecond.map {
-                            "\($0 / 1_000) kbps"
-                        } ?? "none")
-                        + ", streak age "
-                        + "\((f.streakAgeNS ?? 0) / 1_000_000) ms; streak "
-                        + "\(f.streakStartMicroseconds.map(String.init) ?? "—")"
-                        + "→\(f.queuingDelayMicroseconds.map(String.init) ?? "—")"
-                        + " µs, peak "
-                        + "\(f.streakPeakMicroseconds.map(String.init) ?? "—")"
-                        + " µs; backlog \(f.pacerBacklogBytes) B; "
-                        + "full-train \(train); loss "
-                        + String(format: "%.3f", f.lossFraction)
-                        + "/\(String(format: "%.3f", f.postFecLossFraction))"
-                        + " post-FEC]"
+                    let train = f.lastFullTrainBitsPerSecond.map {
+                        let age = (f.lastFullTrainAgeNS ?? 0) / 1_000_000
+                        return "\($0 / 1_000) kbps \(age) ms ago"
+                    } ?? "none"
+                    let loss = String(
+                        format: "%.3f/%.3f",
+                        f.lossFraction, f.postFecLossFraction)
+                    forensics = """
+                         [anchor \(f.anchorBitsPerSecond / 1_000) kbps from \
+                        \(f.rateBeforeBitsPerSecond / 1_000) kbps; belief \
+                        \(belief) kbps, honest \(honest), streak age \
+                        \((f.streakAgeNS ?? 0) / 1_000_000) ms; streak \
+                        \(text(f.streakStartMicroseconds))→\
+                        \(text(f.queuingDelayMicroseconds)) µs, peak \
+                        \(text(f.streakPeakMicroseconds)) µs; backlog \
+                        \(f.pacerBacklogBytes) B; full-train \(train); loss \
+                        \(loss) post-FEC]
+                        """
                 }
-                emit("rate: ↓ \(bps / 1_000) kbps (queuing-delay overuse)"
-                    + forensics)
+                emit("""
+                    rate: ↓ \(bps / 1_000) kbps (queuing-delay overuse)\
+                    \(forensics)
+                    """)
             case .loss:
                 lastPrintedRate = bps
                 emit("rate: ↓ \(bps / 1_000) kbps (loss over threshold)")
@@ -1978,18 +1940,23 @@ final class SessionWire {
                 emit("rate: → \(bps / 1_000) kbps (IDR pacing \(pacing))")
             case .postFecLoss:
                 lastPrintedRate = bps
-                emit("rate: ↓ \(bps / 1_000) kbps (post-FEC loss — "
-                    + "rung 3)")
+                emit("rate: ↓ \(bps / 1_000) kbps (post-FEC loss — rung 3)")
             }
         case .repairEnqueued(let frame, let shards):
-            emit("repair: frame \(frame.rawValue) — \(shards) shard(s) "
-                + "retransmitted (fresh seqs, videoTail)")
+            emit("""
+                repair: frame \(frame.rawValue) — \(shards) shard(s) \
+                retransmitted (fresh seqs, videoTail)
+                """)
         case .nackJudgedStale(let frame, let reason):
-            emit("repair: NACK frame \(frame.rawValue) judged stale "
-                + "(\(reason))")
+            emit("""
+                repair: NACK frame \(frame.rawValue) judged stale \
+                (\(reason))
+                """)
         case .fecRegimeChanged(let regime):
-            emit("fec: regime → \(regime.rawValue) "
-                + "(§5.2 \(regime == .lossy ? "lossy" : "clean") column)")
+            emit("""
+                fec: regime → \(regime.rawValue) \
+                (§5.2 \(regime == .lossy ? "lossy" : "clean") column)
+                """)
         case .audioRoutingRequested(let mode):
             // Delivered under the lock mid-iteration: buffer only. The
             // flip (a PipeWire connect) runs off-lock in service().
@@ -2000,8 +1967,10 @@ final class SessionWire {
         case .audioTrackStateSent(let state):
             emit("audio-track: \(state) announced (0x25)")
         case .videoPostureStateSent(let state):
-            emit("video-posture: \(state.posture) "
-                + "keepalive \(state.keepaliveSeconds)s announced (0x26)")
+            emit("""
+                video-posture: \(state.posture) \
+                keepalive \(state.keepaliveSeconds)s announced (0x26)
+                """)
         case .clipboardSetReceived(let text):
             // CL-15/HS-19: the session's gate + book already ran (the
             // book is pre-armed against this apply's echo). Delivered
@@ -2009,24 +1978,30 @@ final class SessionWire {
             // (a blocking D-Bus SetSelection) runs off-lock in
             // service(). Never logs the payload.
             if clipboardApplyHandler != nil {
-                emit("clipboard: 0x1A set received "
-                    + "(\(text.utf8.count) B) — applying to the host "
-                    + "clipboard")
+                emit("""
+                    clipboard: 0x1A set received \
+                    (\(text.utf8.count) B) — applying to the host \
+                    clipboard
+                    """)
                 pendingClipboardApplies.append(text)
             } else {
                 // Defensive: a leafless shell never declares key 10,
                 // so the core's rule-3 gate makes this unreachable.
-                emit("clipboard: 0x1A set received "
-                    + "(\(text.utf8.count) B) — no clipboard leaf, "
-                    + "ignored")
+                emit("""
+                    clipboard: 0x1A set received \
+                    (\(text.utf8.count) B) — no clipboard leaf, \
+                    ignored
+                    """)
             }
         case .clipboardAnnounceSent(let byteCount):
             emit("clipboard: announce sent (\(byteCount) B, 0x1B)")
         case .clipboardAnnounceSuppressed(let reason):
             emit("clipboard: announce suppressed (\(reason))")
         case .cursorShapeSent(let pixelByteCount, let hidden):
-            emit("cursor: shape sent (0x24, "
-                + (hidden ? "hidden" : "\(pixelByteCount) B") + ")")
+            emit("""
+                cursor: shape sent (0x24, \
+                \(hidden ? "hidden" : "\(pixelByteCount) B"))
+                """)
         case .cursorShapeSuppressed(let reason):
             // Duplicates are the watcher's steady state between real
             // changes — only budget suppressions are worth a line;
@@ -2043,49 +2018,48 @@ final class SessionWire {
             // P-1: sha-verified — buffer for the off-lock leaf apply
             // (a blocking D-Bus SetSelection). Never logs the payload.
             if clipboardImageApplyHandler != nil {
-                emit("clipboard: image received (\(data.count) B, "
-                    + "\(mime)) — applying to the host clipboard")
+                emit("""
+                    clipboard: image received (\(data.count) B, \
+                    \(mime)) — applying to the host clipboard
+                    """)
                 pendingClipboardImageApplies.append(data)
             } else {
                 // Defensive: an imageless shell never declares key
                 // 12, so the core's gate makes this unreachable.
-                emit("clipboard: image received (\(data.count) B) — "
-                    + "no image leaf, ignored")
+                emit("""
+                    clipboard: image received (\(data.count) B) — \
+                    no image leaf, ignored
+                    """)
             }
         case .clipboardImageShareStarted(let byteCount):
-            emit("clipboard: image share started (\(byteCount) B "
-                + "as chan-8 cargo)")
+            emit("""
+                clipboard: image share started (\(byteCount) B \
+                as chan-8 cargo)
+                """)
         case .clipboardImageShareCompleted(let byteCount):
-            emit("clipboard: image share completed (\(byteCount) B, "
-                + "sha-verified by the client)")
+            emit("""
+                clipboard: image share completed (\(byteCount) B, \
+                sha-verified by the client)
+                """)
         case .clipboardImageShareAborted(let reason, let byRemote):
-            emit("clipboard: image share aborted (\(reason), "
-                + "\(byRemote ? "remote" : "local"))")
+            emit("""
+                clipboard: image share aborted (\(reason), \
+                \(byRemote ? "remote" : "local"))
+                """)
         case .clipboardImageReceiveAborted(let reason, let byRemote):
-            emit("clipboard: image receive aborted (\(reason), "
-                + "\(byRemote ? "remote" : "local"))")
+            emit("""
+                clipboard: image receive aborted (\(reason), \
+                \(byRemote ? "remote" : "local"))
+                """)
         case .clipboardImageSuppressed(let reason):
             emit("clipboard: image suppressed (\(reason))")
         case .clipboardImageRefused(let reason):
             emit("clipboard: image refused (\(reason))")
         case .clipboardImageViolation(let violation):
-            emit("clipboard: image lane protocol violation "
-                + "(\(violation)) — aborted")
-        }
-    }
-
-    private func purgeSocketPendingVideo() {
-        guard let session else { return }
-        outbox.removeAll { datagram in
-            let isVideo = datagram.pacerClass == .freshVideo
-                || datagram.pacerClass == .videoTail
-                || datagram.pacerClass == .refinement
-            if isVideo {
-                session.discardPendingDatagram(datagram)
-                freshVideoReleasedAtNS.removeValue(
-                    forKey: datagramTraceKey(datagram))
-            }
-            return isVideo
+            emit("""
+                clipboard: image lane protocol violation \
+                (\(violation)) — aborted
+                """)
         }
     }
 
@@ -2102,8 +2076,10 @@ final class SessionWire {
         guard let injector = inputInjector else {
             if !inputNoInjectorWarned {
                 inputNoInjectorWarned = true
-                emit("input: event seq \(event.seq) arrived but no "
-                    + "injection backend is active — input is OFF this run")
+                emit("""
+                    input: event seq \(event.seq) arrived but no \
+                    injection backend is active — input is OFF this run
+                    """)
             }
             inputInjectFailures += 1
             return
@@ -2144,181 +2120,112 @@ final class SessionWire {
     }
 
     private func flushOutbox() throws {
+        blockedLane = nil
+        noBufferBackoff = false
         guard !outbox.isEmpty else { return }
         if peerGone {
-            outbox.removeAll(keepingCapacity: true)
-            audioOutboxTrace.removeAll(keepingCapacity: true)
-            freshVideoReleasedAtNS.removeAll(keepingCapacity: true)
+            outbox.dropAll()
             return
         }
-        let queued = outbox
-        outbox.removeAll(keepingCapacity: true)
-        var err = [CChar](repeating: 0, count: 256)
-
-        // Challenges to unvalidated tuples ride sendmsg-with-address on
-        // the connected socket (lyte_netio_send_to): the challenge MUST
-        // travel on the exact probed tuple — that is what it proves.
-        let filtered = queued.filter { datagram in
-            guard let destination = datagram.destination,
-                  destination != session.validator.primary.tuple
-            else { return true }
-            let rc = datagram.bytes.withUnsafeBufferPointer { buf -> Int32 in
-                var pkt = lyte_netio_pkt(
-                    data: buf.baseAddress, len: buf.count,
-                    tos: WireTos.byte(for: datagram.pacerClass))
-                return lyte_netio_send_to(
-                    netio, &pkt,
-                    destination.remoteAddress, destination.remotePort,
-                    &err, err.count)
-            }
-            if rc == 1 {
-                challengesSentOffPrimary += 1
-                datagramsSent += 1
-                bytesSent += datagram.bytes.count
-                emit("path: challenge sent to \(destination.remoteAddress):"
-                    + "\(destination.remotePort) (off-primary sendto)")
-            } else if rc == LYTE_NETIO_PEER_GONE {
-                notePeerGone()
+        let outcome = outbox.flush(
+            ledger: session,
+            now: { SystemMonotonicClock.nowNanoseconds },
+            maxBatch: Int(LYTE_NETIO_MAX_BATCH),
+            sendOffPrimary: { datagram, destination in
+                sendOffPrimary(datagram, to: destination)
+            },
+            write: { lane, batch in writeBatch(batch, lane: lane) },
+            log: { emit($0) })
+        switch outcome {
+        case .drained:
+            break
+        case .wouldBlock(let lane):
+            blockedLane = lane
+            let blockedOutq = max(
+                Int(lyte_netio_outq_bytes(socket(for: lane) ?? listenNetio)), 0)
+            if lane == .latency {
+                latencySocketOutqMaxBytes = max(latencySocketOutqMaxBytes, blockedOutq)
             } else {
-                lastSendError = errString(err)
-                emit("path: challenge to \(destination.remoteAddress):"
-                    + "\(destination.remotePort) failed: \(errString(err))")
+                socketOutqMaxBytes = max(socketOutqMaxBytes, blockedOutq)
             }
-            return false
+        case .noBuffer:
+            noBufferBackoff = true
+            let now = SystemMonotonicClock.nowNanoseconds
+            _ = observeKernelPressure(session, now: now)
+            outbox.shedOldestStaleFreshVideo(
+                ledger: session, now: now, budgetNS: session.videoQueueBudgetNS)
+        case .peerGone:
+            notePeerGone()
+        case .failed(let why):
+            lastSendError = why
+            throw HostError("session send failed: \(why)")
         }
-        // Noise transport state is per channel. Move control/audio ahead
-        // of video byte-identically, preserving FIFO within every channel.
-        let deliverable = Session.prioritizeLatency(filtered)
+    }
 
-        var staged = 0
-        while staged < deliverable.count {
-            let firstClass = deliverable[staged].pacerClass
-            let socketLane = SocketLane.forClass(firstClass)
-            let sendSocket = socketLane == .latency
-                ? (latencyNetio ?? netio) : netio
-            let batchEnd: Int
-            if socketLane == .latency {
-                var end = staged
-                while end < deliverable.count,
-                      end - staged < Int(LYTE_NETIO_MAX_BATCH),
-                      deliverable[end].pacerClass <= .audio {
-                    end += 1
-                }
-                batchEnd = end
-            } else {
-                batchEnd = min(
-                    staged + Int(LYTE_NETIO_MAX_BATCH), deliverable.count)
-            }
-            let batch = deliverable[staged..<batchEnd]
-            var pkts: [lyte_netio_pkt] = []
-            pkts.reserveCapacity(batch.count)
-            var offset = 0
-            for d in batch {
-                precondition(offset + d.bytes.count <= Self.scratchCapacity)
-                d.bytes.withUnsafeBufferPointer { src in
-                    scratch.advanced(by: offset)
-                        .update(from: src.baseAddress!, count: src.count)
-                }
-                pkts.append(lyte_netio_pkt(
-                    data: scratch.advanced(by: offset),
-                    len: d.bytes.count,
-                    tos: WireTos.byte(for: d.pacerClass)
-                ))
-                offset += d.bytes.count
-            }
+    /// The connected media socket for a lane, once the client is known.
+    private func socket(for lane: SocketLane) -> OpaquePointer? {
+        lane == .latency ? latencyNetio : videoNetio
+    }
 
-            var sentTotal = 0
-            while sentTotal < pkts.count {
-                let sent = pkts[sentTotal...].withUnsafeBufferPointer { buf in
-                    lyte_netio_send_batch(
-                        sendSocket, buf.baseAddress, Int32(buf.count), nil,
-                        &err, err.count)
-                }
-                if sent == LYTE_NETIO_PEER_GONE {
-                    notePeerGone()
-                    return
-                }
-                if sent == LYTE_NETIO_NO_BUFFER {
-                    socketENOBUFSCount += 1
-                    if socketLane == .latency {
-                        latencySocketENOBUFSCount += 1
-                    } else {
-                        videoSocketENOBUFSCount += 1
-                    }
-                    let unsent = staged + sentTotal
-                    outbox.append(contentsOf: deliverable[unsent...])
-                    let now = SystemMonotonicClock.nowNanoseconds
-                    _ = observeKernelPressure(session, now: now)
-                    shedOldestStaleFreshVideo(
-                        now: now, budgetNS: session.videoQueueBudgetNS)
-                    return
-                }
-                if sent < 0 {
-                    lastSendError = errString(err)
-                    throw HostError("session send failed: \(errString(err))")
-                }
-                if sent == 0 {
-                    // Preserve exact datagram order and return immediately.
-                    // The sender loop retries after releasing `lock`; sleeping
-                    // here was the measured 100+ ms audio-mailbox stall.
-                    let unsent = staged + sentTotal
-                    outbox.append(contentsOf: deliverable[unsent...])
-                    socketWouldBlockCount += 1
-                    if socketLane == .latency {
-                        latencySocketWouldBlockCount += 1
-                    } else {
-                        videoSocketWouldBlockCount += 1
-                    }
-                    let blockedOutq = max(
-                        Int(lyte_netio_outq_bytes(sendSocket)), 0)
-                    if socketLane == .latency {
-                        latencySocketOutqMaxBytes = max(
-                            latencySocketOutqMaxBytes, blockedOutq)
-                    } else {
-                        socketOutqMaxBytes = max(
-                            socketOutqMaxBytes, blockedOutq)
-                    }
-                    if deliverable[unsent...].contains(where: {
-                        $0.pacerClass == .audio
-                    }) {
-                        audioSocketWouldBlockCount += 1
-                    }
-                    socketPendingMaxDatagrams = max(
-                        socketPendingMaxDatagrams, outbox.count)
-                    socketPendingMaxBytes = max(
-                        socketPendingMaxBytes,
-                        outbox.reduce(0) { $0 + $1.bytes.count })
-                    return
-                }
-                let accepted = batch.dropFirst(sentTotal).prefix(Int(sent))
-                let acceptedAt = SystemMonotonicClock.nowNanoseconds
-                for d in accepted {
-                    if d.pacerClass == .freshVideo {
-                        freshVideoFramesPartiallyAccepted.insert(
-                            d.frameNumber.rawValue)
-                        freshVideoReleasedAtNS.removeValue(
-                            forKey: datagramTraceKey(d))
-                    }
-                    if d.pacerClass == .audio,
-                       let trace = audioOutboxTrace.removeValue(
-                            forKey: d.seq.rawValue) {
-                        let delay = acceptedAt &- trace.enqueuedAtNS
-                        if delay > audioSocketOutboxMaxNS {
-                            audioSocketOutboxMaxNS = delay
-                            audioSocketWorstSeq = d.seq.rawValue
-                            audioSocketWorstEnqueuedAtNS = trace.enqueuedAtNS
-                            audioSocketWorstAcceptedAtNS = acceptedAt
-                            audioSocketWorstBlockedByVideo =
-                                trace.blockedByVideo
-                        }
-                    }
-                    session.confirmDatagramSent(d, now: acceptedAt)
-                    datagramsSent += 1
-                    bytesSent += d.bytes.count
-                }
-                sentTotal += Int(sent)
-            }
-            staged += batch.count
+    private func writeResult(_ rc: Int32) -> SocketWriteResult {
+        switch rc {
+        case 0: .wouldBlock
+        case LYTE_NETIO_NO_BUFFER: .noBuffer
+        case LYTE_NETIO_PEER_GONE: .peerGone
+        case LYTE_NETIO_TRANSIENT: .transient
+        case let accepted where accepted > 0: .accepted(Int(accepted))
+        default: .failed(errString(sendError))
         }
+    }
+
+    /// One datagram addressed explicitly, from the listening socket: path
+    /// challenges to unvalidated tuples, and anything sent before the
+    /// media sockets connect.
+    private func sendOffPrimary(
+        _ datagram: VideoChannelDatagram, to destination: FourTuple
+    ) -> SocketWriteResult {
+        let rc = datagram.bytes.withUnsafeBufferPointer { buf -> Int32 in
+            var pkt = lyte_netio_pkt(
+                data: buf.baseAddress, len: buf.count,
+                tos: WireTos.byte(for: datagram.pacerClass))
+            return lyte_netio_send_to(
+                listenNetio, &pkt,
+                destination.remoteAddress, destination.remotePort,
+                &sendError, sendError.count)
+        }
+        return writeResult(rc)
+    }
+
+    /// One lane's batch staged into `scratch` (stable pointers for the
+    /// sendmmsg call), each datagram with its class's TOS.
+    private func writeBatch(
+        _ batch: ArraySlice<VideoChannelDatagram>, lane: SocketLane
+    ) -> SocketWriteResult {
+        guard let socket = socket(for: lane) else {
+            // No connected media socket yet: address the head datagram to
+            // the primary tuple from the listening socket.
+            return sendOffPrimary(
+                batch[batch.startIndex], to: session.validator.primary.tuple)
+        }
+        sendPackets.removeAll(keepingCapacity: true)
+        var offset = 0
+        for d in batch {
+            precondition(offset + d.bytes.count <= Self.scratchCapacity)
+            d.bytes.withUnsafeBufferPointer { src in
+                scratch.advanced(by: offset)
+                    .update(from: src.baseAddress!, count: src.count)
+            }
+            sendPackets.append(lyte_netio_pkt(
+                data: scratch.advanced(by: offset),
+                len: d.bytes.count,
+                tos: WireTos.byte(for: d.pacerClass)))
+            offset += d.bytes.count
+        }
+        let rc = sendPackets.withUnsafeBufferPointer { buf in
+            lyte_netio_send_batch(
+                socket, buf.baseAddress, Int32(buf.count), nil,
+                &sendError, sendError.count)
+        }
+        return writeResult(rc)
     }
 }

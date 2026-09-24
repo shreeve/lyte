@@ -64,8 +64,7 @@ final class CursorGateTests: XCTestCase {
         XCTAssertThrowsError(try CursorShape.decode(
             [0x24, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00]
         ))
-        print("E3 gate (codec): 0x24 pinned byte-exact against the "
-            + "Wire arrays")
+        print("E3 gate (codec): 0x24 pinned byte-exact against the Wire arrays")
     }
 
     // MARK: Leg 2 — key 13 on the spine, mutual-only intersection
@@ -85,8 +84,10 @@ final class CursorGateTests: XCTestCase {
         XCTAssertFalse(
             Capabilities.wireDefault.intersecting(declared).cursorShape
         )
-        print("E3 gate (spine): declaration = local bytes + `0D F5`, "
-            + "mutual-only survival")
+        print("""
+            E3 gate (spine): declaration = local bytes + `0D F5`, \
+            mutual-only survival
+            """)
     }
 
     // MARK: The scripted client (the ClipboardGateTests harness)
@@ -336,9 +337,11 @@ final class CursorGateTests: XCTestCase {
 
         XCTAssertEqual(session.counters.cursorShapesSent, 2)
         XCTAssertEqual(session.counters.cursorShapesSuppressed, 2)
-        print("E3 gate (in vivo): shape → byte-exact 0x24 once; "
-            + "duplicate dedupes; hidden travels; over-ceiling "
-            + "suppresses and counts")
+        print("""
+            E3 gate (in vivo): shape → byte-exact 0x24 once; \
+            duplicate dedupes; hidden travels; over-ceiling \
+            suppresses and counts
+            """)
     }
 
     // MARK: Leg 4 — the rule-3 gate against the unnegotiated
@@ -385,7 +388,9 @@ final class CursorGateTests: XCTestCase {
         }
         XCTAssertEqual(drops, [CtrlMessageType.cursorShape])
 
-        print("E3 gate (rule 3): unnegotiated stays silent; "
-            + "0x24-at-host drops loud")
+        print("""
+            E3 gate (rule 3): unnegotiated stays silent; \
+            0x24-at-host drops loud
+            """)
     }
 }

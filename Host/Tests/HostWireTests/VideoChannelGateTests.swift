@@ -35,7 +35,7 @@ final class VideoChannelGateTests: XCTestCase {
 
     private func load(_ name: String) throws -> [UInt8] {
         [UInt8](try Data(contentsOf: URL(
-            fileURLWithPath: Self.corpusDirectory + "/" + name
+            fileURLWithPath: Self.corpusDirectory + "/\(name)"
         )))
     }
 
@@ -218,12 +218,14 @@ final class VideoChannelGateTests: XCTestCase {
         XCTAssertEqual(channel.counters.datagramsSent, expectedTotal)
 
         let lossPercent = 100.0 * Double(droppedCount) / Double(expectedTotal)
-        print("HS-5 gate: \(frames.count) corpus frames → \(expectedTotal) "
-            + "datagrams (\(channel.counters.bytesSent) B), dropped "
-            + "\(droppedCount) (\(String(format: "%.1f", lossPercent))% — "
-            + "parity limit per group), \(units.count) frames reassembled "
-            + "byte-exact; max batch wire time "
-            + "\(telemetry.maxBatchWireTimeNS) ns")
+        print("""
+            HS-5 gate: \(frames.count) corpus frames → \(expectedTotal) \
+            datagrams (\(channel.counters.bytesSent) B), dropped \
+            \(droppedCount) (\(String(format: "%.1f", lossPercent))% — \
+            parity limit per group), \(units.count) frames reassembled \
+            byte-exact; max batch wire time \
+            \(telemetry.maxBatchWireTimeNS) ns
+            """)
     }
 
     func testSealedDatagramsAssembleInPlaceByteEquivalent() throws {
@@ -261,8 +263,10 @@ final class VideoChannelGateTests: XCTestCase {
             channel.pump(now: now)
         }
         XCTAssertEqual(emitted.map(\.bytes), expected,
-            "pre-sized AAD-buffer assembly must be byte-identical to "
-                + "the canonical envelope encoder")
+            """
+                pre-sized AAD-buffer assembly must be byte-identical to \
+                the canonical envelope encoder
+                """)
         XCTAssertEqual(channel.counters.sealedDatagramsAssembledInPlace,
                        count,
             "every sealed shard must use the two-buffer assembly path")
@@ -488,8 +492,10 @@ final class VideoChannelGateTests: XCTestCase {
             captureTimestampMicroseconds: 1, isKeyframe: true, now: 0
         )
         XCTAssertEqual(channel.framesWithQueuedShards(), [7],
-            "a NACK against this frame right now would measure our "
-            + "pacer, not the path — it must read as draining")
+            """
+                a NACK against this frame right now would measure our \
+                pacer, not the path — it must read as draining
+                """)
 
         var now: UInt64 = 0
         channel.pump(now: now)

@@ -67,13 +67,40 @@ public enum CursorPoll {
     case failed(String)
 }
 
+/// The cursor plane's framebuffer transitions, separated from the
+/// reads. Each transition reports once: fb 0 (the plane disabled — a
+/// hidden pointer or a software-cursor fallback) is `.hidden`, a new
+/// non-zero fb is `.read` and latches only when the caller's read
+/// succeeds (a failed read retries on the next poll). An unreadable
+/// plane changes nothing.
+struct CursorFramebufferLatch {
+    enum Step: Equatable {
+        case unchanged
+        case hidden
+        case read(UInt32)
+    }
+
+    private(set) var last: UInt32?
+
+    mutating func observe(_ framebuffer: UInt32?) -> Step {
+        guard let framebuffer, framebuffer != last else { return .unchanged }
+        if framebuffer == 0 {
+            last = 0
+            return .hidden
+        }
+        return .read(framebuffer)
+    }
+
+    mutating func latch(_ framebuffer: UInt32) { last = framebuffer }
+}
+
 /// Watches one cursor plane. Poll at the doorbell cadence — the
 /// steady-state cost is the same single drmModeGetPlane read as the
 /// primary doorbell (~4 µs).
 public final class EyeCursorWatcher {
     private let fd: Int32
     public let planeId: UInt32
-    private var lastFB: UInt32?
+    private var latch = CursorFramebufferLatch()
 
     /// Finds the cursor plane (type CURSOR, preferring one live on a
     /// CRTC — an inactive plane still watches correctly: its first
@@ -120,17 +147,15 @@ public final class EyeCursorWatcher {
     /// One doorbell-cadence poll. Reports each fb transition once; a
     /// failed grab does not latch the fb, so the next poll retries.
     public func poll() -> CursorPoll {
-        guard let fb = currentFB(fd: fd, planeId: planeId) else {
-            return .unchanged
-        }
-        guard fb != lastFB else { return .unchanged }
-        if fb == 0 {
-            lastFB = 0
-            return .hidden
+        let fb: UInt32
+        switch latch.observe(planeFramebuffer(fd: fd, planeId: planeId)) {
+        case .unchanged: return .unchanged
+        case .hidden: return .hidden
+        case .read(let framebuffer): fb = framebuffer
         }
         switch readCursorFB(fb) {
         case .success(let frame):
-            lastFB = fb
+            latch.latch(fb)
             // A buffer of pure transparent padding IS the hidden
             // state (some themes "hide" by uploading empty).
             return frame.map(CursorPoll.shape) ?? .hidden
@@ -157,8 +182,10 @@ public final class EyeCursorWatcher {
         guard ticket.fourcc == AR24, ticket.modifier == 0,
               let plane = ticket.planes.first else {
             return .failure(String(
-                format: "cursor fb %u is not linear ARGB8888 "
-                    + "(fourcc %08x, modifier %llx)",
+                format: """
+                    cursor fb %u is not linear ARGB8888 \
+                    (fourcc %08x, modifier %llx)
+                    """,
                 fb, ticket.fourcc, ticket.modifier))
         }
         let width = Int(ticket.width), height = Int(ticket.height)
@@ -167,8 +194,7 @@ public final class EyeCursorWatcher {
         guard let base = mmap(
             nil, mapLength, PROT_READ, MAP_SHARED, plane.fd, 0),
             base != MAP_FAILED else {
-            return .failure("mmap of cursor dmabuf failed "
-                + "(errno \(errno))")
+            return .failure("mmap of cursor dmabuf failed (errno \(errno))")
         }
         defer { munmap(base, mapLength) }
         dmabufSync(plane.fd, start: true)

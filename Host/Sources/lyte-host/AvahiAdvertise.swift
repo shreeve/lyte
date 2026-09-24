@@ -52,14 +52,16 @@ final class AvahiAdvertiser {
         if !interfaceName.isEmpty {
             let index = if_nametoindex(interfaceName)
             guard index != 0 else {
-                throw HostError("--advertise-interface \(interfaceName): "
-                    + "no such interface")
+                throw HostError("""
+                    --advertise-interface \(interfaceName): \
+                    no such interface
+                    """)
             }
             ifIndex = Int32(index)
         }
         txtRecords = [
             "v=\(WireVersion.major)",
-            "pkh=" + Hex.string(Sha256.digest(staticPublicKey)),
+            "pkh=\(Hex.string(Sha256.digest(staticPublicKey)))",
         ]
         bus = try SessionBus(kind: .system)
 
@@ -104,9 +106,11 @@ final class AvahiAdvertiser {
         )
         dbus_message_unref(commitReply)
 
-        print("discovery: advertising \"\(serviceName)\" \(Self.serviceType) "
-            + "port \(port) [\(txtRecords.joined(separator: " "))] "
-            + "(\(daemonVersion))")
+        print("""
+            discovery: advertising \"\(serviceName)\" \(Self.serviceType) \
+            port \(port) [\(txtRecords.joined(separator: " "))] \
+            (\(daemonVersion))
+            """)
     }
 
     /// EntryGroup.AddService(i interface, i protocol, u flags, s name,
@@ -231,8 +235,10 @@ func advertiseMain(_ args: [String]) -> Never {
         let advertiser = try AvahiAdvertiser(
             port: port, staticPublicKey: hostStatic.publicKey, name: name
         )
-        print("advertise: up for \(Int(seconds))s — browse with "
-            + "`dns-sd -B \(AvahiAdvertiser.serviceType)`")
+        print("""
+            advertise: up for \(Int(seconds))s — browse with \
+            `dns-sd -B \(AvahiAdvertiser.serviceType)`
+            """)
         Thread.sleep(forTimeInterval: seconds)
         withExtendedLifetime(advertiser) {}
         print("advertise: done — record withdrawn")

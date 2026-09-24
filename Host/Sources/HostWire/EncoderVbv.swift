@@ -1,137 +1,57 @@
-// EncoderVbv: the HS-20 policy that makes the encoder finally consume
-// `frameByteCeiling` — the H3 plan's D-1 rung. The named harm (the H2
-// gate's run B2): under a sustained squeeze the estimator walks the pacer
-// down, but the NVENC encoder never hears about it and keeps emitting
-// frames sized for the old rate; oversized frames overstay the client's
-// completion presumption at the squeezed pacer, the NACKs sustain rung-3
-// verdicts, and the post-release tail sits floor-pinned instead of
-// re-converging. The fix is a reconfigure path from the estimator's
-// ceiling into the encoder's rate control.
+// EncoderVbv: the policy that makes the encoder consume the estimator's
+// live `frameByteCeiling`. Under a sustained squeeze the pacer walks down;
+// an encoder still sized for the old rate emits frames that overstay the
+// client's completion presumption, NACKs sustain rung-3 verdicts, and the
+// tail sits floor-pinned instead of re-converging. The policy turns the
+// ceiling into rate-control directives.
 //
-// Sans-IO in the house style: no clock, no encoder handle — `note` takes
-// the live ceiling and `now`, and returns a directive when the encoder's
-// rate-control params should move. The shell (lyte-host's Sink) applies
-// it through the CHevcEncode leaf before the next encode; FFmpeg's nvenc
-// wrapper turns changed AVCodecContext rate fields into one
-// NvEncReconfigureEncoder call. CORRECTION (HS-22, read from the
-// wrapper's source; re-verified against pup's exact build for HS-27,
-// FFmpeg 8.0.1 nvenc.c reconfig_encoder): that reconfigure is NOT free —
-// nvenc.c sets `resetEncoder = 1, forceIDR = 1` for EVERY avg/max/VBV
-// delta, unconditionally, and no wrapper option avoids it. NVENC's own
-// NvEncReconfigureEncoder supports resetEncoder=0/forceIDR=0 rate moves,
-// but the wrapper never issues them and the session handle is private
-// wrapper state — there is no honest path to a non-IDR reconfigure
-// through this libavcodec. Every directive this policy emits costs a
-// full forced IDR; every directive it withholds is an IDR the session
-// never pays.
+// Sans-IO: `note` takes the live ceiling and `now` and returns a directive
+// when the encoder's rate-control posture should move; the shell applies
+// it before the next frame. On the native VAAPI seat a directive is an RC
+// and HRD misc buffer on the next frame: no encoder reset, no IDR.
 //
-// THE CLEAN-PATH RULE (HS-22 — the owner's "moderate quality on a clean
-// path" regression). The ceiling-derived rate (8×C/B) is judged against
+// THE CLEAN-PATH RULE. The ceiling-derived rate (8×C/B) is judged against
 // the opening recipe's own cap first:
-//   • ceilingRate ≥ (1 − deadband) × baselineMax  ⇒  CLEAN. The wire
-//     delivers at least the recipe's own rate (within the noise the
-//     deadband already declares immaterial): zero directives, the
-//     opening recipe rides. Returning from a squeeze, ONE restore
-//     directive (sustain-gated, below) puts the recipe back, then
-//     silence.
-//   • ceilingRate below that                      ⇒  SQUEEZED. The
-//     rung ladder engages (below).
+//   • ceilingRate ≥ (1 − deadband) × baselineMax  ⇒  CLEAN: no
+//     directives, the opening recipe rides; returning from a squeeze, one
+//     sustain-gated RESTORE directive puts it back.
+//   • below that                                  ⇒  SQUEEZED: the rung
+//     ladder engages.
 //
-// THE RUNG LADDER (HS-27 — rate moves must stop minting IDRs). The
-// beauty-bar's re-measured red (15.2 IDR/min at 932a4c3, books: 17
-// vbv-rung + 13 vbv-tighten + 1 vbv-restore in 150 s) is the estimator
-// hunting a saw-tooth across a saturated path while the old policy
-// tracked every material move EXACTLY — each track a hidden NVENC reset
-// + forced IDR. The truth-probe confirmed the hunt itself is largely the
-// estimator's own artifact (slice (b), pending) — but the MULTIPLIER
-// (IDRs per rate move) is this policy's to kill, in both worlds. So the
-// encoder posture is now QUANTIZED: it may only sit on halving rungs of
-// the recipe cap,
+// THE RUNG LADDER. The squeezed posture sits on rungs of the recipe cap,
+// rung_i = baselineMax × 2^(−i/rungsPerOctave), choosing the smallest rung
+// ≥ the live ceiling rate (the posture never sits below what the wire
+// delivers; the pacer enforces the exact rate). Estimator moves inside
+// the applied rung's band are absorbed (`rateMovesAbsorbed`). With
+// `exactTighten`, tightens land exactly on the ceiling rate instead of the
+// rung above it, and material within-band rises arm the loosen want.
 //
-//   rung_i = baselineMax / 2^i   (rung_0 = the recipe cap itself),
-//
-// and the applied rung is the SMALLEST rung ≥ the live ceiling-rate
-// (round UP: the posture never sits below what the wire delivers, so
-// mid-band quality is never squeezed — the PACER enforces the exact
-// fine-grained rate, at zero encoder cost, and the backpressure gate
-// bounds what a ≤2× posture/pacer mismatch can queue). Every estimator
-// move that lands inside the applied rung's band touches nothing: no
-// directive, no reset, no IDR — the move is ABSORBED (counted in
-// `rateMovesAbsorbed`, the books' proof the new path is riding).
-//
-// The rung mapping reuses the HS-20/HS-22 derivation at the RUNG rate R:
+// The rung mapping at rung rate R:
 //   max     = min(baselineMax, R);  avg = min(baselineAvg, R) (CBR only)
 //   C'      = R×B/8 (the rung's budget-window ceiling, B = min(2/fps,
-//             25 ms) — HS-6)
-//   vbvBits = min(baselineVbv, k × 8×C'), k the HS-22 window ladder at
-//             R/baselineMax (≥80% ⇒ 4, ≥65% ⇒ 3, ≥50% ⇒ 2, deeper ⇒ 1).
-// All params stay CAPS against the opening posture, never pushes above
-// it. Note the corollary: rung_0's posture mins back to the baseline
-// exactly (live configs always carry a baseline VBV — the HS-25 guard),
-// so flapping across the clean boundary is structurally FREE.
+//             25 ms))
+//   vbvBits = min(baselineVbv, k × 8×C'), k by R/baselineMax (≥80% ⇒ 4,
+//             ≥65% ⇒ 3, ≥50% ⇒ 2, deeper ⇒ 1).
+// Every parameter caps against the opening posture, never above it; live
+// baselines carry the one-FEC-group guard as their VBV, so rung 0 and the
+// restore land exactly on the guarded posture.
 //
-// ASYMMETRIC HYSTERESIS (the HS-27 core):
-//   • TIGHTEN — immediate, as ever (an oversized frame at a squeezed
-//     pacer is the harm this policy exists to stop; the estimator's own
-//     fall limiter bounds the cadence). A tighten fires only when the
-//     ceiling is materially INSIDE a lower band — required rung judged
-//     at ceilingRate × (1 + deadband) — so a fall that lands in the
-//     applied band, or dithers at a boundary, changes nothing.
-//   • LOOSEN — a loosening (mid-squeeze rung climb OR the squeeze→clean
-//     restore) fires only after the ceiling has WANTED it continuously
-//     for `riseSustainNS` (default 10 s) AND the rise hold has passed,
-//     and then jumps to the rung of the MINIMUM ceiling seen across the
-//     sustain window (the level the wire actually held, not the
-//     freshest optimism). A saw-tooth hunt whose falls recur inside the
-//     sustain window can therefore never loosen — the posture PARKS at
-//     the hunt's band and the whole hunt costs zero encoder touches —
-//     while a genuine recovery climbs rung by rung, one IDR per ~2×,
-//     and closes with the one restore once the sustained minimum is
-//     clean. Under-posture during the wait is the safe direction
-//     (HS-22c's ruling), and the restore path keeps quality loss
-//     bounded: the wait rides a rung ABOVE the delivered rate, never
-//     below it.
-//
-// RESTORE. Recovery returns the opening recipe exactly (CBR:
-// bit-for-bit — pinned since HS-20; capped-CQ without a baseline VBV
-// restores the nearest expressible recipe, one second at the cap —
-// the wrapper's reconfigure only reads rc_buffer_size > 0, so a VBV can
-// be resized but never removed). Since HS-25 the live baselines carry
-// the unprotectable-frame guard's VBV, so the restore returns to the
-// guarded posture and can never re-open the >255-shard hole.
-//
-// THE NO-RESET RETUNE (HS-33). The vendored patched libavcodec
-// (Host/Scripts/vendor-ffmpeg.sh) applies rate/VBV directives WITHOUT
-// resetEncoder/forceIDR — a directive stops costing an IDR and becomes
-// one cheap driver call (validated on hardware: the HS-33a spike,
-// zero reconfigure IDRs across every move shape, reference chain
-// intact, PSNR floors ≥ the reset path). The HS-27 ladder choices
-// existed to ration IDRs; what the books permitted to move:
-//   • `rungsPerOctave` — the ladder's granularity. Halving rungs
-//     (1/octave) bounded the posture/pacer slack at 2× because finer
-//     tracking meant more IDRs; with free moves the shell narrows to
-//     2/octave (slack ≤ √2 ≈ 1.41×), so a tighten lands the posture
-//     closer above the fallen rate and the fall-repricing queue
-//     (squeeze review §5's 80–895 ms finding) shrinks at its source.
-//   • `riseSustainNS` — STAYS at 10 s, deliberately. An eager 2 s
-//     sustain was tried live (2026-07-29 armed A/B) and MEASURED into
-//     a floor limit cycle: the posture chased every climb, frames
-//     sized at/above the still-climbing pacer overstayed their
-//     budget, and queuing-delay overuse fired 10 falls to 500 kbps
-//     with zero loss while the control leg rode clean. The sustain's
-//     climb-lag is load-bearing for the estimator's probe stability,
-//     not an IDR ration — and under no-reset it costs nothing.
-// The LADDER MECHANICS are untouched — tighten-immediate, sustain-
-// gated loosening to the held minimum, restore-to-baseline — and the
-// distro-lib defaults (1/octave) keep every HS-27 pin verbatim: which
-// knobs the shell passes is decided by lyte_hevc_noreset_enable
-// (the linked libavcodec PROVES itself; nothing here is assumed).
+// ASYMMETRIC HYSTERESIS.
+//   • TIGHTEN is immediate, but only when the ceiling is materially inside
+//     a lower band (judged at ceilingRate × (1 + deadband)); dither at a
+//     boundary changes nothing.
+//   • LOOSEN (a rung climb or the restore) fires only after the ceiling has
+//     wanted it continuously for `riseSustainNS` (10 s) and the rise hold
+//     has passed, then jumps to the rung of the MINIMUM ceiling seen across
+//     the sustain window. A saw-tooth hunt whose falls recur inside the
+//     window never loosens — the posture parks at the hunt's band. The
+//     10 s sustain is load-bearing for the estimator's probe stability: an
+//     eager sustain chases every climb into a zero-loss floor limit cycle.
 
-/// What the shell pushes into the encoder leaf when the policy says the
+/// What the shell pushes into the encoder when the policy says the
 /// rate-control posture must move.
 public struct EncoderRateDirective: Equatable, Sendable {
-    /// Why the posture moved — the IDR books' cause tag, decided by the
-    /// policy itself (the sink used to infer it from the numbers).
+    /// Why the posture moved (the logs' cause tag).
     public enum Kind: String, Sendable {
         /// The posture stepped down (engage or a deeper rung).
         case tighten
@@ -141,17 +61,17 @@ public struct EncoderRateDirective: Equatable, Sendable {
         case restore
     }
     /// New average bitrate, bits/s. Nil = leave the average untouched —
-    /// capped-CQ mode has none (FFmpeg zeroes it at open; setting one
-    /// would change the rate-control mode, not just its numbers).
+    /// a capped (VBR) posture has none; setting one would change the
+    /// rate-control mode, not just its numbers.
     public var averageBitsPerSecond: Int?
-    /// New hard cap, bits/s (AVCodecContext.rc_max_rate).
+    /// New hard cap, bits/s (the encoder's VBR envelope).
     public var maxBitsPerSecond: Int
-    /// New VBV budget, bits (AVCodecContext.rc_buffer_size).
+    /// New VBV budget, bits: the encoder's HRD buffer is bounded by it
+    /// (EncoderHrd), so no frame outgrows the protectable ceiling.
     public var vbvBits: Int
     /// The live frameByteCeiling that produced this directive (evidence
     /// for the logs; the live gate reads frame sizes against it).
     public var frameByteCeiling: Int
-    /// The books' cause tag for the IDR this directive will force.
     public var kind: Kind
 
     public init(
@@ -189,35 +109,23 @@ public struct EncoderVbvConfig: Sendable {
     /// hunt whose falls recur inside this window can never loosen, so
     /// the posture parks and the hunt costs zero encoder resets.
     public var riseSustainNS: UInt64
-    /// HS-33: rungs per halving of the recipe cap. 1 (default) is the
-    /// HS-27 halving ladder — rung_i = cap/2^i, posture/pacer slack
-    /// bounded at 2×. Under the vendored no-reset libavcodec the shell
-    /// passes 2 (rung_i = cap × 2^(−i/2), slack ≤ √2): finer tracking
-    /// is free once a directive stops costing an IDR. Only 1 and 2 are
-    /// defined — these are the only ladders in use, and 2 keeps the
-    /// math deterministic (stdlib square root, no libm).
+    /// Rungs per halving of the recipe cap. 1 (default) is the halving
+    /// ladder — rung_i = cap/2^i, posture/pacer slack bounded at 2×. The
+    /// native seat moves rates with no reset, so the host passes 2
+    /// (rung_i = cap × 2^(−i/2), slack ≤ √2). Only 1 and 2 are defined,
+    /// and 2 keeps the math deterministic (stdlib square root, no libm).
     public var rungsPerOctave: Int
-    /// HS-33's second harvest: land every TIGHTEN exactly on the
-    /// ceiling-derived rate instead of the rung above it, and retune
-    /// on material within-band falls (the ceiling more than a deadband
-    /// below the applied max) instead of absorbing them — the last of
-    /// the posture/pacer slack on the falling edge goes to zero. Only
-    /// honest when a directive costs no IDR: the shell passes true iff
-    /// the vendored no-reset libavcodec proved itself (the same gate
-    /// as rungsPerOctave = 2); the estimator's 500 ms fall limiter
-    /// bounds the extra directives to ~2/s worst case, each one cheap
-    /// driver call. The rung ladder still names the bands, and the
-    /// sustain-gated climb + restore discipline is unchanged (the 10 s
-    /// climb-lag is load-bearing, 2026-07-29 A/B) — but exact mode
-    /// judges BOTH edges by rate, not rung: a material within-band
-    /// RISE (the ceiling more than a deadband above the applied max)
-    /// arms the loosen want just like a band-crossing does, and the
-    /// sustained climb lands exactly on the held-minimum ceiling.
-    /// Without the rising arm, an exact tighten parked mid-band is a
-    /// ratchet — a recovery inside the same rung never changes the
-    /// index, so the encoder stays pinned below the live ceiling
-    /// until a band boundary or a clean restore (the v1-final
-    /// analysis's finding 6).
+    /// Land every TIGHTEN exactly on the ceiling-derived rate instead of
+    /// the rung above it, and retune on material within-band falls (the
+    /// ceiling more than a deadband below the applied max) instead of
+    /// absorbing them. Only honest when a directive costs no IDR, as on
+    /// the native seat (the host passes true); the estimator's 500 ms
+    /// fall limiter bounds the extra directives to ~2/s. The sustain-gated
+    /// climb and restore are unchanged, but exact mode judges BOTH edges
+    /// by rate: a material within-band RISE arms the loosen want like a
+    /// band crossing, and the sustained climb lands exactly on the
+    /// held-minimum ceiling — otherwise an exact tighten parked mid-band
+    /// would ratchet (a recovery inside one rung never changes the index).
     public var exactTighten: Bool
 
     public init(
@@ -544,51 +452,20 @@ public final class EncoderVbvPolicy {
     }
 }
 
-/// HS-33 books: what each APPLIED rate directive actually cost at the
-/// encoder — a forced IDR (distro libavcodec resets on any rc delta:
-/// the HS-22 correction) or an in-place reconfigure (the vendored
-/// no-reset build). The split is decided by OBSERVATION at the shell's
-/// encode seam — did the encode this directive rode into come back a
-/// keyframe? — never assumed from configuration, so the idr-books
-/// cause tags stay truthful under either libavcodec: a vbv move that
-/// mints no IDR lands in `noReset`, not in the IDR cause tally.
-public struct EncoderReconfigureBooks: Equatable, Sendable {
-    /// Directives applied to the encoder leaf (set_rate returned 0).
-    public private(set) var applied = 0
-    /// Applied directives whose encode came back an IDR — the reset
-    /// cost the distro wrapper charges for every rate move.
-    public private(set) var idrMinting: [EncoderRateDirective.Kind: Int] = [:]
-    /// Applied directives whose encode stayed a P-frame — the no-reset
-    /// path riding (or, under distro libav, a reconfigure the wrapper
-    /// deferred — gop=INT_MAX makes that a finding either way).
-    public private(set) var noReset: [EncoderRateDirective.Kind: Int] = [:]
+/// The HRD (VBV) buffer a native encoder runs for a rate cap. Four frames
+/// of the cap is the window iHD's VBR needs for stable inter-frame
+/// quality; it is capped at the policy's VBV, which carries the
+/// one-FEC-group frame ceiling (the HS-25 guard). Under HRD conformance
+/// no frame exceeds the buffer, so an IDR at the rate ceiling comes out
+/// protectable instead of being dropped and re-demanded.
+public enum EncoderHrd {
+    public static let framesOfCap = 4
 
-    public init() {}
-
-    public mutating func note(
-        _ kind: EncoderRateDirective.Kind, mintedIdr: Bool
-    ) {
-        applied += 1
-        if mintedIdr {
-            idrMinting[kind, default: 0] += 1
-        } else {
-            noReset[kind, default: 0] += 1
-        }
-    }
-
-    public var idrMintingTotal: Int { idrMinting.values.reduce(0, +) }
-    public var noResetTotal: Int { noReset.values.reduce(0, +) }
-
-    /// One human tally for the stats block: "tighten 2, rung 1" (the
-    /// idr-books vocabulary), "none" when empty.
-    public static func summary(
-        _ tally: [EncoderRateDirective.Kind: Int]
-    ) -> String {
-        let names: [(EncoderRateDirective.Kind, String)] =
-            [(.tighten, "tighten"), (.loosen, "rung"), (.restore, "restore")]
-        let parts = names.compactMap { kind, name in
-            tally[kind].map { "\(name) \($0)" }
-        }
-        return parts.isEmpty ? "none" : parts.joined(separator: ", ")
+    public static func bufferBits(
+        capBitsPerSecond: Int, fps: Int, vbvBits: Int?
+    ) -> Int {
+        let window = capBitsPerSecond * framesOfCap / max(fps, 1)
+        guard let vbvBits, vbvBits > 0 else { return window }
+        return min(window, vbvBits)
     }
 }

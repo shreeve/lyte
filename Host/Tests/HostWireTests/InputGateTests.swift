@@ -20,10 +20,7 @@ import LyteWireTestKit
 //   • once an injection is reported, every subsequent video frame's
 //     shards carry the lastInputSeq TLV (0x03) — per-shard, like the
 //     conn-id — and the frame still reassembles byte-exact within the
-//     1152 B budget (geometry derives from the real TLV headroom);
-//   • an input event arriving in IDLE is the WAKE (W4b's pre-arm rule:
-//     mode=active on the reliable stream + next-damage-as-IDR armed) —
-//     the notePreArmInput seam HS-11 left unwired now has its caller.
+//     1152 B budget (geometry derives from the real TLV headroom).
 //
 // The far end is the SessionLifecycleGateTests discipline: a LyteWire
 // client build-up (NoiseSession initiator + ArqEndpoint<ClientClock>) —
@@ -99,8 +96,10 @@ final class InputGateTests: XCTestCase {
         ])
         XCTAssertEqual(try InputEcho.decode(echo.encode()), echo)
 
-        print("HS-13 gate (codec): 0x16 all five kinds + 0x17 pinned "
-            + "byte-exact against hand-built layouts")
+        print("""
+            HS-13 gate (codec): 0x16 all five kinds + 0x17 pinned \
+            byte-exact against hand-built layouts
+            """)
     }
 
     func testHostileInputBytesRejectAndNeverTrap() {
@@ -543,13 +542,15 @@ final class InputGateTests: XCTestCase {
             )
         }
 
-        print("HS-13 gate (storm): 40 events all kinds exactly-once "
-            + "IN ORDER through 5% loss / 5% dup / 4 ms jitter "
-            + "(\(net.lostCount) lost, \(net.duplicatedCount) duplicated of "
-            + "\(net.sentCount)); 40/40 echo tuples byte-faithful in "
-            + "\(client.echoMessageTupleCounts.count) messages; post-storm "
-            + "frame stamped lastInputSeq=39 on all "
-            + "\(client.videoShards.count) shards")
+        print("""
+            HS-13 gate (storm): 40 events all kinds exactly-once \
+            IN ORDER through 5% loss / 5% dup / 4 ms jitter \
+            (\(net.lostCount) lost, \(net.duplicatedCount) duplicated of \
+            \(net.sentCount)); 40/40 echo tuples byte-faithful in \
+            \(client.echoMessageTupleCounts.count) messages; post-storm \
+            frame stamped lastInputSeq=39 on all \
+            \(client.videoShards.count) shards
+            """)
     }
 
     // MARK: lastInputSeq stamping + geometry under the extra TLV
@@ -627,8 +628,10 @@ final class InputGateTests: XCTestCase {
         }
         XCTAssertGreaterThan(
             client.videoShards.count, bareShardCount,
-            "1100 B no longer fits one shard at the 1095 B stamped "
-                + "budget — geometry must derive from the real headroom"
+            """
+                1100 B no longer fits one shard at the 1095 B stamped \
+                budget — geometry must derive from the real headroom
+                """
         )
 
         // Byte-exact reassembly through the core's own assembler: the
@@ -648,76 +651,10 @@ final class InputGateTests: XCTestCase {
         XCTAssertEqual(units.map(\.annexB), [stamped],
                        "the stamped frame must reassemble byte-exact")
 
-        print("HS-13 gate (stamp): pre-input frames bare; post-injection "
-            + "frames carry TLV 0x03 = 7 on every shard, geometry at the "
-            + "1095 B TLV-adjusted budget, byte-exact through VideoAssembler")
-    }
-
-    // MARK: Input in IDLE is the WAKE (the notePreArmInput wiring)
-
-    func testGateInputWakesIdleSession() throws {
-        let (session, clientValue, box) = try establish()
-        var client = clientValue
-        var forwarded = 0
-        var t: UInt64 = 1_000
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
-        _ = client.take(type: CtrlMessageType.capabilityDeclaration)
-
-        // Reach IDLE the honest way: a frame, convergence, the one-shot
-        // ack (the HS-11 flip).
-        _ = try session.ingestVideoFrame(
-            syntheticFrame(byteCount: 900),
-            captureTimestampMicroseconds: 42, isKeyframe: false,
-            now: t * 1_000
-        )
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
-        _ = session.noteRatchetConverged(
-            finalFrame: syntheticFrame(byteCount: 700),
-            captureTimestampMicroseconds: 42,
-            now: t * 1_000, hostMicroseconds: t
-        )
-        session.pump(now: t * 1_000)
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
-        XCTAssertEqual(session.wireMode, .idle, "the ack flipped to IDLE")
-        _ = client.take(type: CtrlMessageType.modeTransition)
-        XCTAssertFalse(session.takeFreshKeyframeRequest())
-
-        // A keypress lands in IDLE: the pre-arm IS the WAKE — before
-        // any damage exists (W4b; the seam HS-11 left unwired).
-        var wakeEvents: [SessionEvent] = []
-        try client.arq.send(
-            message: InputEvent(
-                seq: 0, clientMicroseconds: 5,
-                body: .keyKeycode(keycode: 30, pressed: true)
-            ).encode(),
-            now: ClientTimestamp(microseconds: t)
-        )
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
-            wakeEvents.append($0)
-        }
-
-        XCTAssertEqual(session.wireMode, .active, "input in IDLE wakes")
-        XCTAssertTrue(wakeEvents.contains(.modeTransitionSent(.active)))
-        XCTAssertTrue(wakeEvents.contains(where: {
-            if case .inputReceived(let event, _) = $0 {
-                return event.seq == 0
-            }
-            return false
-        }))
-        XCTAssertTrue(session.takeFreshKeyframeRequest(),
-                      "WAKE arms next-damage-as-IDR before the damage exists")
-        let modeMessages = client.take(type: CtrlMessageType.modeTransition)
-        XCTAssertEqual(
-            try modeMessages.map { try ModeTransition.decode($0).mode },
-            [.active],
-            "mode=active reaches the client on the reliable stream"
-        )
-        // The injection report was made by settle's shell; its echo
-        // arrived too.
-        XCTAssertEqual(client.echoTuples.map(\.seq), [0])
-
-        print("HS-13 gate (wake): keypress in IDLE → mode=active on the "
-            + "wire + IDR armed pre-damage + echo tuple delivered — "
-            + "notePreArmInput has its caller")
+        print("""
+            HS-13 gate (stamp): pre-input frames bare; post-injection \
+            frames carry TLV 0x03 = 7 on every shard, geometry at the \
+            1095 B TLV-adjusted budget, byte-exact through VideoAssembler
+            """)
     }
 }

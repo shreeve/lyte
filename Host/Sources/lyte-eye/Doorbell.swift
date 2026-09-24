@@ -51,9 +51,11 @@ func runDoorbell(
     }
     var primary = Watch(planeId: planes.primary.id, lastFB: planes.primary.fb)
     var cursor = planes.cursor.map { Watch(planeId: $0.id, lastFB: $0.fb) }
-    print("device=\(device) primary_plane=\(primary.planeId) "
-        + "cursor_plane=\(cursor?.planeId ?? 0) "
-        + "poll=\(intervalUs)us run=\(Int(seconds))s [swift]")
+    print("""
+        device=\(device) primary_plane=\(primary.planeId) \
+        cursor_plane=\(cursor?.planeId ?? 0) \
+        poll=\(intervalUs)us run=\(Int(seconds))s [swift]
+        """)
 
     var polls = 0
     var pollCostNs = 0.0
@@ -76,9 +78,11 @@ func runDoorbell(
         pollCostNs += (SystemMonotonicClock.nowSeconds - costStart) * 1e9
         polls += 1
         if t >= nextReport {
-            print("  t=\(String(format: "%2.0f", t - t0))s "
-                + "primary_flips_this_sec=\(primaryThisSecond) "
-                + "total=\(primary.changes)")
+            print("""
+                  t=\(String(format: "%2.0f", t - t0))s \
+                primary_flips_this_sec=\(primaryThisSecond) \
+                total=\(primary.changes)
+                """)
             primaryThisSecond = 0
             nextReport += 1.0
         }
@@ -87,8 +91,10 @@ func runDoorbell(
 
     let duration = t - t0
     print(String(
-        format: "RESULT primary: %d flips in %.1fs = %.2f/s  "
-            + "gap_min=%.1fms gap_max=%.1fms",
+        format: """
+            RESULT primary: %d flips in %.1fs = %.2f/s  \
+            gap_min=%.1fms gap_max=%.1fms
+            """,
         primary.changes, duration,
         Double(primary.changes) / duration,
         primary.changes > 1 ? primary.minGap * 1e3 : 0,

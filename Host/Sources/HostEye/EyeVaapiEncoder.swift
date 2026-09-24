@@ -18,10 +18,10 @@
 // quirk the slice pen mirrors).
 //
 // Rate control: CQP (qp) or VBR (bitrateBitsPerSecond > 0 — target
-// 70% of cap, the E1 envelope). setRateBitsPerSecond() re-sends the
-// RC misc buffer with the NEXT frame — the live directive lever
-// libavcodec's wrapper never had (rc at open() only), un-deferring
-// the estimator's rate moves.
+// 70% of cap). setRateControl() re-sends the RC and HRD misc buffers
+// with the NEXT frame: a live rate move with no reset and no IDR. The
+// HRD buffer is four frames of the cap unless the caller bounds it
+// (the one-FEC-group frame ceiling, HostWire.EncoderHrd).
 
 #if os(Linux)
 
@@ -33,8 +33,10 @@ import HostCore
 public struct EyeVaapiError: Error, CustomStringConvertible {
     public var description: String
     init(_ what: String, _ status: VAStatus) {
-        description = "\(what): VAStatus \(status) "
-            + "(\(String(cString: vaErrorStr(status))))"
+        description = """
+            \(what): VAStatus \(status) \
+            (\(String(cString: vaErrorStr(status))))
+            """
     }
     init(_ what: String) { description = what }
 }
@@ -62,14 +64,18 @@ public final class EyeVaapiEncoder {
     private var codedBuffer = VABufferID(VA_INVALID_ID)
     private let recipe: HevcHeaderRecipe
     private let bitrateBitsPerSecond: Int64
-    private var pendingRate: Int64?
-    /// The rate the driver currently holds — a directive's move must
-    /// survive later IDR re-sends (which rebuild the RC/HRD buffers).
+    private var pendingRate: (bitsPerSecond: Int64, hrdBufferBits: Int64?)?
+    /// The rate and HRD buffer the driver currently holds — a directive's
+    /// move must survive later IDR re-sends (which rebuild the RC/HRD
+    /// buffers).
     private var currentRate: Int64 = 0
+    private var currentHrdBufferBits: Int64?
     private var frameIndex: Int64 = 0
     private var poc: UInt32 = 0
     private var previousRecon = VASurfaceID(VA_INVALID_ID)
     private var previousPoc: UInt32 = 0
+    /// Joins a multi-segment coded buffer; capacity is kept across frames.
+    private var assembly: [UInt8] = []
 
     private func check(_ status: VAStatus, _ what: String) throws {
         guard status == VA_STATUS_SUCCESS else {
@@ -109,6 +115,7 @@ public final class EyeVaapiEncoder {
         width: Int32, height: Int32, fps: Int32, qp: Int32,
         renderNode: String = "/dev/dri/renderD128",
         bitrateBitsPerSecond: Int64 = 0,
+        hrdBufferBits: Int64? = nil,
         inputSurfaceCount: Int = 8,
         chroma444: Bool = false
     ) throws {
@@ -119,6 +126,7 @@ public final class EyeVaapiEncoder {
         self.chroma444 = chroma444
         self.bitrateBitsPerSecond = bitrateBitsPerSecond
         self.currentRate = bitrateBitsPerSecond
+        self.currentHrdBufferBits = hrdBufferBits
         // The BRC dialect (pinned to ffmpeg's on this driver): under
         // rate control the PPS baseline is QP 30 and per-CU QP deltas
         // are declared at 8x8 granularity (depth = the SPS's
@@ -183,8 +191,10 @@ public final class EyeVaapiEncoder {
                 & UInt32(VA_PREDICTION_DIRECTION_BI_NOT_EMPTY) != 0
         }
         guard gpb else {
-            throw EyeVaapiError("driver wants plain P slices — the "
-                + "slice pen only speaks the iHD GPB dialect yet")
+            throw EyeVaapiError("""
+                driver wants plain P slices — the \
+                slice pen only speaks the iHD GPB dialect yet
+                """)
         }
 
         // Config: NV12 (or packed AYUV at 4:4:4), our RC mode, and
@@ -256,10 +266,12 @@ public final class EyeVaapiEncoder {
         let rc = bitrateBitsPerSecond > 0
             ? "vbr \(bitrateBitsPerSecond / 1_000_000) Mbps cap"
             : "cqp \(qp)"
-        print("vaapi-native: \(String(cString: vaQueryVendorString(display))) "
-            + "— \(entrypoint == VAEntrypointEncSliceLP ? "LP" : "std")"
-            + " entrypoint, GPB, \(rc)"
-            + (chroma444 ? ", Rext Main444 (AYUV)" : ""))
+        print("""
+            vaapi-native: \(String(cString: vaQueryVendorString(display))) \
+            — \(entrypoint == VAEntrypointEncSliceLP ? "LP" : "std")\
+             entrypoint, GPB, \(rc)\
+            \(chroma444 ? ", Rext Main444 (AYUV)" : "")
+            """)
     }
 
     deinit {
@@ -285,9 +297,13 @@ public final class EyeVaapiEncoder {
     }
 
     /// E6b's lever: takes effect with the NEXT frame's RC misc
-    /// buffer — no reset, no IDR, no reopen.
-    public func setRateBitsPerSecond(_ bitsPerSecond: Int64) {
-        pendingRate = bitsPerSecond
+    /// buffer — no reset, no IDR, no reopen. `hrdBufferBits` is the HRD
+    /// (VBV) buffer to run (HostWire.EncoderHrd); nil keeps the
+    /// four-frame window.
+    public func setRateControl(
+        bitsPerSecond: Int64, hrdBufferBits: Int64? = nil
+    ) {
+        pendingRate = (bitsPerSecond, hrdBufferBits)
     }
 
     // MARK: Surface export (the E1 raw-offset parse, verbatim — the
@@ -377,12 +393,16 @@ public final class EyeVaapiEncoder {
 
     // MARK: The per-frame drive
 
-    /// Encodes one blitted input surface; returns the complete
-    /// access unit (Annex-B, packed headers included — the driver
-    /// writes them into the coded buffer ahead of the slice data).
-    public func encode(
-        surface: VASurfaceID, forceIDR: Bool
-    ) throws -> (data: [UInt8], keyframe: Bool) {
+    /// Encodes one blitted input surface and lends the complete access
+    /// unit (Annex-B, packed headers included — the driver writes them
+    /// into the coded buffer ahead of the slice data) to `body`, with
+    /// whether it is an IDR. The bytes are valid only inside `body`: a
+    /// single coded segment (the common case) is the mapped VA buffer
+    /// itself; a segment chain is joined into a reused scratch buffer.
+    public func encode<R>(
+        surface: VASurfaceID, forceIDR: Bool,
+        _ body: (UnsafeRawBufferPointer, Bool) throws -> R
+    ) throws -> R {
         let idr = frameIndex == 0 || forceIDR
         if idr { poc = 0 }
         let recon = reconSurfaces[Int(frameIndex % 2)]
@@ -405,10 +425,11 @@ public final class EyeVaapiEncoder {
                 buffers.append(try makeFrameRateBuffer())
             }
         } else if let rate = pendingRate, bitrateBitsPerSecond > 0 {
-            currentRate = rate
+            currentRate = rate.bitsPerSecond
+            currentHrdBufferBits = rate.hrdBufferBits
             buffers.append(try makeRateControlBuffer(
-                capBitsPerSecond: rate))
-            buffers.append(try makeHRDBuffer(capBitsPerSecond: rate))
+                capBitsPerSecond: currentRate))
+            buffers.append(try makeHRDBuffer(capBitsPerSecond: currentRate))
             pendingRate = nil
         }
 
@@ -437,25 +458,31 @@ public final class EyeVaapiEncoder {
         var mapped: UnsafeMutableRawPointer?
         try check(vaMapBuffer(display, codedBuffer, &mapped),
                   "vaMapBuffer(coded)")
-        var out: [UInt8] = []
+        defer { _ = vaUnmapBuffer(display, codedBuffer) }
+        // The picture is encoded: the reference chain advances before the
+        // bytes are lent, so a throwing `body` cannot desync it.
+        previousRecon = recon
+        previousPoc = poc
+        poc &+= 1
+        frameIndex += 1
+        var segments: [UnsafeRawBufferPointer] = []
         var segment = mapped?.assumingMemoryBound(
             to: VACodedBufferSegment.self)
         while let s = segment {
             let seg = s.pointee
             if let buf = seg.buf, seg.size > 0 {
-                out.append(contentsOf: UnsafeRawBufferPointer(
+                segments.append(UnsafeRawBufferPointer(
                     start: buf, count: Int(seg.size)))
             }
             segment = seg.next?.assumingMemoryBound(
                 to: VACodedBufferSegment.self)
         }
-        _ = vaUnmapBuffer(display, codedBuffer)
-
-        previousRecon = recon
-        previousPoc = poc
-        poc &+= 1
-        frameIndex += 1
-        return (out, idr)
+        if segments.count == 1 {
+            return try body(segments[0], idr)
+        }
+        assembly.removeAll(keepingCapacity: true)
+        for piece in segments { assembly.append(contentsOf: piece) }
+        return try assembly.withUnsafeBytes { try body($0, idr) }
     }
 
     // MARK: Buffer builders (vaapi_encode_h265.c's fills, mirrored)
@@ -620,7 +647,7 @@ public final class EyeVaapiEncoder {
     /// driver's VBR math degenerates and inter-frame quality collapses
     /// (the yellow-smear artifact — caught by eyeball, not by decode).
     private func vbvBufferBits(capBitsPerSecond: Int64) -> Int64 {
-        capBitsPerSecond * 4 / Int64(fps)
+        currentHrdBufferBits ?? capBitsPerSecond * 4 / Int64(fps)
     }
 
     private func makeRateControlBuffer(

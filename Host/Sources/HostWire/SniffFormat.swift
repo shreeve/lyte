@@ -86,9 +86,11 @@ public enum SniffFormat {
         case .none:
             return "fec=none"
         case .reedSolomon(let shardIndex, let geometry):
-            return "fec=rs idx=\(shardIndex)/\(geometry.totalShards) "
-                + "k=\(geometry.dataShards) m=\(geometry.parityShards) "
-                + "group=\(geometry.groupByteCount)B"
+            return """
+                fec=rs idx=\(shardIndex)/\(geometry.totalShards) \
+                k=\(geometry.dataShards) m=\(geometry.parityShards) \
+                group=\(geometry.groupByteCount)B
+                """
         }
     }
 

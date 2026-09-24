@@ -117,8 +117,10 @@ final class AudioRoutingGateTests: XCTestCase {
         XCTAssertEqual(
             try CapabilityDeclaration.decode(message).capabilities, declared
         )
-        print("HS-18 gate (spine): declaration = frozen bytes + `09 F5`, "
-            + "nothing else moved")
+        print("""
+            HS-18 gate (spine): declaration = frozen bytes + `09 F5`, \
+            nothing else moved
+            """)
     }
 
     func testIntersectionEnablesOnlyOnMutualDeclaration() throws {
@@ -386,8 +388,10 @@ final class AudioRoutingGateTests: XCTestCase {
         XCTAssertEqual(client.take(type: CtrlMessageType.audioRoutingStatus),
                        [[0x19, 0x01]])
 
-        print("HS-18 gate (in vivo): negotiated 0x18 → event → 0x19 "
-            + "byte-exact, both directions")
+        print("""
+            HS-18 gate (in vivo): negotiated 0x18 → event → 0x19 \
+            byte-exact, both directions
+            """)
     }
 
     // MARK: Leg 4 — the rule-3 gate holds against the unnegotiated
@@ -449,7 +453,9 @@ final class AudioRoutingGateTests: XCTestCase {
         }
         XCTAssertEqual(confused, 1)
 
-        print("HS-18 gate (rule 3): unnegotiated 0x18 refused loud, "
-            + "0x19 never volunteered, role confusion dropped")
+        print("""
+            HS-18 gate (rule 3): unnegotiated 0x18 refused loud, \
+            0x19 never volunteered, role confusion dropped
+            """)
     }
 }

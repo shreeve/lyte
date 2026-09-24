@@ -1113,27 +1113,10 @@ public final class VideoChannel {
         guard let seal else {
             return try envelope.encode(plaintextShard: plaintext)
         }
-        var header = try envelope.encode(payload: [])
-        // The sealer API necessarily returns ciphertext‖tag as its own
-        // array. Reuse the AAD header as the FINAL datagram buffer:
-        // pre-size it before sealing, authenticate exactly these header
-        // bytes, then append the returned payload in place. This removes
-        // the former third per-shard allocation from
-        // `envelope.encode(payload: sealed)` while preserving AEAD
-        // sequencing and byte identity.
-        header.reserveCapacity(
-            header.count + plaintext.count + WireBudget.aeadTagByteCount
-        )
-        let sealed = try seal(plaintext[...], header[...], envelope)
-        guard sealed.count <= WireBudget.maxWirePayloadByteCount else {
-            throw WireError.payloadOverBudget(sealed.count)
+        let datagram = try envelope.sealedDatagram(plaintext[...]) {
+            plaintext, aad in try seal(plaintext, aad, envelope)
         }
-        let total = header.count + sealed.count
-        guard total <= WireBudget.maxDatagramByteCount else {
-            throw WireError.datagramOverBudget(total)
-        }
-        header.append(contentsOf: sealed)
         counters.sealedDatagramsAssembledInPlace += 1
-        return header
+        return datagram
     }
 }

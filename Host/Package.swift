@@ -70,10 +70,21 @@ var targets: [Target] = [
             .product(name: "LyteWire", package: "Wire"),
         ]
     ),
+    // The host's cross-platform OS adapters over HostWire's seams (the
+    // file-drop store); keeps HostWire itself IO-free.
+    .target(
+        name: "HostIO",
+        dependencies: [
+            "HostWire",
+            .product(name: "LyteCore", package: "Common"),
+            .product(name: "LyteWire", package: "Wire"),
+        ]
+    ),
     .testTarget(
         name: "HostWireTests",
         dependencies: [
             "HostWire",
+            "HostIO",
             "HostSession",
             "HostCore",
             .product(name: "LyteCore", package: "Common"),
@@ -106,10 +117,6 @@ var targets: [Target] = [
 products.append(.executable(name: "lyte-host", targets: ["lyte-host"]))
 products.append(.executable(name: "lyte-eye", targets: ["lyte-eye"]))
 products.append(.executable(name: "lyte-nvenc", targets: ["lyte-nvenc"]))
-
-// E5: the vendored no-reset FFmpeg is GONE — the portal path it
-// served is demolished. LYTE_FFMPEG_PREFIX is accepted-and-ignored
-// so existing build recipes keep working; nothing links libav.
 
 targets += [
     .systemLibrary(
@@ -181,8 +188,12 @@ targets += [
             // HevcSliceHeader) straight to the driver via libva.
             "CDRM", "CGBM", "CEGL", "CVA",
             "HostCore",
+            .product(name: "LyteIO", package: "Common"),
         ]
     ),
+    // Pure HostEye bookkeeping (GEM-handle and cursor-plane transitions)
+    // — unit tests that never open a device.
+    .testTarget(name: "HostEyeTests", dependencies: ["HostEye"]),
     // E0: the standalone eye — doorbell mode (milestone 1, unprivileged)
     // and capture mode (milestone 2: full loop → Annex-B file).
     .executableTarget(
@@ -256,6 +267,7 @@ targets += [
             "HostCore",
             "HostSession",
             "HostWire",
+            "HostIO",
             "CDBus",
             // HS-15: the audio leg — monitor capture + Opus encode
             // feeding the session's audio channel.
@@ -281,6 +293,7 @@ targets += [
         name: "LyteHostIntegrationTests",
         dependencies: [
             "lyte-host",
+            "CNetIO",
             .product(name: "LyteWire", package: "Wire"),
         ]
     ),

@@ -1,8 +1,7 @@
-// BulkFileStore (F-3): the one production BulkReceiveStore — plain
-// POSIX file IO on the destination directory. Direct syscalls rather
-// than Foundation (HostWire keeps Wire's no-Foundation spirit, and
-// open/pwrite/fsync/rename need no macros — the disk is an OS leaf
-// Swift reaches directly, the CNetIO rationale without the C target).
+// BulkFileStore: the one production BulkReceiveStore — plain POSIX file
+// IO on the destination directory, in HostIO so HostWire stays IO-free.
+// Direct syscalls rather than Foundation: open/pwrite/fsync/rename need
+// no macros, so the disk is an OS leaf Swift reaches directly.
 //
 // Layout inside the drop directory, all of it dotted (invisible):
 //   .lyte-bulk-<16-hex transferId>.part    the staging file — chunks
@@ -21,6 +20,7 @@ import Darwin
 #else
 import Glibc
 #endif
+import HostWire
 import LyteCore
 import LyteWire
 
@@ -128,7 +128,7 @@ public final class BulkFileStore: BulkReceiveStore {
         close(fd)
         fd = -1
         openTransferId = nil
-        let destination = directoryPath + "/" + name
+        let destination = directoryPath + "/\(name)"
         guard rename(stagingPath(transferId), destination) == 0 else {
             throw BulkStoreError.renameFailed(
                 "\(destination): \(Self.errnoText())"
@@ -151,7 +151,7 @@ public final class BulkFileStore: BulkReceiveStore {
     }
 
     public func finalNameExists(_ name: String) -> Bool {
-        access(directoryPath + "/" + name, F_OK) == 0
+        access(directoryPath + "/\(name)", F_OK) == 0
     }
 
     public func freeDiskSpaceByteCount() -> UInt64? {
@@ -175,7 +175,7 @@ public final class BulkFileStore: BulkReceiveStore {
             }
             guard name.hasPrefix(Self.stagingPrefix),
                   name.hasSuffix(".resume") else { continue }
-            let path = directoryPath + "/" + name
+            let path = directoryPath + "/\(name)"
             guard let bytes = try? Self.readWholeFile(path),
                   let state = try? BulkResumeStateCodec.decode(bytes),
                   access(stagingPath(state.transferId), F_OK) == 0
@@ -240,13 +240,17 @@ public final class BulkFileStore: BulkReceiveStore {
     /// Exposed for tests that pre-seed staging bytes (the holed-map
     /// vector replay) and audit stray files.
     public func stagingPath(_ transferId: UInt64) -> String {
-        directoryPath + "/" + Self.stagingPrefix
-            + Hex.string(transferId, width: 16) + ".part"
+        directoryPath + """
+            /\(Self.stagingPrefix)\
+            \(Hex.string(transferId, width: 16)).part
+            """
     }
 
     public func resumePath(_ transferId: UInt64) -> String {
-        directoryPath + "/" + Self.stagingPrefix
-            + Hex.string(transferId, width: 16) + ".resume"
+        directoryPath + """
+            /\(Self.stagingPrefix)\
+            \(Hex.string(transferId, width: 16)).resume
+            """
     }
 
     private func syncDirectory() {
@@ -265,7 +269,7 @@ public final class BulkFileStore: BulkReceiveStore {
         var built = path.hasPrefix("/") ? "/" : ""
         for component in path.split(separator: "/") {
             built += (built.isEmpty || built == "/")
-                ? String(component) : "/" + component
+                ? String(component) : "/\(component)"
             if mkdir(built, 0o755) != 0 && errno != EEXIST {
                 throw BulkStoreError.directoryUnavailable(
                     "\(built): \(errnoText())"
@@ -302,5 +306,19 @@ public final class BulkFileStore: BulkReceiveStore {
             out.append(contentsOf: buffer[0..<count])
         }
         return out
+    }
+}
+
+extension BulkReceiveShell {
+    /// The production shape: a POSIX store on `directoryPath`, created if
+    /// missing. Throws when the directory cannot exist.
+    public convenience init(
+        directoryPath: String,
+        config: BulkTransferConfig = BulkTransferConfig()
+    ) throws {
+        self.init(
+            store: try BulkFileStore(directoryPath: directoryPath),
+            config: config
+        )
     }
 }

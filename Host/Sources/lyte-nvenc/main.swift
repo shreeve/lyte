@@ -72,10 +72,12 @@ check(NvEncodeAPIGetMaxSupportedVersion(&maxVersion),
 let deviceName = String(
     decoding: nameBytes.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
     as: UTF8.self)
-print("nvenc-probe: \(deviceName) — driver CUDA "
-    + "\(driverVersion / 1000).\(driverVersion % 1000 / 10), NVENC API "
-    + "\(maxVersion >> 4).\(maxVersion & 0xF) (header "
-    + "\(LYTE_NVENCAPI_VERSION & 0xFF).\(LYTE_NVENCAPI_VERSION >> 24))")
+print("""
+    nvenc-probe: \(deviceName) — driver CUDA \
+    \(driverVersion / 1000).\(driverVersion % 1000 / 10), NVENC API \
+    \(maxVersion >> 4).\(maxVersion & 0xF) (header \
+    \(LYTE_NVENCAPI_VERSION & 0xFF).\(LYTE_NVENCAPI_VERSION >> 24))
+    """)
 guard maxVersion >= (LYTE_NVENCAPI_VERSION & 0xFF) << 4
         | (LYTE_NVENCAPI_VERSION >> 24) else {
     fail("driver NVENC API older than the vendored 12.2 header")
@@ -209,8 +211,10 @@ for frame in 0..<frameCount {
                   "nvEncReconfigureEncoder", lastError: lastError)
         }
         reconfigured = true
-        print("nvenc-probe: reconfigured 35→18 Mbps at frame \(frame) "
-            + "(resetEncoder=0, forceIDR=0)")
+        print("""
+            nvenc-probe: reconfigured 35→18 Mbps at frame \(frame) \
+            (resetEncoder=0, forceIDR=0)
+            """)
     }
 
     var lockInput = NV_ENC_LOCK_INPUT_BUFFER()
@@ -267,12 +271,16 @@ let sorted = encodeNanos.sorted()
 let p50 = Double(sorted[sorted.count / 2]) / 1e6
 let p99 = Double(sorted[min(sorted.count - 1,
                             sorted.count * 99 / 100)]) / 1e6
-print("nvenc-probe: \(frameCount) frames \(width)x\(height) → "
-    + "\(out.count) B (\(outPath)); encode p50 "
-    + String(format: "%.2f", p50) + " ms / p99 "
-    + String(format: "%.2f", p99) + " ms")
-print("nvenc-probe: IDRs at \(idrFrames), spontaneous intras "
-    + "\(intraFrames), reconfigured=\(reconfigured)")
+print("""
+    nvenc-probe: \(frameCount) frames \(width)x\(height) → \
+    \(out.count) B (\(outPath)); encode p50 \
+    \(String(format: "%.2f", p50)) ms / p99 \
+    \(String(format: "%.2f", p99)) ms
+    """)
+print("""
+    nvenc-probe: IDRs at \(idrFrames), spontaneous intras \
+    \(intraFrames), reconfigured=\(reconfigured)
+    """)
 
 guard idrFrames == [0] else {
     fail("IDR discipline broken — expected exactly [0], got \(idrFrames)"
@@ -280,8 +288,10 @@ guard idrFrames == [0] else {
             ? " (the reconfigure minted one?)" : ""))
 }
 guard reconfigured else { fail("reconfigure never ran") }
-print("nvenc-probe: PASS — one demanded IDR, mid-stream rate move "
-    + "with zero reset and zero IDR. The vendor patch's job, done "
-    + "by the front door.")
+print("""
+    nvenc-probe: PASS — one demanded IDR, mid-stream rate move \
+    with zero reset and zero IDR. The vendor patch's job, done \
+    by the front door.
+    """)
 
 #endif

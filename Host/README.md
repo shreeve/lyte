@@ -11,23 +11,25 @@ closed 2026-07-22 (gate report in git history); the portal era ended
 
 - `Sources/HostCore` — pure Swift, no platform deps: Annex-B/HEVC NAL
   helpers, **the HEVC bitstream pens** (parameter sets, slice headers,
-  the bit writer — since E5 the host authors its own bitstream), the
-  encoder recipe, the quality ratchet, the strict-priority send pacer,
-  the kernel-pressure governor, histograms. Builds and tests on macOS
-  so the contracts are verifiable off-target.
+  the bit writer — the host authors its own bitstream), the
+  strict-priority send pacer, the kernel-pressure governor, histograms.
+  Builds and tests on macOS so the contracts are verifiable off-target.
 - `Sources/HostSession` — IO-free responder policy over LyteWire: handshake
   admission and stateless retry cookies, lifecycle projection, and validated
   path migration. Time and randomness are mandatory inputs; decisions are
   values. Builds and tests on macOS and Linux.
 - `Sources/HostWire` — the session execution layer on LyteWire (also
-  cross-platform): Noise responder orchestration, VideoChannel
-  (packetize/FEC/pace/repair store), AudioFramer, RateEstimator, pairing
-  responder, and client keystore. It executes `HostSession` decisions but does
-  not own their policy.
-- `Sources/HostEye` — the direct eye (Linux): phase-stable GPU pixel
-  observation, KMS identity + GETFB2/dmabuf import caching, RGB→NV12 EGL
-  blit, the native VAAPI encoder seat fed by HostCore's pens, and cursor-plane
-  tracking.
+  cross-platform, IO-free): Noise responder orchestration, VideoChannel
+  (packetize/FEC/pace/repair store), AudioFramer, RateEstimator, the socket
+  outbox (lane batching, backpressure, stale-video shedding), pre-encode
+  admission, the encoder VBV/HRD policy, pairing responder, and client
+  keystore. It executes `HostSession` decisions but does not own their policy.
+- `Sources/HostIO` — the host's cross-platform OS adapters over HostWire's
+  seams: the POSIX file-drop store.
+- `Sources/HostEye` — the direct eye (Linux): the scanout identity and GETFB2
+  ticket, the `EyePipeline` (dmabuf import of the current scanout, the 16×16
+  tile pixel fingerprint, the NV12/AYUV EGL blit, and the native VAAPI encoder
+  seat fed by HostCore's pens), and cursor-plane tracking.
 - `Sources/CDBus`, `CPipeWire`, `CDRM`, `CGBM`, `CEGL`, `CVA`,
   `CNvEnc`, `CCuda` — pkg-config/systemLibrary module maps (Linux only).
 - `Sources/CPipeWireAudio` — C leaf: default-sink monitor audio capture
@@ -85,8 +87,8 @@ Host/Scripts/setup-host.sh
    scanout is now a feature, not a starvation bug; the script offers
    to remove a leftover `90-lyte-screencast.conf`.)
 
-2. **Seat access to `/dev/uinput`** for the `CInputUinput` fallback
-   input backend (HS-13) — the udev rule at
+2. **Seat access to `/dev/uinput`** for the `CInputUinput` input
+   backend — the udev rule at
    `/etc/udev/rules.d/60-lyte-uinput.rules`. Needs root; the script
    prints the exact `sudo tee` command rather than escalating itself.
 
@@ -145,9 +147,9 @@ ln -sf /usr/lib/x86_64-linux-gnu/libxml2.so.16 ~/.local/lib/swift-compat/libxml2
 
 Run. Capture needs no graphical session, no consent dialog, and no
 unlock — the direct eye reads the scanout with CAP_SYS_ADMIN; **pairing
-is the consent model**. (Input and clipboard still prefer the Mutter
-RemoteDesktop session bus when a session exists, with uinput as the
-fallback.)
+is the consent model**. Input is injected through kernel uinput devices
+(compositor-agnostic); the opt-in clipboard sync uses its own Mutter
+RemoteDesktop session.
 
 ```
 # File mode — capture the live scanout to an Annex-B file.
@@ -155,8 +157,10 @@ fallback.)
 
 # The real thing — a Lyte-UDP session host (prints its Noise static pubkey;
 # audio + Avahi advertisement default-on; --pair for PIN pairing;
-# --require-paired to enforce the keystore). 41000-range ports by
-# convention; test hosts take fresh 41xxx ports with --no-advertise.
+# --require-paired to enforce the keystore). A listening host waits for its
+# client as long as it takes; --seconds bounds the session once it starts.
+# 41000-range ports by convention; test hosts take fresh 41xxx ports with
+# --no-advertise.
 ./.build/release/lyte-host --wire-listen 41000 --seconds 330
 
 # HS-18: mute the host's own speakers for the session — desktop audio is
@@ -180,10 +184,14 @@ ffmpeg -v error -i /tmp/lyte-h0a.hevc -f null - # decodes with no errors
 The tool also self-checks that the first encoded packet begins with
 VPS/SPS/PPS + an IDR.
 
-Capture is change-driven from below: the direct eye polls the scanout
-plane's framebuffer ID at display rate — no repaint means no new FB ID
-means nothing captured or encoded, so cadence scales 0 fps (blank) →
-~1 fps (caret blink) → 60 fps (video) automatically, with no
-compositor cooperation to starve. On the wire, a static screen is
-served by the repair store's retained IDR rather than re-encodes —
-idle silence is the default posture, not a negotiated extra.
+Capture is change-driven by pixels: on a 60 Hz beat the direct eye
+fingerprints the current scanout on the GPU (framebuffer identity only
+decides when to re-import, since a compositor may redraw one buffer for
+minutes). Unchanged pixels encode nothing, so cadence scales from 0 fps
+(blank) through ~1 fps (caret blink) to 60 fps (video). A still screen
+is kept warm by re-encoding the retained frame once a second (backing
+off further under the negotiated quiet video posture), and a demanded
+IDR on a still screen re-encodes that retained frame. Changed frames
+are skipped before encode while the queued video already holds its
+latency budget, and the encoder's HRD buffer is bounded so a frame at
+the rate ceiling still fits one FEC group.
