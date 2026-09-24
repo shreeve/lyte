@@ -13,6 +13,7 @@ if [[ ! -d "$DEVELOPER_DIR" ]]; then
 fi
 
 source "$repo_root/Scripts/lib/build-graph.sh"
+source "$repo_root/Scripts/lib/frozen-vectors.sh"
 
 # run_package_tests PACKAGE: resolve and test PACKAGE in its own scratch
 # directory, cleaning it first when its build graph changed.
@@ -65,14 +66,13 @@ verify_frozen_vectors() {
         exit 1
     fi
 
-    # Vectors are append-only: a committed vector file may never be modified,
-    # deleted, renamed, or retyped. New vector files and README.md prose at
-    # any depth are fine. Without rename detection a rename is a deletion,
-    # so a vector moved onto a README path still fails.
     echo "==> frozen-vector contract (append-only)"
     local changed
-    changed="$(git diff --no-renames --name-only --diff-filter=MDT "$base" \
-        -- Wire/Vectors/ | grep -Ev '^Wire/Vectors/(.*/)?README\.md$' || true)"
+    if ! changed="$(lyte_changed_vectors "$base")"; then
+        echo "macOS gate FAILED: cannot diff Wire/Vectors against" \
+            "'$base'; is it a commit?" >&2
+        exit 1
+    fi
     if [[ -n "$changed" ]]; then
         echo "macOS gate FAILED: committed vectors changed:" >&2
         echo "$changed" >&2
@@ -141,6 +141,7 @@ echo "==> shell script lint and gate helpers"
 Scripts/Tests/test-shell-assertions.sh
 Scripts/Tests/test-build-graph.sh
 Scripts/Tests/test-gate-lock.sh
+Scripts/Tests/test-frozen-vectors.sh
 
 echo "==> benchmark safety tests"
 Scripts/Tests/test-benchmark-safety.sh

@@ -117,7 +117,8 @@ In order:
    a `README.md` (at any depth) is modified, deleted, renamed or retyped
    relative to
    `LYTE_GATE_BASE_SHA` (default: merge base with `origin/main`). New files
-   are allowed. `LYTE_ALLOW_VECTOR_CHANGES=1` overrides, deliberately.
+   are allowed; a base that is not a commit fails the gate.
+   `LYTE_ALLOW_VECTOR_CHANGES=1` overrides, deliberately.
 2. **Package tests** for Common, Wire, Host, Client, SystemTests and
    Browser, as above.
 3. **WebAssembly legs:** `Browser/Scripts/build.sh`, then
@@ -132,7 +133,7 @@ In order:
    parses, and none states a check as a bare `[[ … ]]`, `(( … ))` or
    `! cmd`, which macOS bash 3.2 never fails under `set -e`; tests use
    `Scripts/lib/assert.sh`), `test-build-graph.sh`, `test-gate-lock.sh`,
-   `test-benchmark-safety.sh`,
+   `test-frozen-vectors.sh`, `test-benchmark-safety.sh`,
    `test-host-release-posture.sh`, `test-host-package-image.sh --self-test`,
    `test-host-installer.sh --self-test` (which also runs
    `test-host-deploy.sh`), `test-sign-dev.sh`, `test-setup-dev-signing.sh`.
