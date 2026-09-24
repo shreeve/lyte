@@ -123,8 +123,9 @@ message is 0x0F (a pairing-only run opens with share A, 0x0B)
   (cookie mode), draws a stateless RetryChallenge instead of a drop: a
   24-byte HMAC cookie that binds the client tuple, a timestamp (30 s
   lifetime) and message 1 verbatim. Verified cookies spend from their own
-  budget, each proven address from a small share of it; a replay of an
-  admitted cookie is dropped.
+  budget, each source IP (an IPv6 /64) from a small share of it; an
+  admission spends both budgets or neither. The cookie itself still binds
+  address and port. A replay of an admitted cookie is dropped.
 - Message 1 carries no freshness, so a replayed one authenticates again.
   The host therefore commits to a client only when it proves key
   possession: its first authenticated transport datagram. Until then a
@@ -134,7 +135,9 @@ message is 0x0F (a pairing-only run opens with share A, 0x0B)
   timer-driven: the session-start beacon and its capability declaration
   leave once with message 2, and the 1 Hz beacons and ARQ retransmits
   start only after the client's first authenticated datagram. An answer
-  still unconfirmed after 6 s is discarded. The listening host also drops
+  still unconfirmed 12 s after message 2 last left is discarded; each
+  verbatim resend restarts that span, which outlasts the client's longest
+  retry schedule (5 × 2 s). The listening host also drops
   any message 1 it already answered earlier in the process, so a captured
   one replays at most once per host run and cannot hold the host against a
   real client's next dial.
@@ -299,6 +302,10 @@ Pinned by `arq-v1.json`.
 - Path migration: a datagram from a new tuple carrying the connection-id
   TLV draws a PathChallenge (0x03) after it unseals; a matching
   PathResponse (0x04) promotes the tuple, and video restarts from an IDR.
+  The previous primary stays the fallback for 3 s: a datagram from it
+  takes the path back only when its authenticated channel seq is newer
+  than the newest the new primary delivered on that channel, so a
+  straggler cannot flip the path, and a return does not renew the window.
 
 Pinned by `lifecycle-v1.json` and `session-v1.json`.
 
