@@ -1042,11 +1042,7 @@ final class SessionWire {
                     prepared,
                     context: context,
                     captureTimestampMicroseconds: captureMicros,
-                    interleave: { [unowned self] in
-                        self.drainAudioMailboxLocked()
-                    },
-                    now: SystemMonotonicClock.nowNanoseconds,
-                    isBorrowed: true
+                    now: SystemMonotonicClock.nowNanoseconds
                 )
                 lastFrameForTelemetry = shards > 0
                     ? session.lastAdmittedVideoFrameNumber : nil
