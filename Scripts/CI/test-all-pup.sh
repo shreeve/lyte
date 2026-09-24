@@ -16,8 +16,11 @@ cd "$repo_root"
 pup="${LYTE_PUP_HOST:-pup}"
 pup_gate_root="src/lyte-gates/deterministic"
 # The packages pup builds. Browser needs Swift 6.2 (JavaScriptKit) and
-# SystemTests needs the macOS client, so neither is mirrored.
+# SystemTests needs the macOS client, so neither is built; Common's
+# repository lints still scan every manifest and Browser's sources, so those
+# two are mirrored as manifest and Sources only.
 packages="Client Common Wire Host"
+scanned_packages="Browser SystemTests"
 local_state="$(mktemp -d)"
 trap 'rm -rf -- "$local_state"' EXIT
 lock_token="lyte-pup-gate-locked-$$-$RANDOM$RANDOM"
@@ -43,7 +46,9 @@ exec 3> "$local_state/control"
 {
     printf 'lock_token=%q\n' "$lock_token"
     printf 'gate_owner=%q\n' "$(hostname -s):$repo_root (pid $$)"
-    printf 'packages=%q\n' "$packages"
+    printf 'mirrored=%q\n' "$packages $scanned_packages"
+    # Sent inline: the mirror's Scripts/ is not synced until the lock is held.
+    cat Scripts/lib/gate-lock.sh
     cat <<'REMOTE'
 set -euo pipefail
 shopt -s inherit_errexit
@@ -52,9 +57,6 @@ export LD_LIBRARY_PATH="$HOME/.local/lib/swift-compat${LD_LIBRARY_PATH:+:$LD_LIB
 namespace="$HOME/src/lyte-gates"
 gate_root="$namespace/deterministic"
 gate_lock="$namespace/.deterministic.flock"
-# Gates from older checkouts lock the mirror with this directory instead.
-legacy_lock="$namespace/.deterministic.lock"
-holds_legacy_lock=0
 package_image_parent=""
 watchdog=""
 before_state=""
@@ -158,9 +160,6 @@ on_remote_exit() {
     if [[ -n "$before_state" ]] && ! verify_protected_state; then
         status=1
     fi
-    if (( holds_legacy_lock )); then
-        rmdir -- "$legacy_lock"
-    fi
     exit "$status"
 }
 trap on_remote_exit EXIT
@@ -176,7 +175,10 @@ run_package_tests() {
     shift
     local marker="$path/.build/.lyte-build-graph-sha256"
     local build_graph_hash installed_hash=""
-    build_graph_hash="$(lyte_build_graph_hash "$gate_root" "$package")"
+    build_graph_hash="$(lyte_build_graph_hash "$gate_root" "$package")" \
+        || build_graph_hash=""
+    [[ -n "$build_graph_hash" ]] \
+        || fail "no build-graph identity for $package"
 
     if [[ "${1:-}" == --build-only ]]; then
         shift
@@ -210,21 +212,16 @@ main() {
     command -v findmnt >/dev/null 2>&1 \
         || fail "findmnt is required for deletion safety"
     command -v flock >/dev/null 2>&1 || fail "flock is required to lock the mirror"
+    # The baseline precedes every write in the namespace, the lock included.
+    before_state="$(protected_state_fingerprint)"
     mount_targets="$(findmnt -rn -o TARGET)" \
         || fail "cannot inspect mounted filesystems"
     real_directory "$namespace"
-    exec 9>>"$gate_lock"
-    if ! flock -n 9; then
-        fail "another deterministic gate holds the pup mirror: $(cat "$gate_lock")"
-    fi
-    printf '%s, since %s\n' "$gate_owner" "$(date -u +%FT%TZ)" > "$gate_lock"
-    if ! mkdir -- "$legacy_lock" 2>/dev/null; then
-        fail "a gate from an older checkout holds $legacy_lock" \
-            "(rmdir it if no such gate is running)"
-    fi
-    holds_legacy_lock=1
+    lyte_acquire_gate_lock "$gate_lock" \
+        "$gate_owner, since $(date -u +%FT%TZ)" \
+        || fail "$lyte_gate_lock_error"
     real_directory "$gate_root"
-    for package in $packages Scripts docs; do
+    for package in $mirrored Scripts docs; do
         real_directory "$gate_root/$package"
     done
 
@@ -242,13 +239,18 @@ main() {
     watchdog=$!
     exec 8<&-
 
+    # The workload never reads the control channel: on it, a stray read
+    # would block until the local gate ends.
+    run_gate </dev/null
+}
+
+# run_gate: the builds and tests, in the synced mirror.
+run_gate() {
     source "$gate_root/Scripts/lib/build-graph.sh"
-    before_state="$(protected_state_fingerprint)"
 
     run_package_tests Common
     run_package_tests Wire
-    # Client's manifest declares its macOS targets on every platform, so
-    # only the IO-free policy targets build here.
+    # Off macOS the Client manifest keeps only its IO-free policy targets.
     run_package_tests Client
     run_package_tests Host
 
@@ -315,9 +317,16 @@ if [[ ! -e "$local_state/locked" ]]; then
     exit 1
 fi
 
-echo "==> sync $packages and Scripts to $pup:$pup_gate_root"
+echo "==> sync $packages, $scanned_packages and Scripts to $pup:$pup_gate_root"
 for package in $packages; do
     rsync -a --delete --exclude .build \
+        "$package/" "$pup:$pup_gate_root/$package/"
+done
+# Everything else under a scanned package is deleted from the mirror, so the
+# lints never read a stale file.
+for package in $scanned_packages; do
+    rsync -a --delete --delete-excluded --include=/Package.swift \
+        --include=/Sources/ --include='/Sources/**' --exclude='*' \
         "$package/" "$pup:$pup_gate_root/$package/"
 done
 rsync -a --delete Scripts/ "$pup:$pup_gate_root/Scripts/"
