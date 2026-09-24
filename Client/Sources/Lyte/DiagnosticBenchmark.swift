@@ -225,7 +225,7 @@ enum DiagnosticBenchmark {
 }
 
 @MainActor
-private final class DiagnosticQualityProbe {
+final class DiagnosticQualityProbe {
     private struct ProcessedFrame: Sendable {
         var frame: VideoQualityReadback.Frame? = nil
         var score: VideoQualityReadback.Score? = nil
@@ -239,7 +239,7 @@ private final class DiagnosticQualityProbe {
     private let sourceWidth: Int
     private let sourceHeight: Int
     private let reference: [UInt8]?
-    private let setupError: String?
+    let setupError: String?
     private let readbackPath: String?
     private let syntheticMotion: Bool
     private let syntheticReference: SyntheticMotionReference?
@@ -253,7 +253,9 @@ private final class DiagnosticQualityProbe {
             environment["LYTE_BENCHMARK_SYNTHETIC_MOTION"] == "1"
         sourceWidth = Int(environment["LYTE_BENCHMARK_REFERENCE_WIDTH"] ?? "") ?? 0
         sourceHeight = Int(environment["LYTE_BENCHMARK_REFERENCE_HEIGHT"] ?? "") ?? 0
-        syntheticReference = syntheticMotion && sourceWidth > 0 && sourceHeight > 0
+        let syntheticFits = sourceWidth >= SyntheticMotionReference.minimumWidth
+            && sourceHeight >= SyntheticMotionReference.minimumHeight
+        syntheticReference = syntheticMotion && syntheticFits
             ? SyntheticMotionReference(
                 width: sourceWidth, height: sourceHeight)
             : nil
@@ -262,7 +264,10 @@ private final class DiagnosticQualityProbe {
             setupError = nil
         } else if syntheticMotion, sourceWidth > 0, sourceHeight > 0 {
             reference = nil
-            setupError = nil
+            setupError = syntheticFits
+                ? nil
+                : "synthetic_reference_below_\(SyntheticMotionReference.minimumWidth)"
+                    + "x\(SyntheticMotionReference.minimumHeight)"
         } else if let path = environment["LYTE_BENCHMARK_REFERENCE_RAW"],
                   sourceWidth > 0, sourceHeight > 0 {
             do {

@@ -88,7 +88,6 @@ let package = Package(
             name: "lyte-cli",
             dependencies: [
                 "LyteUI",
-                "LyteHelperProtocol",
                 "LyteClientCore",
                 "LyteClientSession",
                 "LyteTransport",
@@ -125,6 +124,15 @@ let package = Package(
         .testTarget(
             name: "LyteHelperTests",
             dependencies: ["LyteHelperSecurity", "lyte-helperd"]
+        ),
+        // lyte-cli's argument contracts, parsed as the shell parses them.
+        .testTarget(
+            name: "LyteCLITests",
+            dependencies: [
+                "lyte-cli",
+                "LyteCorpus",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
         ),
         .testTarget(
             name: "LyteClientCoreTests",
