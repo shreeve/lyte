@@ -502,17 +502,21 @@ final class VideoBeatConductorTests: XCTestCase {
 
     // MARK: - Clock skew
 
+    private struct SkewOutcome {
+        var worstLateness: UInt64 = 0
+        var lateFrames = 0
+        var frames = 0
+    }
+
     /// Streams `minutes` of 60 Hz host captures through the shipping
     /// config while the client clock runs `ppm` fast (positive) or slow
     /// (negative) against the host: the mapped capture advances
     /// 16,667·(1+ppm) µs per frame while the source stamps (and hence
     /// the grid) advance exactly one beat. Path delay wobbles over 9–12
-    /// ms, a normal LAN. Returns the worst lateness observed.
-    private func worstLatenessUnderSkew(
-        ppm: Int64, minutes: Int
-    ) -> UInt64 {
+    /// ms, a normal LAN.
+    private func streamUnderSkew(ppm: Int64, minutes: Int) -> SkewOutcome {
         var policy = VideoBeatConductor()
-        var worst: UInt64 = 0
+        var outcome = SkewOutcome()
         let origin: Int64 = 1_000_000
         for index in 0..<(minutes * 60 * 60) {
             let source = origin + Int64(index) * Int64(period)
@@ -522,9 +526,18 @@ final class VideoBeatConductorTests: XCTestCase {
                 mappedCaptureMicroseconds: UInt64(mapped),
                 arrivalMicroseconds: UInt64(arrival),
                 sourceCaptureMicroseconds: UInt64(source))
-            worst = max(worst, decision.latenessMicroseconds)
+            outcome.frames += 1
+            if decision.latenessMicroseconds > 0 { outcome.lateFrames += 1 }
+            outcome.worstLateness = max(
+                outcome.worstLateness, decision.latenessMicroseconds)
         }
-        return worst
+        return outcome
+    }
+
+    private func worstLatenessUnderSkew(
+        ppm: Int64, minutes: Int
+    ) -> UInt64 {
+        streamUnderSkew(ppm: ppm, minutes: minutes).worstLateness
     }
 
     /// A client clock running fast drains the cue until the mapped
@@ -548,5 +561,78 @@ final class VideoBeatConductorTests: XCTestCase {
         XCTAssertLessThan(
             worstLatenessUnderSkew(ppm: 50, minutes: 60), period,
             "50 ppm for an hour must never leave a frame a full beat late")
+    }
+
+    /// stretch: sustained sub-beat drift lateness re-cues instead of
+    /// leaving about half of every drift cycle unshown. Under a normal
+    /// LAN path at +10 and +50 ppm, fewer than one frame in ten may be
+    /// late, and none by more than a few milliseconds.
+    func testSkewDrainedCueStretchesBeforeFramesGoUnshown() {
+        for ppm: Int64 in [10, 50] {
+            let outcome = streamUnderSkew(ppm: ppm, minutes: 60)
+            XCTAssertLessThan(
+                outcome.lateFrames * 10, outcome.frames,
+                "\(ppm) ppm: \(outcome.lateFrames) of \(outcome.frames) late")
+            XCTAssertLessThan(outcome.worstLateness, 5_000, "\(ppm) ppm")
+        }
+    }
+
+    /// stretch: a path that grows by less than a beat leaves every part
+    /// late. After exactly one elapsed proof window of unbroken lateness
+    /// the cue moves one whole beat, phase preserved, and parts are on
+    /// time again.
+    func testSustainedSubBeatLatenessStretchesOneBeatAfterProof() {
+        var policy = VideoBeatConductor()
+        var capture: UInt64 = 1_000_000
+        var previous = policy.schedule(
+            mappedCaptureMicroseconds: capture,
+            arrivalMicroseconds: capture &+ 9_000,
+            sourceCaptureMicroseconds: capture)
+        var lateRun = 0
+        var stretchGap: UInt64?
+        for _ in 0..<300 {
+            capture &+= period
+            let decision = policy.schedule(
+                mappedCaptureMicroseconds: capture,
+                arrivalMicroseconds: capture &+ 30_000,
+                sourceCaptureMicroseconds: capture)
+            let gap = decision.presentationMicroseconds
+                - previous.presentationMicroseconds
+            XCTAssertEqual(gap % period, 0, "moves are whole beats")
+            if decision.latenessMicroseconds > 0 {
+                XCTAssertNil(stretchGap, "no lateness after the stretch")
+                XCTAssertLessThan(decision.latenessMicroseconds, period)
+                lateRun += 1
+            } else if stretchGap == nil {
+                stretchGap = gap
+            }
+            previous = decision
+        }
+        // 120 late parts span 1.98 s; the 121st completes the 2 s proof.
+        XCTAssertEqual(lateRun, 120)
+        XCTAssertEqual(stretchGap, 2 * period, "one beat of stretch")
+    }
+
+    /// stretch: one on-time part refutes the proof; the window restarts
+    /// from the next late part rather than counting old evidence.
+    func testOnTimePartRestartsTheStretchProof() {
+        var policy = VideoBeatConductor()
+        var capture: UInt64 = 1_000_000
+        _ = policy.schedule(
+            mappedCaptureMicroseconds: capture,
+            arrivalMicroseconds: capture &+ 9_000,
+            sourceCaptureMicroseconds: capture)
+        var lateCount = 0
+        for index in 0..<300 {
+            capture &+= period
+            let path: UInt64 = index == 100 ? 9_000 : 30_000
+            let decision = policy.schedule(
+                mappedCaptureMicroseconds: capture,
+                arrivalMicroseconds: capture &+ path,
+                sourceCaptureMicroseconds: capture)
+            if decision.latenessMicroseconds > 0 { lateCount += 1 }
+        }
+        // 100 late parts, one on time, then a full fresh proof of 120.
+        XCTAssertEqual(lateCount, 220)
     }
 }

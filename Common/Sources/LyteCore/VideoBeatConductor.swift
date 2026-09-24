@@ -1,7 +1,7 @@
 // VideoBeatConductor — video's part under THE CONDUCTOR
 // (docs/20260803-050422-metronome-playout-design.md), sans-IO.
 //
-// The six laws, as this instrument plays them:
+// The laws, as this instrument plays them:
 //
 //   cue   = score + measured_path_delay + cushion × beat_period
 //   beat  = every fresh frame presents ON the beat grid — its mapped
@@ -18,6 +18,10 @@
 //   slip  = when every fresh sample across an elapsed clean window
 //           proves a full beat of surplus, the cue slips back one
 //           beat — at most one per proof, phase preserved.
+//   stretch = the mirror of slip: when every fresh part across an
+//           elapsed proof window arrives past its beat (a sub-beat
+//           shortfall — a fast client clock draining the cue, or a
+//           path grown by under a beat), the cue re-cues one beat.
 //   chain = retained refinements (same source capture re-encoded)
 //           ride one microsecond behind their predecessor; stillness
 //           has no cadence to violate, and the decoder always eats.
@@ -121,6 +125,9 @@ public struct VideoBeatConductor: Sendable {
     // sample without retaining stale evidence past the named duration.
     private var slipProofStartMicroseconds: UInt64?
     private var slipProofMaximumPathDelayMicroseconds: UInt64 = 0
+    /// Arrival of the first part in the current unbroken run of late
+    /// fresh parts (the stretch law's proof window).
+    private var stretchProofStartMicroseconds: UInt64?
 
     // Debt (ported): a genuinely compressed catch-up train.
     private var lastFreshSourceMicroseconds: UInt64?
@@ -146,6 +153,7 @@ public struct VideoBeatConductor: Sendable {
         lastFrameWasRetained = false
         cushionBeatsInForce = config.cushionBeats
         resetSlipProof()
+        stretchProofStartMicroseconds = nil
         lastFreshSourceMicroseconds = nil
         lastFreshArrivalMicroseconds = nil
         freshBurstDebtMicroseconds = 0
@@ -282,13 +290,33 @@ public struct VideoBeatConductor: Sendable {
             }
         }
 
-        // hole: the newest part's beat is already ≥1 beat gone —
-        // re-cue forward by WHOLE beats so it lands on the next beat.
-        // (A merely-late single part — under one beat — keeps its
-        // past beat and is never shown; that is the late law, and it
-        // must not move the grid.)
-        if arrivalMicroseconds > presentation,
-           arrivalMicroseconds - presentation >= period {
+        // stretch: the mirror of slip. When EVERY fresh part across an
+        // elapsed proof window arrives past its beat, the cue is short by
+        // a sub-beat amount (clock skew draining it, or a path that grew
+        // by less than a beat) and the late law alone would never show
+        // those parts. The proof re-cues through the hole law below.
+        let isLate = arrivalMicroseconds > presentation
+        var stretchProven = false
+        if isLate {
+            if let proofStart = stretchProofStartMicroseconds {
+                stretchProven = arrivalMicroseconds >= proofStart
+                    && arrivalMicroseconds - proofStart
+                        >= config.slipProofMicroseconds
+            } else {
+                stretchProofStartMicroseconds = arrivalMicroseconds
+            }
+        } else {
+            stretchProofStartMicroseconds = nil
+        }
+
+        // hole: the newest part's beat is already ≥1 beat gone (or a
+        // stretch is proven) — re-cue forward by WHOLE beats so it lands
+        // on the next beat. (A merely-late single part — under one beat
+        // — keeps its past beat and is never shown; that is the late
+        // law, and it must not move the grid.)
+        if isLate,
+           stretchProven || arrivalMicroseconds - presentation >= period {
+            stretchProofStartMicroseconds = nil
             let lag = arrivalMicroseconds - presentation
             var beatsBehind = (lag + period - 1) / period
             // Under a fast client clock the mapped capture can overtake

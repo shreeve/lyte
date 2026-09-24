@@ -222,3 +222,61 @@ surface.
 
 Never massage a red cell: if the conductor cannot hold the beat, that
 is a finding, not a rounding choice.
+
+## Addendum (2026-09): the stretch law, and what drift really does
+
+The relevant drift is the host-versus-client clock skew that
+`HostClockModel` carries into the mapped capture. The host samples on its
+own exact 16,667 µs grid, and the conductor's grid steps one beat per host
+source beat. The two therefore part at the skew rate. Consumer crystals
+are good to about ±50 ppm, so the grids part by a beat every 5 to 30
+minutes, in either direction.
+
+- **Client slow.** The cue grows. The existing slip law handles this.
+- **Client fast.** The cue drains. Slip never fires, and the hole law
+  waits for a full beat of lateness. Until then every part is late by
+  less than a beat, and under the late law a late part is never shown.
+
+A seventh law, the mirror of slip, closes that gap:
+
+```
+stretch = when every fresh part across an elapsed proof window arrives
+          past its beat, re-cue +1 beat (through the hole law's ceilings)
+```
+
+- It uses the same two-second window as slip.
+- One on-time part resets the window.
+- The move is one whole beat, so the phase is preserved.
+- It shares the hole law's cue and cushion ceilings.
+- A stretched cue holds under one beat of reserve, and slip needs a full
+  beat of surplus above the floor. The two laws therefore cannot fight.
+
+Evidence (`VideoBeatConductorTests`, plus a scratch sweep). Setup: the
+shipping config, 60 Hz host captures, one virtual hour, and a path delay
+of 9 ms plus uniform jitter.
+
+| jitter | skew | before: late / max | after: late / max |
+|---|---|---|---|
+| 3 ms | +10 ppm | 42 % / 16 ms | 8 % / 2 ms |
+| 3 ms | +50 ppm | 42 % / 16 ms | 8.5 % / 3 ms |
+| 10 ms | +50 ppm | 39 % / 16 ms | 27 % / 9 ms |
+| 20 ms | +50 ppm | 22 % / 16 ms | 22 % / 16 ms (proof rarely unbroken) |
+| any | 0 or −50 ppm | unchanged | unchanged |
+
+"Before" is measured after two fixes, which the same change set also
+landed:
+
+- The hole law's cue difference wrapped under a fast client clock. That
+  had disabled the hole law entirely.
+- The cushion posture now follows the measured reserve rather than
+  counting moves. Before, drift holes spent the four-beat ceiling.
+
+Without those two fixes, lateness under fast-client skew grew without
+bound: 166 ms after an hour at +50 ppm.
+
+A stricter variant was evaluated and not adopted. It would stretch when
+every part in the window holds less than the floor reserve, which is the
+exact mirror of slip's floor-plus-one-beat test. In the same sweep it
+showed 0 % late frames at every skew, but it cost about half a beat of
+mean cue under fast skew. It also stretches on a fastest-first-frame
+start, which breaks the beat-grid pin. That choice is left to the owner.
