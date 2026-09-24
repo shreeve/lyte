@@ -10,10 +10,11 @@
 //   0  unsigned integer
 //   1  negative integer (stored as the encoded argument n; value −1−n)
 //   2  byte string
-//   3  text string (valid UTF-8, enforced by byte-exact re-encode)
+//   3  text string (valid UTF-8)
 //   4  array
 //   5  map (keys strictly ascending in bytewise order of their
-//      encodings — sortedness and no-duplicates in one check)
+//      encodings; a repeated key rejects as duplicateMapKey, an
+//      out-of-order one as misorderedMapKeys)
 //   7  only false / true / null (0xF4 / 0xF5 / 0xF6)
 //
 // Excluded and rejected: indefinite lengths, tags (major 6), floats
@@ -65,11 +66,11 @@ public enum CborError: Error, Hashable, Sendable {
     case unsupportedItem(UInt8)
     /// A well-formed argument that is not the shortest form.
     case nonCanonicalArgument
-    /// Map keys out of bytewise order or repeated.
+    /// Map keys out of bytewise order.
     case misorderedMapKeys
+    /// A map key repeated.
     case duplicateMapKey
-    /// Text bytes that are not valid UTF-8 (detected by byte-exact
-    /// re-encode of the decoded string).
+    /// Text bytes that are not valid UTF-8.
     case invalidUtf8
     case nestingTooDeep
 }
@@ -213,11 +214,7 @@ public enum Cbor {
             return .bytes(try take(bytes, cursor: &cursor, count: argument))
         case 3:
             let raw = try take(bytes, cursor: &cursor, count: argument)
-            let text = String(decoding: raw, as: UTF8.self)
-            // Invalid UTF-8 mangles into U+FFFD; byte-exact re-encode
-            // is the Foundation-free validity check AND the canonical
-            // round-trip guarantee in one.
-            guard Array(text.utf8) == raw else {
+            guard let text = String(validating: raw, as: UTF8.self) else {
                 throw CborError.invalidUtf8
             }
             return .text(text)

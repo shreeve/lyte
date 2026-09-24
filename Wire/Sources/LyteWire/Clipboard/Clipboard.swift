@@ -28,8 +28,8 @@
 //
 // Validation at encode AND decode: ≤ 65,536 UTF-8 bytes (the ARQ
 // receive window and the shared-with-input ordered stream size the
-// ceiling — design doc §3), valid UTF-8 (byte-exact re-encode, the
-// CBOR text rule), non-empty (v1 does not sync clearing; a bare type
+// ceiling — design doc §3), valid UTF-8 (the CBOR text rule),
+// non-empty (v1 does not sync clearing; a bare type
 // byte is a zero-fill-adjacent bug to surface). Truncation and foreign
 // type bytes reject with what they found. Never traps on hostile bytes.
 
@@ -124,8 +124,7 @@ public enum ClipboardMessageError: Error, Equatable, Sendable {
     case emptyText
     /// UTF-8 byte count past the 65,536 B ceiling.
     case textOverBudget(Int)
-    /// Bytes that are not valid UTF-8 (detected by byte-exact
-    /// re-encode of the decoded string — the CBOR text rule).
+    /// Bytes that are not valid UTF-8 (the CBOR text rule).
     case invalidUtf8
 }
 
@@ -159,9 +158,7 @@ private func decodeClipboardBody(
     guard body.count <= ClipboardWire.maxTextByteCount else {
         throw ClipboardMessageError.textOverBudget(body.count)
     }
-    let text = String(decoding: body, as: UTF8.self)
-    guard text.utf8.count == body.count,
-          text.utf8.elementsEqual(body) else {
+    guard let text = String(validating: body, as: UTF8.self) else {
         throw ClipboardMessageError.invalidUtf8
     }
     return text

@@ -31,11 +31,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.8.0"),
     ],
     targets: [
-        // The vendored nanors RS-FEC leaf (W1), copied from the root
-        // package's Vendor/nanors. Module name CNanorsWire — distinct from
-        // the root package's CNanors target — so both packages can coexist
-        // in one build graph until the root drops its copy (CL-2 era).
-        // Confinement: only NanorsBackend.swift imports it.
+        // The vendored nanors RS-FEC leaf (W1). Confinement: only
+        // Fec/NanorsBackend.swift imports it.
         .target(name: "CNanorsWire", publicHeadersPath: "include"),
         .target(
             name: "LyteWire",

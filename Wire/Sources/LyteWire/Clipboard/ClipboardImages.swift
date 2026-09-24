@@ -173,9 +173,7 @@ public struct ClipboardImageCargo: Hashable, Sendable {
             throw ClipboardImageCargoError.trailingBytes
         }
         let mimeSlice = payload[mimeStart..<mimeStart + mimeLen]
-        let mime = String(decoding: mimeSlice, as: UTF8.self)
-        guard mime.utf8.count == mimeSlice.count,
-              mime.utf8.elementsEqual(mimeSlice) else {
+        guard let mime = String(validating: mimeSlice, as: UTF8.self) else {
             throw ClipboardImageCargoError.invalidUtf8
         }
         return try ClipboardImageCargo(transferId: transferId, mime: mime)
@@ -201,8 +199,7 @@ public enum ClipboardImageCargoError: Error, Hashable, Sendable {
     /// A mime over 255 UTF-8 bytes (construction-side; the u8 length
     /// fixes the wire bound).
     case mimeOverBudget(Int)
-    /// Mime bytes that are not valid UTF-8 (detected by byte-exact
-    /// re-encode, the CBOR text rule).
+    /// Mime bytes that are not valid UTF-8 (the CBOR text rule).
     case invalidUtf8
 }
 

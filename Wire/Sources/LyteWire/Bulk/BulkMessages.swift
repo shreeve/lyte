@@ -723,8 +723,7 @@ public enum BulkMessageError: Error, Hashable, Sendable {
     case nameOverBudget(Int)
     /// A MIME hint over 255 UTF-8 bytes (construction-side).
     case mimeHintOverBudget(Int)
-    /// Name or MIME bytes that are not valid UTF-8 (detected by
-    /// byte-exact re-encode, the CBOR text rule).
+    /// Name or MIME bytes that are not valid UTF-8.
     case invalidUtf8
     /// A chunk with no data — some layer's fill bug, kept loud.
     case emptyChunkData
@@ -756,9 +755,7 @@ private func checkType(
 }
 
 private func decodeUtf8(_ bytes: ArraySlice<UInt8>) throws -> String {
-    let text = String(decoding: bytes, as: UTF8.self)
-    guard text.utf8.count == bytes.count,
-          text.utf8.elementsEqual(bytes) else {
+    guard let text = String(validating: bytes, as: UTF8.self) else {
         throw BulkMessageError.invalidUtf8
     }
     return text

@@ -1,9 +1,10 @@
-// The five-function crypto surface (core plan §1): this file is the ONLY
-// place in LyteWire that imports `Crypto` — swift-crypto on all platforms
+// The Noise suite's primitive surface (core plan §1): DH, AEAD, hash
+// and HMAC over swift-crypto's `Crypto` module on all platforms
 // (CryptoKit shim on Apple, vendored BoringSSL on Linux; never CryptoKit
-// directly, which is Apple-only). Everything above — CipherState,
-// SymmetricState, the IK handshake, the transport — calls through this
-// enum, so a future WASM build substitutes one leaf, not protocol logic.
+// directly, which is Apple-only). Everything in the Noise stack —
+// CipherState, SymmetricState, the IK handshake, the transport — calls
+// through this enum. `import Crypto` is confined to Crypto/ (this file,
+// Pairing/CPace.swift, Retry/RetryCookie.swift);
 // Scripts/lint-no-foundation.sh enforces the confinement.
 
 import Crypto
