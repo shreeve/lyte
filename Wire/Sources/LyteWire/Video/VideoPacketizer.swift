@@ -36,8 +36,23 @@ public struct VideoShard: Hashable, Sendable {
     }
 }
 
+/// One shard of a packetized frame before seq allocation: the envelope
+/// fec field (full group geometry + shard index) and the plaintext bytes.
+public struct VideoShardPayload: Hashable, Sendable {
+    public let fec: UInt64
+    public let payload: [UInt8]
+
+    public init(fec: UInt64, payload: [UInt8]) {
+        self.fec = fec
+        self.payload = payload
+    }
+}
+
 public struct VideoPacketizer: Sendable {
     public let channel: ChannelId
+    /// The per-shard plaintext ceiling geometry fills to: 1112 B, less
+    /// whatever TLV headroom the carrier's envelopes reserve.
+    public let shardBudgetByteCount: Int
     /// The next seq this packetizer will allocate — exposed so a caller
     /// resuming a channel (or a test crossing the u16 wrap) can verify
     /// the serial counter's position.
@@ -45,10 +60,70 @@ public struct VideoPacketizer: Sendable {
 
     public init(
         channel: ChannelId = .videoActive,
-        firstSeq: ChannelSeq = ChannelSeq(rawValue: 0)
+        firstSeq: ChannelSeq = ChannelSeq(rawValue: 0),
+        shardBudgetByteCount: Int = WireBudget.maxPlaintextShardByteCount
     ) {
         self.channel = channel
         self.nextSeq = firstSeq
+        self.shardBudgetByteCount = shardBudgetByteCount
+    }
+
+    /// The pure half of packetization, with no seq state: validates the
+    /// Annex-B shape and the caller's IDR claim, picks the ladder's k/m
+    /// at `shardBudgetByteCount`, and returns the k + m shards in
+    /// shard-index order. Callers that allocate seqs elsewhere (under
+    /// their own lock, with per-frame TLVs) use this directly.
+    public static func shardPayloads(
+        frame annexB: ArraySlice<UInt8>,
+        isIDR: Bool,
+        regime: FecRegime,
+        shardBudgetByteCount: Int = WireBudget.maxPlaintextShardByteCount
+    ) throws -> [VideoShardPayload] {
+        let classification = classify(annexB)
+        guard classification.isFrameShaped else {
+            throw VideoError.frameNotFrameShaped
+        }
+        let derivedIdr = classification.containsIrap
+        guard isIDR == derivedIdr else {
+            throw VideoError.idrFlagMismatch(claimed: isIDR, derived: derivedIdr)
+        }
+        let geometry = try FecGeometryTable.geometry(
+            forGroupByteCount: annexB.count, regime: regime,
+            shardBudgetByteCount: shardBudgetByteCount
+        )
+        let payloads = try FecEncoder.encode(group: annexB, geometry: geometry)
+        return try payloads.enumerated().map { index, payload in
+            VideoShardPayload(
+                fec: try FecField.reedSolomonShard(index, of: geometry).encoded,
+                payload: payload
+            )
+        }
+    }
+
+    public static func shardPayloads(
+        frame annexB: [UInt8],
+        isIDR: Bool,
+        regime: FecRegime,
+        shardBudgetByteCount: Int = WireBudget.maxPlaintextShardByteCount
+    ) throws -> [VideoShardPayload] {
+        try shardPayloads(
+            frame: annexB[...], isIDR: isIDR, regime: regime,
+            shardBudgetByteCount: shardBudgetByteCount
+        )
+    }
+
+    /// `AnnexBCheck.classifyFrame` through LyteCore's concrete
+    /// ArraySlice entry point: its generic form runs unspecialized from
+    /// another module, ~28× slower per byte on the frame hot path.
+    private static func classify(
+        _ annexB: ArraySlice<UInt8>
+    ) -> AnnexBFrameClassification {
+        let units = AnnexBCheck.nalUnits(in: annexB)
+        return AnnexBFrameClassification(
+            isFrameShaped: AnnexBCheck.leadingStartCodeLength(annexB) != nil
+                && units.contains { HevcNalType.isVcl($0.type) },
+            containsIrap: units.contains { HevcNalType.isIrap($0.type) }
+        )
     }
 
     /// Packetizes one encoded frame into its k + m wire shards. Throws
@@ -65,13 +140,23 @@ public struct VideoPacketizer: Sendable {
         isIDR: Bool,
         regime: FecRegime
     ) throws -> [VideoShard] {
-        try packetizeBytes(
-            frame: annexB,
-            frameNumber: frameNumber,
-            captureTimestamp: captureTimestamp,
-            isIDR: isIDR,
-            regime: regime
+        let payloads = try Self.shardPayloads(
+            frame: annexB, isIDR: isIDR, regime: regime,
+            shardBudgetByteCount: shardBudgetByteCount
         )
+        return payloads.map { shard in
+            defer { nextSeq = nextSeq.next }
+            return VideoShard(
+                envelope: Envelope(
+                    channel: channel,
+                    seq: nextSeq,
+                    frame: frameNumber,
+                    timestamp: captureTimestamp.microseconds,
+                    fec: shard.fec
+                ),
+                payload: shard.payload
+            )
+        }
     }
 
     /// Packetizes a frame borrowed for this call's dynamic extent. The
@@ -83,52 +168,13 @@ public struct VideoPacketizer: Sendable {
         isIDR: Bool,
         regime: FecRegime
     ) throws -> [VideoShard] {
-        try packetizeBytes(
-            frame: annexB,
+        try packetize(
+            frame: Array(annexB)[...],
             frameNumber: frameNumber,
             captureTimestamp: captureTimestamp,
             isIDR: isIDR,
             regime: regime
         )
-    }
-
-    private mutating func packetizeBytes<C>(
-        frame annexB: C,
-        frameNumber: FrameNumber,
-        captureTimestamp: HostTimestamp,
-        isIDR: Bool,
-        regime: FecRegime
-    ) throws -> [VideoShard]
-    where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
-        let classification = AnnexBCheck.classifyFrame(annexB)
-        guard classification.isFrameShaped else {
-            throw VideoError.frameNotFrameShaped
-        }
-        let derivedIdr = classification.containsIrap
-        guard isIDR == derivedIdr else {
-            throw VideoError.idrFlagMismatch(claimed: isIDR, derived: derivedIdr)
-        }
-
-        let geometry = try FecGeometryTable.geometry(
-            forGroupByteCount: annexB.count, regime: regime
-        )
-        let payloads = try FecEncoder.encode(group: annexB, geometry: geometry)
-
-        var shards: [VideoShard] = []
-        shards.reserveCapacity(payloads.count)
-        for (index, payload) in payloads.enumerated() {
-            let field = try FecField.reedSolomonShard(index, of: geometry)
-            let envelope = Envelope(
-                channel: channel,
-                seq: nextSeq,
-                frame: frameNumber,
-                timestamp: captureTimestamp.microseconds,
-                fec: field.encoded
-            )
-            shards.append(VideoShard(envelope: envelope, payload: payload))
-            nextSeq = nextSeq.next
-        }
-        return shards
     }
 
     public mutating func packetize(

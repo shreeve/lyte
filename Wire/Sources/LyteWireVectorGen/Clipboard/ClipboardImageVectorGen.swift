@@ -10,7 +10,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeClipboardImageVectorFile() throws -> ClipboardImageVectorFile {
+public func makeClipboardImageVectorFile() throws -> ClipboardImageVectorFile {
     var vectors: [ClipboardImageVector] = []
 
     // MARK: Cargo-marker roundtrips

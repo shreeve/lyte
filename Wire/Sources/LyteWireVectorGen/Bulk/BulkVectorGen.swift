@@ -12,7 +12,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeBulkVectorFile() throws -> BulkVectorFile {
+public func makeBulkVectorFile() throws -> BulkVectorFile {
     BulkVectorFile(
         format: BulkVectorFile.expectedFormat,
         formatVersion: 1,

@@ -82,35 +82,15 @@ public enum ClipboardImageWire {
 // MARK: - The capability spine helpers (key 12)
 
 extension Capabilities {
-    /// The key-12 entry as it rides the wire: CBOR bool under
-    /// unsigned key 12 (`0C F5` inside the map) — one canonical byte
-    /// image is what makes the intersection's byte-equal rule an
-    /// exact AND.
-    private static var clipboardImagesEntry: CborMapEntry {
-        CborMapEntry(
-            key: .unsigned(CapabilityKey.clipboardImages),
-            value: .bool(true)
-        )
-    }
-
-    /// True when this set (a declaration or an agreed intersection)
-    /// carries `clipboardImages: true`. On a v1 build the key lives
-    /// in `unknownEntries` — which is exactly what makes it survive
-    /// intersection only on mutual declaration. A `false` or
-    /// wrongly-typed value reads as absent: absence and refusal are
-    /// the same posture ("not supported"), per the spine's rule 3.
+    /// True when this set carries `clipboardImages: true` (key 12) — see
+    /// `declaresFlag(_:)`.
     public var clipboardImages: Bool {
-        unknownEntries.contains(Self.clipboardImagesEntry)
+        declaresFlag(CapabilityKey.clipboardImages)
     }
 
-    /// A copy of this set declaring clipboard-image support.
-    /// Idempotent; the CBOR encoder owns canonical key order, so the
-    /// entry may append here regardless of surrounding keys.
+    /// A copy of this set declaring `clipboardImages`.
     public func declaringClipboardImages() -> Capabilities {
-        guard !clipboardImages else { return self }
-        var declared = self
-        declared.unknownEntries.append(Self.clipboardImagesEntry)
-        return declared
+        declaringFlag(CapabilityKey.clipboardImages)
     }
 
     /// The full image gate: feature (10) ∧ dialect (12) — images
@@ -193,9 +173,7 @@ public struct ClipboardImageCargo: Hashable, Sendable {
             throw ClipboardImageCargoError.trailingBytes
         }
         let mimeSlice = payload[mimeStart..<mimeStart + mimeLen]
-        let mime = String(decoding: mimeSlice, as: UTF8.self)
-        guard mime.utf8.count == mimeSlice.count,
-              mime.utf8.elementsEqual(mimeSlice) else {
+        guard let mime = String(validating: mimeSlice, as: UTF8.self) else {
             throw ClipboardImageCargoError.invalidUtf8
         }
         return try ClipboardImageCargo(transferId: transferId, mime: mime)
@@ -221,8 +199,7 @@ public enum ClipboardImageCargoError: Error, Hashable, Sendable {
     /// A mime over 255 UTF-8 bytes (construction-side; the u8 length
     /// fixes the wire bound).
     case mimeOverBudget(Int)
-    /// Mime bytes that are not valid UTF-8 (detected by byte-exact
-    /// re-encode, the CBOR text rule).
+    /// Mime bytes that are not valid UTF-8 (the CBOR text rule).
     case invalidUtf8
 }
 
@@ -363,8 +340,10 @@ public struct ClipboardImageChannel: Sendable {
             counters.sharesSuppressed += 1
             return [.suppressed(.emptyImage)]
         }
-        sendBookKey = ClipboardImageWire.bookKey(sha256: sha256)
-        switch book.admitLocalChange(bytes: sendBookKey) {
+        // The in-flight share owns `sendBookKey` until it finishes; a
+        // copy refused below must not overwrite it.
+        let bookKey = ClipboardImageWire.bookKey(sha256: sha256)
+        switch book.admitLocalChange(bytes: bookKey) {
         case .suppressEcho:
             counters.sharesSuppressed += 1
             return [.suppressed(.loopEcho)]
@@ -402,6 +381,7 @@ public struct ClipboardImageChannel: Sendable {
             return [.suppressed(.emptyImage)]
         }
         sendBlob = data
+        sendBookKey = bookKey
         var engine = BulkSendEngine(offer: offer)
         // begin() throws only on a re-begin; this engine is fresh.
         let beginActions = (try? engine.begin()) ?? []
@@ -494,7 +474,7 @@ public struct ClipboardImageChannel: Sendable {
                 // Ordered carriage makes anything between marker and
                 // offer a peer bug — the typed violation answer.
                 pendingIntent = nil
-                refusedIds.insert(id)
+                rememberRefused(id)
                 var events: [ClipboardImageEvent] = [
                     .violated(.unexpectedMessage(
                         type: message.encode().first ?? 0
@@ -670,15 +650,23 @@ public struct ClipboardImageChannel: Sendable {
         return events
     }
 
+    /// The refused set is bounded: entries retire when their offer
+    /// trails through `ingest`, and a hostile flood of markers is capped
+    /// rather than remembered.
+    private mutating func rememberRefused(_ transferId: UInt64) {
+        if refusedIds.count >= Self.maxRememberedRefusals {
+            refusedIds.removeAll()
+        }
+        refusedIds.insert(transferId)
+    }
+
+    static let maxRememberedRefusals = 32
+
     private mutating func refusal(
         _ why: ClipboardImageRefuseReason,
         transferId: UInt64, reason: BulkAbortReason
     ) -> [ClipboardImageEvent] {
-        // The refused set is bounded: entries retire when their offer
-        // trails through `ingest`, and a hostile flood of markers is
-        // capped rather than remembered.
-        if refusedIds.count > 32 { refusedIds.removeAll() }
-        refusedIds.insert(transferId)
+        rememberRefused(transferId)
         var events: [ClipboardImageEvent] = [.refused(why)]
         if let abort = try? BulkAbort(
             transferId: transferId, reason: reason

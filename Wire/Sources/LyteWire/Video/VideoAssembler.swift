@@ -300,7 +300,7 @@ public struct VideoAssembler: Sendable {
         // already-decoded group and exact duplicates report as duplicates
         // but still advance loss presumption below — they are honest
         // signal about what the network delivered.
-        if var group = groups[frame.rawValue] {
+        if let group = groups[frame.rawValue] {
             guard group.geometry == geometry else {
                 return events + [.shardDropped(.inconsistentGroup(frame))]
             }
@@ -314,16 +314,17 @@ public struct VideoAssembler: Sendable {
                     .duplicateShard(frame, shardIndex: shardIndex)
                 ))
             } else {
-                group.slots[Int(shardIndex)] = Array(payload)
-                group.receivedCount += 1
-                group.noteSlotFilled(at: Int(shardIndex))
+                // Mutated in place: a copy here would duplicate the
+                // slot array (and retain every shard) per arrival.
+                Self.fill(
+                    &groups[frame.rawValue]!, index: Int(shardIndex),
+                    with: payload, frame: frame
+                )
                 if isRepair {
                     events.append(.repairShardAccepted(
                         frame, shardIndex: shardIndex
                     ))
                 }
-                attemptDecode(&group, frame: frame)
-                groups[frame.rawValue] = group
             }
         } else {
             if let capacityEvents = makeRoom(for: frame, into: &events) {
@@ -336,10 +337,9 @@ public struct VideoAssembler: Sendable {
                 firstArrival: now,
                 slots: Array(repeating: nil, count: geometry.totalShards)
             )
-            group.slots[Int(shardIndex)] = Array(payload)
-            group.receivedCount = 1
-            group.noteSlotFilled(at: Int(shardIndex))
-            attemptDecode(&group, frame: frame)
+            Self.fill(
+                &group, index: Int(shardIndex), with: payload, frame: frame
+            )
             groups[frame.rawValue] = group
             openedGroup = true
         }
@@ -400,12 +400,23 @@ public struct VideoAssembler: Sendable {
         return nil
     }
 
-    private func attemptDecode(_ group: inout Group, frame: FrameNumber) {
+    /// Slots one shard into its group and decodes the moment the group
+    /// can.
+    private static func fill(
+        _ group: inout Group, index: Int, with payload: ArraySlice<UInt8>,
+        frame: FrameNumber
+    ) {
+        group.slots[index] = Array(payload)
+        group.receivedCount += 1
+        group.noteSlotFilled(at: index)
+        attemptDecode(&group, frame: frame)
+    }
+
+    private static func attemptDecode(_ group: inout Group, frame: FrameNumber) {
         guard !group.isDecoded, !group.corrupt else { return }
-        let k = group.geometry.dataShards
-        let missingData = group.slots[..<k].count(where: { $0 == nil })
-        let presentParity = group.slots[k...].count(where: { $0 != nil })
-        guard missingData <= presentParity else { return }
+        // RS completes from any k of the n shards: missing data shards
+        // ≤ present parity shards ⇔ at least k shards are present.
+        guard group.receivedCount >= group.geometry.dataShards else { return }
         guard let bytes = try? FecDecoder.decode(
             shards: group.slots, geometry: group.geometry
         ) else { return }
@@ -464,68 +475,73 @@ public struct VideoAssembler: Sendable {
         )
 
         for key in walkKeys.sorted() {
-            var group = groups[key]!
+            Self.sweep(
+                &groups[key]!, frame: FrameNumber(rawValue: key),
+                highest: highest, settleDistance: settleDistance,
+                config: config, now: now, into: &events
+            )
+        }
+    }
 
-            let k = group.geometry.dataShards
-            var newCandidates: [ChannelSeq] = []
-            var missingIndices: [UInt8] = []
-            var presumedLostData = 0
-            var bestCaseParity = 0
-            var absentAllSettled = true
-            for index in 0..<group.geometry.totalShards {
-                let present = group.slots[index] != nil
-                let seq = group.seqBase.advanced(by: Int16(index))
-                let distance = Int(seq.distance(to: highest))
-                let nackWorthy = !present
-                    && distance >= config.reorderThresholdPackets
-                let writtenOff = !present
-                    && distance >= config.fecImpossibleThresholdPackets
-                if index < k {
-                    if writtenOff { presumedLostData += 1 }
-                } else if !writtenOff {
-                    bestCaseParity += 1
-                }
-                if !present, distance < settleDistance {
-                    absentAllSettled = false
-                }
-                if nackWorthy { missingIndices.append(UInt8(index)) }
-                if nackWorthy, !group.nackReported.contains(seq.rawValue) {
-                    group.nackReported.insert(seq.rawValue)
-                    newCandidates.append(seq)
-                }
+    /// One group's loss-presumption pass, mutated in place.
+    private static func sweep(
+        _ group: inout Group, frame: FrameNumber, highest: ChannelSeq,
+        settleDistance: Int, config: VideoAssemblerConfig,
+        now: ClientTimestamp, into events: inout [VideoAssemblerEvent]
+    ) {
+        let k = group.geometry.dataShards
+        var newCandidates: [ChannelSeq] = []
+        var missingIndices: [UInt8] = []
+        var presumedLostData = 0
+        var bestCaseParity = 0
+        var absentAllSettled = true
+        for index in 0..<group.geometry.totalShards {
+            let present = group.slots[index] != nil
+            let seq = group.seqBase.advanced(by: Int16(index))
+            let distance = Int(seq.distance(to: highest))
+            let nackWorthy = !present
+                && distance >= config.reorderThresholdPackets
+            let writtenOff = !present
+                && distance >= config.fecImpossibleThresholdPackets
+            if index < k {
+                if writtenOff { presumedLostData += 1 }
+            } else if !writtenOff {
+                bestCaseParity += 1
             }
-
-            if !newCandidates.isEmpty {
-                events.append(.nackCandidates(
-                    FrameNumber(rawValue: key),
-                    missingSeqs: newCandidates,
-                    missingShardIndices: missingIndices,
-                    parityShards: group.geometry.parityShards,
-                    frameAgeMicroseconds:
-                        now.microseconds(since: group.firstArrival)
-                ))
+            if !present, distance < settleDistance {
+                absentAllSettled = false
             }
-            var firedFecImpossible = false
-            if presumedLostData > bestCaseParity, !group.fecImpossibleReported {
-                group.fecImpossibleReported = true
-                firedFecImpossible = true
-                events.append(.fecImpossible(
-                    FrameNumber(rawValue: key),
-                    presumedLostDataShards: presumedLostData,
-                    bestCaseParityShards: bestCaseParity
-                ))
-            }
-            // Settled: every absent seq reported + written off this
-            // pass, and the fec verdict can never newly fire (arrivals
-            // only shrink presumed losses and grow best-case parity).
-            group.sweepSettled = absentAllSettled
-                && (group.fecImpossibleReported
-                    || presumedLostData <= bestCaseParity)
-            if !newCandidates.isEmpty || firedFecImpossible
-                || group.sweepSettled {
-                groups[key] = group
+            if nackWorthy { missingIndices.append(UInt8(index)) }
+            if nackWorthy, !group.nackReported.contains(seq.rawValue) {
+                group.nackReported.insert(seq.rawValue)
+                newCandidates.append(seq)
             }
         }
+
+        if !newCandidates.isEmpty {
+            events.append(.nackCandidates(
+                frame,
+                missingSeqs: newCandidates,
+                missingShardIndices: missingIndices,
+                parityShards: group.geometry.parityShards,
+                frameAgeMicroseconds:
+                    now.microseconds(since: group.firstArrival)
+            ))
+        }
+        if presumedLostData > bestCaseParity, !group.fecImpossibleReported {
+            group.fecImpossibleReported = true
+            events.append(.fecImpossible(
+                frame,
+                presumedLostDataShards: presumedLostData,
+                bestCaseParityShards: bestCaseParity
+            ))
+        }
+        // Settled: every absent seq reported + written off this
+        // pass, and the fec verdict can never newly fire (arrivals
+        // only shrink presumed losses and grow best-case parity).
+        group.sweepSettled = absentAllSettled
+            && (group.fecImpossibleReported
+                || presumedLostData <= bestCaseParity)
     }
 
     private mutating func evict(

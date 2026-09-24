@@ -9,7 +9,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeSessionVectorFile() throws -> SessionVectorFile {
+public func makeSessionVectorFile() throws -> SessionVectorFile {
     var vectors: [SessionVector] = []
 
     // MARK: Path challenge/response

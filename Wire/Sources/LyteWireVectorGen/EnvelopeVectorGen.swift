@@ -9,7 +9,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeEnvelopeVectorFile() throws -> EnvelopeVectorFile {
+public func makeEnvelopeVectorFile() throws -> EnvelopeVectorFile {
     var vectors: [EnvelopeVector] = []
 
     func fields(_ envelope: Envelope) -> EnvelopeFields {

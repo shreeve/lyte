@@ -10,7 +10,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeRetryVectorFile() throws -> RetryVectorFile {
+public func makeRetryVectorFile() throws -> RetryVectorFile {
     // Counting-byte fixtures, auditable by eye.
     let secret = counting(from: 0x40, count: RetryCookie.secretByteCount)
     let rotatedSecret = counting(

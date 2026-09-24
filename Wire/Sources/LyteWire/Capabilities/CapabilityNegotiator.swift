@@ -46,7 +46,7 @@ public enum CapabilityEvent: Hashable, Sendable {
     /// `operativeMaxDatagramBytes` starts at the 1152 B default
     /// regardless of the agreed ceiling.
     case agreed(Capabilities)
-    /// A peer update was answered — send this ack. `accepted` says
+    /// A peer update was answered — send this ack. Its `status` says
     /// which way; on accept the negotiator has already moved its
     /// operative value.
     case answerUpdate(CapabilityUpdateAck)

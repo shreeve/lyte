@@ -9,7 +9,7 @@ import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/fec-v1.json`.
-public struct FecVectorFile: Codable, Sendable {
+public struct FecVectorFile: FrozenVectorFile {
     /// Always "lyte-wire-fec-vectors".
     public var format: String
     public var formatVersion: Int
@@ -23,6 +23,11 @@ public struct FecVectorFile: Codable, Sendable {
     public var recoveryMatrices: [FecRecoveryMatrix]
 
     public static let expectedFormat = "lyte-wire-fec-vectors"
+    public static let fileName = "fec-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [fieldVectors.map(\.name), recoveryMatrices.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -40,10 +45,6 @@ public struct FecVectorFile: Codable, Sendable {
         self.recoveryMatrices = recoveryMatrices
     }
 
-    public static func load(from path: String) throws -> FecVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(FecVectorFile.self, from: data)
-    }
 }
 
 /// One fec-field vector. `rawHex` is the field's u64 value in hex (the
@@ -203,6 +204,7 @@ public func fecErrorName(_ error: FecError) -> String {
     case .groupByteCountOutOfRange: return "groupByteCountOutOfRange"
     case .overProvisionedDataShards: return "overProvisionedDataShards"
     case .shardIndexOutOfRange: return "shardIndexOutOfRange"
+    case .shardBudgetOutOfRange: return "shardBudgetOutOfRange"
     case .unprotectableDataShardCount: return "unprotectableDataShardCount"
     case .groupByteCountMismatch: return "groupByteCountMismatch"
     case .shardSlotCountMismatch: return "shardSlotCountMismatch"

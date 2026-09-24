@@ -270,12 +270,7 @@ public struct FeedbackReport: Hashable, Sendable {
             out.append(contentsOf: bitmap)
         }
         if !extensions.isEmpty {
-            out.append(UInt8(extensions.count))
-            for ext in extensions {
-                out.append(ext.type)
-                out.append(UInt8(ext.value.count))
-                out.append(contentsOf: ext.value)
-            }
+            WireExtension.appendBlock(extensions, to: &out)
         }
 
         guard out.count <= WireBudget.maxPlaintextShardByteCount else {
@@ -388,30 +383,11 @@ public struct FeedbackReport: Hashable, Sendable {
 
         var extensions = [WireExtension]()
         if flags & extensionsFlag != 0 {
-            guard cursor < payload.endIndex else {
-                throw FeedbackError.truncatedReport
-            }
-            let count = Int(payload[cursor])
-            cursor += 1
-            extensions.reserveCapacity(count)
-            for _ in 0..<count {
-                guard cursor + 2 <= payload.endIndex else {
-                    throw FeedbackError.truncatedReport
-                }
-                let type = payload[cursor]
-                let length = Int(payload[cursor + 1])
-                cursor += 2
-                guard cursor + length <= payload.endIndex else {
-                    throw FeedbackError.truncatedReport
-                }
-                extensions.append(
-                    try WireExtension(
-                        type: type,
-                        value: Array(payload[cursor..<cursor + length])
-                    )
-                )
-                cursor += length
-            }
+            var reader = WireReader(
+                payload[cursor...], truncated: FeedbackError.truncatedReport
+            )
+            extensions = try WireExtension.readBlock(from: &reader)
+            cursor = reader.remaining.startIndex
         }
 
         guard cursor == payload.endIndex else {

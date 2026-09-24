@@ -5,7 +5,7 @@
 
 package struct NoiseCipherState: Sendable {
     /// 32-byte key. Handshake states before the first MixKey have none.
-    private(set) var key: [UInt8]?
+    private(set) var key: NoisePrimitives.AeadKey?
     /// The spec's `n` — sequential during the handshake and for the
     /// vector-verified transport-message path.
     private(set) var nonce: UInt64 = 0
@@ -15,7 +15,7 @@ package struct NoiseCipherState: Sendable {
     static let reservedNonce = UInt64.max
 
     package init(key: [UInt8]? = nil) {
-        self.key = key
+        self.key = key.map(NoisePrimitives.AeadKey.init)
     }
 
     package var hasKey: Bool { key != nil }
@@ -103,6 +103,6 @@ package struct NoiseCipherState: Sendable {
             aad: [][...],
             plaintext: [UInt8](repeating: 0, count: 32)[...]
         )
-        self.key = Array(sealed.prefix(32))
+        self.key = NoisePrimitives.AeadKey(Array(sealed.prefix(32)))
     }
 }

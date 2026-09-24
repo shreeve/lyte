@@ -10,26 +10,13 @@ import LyteWireTestKit
 
 final class RetryVectorFileTests: XCTestCase {
 
-    private static let vectorsPath = packageRoot + "/Vectors/retry-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> RetryVectorFile {
-        try RetryVectorFile.load(from: Self.vectorsPath)
+        try RetryVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
         let file = try loadFile()
-        XCTAssertEqual(file.format, RetryVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
-        XCTAssertFalse(file.cookieVectors.isEmpty)
-        XCTAssertFalse(file.messageVectors.isEmpty)
-        let names = file.cookieVectors.map(\.name)
-            + file.messageVectors.map(\.name)
-        XCTAssertEqual(
-            Set(names).count, names.count, "vector names must be unique"
-        )
+        XCTAssertEqual(file.identityProblems, [])
         // Provenance honesty: v1 has no external oracle for our
         // transcript, and the file must say so.
         for vector in file.cookieVectors {

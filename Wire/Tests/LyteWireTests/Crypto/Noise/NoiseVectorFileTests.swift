@@ -18,24 +18,17 @@ import LyteWireTestKit
 
 final class NoiseVectorFileTests: XCTestCase {
 
-    private static let vectorsPath = packageRoot + "/Vectors/noise-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> NoiseVectorFile {
-        try NoiseVectorFile.load(from: Self.vectorsPath)
+        try NoiseVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
         let file = try loadFile()
-        XCTAssertEqual(file.format, NoiseVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
+        XCTAssertEqual(file.identityProblems, [])
         XCTAssertEqual(
             file.handshakeVectors.count, 2,
             "both external sources (snow, cacophony) must be present"
         )
-        XCTAssertFalse(file.transportVectors.isEmpty)
         for vector in file.handshakeVectors {
             XCTAssertEqual(vector.protocolName, "Noise_IK_25519_ChaChaPoly_SHA256")
             XCTAssertTrue(
@@ -244,25 +237,30 @@ final class NoiseVectorFileTests: XCTestCase {
                     return XCTFail("\(vector.name) step \(index): malformed seal")
                 }
                 let envelope = try step.makeEnvelope()
-                let aad = try envelope.encode(payload: [])
-                let sealed: [UInt8]
-                let opened: [UInt8]
+                let header = try envelope.encode(payload: [])
+                // The sealed-datagram codec must reproduce the pinned wire
+                // payload behind the exact header bytes.
+                let datagram: [UInt8]
+                let received: (envelope: Envelope, plaintext: [UInt8])
                 switch step.direction {
                 case .clientToHost:
-                    sealed = try clientTransport.seal(
-                        plaintext: plaintext[...], aad: aad[...], envelope: envelope
+                    datagram = try clientTransport.sealDatagram(
+                        envelope, plaintext: plaintext
                     )
-                    opened = try hostTransport.unseal(
-                        wirePayload: expected[...], aad: aad[...], envelope: envelope
-                    )
+                    received = try hostTransport.openDatagram(header + expected)
                 case .hostToClient:
-                    sealed = try hostTransport.seal(
-                        plaintext: plaintext[...], aad: aad[...], envelope: envelope
+                    datagram = try hostTransport.sealDatagram(
+                        envelope, plaintext: plaintext
                     )
-                    opened = try clientTransport.unseal(
-                        wirePayload: expected[...], aad: aad[...], envelope: envelope
-                    )
+                    received = try clientTransport.openDatagram(header + expected)
                 }
+                XCTAssertEqual(
+                    Array(datagram.prefix(header.count)), header,
+                    "\(vector.name) step \(index): header is not the AAD prefix"
+                )
+                XCTAssertEqual(received.envelope, envelope)
+                let sealed = Array(datagram.dropFirst(header.count))
+                let opened = received.plaintext
                 XCTAssertEqual(
                     Hex.string(sealed), expectedHex,
                     "\(vector.name) step \(index): wire payload diverges from the pin"

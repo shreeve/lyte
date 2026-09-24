@@ -10,7 +10,7 @@ import LyteCore
 import LyteWire
 
 /// One vector file: `Wire/Vectors/video-v1.json`.
-public struct VideoVectorFile: Codable, Sendable {
+public struct VideoVectorFile: FrozenVectorFile {
     /// Always "lyte-wire-video-vectors".
     public var format: String
     public var formatVersion: Int
@@ -21,6 +21,11 @@ public struct VideoVectorFile: Codable, Sendable {
     public var scenarios: [VideoScenario]
 
     public static let expectedFormat = "lyte-wire-video-vectors"
+    public static let fileName = "video-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [frames.map(\.name), scenarios.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -36,10 +41,6 @@ public struct VideoVectorFile: Codable, Sendable {
         self.scenarios = scenarios
     }
 
-    public static func load(from path: String) throws -> VideoVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(VideoVectorFile.self, from: data)
-    }
 }
 
 /// Where a frame vector's Annex-B bytes live. Inline hex for the small

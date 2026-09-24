@@ -15,6 +15,8 @@
 
 /// An X25519 key pair in raw 32-byte form. Static keys live in platform
 /// keystores (shell territory); this type only carries bytes.
+import LyteCore
+
 public struct NoiseKeyPair: Sendable {
     public let privateKey: [UInt8]
     public let publicKey: [UInt8]
@@ -32,6 +34,15 @@ public struct NoiseKeyPair: Sendable {
         // The freshly generated raw key is well-formed by construction.
         try! NoiseKeyPair(privateKey: NoisePrimitives.generatePrivateKey())
     }
+}
+
+/// Printing a key pair never prints the private key.
+extension NoiseKeyPair: CustomStringConvertible, CustomDebugStringConvertible {
+    public var description: String {
+        "NoiseKeyPair(privateKey: <redacted>, publicKey: \(Hex.string(publicKey)))"
+    }
+
+    public var debugDescription: String { description }
 }
 
 public enum NoiseRole: Sendable, Equatable {

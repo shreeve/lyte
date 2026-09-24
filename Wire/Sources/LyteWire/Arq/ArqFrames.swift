@@ -130,6 +130,11 @@ public enum ArqBounds {
     /// datagram. This is the safe lower bound for the runtime pack ceiling.
     public static let maxAckFrameByteCount = ackHeaderByteCount
         + maxAckBlocks * (ackBlockFixedByteCount + maxAckBitmapByteCount)
+    /// Segments one send group may hold (in flight plus queued) before
+    /// `send` pushes back with `ArqSendError.queueFull` — the endpoint's
+    /// memory bound against a runaway producer.
+    public static let maxQueuedSegmentsPerGroup =
+        32_768 - maxReceiveWindowSegments
 }
 
 /// One data segment: one slice of one message in one group.

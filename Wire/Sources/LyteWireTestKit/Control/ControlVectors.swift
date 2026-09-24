@@ -11,13 +11,18 @@ import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/control-v1.json`.
-public struct ControlVectorFile: Codable, Sendable {
+public struct ControlVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
     public var vectors: [ControlVector]
 
     public static let expectedFormat = "lyte-wire-control-vectors"
+    public static let fileName = "control-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -31,10 +36,6 @@ public struct ControlVectorFile: Codable, Sendable {
         self.vectors = vectors
     }
 
-    public static func load(from path: String) throws -> ControlVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(ControlVectorFile.self, from: data)
-    }
 }
 
 /// One input-echo tuple as vector data (u64s ride as hex, the house

@@ -60,14 +60,8 @@ public struct IdleFrame: Hashable, Sendable {
         var out = [UInt8]()
         out.reserveCapacity(Self.headerByteCount + annexB.count)
         out.append(CtrlMessageType.idleFrame)
-        for shift in stride(from: 0, to: 32, by: 8) {
-            out.append(UInt8(truncatingIfNeeded: frame.rawValue >> shift))
-        }
-        for shift in stride(from: 0, to: 64, by: 8) {
-            out.append(UInt8(
-                truncatingIfNeeded: captureTimestampMicroseconds >> shift
-            ))
-        }
+        wireAppendLE(frame.rawValue, to: &out)
+        wireAppendLE(captureTimestampMicroseconds, to: &out)
         out.append(contentsOf: annexB)
         return out
     }
@@ -83,17 +77,9 @@ public struct IdleFrame: Hashable, Sendable {
         guard payload[base] == CtrlMessageType.idleFrame else {
             throw IdleFrameError.unexpectedType(payload[base])
         }
-        var frame: UInt32 = 0
-        for i in 0..<4 {
-            frame |= UInt32(payload[base + 1 + i]) << (8 * i)
-        }
-        var micros: UInt64 = 0
-        for i in 0..<8 {
-            micros |= UInt64(payload[base + 5 + i]) << (8 * i)
-        }
         return IdleFrame(
-            frame: FrameNumber(rawValue: frame),
-            captureTimestampMicroseconds: micros,
+            frame: FrameNumber(rawValue: wireReadLE(payload, at: base + 1)),
+            captureTimestampMicroseconds: wireReadLE(payload, at: base + 5),
             annexB: Array(payload[(base + headerByteCount)...])
         )
     }

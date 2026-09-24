@@ -9,22 +9,12 @@ import LyteWireTestKit
 
 final class SessionVectorFileTests: XCTestCase {
 
-    private static let vectorsPath = packageRoot + "/Vectors/session-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> SessionVectorFile {
-        try SessionVectorFile.load(from: Self.vectorsPath)
+        try SessionVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
-        let file = try loadFile()
-        XCTAssertEqual(file.format, SessionVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
-        XCTAssertFalse(file.vectors.isEmpty)
-        let names = file.vectors.map(\.name)
-        XCTAssertEqual(Set(names).count, names.count, "vector names must be unique")
+        XCTAssertEqual(try loadFile().identityProblems, [])
     }
 
     func testAllSessionVectors() throws {

@@ -191,6 +191,11 @@ final class ArqSimulationTests: XCTestCase {
                         "\(label) [\(step)]: duplicate completion for \(group)"
                     )
                     oneShotAcks[destination].insert(group.rawValue)
+                case .ignored(.beyondReceiveWindow(let group, let seq)):
+                    // An honest sender never overruns the window.
+                    XCTFail("\(label) [\(step)]: \(group) seq \(seq) sent past the receive window")
+                case .ignored(.ackForUnsentData(let group)):
+                    XCTFail("\(label) [\(step)]: honest ACK for \(group) read as forged")
                 case .ignored:
                     break
                 }

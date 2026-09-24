@@ -38,30 +38,15 @@
 // MARK: - The capability spine helpers
 
 extension Capabilities {
-    /// The key-15 entry as it rides the wire: CBOR bool under
-    /// unsigned key 15 — one canonical byte image (`0F F5` inside the
-    /// map) so the intersection's byte-equal rule is an exact AND.
-    private static var audioQuietPostureEntry: CborMapEntry {
-        CborMapEntry(
-            key: .unsigned(CapabilityKey.audioQuietPosture),
-            value: .bool(true)
-        )
-    }
-
-    /// True when this set (a declaration or an agreed intersection)
-    /// carries `audioQuietPosture: true` — the tripwire's gate.
+    /// True when this set carries `audioQuietPosture: true` (key 15) — see
+    /// `declaresFlag(_:)`.
     public var audioQuietPosture: Bool {
-        unknownEntries.contains(Self.audioQuietPostureEntry)
+        declaresFlag(CapabilityKey.audioQuietPosture)
     }
 
-    /// A copy of this set declaring audio-quiet-posture support.
-    /// Idempotent; the CBOR encoder owns canonical key order, so the
-    /// entry may append here regardless of surrounding keys.
+    /// A copy of this set declaring `audioQuietPosture`.
     public func declaringAudioQuietPosture() -> Capabilities {
-        guard !audioQuietPosture else { return self }
-        var declared = self
-        declared.unknownEntries.append(Self.audioQuietPostureEntry)
-        return declared
+        declaringFlag(CapabilityKey.audioQuietPosture)
     }
 }
 

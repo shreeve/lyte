@@ -15,7 +15,7 @@ private let draftSource =
 private let draftSha256 =
     "ed2772c26c21d43a199d490c1ebe5c5d2431a7dbce50d2124d4fa40957fbf58f"
 
-func makePairingVectorFile() throws -> PairingVectorFile {
+public func makePairingVectorFile() throws -> PairingVectorFile {
     PairingVectorFile(
         format: PairingVectorFile.expectedFormat,
         formatVersion: 1,
@@ -217,7 +217,7 @@ private func makeExchangeVectors() throws -> [PairingExchangeVector] {
         initiatorResult.intermediateSessionKey
             == responderResult.intermediateSessionKey
     else {
-        die("pairing exchange vector generation disagreed on the ISK")
+        preconditionFailure("pairing exchange vector generation disagreed on the ISK")
     }
 
     return [PairingExchangeVector(

@@ -7,13 +7,18 @@ import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/lifecycle-v1.json`.
-public struct LifecycleVectorFile: Codable, Sendable {
+public struct LifecycleVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
     public var vectors: [LifecycleVector]
 
     public static let expectedFormat = "lyte-wire-lifecycle-vectors"
+    public static let fileName = "lifecycle-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -27,10 +32,6 @@ public struct LifecycleVectorFile: Codable, Sendable {
         self.vectors = vectors
     }
 
-    public static func load(from path: String) throws -> LifecycleVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(LifecycleVectorFile.self, from: data)
-    }
 }
 
 /// One lifecycle-codec vector. `codec` names the codec under test;

@@ -9,27 +9,12 @@ import LyteWireTestKit
 
 final class BulkVectorFileTests: XCTestCase {
 
-    private static let vectorsPath = packageRoot + "/Vectors/bulk-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> BulkVectorFile {
-        try BulkVectorFile.load(from: Self.vectorsPath)
+        try BulkVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
-        let file = try loadFile()
-        XCTAssertEqual(file.format, BulkVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
-        XCTAssertFalse(file.messageVectors.isEmpty)
-        XCTAssertFalse(file.capabilityVectors.isEmpty)
-        XCTAssertFalse(file.transferVectors.isEmpty)
-        let names = file.messageVectors.map(\.name)
-            + file.capabilityVectors.map(\.name)
-            + file.transferVectors.map(\.name)
-        XCTAssertEqual(Set(names).count, names.count,
-                       "vector names must be unique")
+        XCTAssertEqual(try loadFile().identityProblems, [])
     }
 
     /// The file's coverage discipline: every codec carries

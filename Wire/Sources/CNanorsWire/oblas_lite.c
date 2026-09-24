@@ -9,12 +9,9 @@
 #endif
 
 static uint8_t GF2_8_MUL[65536];
-static int gf2_8_mul_initialized = 0;
 
-static void oblas_lite_init(void)
+static void gf2_8_mul_build(void)
 {
-    if (gf2_8_mul_initialized)
-        return;
     for (int i = 0; i < 256; i++) {
         for (int j = 0; j < 256; j++) {
             if (i == 0 || j == 0) {
@@ -24,8 +21,33 @@ static void oblas_lite_init(void)
             }
         }
     }
+}
+
+/* The multiplication table is built exactly once. Two threads making
+   their first FEC call concurrently (host video and audio) must not race
+   on it: a plain "initialized" flag can become visible before the table
+   stores do. Single-threaded wasm keeps the flag; everywhere else
+   pthread_once orders the build before every use. */
+#if defined(__wasm__) && !defined(_REENTRANT)
+static int gf2_8_mul_initialized = 0;
+
+static void oblas_lite_init(void)
+{
+    if (gf2_8_mul_initialized)
+        return;
+    gf2_8_mul_build();
     gf2_8_mul_initialized = 1;
 }
+#else
+#include <pthread.h>
+
+static pthread_once_t gf2_8_mul_once = PTHREAD_ONCE_INIT;
+
+static void oblas_lite_init(void)
+{
+    pthread_once(&gf2_8_mul_once, gf2_8_mul_build);
+}
+#endif
 
 #if defined(OBLAS_TINY)
 static inline uint8_t gf2_8_mul(uint16_t a, uint16_t b)

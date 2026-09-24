@@ -1,4 +1,5 @@
 import XCTest
+import LyteCore
 import LyteWire
 import LyteWireTestKit
 
@@ -210,5 +211,112 @@ final class VideoPacketizerTests: XCTestCase {
 
         XCTAssertEqual(actual, expected)
         XCTAssertEqual(borrowedPacketizer.nextSeq, arrayPacketizer.nextSeq)
+    }
+
+    // MARK: Shard budget
+
+    /// The host's session carrier reserves envelope TLV headroom, so its
+    /// frames fill shards to less than 1112 B. This is a transcription of
+    /// that packetizer (Host VideoChannel.prepareFrame) — the reference
+    /// the budget-parameterized Wire path must match shard for shard
+    /// before the host drops its copy.
+    private func hostReference(
+        _ frame: [UInt8], isKeyframe: Bool, regime: FecRegime, budget: Int
+    ) throws -> [VideoShardPayload] {
+        let classification = AnnexBCheck.classifyFrame(frame)
+        guard classification.isFrameShaped else {
+            throw VideoError.frameNotFrameShaped
+        }
+        guard isKeyframe == classification.containsIrap else {
+            throw VideoError.idrFlagMismatch(
+                claimed: isKeyframe, derived: classification.containsIrap
+            )
+        }
+        let k = (frame.count + budget - 1) / budget
+        let m = try FecGeometryTable.parityShards(forDataShards: k, regime: regime)
+        let geometry = try FecGeometry(
+            dataShards: k, parityShards: m, groupByteCount: frame.count
+        )
+        return try FecEncoder.encode(group: frame, geometry: geometry)
+            .enumerated().map { index, payload in
+                VideoShardPayload(
+                    fec: try FecField.reedSolomonShard(index, of: geometry).encoded,
+                    payload: payload
+                )
+            }
+    }
+
+    func testBudgetedShardsMatchTheHostPacketizer() throws {
+        let budgets = [
+            WireBudget.maxPlaintextShardByteCount,
+            WireBudget.maxConnectionIdTaggedPlaintextByteCount,
+            WireBudget.maxConnectionIdTaggedPlaintextByteCount - 12,
+            600,
+        ]
+        let sizes = [7, 600, 601, 1_101, 1_102, 1_112, 1_113, 5_000, 33_000, 120_000]
+        for budget in budgets {
+            for size in sizes {
+                for regime in FecRegime.allCases {
+                    for keyframe in [true, false] {
+                        let frame = keyframe
+                            ? idrFrame(totalByteCount: size)
+                            : pFrame(totalByteCount: size)
+                        let label = "budget \(budget) size \(size) \(regime)"
+                        let reference = Result {
+                            try hostReference(
+                                frame, isKeyframe: keyframe,
+                                regime: regime, budget: budget
+                            )
+                        }
+                        let wire = Result {
+                            try VideoPacketizer.shardPayloads(
+                                frame: frame, isIDR: keyframe, regime: regime,
+                                shardBudgetByteCount: budget
+                            )
+                        }
+                        switch (reference, wire) {
+                        case (.success(let a), .success(let b)):
+                            XCTAssertEqual(a, b, label)
+                            XCTAssertTrue(
+                                b.allSatisfy { $0.payload.count <= budget }, label
+                            )
+                        case (.failure(let a), .failure(let b)):
+                            XCTAssertEqual("\(a)", "\(b)", label)
+                        default:
+                            XCTFail("\(label): \(reference) vs \(wire)")
+                        }
+                    }
+                }
+            }
+        }
+        // Wrong IDR claims are refused identically.
+        XCTAssertThrowsError(try VideoPacketizer.shardPayloads(
+            frame: pFrame(totalByteCount: 50), isIDR: true, regime: .clean
+        )) {
+            XCTAssertEqual(
+                $0 as? VideoError, .idrFlagMismatch(claimed: true, derived: false)
+            )
+        }
+    }
+
+    func testPacketizerAppliesItsShardBudget() throws {
+        var packetizer = VideoPacketizer(shardBudgetByteCount: 1_000)
+        let shards = try packetizer.packetize(
+            frame: idrFrame(totalByteCount: 1_050),
+            frameNumber: FrameNumber(rawValue: 1),
+            captureTimestamp: HostTimestamp(microseconds: 0),
+            isIDR: true, regime: .clean
+        )
+        // 1050 B at a 1000 B budget needs k = 2 (at 1112 B it was k = 1).
+        let field = try FecField.decode(shards[0].envelope.fec)
+        guard case .reedSolomon(_, let geometry) = field else {
+            return XCTFail("expected an RS field")
+        }
+        XCTAssertEqual(geometry.dataShards, 2)
+        XCTAssertThrowsError(try FecGeometryTable.geometry(
+            forGroupByteCount: 10, regime: .clean, shardBudgetByteCount: 0
+        )) {
+            XCTAssertEqual($0 as? FecError, .shardBudgetOutOfRange(0))
+        }
     }
 }

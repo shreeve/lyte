@@ -9,7 +9,7 @@ import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/envelope-v1.json`.
-public struct EnvelopeVectorFile: Codable, Sendable {
+public struct EnvelopeVectorFile: FrozenVectorFile {
     /// Always "lyte-wire-envelope-vectors"; guards against loading the
     /// wrong artifact once W1/W2/W4a ship their own vector kinds.
     public var format: String
@@ -22,6 +22,11 @@ public struct EnvelopeVectorFile: Codable, Sendable {
     public var seqComparisons: [SeqComparison]
 
     public static let expectedFormat = "lyte-wire-envelope-vectors"
+    public static let fileName = "envelope-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -37,10 +42,6 @@ public struct EnvelopeVectorFile: Codable, Sendable {
         self.seqComparisons = seqComparisons
     }
 
-    public static func load(from path: String) throws -> EnvelopeVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(EnvelopeVectorFile.self, from: data)
-    }
 }
 
 /// One test vector. `kind` selects which fields apply:

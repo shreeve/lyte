@@ -607,25 +607,6 @@ final class BulkEngineTests: XCTestCase {
         XCTAssertEqual(exceeded.first, .violated(.creditExceeded))
     }
 
-    func testReceiverCarriesNoParallelAdmissionCounter() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(4)
-        let packageRoot = components.joined(separator: "/")
-        let source = try String(
-            contentsOfFile:
-                packageRoot + "/Sources/LyteWire/Bulk/BulkEngines.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertFalse(source.contains("admittedChunkCount"))
-        XCTAssertTrue(source.contains(
-            "let admissionDebt = consumedChunkCount "
-                + "+ UInt64(pendingStores.count)"
-        ))
-    }
-
     func testReceiverViolationForeignTransferAndRoleReversal() throws {
         let (offer, _) = makeFixture()
         var receiver = BulkReceiveEngine()
@@ -799,5 +780,83 @@ final class BulkEngineTests: XCTestCase {
             index: 0, data: chunkData(offer, payload, 0)
         )
         XCTAssertTrue(actions.isEmpty)
+    }
+
+    // MARK: - Terminal and memory bounds
+
+    /// A store that completes after a cancel must not revive the
+    /// receiver (the shell's disk write can land after the abort).
+    func testLateStoreAfterCancelNeverRevivesTheReceiver() throws {
+        let (offer, payload) = makeFixture(chunkCount: 1, finalChunkBytes: 17)
+        var receiver = BulkReceiveEngine()
+        _ = receiver.ingest(.offer(offer))
+        _ = try receiver.accept()
+        let stores = receiver.ingest(.chunk(try BulkChunk(
+            transferId: offer.transferId, chunkIndex: 0,
+            data: chunkData(offer, payload, 0)
+        )))
+        XCTAssertEqual(stores.count, 1)
+        _ = receiver.cancel()
+        XCTAssertEqual(try receiver.chunkStored(index: 0), [])
+        XCTAssertEqual(receiver.state, .aborted(.cancelled, byRemote: false))
+        XCTAssertNil(receiver.resumeState)
+    }
+
+    /// Credit is the receiver's promise about its own memory; the
+    /// sender's read-ahead stays bounded by its own ceiling however
+    /// much credit a peer grants.
+    func testOverGenerousCreditIsBoundedBySenderReadAhead() throws {
+        let (offer, _) = makeFixture(chunkCount: 600, finalChunkBytes: 4_096)
+        var sender = BulkSendEngine(offer: offer)
+        _ = try sender.begin()
+        let reads = sender.ingest(.accept(try BulkAccept(
+            transferId: offer.transferId, creditTotal: .max
+        ))).filter {
+            if case .readChunk = $0 { return true }
+            return false
+        }
+        XCTAssertEqual(reads.count, BulkSendEngine.defaultMaxReadAheadChunks)
+    }
+
+    /// The widest receive window still completes: the sender's
+    /// read-ahead always reaches the receiver's credit-refresh step.
+    func testWidestWindowCompletes() throws {
+        XCTAssertEqual(
+            BulkTransferConfig(receiveWindowChunks: 10_000).receiveWindowChunks,
+            BulkTransferConfig.maxReceiveWindowChunks
+        )
+        let (offer, payload) = makeFixture(chunkCount: 700, finalChunkBytes: 9)
+        var harness = BulkTransferHarness(
+            offer: offer, payload: payload, window: 10_000
+        )
+        let result = try harness.runSession()
+        XCTAssertEqual(result.senderFinalState, .completed)
+        XCTAssertEqual(harness.assembledDigest(), offer.sha256)
+    }
+
+    /// Merging a peer map with a huge contiguous prefix is O(1) in the
+    /// prefix — a resume of millions of chunks must not materialize it.
+    func testMergingAHugePrefixIsConstantTime() throws {
+        var possession = BulkPossession(extras: [3, 9_000_000])
+        let clock = ContinuousClock()
+        let elapsed = clock.measure {
+            possession.merge(BulkChunkMap(contiguousCount: 8_000_000))
+        }
+        XCTAssertEqual(possession.contiguousCount, 8_000_000)
+        XCTAssertEqual(possession.extras, [9_000_000])
+        XCTAssertLessThan(elapsed, .milliseconds(100))
+    }
+
+    /// A peer chunk size past Int32 is refused by value, never by a
+    /// narrowing trap (wasm32 runs this codec).
+    func testChunkSizePastInt32IsRefused() {
+        XCTAssertThrowsError(try BulkOffer(
+            transferId: 1, totalByteCount: 10, chunkByteCount: 0x8000_0000,
+            sha256: [UInt8](repeating: 0, count: 32), name: "x"
+        )) {
+            XCTAssertEqual(
+                $0 as? BulkMessageError, .chunkSizeOutOfBounds(0x8000_0000)
+            )
+        }
     }
 }

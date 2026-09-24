@@ -9,7 +9,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeCapabilityVectorFile() throws -> CapabilityVectorFile {
+public func makeCapabilityVectorFile() throws -> CapabilityVectorFile {
     CapabilityVectorFile(
         format: CapabilityVectorFile.expectedFormat,
         formatVersion: 1,

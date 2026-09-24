@@ -9,7 +9,7 @@ import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/bulk-v1.json`.
-public struct BulkVectorFile: Codable, Sendable {
+public struct BulkVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
@@ -18,6 +18,11 @@ public struct BulkVectorFile: Codable, Sendable {
     public var transferVectors: [BulkTransferVector]
 
     public static let expectedFormat = "lyte-wire-bulk-vectors"
+    public static let fileName = "bulk-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [messageVectors.map(\.name), capabilityVectors.map(\.name), transferVectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -35,10 +40,6 @@ public struct BulkVectorFile: Codable, Sendable {
         self.transferVectors = transferVectors
     }
 
-    public static func load(from path: String) throws -> BulkVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(BulkVectorFile.self, from: data)
-    }
 }
 
 /// One message-codec vector. `codec` names the codec under test;

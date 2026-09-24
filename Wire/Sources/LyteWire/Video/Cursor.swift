@@ -64,35 +64,15 @@ public enum CursorWire {
 // MARK: - The capability spine helper
 
 extension Capabilities {
-    /// The key-13 entry as it rides the wire: CBOR bool under
-    /// unsigned key 13 (`0D F5` inside the map) — one canonical byte
-    /// image is what makes the intersection's byte-equal rule an
-    /// exact AND.
-    private static var cursorShapeEntry: CborMapEntry {
-        CborMapEntry(
-            key: .unsigned(CapabilityKey.cursorShape),
-            value: .bool(true)
-        )
-    }
-
-    /// True when this set (a declaration or an agreed intersection)
-    /// carries `cursorShape: true`. On a v1 build the key lives in
-    /// `unknownEntries` — which is exactly what makes it survive
-    /// intersection only on mutual declaration. A `false` or
-    /// wrongly-typed value reads as absent: absence and refusal are
-    /// the same posture ("not supported"), per the spine's rule 3.
+    /// True when this set carries `cursorShape: true` (key 13) — see
+    /// `declaresFlag(_:)`.
     public var cursorShape: Bool {
-        unknownEntries.contains(Self.cursorShapeEntry)
+        declaresFlag(CapabilityKey.cursorShape)
     }
 
-    /// A copy of this set declaring cursor-shape support.
-    /// Idempotent; the CBOR encoder owns canonical key order, so the
-    /// entry may append here regardless of surrounding keys.
+    /// A copy of this set declaring `cursorShape`.
     public func declaringCursorShape() -> Capabilities {
-        guard !cursorShape else { return self }
-        var declared = self
-        declared.unknownEntries.append(Self.cursorShapeEntry)
-        return declared
+        declaringFlag(CapabilityKey.cursorShape)
     }
 }
 
