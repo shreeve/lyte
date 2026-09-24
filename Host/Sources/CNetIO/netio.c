@@ -183,7 +183,7 @@ int lyte_netio_errno_class(int err)
     case ENOBUFS:
         return LYTE_NETIO_NO_BUFFER;
     case ECONNREFUSED:
-        return LYTE_NETIO_PEER_GONE;
+        return LYTE_NETIO_REFUSED;
     case EHOSTUNREACH:
     case EHOSTDOWN:
     case ENETUNREACH:

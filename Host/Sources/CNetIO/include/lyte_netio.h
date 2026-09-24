@@ -19,10 +19,11 @@ typedef struct lyte_netio lyte_netio;
 #define LYTE_NETIO_MAX_BATCH 64
 
 /* Distinct return for ECONNREFUSED on a connect()ed socket (send or
-   receive): a previous send drew ICMP port-unreachable — the peer's
-   socket is closed (the client exited). The caller ends the session
-   cleanly; it is not an I/O failure. */
-#define LYTE_NETIO_PEER_GONE (-2)
+   receive): a previous send drew ICMP port-unreachable. The ICMP is
+   unauthenticated and matches only the 4-tuple, so it is a hint that
+   the peer's socket closed, never proof; the caller decides what it
+   corroborates. It is not an I/O failure. */
+#define LYTE_NETIO_REFUSED (-2)
 /* Local UDP send-buffer exhaustion (ENOBUFS), retryable like EAGAIN but
    distinct for telemetry. */
 #define LYTE_NETIO_NO_BUFFER (-3)
@@ -122,7 +123,7 @@ int lyte_netio_send_to(lyte_netio *n, const lyte_netio_pkt *pkt,
 
 /* Receives up to `count` (≤ LYTE_NETIO_MAX_BATCH) datagrams in one
    recvmmsg call. Returns the number received (0 if the socket would
-   block), LYTE_NETIO_PEER_GONE or LYTE_NETIO_TRANSIENT, or -1 with `err`
+   block), LYTE_NETIO_REFUSED or LYTE_NETIO_TRANSIENT, or -1 with `err`
    filled. */
 int lyte_netio_recv_batch(lyte_netio *n, lyte_netio_slot *slots, int count,
                           char *err, size_t errlen);

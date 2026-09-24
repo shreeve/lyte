@@ -1035,7 +1035,8 @@ static func printSessionBooks(
     \(o.latencyWouldBlockCount), ENOBUFS video/latency \
     \(o.videoNoBufferCount)/\
     \(o.latencyNoBufferCount), transient send/receive errors \
-    \(o.transientErrors)/\(wire.receiveTransientErrors), stale fresh shed \
+    \(o.transientErrors)/\(wire.receiveTransientErrors), ICMP refusals \
+    ignored on a live path \(wire.refusalsWhileLive), stale fresh shed \
     \(o.freshVideoShedDatagrams) datagrams / \
     \(o.freshVideoShedBytes) B
     session: \(s.beaconsSent) beacons, \(s.beaconEchoes) echoes \

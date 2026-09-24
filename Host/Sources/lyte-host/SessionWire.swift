@@ -267,6 +267,8 @@ final class SessionWire {
     private(set) var socketOutqMaxBytes = 0
     private(set) var socketOutqQueryFailures = 0
     private(set) var receiveTransientErrors = 0
+    /// ICMP refusals that arrived while the session was live, ignored.
+    private(set) var refusalsWhileLive = 0
     private var currentVideoSocketOutqBytes = 0
     private var currentLatencySocketOutqBytes = 0
     private var kernelPressureGovernor = KernelPressureGovernor()
@@ -295,8 +297,9 @@ final class SessionWire {
         defer { lock.unlock() }
         return vbvPolicy?.rateMovesAbsorbed ?? 0
     }
-    /// ECONNREFUSED (LYTE_NETIO_PEER_GONE): the client's socket is
-    /// closed — session-ending, not an I/O failure.
+    /// The client's socket is closed: a refusal arrived while its path
+    /// was already silent (`refusalEndsSession`). Session-ending, not an
+    /// I/O failure.
     private(set) var peerGone = false
 
     /// The sender thread's wake eventfd, signaled when bytes are enqueued.
@@ -1420,15 +1423,32 @@ final class SessionWire {
         }
     }
 
-    /// ECONNREFUSED, once: the client's socket is closed, so no teardown
-    /// is sent; the session just ends cleanly.
-    private func notePeerGone() {
-        guard !peerGone else { return }
+    /// An ECONNREFUSED is an ICMP port-unreachable,
+    /// which anyone who can guess the client's port can spoof. It ends
+    /// the session only when authenticated silence already says the
+    /// client is gone: FROZEN, 350 ms without the feedback a live client
+    /// sends every 40 ms. On a live session it is counted loss, and the
+    /// liveness clock and the client's typed 0x0A decide.
+    static func refusalEndsSession(lifecycle: SessionState?) -> Bool {
+        lifecycle == .frozen
+    }
+
+    /// Requires `lock`. One refusal: the session ends cleanly (no
+    /// teardown is sent) or it is counted as a transient loss. Returns
+    /// whether the session ended.
+    private func noteRefused() -> Bool {
+        guard !peerGone else { return true }
+        guard Self.refusalEndsSession(lifecycle: session?.lifecycleState)
+        else {
+            refusalsWhileLive += 1
+            return false
+        }
         peerGone = true
         emit("""
-            session: client unreachable (ICMP port closed — it exited) \
-            — closing cleanly
+            session: client unreachable (ICMP port closed after its path \
+            went silent — it exited) — closing cleanly
             """)
+        return true
     }
 
     private func signalDrain() {
@@ -1595,8 +1615,8 @@ final class SessionWire {
                                   Int32(slots.count),
                                   &recvError, recvError.count)
         }
-        if got == LYTE_NETIO_PEER_GONE {
-            notePeerGone()
+        if got == LYTE_NETIO_REFUSED {
+            _ = noteRefused()
             return
         }
         if got == LYTE_NETIO_TRANSIENT {
@@ -2086,7 +2106,7 @@ final class SessionWire {
             outbox.shedOldestStaleFreshVideo(
                 ledger: session, now: now, budgetNS: session.videoQueueBudgetNS)
         case .peerGone:
-            notePeerGone()
+            break // writeResult already judged the refusal
         case .failed(let why):
             throw HostError("session send failed: \(why)")
         }
@@ -2100,7 +2120,7 @@ final class SessionWire {
         switch rc {
         case 0: .wouldBlock
         case LYTE_NETIO_NO_BUFFER: .noBuffer
-        case LYTE_NETIO_PEER_GONE: .peerGone
+        case LYTE_NETIO_REFUSED: noteRefused() ? .peerGone : .transient
         case LYTE_NETIO_TRANSIENT: .transient
         case let accepted where accepted > 0: .accepted(Int(accepted))
         default: .failed(String(cBuffer: sendError))

@@ -73,11 +73,11 @@ final class NetioErrnoClassTests: XCTestCase {
         }
     }
 
-    func testRetryablePeerGoneAndFatalErrorsKeepTheirMeaning() {
+    func testRetryableRefusedAndFatalErrorsKeepTheirMeaning() {
         XCTAssertEqual(lyte_netio_errno_class(EAGAIN), 0)
         XCTAssertEqual(lyte_netio_errno_class(EWOULDBLOCK), 0)
         XCTAssertEqual(lyte_netio_errno_class(ENOBUFS), LYTE_NETIO_NO_BUFFER)
-        XCTAssertEqual(lyte_netio_errno_class(ECONNREFUSED), LYTE_NETIO_PEER_GONE)
+        XCTAssertEqual(lyte_netio_errno_class(ECONNREFUSED), LYTE_NETIO_REFUSED)
         XCTAssertEqual(lyte_netio_errno_class(EBADF), -1)
         XCTAssertEqual(lyte_netio_errno_class(EINVAL), -1)
     }
@@ -183,7 +183,7 @@ final class ListeningSocketLinuxTests: XCTestCase {
                 refused = slots.withUnsafeMutableBufferPointer {
                     lyte_netio_recv_batch(
                         clientB, $0.baseAddress, 1, &error, error.count)
-                } == LYTE_NETIO_PEER_GONE
+                } == LYTE_NETIO_REFUSED
                 usleep(100)
             }
         }
