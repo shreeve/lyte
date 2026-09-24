@@ -16,8 +16,9 @@
 
 - **pup** (standing host) is reachable on Wi-Fi only, `10.0.0.249`. The
   wired `enxf8e43b7ede7c` leg is absent, and `host.conf` advertises on it,
-  so mDNS discovery finds nothing: dial `10.0.0.249` directly, and set
-  `LYTE_BENCHMARK_HOST=10.0.0.249` for benchmarks.
+  so `Lyte.app` (mDNS only) can't see pup until `host.conf` advertises
+  on `wlp0s20f3` ([OPERATIONS](docs/OPERATIONS.md#the-rig)); `wire-view`
+  dials `10.0.0.249`; benchmarks need `LYTE_BENCHMARK_HOST=10.0.0.249`.
 - `lyte-host.service` serves UDP **41151** from the XDG layout:
   `~/.local/bin/lyte-host` → `versions/17fad55a8c21` (the #245 tree),
   deployed with `Host/Scripts/deploy-host.sh`. The in-process session loop is on

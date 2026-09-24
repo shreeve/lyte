@@ -15,8 +15,17 @@ safety runbook. Fresh-machine installation is in
 
 The standing host is `lyte-host.service` on UDP **41151**, advertised over
 mDNS on the interface named by `--advertise-interface` in its `host.conf`.
-When that interface is down, discovery finds nothing and clients must dial
-the address directly.
+When that interface is down, discovery finds nothing. `Lyte.app` finds
+hosts only through mDNS (it has no manual address entry), so point
+`--advertise-interface` at a live interface and restart the service —
+while pup is Wi-Fi only that is `wlp0s20f3`:
+
+```sh
+ssh pup "sed -i 's/--advertise-interface [^ ]*/--advertise-interface wlp0s20f3/' ~/.config/lyte/host.conf && sudo systemctl restart lyte-host"
+```
+
+`lyte-cli wire-view --host <address> --host-port 41151 --host-key <key>`
+dials an address directly without discovery.
 
 ## Build on pup
 
