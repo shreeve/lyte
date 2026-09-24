@@ -109,6 +109,94 @@ final class HevcParameterSetTests: XCTestCase {
                        "QP is PPS business alone")
     }
 
+    // MARK: Geometry and level for any display size
+
+    /// The SPS fields up to the conformance window, read back.
+    private struct Geometry: Equatable {
+        var levelIdc: UInt32
+        var codedWidth: UInt32
+        var codedHeight: UInt32
+        /// left, right, top, bottom in chroma units; nil when absent.
+        var window: [UInt32]?
+    }
+
+    private func geometry(_ recipe: HevcHeaderRecipe) -> Geometry? {
+        var r = HevcBitReader(nal: HevcParameterSets.sps(recipe))
+        guard r.skip(bits: 4 + 3 + 1 + 2 + 1 + 5 + 32 + 4 + 43 + 1),
+              let level = r.read(bits: 8),
+              r.readUe() != nil,
+              let chroma = r.readUe(),
+              chroma != 3 || r.skip(bits: 1),
+              let width = r.readUe(), let height = r.readUe(),
+              let flag = r.read(bits: 1)
+        else { return nil }
+        var window: [UInt32]?
+        if flag == 1 {
+            window = (0..<4).compactMap { _ in r.readUe() }
+        }
+        return Geometry(levelIdc: level, codedWidth: width,
+                        codedHeight: height, window: window)
+    }
+
+    /// A display size off the 8-sample coding block is coded padded and
+    /// cropped back by the conformance window (chroma units: halved at
+    /// 4:2:0); a size on it carries no window, as in the oracle.
+    func testSizesOffTheCodingBlockCarryAConformanceWindow() {
+        let cases: [(UInt32, UInt32, Bool, Geometry)] = [
+            (1366, 768, false, Geometry(
+                levelIdc: 120, codedWidth: 1368, codedHeight: 768,
+                window: [0, 1, 0, 0])),
+            (1600, 900, false, Geometry(
+                levelIdc: 123, codedWidth: 1600, codedHeight: 904,
+                window: [0, 0, 0, 2])),
+            (1366, 768, true, Geometry(
+                levelIdc: 120, codedWidth: 1368, codedHeight: 768,
+                window: [0, 2, 0, 0])),
+            (1440, 900, true, Geometry(
+                levelIdc: 123, codedWidth: 1440, codedHeight: 904,
+                window: [0, 0, 0, 4])),
+            (2048, 1280, false, Geometry(
+                levelIdc: 150, codedWidth: 2048, codedHeight: 1280,
+                window: nil)),
+        ]
+        for (width, height, chroma444, expected) in cases {
+            let recipe = HevcHeaderRecipe(
+                width: width, height: height, chroma444: chroma444)
+            XCTAssertEqual(geometry(recipe), expected,
+                           "\(width)×\(height) 4:4:4 \(chroma444)")
+            XCTAssertEqual(recipe.codedWidth, expected.codedWidth)
+            XCTAssertEqual(recipe.codedHeight, expected.codedHeight)
+        }
+    }
+
+    /// general_level_idc is the lowest level whose picture size and luma
+    /// sample rate cover the stream — 4K60 needs 5.1, 1080p60 fits 4.1 —
+    /// and the VPS carries the same level as the SPS.
+    func testLevelFollowsPictureSizeAndFrameRate() {
+        let cases: [(UInt32, UInt32, UInt32, UInt32)] = [
+            (2048, 1280, 60, 150),
+            (1920, 1080, 60, 123),
+            (1920, 1080, 30, 120),
+            (1280, 720, 60, 120),
+            (1366, 768, 60, 120),
+            (3840, 2160, 30, 150),
+            (3840, 2160, 60, 153),
+            (3840, 2160, 120, 156),
+            (7680, 4320, 60, 183),
+            (8448, 1024, 30, 180),
+        ]
+        for (width, height, fps, level) in cases {
+            let recipe = HevcHeaderRecipe(
+                width: width, height: height, fpsNumerator: UInt32(fps))
+            XCTAssertEqual(recipe.levelIdc, level, "\(width)×\(height)@\(fps)")
+            XCTAssertEqual(geometry(recipe)?.levelIdc, level)
+            var vps = HevcBitReader(nal: HevcParameterSets.vps(recipe))
+            XCTAssertTrue(vps.skip(bits: 4 + 1 + 1 + 6 + 3 + 1 + 16
+                                   + 2 + 1 + 5 + 32 + 4 + 43 + 1))
+            XCTAssertEqual(vps.read(bits: 8), level)
+        }
+    }
+
     // MARK: Rext Main 4:4:4 (the Best tier) — field-verified
 
     /// Walks the Rext SPS field-by-field: profile_idc 4, the §A.3.5
