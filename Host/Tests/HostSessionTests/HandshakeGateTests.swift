@@ -171,7 +171,7 @@ final class HandshakeGateTests: XCTestCase {
         XCTAssertEqual(quiet.cookieModeChangedTo, false)
     }
 
-    /// No secret = the pure HS-9 posture: the token bucket admits the
+    /// No secret = the pure token-bucket posture: the bucket admits the
     /// burst and throttles the rest; require-cookie never engages.
     func testDisabledWithoutSecretIsThePureTokenBucket() {
         var gate = HandshakeGate(config: .init(ratePerSecond: 10, burst: 10))

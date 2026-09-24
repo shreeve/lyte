@@ -3,10 +3,11 @@ import LyteWire
 import LyteWireTestKit
 import XCTest
 
-// PathValidator's pure legs (HS-12): the probe slot against spoofed
-// conn-ids, the anti-amplification withholding of its own challenge, and
-// the refusal to answer foreign traffic. The session-level roam and the
-// modeled resume budget live in HostWireTests/PathMigrationGateTests.
+// PathValidator's pure legs: the probe slot against spoofed conn-ids, the
+// anti-amplification withholding of its own challenge, the return to a
+// retained fallback, and the refusal to answer foreign traffic. The
+// session-level roam and the modeled resume budget live in
+// HostWireTests/PathMigrationGateTests.
 
 final class PathValidatorTests: XCTestCase {
     private func makeConnectionId(seed: UInt64 = 0xC1D) -> ConnectionId {

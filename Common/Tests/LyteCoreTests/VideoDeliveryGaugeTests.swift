@@ -1,8 +1,8 @@
 import XCTest
 @testable import LyteCore
 
-// The 2026-07-30 overlay-gauge law, pinned: every gauge describes the last
-// ~3 seconds through one window implementation. These values print on the
+// The overlay-gauge law: every gauge describes the last ~3 seconds
+// through one window implementation. These values print on the
 // owner's glass every second; the arithmetic must not drift silently.
 
 final class RateMeterTests: XCTestCase {

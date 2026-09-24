@@ -2,13 +2,10 @@ import XCTest
 import HostCore
 import LyteCore
 
-// THE GATE (E6b milestone 1): the Swift pen writes libavcodec's
-// headers byte-for-byte. The oracle bytes below are a REAL capture —
-// lyte-eye on pup (hevc_vaapi, iHD on the Arc, 2048×1280@60, QP 24)
-// — split into NALs and decoded field-by-field (the session's
-// hevc-header-dump); the serializer mirrors every field name-by-name
-// and must reproduce the exact bytes. Plus the bit-writer laws the
-// serializer stands on: Exp-Golomb anchors and emulation prevention.
+// The Swift pen writes libavcodec's headers byte for byte. The oracle
+// bytes are hevc_vaapi's own output (iHD, 2048×1280@60, QP 24), split
+// into NALs; the serializer mirrors every field by its spec name and
+// must reproduce them exactly.
 
 final class HevcParameterSetTests: XCTestCase {
 
@@ -21,9 +18,9 @@ final class HevcParameterSetTests: XCTestCase {
         return out
     }
 
-    /// The oracle: lyte-eye capture on pup, 2026-08-01 (Annex-B
-    /// start codes stripped; the capture used 4-byte start codes, so
-    /// the leading 00 of each next start code is NOT part of these).
+    /// The oracle NALs, Annex-B start codes stripped (the capture used
+    /// 4-byte start codes, so the leading 00 of each next start code is
+    /// not part of these).
     private static let oracleVPS = hex(
         "40010c01ffff016000000300b000000300000300962c0c0000030004"
         + "00000300f3a0")
@@ -44,11 +41,10 @@ final class HevcParameterSetTests: XCTestCase {
                        "PPS must be byte-identical to libavcodec's")
     }
 
-    /// The brc-mode PPS, pinned against a fresh hevc_vaapi VBR capture
-    /// (vis-libav-vbr, 2026-08-01): baseline QP 30 and cu_qp_delta at
-    /// depth 3 — the driver writes per-CU deltas into brc slice data,
-    /// and a PPS that doesn't declare them corrupts every decode
-    /// (sharp text, yellow-washed flats; the eyeball bug of 2026-08-01).
+    /// The rate-controlled PPS against hevc_vaapi's VBR output: baseline
+    /// QP 30 and cu_qp_delta at depth 3 — the driver writes per-CU deltas
+    /// into rate-controlled slice data, and a PPS that does not declare
+    /// them corrupts every decode.
     func testBrcPpsMatchesTheOracleByteExact() {
         let recipe = HevcHeaderRecipe(
             width: 2048, height: 1280, initialQP: 30, cuQpDeltaDepth: 3)
@@ -255,15 +251,10 @@ final class HevcParameterSetTests: XCTestCase {
         XCTAssertEqual(r.read(bits: 5)!, 4, "profile_idc = Rext")
     }
 
-    /// The 4:2:0 dialect is UNTOUCHED by the Rext branch: the oracle
-    /// bytes still reproduce exactly with chroma444 defaulted false.
-    func testRextBranchLeaves420OracleUntouched() {
+    /// The PPS is chroma-agnostic at 8 bits: 4:4:4 needs no
+    /// pps_range_extension fields.
+    func testPpsIsIdenticalAcrossChromaAtEightBits() {
         let recipe = HevcHeaderRecipe(width: 2048, height: 1280)
-        XCTAssertEqual(HevcParameterSets.vps(recipe), Self.oracleVPS)
-        XCTAssertEqual(HevcParameterSets.sps(recipe), Self.oracleSPS)
-        XCTAssertEqual(HevcParameterSets.pps(recipe), Self.oraclePPS)
-        // And the PPS is chroma-agnostic at these settings: 8-bit
-        // 4:4:4 needs no pps_range_extension fields.
         var rext = recipe
         rext.chroma444 = true
         XCTAssertEqual(HevcParameterSets.pps(rext),
