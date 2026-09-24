@@ -2746,20 +2746,48 @@ public final class Session {
     public static func prioritizeLatency(
         _ datagrams: [VideoChannelDatagram]
     ) -> [VideoChannelDatagram] {
+        var ordered = datagrams
+        prioritizeLatency(&ordered)
+        return ordered
+    }
+
+    /// In-place form. The pacer already releases in class order, so the
+    /// common case is a single ordered scan with no allocation.
+    public static func prioritizeLatency(
+        _ datagrams: inout [VideoChannelDatagram]
+    ) {
+        func rank(_ datagram: VideoChannelDatagram) -> Int {
+            switch datagram.pacerClass {
+            case .control: 0
+            case .audio: 1
+            default: 2
+            }
+        }
+        var previous = 0
+        var ordered = true
+        for datagram in datagrams {
+            let current = rank(datagram)
+            if current < previous {
+                ordered = false
+                break
+            }
+            previous = current
+        }
+        guard !ordered else { return }
         var control: [VideoChannelDatagram] = []
         var audio: [VideoChannelDatagram] = []
         var remaining: [VideoChannelDatagram] = []
-        control.reserveCapacity(datagrams.count)
-        audio.reserveCapacity(datagrams.count)
-        remaining.reserveCapacity(datagrams.count)
         for datagram in datagrams {
-            switch datagram.pacerClass {
-            case .control: control.append(datagram)
-            case .audio: audio.append(datagram)
+            switch rank(datagram) {
+            case 0: control.append(datagram)
+            case 1: audio.append(datagram)
             default: remaining.append(datagram)
             }
         }
-        return control + audio + remaining
+        datagrams.removeAll(keepingCapacity: true)
+        datagrams.append(contentsOf: control)
+        datagrams.append(contentsOf: audio)
+        datagrams.append(contentsOf: remaining)
     }
 
     /// The earliest instant anything here has work: the pacer's wake,

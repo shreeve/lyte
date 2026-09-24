@@ -896,6 +896,7 @@ static func run(arguments: [String]) throws {
         let t = wire.pacerTelemetry
         let c = wire.counters
         let s = wire.sessionCounters
+        let o = wire.outboxCounters
         // HS-19: the leaf's own books (byte-level transfer evidence),
         // appended to the clipboard line when the leaf ran.
         // HS-20: the final standing directive, if any moved the encoder.
@@ -935,34 +936,35 @@ static func run(arguments: [String]) throws {
         }
         print("""
         session: \(c.framesIngested) frames → \(c.shardsEnqueued) shards → \
-        \(wire.datagramsSent) datagrams (\(wire.bytesSent) B) in \
+        \(o.datagramsSent) datagrams (\(o.bytesSent) B) in \
         \(t.batches) paced batches; max batch wire time \
         \(t.maxBatchWireTimeNS) ns (quantum 1000000); freshVideo max queue \
         delay \(t[.freshVideo].maxQueueDelayNS) ns
-        socket: \(wire.socketWouldBlockCount) would-block retries, pending max \
-        \(wire.socketPendingMaxDatagrams) datagrams / \
-        \(wire.socketPendingMaxBytes) B; audio blocked \
-        \(wire.audioSocketWouldBlockCount) times, outbox max \
-        \(wire.audioSocketOutboxMaxNS) ns at seq \
-        \(wire.audioSocketWorstSeq.map(String.init) ?? "—") \
+        socket: \(o.wouldBlockCount) would-block retries, pending max \
+        \(o.pendingMaxDatagrams) datagrams / \
+        \(o.pendingMaxBytes) B; audio blocked \
+        \(o.audioWouldBlockCount) times, outbox max \
+        \(o.audioOutboxMaxNS) ns at seq \
+        \(o.audioWorstSeq.map(String.init) ?? "—") \
         (enqueued/accepted \
-        \(wire.audioSocketWorstEnqueuedAtNS.map(String.init) ?? "—")/\
-        \(wire.audioSocketWorstAcceptedAtNS.map(String.init) ?? "—"), \
-        behind video \(wire.audioSocketWorstBlockedByVideo)); kernel sndbuf \
+        \(o.audioWorstEnqueuedAtNS.map(String.init) ?? "—")/\
+        \(o.audioWorstAcceptedAtNS.map(String.init) ?? "—"), \
+        behind video \(o.audioWorstBlockedByVideo)); kernel sndbuf \
         \(wire.socketSendBufferBytes) B, outq max \
         \(wire.socketOutqMaxBytes) B; latency lane sndbuf \
         \(wire.latencySocketSendBufferBytes) B, outq max \
         \(wire.latencySocketOutqMaxBytes) B; ENOBUFS \
-        \(wire.socketENOBUFSCount), outq query failures \
+        \(o.noBufferCount), outq query failures \
         \(wire.socketOutqQueryFailures); pressure \
         \(wire.kernelPressureState), video debt \
         \(wire.kernelVideoServiceDebtNS) ns, EAGAIN video/latency \
-        \(wire.videoSocketWouldBlockCount)/\
-        \(wire.latencySocketWouldBlockCount), ENOBUFS video/latency \
-        \(wire.videoSocketENOBUFSCount)/\
-        \(wire.latencySocketENOBUFSCount), stale fresh shed \
-        \(wire.socketFreshVideoShedDatagrams) datagrams / \
-        \(wire.socketFreshVideoShedBytes) B
+        \(o.videoWouldBlockCount)/\
+        \(o.latencyWouldBlockCount), ENOBUFS video/latency \
+        \(o.videoNoBufferCount)/\
+        \(o.latencyNoBufferCount), transient send/receive errors \
+        \(o.transientErrors)/\(wire.receiveTransientErrors), stale fresh shed \
+        \(o.freshVideoShedDatagrams) datagrams / \
+        \(o.freshVideoShedBytes) B
         session: \(s.beaconsSent) beacons, \(s.beaconEchoes) echoes \
         (last offset \(wire.clock.lastOffsetMicroseconds.map(String.init) ?? "—") µs, \
         min rtt \(wire.clock.minRttMicroseconds.map(String.init) ?? "—") µs), \
