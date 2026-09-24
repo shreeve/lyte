@@ -35,10 +35,15 @@ struct Watch {
 func runDoorbell(
     device: String, seconds: Double, intervalUs: UInt32
 ) -> Never {
-    let fd = openCardWithoutMaster(device)
+    var keptMaster = false
+    let fd = openCardWithoutMaster(device, keptMaster: &keptMaster)
     guard fd >= 0 else {
         perror(device)
         exit(1)
+    }
+    if keptMaster {
+        FileHandle.standardError.write(Data(
+            "doorbell: could not drop DRM master on \(device)\n".utf8))
     }
     drmSetClientCap(fd, UInt64(DRM_CLIENT_CAP_UNIVERSAL_PLANES), 1)
     drmSetClientCap(fd, UInt64(DRM_CLIENT_CAP_ATOMIC), 1)
