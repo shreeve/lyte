@@ -290,7 +290,7 @@ public final class VideoChannel {
     private var queuedShardsByFrame: [UInt32: Int] = [:]
     private var queuedFreshShardsByFrame: [UInt32: Int] = [:]
     private var activeFrameTelemetry: [UInt32: VideoFrameTransmitTelemetry] = [:]
-    private var completedFrameTelemetry: [VideoFrameTransmitTelemetry] = []
+    private var completedFrameTelemetry = Deque<VideoFrameTransmitTelemetry>()
     private static let frameTelemetryCapacity = 256
 
     // MARK: Repair store (HS-17)
@@ -325,10 +325,12 @@ public final class VideoChannel {
     private var store: [UInt32: StoredFrame] = [:]
     /// Insertion order = frame order (the session numbers frames
     /// serially ascending), so evictions pop from the front.
-    private var storeOrder: [UInt32] = []
+    private var storeOrder = Deque<UInt32>()
     private var storeBytes = 0
     private var purgedFrames: Set<UInt32> = []
-    private var purgedFrameOrder: [UInt32] = []
+    private var purgedFrameOrder = BoundedRing<UInt32>(
+        capacity: VideoChannel.purgedFrameCapacity
+    )
     private static let purgedFrameCapacity = 1_024
 
     public init(
@@ -725,7 +727,7 @@ public final class VideoChannel {
     /// Drains completed/purged frame-flight records in bounded batches.
     public func takeFrameTransmitTelemetry() -> [VideoFrameTransmitTelemetry] {
         defer { completedFrameTelemetry.removeAll(keepingCapacity: true) }
-        return completedFrameTelemetry
+        return Array(completedFrameTelemetry)
     }
 
     /// Joins encoder-side fields onto the frame-flight record without a
@@ -1070,9 +1072,8 @@ public final class VideoChannel {
 
     private func rememberPurgedFrame(_ frame: UInt32) {
         guard purgedFrames.insert(frame).inserted else { return }
-        purgedFrameOrder.append(frame)
-        if purgedFrameOrder.count > Self.purgedFrameCapacity {
-            purgedFrames.remove(purgedFrameOrder.removeFirst())
+        if let forgotten = purgedFrameOrder.append(frame) {
+            purgedFrames.remove(forgotten)
         }
     }
 

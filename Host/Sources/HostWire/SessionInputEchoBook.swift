@@ -1,3 +1,4 @@
+import LyteCore
 import LyteWire
 
 /// The sans-IO owner of the Host session's injected-input evidence.
@@ -10,7 +11,7 @@ public struct SessionInputEchoBook: Equatable, Sendable {
     public private(set) var lastInjectedSequence: UInt32?
     public var pendingTupleCount: Int { pendingTuples.count }
 
-    private var pendingTuples: [InputEchoTuple] = []
+    private var pendingTuples = Deque<InputEchoTuple>()
 
     public init() {}
 
