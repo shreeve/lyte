@@ -9,8 +9,9 @@
 //
 // Identity once lived in ~/.config/lyte-host. `adoptConfigFile` reads the
 // new location first; when only the legacy file exists it COPIES it into
-// place (0600, atomic, verified byte-for-byte) and never deletes, moves, or
-// writes the legacy file. Writes go only to the new location.
+// place (0600, atomic, create-if-absent, verified byte-for-byte) and never
+// deletes, moves, or writes the legacy file. Adoption never replaces or
+// removes anything at the new location: whatever lands there first wins.
 
 #if canImport(Darwin)
 import Darwin
@@ -75,18 +76,21 @@ public struct HostPaths: Equatable, Sendable {
     /// The config file `name` to read and write — always the new location.
     /// When only `~/.config/lyte-host/<name>` exists it is copied there
     /// first and `note` says so; the legacy file is left exactly as found.
+    /// A new-location entry that appears meanwhile (another host process,
+    /// a `--pair` run) wins; a copy that reads back wrong throws and is
+    /// left in place for the operator.
     public func adoptConfigFile(_ name: String) throws -> (path: String, note: String?) {
         let target = config(name)
         if SecretFile.exists(target) {
             return (target, nil)
         }
         let legacy = legacyConfig(name)
-        guard let bytes = try SecretFile.read(legacy) else {
+        guard let bytes = try SecretFile.read(legacy),
+              try SecretFile.create(bytes, at: target)
+        else {
             return (target, nil)
         }
-        try SecretFile.write(bytes, to: target)
         guard try SecretFile.read(target) == bytes else {
-            unlink(target)
             throw HostPathError.adoptionMismatch(target)
         }
         return (target, "identity: copied \(legacy) → \(target) (legacy file left in place)")
