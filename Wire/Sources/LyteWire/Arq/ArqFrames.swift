@@ -1,5 +1,5 @@
 // The ARQ frame codecs: the wire format of the reliable sublayer that
-// CTRL, video-idle and the feature channels ride. Two frame types,
+// CTRL and the feature channels ride. Two frame types,
 // registered in the CTRL type space and used on every reliable channel:
 //
 //   0x07  data segment — one slice of one message in one group

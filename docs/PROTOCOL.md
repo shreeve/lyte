@@ -33,8 +33,10 @@ clock); do not read them as the current contract.
 | Wire payload (ciphertext + 16 B tag) | ≤ 1128 | `WireBudget.maxWirePayloadByteCount` |
 | Datagram | ≤ 1152 | `WireBudget.maxDatagramByteCount` |
 
-The datagram ceiling can be raised per session only through capability key
-8 (`maxDatagramBytes`), host-proposed at an IDR boundary.
+Capability key 8 (`maxDatagramBytes`) declares and renegotiates a larger
+ceiling, host-proposed at an IDR boundary, but the raise is dormant in v1:
+every layer enforces the constants above and no end applies an agreed
+value past 1152.
 
 ## Envelope
 
@@ -46,7 +48,8 @@ or FEC group id; `timestamp` is microseconds in the sender's monotonic
 domain.
 
 TLV types: `0x00` invalid, `0x01` connection id (migration), `0x02` wire
-major version, `0x03` last input seq. Unknown TLV types are skipped by
+major version (reserved, unused in v1: the major rides the first Noise
+handshake payload byte and must match exactly), `0x03` last input seq. Unknown TLV types are skipped by
 consumers and preserved by the codec.
 
 Pinned by `envelope-v1.json`, `session-v1.json` (conn-id TLV),
@@ -60,7 +63,7 @@ Pinned by `envelope-v1.json`, `session-v1.json` (conn-id TLV),
 | 1 | audio | unreliable, RS-FEC | audio |
 | 2 | video-active | unreliable, RS-FEC + NACK repair | fresh video (repairs: video tail) |
 | 3 | feedback | unreliable, 25–50 ms reports | telemetry |
-| 4 | video-idle | ARQ one-shot groups | video tail |
+| 4 | video-idle | registered, unused in v1 | video tail |
 | 5–7 | reserved | never sent; dropped on receive | — |
 | 8 | bulk transfer | ARQ ordered stream | bulk (last) |
 | 9–255 | feature channels | ARQ | feature |
@@ -129,8 +132,9 @@ The receiver keeps a 64-deep replay window per channel and commits window
 state only after the tag verifies. After eight consecutive open failures it
 also tries the next four forward wraps, so a long one-way gap cannot kill a
 channel; the tag arbitrates, so a forgery never moves the anchor. Rekey is
-Noise REKEY plus an epoch increment, with the previous epoch kept as a
-grace key.
+a pinned primitive: Noise REKEY plus an epoch increment, with the previous
+epoch kept as a grace key. Wire v1 has no CTRL message that triggers it,
+so no v1 end rekeys and every session runs at epoch 0.
 
 Pinned by `noise-v1.json`.
 
@@ -211,7 +215,7 @@ after the handshake unless noted).
 | 0x12 | CapabilityUpdateAck | client → host | ARQ | `capabilities-v1.json` |
 | 0x13 | RetryChallenge | host → client | bare, unsealed | `retry-v1.json` |
 | 0x14 | RetryHandshake1 | client → host | bare, unsealed | `retry-v1.json` |
-| 0x15 | IdleFrame | host → client | ARQ one-shot group | `control-v1.json` |
+| 0x15 | IdleFrame | host → client | CTRL ARQ one-shot group; not sent by the v1 host | `control-v1.json` |
 | 0x16 | InputEvent | client → host | ARQ | `control-v1.json`, `input-coordinates-v1.json` |
 | 0x17 | InputEcho | host → client | ARQ | `control-v1.json` |
 | 0x18 | AudioRoutingRequest | client → host | ARQ, key 9 | `control-v1.json` |
@@ -256,7 +260,9 @@ Pinned by `arq-v1.json`.
 ## Session lifecycle
 
 - Wire modes are ACTIVE and IDLE (0x09). FROZEN and RECOVERY are local
-  path-loss overlays and never appear on the wire.
+  path-loss overlays and never appear on the wire. IDLE is dormant in v1:
+  it follows a converged ratchet frame the host never produces, so the host
+  stays ACTIVE and never sends mode IDLE.
 - Teardown (0x0A) carries `takenOver` (0x01) or `shuttingDown` (0x02). The
   macOS client roams (re-dials) on `shuttingDown` and ends the window on
   `takenOver`.

@@ -4,10 +4,12 @@
 // whether datagram video is flowing, and a teardown must never overtake the
 // messages that explain it.
 //
-// The final converged frame rides a video-idle one-shot group, unordered
-// against group 0, so the sender only sends mode=idle after that one-shot
-// is acknowledged (`ArqEvent.oneShotAcknowledged`). The receiver therefore
-// always holds the converged frame before it learns the session went idle.
+// The final converged frame (IdleFrame 0x15) rides a CTRL one-shot group,
+// unordered against group 0, so the sender only sends mode=idle after that
+// one-shot is acknowledged (`ArqEvent.oneShotAcknowledged`). The receiver
+// therefore always holds the converged frame before it learns the session
+// went idle. Dormant in v1: the host has no convergence ratchet, so it
+// never sends the frame or mode=idle.
 //
 // Mode transition (type 0x09), fixed 2 bytes:
 //

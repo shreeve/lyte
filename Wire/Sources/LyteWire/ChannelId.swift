@@ -7,8 +7,8 @@ public enum DeliveryClass: Equatable, Sendable {
     case reliableOrdered
     /// Fire-and-forget datagrams; loss handled above (FEC) or not at all.
     case unreliable
-    /// ARQ, independent one-shot message groups — no cross-group blocking
-    /// (sparse idle frames, the final ratchet frame).
+    /// ARQ, independent one-shot message groups — no cross-group blocking.
+    /// Registered for sparse idle frames; no v1 end sends on such a channel.
     case reliableOneShotGroups
 }
 
@@ -50,7 +50,8 @@ public struct ChannelId: RawRepresentable, Hashable, Sendable {
     public static let videoActive = ChannelId(rawValue: 2)
     /// Client→host congestion feedback and telemetry, 25–50 ms cadence.
     public static let feedback = ChannelId(rawValue: 3)
-    /// Sparse idle frames and the final converged ratchet frame.
+    /// Registered for sparse idle frames; unused in v1 — IdleFrame rides
+    /// CTRL one-shot groups and nothing sends on chan 4.
     public static let videoIdle = ChannelId(rawValue: 4)
     /// Chunked, resumable blob transfer over its own ARQ ordered stream.
     /// Send class `.bulk`; channels 9+ keep `.feature` so small interactive

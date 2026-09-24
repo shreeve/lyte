@@ -189,8 +189,9 @@ public struct NoiseTransport: Sendable {
     /// to it.
     public let handshakeHash: [UInt8]
 
-    /// Recommended rekey trigger: every 2^24 datagrams per direction (the
-    /// hourly timer is the shell's).
+    /// A rekey trigger for when one exists: every 2^24 datagrams per
+    /// direction. Wire v1 has no CTRL message that coordinates a rekey,
+    /// so no v1 end calls `rekeySend`/`rekeyReceive`.
     public static let rekeyDatagramThreshold: UInt64 = 1 << 24
 
     init(

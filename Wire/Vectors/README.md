@@ -4,14 +4,14 @@ These files are first-class, versioned wire-contract artifacts, not test
 fixtures: `Wire/Tests` verifies `LyteWire` against them byte-for-byte on
 macOS and Linux, and `Wire/Scripts/wasm-test.sh` runs the same suite for
 wasm32-unknown-wasip1 under wasmtime. The client and host suites verify
-their codecs against the same bytes. This README is the normative byte
-layout; [docs/PROTOCOL.md](../../docs/PROTOCOL.md) is the living overview
-that ties each protocol layer to its file, and
+their codecs against the same bytes. This README describes every file and
+gives the normative byte layout for the layers with a section below; the
+other codecs' layouts are the header comments of their `LyteWire` sources
+(for example `Control/InputMessages.swift` for InputEvent 0x16).
+[docs/PROTOCOL.md](../../docs/PROTOCOL.md) is the living overview that ties
+each protocol layer to its file, and
 [docs/GLOSSARY.md](../../docs/GLOSSARY.md) explains the slice and gate ids
-(W5, W-G6, HS-12, CL-3, …) used below. "Master plan" and "core plan"
-citations point into retired build plans; the
-[docs catalog](../../docs/README.md#retired-records) gives the command that
-recovers them.
+(W5, W-G6, HS-12, CL-3, …) that name when a layer was built.
 
 **Freeze policy.** A committed vector file is frozen. If the codec and a
 vector ever disagree, that is a wire-contract break to investigate — never a
@@ -57,8 +57,8 @@ file; never rewrite a committed replay.
 
 - `envelope-v1.json` — envelope + TLV codec vectors for wire major
   version 1, plus the (chan, seq) serial-arithmetic table.
-- `fec-v1.json` — fec-field codec vectors, the resiliency §5.2 parity
-  ladder as data, and RS recovery matrices (W1).
+- `fec-v1.json` — fec-field codec vectors, the adaptive parity ladder as
+  data, and RS recovery matrices (W1).
 - `video-v1.json` — video-interior vectors (W2): packetize vectors
   (frame → frozen shard datagrams) and assembly scenarios (scripted
   delivery → expected DecodeUnits and fec-impossible verdicts; the
@@ -100,8 +100,8 @@ file; never rewrite a committed replay.
   appendix-A examples (transcribed in `CborTests`) and the
   hand-computed set/message bytes in `CapabilitiesTests` /
   `CapabilityCodecTests`.
-- `retry-v1.json` — the stateless retry cookie (HS-9's deferred
-  msg1-flood hardening; core plan §5): the RetryCookie transcript MAC
+- `retry-v1.json` — the stateless retry cookie (the msg1-flood
+  defense): the RetryCookie transcript MAC
   frozen as data (mint bytes, lifetime window, tuple/msg1 binding,
   secret rotation) plus the retry CTRL codecs 0x13/0x14. Anchored
   against the hand-built layouts in `RetryCodecTests` and, for the MAC
@@ -132,11 +132,8 @@ file; never rewrite a committed replay.
   (host→client), both `type ‖ UTF-8 text` with the text the sole
   trailing field, plus capability key 10 (`clipboardText`) on the W7
   forward-compat spine as data (declared `0A F5`, absent, and composed
-  beside key 9 — capabilities-v1.json never moves). A NEW file rather
-  than an append to control-v1.json: appending is legal under the
-  freeze policy, but control-v1.json's byte-exact pup verification is
-  queued on the deferred ledger, and a new file keeps the existing 12
-  untouched while that leg is in flight. Format mirrors the control
+  beside key 9 — capabilities-v1.json never moves). A new file, because
+  committed files never change. Format mirrors the control
   file (`roundtrip`/`decodeReject` over `messageHex`; text rides as
   `textUtf8Hex`); anchored against the hand-computed bytes in
   `ClipboardCodecTests`. Inventory (17): roundtrips covering ASCII,
@@ -171,17 +168,15 @@ file; never rewrite a committed replay.
   3 key-11 spine pins, 2 transfer traces. `BulkVectorFileTests`
   asserts the coverage discipline and replays every trace.
 - `clipboard-images-v1.json` — the P-1 clipboard-image sync
-  (clipboard v2; the H4 plan's wave-2 P-1 section, inheriting the H3
-  F-6 sketch): ClipboardImageCargo 0x22, the direction-neutral cargo
+  (clipboard v2): ClipboardImageCargo 0x22, the direction-neutral cargo
   marker (`type ‖ transferId u64 LE ‖ mimeLen u8 ‖ mime UTF-8`) that
   rides chan 8's ordered stream immediately before its transfer's
   BulkOffer so clipboard cargo and file drops never confuse each
   other, plus capability key 12 (`clipboardImages`) on the W7
   forward-compat spine as data (declared `0C F5`, absent, and the
   keys-10/11/12 composition — the image GATE is 10∧12, key 11 stays
-  independent file consent; capabilities-v1.json never moves). A NEW
-  file for the same reason clipboard-v1.json was: appending is legal,
-  but a new file keeps the frozen ones untouched. Format mirrors the
+  independent file consent; capabilities-v1.json never moves). Format
+  mirrors the
   bulk file (`roundtrip`/`decodeReject`/`encodeReject`; ids ride as
   hex, mimes as `mimeUtf8Hex`); anchored against the hand-computed
   bytes in `ClipboardImageCodecTests`. Inventory (16): roundtrips
@@ -206,9 +201,7 @@ file; never rewrite a committed replay.
   CTRL type is skipped silently on both carriage modes (bare payloads
   fall through the type peek unconsumed; ARQ-delivered unknowns are
   counted and dropped), so a v1 client ignoring 0x23 lands exactly on
-  the lost-refusal behavior. A NEW file for the clipboard-v1 reason:
-  appending is legal, but a new file keeps the frozen ones untouched.
-  Format mirrors the session file (`roundtrip`/`decodeReject` over
+  the lost-refusal behavior. Format mirrors the session file (`roundtrip`/`decodeReject` over
   `messageHex`, `frame`/`reason` typed on roundtrips); anchored
   against the hand-computed bytes in `RepairRefusalCodecTests`.
   Inventory (10): roundtrips covering the whole 3-value reason space
@@ -276,7 +269,9 @@ TLV block: `count:u8 (type:u8 len:u8 value)*`. Unknown TLV types MUST be
 skipped by consumers and are preserved verbatim by the codec. Reserved
 types, pinned at W0 for later slices: `0x00` invalid (never assigned),
 `0x01` connection ID (migration, Lyte-UDP decision §8.4), `0x02` wire major
-version (first handshake datagram, §8.3 — replaces ALPN).
+version — reserved and unused in v1: nothing sends it, and the major rides
+the first Noise handshake payload byte instead (§8.3), where it must match
+exactly.
 
 Byte budgets, enforced at encode time and covered by reject vectors:
 plaintext shard ≤ **1112 B**, wire payload (ciphertext + tag) ≤ **1128 B**,
@@ -347,7 +342,7 @@ re-encode differs), `decodeReject` (decoding `rawHex` throws `error`,
 a `FecError` case name). `rawHex` is the u64 value in hex, same
 convention as the envelope file's `fecHex`.
 
-`geometryRows` freeze the resiliency §5.2 adaptive parity ladder as data:
+`geometryRows` freeze the adaptive parity ladder as data:
 (`dataShards`, `regime` clean|lossy) → `parityShards`, null where no
 ladder ratio fits the 255-shard block (lookup throws; clean protects
 k ≤ 231, lossy k ≤ 204 — `frameByteCeiling` derives from these).
@@ -459,8 +454,8 @@ Every CTRL (chan 0) payload starts with one message-type byte — in
 today's bare datagrams and, once W3 lands, at the start of each
 ARQ-framed message body alike. Types pinned at W4a: `0x00` invalid
 (never assigned, the zero-fill rule), `0x01` clock beacon, `0x02` beacon
-echo. The beacon pair is ARQ-exempt fire-and-forget by design (master
-plan §4.6): clock mapping wants fresh timestamps, not reliable old ones —
+echo. The beacon pair is ARQ-exempt fire-and-forget by design: clock
+mapping wants fresh timestamps, not reliable old ones —
 a lost beacon is superseded by the next 1 Hz send. It is the ONE beacon
 (clock mapping + slow liveness); the 350 ms blackout detector is
 feedback-stream silence, a different mechanism.
@@ -516,7 +511,7 @@ Fixed 21-byte header, little-endian:
 
 | offset | size | field | notes |
 |---|---|---|---|
-| 0 | 1 | pathId | 0 in v1 (resiliency §6), carried verbatim |
+| 0 | 1 | pathId | 0 in v1 (single path), carried verbatim |
 | 1 | 1 | flags | bit0: TLV block present; bits 1–7 reserved |
 | 2 | 8 | clientTimestamp | client µs at report build |
 | 10 | 8 | dispersionBase | client µs base for sample deltas; MUST be 0 when sampleCount is 0 |
@@ -606,15 +601,15 @@ Sequencing is **group-scoped**, not channel-scoped: envelope seqs on a
 reliable channel are shared with ARQ-exempt traffic, so each group
 numbers its own segments with a serial u16 from 0 (wire v1). Group 0 is
 the channel's long-lived ordered message stream; non-zero groups are
-independent one-shot message groups (sparse idle frames, the final
-ratchet frame), ids caller-allocated ascending per direction — a
+independent one-shot message groups (defined for sparse idle frames and
+the final ratchet frame; no v1 end sends one yet), ids allocated
+ascending per direction — a
 fully-lost group leaves no hole in any other group's sequence space,
 which is the no-cross-group-HOL ruling (decision record §8.1) as
 arithmetic. Retransmission unit is the SEGMENT, re-sent byte-identical
-inside a fresh datagram (fresh envelope seq, fresh AEAD nonce) — the
-core-plan pin §2.2's guarantees (no nonce reuse, single admission, no
-ACK ambiguity) preserved while clearing the Noise replay-window
-liveness hazard a byte-identical datagram resend would hit.
+inside a fresh datagram (fresh envelope seq, fresh AEAD nonce): no nonce
+reuse, single admission and no ACK ambiguity, without the Noise
+replay-window liveness hazard a byte-identical datagram resend would hit.
 
 Data segment (type 0x07), fixed 8-byte header then body, little-endian:
 
@@ -691,15 +686,16 @@ found.
 Mode transition (type 0x09): `type:u8 mode:u8` — mode 0x01 ACTIVE,
 0x02 IDLE; anything else rejects (`unknownMode`; 0x00 is the loud
 zero-fill bug). ACTIVE⇄IDLE are the only wire modes: FROZEN/RECOVERY
-are each end's local path-loss overlay (overview §2's mode-machine
-ruling) and must never appear on the wire. The sender flips to IDLE
-only after the converged frame's video-idle one-shot is acknowledged —
-one-shot groups are unordered against the CTRL stream, so the ack is
-what guarantees the receiver holds the frame before it learns the
-session went idle.
+are each end's local path-loss overlay and must never appear on the
+wire. The sender flips to IDLE only after the converged frame's
+one-shot is acknowledged — one-shot groups are unordered against the
+CTRL stream, so the ack is what guarantees the receiver holds the frame
+before it learns the session went idle. The IDLE half is dormant in v1:
+the host has no convergence ratchet, so it stays ACTIVE and never sends
+mode 0x02.
 
 Session teardown (type 0x0A): `type:u8 reason:u8` — reason 0x01
-taken-over-by (the transport pillar's multi-client ruling), 0x02
+taken-over-by (a newer client took the host), 0x02
 shutting-down; anything else rejects (`unknownReason`). Liveness
 timeouts (≥30 s without authenticated peer evidence) send nothing —
 the peer that would read the message is the one that died.
@@ -808,7 +804,7 @@ Message decode rejects: `share-a-truncated`, `share-a-trailing-byte`,
 
 ## The capability layer (wire v1)
 
-The W7 "superpowers handshake" (transport pillar §4): right after
+The W7 capability handshake: right after
 establishment, each end sends one capability declaration as the first
 ARQ-carried CTRL message; the session's effective capabilities are the
 INTERSECTION, computed identically on both ends. There is no accept
@@ -866,11 +862,12 @@ required keys (1–3) missing reject. Empty videoCodecs or chromaModes
 intersection is negotiation failure (`CapabilityNegotiator`).
 
 **Renegotiation.** v1 marks exactly one key renegotiable:
-`maxDatagramBytes` — the DPLPMTUD raise (overview §2), host→client
+`maxDatagramBytes` — the path-MTU raise, host→client
 proposals only (the media sender owns geometry), one outstanding at a
 time, values within [1152, agreed ceiling], applied at an IDR
 boundary. The operative value starts at 1152 regardless of the agreed
-ceiling. Everything else is connect-time only; a proposal naming a
+ceiling, and in v1 it stays there: the raise is negotiated but no layer
+carries a datagram past 1152. Everything else is connect-time only; a proposal naming a
 fixed or unknown key draws a rejected ack, not a teardown.
 
 Messages (CTRL types, all ARQ-carried on the ordered stream):
@@ -943,9 +940,9 @@ Message round trips: `declaration-wire-default`,
 
 ## The stateless retry cookie (wire v1)
 
-The msg1-flood defense (core plan §5: "Core provides a stateless HMAC
-retry-cookie codec for the first handshake datagram; the host shell
-decides when to demand it") — QUIC Retry's shape without QUIC. Under a
+The msg1-flood defense: LyteWire provides a stateless HMAC retry-cookie
+codec for the first handshake datagram, and the host shell decides when
+to demand it — QUIC Retry's shape without QUIC. Under a
 Noise msg1 flood the host escalates from HS-9's token bucket to cookie
 mode: each msg1 draws a RetryChallenge whose cookie is minted purely
 from (client tuple, now, secret) — no per-client state — and only a
@@ -1048,7 +1045,9 @@ reorder inside the window fine, older rejects `staleSequence`, repeats
 reject `replayedSequence`; window state commits only after the tag
 verifies. Rekey = Noise REKEY + epoch increment; the receive side keeps
 the previous epoch's key as a grace key (trial-decrypt, tag arbitrates)
-so in-flight datagrams survive. Budgets enforced at the seam: plaintext
+so in-flight datagrams survive. Rekey is a pinned primitive only: wire v1
+has no CTRL message that triggers it, so no v1 end rekeys and every
+session runs at epoch 0. Budgets enforced at the seam: plaintext
 ≤ 1112 B, ciphertext+tag ≤ 1128 B.
 
 ## File format: noise-v1.json
