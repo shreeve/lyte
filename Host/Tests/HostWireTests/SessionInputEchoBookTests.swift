@@ -36,6 +36,22 @@ final class SessionInputEchoBookTests: XCTestCase {
         ])
     }
 
+    func testAnUnacknowledgedPeerCannotGrowTheBookWithoutBound() {
+        var book = SessionInputEchoBook()
+        let injected = SessionInputEchoBook.capacity * 3
+        for seq in 0..<UInt32(injected) {
+            book.noteInjected(
+                seq: seq, receivedAtMicroseconds: UInt64(seq),
+                injectedAtMicroseconds: UInt64(seq) + 1)
+        }
+        XCTAssertEqual(book.pendingTupleCount, SessionInputEchoBook.capacity)
+        XCTAssertEqual(book.lastInjectedSequence, UInt32(injected - 1))
+        XCTAssertEqual(
+            book.nextMessage()?.tuples.first?.seq,
+            UInt32(injected - SessionInputEchoBook.capacity),
+            "the oldest evidence goes first")
+    }
+
     func testMessagesBatchAtTheWireCeilingAndCommitInOrder() throws {
         var book = SessionInputEchoBook()
         for seq in 0..<40 {
