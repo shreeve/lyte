@@ -321,10 +321,31 @@ public final class EyeVaapiEncoder {
             )
         }
         guard u32(80) >= 2 else {
+            closeExportedObjects(descriptor, keeping: [])
             throw EyeVaapiError(
                 "expected 2 exported layers, got \(u32(80))")
         }
-        return (layer(0), layer(1))
+        let planes = (layer(0), layer(1))
+        closeExportedObjects(descriptor, keeping: [planes.0.fd, planes.1.fd])
+        return planes
+    }
+
+    /// The export hands back one fd per object (up to 4); the caller owns
+    /// only the ones it returns, so every other one closes here, on the
+    /// success and the refusal path alike.
+    private func closeExportedObjects(
+        _ descriptor: UnsafeMutableRawPointer, keeping kept: Set<Int32>
+    ) {
+        let objects = min(
+            Int(descriptor.load(fromByteOffset: 12, as: UInt32.self)), 4)
+        var closed: Set<Int32> = []
+        for i in 0..<objects {
+            let fd = Int32(bitPattern: descriptor.load(
+                fromByteOffset: 16 + i * 16, as: UInt32.self))
+            guard fd >= 0, !kept.contains(fd), closed.insert(fd).inserted
+            else { continue }
+            close(fd)
+        }
     }
 
     /// The 4:4:4 variant: a packed AYUV surface exports as one layer.
@@ -351,17 +372,20 @@ public final class EyeVaapiEncoder {
             descriptor.load(fromByteOffset: offset, as: UInt64.self)
         }
         guard u32(80) >= 1 else {
+            closeExportedObjects(descriptor, keeping: [])
             throw EyeVaapiError(
                 "expected 1 exported layer, got \(u32(80))")
         }
         let objectIndex = Int(u32(84 + 8))
-        return ExportedPlane(
+        let plane = ExportedPlane(
             fourcc: u32(84),
             modifier: u64(16 + objectIndex * 16 + 8),
             fd: Int32(bitPattern: u32(16 + objectIndex * 16)),
             offset: u32(84 + 24),
             pitch: u32(84 + 40)
         )
+        closeExportedObjects(descriptor, keeping: [plane.fd])
+        return plane
     }
 
     // MARK: The per-frame drive
