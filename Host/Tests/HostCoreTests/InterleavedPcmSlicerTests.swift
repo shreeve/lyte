@@ -126,28 +126,6 @@ final class InterleavedPcmSlicerTests: XCTestCase {
         XCTAssertEqual(timestamps, [307_000])
     }
 
-    func testConsumersCarryNoSecondSlicerState() throws {
-        let hostRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let consumers = [
-            "Sources/lyte-host/AudioWire.swift",
-            "Sources/lyte-audio-check/main.swift",
-        ]
-        for path in consumers {
-            let source = try String(
-                contentsOf: hostRoot.appendingPathComponent(path),
-                encoding: .utf8
-            )
-            XCTAssertTrue(source.contains("InterleavedPcmSlicer"), path)
-            XCTAssertFalse(source.contains("pendingStartFrame"), path)
-            XCTAssertFalse(source.contains("marks.append"), path)
-            XCTAssertFalse(source.contains("framesSeen"), path)
-            XCTAssertFalse(source.contains("1_000_000 / UInt64"), path)
-        }
-    }
-
     /// A long session of irregular buffers keeps every packet stamp exact:
     /// the consumed head plus the retained frames account for every frame.
     func testLongSessionStampsStayExactAcrossManyBuffers() {

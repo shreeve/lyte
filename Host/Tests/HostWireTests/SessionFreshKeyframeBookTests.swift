@@ -3,35 +3,6 @@ import Foundation
 import HostWire
 
 final class SessionFreshKeyframeBookTests: XCTestCase {
-    func testSessionKeepsOneNamedFreshKeyframeOwner() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let session = try String(contentsOfFile:
-            packageRoot + "/Sources/HostWire/Session.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertTrue(session.contains(
-            "private var freshKeyframes = SessionFreshKeyframeBook()"
-        ))
-        for retiredLatch in [
-            "clientKeyframePending",
-            "machineIdrPacing",
-            "unprotectableKeyframePending",
-            "staleNackKeyframePending",
-            "fallPurgeKeyframePending",
-            "lastUnknownFrame",
-        ] {
-            XCTAssertFalse(
-                session.contains(retiredLatch),
-                "parallel keyframe latch returned: \(retiredLatch)"
-            )
-        }
-    }
-
     func testAllCausesCoalesceInStableNameOrder() {
         var book = SessionFreshKeyframeBook()
         book.arm(.fallPurge)

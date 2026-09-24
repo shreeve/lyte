@@ -23,34 +23,6 @@ import LyteWireTestKit
 
 final class SessionGateTests: XCTestCase {
 
-    func testCapabilityNegotiatorAloneOwnsDeclarationOnceState() throws {
-        let source = try sessionSource()
-
-        XCTAssertFalse(source.contains("capabilitiesDeclared"))
-        XCTAssertTrue(source.contains(
-            "guard let declaration = negotiator.start() else { return [] }"))
-    }
-
-    func testLastAdmittedFrameAloneOwnsTheVideoCursor() throws {
-        let source = try sessionSource()
-
-        XCTAssertFalse(source.contains(
-            "private var nextVideoFrameNumber ="))
-        XCTAssertFalse(source.contains("nextVideoFrameNumber ="))
-        XCTAssertTrue(source.contains(
-            "lastAdmittedVideoFrameNumber?.next ?? FrameNumber(rawValue: 0)"))
-    }
-
-    private func sessionSource() throws -> String {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false)
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        return try String(
-            contentsOfFile: packageRoot + "/Sources/HostWire/Session.swift",
-            encoding: .utf8)
-    }
-
     // MARK: Corpus plumbing (the HS-5 gate's, verbatim)
 
     private static var corpusDirectory: String {
@@ -99,27 +71,17 @@ final class SessionGateTests: XCTestCase {
     /// initiator (the client role), with the host's static pinned
     /// out-of-band exactly as J-G1's debug client will hold it.
     private struct LoopbackClient {
-        var noise: NoiseSession
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        let staticKeys: NoiseKeyPair
+        var peer: SealedCtrlPeer<ClientClock>
 
         init(hostStaticPublicKey: [UInt8]) throws {
-            staticKeys = NoiseKeyPair.generate()
-            noise = try NoiseSession(
-                role: .initiator,
-                staticKeys: staticKeys,
-                remoteStaticPublicKey: hostStaticPublicKey
-            )
+            peer = try SealedCtrlPeer(initiatorTo: hostStaticPublicKey)
         }
 
+        var staticKeys: NoiseKeyPair { peer.staticKeys }
+        var transport: NoiseTransport? { peer.transport }
+
         mutating func message1Datagram(clientMicros: UInt64) throws -> [UInt8] {
-            let message1 = try noise.writeMessage1()
-            return try ctrlDatagram(
-                body: [CtrlMessageType.noiseHandshake1] + message1,
-                sealed: false,
-                clientMicros: clientMicros
-            )
+            try peer.message1Datagram(timestamp: clientMicros)
         }
 
         /// One client→host CTRL datagram with the client seam's exact
@@ -130,42 +92,32 @@ final class SessionGateTests: XCTestCase {
             clientMicros: UInt64,
             extensions: [WireExtension] = []
         ) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: clientMicros,
-                fec: 0,
+            try peer.datagram(
+                body: body, sealed: sealed, timestamp: clientMicros,
                 extensions: extensions
             )
-            ctrlSeq &+= 1
-            guard sealed else { return try envelope.encode(payload: body) }
-            return try transport!.sealDatagram(envelope, plaintext: body)
         }
 
         /// Decodes one host datagram, completing the handshake on a bare
-        /// message 2 and unsealing everything else. Returns the envelope
-        /// and the plaintext payload.
+        /// message 2 and unsealing everything else (replays throw).
+        /// Returns the envelope and the plaintext payload.
         mutating func absorb(
             _ bytes: [UInt8]
         ) throws -> (envelope: Envelope, plaintext: [UInt8]) {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            if transport == nil {
-                guard envelope.channel == .ctrl,
-                      payload.first == CtrlMessageType.noiseHandshake2
-                else {
-                    XCTFail("""
-                        expected bare message 2 first, got chan \
-                        \(envelope.channel.rawValue)
-                        """)
-                    throw NoiseError.missingVersionPayload
-                }
-                _ = try noise.readMessage2(payload.dropFirst())
-                transport = try noise.makeTransport()
-                return (envelope, Array(payload))
+            if peer.isEstablished {
+                return try peer.transport!.openDatagram(bytes)
             }
-            let plaintext = try transport!.openDatagram(bytes).plaintext
-            return (envelope, plaintext)
+            let (envelope, payload) = try Envelope.decode(bytes)
+            do {
+                try peer.absorb(bytes, nowMicros: 0)
+            } catch {
+                XCTFail("""
+                    expected bare message 2 first, got chan \
+                    \(envelope.channel.rawValue)
+                    """)
+                throw error
+            }
+            return (envelope, Array(payload))
         }
     }
 

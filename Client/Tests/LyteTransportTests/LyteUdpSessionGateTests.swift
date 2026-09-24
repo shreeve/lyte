@@ -60,11 +60,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
     /// reliable word), the idle-frame one-shot whose ack flips to
     /// IDLE, conn-id-tagged sealed CTRL, and corpus video on chan 2.
     private final class HostStandIn: NoiseHandshakeIO {
-        let staticKeys = NoiseKeyPair.generate()
-        let connectionId: ConnectionId
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var arq: ArqEndpoint<HostClock>
+        var peer: SealedCtrlPeer<HostClock>
         var machine: SessionStateMachine<HostClock>?
         var negotiator: CapabilityNegotiator
         var capabilitiesDeclared = false
@@ -107,15 +103,15 @@ final class LyteUdpSessionGateTests: XCTestCase {
             retryChallenges: Int = 0
         ) {
             var rng = SplitMix64(seed: 0xC1_08)
-            connectionId = ConnectionId.random(using: &rng)
-            var config = ArqConfig()
-            config.maxDatagramPayloadByteCount =
-                WireBudget.maxConnectionIdTaggedPlaintextByteCount
-            arq = ArqEndpoint(channel: .ctrl, config: config)
+            peer = SealedCtrlPeer(
+                connectionId: ConnectionId.random(using: &rng))
             negotiator = CapabilityNegotiator(
                 role: .host, local: localCapabilities)
             retryChallengesToIssue = retryChallenges
         }
+
+        var staticKeys: NoiseKeyPair { peer.staticKeys }
+        var transport: NoiseTransport? { peer.transport }
 
         // NoiseHandshakeIO — the pre-thread handshake window, answered
         // in-process, with the W8 challenge leg in front when scripted.
@@ -169,27 +165,13 @@ final class LyteUdpSessionGateTests: XCTestCase {
         }
 
         private func establish(message1: [UInt8]) throws {
-            var responder = try NoiseSession(
-                role: .responder, staticKeys: staticKeys)
-            _ = try responder.readMessage1(message1[...])
-            let message2 = try responder.writeMessage2()
-            transport = try responder.makeTransport()
+            let message2 = try peer.answer(message1: message1[...])
             // The machine begins at establishment, ACTIVE (W4b).
             machine = SessionStateMachine(
                 role: .mediaSender,
                 now: HostTimestamp(microseconds: 0)
             )
-            let carriage = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: 0,
-                fec: 0,
-                extensions: [connectionId.wireExtension]
-            )
-            ctrlSeq &+= 1
-            handshakeOutbox.append(try carriage.encode(
-                payload: [CtrlMessageType.noiseHandshake2] + message2))
+            handshakeOutbox.append(message2)
         }
 
         private func bareCtrl(payload: [UInt8]) throws -> [UInt8] {
@@ -207,20 +189,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
         // bytes as AAD, sealed under the transport.
 
         func sealedCtrl(body: [UInt8], hostMicros: UInt64) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: hostMicros,
-                fec: 0,
-                extensions: [connectionId.wireExtension]
-            )
-            ctrlSeq &+= 1
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            let datagram = try envelope.encode(payload: payload)
+            let datagram = try peer.datagram(body: body, timestamp: hostMicros)
             XCTAssertLessThanOrEqual(
                 datagram.count, WireBudget.maxDatagramByteCount)
             return datagram
@@ -241,13 +210,8 @@ final class LyteUdpSessionGateTests: XCTestCase {
                 regime: .clean
             )
             return try shards.map { shard in
-                let header = try shard.envelope.encode(payload: [])
-                let sealed = try transport!.seal(
-                    plaintext: shard.payload[...],
-                    aad: header[...],
-                    envelope: shard.envelope
-                )
-                let datagram = try shard.envelope.encode(payload: sealed)
+                let datagram = try peer.transport!.sealDatagram(
+                    shard.envelope, plaintext: shard.payload)
                 XCTAssertLessThanOrEqual(
                     datagram.count, WireBudget.maxDatagramByteCount)
                 return datagram
@@ -258,14 +222,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
         /// the 350 ms detector's food; CTRL splits at the one-byte
         /// peek (HS-11's evidence discipline).
         func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
+            guard let (envelope, plaintext) = try peer.open(bytes) else {
                 replayDrops += 1
                 return
             }
@@ -280,7 +237,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
             switch plaintext.first {
             case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
                 runMachine(.ctrlEvidence, nowMicros: nowMicros)
-                for event in arq.ingest(
+                for event in peer.arq.ingest(
                     payload: plaintext,
                     now: HostTimestamp(microseconds: nowMicros)
                 ) {
@@ -347,7 +304,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
                 // HS-11's rule: the declaration is the FIRST
                 // sendReliable post-establishment.
                 capabilitiesDeclared = true
-                try arq.send(
+                try peer.arq.send(
                     message: try XCTUnwrap(negotiator.start()).encode(),
                     now: HostTimestamp(microseconds: nowMicros)
                 )
@@ -364,7 +321,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
                 out.append(try sealedCtrl(
                     body: beacon.encode(), hostMicros: nowMicros))
             }
-            let (payloads, _) = arq.poll(
+            let (payloads, _) = peer.arq.poll(
                 now: HostTimestamp(microseconds: nowMicros))
             for payload in payloads {
                 out.append(try sealedCtrl(
@@ -387,17 +344,17 @@ final class LyteUdpSessionGateTests: XCTestCase {
                 switch action {
                 case .sendModeMessage(let mode):
                     sentModeMessages.append(mode)
-                    try? arq.send(
+                    try? peer.arq.send(
                         message: ModeTransition(mode: mode).encode(),
                         now: instant)
                 case .sendTeardownMessage(let reason):
-                    try? arq.send(
+                    try? peer.arq.send(
                         message: SessionTeardown(reason: reason).encode(),
                         now: instant)
                 case .sendFinalFrameReliably:
                     XCTAssertFalse(pendingIdleFrame.isEmpty,
                                    "converged with no scripted idle frame")
-                    try? arq.sendOneShot(
+                    try? peer.arq.sendOneShot(
                         message: pendingIdleFrame,
                         group: ArqGroupId(rawValue: nextOneShot),
                         now: instant)
@@ -428,8 +385,8 @@ final class LyteUdpSessionGateTests: XCTestCase {
         let crypto: NoiseTransportCrypto
         let demux: ReceiveDemux
         var core: LyteUdpSessionCore!
-        let outbound = LockedDatagramPile()
-        let clock = LockedMicros()
+        let outbound = LockedBytePile()
+        let clock = ManualMicrosClock()
 
         var events: [LyteUdpSessionEvent] = []
         var samples: [(CMSampleBuffer, DecodeUnit)] = []
@@ -518,23 +475,6 @@ final class LyteUdpSessionGateTests: XCTestCase {
                 if case .closed(let reason) = event { return reason }
             }
             return nil
-        }
-    }
-
-    final class LockedDatagramPile: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [[UInt8]] = []
-        func append(_ d: [UInt8]) { lock.lock(); stored.append(d); lock.unlock() }
-        var all: [[UInt8]] { lock.lock(); defer { lock.unlock() }; return stored }
-        var count: Int { lock.lock(); defer { lock.unlock() }; return stored.count }
-    }
-
-    final class LockedMicros: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: UInt64 = 1_000
-        var value: UInt64 {
-            get { lock.lock(); defer { lock.unlock() }; return stored }
-            set { lock.lock(); stored = newValue; lock.unlock() }
         }
     }
 
@@ -963,7 +903,7 @@ final class LyteUdpSessionGateTests: XCTestCase {
 
     func testIdleFrameBeforeAnyIdrIsWithheldNotRendered() throws {
         let corpus = try loadCorpus(2)
-        let collected = LockedDatagramPile()   // count via appends
+        let collected = LockedBytePile()   // count via appends
         let pipeline = LyteVideoPipeline(
             nowNanoseconds: { 0 },
             sink: HeadlessVideoSink(receive: {

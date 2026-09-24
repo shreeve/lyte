@@ -4,6 +4,7 @@ import HostCore
 import HostIO
 import HostSession
 import HostWire
+import HostWireTestKit
 import LyteCore
 import LyteWire
 import LyteWireTestKit
@@ -641,219 +642,55 @@ final class BulkReceiveGateTests: XCTestCase {
     // MARK: The negotiated loopback client (the ClipboardGateTests
     // shape, grown a bulk channel)
 
-    private struct BulkClient {
-        var noise: NoiseSession
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
-        var bulkSeq: UInt16 = 0
-        var arq = ArqEndpoint<ClientClock>(channel: .ctrl)
-        var bulkArq = ArqEndpoint<ClientClock>(channel: .bulkTransfer)
-        let staticKeys: NoiseKeyPair
-
-        var received: [[UInt8]] = []
+    private struct BulkClient: PeerBackedClient {
+        var peer: SealedCtrlPeer<ClientClock>
         var receivedBulk: [BulkMessage] = []
 
-        init(hostStaticPublicKey: [UInt8]) throws {
-            staticKeys = NoiseKeyPair.generate()
-            noise = try NoiseSession(
-                role: .initiator,
-                staticKeys: staticKeys,
-                remoteStaticPublicKey: hostStaticPublicKey
-            )
-        }
-
-        mutating func message1Datagram(
-            clientMicros: UInt64
-        ) throws -> [UInt8] {
-            let message1 = try noise.writeMessage1()
-            return try datagram(
-                channel: .ctrl,
-                body: [CtrlMessageType.noiseHandshake1] + message1,
-                sealed: false, clientMicros: clientMicros
-            )
-        }
-
-        mutating func datagram(
-            channel: ChannelId, body: [UInt8], sealed: Bool,
-            clientMicros: UInt64
-        ) throws -> [UInt8] {
-            let seq: ChannelSeq
-            switch channel {
-            case .bulkTransfer:
-                seq = ChannelSeq(rawValue: bulkSeq)
-                bulkSeq &+= 1
-            default:
-                seq = ChannelSeq(rawValue: ctrlSeq)
-                ctrlSeq &+= 1
-            }
-            let envelope = Envelope(
-                channel: channel, seq: seq,
-                frame: FrameNumber(rawValue: 0),
-                timestamp: clientMicros, fec: 0
-            )
-            guard sealed else { return try envelope.encode(payload: body) }
-            return try transport!.sealDatagram(envelope, plaintext: body)
-        }
+        var progressMark: Int { peer.received.count + receivedBulk.count }
 
         mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            if transport == nil {
-                XCTAssertEqual(envelope.channel, .ctrl)
-                XCTAssertEqual(
-                    payload.first, CtrlMessageType.noiseHandshake2
-                )
-                _ = try noise.readMessage2(payload.dropFirst())
-                transport = try noise.makeTransport()
-                return
-            }
-            guard envelope.channel == .ctrl
-                || envelope.channel == .bulkTransfer
-            else { return }
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.openDatagram(bytes).plaintext
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
-                return // network duplicate; routine
-            }
-            if envelope.channel == .bulkTransfer {
-                for event in bulkArq.ingest(
-                    payload: plaintext,
-                    now: ClientTimestamp(microseconds: nowMicros)
-                ) {
-                    if case .message(_, let bytes) = event {
-                        receivedBulk.append(try BulkMessage.decode(bytes))
-                    }
-                }
-                return
-            }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: ClientTimestamp(microseconds: nowMicros)
-                ) {
-                    if case .message(_, let bytes) = event {
-                        received.append(bytes)
-                    }
-                }
-            default:
-                break // beacons etc. — not this gate's business
+            guard case .reliable(let envelope, _, let events) =
+                    try peer.absorb(bytes, nowMicros: nowMicros),
+                  envelope.channel == .bulkTransfer
+            else { return } // CTRL lands in `received`; beacons etc. aside
+            for case .message(_, let bytes) in events {
+                receivedBulk.append(try BulkMessage.decode(bytes))
             }
         }
 
         mutating func sendBulk(
             _ message: BulkMessage, nowMicros: UInt64
         ) throws {
-            try bulkArq.send(
-                message: message.encode(),
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
+            try peer.sendBulk(message.encode(), nowMicros: nowMicros)
         }
 
         mutating func takeBulk() -> [BulkMessage] {
             defer { receivedBulk.removeAll() }
             return receivedBulk
         }
-
-        mutating func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
-            var out: [[UInt8]] = []
-            let now = ClientTimestamp(microseconds: nowMicros)
-            let (ctrlPayloads, _) = arq.poll(now: now)
-            for payload in ctrlPayloads {
-                out.append(try datagram(
-                    channel: .ctrl, body: payload, sealed: true,
-                    clientMicros: nowMicros
-                ))
-            }
-            let (bulkPayloads, _) = bulkArq.poll(now: now)
-            for payload in bulkPayloads {
-                out.append(try datagram(
-                    channel: .bulkTransfer, body: payload, sealed: true,
-                    clientMicros: nowMicros
-                ))
-            }
-            return out
-        }
-    }
-
-    private final class DatagramBox {
-        var datagrams: [VideoChannelDatagram] = []
     }
 
     private func establish(
         hostCapabilities: Capabilities,
         clientCapabilities: Capabilities
-    ) throws -> (session: Session, client: BulkClient, box: DatagramBox) {
-        let hostStatic = NoiseKeyPair.generate()
-        let box = DatagramBox()
-        let session = Session(
+    ) throws -> (host: HostSessionHarness, client: BulkClient) {
+        let host = HostSessionHarness(
             config: SessionConfig(
-                crypto: .noise(hostStatic: hostStatic),
+                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
                 rateBitsPerSecond: Self.rateBPS,
                 beaconIntervalNS: 1 << 62,
                 capabilities: hostCapabilities
             ),
-            clientTuple: Self.tupleA,
-            now: 0,
-            rng: SplitMix64(seed: 0xB0B),
-            send: { box.datagrams.append($0) }
+            tuple: Self.tupleA,
+            rng: SplitMix64(seed: 0xB0B)
         )
-        var client = try BulkClient(
-            hostStaticPublicKey: hostStatic.publicKey)
-        _ = session.receive(
-            try client.message1Datagram(clientMicros: 500),
-            from: Self.tupleA, now: 0, hostMicroseconds: 0
-        )
-        XCTAssertEqual(session.phase, .established)
-        session.pump(now: 0)
-        var negotiator = CapabilityNegotiator(
-            role: .client, local: clientCapabilities
-        )
-        try client.arq.send(
-            message: try XCTUnwrap(negotiator.start()).encode(),
-            now: ClientTimestamp(microseconds: 1_000)
-        )
-        return (session, client, box)
-    }
-
-    /// Exchange passes 2 ms apart until both ends quiesce.
-    private func settle(
-        _ session: Session, _ client: inout BulkClient,
-        _ box: DatagramBox, forwarded: inout Int, t: inout UInt64,
-        onEvent: (SessionEvent) -> Void = { _ in }
-    ) throws {
-        var idle = 0
-        while idle < 3 {
-            t += 2_000
-            let before = (
-                forwarded, client.received.count,
-                client.receivedBulk.count
-            )
-            var events = session.advance(now: t * 1_000, hostMicroseconds: t)
-            session.pump(now: t * 1_000)
-            while forwarded < box.datagrams.count {
-                try client.absorb(box.datagrams[forwarded].bytes, nowMicros: t)
-                forwarded += 1
-            }
-            for datagram in try client.pollOut(nowMicros: t) {
-                events += session.receive(
-                    datagram, from: Self.tupleA,
-                    now: t * 1_000, hostMicroseconds: t
-                )
-                session.pump(now: t * 1_000)
-                while forwarded < box.datagrams.count {
-                    try client.absorb(
-                        box.datagrams[forwarded].bytes, nowMicros: t
-                    )
-                    forwarded += 1
-                }
-            }
-            for event in events { onEvent(event) }
-            idle = (
-                forwarded, client.received.count,
-                client.receivedBulk.count
-            ) == before ? idle + 1 : 0
-        }
+        var client = BulkClient(peer: try host.connectClient(
+            declaring: clientCapabilities,
+            openChannels: [.ctrl, .bulkTransfer]
+        ))
+        client.peer.bulkArq = ArqEndpoint(channel: .bulkTransfer)
+        XCTAssertEqual(host.session.phase, .established)
+        return (host, client)
     }
 
     // MARK: Leg 9 — the rule-3 gate: toggle off, chan 8 refused loud
@@ -861,16 +698,16 @@ final class BulkReceiveGateTests: XCTestCase {
     func testGateToggleOffDropsChanEightLoudAndRefusesSendBulk() throws {
         // The toggle-off host: key 11 never declared (exactly what
         // lyte-host does without --accept-files).
-        let (session, clientValue, box) = try establish(
+        let (host, clientValue) = try establish(
             hostCapabilities: .wireDefault,
             clientCapabilities: .wireDefault.declaringBulkTransfer()
         )
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
 
         var agreed: Capabilities?
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .capabilitiesAgreed(let set) = $0 { agreed = set }
         }
         XCTAssertEqual(agreed?.bulkTransfer, false,
@@ -888,7 +725,7 @@ final class BulkReceiveGateTests: XCTestCase {
         )
         var refusals = 0
         var surfaced = 0
-        try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+        try host.settle(&client, t: &t) {
             if case .dropped(.bulkNotNegotiated) = $0 { refusals += 1 }
             if case .bulkMessageReceived = $0 { surfaced += 1 }
         }
@@ -914,14 +751,14 @@ final class BulkReceiveGateTests: XCTestCase {
 
     func testGateFullFileDropThroughRealSessionPair() throws {
         let dir = try makeTempDir()
-        let (session, clientValue, box) = try establish(
+        let (host, clientValue) = try establish(
             hostCapabilities: .wireDefault.declaringBulkTransfer(),
             clientCapabilities: .wireDefault.declaringBulkTransfer()
         )
         var client = clientValue
-        var forwarded = 0
+        let session = host.session
         var t: UInt64 = 1_000
-        try settle(session, &client, box, forwarded: &forwarded, t: &t)
+        try host.settle(&client, t: &t)
         XCTAssertTrue(session.agreedBulkTransfer)
 
         let shell = try BulkReceiveShell(directoryPath: dir)
@@ -942,7 +779,7 @@ final class BulkReceiveGateTests: XCTestCase {
         while !sender.completed && rounds < 20 {
             rounds += 1
             var surfaced: [BulkMessage] = []
-            try settle(session, &client, box, forwarded: &forwarded, t: &t) {
+            try host.settle(&client, t: &t) {
                 if case .bulkMessageReceived(let message) = $0 {
                     surfaced.append(message)
                 }
