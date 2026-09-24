@@ -238,6 +238,10 @@ Security surface:
   daemon exits a few seconds after it goes idle.
 - `SIGTERM` (launchd stop, `SMAppService` re-registration, shutdown)
   restores `awdl0` before the daemon exits.
+- A daemon killed while holding (crash, `SIGKILL`) cannot restore. It
+  leaves `/var/run/dev.shreeve.lyte.helper.awdl-held`, and its successor
+  raises `awdl0` before accepting clients. The app's stream end always
+  reaches the helper, so launchd starts that successor.
 - A route watcher reasserts the hold only on `awdl0`'s own up edge.
 
 ### Registration

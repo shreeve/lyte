@@ -20,6 +20,11 @@ final class HelperClient {
     private let service = SMAppService.daemon(plistName: LyteHelper.plistName)
     private var connection: NSXPCConnection?
     private(set) var engaged = false
+    /// A hold was asked for during the current stream. Its end always
+    /// reaches the helper, over a fresh connection if the old one died:
+    /// launchd then respawns a helper that was killed mid-hold, and its
+    /// startup reconcile restores the radio.
+    private var heldThisStream = false
     private var promptedThisRun = false
 
     /// The requirement the helper must satisfy, derived from this app's own
@@ -112,6 +117,7 @@ final class HelperClient {
         case .enabled:
             proxy()?.streamBegan()
             engaged = true
+            heldThisStream = true
             return nil
         case .requiresApproval:
             guard registration == .ensure else { return nil }
@@ -126,9 +132,10 @@ final class HelperClient {
     }
 
     func streamEnded() {
-        guard engaged else { return }
+        guard heldThisStream else { return }
         proxy()?.streamEnded()
         engaged = false
+        heldThisStream = false
     }
 
     private func proxy() -> LyteHelperCommands? {

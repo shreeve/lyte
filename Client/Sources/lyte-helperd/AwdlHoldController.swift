@@ -24,6 +24,9 @@ final class AwdlHoldController: @unchecked Sendable {
             NSLog("lyte-helperd: idle — exiting (launchd will relaunch on demand)")
             exit(0)
         }
+        /// Exists exactly while this daemon holds awdl0 down, so a
+        /// successor can tell that a killed predecessor left it down.
+        var heldMarker: URL?
     }
 
     /// One XPC connection's identity. Tokens are never reused, so a
@@ -50,12 +53,30 @@ final class AwdlHoldController: @unchecked Sendable {
     }
 
     /// The daemon's controller, switching the real awdl0.
+    /// The marker lives in /var/run: root-only, and cleared at boot, when
+    /// awdl0 comes up on its own.
     static let shared = AwdlHoldController(configuration: .init(
         setAwdlUp: { up in
             if !InterfaceControl.setUp(InterfaceControl.awdl, up: up) {
                 NSLog("lyte-helperd: awdl0 \(up ? "up" : "down") refused")
             }
-        }))
+        },
+        heldMarker: URL(
+            fileURLWithPath: "/var/run/dev.shreeve.lyte.helper.awdl-held")))
+
+    /// Startup, before any client is accepted: a predecessor that crashed
+    /// or was killed while holding left awdl0 down with nobody to restore
+    /// it. Raise it now.
+    func reconcileAfterUncleanExit() {
+        queue.sync {
+            guard let marker = configuration.heldMarker,
+                  FileManager.default.fileExists(atPath: marker.path)
+            else { return }
+            NSLog("lyte-helperd: previous daemon exited holding awdl0 — restoring")
+            configuration.setAwdlUp(true)
+            try? FileManager.default.removeItem(at: marker)
+        }
+    }
 
     func makeOwner() -> Owner {
         Owner(token: nextToken.add(1, ordering: .relaxed).newValue)
@@ -121,6 +142,9 @@ final class AwdlHoldController: @unchecked Sendable {
     private func startHolding() {
         holding = true
         NSLog("lyte-helperd: holding awdl0 down")
+        if let marker = configuration.heldMarker {
+            FileManager.default.createFile(atPath: marker.path, contents: nil)
+        }
         configuration.setAwdlUp(false)
         if configuration.watchRoutes { startRouteWatcher() }
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -139,6 +163,9 @@ final class AwdlHoldController: @unchecked Sendable {
         routeWatcher?.cancel()
         routeWatcher = nil
         configuration.setAwdlUp(true)
+        if let marker = configuration.heldMarker {
+            try? FileManager.default.removeItem(at: marker)
+        }
         NSLog("lyte-helperd: awdl0 restored")
     }
 

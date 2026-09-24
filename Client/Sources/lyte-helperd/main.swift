@@ -66,6 +66,7 @@ termination.setEventHandler {
 termination.resume()
 
 NSLog("lyte-helperd: starting (v\(LyteHelper.version))")
+AwdlHoldController.shared.reconcileAfterUncleanExit()
 let delegate = ListenerDelegate()
 listener.delegate = delegate
 listener.resume()
