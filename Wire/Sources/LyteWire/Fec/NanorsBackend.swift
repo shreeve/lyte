@@ -1,7 +1,7 @@
 // The one file in LyteWire that imports the C leaf. FecEncoder/FecDecoder
 // speak only to this surface — two pure functions over byte arrays — so
-// the WASM build can swap in a different RS backend without touching
-// protocol logic, the same confinement rule Crypto/ will follow at W5.
+// a build can swap in a different RS backend without touching protocol
+// logic.
 //
 // nanors is the client's battle-tested RS-FEC math (M3: 1,087 packets
 // recovered over a 5% drop soak), vendored here as CNanorsWire. The call
@@ -25,9 +25,8 @@ enum NanorsBackend {
         let total = dataShards + parityShards
         let backing = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: total * bs)
         defer { backing.deallocate() }
-        backing.initialize(repeating: 0)
         let copiedContiguously = group.withContiguousStorageIfAvailable { src in
-            backing.baseAddress!.update(from: src.baseAddress!, count: src.count)
+            backing.baseAddress!.initialize(from: src.baseAddress!, count: src.count)
             return true
         } ?? false
         if !copiedContiguously {
@@ -37,6 +36,10 @@ enum NanorsBackend {
                 destination += 1
             }
         }
+        // Only the trailing data row's pad needs zeros: the RS encode
+        // overwrites every parity row outright.
+        (backing.baseAddress! + group.count)
+            .initialize(repeating: 0, count: dataShards * bs - group.count)
 
         try runBlock(
             backing: backing, dataShards: dataShards,
