@@ -78,6 +78,11 @@ final class ConnectionModel {
     /// Fences late events from detached sessions: each session built
     /// mints an epoch, and only the current epoch's events apply.
     private var sessionEpoch = 0
+    /// The first session-ending event (a capability failure or a close)
+    /// of the current epoch's dial, held while no window owns the session
+    /// yet. Adoption replays it, so a session that died during its own
+    /// start never becomes a live-looking stream.
+    private var pendingTerminal: LyteUdpSessionEvent?
     /// The session machine's FROZEN pill.
     private(set) var lyteFrozen = false
     /// What the current session's capability agreement made available.
@@ -328,6 +333,8 @@ final class ConnectionModel {
                     "round": String(round),
                     "error": String(describing: error),
                 ])
+                // A dial that failed after binding still holds its socket.
+                services.endSession(candidate, .silent)
                 guard isCurrent(generation) else { return }
                 guard case TransportCryptoError.handshakeFailed(let why)
                         = error, why.hasPrefix("no response"),
@@ -368,6 +375,7 @@ final class ConnectionModel {
         }
         phase = .streaming
         services.streamBegan()
+        replayPendingTerminal()
     }
 
     // MARK: - Session lifecycle
@@ -404,6 +412,7 @@ final class ConnectionModel {
         // never carries over.
         sessionEpoch += 1
         negotiated = .none
+        pendingTerminal = nil
         let epoch = sessionEpoch
         let session = LyteUdpSession(
             crypto: crypto,
@@ -440,6 +449,22 @@ final class ConnectionModel {
         // sharing is on (updatePasteboardWatcher).
         pasteboardSync = makePasteboardSync(for: lyte)
         if negotiated.agreed { startAgreedFeatures(on: lyte) }
+    }
+
+    /// Delivers the end a session met before its window adopted it, once
+    /// the window's machinery (roaming, the chroma fallback) stands to act
+    /// on it. The last step of every adoption.
+    func replayPendingTerminal() {
+        guard let event = pendingTerminal else { return }
+        pendingTerminal = nil
+        if case .closed(let reason) = event,
+           case .localTeardown = reason {
+            // The core closed itself before anyone owned it: nobody else
+            // is driving this end.
+            beginRoamingAfterLoss(reason)
+        } else {
+            handleLyteEvent(event)
+        }
     }
 
     /// The attached session's agreed features: the clipboard watcher and
@@ -549,6 +574,12 @@ final class ConnectionModel {
     }
 
     func handleLyteEvent(_ event: LyteUdpSessionEvent) {
+        if lyteSession == nil, Self.endsSession(event) {
+            // The dial in flight has no window yet; its end waits for
+            // adoption.
+            if pendingTerminal == nil { pendingTerminal = event }
+            return
+        }
         switch event {
         case .capabilitiesAgreed(let agreed):
             negotiated = NegotiatedFeatures(agreed)
@@ -590,6 +621,13 @@ final class ConnectionModel {
             case .roam:
                 beginRoamingAfterLoss(reason)
             }
+        }
+    }
+
+    private static func endsSession(_ event: LyteUdpSessionEvent) -> Bool {
+        switch event {
+        case .capabilitiesFailed, .closed: true
+        default: false
         }
     }
 

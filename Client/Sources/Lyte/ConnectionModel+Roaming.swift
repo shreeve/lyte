@@ -162,6 +162,7 @@ extension ConnectionModel {
             do {
                 try await start(lyte)
             } catch {
+                endSession(lyte, .silent)
                 guard let self, self.isCurrent(generation) else { return }
                 self.roamingInput { policy, now in policy.dialFailed(now: now) }
                 return
@@ -195,5 +196,6 @@ extension ConnectionModel {
         roamingInput { policy, now in
             policy.sessionEstablished(address: address, port: port, now: now)
         }
+        replayPendingTerminal()
     }
 }
