@@ -10,8 +10,8 @@ import LyteHelperSecurity
 /// Security surface: one Mach service exporting three argument-free calls
 /// (`streamBegan`, `streamEnded`, `version`). A peer must satisfy the code
 /// requirement derived from this binary's own designated requirement with
-/// the app's identifier; XPC rejects anyone else before the delegate runs.
-/// The only privileged effect is awdl0's IFF_UP flag.
+/// the app's identifier; XPC rejects every other signer before the delegate
+/// runs. The only privileged effect is awdl0's IFF_UP flag.
 
 /// One per XPC connection; its holds are released exactly once.
 final class ConnectionHandler: NSObject, LyteHelperCommands, @unchecked Sendable {
@@ -55,8 +55,8 @@ do {
     exit(EX_CONFIG)
 }
 
-// launchd stop, SMAppService.unregister (every app launch refreshes the
-// registration) and shutdown all arrive as SIGTERM: restore awdl0 first.
+// launchd stop, SMAppService re-registration and shutdown all arrive as
+// SIGTERM: restore awdl0 first.
 signal(SIGTERM, SIG_IGN)
 let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 termination.setEventHandler {

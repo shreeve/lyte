@@ -44,10 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !DiagnosticRunIdentity.isRequested else { return }
-        // Refresh (not just ensure) the AWDL helper registration: a
-        // rebuilt binary's stale LWCR otherwise EX_CONFIGs every spawn.
         Task.detached(priority: .utility) {
-            HelperClient.refreshRegistration()
+            HelperClient.registerIfNeeded()
         }
     }
 }

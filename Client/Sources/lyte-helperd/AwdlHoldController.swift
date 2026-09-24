@@ -84,8 +84,9 @@ final class AwdlHoldController: @unchecked Sendable {
     func ownerVanished(_ owner: Owner) {
         queue.async { [self] in
             retired.insert(owner)
-            guard let count = holds.removeValue(forKey: owner) else { return }
-            NSLog("lyte-helperd: client vanished with \(count) hold(s) — releasing")
+            if let count = holds.removeValue(forKey: owner) {
+                NSLog("lyte-helperd: client vanished with \(count) hold(s) — releasing")
+            }
             releaseIfIdle()
         }
     }
@@ -108,9 +109,12 @@ final class AwdlHoldController: @unchecked Sendable {
 
     // MARK: - Queue-confined
 
+    /// With no holds left the radio is restored and the daemon lingers
+    /// toward its idle exit — including after a connection that never held
+    /// anything (the app's launch-time version probe).
     private func releaseIfIdle() {
-        guard holds.isEmpty, holding else { return }
-        stopHolding()
+        guard holds.isEmpty else { return }
+        if holding { stopHolding() }
         scheduleIdleExit()
     }
 

@@ -124,6 +124,20 @@ final class AwdlHoldControllerTests: XCTestCase {
         XCTAssertEqual(recorder.idles, 1)
     }
 
+    /// The app's launch-time version probe connects, asks, and leaves
+    /// without a hold: the daemon it spawned must still go idle.
+    func testConnectionThatNeverHeldStillLeadsToIdleExit() {
+        let recorder = Recorder()
+        let controller = makeController(recorder, idleExitDelay: .milliseconds(20))
+        controller.ownerVanished(controller.makeOwner())
+        let deadline = Date().addingTimeInterval(2)
+        while recorder.idles == 0, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(recorder.idles, 1)
+        XCTAssertEqual(recorder.states, [], "no hold, no radio change")
+    }
+
     // MARK: - Interface control
 
     func testFlagRequestsMatchTheSDKEncoding() {

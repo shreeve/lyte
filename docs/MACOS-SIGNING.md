@@ -240,6 +240,25 @@ Security surface:
   restores `awdl0` before the daemon exits.
 - A route watcher reasserts the hold only on `awdl0`'s own up edge.
 
+### Registration
+
+Registering the daemon tells launchd to run whatever `lyte-helperd` is in
+the bundle as root, and the bundle is user-owned. So the app registers
+only when it has to. At launch it leaves an enabled registration alone
+when the registered helper answers `version` with the current value. It
+leaves a registration awaiting Login Items approval alone too. It
+registers when there is no registration, or when the enabled helper is
+silent or stale: a rebuild re-signs the helper, and launchd then refuses
+the old launch requirement with `EX_CONFIG`.
+
+Before any `register()`, the app validates the embedded helper on disk
+(`SecStaticCodeCheckValidity`, every architecture, strict). The helper must
+satisfy the app's own designated requirement with the helper's identifier.
+A helper signed by anyone else is refused, and an existing registration is
+left alone. Every XPC connection from the app, the version probe included,
+installs the same requirement, so the app never talks to a foreign helper.
+An unsigned app has no derivable requirement and never registers.
+
 ### Client authentication
 
 `lyte-helperd` does not trust Mach-service reachability. Before its listener
@@ -254,8 +273,13 @@ Deriving from the helper rather than hard-coding a certificate preserves the
 exact signer selected by `sign-dev.sh`: the Apple Development anchor and leaf
 identity in the preferred path, or the Lyte Dev certificate root in the
 explicit fallback. Startup fails closed if the running code is invalid, its
-requirement has an unexpected shape, or the rewritten requirement cannot be
-compiled.
+requirement has an unexpected shape (anything but one identifier clause, a
+pinned signer, and no `or` alternative), or the rewritten requirement cannot
+be compiled.
+
+These checks exclude other signers, not other processes of the same user.
+Both development identities sign without a prompt, so same-user code can
+sign a binary that satisfies either requirement.
 
 The packaging gate asks the signed helper for the derived requirement, proves
 it is byte-for-byte the signed app's designated requirement, proves the app

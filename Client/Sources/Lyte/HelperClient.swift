@@ -1,6 +1,8 @@
 import Foundation
 import ServiceManagement
 import LyteHelperProtocol
+import LyteHelperSecurity
+import Synchronization
 
 /// App-side face of the privileged helper: registration via SMAppService
 /// (one-time user approval in System Settings → Login Items) and the XPC
@@ -19,6 +21,12 @@ final class HelperClient {
     private var connection: NSXPCConnection?
     private(set) var engaged = false
     private var promptedThisRun = false
+
+    /// The requirement the helper must satisfy, derived from this app's own
+    /// designated requirement; nil for an unsigned or unexpectedly signed
+    /// build, which then never registers or talks to a root helper.
+    nonisolated static let helperRequirement: String? =
+        try? HelperClientRequirement.helperRequirementForCurrentProcess()
 
     /// awdl0's own UP flag, read via getifaddrs (no privileges needed).
     /// The XPC call is fire-and-forget, so a daemon that failed to spawn
@@ -39,24 +47,58 @@ final class HelperClient {
         return false
     }
 
-    /// App-launch refresh: every rebuild re-signs the helper and stales
-    /// the code requirement BTM stored at registration (launchd then
-    /// refuses the spawn with EX_CONFIG). Unregister + re-register
-    /// refreshes it; the user's approval normally survives the cycle.
-    nonisolated static func refreshRegistration() {
+    /// App-launch registration; `HelperRegistration` owns the rules.
+    nonisolated static func registerIfNeeded() {
         // SMAppService does synchronous BTM/XPC work; keep it off the
         // MainActor with a local service handle.
-        let refreshService = SMAppService.daemon(
-            plistName: LyteHelper.plistName)
-        try? refreshService.unregister()
-        do {
-            try refreshService.register()
-            NSLog(
-                "lyte helper: re-registered, status "
-                    + "\(refreshService.status.rawValue)")
-        } catch {
-            NSLog("lyte helper: refresh register FAILED — \(error.localizedDescription)")
-        }
+        let service = SMAppService.daemon(plistName: LyteHelper.plistName)
+        let requirement = helperRequirement
+        let embeddedHelper = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/MacOS/lyte-helperd")
+        let outcome = HelperRegistration(
+            expectedVersion: LyteHelper.version,
+            status: {
+                switch service.status {
+                case .enabled: .enabled
+                case .requiresApproval: .requiresApproval
+                case .notFound: .notFound
+                default: .notRegistered
+                }
+            },
+            probeVersion: { requirement.flatMap(probeVersion) },
+            validateEmbeddedHelper: {
+                guard let requirement else {
+                    throw HelperClientRequirementError
+                        .unexpectedDesignatedRequirement
+                }
+                try HelperClientRequirement.validateStaticCode(
+                    at: embeddedHelper, satisfies: requirement)
+            },
+            unregister: { try service.unregister() },
+            register: { try service.register() }
+        ).run()
+        NSLog("lyte helper: registration \(outcome), status "
+            + "\(service.status.rawValue)")
+    }
+
+    /// Asks the registered helper for its version over a connection that
+    /// accepts only a helper satisfying `requirement`. Blocking, bounded.
+    nonisolated private static func probeVersion(
+        requirement: String
+    ) -> String? {
+        let probe = NSXPCConnection(
+            machServiceName: LyteHelper.machServiceName, options: .privileged)
+        probe.remoteObjectInterface = NSXPCInterface(
+            with: LyteHelperCommands.self)
+        probe.setCodeSigningRequirement(requirement)
+        probe.resume()
+        defer { probe.invalidate() }
+        let answer = VersionAnswer()
+        let proxy = probe.remoteObjectProxyWithErrorHandler { _ in
+            answer.finish(nil)
+        } as? LyteHelperCommands
+        proxy?.version { answer.finish($0) }
+        return answer.wait(seconds: 5)
     }
 
     /// Called when a stream starts. Returns a user-facing hint when the
@@ -90,10 +132,12 @@ final class HelperClient {
     }
 
     private func proxy() -> LyteHelperCommands? {
+        guard let requirement = Self.helperRequirement else { return nil }
         if connection == nil {
             let c = NSXPCConnection(machServiceName: LyteHelper.machServiceName,
                                     options: .privileged)
             c.remoteObjectInterface = NSXPCInterface(with: LyteHelperCommands.self)
+            c.setCodeSigningRequirement(requirement)
             // Both handlers hop to the MainActor later; by then the
             // watchdog may have minted a newer connection, which a stale
             // handler must not clear.
@@ -114,5 +158,25 @@ final class HelperClient {
         guard let dead, connection === dead else { return }
         connection = nil
         engaged = false
+    }
+}
+
+/// One version probe's answer, taken at most once from any XPC queue.
+private final class VersionAnswer: Sendable {
+    private let value = Mutex<String??>(nil)
+    private let done = DispatchSemaphore(value: 0)
+
+    func finish(_ version: String?) {
+        let first = value.withLock { stored -> Bool in
+            guard stored == nil else { return false }
+            stored = .some(version)
+            return true
+        }
+        if first { done.signal() }
+    }
+
+    func wait(seconds: Int) -> String? {
+        _ = done.wait(timeout: .now() + .seconds(seconds))
+        return value.withLock { $0 ?? nil }
     }
 }
