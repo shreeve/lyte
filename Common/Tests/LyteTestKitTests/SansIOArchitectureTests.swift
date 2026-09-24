@@ -52,6 +52,13 @@ final class SansIOArchitectureTests: XCTestCase {
             path: "Host/Sources/HostSession",
             allowedImports: ["LyteCore", "LyteWire"]
         ),
+        // The host session core. Its file IO lives in the HostIO adapter
+        // and its sockets, threads and clocks in lyte-host, so neither
+        // may be imported here.
+        Boundary(
+            path: "Host/Sources/HostWire",
+            allowedImports: ["HostCore", "HostSession", "LyteCore", "LyteWire"]
+        ),
     ]
 
     private static let forbiddenTokenSequences: [[String]] = [
