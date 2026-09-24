@@ -136,12 +136,12 @@ public enum CapabilityKey {
     /// it, and the client falls back to the in-video cursor.
     /// Accessors in Cursor.swift.
     public static let cursorShape: UInt64 = 13
-    /// bool — this end speaks routing mode 0x03 (streamOff: the
+    /// bool — this end speaks routing mode 0x04 (streamOff: the
     /// postures-design mute-at-source — the host captures and sends
     /// NO audio; its speakers keep playing). Rides the spine through
     /// `unknownEntries` (one canonical `0E F5` entry), surviving
     /// intersection only on mutual declaration; a client never sends
-    /// 0x03 against a set without it. Accessors in AudioRouting.swift.
+    /// 0x04 against a set without it. Accessors in AudioRouting.swift.
     public static let audioStreamOff: UInt64 = 14
     /// bool — this end speaks the audio tripwire's track-state
     /// announcement (CTRL 0x25: the host may GATE audio transmission
