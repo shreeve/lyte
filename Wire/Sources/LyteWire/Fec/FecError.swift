@@ -22,6 +22,8 @@ public enum FecError: Error, Equatable, Sendable {
     case overProvisionedDataShards(dataShards: Int, groupByteCount: Int)
     /// Shard index at or beyond dataShards + parityShards.
     case shardIndexOutOfRange(Int)
+    /// A shard byte budget outside 1…1112 (the plaintext shard ceiling).
+    case shardBudgetOutOfRange(Int)
     /// The geometry table has no ladder ratio for this data shard count
     /// that fits the 255-shard block limit (see FecGeometryTable).
     case unprotectableDataShardCount(Int)

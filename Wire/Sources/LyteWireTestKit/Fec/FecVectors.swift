@@ -203,6 +203,7 @@ public func fecErrorName(_ error: FecError) -> String {
     case .groupByteCountOutOfRange: return "groupByteCountOutOfRange"
     case .overProvisionedDataShards: return "overProvisionedDataShards"
     case .shardIndexOutOfRange: return "shardIndexOutOfRange"
+    case .shardBudgetOutOfRange: return "shardBudgetOutOfRange"
     case .unprotectableDataShardCount: return "unprotectableDataShardCount"
     case .groupByteCountMismatch: return "groupByteCountMismatch"
     case .shardSlotCountMismatch: return "shardSlotCountMismatch"

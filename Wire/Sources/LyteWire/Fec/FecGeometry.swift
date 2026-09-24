@@ -168,14 +168,19 @@ public enum FecGeometryTable {
     }
 
     /// The ladder's geometry for a group of `byteCount` payload bytes at
-    /// minimal k (fill shards to the 1112 B budget, balanced split).
+    /// minimal k: shards filled to `shardBudgetByteCount` (the 1112 B
+    /// plaintext ceiling unless the carrier reserves envelope TLV
+    /// headroom), balanced split.
     public static func geometry(
-        forGroupByteCount byteCount: Int, regime: FecRegime
+        forGroupByteCount byteCount: Int, regime: FecRegime,
+        shardBudgetByteCount budget: Int = WireBudget.maxPlaintextShardByteCount
     ) throws -> FecGeometry {
         guard byteCount >= 1 else {
             throw FecError.groupByteCountOutOfRange(byteCount)
         }
-        let budget = WireBudget.maxPlaintextShardByteCount
+        guard (1...WireBudget.maxPlaintextShardByteCount).contains(budget) else {
+            throw FecError.shardBudgetOutOfRange(budget)
+        }
         let k = (byteCount + budget - 1) / budget
         let m = try parityShards(forDataShards: k, regime: regime)
         return try FecGeometry(
