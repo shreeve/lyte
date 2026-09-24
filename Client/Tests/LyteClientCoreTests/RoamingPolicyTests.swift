@@ -243,6 +243,18 @@ final class RoamingPolicyTests: XCTestCase {
             + "escalates over a frozen path, waives the same-address hold")
     }
 
+    // MARK: Dial answers only settle dials the policy issued
+
+    func testDialFailureWithNoDialInFlightIsInert() {
+        var policy = makePolicy()
+        _ = policy.sessionEstablished(
+            address: "10.0.0.60", port: 41_161, now: 0)
+        XCTAssertEqual(policy.dialFailed(now: 1_000_000), [],
+                       "a straggler's failure must not start a hunt")
+        XCTAssertEqual(policy.status, .attached)
+        XCTAssertNil(policy.nextDeadline)
+    }
+
     // MARK: Leg 6 — the manual Reconnect verb
 
     func testManualReconnectResetsLaddersAndActsNow() {
@@ -252,6 +264,8 @@ final class RoamingPolicyTests: XCTestCase {
         _ = policy.sessionClosed(now: 10_000_000)
         // Grow both ladders.
         _ = policy.dialFailed(now: 11_000_000)
+        XCTAssertTrue(policy.tick(now: 13_000_000).contains(
+            .dial(address: "10.0.0.60", port: 41_161, discovered: false)))
         _ = policy.dialFailed(now: 15_000_000)
         _ = policy.scanCompleted(sightings: [], now: 16_000_000)
         _ = policy.scanCompleted(sightings: [], now: 18_000_000)

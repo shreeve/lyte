@@ -1,9 +1,7 @@
-// LyteInputCapture (CL-9): NSEvent capture for the Lyte-UDP stream
-// window — the input half of the app's Lyte path. Speaks HS-13's wire:
-// evdev position codes (the host's XKB map owns layout), absolute
-// pointer pixels in the HOST's recorded-monitor space, smooth-scroll
-// pixel deltas. (The GameStream capture and its Windows-VK world died
-// with LyteKit at the H2 demolition.)
+// LyteInputCapture: NSEvent capture for the stream window. Speaks the
+// host's input wire: evdev position codes (the host's XKB map owns
+// layout), absolute pointer pixels in the host's recorded-monitor space,
+// smooth-scroll pixel deltas.
 //
 // Coordinate mapping: the display layer draws with resizeAspect, so the
 // video occupies the aspect-fit rect inside the view — absolute
@@ -13,26 +11,19 @@
 // are DROPPED rather than guessed: a wrongly-scaled click is worse
 // than a swallowed one.
 //
-// Kept local: ⌘-chorded keys (window management must not leak to the
-// host) and key auto-repeats (repeat policy is host-side-deferred per
-// the HS-13 row — a repeat without its release would wedge a key).
+// Key and button forwarding decisions (what stays local, what the host
+// holds, ⌘ as Super) live in the pure InputForwardingPolicy; this shell
+// measures the facts and executes the verdicts.
 //
-// CL-13, the control-strip seam (rule corrected by CL-16): local
-// monitors swallow every mouse event in the window, which would make
-// any overlaid SwiftUI control unclickable. So mouse events HIT-TEST
-// first — an event is CAPTURED (sent to the host) iff the hit view is
-// the video layer view or a descendant of it; ANY other hit means
-// SwiftUI content claimed the point and the event returns to AppKit
-// untouched, video-player style. Probe-established (the CL-16
-// investigation): NSHostingView.hitTest answers with the HOSTING view
-// — an ANCESTOR of the video view — whenever SwiftUI content like the
-// strip's buttons owns the point, so an ancestor hit must PASS
-// THROUGH (CL-13 shipped it captured, which left every strip button
-// dead and leaked strip clicks to the host cursor). Every mouse move
-// (captured or passed) also feeds `onActivity` — since CL-18 with the
-// pointer's edge geometry, because the strip's reveal is now a
-// dwell-near-the-edge verdict (StripRevealPolicy), not a
-// any-motion-reveals ping.
+// The control-strip seam: local monitors see every mouse event in the
+// window, which would make any overlaid SwiftUI control unclickable. So
+// mouse events HIT-TEST first — an event lands on the video iff the hit
+// view is the video layer view or a descendant of it. NSHostingView
+// answers hitTest with the HOSTING view (an ANCESTOR of the video view)
+// whenever SwiftUI content like the strip's buttons owns the point, so
+// an ancestor hit belongs to the overlay. Every mouse move (captured or
+// passed) also feeds `onActivity` with the pointer's edge geometry — the
+// strip's reveal is a dwell-near-the-edge verdict (StripRevealPolicy).
 
 import AppKit
 import LyteTransport
@@ -65,8 +56,7 @@ final class LyteInputCapture {
     /// Never fed for keys: typing must not resurface the strip.
     private let onActivity: @MainActor (PointerActivity) -> Void
     private var monitors: [Any] = []
-    private var heldKeys: Set<UInt32> = []
-    private var heldButtons: Set<UInt32> = []
+    private var forwarding = InputForwardingPolicy()
     private var resignObserver: NSObjectProtocol?
 
     init(
@@ -97,9 +87,9 @@ final class LyteInputCapture {
             self?.handleKey(event) ?? event
         } as Any)
         // ⌘Tab away mid-stream swallows the matching keyUps exactly the
-        // way teardown does (analysis finding 16): whatever we told the
-        // host was down stays down and auto-repeats. Focus loss releases
-        // everything; keys still physically held re-press on return.
+        // way teardown does: whatever the host holds would stay down and
+        // auto-repeat. Focus loss releases everything; keys still
+        // physically held re-press on return.
         resignObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification, object: window,
             queue: .main
@@ -110,14 +100,13 @@ final class LyteInputCapture {
 
     /// Sends up-events for every key/button the host believes is down.
     private func releaseAllHeld() {
-        for key in heldKeys {
-            send(.keyKeycode(keycode: key, pressed: false))
-        }
-        for button in heldButtons {
-            send(.pointerButton(button: button, pressed: false))
-        }
-        heldKeys.removeAll()
-        heldButtons.removeAll()
+        forwarding.releaseAll().forEach(send)
+    }
+
+    private func execute(_ verdict: InputForwardingPolicy.Verdict,
+                         _ event: NSEvent) -> NSEvent? {
+        verdict.sends.forEach(send)
+        return verdict.consumed ? nil : event
     }
 
     func stop() {
@@ -150,10 +139,8 @@ final class LyteInputCapture {
     /// the video layer view or a DESCENDANT of it — the only two shapes
     /// hitTest produces for a point the video genuinely owns. Anything
     /// else — nil, a sibling, or an ANCESTOR (NSHostingView answering
-    /// for its own SwiftUI content: the strip's buttons, probe-proven)
-    /// — means an overlay claimed the point and the event must return
-    /// to AppKit. CL-13's version also kept ancestor hits captured,
-    /// which made every strip button dead (the CL-16 regression).
+    /// for its own SwiftUI content, like the strip's buttons) — means an
+    /// overlay claimed the point.
     private func landsOnVideoSurface(_ event: NSEvent) -> Bool {
         guard let view, let content = event.window?.contentView else {
             return false
@@ -179,9 +166,24 @@ final class LyteInputCapture {
             distanceFromBottom: event.locationInWindow.y,
             distanceFromTop: contentHeight - event.locationInWindow.y,
             isFullscreen: window.styleMask.contains(.fullScreen)))
-        // Only the video surface feeds the host; overlays keep their
-        // own events (CL-13, rule corrected by CL-16).
-        guard landsOnVideoSurface(event) else { return event }
+        let onVideo = landsOnVideoSurface(event)
+
+        switch event.type {
+        case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
+             .otherMouseDown, .otherMouseUp:
+            let pressed = [
+                NSEvent.EventType.leftMouseDown, .rightMouseDown, .otherMouseDown,
+            ].contains(event.type)
+            return execute(forwarding.button(
+                MacEvdevKeyMap.evdevButton(
+                    forMacButtonNumber: event.buttonNumber),
+                pressed: pressed, onVideo: onVideo), event)
+        default:
+            break
+        }
+        // Only the video surface feeds the host motion and scroll;
+        // overlays keep their own events.
+        guard onVideo else { return event }
 
         switch event.type {
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
@@ -196,21 +198,6 @@ final class LyteInputCapture {
             let x = min(max(p.x - r.minX, 0), r.width) / r.width * size.width
             let y = min(max(r.maxY - p.y, 0), r.height) / r.height * size.height
             send(.pointerMotionAbsolute(x: x, y: y))
-            return nil
-
-        case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
-             .otherMouseDown, .otherMouseUp:
-            guard let button = MacEvdevKeyMap.evdevButton(
-                forMacButtonNumber: event.buttonNumber) else { return event }
-            let pressed = [
-                NSEvent.EventType.leftMouseDown, .rightMouseDown, .otherMouseDown,
-            ].contains(event.type)
-            send(.pointerButton(button: button, pressed: pressed))
-            if pressed {
-                heldButtons.insert(button)
-            } else {
-                heldButtons.remove(button)
-            }
             return nil
 
         case .scrollWheel:
@@ -239,43 +226,64 @@ final class LyteInputCapture {
 
     private func handleKey(_ event: NSEvent) -> NSEvent? {
         guard let window, event.window === window, window.isKeyWindow else { return event }
-
-        // ⌘-chorded keys stay local (⌘W close, ⌘Q quit, ⌘Tab is system-level).
-        if event.type != .flagsChanged, event.modifierFlags.contains(.command) {
-            return event
-        }
+        let commandHeld = event.modifierFlags.contains(.command)
 
         switch event.type {
-        case .keyDown, .keyUp:
-            // Auto-repeats stay local: the wire has no repeat value and
-            // a stream of downs without ups is a wedged key host-side
-            // (repeat policy is the HS-13 row's deferred item).
-            if event.type == .keyDown, event.isARepeat { return nil }
-            guard let keycode = MacEvdevKeyMap.evdevKeycode(
-                forMacKeyCode: event.keyCode) else { return event }
-            let pressed = event.type == .keyDown
-            send(.keyKeycode(keycode: keycode, pressed: pressed))
-            if pressed {
-                heldKeys.insert(keycode)
-            } else {
-                heldKeys.remove(keycode)
-            }
-            return nil
+        case .keyDown:
+            let code = MacEvdevKeyMap.evdevKeycode(forMacKeyCode: event.keyCode)
+            return execute(forwarding.keyDown(
+                code, isRepeat: event.isARepeat, commandHeld: commandHeld,
+                isLocalShortcut: commandHeld
+                    && Self.isLocalShortcut(event)), event)
+
+        case .keyUp:
+            let code = MacEvdevKeyMap.evdevKeycode(forMacKeyCode: event.keyCode)
+            return execute(
+                forwarding.keyUp(code, commandHeld: commandHeld), event)
 
         case .flagsChanged:
             guard let (keycode, deviceMask) =
                 MacEvdevKeyMap.modifierKeys[event.keyCode] else { return event }
             let pressed = event.modifierFlags.rawValue & UInt(deviceMask) != 0
-            send(.keyKeycode(keycode: keycode, pressed: pressed))
-            if pressed {
-                heldKeys.insert(keycode)
-            } else {
-                heldKeys.remove(keycode)
-            }
-            return nil
+            return execute(forwarding.modifier(keycode, pressed: pressed), event)
 
         default:
             return event
         }
+    }
+
+    /// True when a menu item (the app's own commands, which own every
+    /// window-management chord: ⌘W, ⌘Q, ⌘H, ⌘M, the Actions menu)
+    /// answers this ⌘ key equivalent. System chords (⌘Tab, ⌘Space)
+    /// never reach the app at all.
+    private static func isLocalShortcut(_ event: NSEvent) -> Bool {
+        guard let menu = NSApp.mainMenu,
+              let characters = event.charactersIgnoringModifiers?.lowercased(),
+              !characters.isEmpty
+        else { return false }
+        let chordMask: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
+        let modifiers = event.modifierFlags.intersection(chordMask)
+        return menuAnswers(menu, characters: characters, modifiers: modifiers)
+    }
+
+    private static func menuAnswers(
+        _ menu: NSMenu, characters: String, modifiers: NSEvent.ModifierFlags
+    ) -> Bool {
+        for item in menu.items {
+            if let submenu = item.submenu,
+               menuAnswers(submenu, characters: characters, modifiers: modifiers) {
+                return true
+            }
+            let equivalent = item.keyEquivalent
+            guard !equivalent.isEmpty else { continue }
+            var mask = item.keyEquivalentModifierMask
+            // An uppercase equivalent implies ⇧ (AppKit's convention).
+            if equivalent != equivalent.lowercased() { mask.insert(.shift) }
+            if equivalent.lowercased() == characters,
+               mask.intersection([.command, .shift, .option, .control]) == modifiers {
+                return true
+            }
+        }
+        return false
     }
 }

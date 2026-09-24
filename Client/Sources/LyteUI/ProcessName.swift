@@ -4,7 +4,8 @@ import Foundation
 /// menu title from the LaunchServices registration (argv[0] for bare
 /// executables); the only way to change it is the private LS display-name
 /// call — the same one Chromium and Qt use. Resolved via dlsym so we fail
-/// soft if the symbol ever disappears. The bundled app (M5) won't need this.
+/// soft if the symbol ever disappears. Only the CLI's window commands need
+/// it; the bundled app is named by its Info.plist.
 public enum ProcessName {
     public static func set(_ name: String) {
         typealias GetASN = @convention(c) () -> CFTypeRef?

@@ -39,7 +39,7 @@ struct LyteCommands: Commands {
                 set: { connection?.setHostMuted($0) }
             ))
             .keyboardShortcut("h", modifiers: [.command, .shift])
-            .disabled(connection?.hostAudioNegotiated != true
+            .disabled(connection?.negotiated.hostAudioRouting != true
                 || connection?.hostAudioPosture == nil)
 
             // The per-host session-start default (CL-13; opt-out
@@ -65,7 +65,7 @@ struct LyteCommands: Commands {
                 set: { connection?.setClipboardSharing($0) }
             ))
             .keyboardShortcut("c", modifiers: [.command, .shift])
-            .disabled(connection?.clipboardNegotiated != true)
+            .disabled(connection?.negotiated.clipboardText != true)
 
             // The images rung (P-1): the tier's third step, gated on
             // keys 10∧12 — disabled against a text-only host. Images
@@ -74,7 +74,7 @@ struct LyteCommands: Commands {
                 get: { connection?.clipboardImageSharing ?? false },
                 set: { connection?.setClipboardImageSharing($0) }
             ))
-            .disabled(connection?.clipboardImagesNegotiated != true)
+            .disabled(connection?.negotiated.clipboardImages != true)
 
             // The per-host consent defaults (CL-15 text, P-1 images):
             // applied at the NEXT connect to this host.
@@ -103,18 +103,18 @@ struct LyteCommands: Commands {
 
             Divider()
 
-            // Chroma (V-5): the strip control's full fallback (the
-            // CL-18 rule — with the strip hidden, everything still
-            // works from here). Same model verb, so menu and strip
-            // cannot disagree; picking a tier reconnects cleanly with
-            // the new declaration. The dormant Better row is visible
-            // but disabled — no yuv422 wire id, no host silicon.
+            // Chroma: the strip control's full fallback (with the strip
+            // hidden, everything still works from here). Same model verb,
+            // so menu and strip cannot disagree; picking a tier
+            // reconnects cleanly with the new declaration. The dormant
+            // Better row is visible but disabled for every host — it has
+            // no wire id yet.
             Menu("Chroma") {
                 ForEach(ChromaTier.allCases, id: \.self) { tier in
                     Toggle(
                         "\(tier.displayName) (\(tier.samplingLabel))"
                         + (tier.isSelectable
-                            ? "" : " — Not Offered by This Host"),
+                            ? "" : " — Not Yet Available"),
                         isOn: Binding(
                             get: { connection?.chromaTier == tier },
                             set: { on in

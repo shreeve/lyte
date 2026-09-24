@@ -473,11 +473,3 @@ private final class DiagnosticQualityProbe {
         value.isFinite ? value : 999
     }
 }
-
-private extension Duration {
-    var seconds: Double {
-        let parts = components
-        return Double(parts.seconds)
-            + Double(parts.attoseconds) / 1_000_000_000_000_000_000
-    }
-}

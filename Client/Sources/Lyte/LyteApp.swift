@@ -1,35 +1,20 @@
 import SwiftUI
 import LyteUI
 
-/// The Lyte app (M5): D6 window-is-the-app. Each window is one connection;
-/// a new window opens in the connect state and becomes a stream.
+/// The Lyte app: each window is one connection; a new window opens in the
+/// connect state and becomes a stream.
 @main
 struct LyteApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
-        let diagnosticRequested: Bool
         do {
-            diagnosticRequested = try DiagnosticRunIdentity.publishIfRequested()
+            _ = try DiagnosticRunIdentity.publishIfRequested()
         } catch {
             fputs(
                 "lyte benchmark identity: \(error.localizedDescription)\n",
                 stderr)
             exit(74)
-        }
-
-        // Headless helper registration: lets tooling (and CI) drive the
-        // SMAppService dance without opening windows or streams.
-        if CommandLine.arguments.contains("--register-helper") {
-            guard !diagnosticRequested else {
-                fputs(
-                    "lyte benchmark identity: helper registration refused\n",
-                    stderr)
-                exit(74)
-            }
-            HelperClient.shared.registerIfNeeded()
-            print("helper status: \(HelperClient.shared.statusDescription)")
-            exit(0)
         }
     }
 
@@ -44,8 +29,7 @@ struct LyteApp: App {
             LyteCommands()
         }
 
-        // The agent (A0): always-on menu-bar presence — status, new
-        // connections, resume, and the future host toggle.
+        // The always-on menu-bar presence: status and new connections.
         MenuBarExtra("Lyte", systemImage: "bolt.fill") {
             AgentMenu()
         }
@@ -55,8 +39,6 @@ struct LyteApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
-        // Unbundled dev builds inherit the launcher's identity otherwise
-        ProcessName.set("Lyte")
         NSApp.applicationIconImage = AppIcon.shared
     }
 

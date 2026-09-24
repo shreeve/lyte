@@ -381,7 +381,10 @@ public struct RoamingPolicy: Sendable {
     /// The dial the policy asked for never became a session (handshake
     /// timeout — commonly a host that hasn't freed the dead session
     /// yet). Back off on this target; scanning continues throughout.
+    /// Inert when no dial is in flight: a failure can only answer a dial
+    /// this policy issued, never a straggler from an earlier session.
     public mutating func dialFailed(now: UInt64) -> [RoamingAction] {
+        guard dialInFlight else { return [] }
         dialInFlight = false
         dialInFlightTarget = nil
         nextDialAllowedAt = now &+ UInt64(dialRetryMicroseconds)
