@@ -3,6 +3,7 @@ import ArgumentParser
 @preconcurrency import AVFoundation
 import Foundation
 import LyteCore
+import LyteIO
 import LyteTransport
 import LyteUI
 import LyteWire
@@ -151,7 +152,7 @@ struct WireView: AsyncParsableCommand {
         let displayLayer = AVSampleBufferDisplayLayer()
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = CGColor(gray: 0, alpha: 1)
-        let renderer = displayLayer.sampleBufferRenderer
+        VideoRendererHandoff.attachHostClockTimebase(to: displayLayer)
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 960, height: 540),
@@ -208,19 +209,32 @@ struct WireView: AsyncParsableCommand {
         sessionConfig.core.capabilities = sessionConfig.core.capabilities
             .declaringChroma(tier: Self.parseChroma(chroma) ?? .good)
         let pasteboardBox = LockedCell<PasteboardSync?>(nil)
-        // Close the coalesced IDR episode when an IRAP actually reaches the
-        // diagnostic renderer — same seam the app's VideoRendererHandoff
-        // owns. Without it, mild loss left IdrRequester retrying forever
-        // and the host re-armed static-screen IDRs on every 500 ms tick.
-        let sessionBox = LockedCell<LyteUdpSession?>(nil)
-        let videoSink = AVSampleBufferRendererVideoSink(renderer: renderer) {
-            [sessionBox] frame in
-            sessionBox.value?.noteVideoIrapEnqueued(frame: frame)
-        }
+        // The app's renderer path, exactly: bounded handoff, Conductor
+        // playout, recovery flush barrier, IRAP episode close.
+        let clockModel = HostClockModel()
+        let recorder = VideoFlightRecorder(
+            nowMicroseconds: { SystemMonotonicClock.nowMicroseconds })
+        let handoff = VideoRendererHandoff(
+            renderer: displayLayer.sampleBufferRenderer,
+            queue: DispatchQueue(label: "lyte.video.delivery", qos: .userInteractive),
+            clockModel: clockModel,
+            books: VideoDeliveryBooks(),
+            recorder: recorder)
         let session = LyteUdpSession(
             crypto: crypto,
             config: sessionConfig,
-            videoSink: videoSink,
+            clockModel: clockModel,
+            onVideoRecoveryDemand: { [weak handoff] cause, frame in
+                handoff?.beginRecovery(cause: cause, after: frame)
+            },
+            onVideoRecoveryTrace: { event in
+                recorder.recordRecoveryLifecycle(
+                    kind: event.kind,
+                    frame: event.frame.rawValue,
+                    cause: event.cause,
+                    isRandomAccess: event.isRandomAccess)
+            },
+            videoSink: handoff,
             onEvent: { event in
                 switch event {
                 case .capabilitiesAgreed(let agreed):
@@ -290,7 +304,7 @@ struct WireView: AsyncParsableCommand {
                     print("wire-view: \(note)")
                 }
             })
-        sessionBox.value = session
+        handoff.bind(session)
 
         print("wire-view: Noise IK handshake → \(host):\(hostPort == 0 ? port : hostPort) …")
         do {
@@ -393,13 +407,7 @@ struct WireView: AsyncParsableCommand {
         // don't actually decode — enqueue counts alone can't lie-detect.
         let printer = WireViewStatsPrinter(
             session: session,
-            rendererState: { @Sendable in
-                switch renderer.status {
-                case .rendering: return "rendering"
-                case .failed: return "FAILED: \(String(describing: renderer.error))"
-                default: return "idle"
-                }
-            })
+            rendererState: { handoff.rendererStateDescription })
 
         let ticker = DispatchSource.makeTimerSource(queue: .global())
         ticker.schedule(deadline: .now() + 1, repeating: 1)

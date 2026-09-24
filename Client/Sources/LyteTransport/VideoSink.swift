@@ -41,33 +41,3 @@ final class SessionVideoSink: VideoSink, @unchecked Sendable {
         downstream.submit(sample: sample, unit: unit)
     }
 }
-
-/// The direct AVFoundation leaf used by diagnostic shells such as wire-view.
-/// The app's richer renderer handoff implements `VideoSink` itself so queue,
-/// recovery, and telemetry policy remain visible there.
-///
-/// `onIrapEnqueued` is required: an IRAP that reaches `renderer.enqueue`
-/// must close the client's coalesced IDR episode. Omitting that close left
-/// wire-view retrying 0x10 forever under mild loss while the host's
-/// in-flight offer window re-armed static-screen IDRs at ~2 Hz.
-public final class AVSampleBufferRendererVideoSink:
-    VideoSink, @unchecked Sendable
-{
-    private let renderer: AVSampleBufferVideoRenderer
-    private let onIrapEnqueued: @Sendable (FrameNumber) -> Void
-
-    public init(
-        renderer: AVSampleBufferVideoRenderer,
-        onIrapEnqueued: @escaping @Sendable (FrameNumber) -> Void
-    ) {
-        self.renderer = renderer
-        self.onIrapEnqueued = onIrapEnqueued
-    }
-
-    public func submit(sample: CMSampleBuffer, unit: DecodeUnit) {
-        renderer.enqueue(sample)
-        if unit.isIDR {
-            onIrapEnqueued(unit.frameNumber)
-        }
-    }
-}
