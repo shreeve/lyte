@@ -1074,7 +1074,8 @@ static func run(arguments: [String]) throws {
         max \(wire.inputLatency.maxValue.map(String.init) ?? "—") µs
         audio: \(s.audioPacketsIngested) packets → \
         \(s.audioDatagramsEnqueued) datagrams \
-        (\(s.audioGroupsCompleted) RS 4+2 groups), \
+        (\(s.audioGroupsCompleted) RS 4+2 groups, \
+        \(s.audioGroupsAbandoned) abandoned), \
         \(s.audioPacketsSuppressed) suppressed, \
         \(wire.audioSendFailures) send failures, \
         \(wire.audioPacketsDroppedPreSession) dropped pre-session; \

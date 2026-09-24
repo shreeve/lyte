@@ -606,6 +606,9 @@ public struct SessionCounters: Equatable, Sendable {
     public var audioDatagramsEnqueued = 0
     /// Completed 4+2 audio FEC groups.
     public var audioGroupsCompleted = 0
+    /// Audio FEC groups closed without parity because the Opus packet
+    /// size changed mid-group (a bitrate step under hard CBR).
+    public var audioGroupsAbandoned = 0
     /// Audio datagrams assembled by extending their pre-sized AAD header
     /// in place after sealing, avoiding a third header+payload array.
     public var audioSealedDatagramsAssembledInPlace = 0
@@ -1410,6 +1413,7 @@ public final class Session {
         counters.audioPacketsIngested += 1
         counters.audioDatagramsEnqueued += datagrams.count
         counters.audioGroupsCompleted = audio.counters.groupsCompleted
+        counters.audioGroupsAbandoned = audio.counters.groupsAbandoned
         return datagrams.count
     }
 
