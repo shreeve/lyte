@@ -913,6 +913,10 @@ final class SessionWire {
             lock.unlock()
             usleep(2_000)
         }
+        lock.lock()
+        pendingLogLines += lineLimiter.due(
+            now: SystemMonotonicClock.nowNanoseconds, final: true)
+        lock.unlock()
         flushLogLines()
         runPendingPairingEvents()
         print(session.arqIsQuiescent
@@ -1133,6 +1137,8 @@ final class SessionWire {
             return
         }
         serviceAndFlushLocked()
+        pendingLogLines += lineLimiter.due(
+            now: SystemMonotonicClock.nowNanoseconds)
         // What this pass could not emit belongs to the sender thread.
         let leftovers = !(session?.isIdle ?? true) || !outbox.isEmpty
         let requests = pendingAudioRouting
@@ -1624,8 +1630,17 @@ final class SessionWire {
     /// stalled stdout reader must never block a write inside the lock
     /// and freeze audio, pacing and capture. Guarded by `lock`.
     private var pendingLogLines: [String] = []
+    /// Lines a peer can cause once per datagram (drops, unclaimed CTRL)
+    /// go through this limiter. Guarded by `lock`.
+    private var lineLimiter = LogLineLimiter()
 
     private func emit(_ line: String) { pendingLogLines.append(line) }
+
+    /// Requires `lock`. One occurrence of a per-datagram line class.
+    private func emitLimited(_ key: String, _ line: @autoclosure () -> String) {
+        pendingLogLines += lineLimiter.admit(
+            key, now: SystemMonotonicClock.nowNanoseconds, line: line)
+    }
 
     /// Callers must not hold `lock`.
     private func flushLogLines() {
@@ -1694,14 +1709,14 @@ final class SessionWire {
                 pendingPairingEvents.append(contentsOf: output.events)
                 return
             }
-            emit("""
+            emitLimited("ctrl-arq: unclaimed message", """
                 ctrl-arq: message group \(group.rawValue) (\(message.count) B, \
                 type \(Hex.string(message.first ?? 0, prefix: true)))
                 """)
         case .reliableOneShotAcknowledged(let group):
             emit("ctrl-arq: one-shot group \(group.rawValue) acknowledged")
         case .arqIgnored(let reason):
-            emit("ctrl-arq: ignored \(reason)")
+            emitLimited("ctrl-arq: ignored", "ctrl-arq: ignored \(reason)")
         case .idrRequested(let request):
             emit("""
                 ctrl: IDR request seq \(request.requestSeq) (frame \
@@ -1738,7 +1753,9 @@ final class SessionWire {
         case .dropped(.handshakeCookieInvalid):
             break
         case .dropped(let reason):
-            emit("drop: \(reason)")
+            // Keyed by the reason's case, not its payload.
+            let kind = String(describing: reason).prefix { $0 != "(" }
+            emitLimited("drop: \(kind)", "drop: \(reason)")
         case .sendFailed(let what):
             emit("send-failed: \(what)")
         case .capabilitiesAgreed(let agreed):
