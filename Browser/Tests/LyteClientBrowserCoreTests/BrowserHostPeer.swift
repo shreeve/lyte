@@ -1,44 +1,67 @@
 import HostSession
 import HostWire
+import HostWireTestKit
 import LyteClientBrowserCore
 import LyteCore
 import LyteWire
 import XCTest
 
-/// The engine lyte-control-peer serves to Chrome — a shipping
-/// HostWire.Session plus PairingResponderService — in process, with UDP
-/// replaced by arrays and time by one virtual clock shared with the browser
-/// session. Tests decide which datagrams cross, so loss, duplication,
-/// reordering and forgery are explicit.
+/// The engine lyte-control-peer serves to Chrome — HostWireTestKit's
+/// shipping `Session` on an outbox, plus PairingResponderService — in
+/// process. Host time is the harness's virtual µs; the browser reads the
+/// same instant through its own clock (`nowMicros`), which may run skewed.
+/// Tests decide which datagrams cross, so loss, duplication, reordering
+/// and forgery are explicit.
 final class BrowserHostPeer {
-    static let tuple = FourTuple(
-        localAddress: "127.0.0.1", localPort: 41_234,
-        remoteAddress: "127.0.0.1", remotePort: 50_000
-    )
     static let pin = "246810"
+    static let startMicros: UInt64 = 1_000_000
 
     let hostStatic = NoiseKeyPair.generate()
     let pairing: PairingResponderService
-    private let lifecycle: SessionMachineConfig
-    private(set) var session: Session?
+    let harness: HostSessionHarness
+    /// Client clock rate against the host's, parts per million.
+    private let clientSkewPartsPerMillion: Int64
     private(set) var events: [SessionEvent] = []
-    private var outbox: [[UInt8]] = []
-    /// Virtual time in microseconds, shared by both ends.
-    private(set) var nowMicros: UInt64 = 1_000_000
+    /// Host virtual time in microseconds.
+    private(set) var hostMicros: UInt64 = BrowserHostPeer.startMicros
 
-    init(lifecycle: SessionMachineConfig = SessionMachineConfig(
-        blackoutSilenceMicroseconds: 30_000_000,
-        recoveryBlackoutSilenceMicroseconds: 30_000_000
-    )) {
-        self.lifecycle = lifecycle
+    init(
+        lifecycle: SessionMachineConfig = SessionMachineConfig(
+            blackoutSilenceMicroseconds: 30_000_000,
+            recoveryBlackoutSilenceMicroseconds: 30_000_000
+        ),
+        capabilities: Capabilities = .wireDefault.declaringClipboardText(),
+        clientSkewPartsPerMillion: Int64 = 0
+    ) {
+        self.clientSkewPartsPerMillion = clientSkewPartsPerMillion
         self.pairing = PairingResponderService(
             pin: Array(Self.pin.utf8),
             hostStaticPublicKey: hostStatic.publicKey
         )
+        self.harness = HostSessionHarness(
+            config: SessionConfig(
+                crypto: .noise(hostStatic: hostStatic),
+                rateBitsPerSecond: 50_000_000,
+                capabilities: capabilities,
+                lifecycle: lifecycle
+            ),
+            tuple: FourTuple(
+                localAddress: "127.0.0.1", localPort: 41_234,
+                remoteAddress: "127.0.0.1", remotePort: 50_000
+            ),
+            now: Self.startMicros * 1_000,
+            rng: SystemRandomNumberGenerator()
+        )
     }
 
+    var session: Session { harness.session }
     var hostStaticHex: String { Hex.string(hostStatic.publicKey) }
-    private var nowNS: UInt64 { nowMicros * 1_000 }
+
+    /// The browser's clock at this host instant.
+    var nowMicros: UInt64 {
+        let elapsed = Int64(hostMicros - Self.startMicros)
+        return UInt64(Int64(hostMicros) + elapsed * clientSkewPartsPerMillion / 1_000_000)
+    }
 
     func makeClient(
         pin: String = BrowserHostPeer.pin,
@@ -53,40 +76,16 @@ final class BrowserHostPeer {
     /// Moves virtual time and runs the host's timers (beacons, echo
     /// flush, ARQ retransmit, lifecycle), as the peer's run loop does.
     func advance(microseconds: UInt64) {
-        nowMicros += microseconds
-        guard let session else { return }
-        handle(session.advance(now: nowNS, hostMicroseconds: nowMicros), session)
-        session.pump(now: nowNS)
+        hostMicros += microseconds
+        handle(harness.advance(to: hostMicros))
     }
 
     /// One client datagram arrives at the host.
     func receive(_ datagram: [UInt8]) {
-        if session == nil {
-            session = Session(
-                config: SessionConfig(
-                    crypto: .noise(hostStatic: hostStatic),
-                    rateBitsPerSecond: 50_000_000,
-                    capabilities: .wireDefault.declaringClipboardText(),
-                    lifecycle: lifecycle
-                ),
-                clientTuple: Self.tuple,
-                now: nowNS,
-                rng: SystemRandomNumberGenerator()
-            ) { [unowned self] datagram in
-                outbox.append(datagram.bytes)
-            }
-        }
-        guard let session else { return }
-        handle(
-            session.receive(
-                datagram[...], from: Self.tuple, now: nowNS, hostMicroseconds: nowMicros
-            ),
-            session
-        )
-        session.pump(now: nowNS)
+        handle(harness.receive(datagram, at: hostMicros))
     }
 
-    private func handle(_ produced: [SessionEvent], _ session: Session) {
+    private func handle(_ produced: [SessionEvent]) {
         events += produced
         for event in produced {
             switch event {
@@ -97,10 +96,13 @@ final class BrowserHostPeer {
                     )
                 }
             case .reliableCtrl(_, let message):
-                if let output = pairing.handleReliableCtrl(message, now: nowNS) {
+                if let output = pairing.handleReliableCtrl(
+                    message, now: hostMicros * 1_000
+                ) {
                     for reply in output.replies {
                         try? session.sendReliable(
-                            reply, now: nowNS, hostMicroseconds: nowMicros
+                            reply, now: hostMicros * 1_000,
+                            hostMicroseconds: hostMicros
                         )
                     }
                 }
@@ -116,11 +118,18 @@ final class BrowserHostPeer {
         }
     }
 
+    /// Everything the host has released since the last drain, with the
+    /// pacer's metadata (frame number, class).
+    func drainReleased() -> [VideoChannelDatagram] {
+        session.pump(now: hostMicros * 1_000)
+        let released = Array(harness.sent[harness.forwarded...])
+        harness.forwarded = harness.sent.count
+        return released
+    }
+
     /// Everything the host has sent since the last drain.
     func drain() -> [[UInt8]] {
-        session?.pump(now: nowNS)
-        defer { outbox.removeAll() }
-        return outbox
+        drainReleased().map(\.bytes)
     }
 
     // MARK: Driving a client
@@ -135,20 +144,29 @@ final class BrowserHostPeer {
         return step
     }
 
-    /// Shuttles datagrams both ways in 5 ms beats until `done` or `limit`.
+    /// Hands host datagrams to the client and its replies back to the host.
+    func deliver(
+        _ datagrams: [[UInt8]], to client: BrowserControlSession,
+        notes: inout [String]
+    ) {
+        for datagram in datagrams {
+            deliver(client.ingest(datagram: datagram, nowMicros: nowMicros), notes: &notes)
+        }
+    }
+
+    /// Shuttles datagrams both ways in `beat` steps until `done` or `limit`.
     func run(
         _ client: BrowserControlSession,
         notes: inout [String],
         beats limit: Int = 400,
+        beat: UInt64 = 5_000,
         until done: (BrowserControlSession) -> Bool
     ) {
         for _ in 0..<limit {
             if done(client) { return }
-            for datagram in drain() {
-                deliver(client.ingest(datagram: datagram, nowMicros: nowMicros), notes: &notes)
-            }
+            deliver(drain(), to: client, notes: &notes)
             deliver(client.tick(nowMicros: nowMicros), notes: &notes)
-            advance(microseconds: 5_000)
+            advance(microseconds: beat)
         }
     }
 

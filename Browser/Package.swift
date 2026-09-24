@@ -57,7 +57,9 @@ let package = Package(
                 "LyteClientBrowserCore",
                 .product(name: "LyteWire", package: "Wire"),
                 .product(name: "LyteCore", package: "Common"),
+                .product(name: "LyteWireTestKit", package: "Wire"),
                 .product(name: "HostWire", package: "Host"),
+                .product(name: "HostWireTestKit", package: "Host"),
                 .product(name: "HostSession", package: "Host"),
             ]
         ),

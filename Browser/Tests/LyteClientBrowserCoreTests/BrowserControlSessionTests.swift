@@ -138,7 +138,7 @@ final class BrowserControlSessionTests: XCTestCase {
 
         host.run(client, notes: &notes) { $0.currentStatus == .ready }
         XCTAssertEqual(client.currentStatus, .ready, notes.joined(separator: " | "))
-        let hostConnectionId = try XCTUnwrap(host.session?.connectionId)
+        let hostConnectionId = try XCTUnwrap(host.session.connectionId)
         let send = client.sendInput(
             body: .pointerMotionAbsolute(x: 1, y: 2), nowMicros: host.nowMicros
         )

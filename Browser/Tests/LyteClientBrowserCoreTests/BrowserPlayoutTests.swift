@@ -221,13 +221,13 @@ final class BrowserPlayoutTests: XCTestCase {
     func testAudioQueueKeepsOnlyTheNewestPacketsWhenNotDrained() throws {
         let host = BrowserHostPeer()
         let (client, _) = try host.readyClient()
-        let session = try XCTUnwrap(host.session)
+        let session = host.session
         let sent = 50
         for index in 0..<sent {
             try session.ingestAudioPacket(
                 [0xF8, 0xFF, 0xFE, UInt8(index)],
-                captureTimestampMicroseconds: host.nowMicros,
-                now: host.nowMicros * 1_000
+                captureTimestampMicroseconds: host.hostMicros,
+                now: host.hostMicros * 1_000
             )
             host.advance(microseconds: 5_000)
             deliverAll(host, client)
@@ -268,10 +268,9 @@ final class BrowserPlayoutTests: XCTestCase {
         _ annexB: [UInt8], keyframe: Bool, capture: UInt64,
         _ host: BrowserHostPeer, _ client: BrowserControlSession
     ) throws -> [BrowserVideoPlayout.ScheduledFrame] {
-        let session = try XCTUnwrap(host.session)
-        try session.ingestVideoFrame(
+        try host.session.ingestVideoFrame(
             annexB, captureTimestampMicroseconds: capture,
-            isKeyframe: keyframe, now: host.nowMicros * 1_000
+            isKeyframe: keyframe, now: host.hostMicros * 1_000
         )
         var scheduled: [BrowserVideoPlayout.ScheduledFrame] = []
         for _ in 0..<200 {
