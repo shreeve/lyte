@@ -85,10 +85,11 @@ fakes:
 
 - `SansIOArchitectureTests`: import allowlists for every sans-IO target
   (`LyteCore`, `LyteClientCore`, `LyteClientSession`, `LyteWire`,
-  `HostCore`, `HostSession`, `HostWire`), `Crypto` confined to
-  `LyteWire/Crypto/`, `CNanorsWire` confined to `Fec/NanorsBackend.swift`,
-  and a forbidden-token scan (Foundation IO, locks, threads, OS clocks,
-  system randomness).
+  `HostCore`, `HostSession`, `HostWire`, `LyteClientBrowserCore`),
+  `Crypto` confined to `LyteWire/Crypto/`, `CNanorsWire` confined to
+  `Fec/NanorsBackend.swift`, and a forbidden-token scan (Foundation IO,
+  stdout, tasks and actors, locks, threads, OS clocks, and system
+  randomness — including `random`/`shuffled` calls handed no generator).
 - Single-owner ratchets (`LyteTestKitTests/SingleOwnerTests`, one table
   matched on scanner tokens, so comments, strings and longer names never
   trip it): every top-level type `LyteCore` and `LyteIO` declare (and
