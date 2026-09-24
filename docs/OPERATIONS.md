@@ -27,6 +27,11 @@ ssh pup "sed -i 's/--advertise-interface [^ ]*/--advertise-interface wlp0s20f3/'
 `lyte-cli wire-view --host <address> --host-port 41151 --host-key <key>`
 dials an address directly without discovery.
 
+**Agents on the Mac:** a sandboxed agent shell cannot reach pup: `ssh pup`
+fails with `No route to host` because macOS Local Network privacy blocks
+the sandbox, not the network. Run ssh, rsync and the pup gate outside the
+sandbox.
+
 ## Build on pup
 
 The Host manifest references `../Wire` and `../Common`, so the three
@@ -116,6 +121,20 @@ sudo setcap cap_sys_admin+ep "$bin"        # hand-run only; the unit grants it a
 sudo setcap -r "$bin"
 sudo systemctl start lyte-host
 ```
+
+Pairing without a person at the client: run the `--pair` host in the
+background (`nohup … </dev/null > ~/lyte-pair.log 2>&1 &` — without the
+stdin redirect the ssh session never returns), read the PIN from its log,
+then pair from the Mac with the CLI, which writes the same pinned-host
+store and Keychain identity the app uses:
+
+```sh
+lyte-cli wire-pair <address> --port 41151 --pin <PIN> --host-key <host key>
+```
+
+The client leaves as soon as the PIN exchange completes; the `--pair` host
+then exits cleanly on its own. Afterwards remove the capability and start
+the service as above.
 
 The standing conf does not pass `--require-paired`, so the service admits
 any client that knows the host's public key (deferred: [TODO.md](../TODO.md)).

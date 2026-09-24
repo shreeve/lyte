@@ -73,6 +73,10 @@ live state: [HANDOFF.md](HANDOFF.md).
 
 ## Gates
 
+- **Enforce the gates.** No hosted CI runs them, so "always green" rests
+  on whoever lands a PR running `Scripts/CI/test-all-macos.sh` and
+  `test-all-pup.sh` by hand. A self-hosted runner on pup (Linux leg) plus
+  the owner's Mac (macOS leg), or a pre-merge hook, would make it a check.
 - Add a release-mode leg (`-c release`) for the Wire property tests and
   the corpus gates, run `LYTE_ARQ_TRIALS=25000` in a pre-merge or pup
   gate, and add an optional `LYTE_HARDWARE_TESTS=1` leg on the owner's
