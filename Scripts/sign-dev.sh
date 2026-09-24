@@ -3,7 +3,15 @@
 # (Local Network privacy relies on Apple-issued signing), else the
 # self-signed "Lyte Dev" identity, which still preserves Keychain ACLs.
 #
-# Usage: Scripts/sign-dev.sh <binary-or-.app> [<binary-or-.app> ...]
+# Usage: Scripts/sign-dev.sh [--nested] <binary-or-.app> [<binary-or-.app> ...]
+#
+# --nested signs embedded third-party code (Sparkle's framework, its
+# Autoupdate tool and Updater.app) with the same identity and runtime but
+# keeps each piece's own identifier; sign nested code before its container.
+#
+# LYTE_SIGNING_IDENTITY may name a "Developer ID Application: …" identity
+# for release builds (Scripts/release.sh); those signatures carry a secure
+# timestamp, as notarization requires. Development signatures carry none.
 #
 # One-time setup: Scripts/setup-dev-signing.sh. Identity-bearing binaries
 # fail closed without an identity: ad-hoc signing breaks the Keychain ACL
@@ -17,8 +25,13 @@
 # unsigned SwiftPM binary or a copy re-signed with `codesign --force --sign -`.
 set -e
 
+NESTED=0
+if [ "${1:-}" = --nested ]; then
+    NESTED=1
+    shift
+fi
 if [ "$#" -eq 0 ]; then
-    echo "usage: Scripts/sign-dev.sh <binary-or-.app> [<binary-or-.app> ...]" >&2
+    echo "usage: Scripts/sign-dev.sh [--nested] <binary-or-.app> [<binary-or-.app> ...]" >&2
     exit 2
 fi
 
@@ -42,14 +55,15 @@ elif [ -n "$REQUESTED_IDENTITY" ]; then
     then
         IDENT_LINE="$(printf '%s\n' "$VALID_IDENTITIES" \
           | awk -v h="$REQUESTED_IDENTITY" '
-              toupper($2) == toupper(h) && index($0, "\"Apple Development: ") {
+              toupper($2) == toupper(h) && (index($0, "\"Apple Development: ") \
+                  || index($0, "\"Developer ID Application: ")) {
                   print
               }')"
     else
         case "$REQUESTED_IDENTITY" in
-            "Apple Development: "*) ;;
+            "Apple Development: "*|"Developer ID Application: "*) ;;
             *)
-                echo "error: requested identity is not Apple Development or Lyte Dev: $REQUESTED_IDENTITY" >&2
+                echo "error: requested identity is not Apple Development, Developer ID Application or Lyte Dev: $REQUESTED_IDENTITY" >&2
                 exit 1
                 ;;
         esac
@@ -103,6 +117,23 @@ if [ -z "$IDENT_HASH" ]; then
     exit 1
 fi
 
+TIMESTAMP=--timestamp=none
+case "$IDENTITY" in
+    "Developer ID Application: "*)
+        IDENTITY_KIND=developer-id
+        TIMESTAMP=--timestamp
+        ;;
+esac
+
+if [ "$NESTED" -eq 1 ]; then
+    for target in "$@"; do
+        codesign --force --sign "$IDENT_HASH" \
+            --options runtime "$TIMESTAMP" "$target"
+        codesign --verify --strict "$target"
+    done
+    exit 0
+fi
+
 SELECTED_TEAM=""
 for target in "$@"; do
     case "$target" in
@@ -110,7 +141,7 @@ for target in "$@"; do
         *)     ident="dev.shreeve.$(basename "$target")" ;;
     esac
     codesign --force --sign "$IDENT_HASH" --identifier "$ident" \
-        --options runtime --timestamp=none "$target"
+        --options runtime "$TIMESTAMP" "$target"
     codesign --verify --strict "$target"
     signature_details="$(codesign -d --verbose=4 "$target" 2>&1)"
     actual_ident="$(printf '%s\n' "$signature_details" \
@@ -119,6 +150,18 @@ for target in "$@"; do
     stable_requirement=false
     if ! printf '%s\n' "$requirement" | grep -Fq "identifier \"$ident\""; then
         stable_requirement=false
+    elif [ "$IDENTITY_KIND" = developer-id ]; then
+        actual_team="$(printf '%s\n' "$signature_details" \
+            | awk -F= '/^TeamIdentifier=/{print $2; exit}')"
+        if printf '%s\n' "$actual_team" | grep -Eq '^[A-Z0-9]{10}$' \
+            && { [ -z "$SELECTED_TEAM" ] || [ "$SELECTED_TEAM" = "$actual_team" ]; } \
+            && printf '%s\n' "$requirement" | grep -Fq 'anchor apple generic' \
+            && printf '%s\n' "$requirement" | grep -Eq \
+                "certificate leaf\\[subject\\.OU\\] = \"?$actual_team\"?"
+        then
+            SELECTED_TEAM="$actual_team"
+            stable_requirement=true
+        fi
     elif [ "$IDENTITY_KIND" = apple ]; then
         actual_team="$(printf '%s\n' "$signature_details" \
             | awk -F= '/^TeamIdentifier=/{print $2; exit}')"

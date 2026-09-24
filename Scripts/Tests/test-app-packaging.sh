@@ -58,6 +58,24 @@ cmp -s "$app/Contents/Resources/AppIcon.icns" \
     "$repo_root/Client/AppIcon/AppIcon.icns" \
     || fail "the bundle's AppIcon.icns is not Client/AppIcon/AppIcon.icns"
 
+# Sparkle ships as the one embedded framework, without the XPC services a
+# non-sandboxed app never runs, and signed by the app's own authority.
+sparkle="$app/Contents/Frameworks/Sparkle.framework"
+[[ -d "$sparkle" ]] || fail "no embedded Sparkle.framework"
+[[ ! -e "$sparkle/Versions/B/XPCServices" ]] \
+    || fail "Sparkle's XPC services are embedded"
+[[ "$(plutil -extract SUEnableInstallerLauncherService raw -o - "$plist")" == false ]] \
+    || fail "SUEnableInstallerLauncherService is not false"
+codesign --verify --strict "$sparkle" || fail "Sparkle.framework does not verify"
+# A bundle that can update itself names Lyte's feed and the committed key.
+if feed_key="$(plutil -extract SUPublicEDKey raw -o - "$plist" 2>/dev/null)"; then
+    [[ "$feed_key" == "$(tr -d '[:space:]' < "$repo_root/Client/Updates/sparkle-public-key.txt")" ]] \
+        || fail "SUPublicEDKey is not Client/Updates/sparkle-public-key.txt"
+    [[ "$(plutil -extract SUFeedURL raw -o - "$plist")" == \
+        https://github.com/shreeve/lyte/releases/latest/download/appcast.xml ]] \
+        || fail "SUFeedURL is not Lyte's release feed"
+fi
+
 bundle_version="$(plutil -extract CFBundleVersion raw -o - "$plist")"
 short_version="$(
     plutil -extract CFBundleShortVersionString raw -o - "$plist"
@@ -133,6 +151,18 @@ case "$authority" in
         grep -Fq \
             "certificate leaf[subject.CN] = \"$authority\"" \
             <<< "$helper_requirement"
+        ;;
+    "Developer ID Application: "*)
+        # A release: the team anchors the requirement, so updates signed by
+        # the same team keep the app's identity (Local Network, the helper).
+        team_identifier="$(awk -F= '/^TeamIdentifier=/{print $2; exit}' \
+            <<< "$app_signature")"
+        [[ "$team_identifier" =~ ^[A-Z0-9]{10}$ ]] \
+            || fail "app team identifier is malformed: $team_identifier"
+        grep -Fq 'anchor apple generic' <<< "$requirement" \
+            || fail "the release requirement is not anchored at Apple"
+        grep -Eq "certificate leaf\[subject\.OU\] = \"?$team_identifier\"?" \
+            <<< "$requirement" || fail "the release requirement does not name team $team_identifier"
         ;;
     "Lyte Dev")
         grep -Fq 'certificate root = H"' <<< "$requirement"
