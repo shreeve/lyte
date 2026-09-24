@@ -14,7 +14,72 @@ import XCTest
 /// window whose lifecycle has moved on.
 @MainActor
 final class ConnectionLifecycleTests: XCTestCase {
-    // MARK: - Lifecycle
+    // MARK: - Connect fencing
+
+    func testDisconnectWhileDialingClosesTheLateSessionInsteadOfStreaming() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.hold]
+        let model = ConnectionModel(services: harness.services)
+
+        let connect = Task { await model.connectLyte(harness.host) }
+        try await harness.waitForStarts(1)
+        model.disconnect()
+        harness.resolveStart(0, with: .success(()))
+        await connect.value
+
+        guard case .pickHost = model.phase else {
+            return XCTFail("a dial that finished after disconnect streamed: \(model.phase)")
+        }
+        XCTAssertNil(model.lyteSession)
+        XCTAssertEqual(harness.streamsBegan, 0,
+                       "the helper hold must not be taken for an orphan")
+        XCTAssertTrue(harness.wasEnded(harness.started[0]),
+                      "the orphaned session must be closed")
+    }
+
+    func testConnectingScreenCancelReturnsToThePicker() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.hold]
+        let model = ConnectionModel(services: harness.services)
+
+        let connect = Task { await model.connectLyte(harness.host) }
+        try await harness.waitForStarts(1)
+        model.disconnect()
+        guard case .pickHost = model.phase else {
+            return XCTFail("Cancel left the window at \(model.phase)")
+        }
+        harness.resolveStart(0, with: .failure(harness.silence))
+        await connect.value
+        guard case .pickHost = model.phase else {
+            return XCTFail("a cancelled dial's failure resurfaced: \(model.phase)")
+        }
+    }
+
+    func testCancelDuringIdentityLookupNeverDialsOverTheNextConnect() async throws {
+        let harness = LifecycleHarness()
+        harness.holdFirstIdentity = true
+        harness.startPlan = [.succeed, .succeed]
+        let model = ConnectionModel(services: harness.services)
+
+        let stale = Task { await model.connectLyte(harness.host) }
+        try await harness.waitUntil { harness.identityWaiting }
+        model.disconnect()
+
+        await model.connectLyte(harness.host)
+        let live = try XCTUnwrap(model.lyteSession)
+        XCTAssertEqual(harness.started.count, 1)
+
+        harness.releaseIdentity()
+        await stale.value
+        XCTAssertEqual(harness.started.count, 1,
+                       "a superseded connect dialed after its identity lookup")
+        XCTAssertTrue(model.lyteSession === live)
+        guard case .streaming = model.phase else {
+            return XCTFail("the live session lost its window: \(model.phase)")
+        }
+    }
+
+    // MARK: - Roaming fencing
 
     func testCurrentRoamingDialIsAdopted() async throws {
         let harness = LifecycleHarness()
@@ -30,6 +95,8 @@ final class ConnectionLifecycleTests: XCTestCase {
         XCTAssertTrue(model.lyteSession === harness.started[1])
         XCTAssertEqual(model.roamingStatus, .attached)
     }
+
+    // MARK: - Host goodbyes
 
     func testHostTakeoverGoodbyeEndsTheWindow() async throws {
         let harness = LifecycleHarness()

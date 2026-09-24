@@ -50,9 +50,22 @@ final class ConnectionModel {
     /// cover a full host restart and hardware initialization
     /// (10–15 s observed) with margin, not to camp forever.
     static let freshConnectBudgetMicroseconds: UInt64 = 45_000_000
-    /// Invalidates in-flight connect rounds (Cancel, or a newer
-    /// connect superseding an old one mid-dial).
-    private var connectGeneration = 0
+    /// Advances on every lifecycle edge — a connect begins, the human
+    /// disconnects, roaming starts or stops. Asynchronous work (identity
+    /// lookups, dials, browses) captures it at launch and, when it no
+    /// longer matches on completion, drops its result and closes any
+    /// session it made: late results never reach a window that moved on.
+    private var lifecycleGeneration: UInt64 = 0
+
+    @discardableResult
+    private func advanceLifecycle() -> UInt64 {
+        lifecycleGeneration &+= 1
+        return lifecycleGeneration
+    }
+
+    private func isCurrent(_ generation: UInt64) -> Bool {
+        generation == lifecycleGeneration
+    }
     var muted = false {
         didSet { lyteSession?.setAudioMuted(muted) }
     }
@@ -213,6 +226,7 @@ final class ConnectionModel {
     /// window. Unpaired hosts go through the pairing sheet instead
     /// (ConnectView routes them there).
     func connectLyte(_ host: DiscoveredLyteHost) async {
+        let generation = advanceLifecycle()
         guard let pinned = services.loadPins().host(publicKeyHash: host.publicKeyHash),
               let hostStatic = pinned.staticPublicKey else {
             phase = .failed(.ordinary(
@@ -251,11 +265,16 @@ final class ConnectionModel {
             HandshakeWitness.record("identityLookupFailed", fields: [
                 "error": String(describing: error),
             ])
+            guard isCurrent(generation) else { return }
             // The Keychain path needs the stable "Lyte Dev" signature —
             // builds via Scripts/make-app.sh (docs/MACOS-SIGNING.md).
             phase = .failed(.ordinary("client identity: \(error)"))
             return
         }
+        // The human may have cancelled (or started another connect)
+        // while the Keychain answered: dialing now would clobber the
+        // window's renderer and event epoch.
+        guard isCurrent(generation) else { return }
 
         // CL-13/CL-18: the per-host preference seeds the session-start
         // posture — one 0x18 leaves after the host's first 0x19 when
@@ -299,8 +318,6 @@ final class ConnectionModel {
         // freshest address), inside one honest budget. Every OTHER
         // failure — crypto rejection, unpaired, socket errors —
         // still fails immediately: patience is only for silence.
-        connectGeneration += 1
-        let generation = connectGeneration
         let deadline = services.now() + Self.freshConnectBudgetMicroseconds
         var dialAddress = host.address
         var dialPort = host.port
@@ -335,8 +352,7 @@ final class ConnectionModel {
                 HandshakeWitness.record("sessionStartCompleted", fields: [
                     "round": String(round),
                 ])
-                guard generation == connectGeneration,
-                      case .connecting = phase else {
+                guard isCurrent(generation) else {
                     // The human cancelled mid-dial: this session has
                     // no owner — close it politely and walk away.
                     services.endSession(candidate, .goodbye)
@@ -351,8 +367,7 @@ final class ConnectionModel {
                     "round": String(round),
                     "error": String(describing: error),
                 ])
-                guard generation == connectGeneration,
-                      case .connecting = phase else { return }
+                guard isCurrent(generation) else { return }
                 guard case TransportCryptoError.handshakeFailed(let why)
                         = error, why.hasPrefix("no response"),
                       services.now() < deadline else {
@@ -375,8 +390,7 @@ final class ConnectionModel {
                 // advertising, dial where it lives NOW.
                 let sighting = await services.browse(2.0)
                     .first { $0.publicKeyHash == host.publicKeyHash }
-                guard generation == connectGeneration,
-                      case .connecting = phase else { return }
+                guard isCurrent(generation) else { return }
                 if let sighting {
                     dialAddress = sighting.address
                     dialPort = sighting.port
@@ -412,13 +426,6 @@ final class ConnectionModel {
         services.streamBegan()
     }
 
-    /// The connecting screen's Cancel: invalidates the in-flight
-    /// connect (any round that completes afterward closes its session
-    /// politely and walks away) and returns to the picker.
-    func cancelConnect() {
-        connectGeneration += 1
-        phase = .pickHost
-    }
 
     /// Builds one wire session against this window's display layer,
     /// minting a fresh event epoch — the shared leg of the first
@@ -664,9 +671,6 @@ final class ConnectionModel {
         }
     }
 
-    func endSession(reason: String?) {
-        endLyteSession(reason: reason)
-    }
 
     /// The 1 Hz link-health tick (driven by the stream container's task
     /// loop): fold new recorder frames into their event-second buckets,
@@ -692,8 +696,14 @@ final class ConnectionModel {
             nowMicroseconds: SystemMonotonicClock.nowMicroseconds)
     }
 
+    /// The human's exit, whatever the phase: the connecting screen's
+    /// Cancel, Disconnect, ⌘W. In-flight work is invalidated first — a
+    /// dial that completes afterward closes its session and walks away —
+    /// then whatever stands (session, roaming hunt) ends.
     func disconnect() {
-        endSession(reason: nil)
+        advanceLifecycle()
+        if case .connecting = phase { phase = .pickHost }
+        endLyteSession(reason: nil)
     }
 
     // MARK: - Chroma tier (V-5)
