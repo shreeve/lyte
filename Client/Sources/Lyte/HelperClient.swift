@@ -84,7 +84,7 @@ final class HelperClient {
                 promptedThisRun = true
                 SMAppService.openSystemSettingsLoginItems()
             }
-            return "Approve the Lyte helper in System Settings → Login Items to auto-quiet AWDL (+~50 ms smoother audio)"
+            return "Approve the Lyte helper in System Settings → Login Items to quiet AWDL while streaming (smoother audio)"
         default:
             return nil
         }

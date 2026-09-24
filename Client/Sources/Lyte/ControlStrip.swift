@@ -610,7 +610,7 @@ struct ChromaStripMenu: View {
     private func rowTitle(_ tier: ChromaTier) -> String {
         let base = "\(tier.displayName) (\(tier.samplingLabel))"
         return tier.isSelectable
-            ? base : base + " — not offered by this host"
+            ? base : base + " — not yet available"
     }
 }
 
