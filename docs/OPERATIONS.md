@@ -73,9 +73,10 @@ Run as the seat user in the host tree on pup (`~/src/lyte-host`), after a
 release build:
 
 ```sh
-Scripts/deploy-host.sh --restart            # copy to versions/<id>, flip the link, restart
-Scripts/deploy-host.sh --status             # active and previous version, sha256 check
-Scripts/deploy-host.sh --rollback --restart # flip back (a second rollback undoes the first)
+cd ~/src/lyte-host                          # the Host package on pup (Host/ in the repo)
+./Scripts/deploy-host.sh --restart            # copy to versions/<id>, flip the link, restart
+./Scripts/deploy-host.sh --status             # active and previous version, sha256 check
+./Scripts/deploy-host.sh --rollback --restart # flip back (a second rollback undoes the first)
 ```
 
 A deploy never rewrites a version in place, and redeploying the active
