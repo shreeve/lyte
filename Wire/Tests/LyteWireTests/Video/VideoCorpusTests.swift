@@ -34,7 +34,7 @@ final class VideoCorpusTests: XCTestCase {
             let bytes = try load(name)
             XCTAssertTrue(AnnexBCheck.isFrameShaped(bytes), name)
             XCTAssertEqual(
-                AnnexBStream.accessUnitRanges(in: bytes).count, 1,
+                AnnexBAccessUnits.ranges(in: bytes).count, 1,
                 "\(name): exactly one access unit per corpus file"
             )
             let isIdrFile = name.contains("idr")
