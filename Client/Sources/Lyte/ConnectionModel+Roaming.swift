@@ -108,6 +108,12 @@ extension ConnectionModel {
         Task { @MainActor [weak self] in
             let hosts = await browse(2.0)
             guard let self, self.isCurrent(generation) else { return }
+            if let name = self.hostName, let pkh = self.hostPublicKeyHash,
+               Self.identityReplaced(in: hosts, name: name, publicKeyHash: pkh) {
+                // No ladder can reach the pinned identity any more.
+                self.endLyteSession(reason: Self.identityReplacedMessage(name))
+                return
+            }
             let sightings = hosts.compactMap { host -> RoamingSighting? in
                 guard let pkh = host.publicKeyHash else { return nil }
                 return RoamingSighting(
@@ -162,6 +168,7 @@ extension ConnectionModel {
             do {
                 try await start(lyte)
             } catch {
+                endSession(lyte, .silent)
                 guard let self, self.isCurrent(generation) else { return }
                 self.roamingInput { policy, now in policy.dialFailed(now: now) }
                 return
@@ -195,5 +202,6 @@ extension ConnectionModel {
         roamingInput { policy, now in
             policy.sessionEstablished(address: address, port: port, now: now)
         }
+        replayPendingTerminal()
     }
 }
