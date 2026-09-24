@@ -1091,7 +1091,9 @@ static func printSessionBooks(
     session-lock: video prepare max \(wire.videoPrepareMaxNS) ns off-lock, \
     commit wait/hold max \(wire.videoCommitLockWaitMaxNS)/\
     \(wire.videoCommitLockHoldMaxNS) ns, service/receive max \
-    \(wire.serviceOnceMaxNS)/\(wire.receiveAllMaxNS) ns
+    \(wire.serviceOnceMaxNS)/\(wire.receiveAllMaxNS) ns; \(wire.drainPasses) \
+    sender passes, \(wire.receiveCalls) recvmmsg calls, \(wire.outqQueries) \
+    SIOCOUTQ queries
     audio-routing: final \(wire.currentAudioRouting), \
     \(s.audioRoutingRequestsReceived) flip requests, \
     \(s.audioRoutingStatusesSent) statuses sent

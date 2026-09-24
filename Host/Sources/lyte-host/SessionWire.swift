@@ -262,6 +262,11 @@ final class SessionWire {
     private(set) var videoCommitLockHoldMaxNS: UInt64 = 0
     private(set) var serviceOnceMaxNS: UInt64 = 0
     private(set) var receiveAllMaxNS: UInt64 = 0
+    /// The sender thread's syscall economy: its passes, and the recvmmsg
+    /// calls and SIOCOUTQ queries every path made. Under `lock`.
+    private(set) var drainPasses = 0
+    private(set) var receiveCalls = 0
+    private(set) var outqQueries = 0
     /// Mutated under `lock` (the mailbox counters above use
     /// `audioMailboxLock`).
     private(set) var audioSendFailures = 0
@@ -278,6 +283,12 @@ final class SessionWire {
     private(set) var refusalsWhileLive = 0
     private var currentVideoSocketOutqBytes = 0
     private var currentLatencySocketOutqBytes = 0
+    /// When the send queues were last sampled. While the outbox is empty
+    /// and the governor is calm the kernel bytes move by at most one
+    /// quantum's worth between samples, so they are re-read once per
+    /// pacer quantum; any other state re-reads them every pump.
+    private var lastOutqSampleNS: UInt64?
+    private static let outqSampleIntervalNS: UInt64 = 1_000_000
     private var kernelPressureGovernor = KernelPressureGovernor()
     private var kernelPressureDecision: KernelPressureDecision?
     private(set) var sendErrors = 0
@@ -597,22 +608,12 @@ final class SessionWire {
     private func observeKernelPressure(
         _ session: Session, now: UInt64
     ) -> KernelPressureDecision {
-        let videoOutq = Int(lyte_netio_outq_bytes(videoNetio ?? listenNetio))
-        if videoOutq >= 0 {
-            currentVideoSocketOutqBytes = videoOutq
-            socketOutqMaxBytes = max(socketOutqMaxBytes, videoOutq)
-        } else {
-            socketOutqQueryFailures += 1
-        }
-        if let latencyNetio {
-            let latencyOutq = Int(lyte_netio_outq_bytes(latencyNetio))
-            if latencyOutq >= 0 {
-                currentLatencySocketOutqBytes = latencyOutq
-                latencySocketOutqMaxBytes = max(
-                    latencySocketOutqMaxBytes, latencyOutq)
-            } else {
-                socketOutqQueryFailures += 1
-            }
+        let calm = outbox.isEmpty
+            && (kernelPressureDecision?.state ?? .calm) == .calm
+        if !calm || lastOutqSampleNS.map({
+            now &- $0 >= Self.outqSampleIntervalNS
+        }) ?? true {
+            sampleSendQueues(now: now)
         }
         let decision = kernelPressureGovernor.observe(
             KernelPressureSample(
@@ -631,6 +632,30 @@ final class SessionWire {
                 frameBudgetBytes: session.frameByteCeiling(fps: 60)))
         kernelPressureDecision = decision
         return decision
+    }
+
+    /// Requires `lock`. SIOCOUTQ on both media sockets.
+    private func sampleSendQueues(now: UInt64) {
+        lastOutqSampleNS = now
+        outqQueries += 1
+        let videoOutq = Int(lyte_netio_outq_bytes(videoNetio ?? listenNetio))
+        if videoOutq >= 0 {
+            currentVideoSocketOutqBytes = videoOutq
+            socketOutqMaxBytes = max(socketOutqMaxBytes, videoOutq)
+        } else {
+            socketOutqQueryFailures += 1
+        }
+        if let latencyNetio {
+            outqQueries += 1
+            let latencyOutq = Int(lyte_netio_outq_bytes(latencyNetio))
+            if latencyOutq >= 0 {
+                currentLatencySocketOutqBytes = latencyOutq
+                latencySocketOutqMaxBytes = max(
+                    latencySocketOutqMaxBytes, latencyOutq)
+            } else {
+                socketOutqQueryFailures += 1
+            }
+        }
     }
 
     private func pumpForSocketState(_ session: Session) {
@@ -831,17 +856,26 @@ final class SessionWire {
             && tuple.remotePort == requiredPeer.port
     }
 
-    /// One receive batch from every socket. A closed session leaves the
-    /// listening socket alone: what arrives there belongs to the next
-    /// session.
+    /// One receive batch from every socket, or only from the sockets in
+    /// `readable` (fds that polled readable; nil = all). A closed session
+    /// leaves the listening socket alone: what arrives there belongs to
+    /// the next session.
     private func receiveFromAll(
+        readable: Set<Int32>? = nil,
         _ handle: ([UInt8], FourTuple) -> Void
     ) throws {
-        if session?.lifecycleState != .closed {
+        func polled(_ socket: OpaquePointer) -> Bool {
+            readable.map { $0.contains(lyte_netio_fd(socket)) } ?? true
+        }
+        if session?.lifecycleState != .closed, polled(listenNetio) {
             try receiveAll(from: listenNetio, handle)
         }
-        if let videoNetio { try receiveAll(from: videoNetio, handle) }
-        if let latencyNetio { try receiveAll(from: latencyNetio, handle) }
+        if let videoNetio, polled(videoNetio) {
+            try receiveAll(from: videoNetio, handle)
+        }
+        if let latencyNetio, polled(latencyNetio) {
+            try receiveAll(from: latencyNetio, handle)
+        }
     }
 
     /// Requires `lock`. One datagram into an established session.
@@ -1484,6 +1518,11 @@ final class SessionWire {
     /// session's next timer. A send failure ends the session; the thread
     /// stays stoppable.
     private func drainLoop() {
+        // The first pass reads every socket; later ones only those the
+        // last wait saw readable (a socket skipped while it holds data
+        // stays readable and ends the next wait at once). The janitor's
+        // service pass still reads every socket every 10 ms.
+        var readable: Set<Int32>?
         while true {
             drainCondition.lock()
             let stop = drainStop
@@ -1495,7 +1534,7 @@ final class SessionWire {
             if stop { return }
             let wait: DrainWait
             do {
-                wait = try drainPass()
+                wait = try drainPass(readable: readable)
             } catch {
                 drainCondition.lock()
                 let firstFailure = !drainFailed
@@ -1506,21 +1545,22 @@ final class SessionWire {
                 }
                 wait = DrainWait()
             }
-            block(until: wait)
+            readable = block(until: wait)
         }
     }
 
     /// Callers must not hold `lock`: the wait happens outside it, so
     /// audio's 5 ms sends interleave with a long video drain.
-    private func drainPass() throws -> DrainWait {
+    private func drainPass(readable: Set<Int32>?) throws -> DrainWait {
         lock.lock()
         guard let session, session.isPeerConfirmed, !peerGone else {
             lock.unlock()
             flushLogLines()
             return DrainWait()
         }
+        drainPasses += 1
         do {
-            try serviceOnce()
+            try serviceOnce(readable: readable)
             try flushOutbox()
         } catch {
             lock.unlock()
@@ -1561,7 +1601,9 @@ final class SessionWire {
         return DrainWait(timeoutNS: timeoutNS, sockets: sockets)
     }
 
-    private func block(until wait: DrainWait) {
+    /// Waits, then returns the sockets that polled readable (or in
+    /// error, which a receive reports); nil when the wait itself failed.
+    private func block(until wait: DrainWait) -> Set<Int32>? {
         var fds: [Int32] = [wakeFd]
         var events: [Int16] = [Int16(POLLIN)]
         for socket in wait.sockets where socket.pollIn || socket.pollOut {
@@ -1570,14 +1612,22 @@ final class SessionWire {
                 (socket.pollIn ? POLLIN : 0) | (socket.pollOut ? POLLOUT : 0)))
         }
         var revents = [Int16](repeating: 0, count: fds.count)
-        _ = lyte_netio_wait(
+        let ready = lyte_netio_wait(
             fds, events, &revents, Int32(fds.count), wait.timeoutNS ?? -1)
         if revents[0] != 0 {
             lyte_netio_wake_drain(wakeFd)
         }
+        guard ready >= 0 else { return nil }
+        let readableMask = Int16(POLLIN | POLLERR | POLLHUP)
+        var readable: Set<Int32> = []
+        for i in 1..<fds.count where revents[i] & readableMask != 0 {
+            readable.insert(fds[i])
+        }
+        return readable
     }
 
-    private func serviceOnce() throws {
+    /// `readable`: see `receiveFromAll`.
+    private func serviceOnce(readable: Set<Int32>? = nil) throws {
         let serviceStart = SystemMonotonicClock.nowNanoseconds
         defer {
             serviceOnceMaxNS = max(
@@ -1586,7 +1636,7 @@ final class SessionWire {
         }
         // Audio first, before receive and timer work.
         drainAudioMailboxLocked()
-        try receiveFromAll { [weak self] datagram, tuple in
+        try receiveFromAll(readable: readable) { [weak self] datagram, tuple in
             self?.receiveEstablished(datagram, from: tuple)
         }
         for event in session.advance(
@@ -1612,6 +1662,7 @@ final class SessionWire {
         }
         // One recvmmsg batch per call: a continuously full socket must not
         // hold the session lock unboundedly.
+        receiveCalls += 1
         let got = recvSlots.withUnsafeMutableBufferPointer { slots in
             lyte_netio_recv_batch(socket, slots.baseAddress,
                                   Int32(slots.count),
