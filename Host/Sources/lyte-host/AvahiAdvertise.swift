@@ -142,8 +142,7 @@ final class AvahiAdvertiser {
         if let bus, let groupPath {
             if let reply = try? bus.call(
                 dest: Self.dest, path: groupPath,
-                interface: Self.groupInterface, method: "Free",
-                timeoutMs: 1_000) {
+                interface: Self.groupInterface, method: "Free") {
                 dbus_message_unref(reply)
             }
         }

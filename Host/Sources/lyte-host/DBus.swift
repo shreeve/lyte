@@ -31,6 +31,16 @@ enum DBusVariant {
 final class SessionBus {
     let conn: OpaquePointer
 
+    /// A call's reply wait. Clipboard and Avahi calls run on the janitor
+    /// during a session and on the handshake wait between sessions, so a
+    /// stalled Mutter or Avahi costs the listener or the session's shell
+    /// work at most this per call.
+    static let callTimeoutMs: Int32 = 1_000
+    /// Bring-up calls (the clipboard's RemoteDesktop session) run once,
+    /// before any client is waiting, and may meet a compositor still
+    /// starting.
+    static let setupTimeoutMs: Int32 = 10_000
+
     /// Which bus a private connection binds. Mutter lives on the user
     /// session bus; Avahi is a system daemon on the system bus — same
     /// libdbus plumbing either way.
@@ -120,7 +130,7 @@ final class SessionBus {
 
     /// Issues a blocking method call; the closure appends arguments.
     func call(dest: String, path: String, interface: String, method: String,
-              timeoutMs: Int32 = 30_000,
+              timeoutMs: Int32 = SessionBus.callTimeoutMs,
               appendArgs: (inout DBusMessageIter) throws -> Void = { _ in }) throws
         -> OpaquePointer
     {

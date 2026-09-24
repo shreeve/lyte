@@ -144,7 +144,8 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
         bus = try SessionBus()
         let createReply = try bus.call(
             dest: Self.rdService, path: "/org/gnome/Mutter/RemoteDesktop",
-            interface: Self.rdService, method: "CreateSession")
+            interface: Self.rdService, method: "CreateSession",
+            timeoutMs: SessionBus.setupTimeoutMs)
         rdSession = try SessionBus.objectPathReply(createReply)
         dbus_message_unref(createReply)
     }
@@ -162,13 +163,15 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             """)
         let startReply = try bus.call(
             dest: Self.rdService, path: rdSession,
-            interface: Self.sessionInterface, method: "Start")
+            interface: Self.sessionInterface, method: "Start",
+            timeoutMs: SessionBus.setupTimeoutMs)
         dbus_message_unref(startReply)
         // Empty options: observe only — becoming owner is apply()'s
         // job, never enablement's.
         let enableReply = try bus.call(
             dest: Self.rdService, path: rdSession,
             interface: Self.sessionInterface, method: "EnableClipboard",
+            timeoutMs: SessionBus.setupTimeoutMs,
             appendArgs: { iter in
                 try self.bus.appendOptions(&iter, [])
             })

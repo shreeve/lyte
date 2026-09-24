@@ -298,6 +298,7 @@ targets += [
         name: "LyteHostIntegrationTests",
         dependencies: [
             "lyte-host",
+            "CDBus",
             "CNetIO",
             "HostCore",
             "HostIO",
