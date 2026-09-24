@@ -964,6 +964,7 @@ public final class Session {
             validator.datagramReceived(
                 from: tuple,
                 connectionId: claimed,
+                position: (envelope.channel, envelope.seq),
                 byteCount: datagram.count,
                 now: now
             ),
