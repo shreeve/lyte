@@ -1786,6 +1786,7 @@ final class SessionWire {
                     lifecycle: FROZEN — 350 ms of media-path silence; \
                     datagram video suspended, CTRL stays alive
                     """)
+                releaseHeldInput("the client's path went dark")
             case .recovery:
                 emit("""
                     lifecycle: RECOVERY — evidence returned; fresh IDR \
@@ -1798,6 +1799,7 @@ final class SessionWire {
             }
         case .sessionClosed(let reason):
             emit("session: CLOSED (\(reason))")
+            releaseHeldInput("the session closed")
         case .inputReceived(let event, let rxMicros):
             injectInput(event, receivedAtMicroseconds: rxMicros)
         case .videoBacklogPurged(let datagrams, let bytes, let staleWireMs):
@@ -2012,6 +2014,17 @@ final class SessionWire {
             receivedAtMicroseconds: rxMicros,
             injectedAtMicroseconds: injectMicros
         )
+    }
+
+    /// Requires `lock`. A client whose path is dark cannot send the
+    /// release of a key it holds, and the compositor autorepeats a held
+    /// key until it sees one, so nothing stays pressed past FROZEN or
+    /// the session's close. A key the user really is still holding is
+    /// released too, which is the safe direction.
+    private func releaseHeldInput(_ why: String) {
+        guard let released = inputInjector?.releaseHeld(), released > 0
+        else { return }
+        emit("input: released \(released) held key(s) — \(why)")
     }
 
     /// Capture negotiation → the injector's absolute-coordinate scaling

@@ -913,7 +913,9 @@ static func serveSession(
     w.shutdown(reason: .shuttingDown)
     // The devices and the leaf outlive the session: nothing its client
     // held may stay pressed, and the leaf stops reporting into it.
-    host.injector?.releaseHeld()
+    if let released = host.injector?.releaseHeld(), released > 0 {
+        print("input: released \(released) held key(s) at session end")
+    }
     host.clipboardLeaf?.detach()
     host.clipboardLeaf?.onLocalChange = nil
     host.clipboardLeaf?.onLocalImageChange = nil

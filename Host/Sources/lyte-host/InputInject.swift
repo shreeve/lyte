@@ -22,9 +22,11 @@ protocol InputInjector: AnyObject {
     /// The recorded monitor's pixel size, once capture reads it (the
     /// uinput tablet scales absolute moves against it).
     func noteMonitorExtent(width: UInt32, height: UInt32)
-    /// Releases every key and button still held — a session ended with
-    /// its client's press outstanding. The devices stay up.
-    func releaseHeld()
+    /// Releases every key and button still held and returns how many:
+    /// the client can no longer send their releases (its path went dark
+    /// or the session ended). The devices stay up.
+    @discardableResult
+    func releaseHeld() -> Int
     func stop()
 }
 
@@ -37,9 +39,9 @@ final class UinputInjector: InputInjector {
     private let handle: OpaquePointer
     static let pixelsPerDetent = 15.0
     /// Every key/button currently held down, by evdev code. A kernel
-    /// device never releases latched keys itself, so releaseHeld() at
-    /// every session end and stop() release everything still held.
-    /// inject() runs under SessionWire's session lock; releaseHeld() and
+    /// device never releases latched keys itself. inject() and a
+    /// session's releaseHeld() (FROZEN, session close) run under
+    /// SessionWire's session lock; the end-of-session releaseHeld() and
     /// stop() run on main after the session's threads have stopped —
     /// never concurrently.
     private var heldCodes: Set<UInt32> = []
@@ -126,18 +128,21 @@ final class UinputInjector: InputInjector {
         }
     }
 
-    func releaseHeld() {
-        guard !stopped, !heldCodes.isEmpty else { return }
+    @discardableResult
+    func releaseHeld() -> Int {
+        guard !stopped, !heldCodes.isEmpty else { return 0 }
         var err = [CChar](repeating: 0, count: 256)
         for code in heldCodes {
             _ = lyte_uinput_key(handle, code, 0, &err, err.count)
         }
-        print("input: released \(heldCodes.count) held key(s)")
+        let released = heldCodes.count
         heldCodes.removeAll()
+        return released
     }
 
     func stop() {
-        releaseHeld()
+        let released = releaseHeld()
+        if released > 0 { print("input: released \(released) held key(s)") }
         stopped = true
     }
 }
