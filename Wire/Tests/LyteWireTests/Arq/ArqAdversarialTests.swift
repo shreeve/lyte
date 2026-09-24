@@ -280,4 +280,106 @@ final class ArqAdversarialTests: XCTestCase {
             }
         )
     }
+
+    /// One-shot groups hold out-of-order segments and partial messages.
+    /// A peer opening fresh ids must not pin more than the endpoint-wide
+    /// byte budget; the ordered stream is never refused, and completing a
+    /// group releases its bytes.
+    func testOneShotReceiveBytesAreBoundedAndReleased() throws {
+        let config = ArqConfig(maxOneShotReceiveByteCount: 3_000)
+        var receiver = Endpoint(channel: .ctrl, config: config)
+        func tail(_ gid: UInt16) throws -> [UInt8] {
+            try ArqSegment(
+                group: ArqGroupId(rawValue: gid),
+                seq: ArqSegmentSeq(rawValue: 1),
+                endOfMessage: true,
+                body: [UInt8](repeating: UInt8(gid), count: 1_000)
+            ).encode()
+        }
+        // Three buffered tails fit; the fourth would cross the budget.
+        for gid: UInt16 in 1...3 {
+            XCTAssertEqual(receiver.ingest(payload: try tail(gid), now: at(0)), [])
+        }
+        let refusedGroup = ArqGroupId(rawValue: 4)
+        XCTAssertEqual(
+            receiver.ingest(payload: try tail(4), now: at(0)),
+            [.ignored(.oneShotReceiveBudgetExhausted(refusedGroup))]
+        )
+        let (acks, _) = receiver.poll(now: at(0))
+        let acked = try acks
+            .flatMap { try ArqFrame.decodeAll($0) }
+            .flatMap { frame -> [ArqAck.Block] in
+                if case .ack(let ack) = frame { return ack.blocks }
+                return []
+            }
+            .map(\.group)
+        XCTAssertFalse(acked.contains(refusedGroup), "refused means unacknowledged")
+
+        // The ordered stream is outside the budget.
+        let stream = try ArqSegment(
+            group: .orderedStream, seq: ArqSegmentSeq(rawValue: 0),
+            endOfMessage: true, body: [UInt8](repeating: 0x55, count: 1_000)
+        )
+        XCTAssertEqual(
+            receiver.ingest(payload: stream.encode(), now: at(1)),
+            [.message(group: .orderedStream,
+                      bytes: [UInt8](repeating: 0x55, count: 1_000))]
+        )
+
+        // At the budget, the segment completing group 1 is still
+        // admitted — it releases bytes — and frees room for group 4.
+        let head = try ArqSegment(
+            group: ArqGroupId(rawValue: 1), seq: ArqSegmentSeq(rawValue: 0),
+            endOfMessage: false, body: [0xAA]
+        )
+        XCTAssertEqual(
+            receiver.ingest(payload: head.encode(), now: at(2)),
+            [.message(group: ArqGroupId(rawValue: 1),
+                      bytes: [0xAA] + [UInt8](repeating: 1, count: 1_000))]
+        )
+        XCTAssertEqual(receiver.ingest(payload: try tail(4), now: at(3)), [])
+    }
+
+    /// A message over the ceiling on the ordered stream loses it for
+    /// good: the poisoning is reported once as messageOverBudget, then
+    /// every later stream segment names the poisoned stream, and the
+    /// endpoint says so for the shell to end the session. One-shot
+    /// groups keep working.
+    func testPoisonedOrderedStreamIsTypedAndPermanent() throws {
+        let config = ArqConfig(
+            maxSegmentBodyByteCount: 64, maxMessageByteCount: 100
+        )
+        var receiver = Endpoint(channel: .ctrl, config: config)
+        func stream(_ seq: UInt16) throws -> [UInt8] {
+            try ArqSegment(
+                group: .orderedStream, seq: ArqSegmentSeq(rawValue: seq),
+                endOfMessage: seq == 3,
+                body: [UInt8](repeating: 0xEE, count: 64)
+            ).encode()
+        }
+        XCTAssertEqual(receiver.ingest(payload: try stream(0), now: at(0)), [])
+        XCTAssertFalse(receiver.isOrderedStreamPoisoned)
+        XCTAssertEqual(
+            receiver.ingest(payload: try stream(1), now: at(0)),
+            [.ignored(.messageOverBudget(.orderedStream))]
+        )
+        XCTAssertTrue(receiver.isOrderedStreamPoisoned)
+        for seq: UInt16 in 2...3 {
+            XCTAssertEqual(
+                receiver.ingest(payload: try stream(seq), now: at(1)),
+                [.ignored(.orderedStreamPoisoned)]
+            )
+        }
+        // Still poisoned long after any one-shot lifetime.
+        _ = receiver.poll(now: at(60_000_000))
+        XCTAssertTrue(receiver.isOrderedStreamPoisoned)
+        let oneShot = try ArqSegment(
+            group: ArqGroupId(rawValue: 1), seq: ArqSegmentSeq(rawValue: 0),
+            endOfMessage: true, body: [7]
+        )
+        XCTAssertEqual(
+            receiver.ingest(payload: oneShot.encode(), now: at(60_000_001)),
+            [.message(group: ArqGroupId(rawValue: 1), bytes: [7])]
+        )
+    }
 }

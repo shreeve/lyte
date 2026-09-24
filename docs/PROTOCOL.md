@@ -242,6 +242,15 @@ window; a sender never exceeds the peer's window. One send group holds at
 most 32,512 segments; past that `send` throws `ArqSendError.queueFull`,
 which every shell treats as backpressure, not as a fatal error.
 
+A reassembled message is at most 262,144 bytes. The ceiling is not
+negotiated, so both ends share it. A message past it poisons its group:
+a one-shot group is dropped, and a poisoned ordered stream can never
+deliver in order again, so the endpoint reports it
+(`isOrderedStreamPoisoned`, `.orderedStreamPoisoned`) and the session
+should end. Incomplete one-shot receive groups share a 1 MiB receive
+budget; a segment past it is refused unacknowledged unless it completes
+its message.
+
 Pinned by `arq-v1.json`.
 
 ## Session lifecycle
