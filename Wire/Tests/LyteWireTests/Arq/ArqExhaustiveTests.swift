@@ -128,14 +128,16 @@ final class ArqExhaustiveTests: XCTestCase {
         oneShotNeeds: Set<Int>,
         initialSeq: UInt16
     ) {
-        let label = "seq \(initialSeq), order \(order)"
+        // Messages are built only on failure: 165k scenarios make
+        // eager interpolation the dominant cost.
+        func label() -> String { "seq \(initialSeq), order \(order)" }
         var receiver = Endpoint(
             channel: .ctrl, config: Self.config(initialSeq: initialSeq)
         )
         var deliveredStream: [[UInt8]] = []
         var deliveredOneShot: [[UInt8]] = []
 
-        func absorb(_ events: [ArqEvent], step: String) {
+        func absorb(_ events: [ArqEvent], step: @autoclosure () -> String) {
             for event in events {
                 guard case .message(let group, let bytes) = event else {
                     continue
@@ -145,24 +147,24 @@ final class ArqExhaustiveTests: XCTestCase {
                 } else if group == Self.oneShotGroup {
                     deliveredOneShot.append(bytes)
                 } else {
-                    XCTFail("\(label) [\(step)]: message on foreign group")
+                    XCTFail("\(label()) [\(step())]: message on foreign group")
                 }
             }
-            // Exactly-once + in-order + byte-exact, checked every step.
-            XCTAssertEqual(
-                deliveredStream,
-                Array(Self.streamMessages.prefix(deliveredStream.count)),
-                "\(label) [\(step)]: stream delivery is not an in-order prefix"
-            )
-            XCTAssertLessThanOrEqual(
-                deliveredOneShot.count, 1,
-                "\(label) [\(step)]: one-shot delivered twice"
-            )
-            if let delivered = deliveredOneShot.first {
-                XCTAssertEqual(
-                    delivered, Self.oneShotMessage,
-                    "\(label) [\(step)]: one-shot bytes differ"
-                )
+            // Exactly-once + in-order + byte-exact, checked every step
+            // (plain comparisons: this runs millions of times).
+            if !deliveredStream.elementsEqual(
+                Self.streamMessages.prefix(deliveredStream.count)) {
+                XCTFail("""
+                    \(label()) [\(step())]: stream delivery is not an \
+                    in-order prefix: \(deliveredStream)
+                    """)
+            }
+            if deliveredOneShot.count > 1 {
+                XCTFail("\(label()) [\(step())]: one-shot delivered twice")
+            }
+            if let delivered = deliveredOneShot.first,
+               delivered != Self.oneShotMessage {
+                XCTFail("\(label()) [\(step())]: one-shot bytes differ")
             }
         }
 
@@ -181,14 +183,14 @@ final class ArqExhaustiveTests: XCTestCase {
         if oneShotNeeds.isSubset(of: present) {
             XCTAssertEqual(
                 deliveredOneShot.count, 1,
-                "\(label): complete one-shot group held back — cross-group HOL"
+                "\(label()): complete one-shot group held back — cross-group HOL"
             )
         }
         for (index, needs) in streamNeeds.enumerated()
         where needs.isSubset(of: present) {
             XCTAssertGreaterThan(
                 deliveredStream.count, index,
-                "\(label): stream message \(index) complete but undelivered"
+                "\(label()): stream message \(index) complete but undelivered"
             )
         }
 
@@ -196,7 +198,7 @@ final class ArqExhaustiveTests: XCTestCase {
         // a lossless in-order pipe; the receiver's dedupe and the ACK
         // machinery must converge to full delivery and quiescence.
         guard var sender = try? Self.makeSender(initialSeq: initialSeq) else {
-            return XCTFail("\(label): sender rebuild failed")
+            return XCTFail("\(label()): sender rebuild failed")
         }
         var round = 0
         var oneShotAckSeen = false
@@ -205,9 +207,9 @@ final class ArqExhaustiveTests: XCTestCase {
             let now = HostTimestamp(microseconds: 10_000 * UInt64(round))
             let (out, _) = sender.poll(now: now)
             for datagram in out {
-                XCTAssertLessThanOrEqual(
-                    datagram.count, WireBudget.maxPlaintextShardByteCount
-                )
+                if datagram.count > WireBudget.maxPlaintextShardByteCount {
+                    XCTFail("\(label()): \(datagram.count) B over the shard budget")
+                }
                 absorb(
                     receiver.ingest(payload: datagram, now: now),
                     step: "recovery \(round)"
@@ -220,7 +222,7 @@ final class ArqExhaustiveTests: XCTestCase {
                         XCTAssertEqual(group, Self.oneShotGroup)
                         XCTAssertFalse(
                             oneShotAckSeen,
-                            "\(label): one-shot acknowledged twice"
+                            "\(label()): one-shot acknowledged twice"
                         )
                         oneShotAckSeen = true
                     }
@@ -230,10 +232,10 @@ final class ArqExhaustiveTests: XCTestCase {
         }
 
         // Termination + totality.
-        XCTAssertLessThan(round, 50, "\(label): recovery did not terminate")
-        XCTAssertEqual(deliveredStream, Self.streamMessages, label)
-        XCTAssertEqual(deliveredOneShot, [Self.oneShotMessage], label)
-        XCTAssertTrue(oneShotAckSeen, label)
+        XCTAssertLessThan(round, 50, "\(label()): recovery did not terminate")
+        XCTAssertEqual(deliveredStream, Self.streamMessages, label())
+        XCTAssertEqual(deliveredOneShot, [Self.oneShotMessage], label())
+        XCTAssertTrue(oneShotAckSeen, label())
     }
 
     // MARK: Enumeration helpers
