@@ -225,21 +225,23 @@ final class LyteInputCapture {
             let code = MacEvdevKeyMap.evdevKeycode(
                 forMacKeyCode: event.keyCode, isoKeyboard: iso)
             return execute(forwarding.keyDown(
-                code, isRepeat: event.isARepeat, commandHeld: commandHeld,
+                code, macKeyCode: event.keyCode,
+                isRepeat: event.isARepeat, commandHeld: commandHeld,
                 isLocalShortcut: commandHeld
                     && Self.isLocalShortcut(event),
-                modifiersDown: Self.modifiersDown(event.modifierFlags)), event)
+                modifiersDown: Self.modifiersDown(event.modifierFlags),
+                capsLockOn: event.modifierFlags.contains(.capsLock)), event)
 
         case .keyUp:
             let code = MacEvdevKeyMap.evdevKeycode(
                 forMacKeyCode: event.keyCode, isoKeyboard: iso)
-            return execute(
-                forwarding.keyUp(code, commandHeld: commandHeld), event)
+            return execute(forwarding.keyUp(
+                code, macKeyCode: event.keyCode, commandHeld: commandHeld),
+                event)
 
         case .flagsChanged where event.keyCode == MacEvdevKeyMap.capsLockKeyCode:
-            guard let code = MacEvdevKeyMap.evdevKeycode(
-                forMacKeyCode: event.keyCode) else { return event }
-            return execute(forwarding.lockToggled(code), event)
+            return execute(forwarding.capsLockChanged(
+                on: event.modifierFlags.contains(.capsLock)), event)
 
         case .flagsChanged:
             guard let (keycode, deviceMask) =

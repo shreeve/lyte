@@ -23,6 +23,10 @@ import LyteWire
 ///   must neither ride the next key out as Super nor stay down, and
 ///   Shift, Control and Option are pressed or released to match before
 ///   the key or click goes out.
+/// - A key's release goes out as the evdev code its press went out as,
+///   whatever the key map says at release time.
+/// - The host's Caps Lock follows the Mac's: the host starts with it off,
+///   and any key or lock event whose flags disagree taps it once.
 struct InputForwardingPolicy {
     struct Verdict: Equatable {
         /// Wire events to send, in order.
@@ -47,30 +51,47 @@ struct InputForwardingPolicy {
     private(set) var heldButtons: Set<UInt32> = []
     /// ⌘ keys physically down but not yet forwarded.
     private(set) var pendingCommandKeys: Set<UInt32> = []
+    /// The evdev code each forwarded press went out as, by Mac key code.
+    private(set) var pressedAs: [UInt16: UInt32] = [:]
+    /// The host's Caps Lock as this capture has driven it.
+    private(set) var hostCapsLock = false
 
-    /// A key press. `code` is nil for keys with no evdev mapping;
-    /// `isLocalShortcut` says an app shortcut owns this ⌘ chord;
-    /// `modifiersDown` is the event's own record of which plain modifier
-    /// keys are physically down (nil when unknown).
+    /// KEY_CAPSLOCK.
+    static let capsLockKeycode: UInt32 = 58
+
+    /// A key press. `mapped` is nil for keys with no evdev mapping;
+    /// `macKeyCode` names the physical key, so its release can reuse this
+    /// press's code; `isLocalShortcut` says an app shortcut owns this ⌘
+    /// chord; `modifiersDown` is the event's own record of which plain
+    /// modifier keys are physically down and `capsLockOn` its Caps Lock
+    /// state (nil when unknown).
     mutating func keyDown(
-        _ code: UInt32?, isRepeat: Bool, commandHeld: Bool,
-        isLocalShortcut: Bool, modifiersDown: Set<UInt32>? = nil
+        _ mapped: UInt32?, macKeyCode: UInt16? = nil, isRepeat: Bool,
+        commandHeld: Bool, isLocalShortcut: Bool,
+        modifiersDown: Set<UInt32>? = nil, capsLockOn: Bool? = nil
     ) -> Verdict {
+        let code = macKeyCode.flatMap { pressedAs[$0] } ?? mapped
         // A key the host holds is the host's to repeat, whatever modifier
         // joined since: its repeats never fire a local shortcut.
         if isRepeat, let code, heldKeys.contains(code) { return .swallow }
         if commandHeld, isLocalShortcut { return .passThrough }
         if isRepeat { return .swallow }
         guard let code else { return .passThrough }
-        var sends = resyncModifiers(modifiersDown)
+        var sends: [InputEvent.Body] = []
+        if let capsLockOn { sends += syncCapsLock(capsLockOn) }
+        sends += resyncModifiers(modifiersDown)
         sends += resyncCommand(held: commandHeld)
         sends.append(.keyKeycode(keycode: code, pressed: true))
         heldKeys.insert(code)
+        if let macKeyCode { pressedAs[macKeyCode] = code }
         return Verdict(sends: sends, consumed: true)
     }
 
-    mutating func keyUp(_ code: UInt32?, commandHeld: Bool) -> Verdict {
-        guard let code else { return .passThrough }
+    mutating func keyUp(
+        _ mapped: UInt32?, macKeyCode: UInt16? = nil, commandHeld: Bool
+    ) -> Verdict {
+        let pressed = macKeyCode.flatMap { pressedAs.removeValue(forKey: $0) }
+        guard let code = pressed ?? mapped else { return .passThrough }
         if heldKeys.remove(code) != nil {
             return Verdict(
                 sends: [.keyKeycode(keycode: code, pressed: false)],
@@ -104,16 +125,11 @@ struct InputForwardingPolicy {
         return .swallow
     }
 
-    /// A lock key's state flip (Caps Lock): macOS reports no press or
-    /// release, so each flip is one full tap on the host — never held,
-    /// so the host has nothing to repeat or strand.
-    func lockToggled(_ code: UInt32) -> Verdict {
-        Verdict(
-            sends: [
-                .keyKeycode(keycode: code, pressed: true),
-                .keyKeycode(keycode: code, pressed: false),
-            ],
-            consumed: true)
+    /// Caps Lock's new state (macOS reports a flip, never a press or
+    /// release). A disagreement with the host is one full tap there —
+    /// never held, so the host has nothing to repeat or strand.
+    mutating func capsLockChanged(on: Bool) -> Verdict {
+        Verdict(sends: syncCapsLock(on), consumed: true)
     }
 
     /// A mouse button edge. `onVideo` is the hit test: true when the
@@ -151,7 +167,18 @@ struct InputForwardingPolicy {
         heldKeys.removeAll()
         heldButtons.removeAll()
         pendingCommandKeys.removeAll()
+        pressedAs.removeAll()
         return sends
+    }
+
+    /// The Caps Lock tap that brings the host to the Mac's state `on`.
+    private mutating func syncCapsLock(_ on: Bool) -> [InputEvent.Body] {
+        guard on != hostCapsLock else { return [] }
+        hostCapsLock = on
+        return [
+            .keyKeycode(keycode: Self.capsLockKeycode, pressed: true),
+            .keyKeycode(keycode: Self.capsLockKeycode, pressed: false),
+        ]
     }
 
     /// The Shift/Control/Option edges that make the host's view match the
