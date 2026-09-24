@@ -121,12 +121,16 @@ public enum AudioFramerError: Error, Equatable, Sendable {
     /// size the open group was promised at its first packet. Loud,
     /// because the already-emitted geometry advertised shard
     /// boundaries that would no longer align to packet boundaries.
+    /// The open group stays open; the caller recovers with
+    /// `AudioFramer.abandonOpenGroup()` and re-ingests the packet.
     case packetSizeChangedMidGroup(expected: Int, actual: Int)
 }
 
 public struct AudioFramerCounters: Equatable, Sendable {
     public var packetsIngested = 0
     public var groupsCompleted = 0
+    /// Groups closed early by `abandonOpenGroup()` (no parity sent).
+    public var groupsAbandoned = 0
     public var datagramsFramed = 0
 
     public init() {}
@@ -210,6 +214,20 @@ public final class AudioFramer {
         }
         counters.datagramsFramed += out.count
         return out
+    }
+
+    /// Closes the open group without parity — the recovery for a packet
+    /// size change (an Opus bitrate step). Its data shards already left
+    /// and each is a whole packet, so only that group's loss protection
+    /// is forfeit; the next packet opens a fresh group at the next
+    /// packet number (receivers key groups by the frame field and never
+    /// assume group alignment). Returns false when no group was open.
+    @discardableResult
+    public func abandonOpenGroup() -> Bool {
+        guard !groupPackets.isEmpty else { return false }
+        groupPackets.removeAll(keepingCapacity: true)
+        counters.groupsAbandoned += 1
+        return true
     }
 
     /// The group is full: parity shards ride out right behind the
