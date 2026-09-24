@@ -162,7 +162,7 @@ final class ReliableCtrlGateTests: XCTestCase {
         let reliable: ReliableCtrlEndpoint
         /// Everything the client transmitted, in order (the SimNet
         /// forwarding cursor reads from here).
-        let outbound: LockedDatagrams
+        let outbound: LockedBytePile
         private let capturedEvents: LockedEvents
 
         var beaconSeqsSeen: [UInt32] = []
@@ -175,7 +175,7 @@ final class ReliableCtrlGateTests: XCTestCase {
                 hostStaticPublicKey: host.staticKeys.publicKey,
                 attempts: 2, attemptTimeoutMilliseconds: 200)
             try crypto.performHandshake(io: host)
-            let outbound = LockedDatagrams()
+            let outbound = LockedBytePile()
             let sender = TransportSender(crypto: crypto, transmit: {
                 outbound.append($0)
                 return true
@@ -237,14 +237,6 @@ final class ReliableCtrlGateTests: XCTestCase {
                 return nil
             }
         }
-    }
-
-    private final class LockedDatagrams: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [[UInt8]] = []
-        func append(_ d: [UInt8]) { lock.lock(); stored.append(d); lock.unlock() }
-        var all: [[UInt8]] { lock.lock(); defer { lock.unlock() }; return stored }
-        var count: Int { lock.lock(); defer { lock.unlock() }; return stored.count }
     }
 
     private final class LockedEvents: @unchecked Sendable {
