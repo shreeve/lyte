@@ -1,8 +1,15 @@
 #!/bin/sh
 # The Swift Wasm toolchain pins and lookup shared by the WebAssembly legs
-# (Browser/Scripts/build.sh; Wire/Scripts/wasm-test.sh carries the same
-# pins). Source it, then call lyte_wasm_require. Nothing is auto-installed:
-# a missing piece fails with the exact install commands.
+# (Browser/Scripts/build.sh, Wire/Scripts/wasm-test.sh, the macOS gate).
+# Source it, then call lyte_wasm_require. Nothing is auto-installed: a
+# missing piece fails with the exact install commands.
+#
+# Optional: binaryen's wasm-opt. PackageToJS (Browser/Scripts/build.sh) runs
+# it on release builds when it is on PATH; without it PackageToJS prints a
+# warning and stages the module unoptimized, which is why
+# LyteClientBrowser.wasm is ~77 MB. The unoptimized module behaves the same
+# and no gate needs wasm-opt; install it (`brew install binaryen`) where the
+# download size matters.
 
 LYTE_WASM_TOOLCHAIN_VERSION="6.3.3"
 LYTE_WASM_SDK="swift-${LYTE_WASM_TOOLCHAIN_VERSION}-RELEASE_wasm"
@@ -20,6 +27,27 @@ Install (user-local, repo-untouched):
   swiftly run swift sdk install +6.3.3 \
     https://download.swift.org/swift-6.3.3-release/wasm-sdk/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE_wasm.artifactbundle.tar.gz \
     --checksum cabfa08b73bb8ac783927ecd15fa386e99d0c139c5f232445067bcf58379cae7
+EOF
+}
+
+# Prints the wasmtime executable (PATH, then the upstream installer's
+# ~/.wasmtime/bin); fails when neither exists.
+lyte_wasmtime() {
+    if command -v wasmtime 2>/dev/null; then
+        return 0
+    fi
+    if [ -x "$HOME/.wasmtime/bin/wasmtime" ]; then
+        echo "$HOME/.wasmtime/bin/wasmtime"
+        return 0
+    fi
+    return 1
+}
+
+lyte_wasmtime_install_help() {
+    cat >&2 <<'EOF'
+Install wasmtime (either):
+  brew install wasmtime
+  curl https://wasmtime.dev/install.sh -sSf | bash
 EOF
 }
 
