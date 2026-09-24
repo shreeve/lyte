@@ -13,10 +13,12 @@
 // audio thread publishes into a narrow mailbox and only tries the session
 // lock; the janitor runs service() every 10 ms for shell work off the
 // lock; the SCHED_RR sender thread ppolls its wake eventfd, the sockets
-// and the session's next timer, then services and flushes. One NSLock
+// and the session's next timer, then services and flushes. One lock
 // guards the Session and the outbox, so seq allocation, sealing, pacer
-// insertion and flush keep one order; console lines are printed after it
-// is released. Agreed capability flags live under a separate config lock.
+// insertion and flush keep one order; it inherits priority, so a
+// preempted default-priority holder cannot stall the realtime sender.
+// Console lines are printed after it is released. Agreed capability flags
+// live under a separate config lock.
 
 import LyteIO
 import LyteCore
@@ -112,7 +114,7 @@ final class SessionWire {
     private var session: Session!
     /// Guards the Session and the outbox (see the header). Held across
     /// service passes, released across sleeps.
-    private let lock = NSLock()
+    private let lock = PriorityInheritingLock()
     private let rateBitsPerSecond: Int
     /// What this host declares in the capability exchange.
     private let capabilities: Capabilities
