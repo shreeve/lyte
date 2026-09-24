@@ -113,6 +113,10 @@ public final class InputSender: @unchecked Sendable {
     private let sendMessage: (_ message: [UInt8], _ now: ClientTimestamp) throws -> Void
     private let clockModel: HostClockModel
 
+    /// Serializes whole sends — seq allocation, the reliable enqueue and
+    /// the commit — so concurrent callers can neither share a seq nor
+    /// enqueue seqs out of order. Never held by the receive thread.
+    private let sendLock = NSLock()
     private let lock = NSLock()
     private var nextSeq: UInt32 = 0
     /// seq → capture µs, awaiting its echo tuple (input→inject).
@@ -149,23 +153,40 @@ public final class InputSender: @unchecked Sendable {
     // MARK: Send
 
     /// Encodes and queues one input event on the reliable ordered
-    /// stream, stamping it with `now` (the capture instant) and the
-    /// next session seq. Never gates on wire mode — an event in IDLE
-    /// is the host's WAKE, one in FROZEN persists into RECOVERY (the
-    /// pre-arm rule; see the file comment). Throws what the reliable
-    /// endpoint throws; a refused send allocates no seq.
+    /// stream, stamped with `now` as both the capture instant and the
+    /// send instant — the virtual-time form of `send(_:captured:now:)`.
     @discardableResult
     public func send(
         _ body: InputEvent.Body, now: ClientTimestamp
     ) throws -> UInt32 {
+        try send(body, captured: now, now: now)
+    }
+
+    /// Encodes and queues one input event on the reliable ordered
+    /// stream. `captured` stamps the event and its latency books; `now`
+    /// is the send instant handed to the reliable endpoint, whose RTT
+    /// and PTO clocks must not see queue wait. Never gates on wire mode
+    /// — an event in IDLE is the host's WAKE, one in FROZEN persists
+    /// into RECOVERY (the pre-arm rule; see the file comment). Throws
+    /// what the reliable endpoint throws; a refused send allocates no
+    /// seq. Safe from concurrent callers: seqs are unique and enqueue in
+    /// ascending order.
+    @discardableResult
+    public func send(
+        _ body: InputEvent.Body,
+        captured: ClientTimestamp,
+        now: ClientTimestamp
+    ) throws -> UInt32 {
+        sendLock.lock()
+        defer { sendLock.unlock() }
         lock.lock()
         let seq = nextSeq
-        let event = InputEvent(
-            seq: seq, clientMicroseconds: now.microseconds, body: body
-        )
         lock.unlock()
+        let event = InputEvent(
+            seq: seq, clientMicroseconds: captured.microseconds, body: body
+        )
 
-        // The reliable send outside the lock (it takes its own and
+        // The reliable send outside the book lock (it takes its own and
         // fires fresh segments synchronously).
         do {
             try sendMessage(event.encode(), now)
@@ -179,8 +200,8 @@ public final class InputSender: @unchecked Sendable {
         lock.lock()
         nextSeq &+= 1
         stats.eventsSent += 1
-        awaitingEcho[seq] = now.microseconds
-        awaitingPhoton[seq] = now.microseconds
+        awaitingEcho[seq] = captured.microseconds
+        awaitingPhoton[seq] = captured.microseconds
         pendingOrder.append(seq)
         evictOverflowLocked()
         refreshPendingFlagLocked()

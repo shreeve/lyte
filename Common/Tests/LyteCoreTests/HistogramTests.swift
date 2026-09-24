@@ -137,4 +137,28 @@ final class HistogramTests: XCTestCase {
         XCTAssertNil(histogram.maxValue)
         XCTAssertFalse(histogram.saturated)
     }
+
+    /// Ranks are exact integer arithmetic, not floating-point accidents:
+    /// 0.07 × 100 is 7.000000000000001 in binary and 0.29 × 100 is
+    /// 28.999999999999996, yet their ranks are exactly 7 and 29.
+    func testRanksAreExactAtEveryRepresentableBoundary() {
+        var histogram = Histogram<Int>(capacity: 1_000)
+        for value in 1...100 { histogram.record(value) }
+        XCTAssertEqual(histogram.percentile(0.07), 7)
+        XCTAssertEqual(histogram.percentile(0.29, rank: .upperBoundary), 30)
+        for count in 1...200 {
+            let values = Array(1...count)
+            for hundredths in 0...100 {
+                let q = Double(hundredths) / 100
+                let rank = (hundredths * count + 99) / 100
+                XCTAssertEqual(
+                    Histogram<Int>.percentile(of: values, q),
+                    values[max(rank, 1) - 1], "nearest q=\(q) n=\(count)")
+                XCTAssertEqual(
+                    Histogram<Int>.percentile(of: values, q, rank: .upperBoundary),
+                    values[min(hundredths * count / 100, count - 1)],
+                    "upper q=\(q) n=\(count)")
+            }
+        }
+    }
 }

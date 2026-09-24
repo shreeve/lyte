@@ -1,45 +1,28 @@
-// LyteUdpSession (CL-8, absorbing CL-7's deferred session slice): the
-// client's production Lyte-UDP session object — the thing behind the
-// app's ConnectionModel and behind `lyte-cli wire-view`. It assembles
-// the proven parts into one lifecycle:
+// LyteUdpSessionCore: the client's synchronized protocol/media shell above
+// the socket. It composes the parts —
 //
-//   Noise IK (persistent identity; W8 0x13→0x14 retry answer in the
-//   dial path — NoiseTransportCrypto's leg)
-//     → UdpReceiveEndpoint (bind, handshake, receive thread)
-//     → ReceiveDemux / TransportSender (seal/unseal, header-as-AAD)
-//     → ReliableCtrlEndpoint (CL-7's ARQ carriage)
-//         → ClientControlSession — IO-free client judgment over capability,
-//           lifecycle, and host-audio control; declaration 0x0F is the FIRST
-//           reliable word each way and the intersection IS the agreement (W7)
+//   ReceiveDemux / TransportSender (seal/unseal, header-as-AAD)
+//     → ReliableCtrlEndpoint ×2 (ARQ on CTRL; a second on chan 8, so a
+//       file transfer never head-of-line-blocks a keystroke)
+//         → ClientControlSession (IO-free capability, lifecycle, audio
+//           routing, clipboard, cursor and media-posture judgment). The
+//           capability declaration (0x0F) is the first reliable word each
+//           way; everything gated on a capability orders behind it.
 //         → IdleFrame 0x15 → LyteVideoPipeline.ingestReliableFrame
-//           (rendered through the SAME factory as datagram video; the
-//           one-shot's ACK — the host's flip-to-IDLE gate — leaves in
-//           the same ingest pass, nothing extra needed)
-//     → LyteVideoPipeline (chan 2 datagram video), FeedbackSender,
-//       BeaconEchoResponder → HostClockModel (CL-10), IdrRequester
+//     → LyteVideoPipeline (chan 2 video), AudioReceiver (chan 1),
+//       FeedbackSender, BeaconEchoResponder → HostClockModel,
+//       IdrRequester, NackPolicy, InputSender
 //
-// Split for the gate tests (the ReliableCtrlGateTests/PairingGateTests
-// pattern): `LyteUdpSessionCore` is the synchronized protocol/media
-// shell above the socket. It delegates pure lifecycle and capability
-// orchestration to `LyteClientSession`, takes a demux, sender, and injected
-// clock, and lets tests drive the REAL assembly through SimNet in virtual time
-// against a LyteWire host build-up. `LyteUdpSession` is the thin production
-// shell that binds the socket and runs the handshake.
+// — behind one lock, with an injected clock, so tests drive the real
+// assembly in virtual time against a LyteWire host. `LyteUdpSession` is
+// the production shell that binds the socket and runs the handshake.
 //
-// The client's silence detector — an honest deviation, documented:
-// W4b's 350 ms detector is dimensioned for the media-path evidence
-// stream (25–50 ms feedback for the host, 5 ms audio for the client).
-// The client has no audio channel until H2, and an IDLE host sends
-// only 1 Hz beacons — a 350 ms receiver detector would flap
-// FROZEN↔IDLE between beacons forever. So the client (a) feeds EVERY
-// authenticated host arrival to the detector (video shards, sealed
-// CTRL, beacons — for the receiver they are all proof the host→client
-// path moves), and (b) defaults the blackout threshold to 2.5 s,
-// comfortably past the 1 Hz beacon cadence and still far under the
-// 30 s liveness teardown. When H2's audio lands (the 5 ms path probe),
-// the default tightens back to the pillar's 350 ms and the evidence
-// split (media vs CTRL) becomes real. The machine's config is the
-// injection point; nothing in Wire/ changes.
+// The blackout detector: every authenticated host arrival (video shards,
+// sealed CTRL, beacons, audio) is receiver-side evidence that the
+// host→client path moves. The default threshold is 2.5 s, past an idle
+// host's 1 Hz beacons and far under the 30 s liveness teardown; the first
+// audio datagram re-arms it at 350 ms, and an announced audio quiet
+// relaxes it back until audio resumes.
 
 import LyteIO
 import LyteCore
@@ -49,299 +32,12 @@ import Foundation
 import LyteWire
 import Synchronization
 
-/// Source-compatible facade for callers that import LyteTransport. Policy and
-/// the concrete error now live in the IO-free client-session package.
-public typealias AudioRoutingAskError = LyteClientSession.AudioRoutingAskError
-
-// MARK: - Client-side bulk-channel policy (F-4)
-
-/// The rule-3 gate, bulk verse: a bulk send when key 11 never
-/// survived intersection is refused before a byte leaves — the client
-/// OFFERS ONLY into an agreed set (H3 §0 decision 1; the host's
-/// standing consent toggle decides whether it declares).
-public enum BulkChannelError: Error, Equatable, Sendable {
-    case notNegotiated
-}
-
-/// Source-compatible facade for callers that import LyteTransport. Clipboard
-/// policy and its outcome now live in the IO-free client-session package.
-public typealias ClipboardShareOutcome =
-    LyteClientSession.ClipboardShareOutcome
-
-// MARK: - Events
-
-/// Everything the session surfaces to its owner (the CLI's printer,
-/// the app's ConnectionModel). Fired from receive/timer threads —
-/// UI owners hop to the main actor themselves.
-public enum LyteUdpSessionEvent: Sendable {
-    /// The W7 exchange settled: this is the session's agreed set.
-    case capabilitiesAgreed(Capabilities)
-    /// The peer's declaration produced an unworkable intersection —
-    /// the typed teardown followed automatically. TYPED since V-5:
-    /// the app's chroma fallback keys on `.noCommonChromaMode`
-    /// specifically (a Best declaration against a 4:2:0-only host
-    /// auto-re-dials at Good — ChromaFallbackPolicy's verdict).
-    case capabilitiesFailed(CapabilityNegotiationError)
-    /// A host renegotiation proposal (0x11) was answered (0x12).
-    case capabilityUpdateAnswered(accepted: Bool)
-    /// The wire mode changed (a delivered ModeTransition, or RECOVERY
-    /// re-entry semantics on the host's side reflected here).
-    case modeChanged(SessionWireMode)
-    /// The lifecycle state changed — `frozen` is the CL-8 pill.
-    case stateChanged(SessionState)
-    /// A reliable idle frame (0x15) arrived, with what became of it.
-    case idleFrameReceived(frame: UInt32, outcome: ReliableFrameOutcome)
-    /// A 0x19 applied-posture status arrived (CL-13): where the host's
-    /// own speakers ACTUALLY stand — sent by the host at capability
-    /// agreement and after every applied flip; a failed flip reports
-    /// the OLD posture. Fires on every status, changed or not, so the
-    /// UI can settle a pending toggle either way. Truth, not hope.
-    case hostAudioRoutingStatus(HostAudioRoutingMode)
-    /// A 0x1B clipboard announce arrived and passed every gate
-    /// (negotiated, sharing enabled) — the glue applies `text` to the
-    /// pasteboard (CL-15). The sync book is already pre-armed against
-    /// the apply's changeCount echo. Never fires while sharing is off:
-    /// content must not land on the pasteboard without consent.
-    case hostClipboardChanged(String)
-    /// E3: a 0x24 cursor shape arrived past the rule-3 gate (key 13
-    /// agreed) — the direct eye's video carries no cursor, so the
-    /// host streams the hardware cursor plane's image as metadata and
-    /// the glue wears it as the local NSCursor over the video view.
-    /// `.hidden` (zero-sized) means the host cursor is hidden. No
-    /// consent toggle: a cursor shape is presentation state, not
-    /// content — the audio-routing-status posture, not clipboard's.
-    case hostCursorShapeChanged(CursorShape)
-    /// P-1 (clipboard v2): a host clipboard IMAGE landed sha-verified
-    /// off the chan-8 clipboard lane and passed every gate (keys 10∧12
-    /// agreed, sharing on, images tier on) — the glue applies `data`
-    /// (PNG in v2) to the pasteboard. The sync book is already
-    /// pre-armed against the apply's changeCount echo. Never fires
-    /// while sharing/images are off: an unwelcome marker draws the
-    /// typed abort(declined) instead — the sender waits on a verdict,
-    /// so images cannot use text's silent-deafness posture.
-    case hostClipboardImageChanged(data: [UInt8], mime: String)
-    /// One decoded chan-8 bulk message arrived (F-4): accept/ack/
-    /// complete/abort answers for the client's sending role. Already
-    /// through the rule-3 gate (key 11 agreed); the owner feeds it to
-    /// its BulkSendCoordinator.
-    case bulkMessageReceived(BulkMessage)
-    /// Our typed teardown left on the ordered stream.
-    case teardownSent(SessionTeardownReason)
-    /// The session reached `closed` — peer teardown, local teardown,
-    /// or the 30 s liveness timeout. The owner stops the session.
-    case closed(SessionCloseReason)
-    /// Protocol weather worth a log line, never fatal.
-    case protocolNote(String)
-}
-
-/// The first dependency-breaking fact that opened a video recovery episode.
-/// This is app telemetry/control vocabulary only; it never changes wire bytes.
-public enum VideoRecoveryCause: String, Sendable, Codable, CaseIterable {
-    case fecAssemblerDamage
-    case hostPurgeInferredDamage
-    case freshPresentationDebt
-    case rendererFailure
-    case rendererBackpressure
-}
-
-public struct VideoRecoveryTraceEvent: Sendable {
-    public var kind: String
-    public var frame: FrameNumber
-    public var cause: VideoRecoveryCause?
-    public var isRandomAccess: Bool?
-
-    public init(
-        kind: String,
-        frame: FrameNumber,
-        cause: VideoRecoveryCause? = nil,
-        isRandomAccess: Bool? = nil
-    ) {
-        self.kind = kind
-        self.frame = frame
-        self.cause = cause
-        self.isRandomAccess = isRandomAccess
-    }
-}
-
-/// Session-level counters (the parts keep their own detailed stats;
-/// these are the CL-8 dispatch layer's).
-public struct LyteUdpSessionCounters: Sendable {
-    public var modeTransitionsReceived: UInt64 = 0
-    public var idleFramesReceived: UInt64 = 0
-    public var capabilityUpdatesAnswered: UInt64 = 0
-    public var unknownReliableTypes: UInt64 = 0
-    public var malformedReliableMessages: UInt64 = 0
-    /// 0x17 echo messages consumed (tuple-level books live on
-    /// `InputSender`'s stats — CL-9).
-    public var inputEchoMessagesReceived: UInt64 = 0
-    /// Chan-1 datagrams routed to the audio receiver (CL-11).
-    public var audioDatagramsReceived: UInt64 = 0
-    /// 0x18 flip requests this end put on the ordered stream (CL-13),
-    /// the session-start posture ask included.
-    public var audioRoutingRequestsSent: UInt64 = 0
-    /// 0x19 applied-posture statuses consumed (CL-13).
-    public var audioRoutingStatusesReceived: UInt64 = 0
-    /// Tripwire: 0x25 track-state announcements received (gate
-    /// closes, still-quiet check-ins, and wakes all count here).
-    public var audioTrackStatesReceived: UInt64 = 0
-    /// Video posture: 0x26 announcements received (ladder steps and
-    /// wakes).
-    public var videoPostureStatesReceived: UInt64 = 0
-    /// Loud audio-routing drops (CL-13): an unnegotiated 0x19, or a
-    /// role-confused 0x18 arriving AT the client — the host's rule-3
-    /// gate, mirrored.
-    public var audioRoutingDropsLoud: UInt64 = 0
-    /// 0x1A clipboard sets this end put on the ordered stream (CL-15).
-    public var clipboardSharesSent: UInt64 = 0
-    /// 0x1B announces consumed and applied (CL-15).
-    public var clipboardAnnouncesReceived: UInt64 = 0
-    /// 0x24 cursor shapes consumed and worn (E3).
-    public var cursorShapesReceived: UInt64 = 0
-    /// Local changes the sync book suppressed (echo or duplicate).
-    public var clipboardLoopSuppressed: UInt64 = 0
-    /// Announces that arrived while the session toggle was OFF —
-    /// counted and ignored, never applied (the consent posture).
-    public var clipboardIgnoredDisabled: UInt64 = 0
-    /// Loud clipboard drops: an unnegotiated 0x1B, or a role-confused
-    /// 0x1A arriving AT the client.
-    public var clipboardDropsLoud: UInt64 = 0
-    /// Bulk messages this end put on chan 8's ordered stream (F-4).
-    public var bulkMessagesSent: UInt64 = 0
-    /// Decoded chan-8 bulk messages surfaced to the owner (F-4).
-    public var bulkMessagesReceived: UInt64 = 0
-    /// Loud bulk drops: a chan-8 message without negotiated key 11,
-    /// or bytes the bulk codecs refused.
-    public var bulkDropsLoud: UInt64 = 0
-}
-
-// MARK: - Config
-
-public struct LyteUdpSessionCoreConfig: Sendable {
-    /// What this client declares (0x0F). The default is the wire
-    /// default — HEVC, 4:2:0, idle silence on, 1152 B ceiling — plus
-    /// capability key 9 (hostAudioRouting) on the W7 unknown-entries
-    /// spine (CL-13): this client can always RENDER the host-mute
-    /// control, so it always declares; the intersection against the
-    /// host decides whether the control exists.
-    public var capabilities: Capabilities
-    /// The receiver machine's timing. The default deviates from
-    /// SessionMachineConfig's 350 ms blackout deliberately — see the
-    /// file comment: 2.5 s is beacon-bounded until H2's audio provides
-    /// the 5 ms path probe.
-    public var machineConfig: SessionMachineConfig
-    /// CL-11, the tightening the CL-8 deviation promised: once this
-    /// session has SEEN audio (an authenticated chan-1 datagram — the
-    /// 5 ms path probe, flowing in ACTIVE/IDLE/FROZEN per HS-15's
-    /// lifecycle ruling), the blackout detector re-arms at this
-    /// threshold — W4b's pillar figure. Evidence-gated rather than
-    /// capability-gated deliberately: W7's registry carries only the
-    /// reserved audioExpress escape hatch, no audio-presence key, so
-    /// a no-audio host (--no-audio, or pre-HS-15) simply never
-    /// tightens and keeps the 2.5 s beacon-bounded behavior. Nil
-    /// disables tightening outright.
-    public var tightenedBlackoutSilenceMicroseconds: Int64?
-    /// The audio playout buffer's policy (CL-11).
-    public var audioJitter: AudioJitterConfig
-    /// The targeted-repair ask policy (CL-12).
-    public var nackPolicy: NackPolicyConfig
-    /// The session-start posture (CL-13, the per-host default's
-    /// landing point): when set and key 9 survived intersection, the
-    /// first 0x19 — the host's own starting posture, sent at
-    /// capability agreement — is compared against this, and one 0x18
-    /// leaves if they differ. Asked exactly ONCE per session (a host
-    /// whose flip fails reports the old posture; re-asking forever
-    /// would be a loop, and the strip's toggle is the live override).
-    /// Nil takes the host's default without comment.
-    ///
-    /// DEFAULT FLIPPED BY CL-18 (owner hand-test verdict): a fresh
-    /// config now desires `.hostMuted` — the Sunshine/Moonlight
-    /// posture, sound follows the viewer while the host holds its
-    /// tongue. Against a no-key-9 host nothing changes (the ask only
-    /// ever fires on the host's first 0x19, which such a host never
-    /// owes — the host plays, nothing we can do). Shells wanting the
-    /// old neutral posture set nil explicitly (wire-view does, unless
-    /// its --host-audio flag says otherwise).
-    public var desiredHostAudioRouting: HostAudioRoutingMode?
-    /// CL-15: the session's starting clipboard-sharing posture (the
-    /// per-host "Share Clipboard" default's landing point; default
-    /// OFF — clipboards carry passwords). Declaration is unaffected:
-    /// key 10 is always declared (dialect, not consent — the key-9
-    /// rule) and the strip's toggle flips sharing live via
-    /// `setClipboardSharing`. While off, nothing leaves and nothing
-    /// lands.
-    public var shareClipboard: Bool
-    /// P-1: the images rung of the consent tier (Off / Text only /
-    /// Text + images; clipboard design §6). Images move only when THIS and
-    /// `shareClipboard` are both on; default OFF like text. Declaration
-    /// is unaffected — key 12 is always declared (dialect, not consent,
-    /// the key-9/10/11 rule) — but an unwelcome inbound marker draws
-    /// abort(declined) rather than text's silent ignore, because the
-    /// image sender waits on a verdict.
-    public var shareClipboardImages: Bool
-
-    public init(
-        capabilities: Capabilities = .wireDefault
-            .declaringHostAudioRouting().declaringAudioStreamOff()
-            .declaringClipboardText()
-            // F-4: key 11 (bulkTransfer) — dialect, not consent (the
-            // key-9/key-10 rule, third verse): this client can always
-            // SEND a dropped file, so it always declares; whether an
-            // offer is welcome is the HOST's standing toggle, which
-            // decides whether the host declares — the intersection
-            // gates the client's offers.
-            .declaringBulkTransfer()
-            // P-1: key 12 (clipboardImages) — dialect, fourth verse:
-            // this client can always speak the 0x22 image-cargo
-            // dialect, so it always declares; whether images actually
-            // MOVE is the consent tier at both ends (the host's
-            // --clipboard=images flag decides ITS declaration; ours
-            // is gated live by shareClipboardImages).
-            .declaringClipboardImages()
-            // E3: key 13 (cursorShape) — dialect, fifth verse: this
-            // client can always wear a 0x24 shape as its local
-            // NSCursor, so it always declares; whether shapes SEND is
-            // the host's capture-organ truth (only the direct eye,
-            // whose video carries no cursor, declares its side).
-            .declaringCursorShape()
-            // Tripwire: key 15 (audioQuietPosture) — dialect, sixth
-            // verse: this client can always honor an announced quiet
-            // (relax the audio-fed blackout detector, let the jitter
-            // buffer rest), so it always declares; whether the host
-            // GATES is its own tripwire's verdict.
-            .declaringAudioQuietPosture()
-            // Video posture: key 16 — dialect, seventh verse: this
-            // client can always arm its freshness expectations
-            // against an ANNOUNCED keepalive interval, so it always
-            // declares; whether the host backs off is its ladder.
-            .declaringVideoQuietPosture(),
-        machineConfig: SessionMachineConfig = SessionMachineConfig(
-            blackoutSilenceMicroseconds: 2_500_000
-        ),
-        tightenedBlackoutSilenceMicroseconds: Int64? = 350_000,
-        audioJitter: AudioJitterConfig = AudioJitterConfig(),
-        nackPolicy: NackPolicyConfig = NackPolicyConfig(),
-        desiredHostAudioRouting: HostAudioRoutingMode? = .hostMuted,
-        shareClipboard: Bool = false,
-        shareClipboardImages: Bool = false
-    ) {
-        self.capabilities = capabilities
-        self.machineConfig = machineConfig
-        self.tightenedBlackoutSilenceMicroseconds =
-            tightenedBlackoutSilenceMicroseconds
-        self.audioJitter = audioJitter
-        self.nackPolicy = nackPolicy
-        self.desiredHostAudioRouting = desiredHostAudioRouting
-        self.shareClipboard = shareClipboard
-        self.shareClipboardImages = shareClipboardImages
-    }
-}
-
-// MARK: - The core (everything above the socket)
-
 public final class LyteUdpSessionCore: @unchecked Sendable {
     public let config: LyteUdpSessionCoreConfig
 
     private let now: @Sendable () -> ClientTimestamp
+    /// The clipboard-image digest (LyteCore's SHA-256 unless injected).
+    private let sha256: @Sendable ([UInt8]) -> [UInt8]
     private let onEvent: @Sendable (LyteUdpSessionEvent) -> Void
     private let onVideoRecoveryDemand:
         @Sendable (VideoRecoveryCause, FrameNumber) -> Void
@@ -352,16 +48,15 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     // PairingGateTests construction order).
     public private(set) var pipeline: LyteVideoPipeline!
     public private(set) var reliable: ReliableCtrlEndpoint!
-    /// F-4: chan 8's OWN ArqEndpoint pair (client side) — the bulk
-    /// stream never shares CTRL's, so a file cannot head-of-line-block
-    /// a keystroke by construction (the W10 channel ruling).
+    /// Chan 8's own ARQ endpoint: the bulk stream never shares CTRL's,
+    /// so a file cannot head-of-line-block a keystroke.
     public private(set) var bulkReliable: ReliableCtrlEndpoint!
     public private(set) var echoResponder: BeaconEchoResponder!
     public private(set) var idrRequester: IdrRequester!
     public private(set) var feedback: FeedbackSender!
     public private(set) var input: InputSender!
     public private(set) var audio: AudioReceiver!
-    /// CL-12: the targeted-repair ask policy behind the pipeline's
+    /// The targeted-repair ask policy behind the pipeline's
     /// repair-signal seam.
     public private(set) var nackPolicy: NackPolicy!
     public let clockModel: HostClockModel
@@ -372,7 +67,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// Transfer-id minting for image shares. System randomness is
     /// injected into the IO-free policy at its one minting decision.
     private var imageRng = SystemRandomNumberGenerator()
-    /// V-5: the negotiated-posture audit — SPS chroma_format_idc off
+    /// The negotiated-posture audit — SPS chroma_format_idc off
     /// every IDR against the agreed chroma singleton (confirmation
     /// once, DOCTOR line on a mismatch edge).
     private var chromaAudit = ChromaStreamAudit()
@@ -396,6 +91,19 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// Beat-context bookkeeping (guarded by `lock`): the stamp last
     /// fed to the machine.
     private var lastFedEvidenceMicros: UInt64 = 0
+    /// Lifecycle decisions are numbered under `lock` as they are made
+    /// (the beat and the receive thread both make them) so their state
+    /// and mode edges reach the owner in decision order: an edge older
+    /// than one already delivered is superseded and dropped.
+    /// `lifecycleTicketsIssued` is guarded by `lock`;
+    /// `lifecycleEdgeDelivered` by `edgeLock`, which is held across the
+    /// edge callbacks.
+    private var lifecycleTicketsIssued: UInt64 = 0
+    private var lifecycleEdgeDelivered: UInt64 = 0
+    private let edgeLock = NSLock()
+    /// Runs between a lifecycle decision and its execution — the edge
+    /// ordering pin interleaves a second decision here.
+    var testingBeforeLifecycleExecution: (() -> Void)?
     /// Upstream half of the renderer recovery gate. Sample construction may
     /// already be queued when assembler damage is discovered; this fence
     /// prevents those completed P samples from racing the handoff flush.
@@ -412,6 +120,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             ClientTimestamp(
                 microseconds: SystemMonotonicClock.nowMicroseconds)
         },
+        sha256: @escaping @Sendable ([UInt8]) -> [UInt8] = {
+            Sha256.digest($0)
+        },
         onVideoRecoveryDemand: @escaping @Sendable (
             VideoRecoveryCause, FrameNumber
         ) -> Void = { _, _ in },
@@ -425,6 +136,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         self.config = config
         self.clockModel = clockModel
         self.now = now
+        self.sha256 = sha256
         self.onEvent = onEvent
         self.onVideoRecoveryDemand = onVideoRecoveryDemand
         self.onVideoRecoveryTrace = onVideoRecoveryTrace
@@ -444,10 +156,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             nowNanoseconds: { now().microseconds &* 1_000 },
             sink: sessionSink,
             onFecImpossible: { [weak self] frame, _, _ in
-                // CL-12: a frame with a live repair ask holds its IDR
-                // for the rule-4 window; everything else requests as
-                // CL-3 always did (the policy escalates expiries back
-                // through the same requester).
+                // A frame with a live repair ask holds its IDR for the
+                // repair window; everything else requests an IDR now
+                // (the policy escalates expiries back through the same
+                // requester).
                 guard let self else { return }
                 let now = self.now()
                 if !self.nackPolicy.shouldDeferFecImpossible(
@@ -514,7 +226,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 guard let self else { return }
                 // Enqueue + an immediate out-of-cadence report: the
                 // host's rule-3 freeze budget is derived from the
-                // cadence (HS-32, ~1.5×) — an ask that skips the wait
+                // cadence — an ask that skips the wait
                 // spends none of it.
                 self.feedback.enqueueNacks(entries)
                 self.feedback.tick(now: self.now())
@@ -529,7 +241,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 self.beginVideoRecovery(
                     cause: .fecAssemblerDamage, frame: frame, now: now)
                 // Reason-neutral: this closure exits deadline expiries,
-                // framesGone, AND HS-32 refusals (which already printed
+                // framesGone, and host refusals (which already printed
                 // their own reasoned note); the books tell them apart.
                 self.onEvent(.protocolNote(
                     "nack: frame \(frame.rawValue) repair abandoned — "
@@ -543,7 +255,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// stays in `SessionVideoSink`; the core sees only the decoded wire unit.
     /// Returns true exactly when the adapter may submit downstream.
     func admitVideoUnit(_ unit: DecodeUnit) -> Bool {
-        // The input→photon seam (CL-9): a DELIVERED frame whose shards
+        // The input→photon seam: a DELIVERED frame whose shards
         // carried the lastInputSeq TLV closes every pending event at or below
         // its stamp. Delivery — not shard arrival — is the honest instant.
         lock.lock()
@@ -563,7 +275,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 isRandomAccess: true))
         }
         input.noteFrameDelivered(frame: unit.frameNumber, now: now())
-        // V-5: IDRs carry parameter sets in-band. Audit actual chroma against
+        // IDRs carry parameter sets in-band. Audit actual chroma against
         // the negotiated posture; mismatch is a doctor line, never a silent
         // resample.
         if unit.isIDR {
@@ -576,8 +288,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     /// The first reliable word: this end's capability declaration
     /// (0x0F) on the ARQ ordered stream — everything gated on a
-    /// capability orders behind it for free (W7's rule; the host does
-    /// the same from its side).
+    /// capability orders behind it for free (the host does the same
+    /// from its side).
     public func open(now: ClientTimestamp) throws {
         lock.lock()
         let declaration: [UInt8]?
@@ -674,14 +386,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         beginTeardown(reason: reason, now: now())
     }
 
-    // MARK: Input (CL-9)
+    // MARK: Input
 
     /// Queues one captured input event on the reliable ordered stream
     /// (0x16), stamped `now` and sequenced by the session's counter.
     /// NEVER gated on wire mode or the FROZEN overlay: the host runs
     /// `.preArmInput` on every delivered event BEFORE injecting, so an
     /// event in IDLE is the WAKE and one during a blackout persists
-    /// through FROZEN into RECOVERY's IDR (W4b via HS-13) — sending
+    /// through FROZEN into RECOVERY's IDR — sending
     /// promptly IS how this end drives the pre-arm seam. Returns the
     /// allocated seq; throws what the reliable endpoint throws.
     @discardableResult
@@ -694,6 +406,16 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     @discardableResult
     public func sendInput(_ body: InputEvent.Body) throws -> UInt32 {
         try sendInput(body, now: now())
+    }
+
+    /// The queued-capture form: the event and its latency books carry
+    /// `captured`, while the reliable stream is driven at the session's
+    /// own `now()` so queue wait never inflates ARQ RTT samples.
+    @discardableResult
+    public func sendInput(
+        _ body: InputEvent.Body, captured: ClientTimestamp
+    ) throws -> UInt32 {
+        try input.send(body, captured: captured, now: now())
     }
 
     /// App renderer failure/backpressure joins the established IDR recovery
@@ -738,7 +460,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         idrRequester.recordRecoveryDemand(frame: frame, now: now)
     }
 
-    // MARK: Host audio routing (CL-13)
+    // MARK: Host audio routing
 
     /// Asks the host to flip its own speakers (0x18 on the ARQ ordered
     /// stream) — the strip's live override. The IO-free control session
@@ -766,7 +488,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         try requestHostAudioRouting(mode, now: now())
     }
 
-    // MARK: Clipboard (CL-15)
+    // MARK: Clipboard
 
     /// True when capability key 10 survived intersection — the
     /// strip's clipboard toggle exists exactly when this is true.
@@ -831,7 +553,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         shareLocalClipboard(text, now: now())
     }
 
-    // MARK: Clipboard images (P-1, clipboard v2)
+    // MARK: Clipboard images
 
     /// True when capability keys 10 AND 12 both survived intersection
     /// — the images rung of the consent tier exists exactly when this
@@ -874,13 +596,26 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// book → the lane → the 32 MiB ceiling) and shared as 0x22 cargo
     /// on chan 8 when it survives. Never throws — the poller has
     /// nobody to catch for it.
+    ///
+    /// Three phases: the digest-free gates under the lock, the digest
+    /// outside it (tens of MiB must not stall datagram dispatch), then
+    /// the full judgment under the lock again. A refused image is never
+    /// hashed.
     @discardableResult
     public func shareLocalClipboardImage(
         _ data: [UInt8], now: ClientTimestamp
     ) -> ClipboardShareOutcome {
         lock.lock()
+        let refusal = controlSession.prejudgeLocalClipboardImage(
+            byteCount: data.count)
+        lock.unlock()
+        if let refusal {
+            return executeClipboardDecision(refusal, now: now)
+        }
+        let digest = sha256(data)
+        lock.lock()
         let decision = controlSession.shareLocalClipboardImage(
-            data, sha256: Sha256.digest(data), rng: &imageRng
+            data, sha256: digest, rng: &imageRng
         )
         lock.unlock()
         return executeClipboardDecision(decision, now: now)
@@ -895,10 +630,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     /// One batch of channel events into the world: `.send` rides
     /// chan 8's ordered stream, `.applyImage` becomes the typed event
-    /// (payload bytes appear THERE and nowhere else — the CL-15 rule),
+    /// (payload bytes appear there and nowhere else),
     /// the rest is protocol weather. Returns the share verdict for
-    /// the funnel's caller; called OUTSIDE the lock (the v1 send
-    /// pattern — the reliable endpoint's callbacks take our lock).
+    /// the funnel's caller; called outside the lock (the reliable
+    /// endpoint's callbacks take our lock).
     @discardableResult
     private func executeClipboardDecision(
         _ decision: ClientClipboardSessionDecision,
@@ -950,7 +685,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         return outcome
     }
 
-    // MARK: Bulk transfer (F-4)
+    // MARK: Bulk transfer
 
     /// True when capability key 11 survived intersection — the host's
     /// standing consent toggle is ON and it accepts file offers. The
@@ -962,8 +697,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     }
 
     /// Queues one encoded bulk message on chan 8's ARQ ordered stream.
-    /// Refused HERE when key 11 never survived intersection (the
-    /// rule-3 gate: offer only into an agreed set — H3 §0 decision 1).
+    /// Refused here when key 11 never survived intersection: the client
+    /// offers only into an agreed set.
     public func sendBulkMessage(
         _ message: [UInt8], now: ClientTimestamp
     ) throws {
@@ -975,8 +710,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         counters.bulkMessagesSent += 1
         lock.unlock()
         // Chan 8 borrows the ctrl-learned connection ID so the very
-        // first bulk datagram already carries the tag (HS-12's
-        // every-packet rule; chan-8 inbound teaches it too).
+        // first bulk datagram already carries the tag (every datagram
+        // carries it; chan-8 inbound teaches it too).
         bulkReliable.adoptConnectionId(reliable.learnedConnectionId)
         try bulkReliable.send(message, now: now)
     }
@@ -992,12 +727,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// clocks (every authenticated arrival — the file comment's
     /// receiver-side evidence rule).
     ///
-    /// The arrival stamp is DELIBERATELY discarded (A-25): it may be
-    /// kernel wall-clock (SCM_TIMESTAMP) while every clock in here —
-    /// the echo responder's t2 included — lives on the session's
-    /// injected monotonic `now()`. Wiring it into t2 would mix clock
-    /// domains and corrupt every RTT sample; the discard binding makes
-    /// the compiler hold that line.
+    /// The arrival stamp is deliberately discarded: it is in the
+    /// SystemMonotonicClock domain, while every clock in here — the echo
+    /// responder's t2 included — lives on the session's injected `now()`,
+    /// which tests drive virtually. Feeding it into t2 would mix clock
+    /// domains whenever `now` is not the system clock.
     public func handleDatagram(
         _ outcome: IngestOutcome, arrivalMicroseconds _: UInt64
     ) {
@@ -1026,17 +760,16 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             input.noteVideoShard(envelope: envelope)
             pipeline.ingest(envelope: envelope, payload: payload, now: now)
         } else if envelope.channel == .bulkTransfer {
-            // F-4: the whole channel is ARQ carriage by design — no
+            // the whole channel is ARQ carriage by design — no
             // exempt path exists on chan 8.
             bulkReliable.adoptConnectionId(reliable.learnedConnectionId)
             _ = bulkReliable.handleCtrlDatagram(
                 envelope: envelope, payload: payload, now: now)
         } else if envelope.channel == .audio {
-            // CL-11: the 5 ms path probe. Depacketize/recover/buffer,
-            // and — first time only — tighten the blackout detector
-            // to the pillar's 350 ms: with audio flowing in every
-            // non-closed state (HS-15's lifecycle ruling), 350 ms of
-            // total silence honestly means the path is dark.
+            // The 5 ms path probe. Depacketize/recover/buffer, and —
+            // first time only — tighten the blackout detector to 350 ms:
+            // with audio flowing in every non-closed state, 350 ms of
+            // total silence means the path is dark.
             lock.lock()
             counters.audioDatagramsReceived += 1
             controlSession.noteAudioEvidence()
@@ -1054,7 +787,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         }
     }
 
-    /// HS-32: the ARQ-exempt CTRL types beyond the beacon. A 0x23
+    /// the ARQ-exempt CTRL types beyond the beacon. A 0x23
     /// repair refusal ends the named frame's repair wait immediately —
     /// the policy escalates it to the existing rate-windowed IDR
     /// requester. Anything else (unknown types included) is skipped
@@ -1156,7 +889,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         return controlSession.hostAnnouncedAudioQuiet
     }
 
-    /// V-5: the stream's observed chroma ("4:2:0"/"4:4:4"), nil
+    /// the stream's observed chroma ("4:2:0"/"4:4:4"), nil
     /// before the first IDR with in-band parameter sets — the stats
     /// overlay's truth about what the wire actually carries.
     public var streamChromaDescription: String? {
@@ -1177,7 +910,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         return controlSession.wireMode
     }
 
-    /// The CL-8 pill: true while the local overlay says the path is
+    /// The pill: true while the local overlay says the path is
     /// dark. Never a wire state; never modal in the UI.
     public var isFrozen: Bool { state == .frozen }
 
@@ -1188,7 +921,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     }
 
     /// True when capability key 9 survived intersection — the strip's
-    /// host-mute button exists exactly when this is true (CL-13).
+    /// host-mute button exists exactly when this is true.
     public var hostAudioRoutingNegotiated: Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -1223,16 +956,28 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         lock.lock()
         let decision = controlSession.advance(input, now: now)
         machineFrozen.store(decision.state == .frozen, ordering: .relaxed)
+        let ticket = issueLifecycleTicketLocked()
         lock.unlock()
 
-        executeLifecycle(decision, now: now)
+        executeLifecycle(decision, ticket: ticket, now: now)
     }
 
-    /// Executes a pure lifecycle decision after the session lock is released.
+    /// Runs under `lock`, in the same critical section that made the
+    /// decision.
+    private func issueLifecycleTicketLocked() -> UInt64 {
+        lifecycleTicketsIssued += 1
+        return lifecycleTicketsIssued
+    }
+
+    /// Executes a pure lifecycle decision after the session lock is
+    /// released. Actions always run; state and mode edges are delivered
+    /// only when no newer decision's edges already were.
     private func executeLifecycle(
         _ decision: ClientSessionLifecycleDecision,
+        ticket: UInt64,
         now: ClientTimestamp
     ) {
+        testingBeforeLifecycleExecution?()
         for action in decision.actions {
             switch action {
             case .sendTeardownMessage(let reason):
@@ -1252,6 +997,12 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 break   // sender-role actions; a receiver never emits them
             }
         }
+        guard decision.wireModeChange != nil || decision.stateChange != nil
+        else { return }
+        edgeLock.lock()
+        defer { edgeLock.unlock() }
+        guard ticket > lifecycleEdgeDelivered else { return }
+        lifecycleEdgeDelivered = ticket
         if let mode = decision.wireModeChange {
             onEvent(.modeChanged(mode))
         }
@@ -1306,8 +1057,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         }
     }
 
-    /// The composed IO-free control session owns routing, decoding, and
-    /// cross-organ judgment. The shell keeps counters and external effects.
+    /// The composed IO-free control session owns routing, decoding,
+    /// cross-organ judgment, and the decision's books and note. The shell
+    /// bumps the counters, performs the sends, surfaces typed events, and
+    /// executes the effects and lifecycle actions.
     private func receiveControlWord(
         _ bytes: [UInt8], now: ClientTimestamp
     ) {
@@ -1321,42 +1074,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 "control response encoding refused: \(error)"))
             return
         }
-        if case .lifecycle(.modeTransition) = decision?.event {
-            counters.modeTransitionsReceived += 1
+        for counter in decision?.counters ?? [] {
+            counters.bump(counter)
         }
-        if case .capability(.updateAnswered) = decision?.event {
-            counters.capabilityUpdatesAnswered += 1
-        }
-        switch decision?.event {
-        case .audioRouting(.status(_, startup: let startup)):
-            counters.audioRoutingStatusesReceived += 1
-            if case .requested = startup {
-                counters.audioRoutingRequestsSent += 1
-            }
-        case .audioRouting(.unnegotiatedStatus),
-             .audioRouting(.roleConfusedRequest):
-            counters.audioRoutingDropsLoud += 1
-        case .clipboard(.textChanged):
-            counters.clipboardAnnouncesReceived += 1
-        case .clipboard(.textIgnoredDisabled):
-            counters.clipboardIgnoredDisabled += 1
-        case .clipboard(.unnegotiatedTextAnnounce),
-             .clipboard(.roleConfusedTextSet):
-            counters.clipboardDropsLoud += 1
-        case .cursor(.shape):
-            counters.cursorShapesReceived += 1
-        case .cursor(.unnegotiatedShape):
-            counters.unknownReliableTypes += 1
-        case .mediaPosture(.audioState):
-            counters.audioTrackStatesReceived += 1
-        case .mediaPosture(.videoState):
-            counters.videoPostureStatesReceived += 1
-        default:
-            break
-        }
+        var lifecycleTicket: UInt64 = 0
         if let lifecycle = decision?.lifecycle {
             machineFrozen.store(
                 lifecycle.state == .frozen, ordering: .relaxed)
+            lifecycleTicket = issueLifecycleTicketLocked()
         }
         lock.unlock()
         guard let decision else { return }
@@ -1382,108 +1107,34 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             }
         }
 
+        if let note = decision.note {
+            onEvent(.protocolNote(note))
+        }
         switch decision.event {
-        case .lifecycle:
-            break
-        case .malformedLifecycle(.modeTransition):
-            noteMalformed("mode transition")
-        case .malformedLifecycle(.sessionTeardown):
-            noteMalformed("session teardown")
         case .capability(.agreed(let intersection)):
             onEvent(.capabilitiesAgreed(intersection))
         case .capability(.failed(let failure)):
             onEvent(.capabilitiesFailed(failure))
         case .capability(.updateAnswered(let accepted)):
             onEvent(.capabilityUpdateAnswered(accepted: accepted))
-        case .capability(.malformed(.declaration)):
-            noteMalformed("capability declaration")
-        case .capability(.malformed(.update)):
-            noteMalformed("capability update")
-        case .capability(.refused(.declaration, let failure)):
-            onEvent(.protocolNote(
-                "capability declaration refused: \(failure)"))
-        case .capability(.refused(.update, let failure)):
-            onEvent(.protocolNote(
-                "capability update refused: \(failure)"))
-        case .audioRouting(.status(
-            let hostMode, startup: .requested(let desired)
-        )):
-            onEvent(.protocolNote(
-                "session-start posture: asked host for \(desired) "
-                + "(host default \(hostMode))"))
-        case .audioRouting(.status(
-            _, startup: .refused(_, let error)
-        )):
-            onEvent(.protocolNote(
-                "session-start posture ask refused: \(error)"))
-        case .audioRouting(.status(_, startup: .none)):
-            break
-        case .audioRouting(.malformedStatus):
-            noteMalformed("audio-routing status")
-        case .audioRouting(.unnegotiatedStatus):
-            onEvent(.protocolNote(
-                "audio-routing 0x19 without negotiated key 9 — dropped"))
-        case .audioRouting(.roleConfusedRequest):
-            onEvent(.protocolNote(
-                "audio-routing 0x18 arrived AT the client "
-                + "(role confusion) — dropped"))
         case .clipboard(.textChanged(let text)):
             onEvent(.hostClipboardChanged(text))
-        case .clipboard(.malformedTextAnnounce):
-            noteMalformed("clipboard announce")
-        case .clipboard(.unnegotiatedTextAnnounce):
-            onEvent(.protocolNote(
-                "clipboard 0x1B without negotiated key 10 — dropped"))
-        case .clipboard(.textIgnoredDisabled(let byteCount)):
-            onEvent(.protocolNote(
-                "clipboard 0x1B while sharing is off — ignored "
-                    + "(\(byteCount) B never applied)"))
-        case .clipboard(.roleConfusedTextSet):
-            onEvent(.protocolNote(
-                "clipboard 0x1A arrived AT the client "
-                    + "(role confusion) — dropped"))
-        case .clipboard(.malformedImageCargo),
-             .clipboard(.unnegotiatedImageCargo),
-             .clipboard(.image):
-            break   // Image words ride the bulk channel, not this seam.
         case .cursor(.shape(let shape)):
             onEvent(.hostCursorShapeChanged(shape))
-        case .cursor(.malformedShape):
-            noteMalformed("cursor shape")
-        case .cursor(.unnegotiatedShape):
-            onEvent(.protocolNote(
-                "cursor 0x24 without negotiated key 13 — dropped"))
-        case .mediaPosture(.audioState(let state)):
-            if state.state == .quiet {
-                audio.noteAnnouncedQuiet()
-                relaxDetectorForAnnouncedQuiet(now: now)
-            }
-        case .mediaPosture(.videoState(let state, changed: let changed)):
-            if changed {
-                onEvent(.protocolNote(state.posture == .quiet
-                    ? "video quiet — keepalive \(state.keepaliveSeconds)s "
-                        + "announced"
-                    : "video active — keepalive 1 s"))
-            }
-        case .mediaPosture(.malformedAudioState):
-            noteMalformed("audio track state")
-        case .mediaPosture(.malformedVideoState):
-            noteMalformed("video posture state")
-        case .mediaPosture(.unnegotiatedAudioState):
-            onEvent(.protocolNote(
-                "audio track-state 0x25 without negotiated key 15 — dropped"))
-        case .mediaPosture(.unnegotiatedVideoState):
-            onEvent(.protocolNote(
-                "video posture 0x26 without negotiated key 16 — dropped"))
+        case .mediaPosture(.audioState(let state)) where state.state == .quiet:
+            audio.noteAnnouncedQuiet()
+            relaxDetectorForAnnouncedQuiet(now: now)
+        default:
+            break
         }
         if let lifecycle = decision.lifecycle {
-            executeLifecycle(lifecycle, now: now)
+            executeLifecycle(lifecycle, ticket: lifecycleTicket, now: now)
         }
     }
 
     /// Every chan-8 ARQ delivery: the stream now carries TWO lanes.
     /// A 0x22 marker or any bulk message the image channel claims is
-    /// the clipboard lane's (P-1); the rest is the file lane's (F-4),
+    /// the clipboard lane's; the rest is the file lane's,
     /// decoded and surfaced for the owner's BulkSendCoordinator. Each
     /// lane wears its OWN rule-3 gate — a file message without key 11
     /// drops loud even when images agreed, and vice versa (the tiers
@@ -1509,7 +1160,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         lock.lock()
         if controlSession.clipboardClaimsBulk(message) {
             let decision = controlSession.receiveClipboardBulk(
-                message, sha256: Sha256.digest)
+                message, sha256: sha256)
             lock.unlock()
             executeClipboardDecision(decision, now: now)
             return
@@ -1526,7 +1177,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         onEvent(.bulkMessageReceived(message))
     }
 
-    /// One 0x22 clipboard-image marker (P-1): gate (keys 10∧12), then
+    /// One 0x22 clipboard-image marker: gate (keys 10∧12), then
     /// tier — a welcome marker arms the channel's receive lane for the
     /// offer riding behind it; an unwelcome one draws abort(declined)
     /// through the channel so the trailing offer is swallowed rather
@@ -1588,308 +1239,5 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         counters.malformedReliableMessages += 1
         lock.unlock()
         onEvent(.protocolNote("malformed \(what) dropped"))
-    }
-}
-
-// MARK: - The production shell
-
-public final class LyteUdpSession: @unchecked Sendable {
-    public struct Config: Sendable {
-        /// The local bind (0 = kernel-assigned; wire-view binds its
-        /// argued port for tcpdump-friendly runs).
-        public var bindPort: UInt16 = 0
-        public var bindAddress: String = "0.0.0.0"
-        public var core = LyteUdpSessionCoreConfig()
-        /// How long `close()` waits for the teardown segment's ACK
-        /// before tearing the socket down anyway.
-        public var teardownLingerMilliseconds = 500
-        /// CL-11: decode + play the audio channel (AVAudioEngine).
-        /// Default on — audio just plays; the receiver's stats exist
-        /// either way. wire-view surfaces this as --audio.
-        public var audioPlayback = true
-
-        public init() {}
-    }
-
-    /// The crypto seam, prepared by the caller: NoiseTransportCrypto
-    /// with persistent identity for the app's paired path or a throwaway
-    /// identity for the --host-key debug posture.
-    public let crypto: any TransportCrypto
-    public let config: Config
-    public private(set) var endpoint: UdpReceiveEndpoint?
-    private let coreStorage = Mutex<LyteUdpSessionCore?>(nil)
-    public var core: LyteUdpSessionCore? {
-        coreStorage.withLock { $0 }
-    }
-    /// The CL-11 playback unit, present when `config.audioPlayback`
-    /// and the audio device came up.
-    public private(set) var audioPlayer: LyteAudioPlayer?
-
-    private let videoSink: any VideoSink
-    private let onEvent: @Sendable (LyteUdpSessionEvent) -> Void
-    private let onVideoRecoveryDemand:
-        @Sendable (VideoRecoveryCause, FrameNumber) -> Void
-    private let onVideoRecoveryTrace:
-        @Sendable (VideoRecoveryTraceEvent) -> Void
-    private let closing = Atomic<Bool>(false)
-    public let clockModel: HostClockModel
-    /// CoreAudio engine start/stop runs HERE, never on the caller's
-    /// thread: AVAudioEngine.start() can block on HAL/device
-    /// arbitration (found live — wire-view's @MainActor run() wedged
-    /// inside session.start() before NSApplication owned the run
-    /// loop). One serial queue keeps start/stop ordered.
-    private let audioQueue = DispatchQueue(
-        label: "lyte.audio.engine", qos: .userInitiated)
-    private lazy var orderedInput = OrderedInputSender { [weak self] body, now in
-        guard let self, let core = self.core else {
-            throw TransportEndpointError.notStarted
-        }
-        _ = try core.sendInput(body, now: now)
-    }
-
-    public init(
-        crypto: any TransportCrypto,
-        config: Config = Config(),
-        clockModel: HostClockModel = HostClockModel(),
-        onVideoRecoveryDemand: @escaping @Sendable (
-            VideoRecoveryCause, FrameNumber
-        ) -> Void = { _, _ in },
-        onVideoRecoveryTrace: @escaping @Sendable (
-            VideoRecoveryTraceEvent
-        ) -> Void = { _ in },
-        videoSink: any VideoSink,
-        onEvent: @escaping @Sendable (LyteUdpSessionEvent) -> Void
-    ) {
-        self.crypto = crypto
-        self.config = config
-        self.clockModel = clockModel
-        self.onVideoRecoveryDemand = onVideoRecoveryDemand
-        self.onVideoRecoveryTrace = onVideoRecoveryTrace
-        self.videoSink = videoSink
-        self.onEvent = onEvent
-    }
-
-    /// Bind → Noise handshake (blocking, retry timer inside; answers a
-    /// W8 retry challenge with the verbatim msg1) → receive thread →
-    /// capability declaration as the first reliable word → timers.
-    /// Throws TransportCryptoError / TransportEndpointError on a dial
-    /// that never became a session.
-    public func start() throws {
-        let endpoint = UdpReceiveEndpoint(
-            port: config.bindPort,
-            bindAddress: config.bindAddress,
-            crypto: crypto,
-            onDatagram: { [weak self] outcome, arrivalMicroseconds in
-                self?.core?.handleDatagram(
-                    outcome, arrivalMicroseconds: arrivalMicroseconds)
-            })
-        try endpoint.start()
-        self.endpoint = endpoint
-
-        let sender = TransportSender(crypto: crypto, transmit: {
-            [weak endpoint] datagram in
-            endpoint?.sendToPeer(datagram) ?? false
-        })
-        let core = LyteUdpSessionCore(
-            demux: endpoint.demux,
-            sender: sender,
-            config: config.core,
-            clockModel: clockModel,
-            asynchronousVideoBuild: true,
-            onVideoRecoveryDemand: onVideoRecoveryDemand,
-            onVideoRecoveryTrace: onVideoRecoveryTrace,
-            videoSink: videoSink,
-            onEvent: onEvent
-        )
-        coreStorage.withLock { $0 = core }
-        try core.open()
-        core.startTimers()
-
-        // Audio out (CL-11): a refused device is weather, never fatal —
-        // the screen must stream even when audio cannot (the host's
-        // rule, mirrored). Construction is cheap and synchronous; the
-        // engine spin-up goes to the audio queue (see its comment).
-        if config.audioPlayback {
-            do {
-                let player = try LyteAudioPlayer(receiver: core.audio)
-                audioPlayer = player
-                let onEvent = onEvent
-                audioQueue.async {
-                    do {
-                        try player.start()
-                    } catch {
-                        onEvent(.protocolNote(
-                            "audio playback unavailable (\(error)) — video-only"))
-                    }
-                }
-            } catch {
-                onEvent(.protocolNote(
-                    "audio playback unavailable (\(error)) — video-only"))
-            }
-        }
-    }
-
-    /// The stream window's mute toggle (CL-11): playback keeps
-    /// consuming (buffer discipline unaffected); only the mixer goes
-    /// quiet.
-    public func setAudioMuted(_ muted: Bool) {
-        audioPlayer?.muted = muted
-    }
-
-    /// The strip's host-mute override (CL-13): asks the host to flip
-    /// its OWN speakers. Throws `AudioRoutingAskError.notNegotiated`
-    /// when key 9 never survived intersection — the button gating
-    /// means the app never hits that; wire-view's flag can.
-    public func requestHostAudioRouting(_ mode: HostAudioRoutingMode) throws {
-        guard let core else { throw TransportEndpointError.notStarted }
-        try core.requestHostAudioRouting(mode)
-    }
-
-    /// True when key 9 survived intersection (CL-13).
-    public var hostAudioRoutingNegotiated: Bool {
-        core?.hostAudioRoutingNegotiated ?? false
-    }
-
-    /// The 0x19-confirmed host-speaker posture, nil before the first
-    /// status (CL-13).
-    public var hostAudioRoutingPosture: HostAudioRoutingMode? {
-        core?.hostAudioRoutingPosture
-    }
-
-    /// True when key 10 survived intersection (CL-15) — the strip's
-    /// clipboard toggle exists exactly when this is true.
-    public var clipboardNegotiated: Bool {
-        core?.clipboardNegotiated ?? false
-    }
-
-    /// True when key 11 survived intersection (F-4) — the host's
-    /// standing consent toggle is on; the drop target offers exactly
-    /// when this is true.
-    public var bulkTransferNegotiated: Bool {
-        core?.bulkTransferNegotiated ?? false
-    }
-
-    /// The BulkSendCoordinator's chan-8 send leg (F-4). Throws
-    /// `BulkChannelError.notNegotiated` against a key-11-less host —
-    /// the coordinator's own gate means the app never hits that.
-    public func sendBulkMessage(_ message: [UInt8]) throws {
-        guard let core else { throw TransportEndpointError.notStarted }
-        try core.sendBulkMessage(message)
-    }
-
-    /// The live clipboard-sharing toggle (CL-15).
-    public var clipboardSharingEnabled: Bool {
-        core?.clipboardSharingEnabled ?? false
-    }
-
-    public func setClipboardSharing(_ enabled: Bool) {
-        core?.setClipboardSharing(enabled)
-    }
-
-    /// The pasteboard watcher's funnel (CL-15): one local clipboard
-    /// change through the core's gates. Safe before start (`.sendRefused`).
-    @discardableResult
-    public func shareLocalClipboard(_ text: String) -> ClipboardShareOutcome {
-        core?.shareLocalClipboard(text) ?? .sendRefused("not started")
-    }
-
-    /// P-1: true when keys 10∧12 both survived intersection — the
-    /// images rung of the consent tier exists exactly when this is.
-    public var clipboardImagesNegotiated: Bool {
-        core?.clipboardImagesNegotiated ?? false
-    }
-
-    /// The images rung's live state (sharing on AND images on).
-    public var clipboardImageSharingEnabled: Bool {
-        core?.clipboardImageSharingEnabled ?? false
-    }
-
-    public func setClipboardImageSharing(_ enabled: Bool) {
-        core?.setClipboardImageSharing(enabled)
-    }
-
-    /// The pasteboard watcher's image funnel (P-1): one local image
-    /// copy (PNG bytes) through the core's gates. Safe before start.
-    @discardableResult
-    public func shareLocalClipboardImage(
-        _ data: [UInt8]
-    ) -> ClipboardShareOutcome {
-        core?.shareLocalClipboardImage(data)
-            ?? .sendRefused("not started")
-    }
-
-    /// Orderly close: the typed 0x0A on the ordered stream, a linger
-    /// for its ACK (≤ the configured window), then teardown. Blocking —
-    /// call off the main thread.
-    public func close(reason: SessionTeardownReason = .shuttingDown) {
-        guard !closing.exchange(true, ordering: .relaxed) else { return }
-        orderedInput.finishAndDrain()
-        if let core {
-            core.beginTeardown(reason: reason)
-            let deadline = SystemMonotonicClock.nowNanoseconds
-                + UInt64(config.teardownLingerMilliseconds) * 1_000_000
-            while !core.isReliableQuiescent,
-                  SystemMonotonicClock.nowNanoseconds < deadline
-            {
-                usleep(20_000)
-            }
-        }
-        stopParts()
-    }
-
-    /// The shell's input leg (CL-9): captured events straight onto the
-    /// reliable stream. A refused send (teardown races, mostly) is the
-    /// caller's weather — count it, never crash the capture monitor.
-    @discardableResult
-    public func sendInput(_ body: InputEvent.Body) throws -> UInt32 {
-        guard let core else { throw TransportEndpointError.notStarted }
-        return try core.sendInput(body)
-    }
-
-    /// Renderer-side broken-reference seam. It joins the same coalescing
-    /// episode as FEC/repair failures: one immediate 0x10, slow retries,
-    /// and no second episode until a usable IRAP reaches the pipeline.
-    public func requestVideoRecovery(
-        after frame: FrameNumber,
-        cause: VideoRecoveryCause = .rendererFailure
-    ) {
-        core?.requestVideoRecovery(after: frame, cause: cause)
-    }
-
-    public func noteVideoIrapEnqueued(
-        frame: FrameNumber = FrameNumber(rawValue: 0)
-    ) {
-        core?.noteVideoIrapEnqueued(frame: frame)
-    }
-
-    /// Production UI funnel: capture returns immediately; one dedicated
-    /// serial sender preserves event order while ARQ, sealing, and sendto
-    /// execute away from MainActor. Jobs observe `closing` before touching
-    /// session state, so teardown cannot resurrect a dead sender.
-    public func enqueueInput(_ body: InputEvent.Body) {
-        orderedInput.enqueue(body)
-    }
-
-    public var inputSendTimingSnapshot: InputSendTiming.Snapshot {
-        orderedInput.snapshot
-    }
-
-    /// Hard stop, no wire goodbye — the path after a peer teardown or
-    /// liveness close (the machine is already closed; there is nothing
-    /// to say and possibly nobody to say it to).
-    public func stop() {
-        guard !closing.exchange(true, ordering: .relaxed) else { return }
-        stopParts()
-    }
-
-    private func stopParts() {
-        orderedInput.stop()
-        if let player = audioPlayer {
-            audioPlayer = nil
-            // Serialized behind the async start; never blocks teardown.
-            audioQueue.async { player.stop() }
-        }
-        core?.stopTimers()
-        endpoint?.stop()
     }
 }

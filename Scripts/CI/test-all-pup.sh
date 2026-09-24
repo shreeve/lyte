@@ -65,7 +65,7 @@ if [[ "$(readlink -f -- "$gate_root")" != "$HOME/src/lyte-gates/deterministic" ]
     echo "pup gate FAILED: fixed gate root resolved outside its namespace" >&2
     exit 1
 fi
-for package in Client Common Wire Host SystemTests; do
+for package in Browser Client Common Wire Host SystemTests; do
     target="$gate_root/$package"
     if [[ -L "$target" ]]; then
         echo "pup gate FAILED: package mirror is a symlink: $target" >&2
@@ -92,7 +92,7 @@ then
 fi
 lock_acquired=1
 
-echo "==> sync Client, Common, Wire, Host, and SystemTests to $pup:$pup_gate_root"
+echo "==> sync Browser, Client, Common, Wire, Host, and SystemTests to $pup:$pup_gate_root"
 # Remove only the retired client-package paths inside the validated,
 # lock-owned deterministic mirror. They must not survive as a second package.
 ssh "$pup" 'bash -se' <<'RETIRE_ROOT_CLIENT'
@@ -136,6 +136,8 @@ for directory in "$gate_root/Sources" "$gate_root/Tests"; do
     fi
 done
 RETIRE_ROOT_CLIENT
+rsync -a --delete --exclude .build --exclude .serve \
+    Browser/ "$pup:$pup_gate_root/Browser/"
 rsync -a --delete --exclude .build Client/ "$pup:$pup_gate_root/Client/"
 rsync -a --delete --exclude .build Common/ "$pup:$pup_gate_root/Common/"
 rsync -a --delete --exclude .build Wire/ "$pup:$pup_gate_root/Wire/"

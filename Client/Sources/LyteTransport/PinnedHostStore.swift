@@ -136,13 +136,54 @@ public struct PinnedHostStore: Codable, Equatable, Sendable {
         )[0].appendingPathComponent("Lyte/pinned_hosts.json")
     }
 
+    /// The store at `url`; empty when the file is absent. A present
+    /// file that cannot be read or decoded is quarantined first (see
+    /// `loadQuarantiningUnreadable`), so a later `save` never
+    /// overwrites the only copy of the pins.
     public static func load(from url: URL = Self.url) -> PinnedHostStore {
-        guard let data = try? Data(contentsOf: url),
-              let store = try? JSONDecoder().decode(PinnedHostStore.self, from: data)
-        else {
-            return PinnedHostStore()
+        loadQuarantiningUnreadable(from: url).store
+    }
+
+    /// `load`, also naming where an unreadable file was moved. The
+    /// file is renamed aside to `<name>.corrupt-<UTC stamp>` beside
+    /// the original and never deleted; `quarantinedTo` is nil when the
+    /// file was absent or decoded. When even the rename fails the
+    /// store comes back empty with `quarantinedTo` nil.
+    public static func loadQuarantiningUnreadable(
+        from url: URL = Self.url
+    ) -> (store: PinnedHostStore, quarantinedTo: URL?) {
+        let files = FileManager.default
+        guard files.fileExists(atPath: url.path) else {
+            return (PinnedHostStore(), nil)
         }
-        return store
+        if let data = try? Data(contentsOf: url),
+           let store = try? JSONDecoder().decode(
+               PinnedHostStore.self, from: data) {
+            return (store, nil)
+        }
+        return (PinnedHostStore(), quarantine(url))
+    }
+
+    private static func quarantine(_ url: URL) -> URL? {
+        let stamp = Date().formatted(
+            .iso8601.year().month().day().time(includingFractionalSeconds: false)
+                .dateTimeSeparator(.standard).timeSeparator(.omitted)
+                .dateSeparator(.omitted))
+        let base = "\(url.lastPathComponent).corrupt-\(stamp)"
+        let directory = url.deletingLastPathComponent()
+        for attempt in 0..<100 {
+            let name = attempt == 0 ? base : "\(base)-\(attempt)"
+            let target = directory.appendingPathComponent(name)
+            guard !FileManager.default.fileExists(atPath: target.path)
+            else { continue }
+            do {
+                try FileManager.default.moveItem(at: url, to: target)
+                return target
+            } catch {
+                return nil
+            }
+        }
+        return nil
     }
 
     public func save(to url: URL = Self.url) throws {

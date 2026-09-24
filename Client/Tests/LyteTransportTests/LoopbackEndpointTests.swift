@@ -124,6 +124,34 @@ final class LoopbackEndpointTests: XCTestCase {
                      "reserved channels must never accumulate accepted stats")
     }
 
+    /// Between `bindAndHandshake` and `startReceiving` nothing is read:
+    /// a datagram that arrives in that window waits in the kernel buffer
+    /// and is the first thing the receive thread delivers.
+    func testDatagramsBeforeStartReceivingWaitForTheConsumer() throws {
+        let delivered = LockedBytePile()
+        let endpoint = UdpReceiveEndpoint(
+            port: 0, bindAddress: "127.0.0.1",
+            crypto: PassthroughTransportCrypto(),
+            onDatagram: { outcome, _ in
+                if case .accepted(_, let payload) = outcome {
+                    delivered.append(payload)
+                }
+            })
+        try endpoint.bindAndHandshake()
+        defer { endpoint.stop() }
+        let sender = try LoopbackSender(port: endpoint.boundPort)
+        defer { sender.close() }
+        try sender.send(try Envelope(
+            channel: .ctrl, seq: ChannelSeq(rawValue: 0),
+            frame: FrameNumber(rawValue: 0), timestamp: 0, fec: 0
+        ).encode(payload: [0x7E]))
+        usleep(50_000)
+        XCTAssertEqual(delivered.count, 0, "no thread reads before start")
+        endpoint.startReceiving()
+        try waitUntil(timeoutSeconds: 5) { delivered.count == 1 }
+        XCTAssertEqual(delivered.all, [[0x7E]])
+    }
+
     // MARK: CL-3's return leg
 
     func testSendToPeerReachesTheDatagramSource() throws {

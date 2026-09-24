@@ -129,6 +129,15 @@ public struct ClientControlSession: Sendable {
         clipboard.noteLocalTextSent(text)
     }
 
+    /// The digest-free image gates; nil means hash and share. See
+    /// `ClientClipboardSession.prejudgeLocalImage`.
+    public mutating func prejudgeLocalClipboardImage(
+        byteCount: Int
+    ) -> ClientClipboardSessionDecision? {
+        clipboard.prejudgeLocalImage(
+            byteCount: byteCount, agreed: capabilities.agreed)
+    }
+
     public mutating func shareLocalClipboardImage(
         _ data: [UInt8],
         sha256: [UInt8],

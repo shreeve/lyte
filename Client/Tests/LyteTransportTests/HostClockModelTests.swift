@@ -360,4 +360,26 @@ final class HostClockModelTests: XCTestCase {
             return ClientTimestamp(microseconds: v)
         }
     }
+
+    /// The cached fit is invalidated by every ingest: a read after new
+    /// evidence reflects it, and repeated reads agree exactly.
+    func testCachedEstimateFollowsEveryIngest() throws {
+        let model = HostClockModel()
+        XCTAssertNil(model.estimate())
+        model.ingest(ClockSample(
+            beaconSeq: 0, offsetMicroseconds: 1_000, rttMicroseconds: 900,
+            measuredAt: ClientTimestamp(microseconds: 1_000_000)))
+        let first = try XCTUnwrap(model.estimate())
+        XCTAssertEqual(first.offsetMicroseconds, 1_000)
+        XCTAssertEqual(model.estimate()?.offsetMicroseconds, 1_000)
+        model.ingest(ClockSample(
+            beaconSeq: 1, offsetMicroseconds: 1_400, rttMicroseconds: 400,
+            measuredAt: ClientTimestamp(microseconds: 2_000_000)))
+        let second = try XCTUnwrap(model.estimate())
+        XCTAssertEqual(second.minRttMicroseconds, 400)
+        XCTAssertEqual(second.windowSamples, 2)
+        XCTAssertEqual(second.acceptedSamples, 2)
+        XCTAssertNotEqual(second.offsetMicroseconds, first.offsetMicroseconds,
+                          "a stale cached fit would still read 1000")
+    }
 }

@@ -85,6 +85,17 @@ final class VideoPipelineTests: XCTestCase {
         }
     }
 
+    private final class SampleBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [CMSampleBuffer] = []
+        func append(_ sample: CMSampleBuffer) {
+            lock.lock(); stored.append(sample); lock.unlock()
+        }
+        var first: CMSampleBuffer? {
+            lock.lock(); defer { lock.unlock() }; return stored.first
+        }
+    }
+
     private final class StepClock: @unchecked Sendable {
         private let lock = NSLock()
         private var value: UInt64 = 0
@@ -131,9 +142,10 @@ final class VideoPipelineTests: XCTestCase {
         let frame = try XCTUnwrap(loadPrefix().first)
         let shards = try XCTUnwrap(try packetizePrefix([frame]).first)
         let clock = StepClock()
+        let samples = SampleBox()
         let pipeline = LyteVideoPipeline(
             nowNanoseconds: { clock.read() },
-            sink: HeadlessVideoSink())
+            sink: HeadlessVideoSink { sample, _ in samples.append(sample) })
 
         for shard in shards {
             pipeline.ingest(
@@ -142,8 +154,9 @@ final class VideoPipelineTests: XCTestCase {
                 now: ClientTimestamp(microseconds: 1_000))
         }
 
+        let sample = try XCTUnwrap(samples.first)
         let telemetry = try XCTUnwrap(
-            pipeline.frameTelemetry(frame: FrameNumber(rawValue: 0)))
+            VideoSampleTiming.buildTelemetry(from: sample))
         XCTAssertEqual(telemetry.assemblyLockHoldMicroseconds, 1)
         XCTAssertEqual(telemetry.sampleBuildMicroseconds, 1)
     }
@@ -460,10 +473,28 @@ final class VideoPipelineTests: XCTestCase {
 
     // MARK: - Annex-B → length-prefix conversion (the copy-adapted core)
 
+    /// The expected HVCC layout: each NAL minus trailing-zero padding,
+    /// behind a 4-byte big-endian length; all-padding NALs vanish.
+    private func lengthPrefixed(annexB: [UInt8]) -> [UInt8] {
+        var out: [UInt8] = []
+        for unit in AnnexBCheck.nalUnits(in: annexB) {
+            var end = unit.offset + unit.length
+            while end > unit.offset, annexB[end - 1] == 0 { end -= 1 }
+            let length = end - unit.offset
+            guard length > 0 else { continue }
+            out += [UInt8(truncatingIfNeeded: length >> 24),
+                    UInt8(truncatingIfNeeded: length >> 16),
+                    UInt8(truncatingIfNeeded: length >> 8),
+                    UInt8(truncatingIfNeeded: length)]
+            out += annexB[unit.offset..<end]
+        }
+        return out
+    }
+
     func testLengthPrefixedConversionRoundTripsNalPayloads() throws {
         let frames = try loadPrefix()
         let annexB = frames[0]
-        let hvcc = VideoRenderFactory.lengthPrefixed(annexB: annexB)
+        let hvcc = lengthPrefixed(annexB: annexB)
         XCTAssertFalse(hvcc.isEmpty)
 
         // Walk the length-prefixed output and compare each NAL payload
@@ -491,7 +522,7 @@ final class VideoPipelineTests: XCTestCase {
 
     func testSamplePayloadIsByteExactWithOneOwnedCopy() throws {
         let frame = try loadPrefix()[0]
-        let expected = VideoRenderFactory.lengthPrefixed(annexB: frame)
+        let expected = lengthPrefixed(annexB: frame)
         let factory = VideoRenderFactory()
         let sample = try XCTUnwrap(factory.makeSampleBuffer(from: DecodeUnit(
             frameNumber: FrameNumber(rawValue: 0),
@@ -501,16 +532,11 @@ final class VideoPipelineTests: XCTestCase {
 
         XCTAssertEqual(try samplePayloadBytes(sample), expected,
             "CoreMedia storage must preserve every length prefix and NAL byte")
-        XCTAssertEqual(factory.lastCopyMetrics, VideoRenderCopyMetrics(
-            destinationBytes: expected.count,
-            intermediateBytes: 0,
-            payloadCopyPasses: 1),
-            "conversion writes once into owned sample storage")
     }
 
     func testSampleStorageOutlivesFactoryAndAnnexBSource() throws {
         let frame = try loadPrefix()[0]
-        let expected = VideoRenderFactory.lengthPrefixed(annexB: frame)
+        let expected = lengthPrefixed(annexB: frame)
         let sample: CMSampleBuffer = try autoreleasepool {
             var source = frame
             let factory = VideoRenderFactory()

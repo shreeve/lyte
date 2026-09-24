@@ -605,4 +605,30 @@ final class PacerTests: XCTestCase {
         XCTAssertNil(pacer.nextBatch(now: 500_000), "half a quantum is not enough")
         XCTAssertNotNil(pacer.nextBatch(now: 1 * ms))
     }
+
+    /// A class whose queue is topped up before it ever drains (sustained
+    /// bulk, fresh video through a long rate fall) must not retain every
+    /// token it has already sent.
+    func testSustainedBacklogKeepsQueueStorageBounded() {
+        let pacer = Pacer(rateBitsPerSecond: 100_000_000, now: 0)
+        var now: UInt64 = 0
+        for _ in 0..<64 { pacer.enqueue(.bulk, bytes: 1_200, now: now) }
+        var sent = 0
+        while sent < 50_000 {
+            now += 1_000_000
+            guard let batch = pacer.nextBatch(now: now) else { continue }
+            sent += batch.tokens.count
+            for _ in batch.tokens { pacer.enqueue(.bulk, bytes: 1_200, now: now) }
+            XCTAssertEqual(pacer.queuedCount(.bulk), 64)
+        }
+        XCTAssertLessThanOrEqual(pacer.retainedTokenSlots(.bulk), 1_024)
+    }
+
+    /// A caller clock that steps backwards must not trap the telemetry.
+    func testRegressingClockDoesNotTrapQueueDelayBooks() {
+        let pacer = Pacer(rateBitsPerSecond: 100_000_000, now: 1_000)
+        pacer.enqueue(.control, bytes: 64, now: 1_000)
+        XCTAssertNotNil(pacer.nextBatch(now: 500))
+        XCTAssertEqual(pacer.telemetry[.control].maxQueueDelayNS, 0)
+    }
 }

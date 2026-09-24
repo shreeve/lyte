@@ -449,20 +449,20 @@ public final class AudioJitterBuffer {
     private func retarget() {
         guard skewWindow.count >= 16 else { return }
         stats.retargetComputations += 1
-        let samples = chronologicalSkewWindow()
+        let count = skewWindow.count
 
         var slopePerPacket = 0.0
-        if samples.count >= 128 {
+        if count >= 128 {
             // Least squares over (index, skew): index steps are one
             // packet interval apart on the arrival lattice.
-            let n = Double(samples.count)
+            let n = Double(count)
             let meanX = (n - 1) / 2
             var meanY = 0.0
-            for value in samples { meanY += Double(value) }
+            forEachChronologicalSkew { _, value in meanY += Double(value) }
             meanY /= n
             var num = 0.0
             var den = 0.0
-            for (index, value) in samples.enumerated() {
+            forEachChronologicalSkew { index, value in
                 let dx = Double(index) - meanX
                 num += dx * (Double(value) - meanY)
                 den += dx * dx
@@ -474,13 +474,15 @@ public final class AudioJitterBuffer {
         estimatedSkewPpm = slopePerPacket
             / Double(config.packetDurationMicroseconds) * 1e6
 
-        var residuals = [Double](repeating: 0, count: samples.count)
-        for (index, value) in samples.enumerated() {
-            residuals[index] = Double(value) - slopePerPacket * Double(index)
+        // The detrended spread in one pass: no copy, no sort.
+        var lowest = Double.infinity
+        var highest = -Double.infinity
+        forEachChronologicalSkew { index, value in
+            let residual = Double(value) - slopePerPacket * Double(index)
+            lowest = min(lowest, residual)
+            highest = max(highest, residual)
         }
-        residuals.sort()
-        let spread = Int64((residuals[residuals.count - 1]
-            - residuals[0]).rounded(.up))
+        let spread = Int64((highest - lowest).rounded(.up))
         let needed = 1 + Int((spread
             + config.packetDurationMicroseconds - 1)
             / config.packetDurationMicroseconds)
@@ -513,13 +515,23 @@ public final class AudioJitterBuffer {
         stats.targetPackets = targetPackets
     }
 
-    /// The skew ring in arrival order (oldest first) — the detrend's
-    /// x-axis must be time, and the ring wraps.
-    private func chronologicalSkewWindow() -> [Int64] {
-        guard skewWindow.count == config.deviationWindowPackets,
-              skewCursor != 0 else { return skewWindow }
-        return Array(skewWindow[skewCursor...])
-            + Array(skewWindow[..<skewCursor])
+    /// Visits the skew ring in arrival order (oldest first) with each
+    /// sample's chronological index — the detrend's x-axis must be time,
+    /// and the ring wraps once full.
+    private func forEachChronologicalSkew(
+        _ body: (_ index: Int, _ value: Int64) -> Void
+    ) {
+        let count = skewWindow.count
+        let start = count == config.deviationWindowPackets ? skewCursor : 0
+        var index = 0
+        for position in start..<count {
+            body(index, skewWindow[position])
+            index += 1
+        }
+        for position in 0..<start {
+            body(index, skewWindow[position])
+            index += 1
+        }
     }
 
     private func windowStdDev() -> Double {

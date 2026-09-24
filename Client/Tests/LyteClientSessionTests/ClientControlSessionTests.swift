@@ -206,4 +206,41 @@ final class ClientControlSessionTests: XCTestCase {
     private func at(_ microseconds: UInt64) -> ClientTimestamp {
         ClientTimestamp(microseconds: microseconds)
     }
+
+    /// Every decision owns its books and operator note; the shells only
+    /// map counters onto storage and print the line.
+    func testDecisionProjectsItsCountersAndNote() {
+        let malformed = ClientControlSessionDecision(
+            event: .cursor(.malformedShape))
+        XCTAssertEqual(malformed.counters, [.malformedReliableMessage])
+        XCTAssertEqual(malformed.note, "malformed cursor shape dropped")
+
+        let asked = ClientControlSessionDecision(
+            event: .audioRouting(.status(
+                .hostAudible, startup: .requested(.hostMuted))))
+        XCTAssertEqual(
+            Set(asked.counters),
+            [.audioRoutingStatusReceived, .audioRoutingRequestSent])
+        XCTAssertEqual(
+            asked.note,
+            "session-start posture: asked host for hostMuted "
+                + "(host default hostAudible)")
+
+        let ignored = ClientControlSessionDecision(
+            event: .clipboard(.textIgnoredDisabled(byteCount: 12)))
+        XCTAssertEqual(ignored.counters, [.clipboardIgnoredDisabled])
+        XCTAssertEqual(
+            ignored.note,
+            "clipboard 0x1B while sharing is off — ignored "
+                + "(12 B never applied)")
+
+        let unnegotiatedCursor = ClientControlSessionDecision(
+            event: .cursor(.unnegotiatedShape))
+        XCTAssertEqual(unnegotiatedCursor.counters, [.unknownReliableType])
+
+        let teardown = ClientControlSessionDecision(
+            event: .lifecycle(.sessionTeardown))
+        XCTAssertEqual(teardown.counters, [])
+        XCTAssertNil(teardown.note)
+    }
 }

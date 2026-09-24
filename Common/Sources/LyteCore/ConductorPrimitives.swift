@@ -1,20 +1,21 @@
-// THE CONDUCTOR's shared primitives (tier 3 of the standardization,
-// docs/20260803-050422-metronome-playout-design.md): the law-machinery
-// that is LITERALLY IDENTICAL across instruments lives here, spelled
-// once. Instruments keep their own verbs and constants — and their
-// doctrine: audio's clock of record is the DAC (never HostClockModel;
-// the ear forgives slow drift, never a click) and audio sizes its
-// cushion from the detrended window SPREAD, not a percentile (the
-// former p99 discarded exactly the late/PLC events — a measured fix,
-// not drift). Those asymmetries are decisions of record; nothing in
-// this file may flatten them.
+// THE CONDUCTOR's shared primitives (docs/20260803-050422-metronome-playout-
+// design.md). Instruments keep their own verbs, constants and doctrine:
+// audio's clock of record is the DAC (never HostClockModel) and audio sizes
+// its cushion from the detrended window spread, not a percentile. Nothing
+// here may flatten those asymmetries.
 //
-//   ProofCounter     — audio's sample-cadenced proof-before-shed law:
-//                      cushion is easy to raise and slow to hand back;
-//                      packet evidence must accumulate before one
-//                      scheduled give-back (decay hold/step and
-//                      retarget cadence). Video uses elapsed injected
-//                      time because its source cadence is content-driven.
+//   ScoreBeat    — the one beat both ends play to: the host samples the
+//                  screen on it and the client conductor steps its grid by
+//                  it. The two must be equal, or every frame steps a beat
+//                  per mismatched source step.
+//   ProofCounter — audio's sample-cadenced proof-before-shed law. Video uses
+//                  elapsed injected time because its source cadence is
+//                  content-driven.
+
+/// The score's beat: 60 Hz, as whole microseconds.
+public enum ScoreBeat {
+    public static let periodMicroseconds: UInt64 = 16_667
+}
 
 /// The proof-before-shed law's counter: evidence accumulates one
 /// sample at a time, any contrary event resets it, and the shed may

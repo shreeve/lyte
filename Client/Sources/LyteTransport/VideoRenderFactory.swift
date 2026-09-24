@@ -1,23 +1,11 @@
 // VideoRenderFactory: LyteWire DecodeUnit → CMSampleBuffer for
-// AVSampleBufferDisplayLayer — CL-2's copy-adaptation of the GameStream
-// stack's proven construction (LyteKit's VideoSampleFactory, deleted at
-// the H2 demolition; git history keeps the original):
-// the CMBlockBuffer/CMSampleBuffer assembly, the format-description
-// rebuild on IDR parameter sets and the Annex-B → 4-byte length-prefix
-// conversion with the
-// trailing-zero strip (RBSP stop-bit guarantee: a NAL's last real byte
-// is never zero, so trailing zeros are inter-NAL padding).
-//
-// Copied rather than imported because the original factory was entangled
-// with the GameStream DecodeUnit (typed buffer chains, RTP 90 kHz
-// timestamps, Sunshine frame headers). Deliberate differences from the
-// original:
-//   - parameter sets and NAL boundaries come from AnnexBCheck's walker
-//     over the recovered Annex-B bytes, not typed buffer chains;
-//   - HEVC only — Lyte's wire carries hevc_nvenc output; the H.264 leg
-//     died with the GameStream stack;
-//   - pts begins as the host capture timestamp (µs); the Conductor
-//     re-stamps it onto the local CM host-clock beat grid.
+// AVSampleBufferDisplayLayer. It rebuilds the HEVC format description from
+// an IDR's in-band VPS/SPS/PPS and converts Annex-B (3- or 4-byte start
+// codes) to 4-byte length-prefixed NALs, stripping each NAL's trailing
+// zeros (the RBSP stop-bit guarantee: a NAL's last real byte is never
+// zero, so trailing zeros are inter-NAL padding). HEVC only. The pts is
+// the host capture timestamp (µs); the Conductor re-stamps it onto the
+// local CM host-clock beat grid.
 
 import CoreMedia
 import Foundation
@@ -31,29 +19,13 @@ public enum VideoRenderError: Error, Sendable {
     case sampleBufferCreateFailed(OSStatus)
 }
 
-public struct VideoRenderCopyMetrics: Equatable, Sendable {
-    /// Bytes in the final HVCC sample storage.
-    public var destinationBytes: Int
-    /// Full payload-sized temporary storage allocated during conversion.
-    public var intermediateBytes: Int
-    /// Source-to-owned-destination passes over NAL payload bytes.
-    public var payloadCopyPasses: Int
-
-    public init(
-        destinationBytes: Int,
-        intermediateBytes: Int,
-        payloadCopyPasses: Int
-    ) {
-        self.destinationBytes = destinationBytes
-        self.intermediateBytes = intermediateBytes
-        self.payloadCopyPasses = payloadCopyPasses
-    }
-}
-
-/// Not Sendable by design: LyteVideoPipeline confines it behind its lock.
+/// Not Sendable by design: LyteVideoPipeline confines it to its serial
+/// sample-build queue.
 public final class VideoRenderFactory {
     private var formatDescription: CMVideoFormatDescription?
-    public private(set) var lastCopyMetrics: VideoRenderCopyMetrics?
+    /// The VPS/SPS/PPS bytes `formatDescription` was built from; an IDR
+    /// repeating them reuses the description instead of rebuilding it.
+    private var parameterSets: [[UInt8]] = []
 
     public init() {}
 
@@ -67,12 +39,12 @@ public final class VideoRenderFactory {
     /// Returns nil for units that cannot render yet (P-frame before the
     /// first IDR).
     public func makeSampleBuffer(from unit: DecodeUnit) throws -> CMSampleBuffer? {
+        let nals = Self.renderableNALs(annexB: unit.annexB)
         if unit.isIDR {
-            try rebuildFormatDescription(from: unit.annexB)
+            try refreshFormatDescription(nals: nals, annexB: unit.annexB)
         }
         guard let formatDescription else { return nil }
 
-        let nals = Self.renderableNALs(annexB: unit.annexB)
         let sampleByteCount = nals.reduce(0) { $0 + 4 + $1.range.count }
         guard sampleByteCount > 0 else { return nil }
 
@@ -137,33 +109,27 @@ public final class VideoRenderFactory {
         guard status == noErr, let sampleBuffer else {
             throw VideoRenderError.sampleBufferCreateFailed(status)
         }
-        lastCopyMetrics = VideoRenderCopyMetrics(
-            destinationBytes: sampleByteCount,
-            intermediateBytes: 0,
-            payloadCopyPasses: 1)
-
         return sampleBuffer
     }
 
     // MARK: - Parameter sets
 
-    private func rebuildFormatDescription(from annexB: [UInt8]) throws {
-        let units = AnnexBCheck.nalUnits(in: annexB)
+    /// Rebuilds the description from the unit's parameter sets. An IRAP
+    /// without in-band VPS/SPS/PPS keeps the current description, as does
+    /// one repeating the sets the current description came from.
+    private func refreshFormatDescription(
+        nals: [RenderableNAL], annexB: [UInt8]
+    ) throws {
         func parameterSet(_ type: UInt8) -> [UInt8]? {
-            guard let unit = units.first(where: { $0.type == type }) else { return nil }
-            var bytes = Array(annexB[unit.offset..<unit.offset + unit.length])
-            while let last = bytes.last, last == 0 { bytes.removeLast() }
-            return bytes.isEmpty ? nil : bytes
+            nals.first { $0.type == type }.map { Array(annexB[$0.range]) }
         }
-        // An IRAP without in-band parameter sets keeps the current
-        // description (same behavior as the frozen factory's guard).
         guard let vps = parameterSet(HevcNalType.vps),
               let sps = parameterSet(HevcNalType.sps),
               let pps = parameterSet(HevcNalType.pps) else { return }
         let sets = [vps, sps, pps]
+        guard formatDescription == nil || sets != parameterSets else { return }
 
-        // Manually allocated so the pointers stay valid across the call
-        // (copied from the frozen factory's withParameterSets).
+        // Manually allocated so the pointers stay valid across the call.
         let buffers = sets.map { bytes -> UnsafeMutableBufferPointer<UInt8> in
             let buf = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: bytes.count)
             _ = buf.initialize(from: bytes)
@@ -181,41 +147,25 @@ public final class VideoRenderFactory {
         guard status == noErr else {
             throw VideoRenderError.formatDescriptionCreateFailed(status)
         }
-        if let desc { formatDescription = desc }
-    }
-
-    /// Annex-B (3- or 4-byte start codes) → 4-byte big-endian
-    /// length-prefixed NALs (the HVCC sample layout VideoToolbox wants).
-    /// Rides AnnexBCheck's proven walker; trailing zeros of each NAL are
-    /// stripped as padding per the RBSP stop-bit guarantee.
-    public static func lengthPrefixed(annexB: [UInt8]) -> [UInt8] {
-        let nals = renderableNALs(annexB: annexB)
-        var out = [UInt8]()
-        out.reserveCapacity(nals.reduce(0) { $0 + 4 + $1.range.count })
-        for nal in nals {
-            let length = nal.range.count
-            out.append(contentsOf: [
-                UInt8((length >> 24) & 0xff), UInt8((length >> 16) & 0xff),
-                UInt8((length >> 8) & 0xff), UInt8(length & 0xff),
-            ])
-            out.append(contentsOf: annexB[nal.range])
+        if let desc {
+            formatDescription = desc
+            parameterSets = sets
         }
-        return out
     }
 
     private struct RenderableNAL {
+        var type: UInt8
         var range: Range<Int>
     }
 
-    /// One validated AnnexBCheck walk shared by the diagnostic converter
-    /// and the direct-to-CoreMedia path. Empty NALs and RBSP padding have
-    /// exactly the prior semantics.
+    /// One AnnexBCheck walk per unit: each NAL's byte range minus its
+    /// trailing-zero padding; NALs that are all padding are dropped.
     private static func renderableNALs(annexB: [UInt8]) -> [RenderableNAL] {
         AnnexBCheck.nalUnits(in: annexB).compactMap { unit in
             var end = unit.offset + unit.length
             while end > unit.offset, annexB[end - 1] == 0 { end -= 1 }
             guard end > unit.offset else { return nil }
-            return RenderableNAL(range: unit.offset..<end)
+            return RenderableNAL(type: unit.type, range: unit.offset..<end)
         }
     }
 }

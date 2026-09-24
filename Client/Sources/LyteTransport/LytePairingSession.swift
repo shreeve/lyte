@@ -129,7 +129,7 @@ public enum LytePairing {
         progress("Noise IK handshake → "
             + "\(config.hostAddress):\(config.hostPort) …")
         do {
-            try endpoint.start()
+            try endpoint.bindAndHandshake()
         } catch let error as TransportCryptoError {
             return .failed("handshake failed: \(error)")
         } catch {
@@ -199,9 +199,11 @@ public enum LytePairing {
                     }
                 }
             })
+        reliableBox.value = reliable
+        // Consumers are published; only now may host datagrams flow.
+        endpoint.startReceiving()
         reliable.start()
         defer { reliable.stop() }
-        reliableBox.value = reliable
 
         do {
             try reliable.send(service.start())

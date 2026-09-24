@@ -146,6 +146,45 @@ final class ClientClipboardSessionTests: XCTestCase {
             .overBudget(17))
     }
 
+    func testPrejudgeRefusesWithoutADigestAndPassesEverythingElse() {
+        var rng = CountingRng(nextValue: 3)
+        var session = ClientClipboardSession(
+            textSharingAtStart: true,
+            imageSharingAtStart: true,
+            imageByteCeiling: 16)
+        XCTAssertEqual(
+            session.prejudgeLocalImage(byteCount: 8, agreed: text)?
+                .shareOutcome,
+            .notNegotiated)
+        XCTAssertNil(session.prejudgeLocalImage(byteCount: 16, agreed: images),
+                     "within the ceiling the digest decides")
+        XCTAssertNil(session.prejudgeLocalImage(byteCount: 0, agreed: images),
+                     "the empty verdict stays the channel's")
+        let over = session.prejudgeLocalImage(byteCount: 17, agreed: images)
+        XCTAssertEqual(over?.shareOutcome, .overBudget(17))
+        XCTAssertEqual(over?.events, [.image(.suppressed(.overBudget(17)))])
+        XCTAssertEqual(session.imageCounters.sharesSuppressed, 1)
+
+        XCTAssertEqual(
+            session.shareLocalImage(
+                [UInt8](repeating: 4, count: 12),
+                sha256: [UInt8](repeating: 9, count: 32),
+                rng: &rng, agreed: images
+            ).shareOutcome,
+            .shared)
+        XCTAssertEqual(
+            session.prejudgeLocalImage(byteCount: 17, agreed: images)?
+                .shareOutcome,
+            .suppressedBusy,
+            "busy outranks the ceiling, as in the channel's own order")
+        session.setImageSharing(false)
+        XCTAssertEqual(
+            session.prejudgeLocalImage(byteCount: 17, agreed: images)?
+                .shareOutcome,
+            .sharingDisabled)
+        XCTAssertEqual(session.imageCounters.sharesSuppressed, 2)
+    }
+
     func testInboundImageMarkerOwnsCapabilityAndConsentJudgment() throws {
         let cargo = try ClipboardImageCargo(
             transferId: 42,
