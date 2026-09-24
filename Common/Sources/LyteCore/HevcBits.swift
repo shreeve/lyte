@@ -20,8 +20,12 @@ public enum HevcRbsp {
         return output
     }
 
-    /// Removes only conforming emulation-prevention bytes. A literal 0x03
-    /// after two zeros survives when it is trailing or followed by > 0x03.
+    /// Removes emulation-prevention bytes: a 0x03 after two zeros that is
+    /// followed by a byte <= 0x03. This is narrower than H.265 §7.3.1.1,
+    /// which drops the 0x03 of every 0x000003; the two agree on every
+    /// conforming RBSP whose last byte is non-zero (every parameter set and
+    /// slice header this module parses), since an encoder only inserts the
+    /// byte before 0x00...0x03 or at the end.
     public static func unescaped(_ bytes: [UInt8]) -> [UInt8] {
         var output: [UInt8] = []
         output.reserveCapacity(bytes.count)
@@ -63,15 +67,20 @@ public struct HevcBitWriter: Sendable {
         }
     }
 
+    /// ue(v) for 0 ... 2^32 − 2, the range HevcBitReader.readUe decodes.
     public mutating func ue(_ value: UInt32) {
-        let codePlusOne = value &+ 1
+        precondition(value < UInt32.max, "ue(v) is limited to 32-bit codes")
+        let codePlusOne = value + 1
         let length = 32 - codePlusOne.leadingZeroBitCount
         u(0, length - 1)
         u(codePlusOne, length)
     }
 
+    /// se(v) for −(2^31 − 1) ... 2^31 − 1; Int32.min has no 32-bit code.
     public mutating func se(_ value: Int32) {
-        ue(value > 0 ? UInt32(value) * 2 - 1 : UInt32(-value) * 2)
+        precondition(value != .min, "se(v) is limited to 32-bit codes")
+        let magnitude = UInt32(value.magnitude)
+        ue(value > 0 ? magnitude * 2 - 1 : magnitude * 2)
     }
 
     public mutating func rbspTrailingBits() {
