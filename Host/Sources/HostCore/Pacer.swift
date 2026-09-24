@@ -5,7 +5,9 @@
 // - No emitted batch exceeds `quantumNS` of wire time: burst capacity is
 //   one quantum of bytes.
 // - A lower class never sends while a higher class has a queued token.
-//   FIFO within a class; `urgent` jumps only its own class's queue.
+//   FIFO within a class; `urgent` jumps only its own class's queue, and
+//   never splits a frame: once a normal token with a frame ID leaves, the
+//   rest of that frame leaves before any urgent token.
 // - A negative balance is only ever an oversize lower-class overrun.
 //   Control and audio emit alone through it and charge the bucket, so
 //   the wire total still honors the rate; video never borrows it.
@@ -117,18 +119,29 @@ public final class Pacer {
     private var bytesPerNS: Double
     private var lastRefillAt: UInt64
 
-    // One FIFO pair per class; urgent drains before normal. Deque storage
-    // reclaims consumed slots, so a queue stays bounded by its live depth.
+    // One FIFO pair per class; urgent drains before normal, except that a
+    // started normal frame finishes first. Deque storage reclaims consumed
+    // slots, so a queue stays bounded by its live depth.
     private struct ClassQueue {
         var urgent = Deque<PacerToken>()
         var normal = Deque<PacerToken>()
         /// Running total of un-popped bytes, kept by push/pop so hot
         /// backlog reads never walk the queue.
         var bytesQueued = 0
+        /// The frame ID of the last normal token popped: while the normal
+        /// head still carries it, that frame is mid-release and outranks
+        /// urgent tokens.
+        var startedFrame: UInt32?
 
         var isEmpty: Bool { urgent.isEmpty && normal.isEmpty }
 
-        var head: PacerToken? { urgent.first ?? normal.first }
+        private var continuesStartedFrame: Bool {
+            startedFrame != nil && normal.first?.frameID == startedFrame
+        }
+
+        var head: PacerToken? {
+            continuesStartedFrame ? normal.first : urgent.first ?? normal.first
+        }
 
         mutating func push(_ t: PacerToken) {
             bytesQueued += t.bytes
@@ -136,9 +149,17 @@ public final class Pacer {
         }
 
         mutating func pop() -> PacerToken? {
-            guard let t = urgent.popFirst() ?? normal.popFirst() else {
+            let t: PacerToken
+            if continuesStartedFrame {
+                t = normal.popFirst()!
+            } else if let u = urgent.popFirst() {
+                t = u
+            } else if let n = normal.popFirst() {
+                t = n
+            } else {
                 return nil
             }
+            if !t.urgent { startedFrame = t.frameID }
             bytesQueued -= t.bytes
             return t
         }
@@ -186,7 +207,8 @@ public final class Pacer {
     }
 
     /// Queues one send unit. `urgent` jumps the FIFO of `priorityClass`
-    /// only; it never crosses class boundaries.
+    /// only; it never crosses class boundaries and never splits a frame
+    /// whose release has begun.
     public func enqueue(_ priorityClass: PacerClass, bytes: Int,
                         frameID: UInt32? = nil, urgent: Bool = false,
                         tag: UInt64 = 0, now: UInt64) {

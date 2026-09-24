@@ -263,7 +263,7 @@ public enum SessionEvent: Equatable, Sendable {
     /// bytes would have occupied at the new rate.
     case videoBacklogPurged(datagrams: Int, bytes: Int, staleWireMs: Int)
     /// A client NACK passed the retransmit gate — `shards` repair
-    /// datagrams are enqueued (fresh seqs, videoTail class).
+    /// datagrams are enqueued (videoTail class; seqs at release).
     case repairEnqueued(frame: FrameNumber, shards: Int)
     /// A client NACK was refused. `.budgetExceeded`/`.unavailable` send an
     /// explicit refusal (the client's recovery episode owns the IDR
@@ -834,7 +834,12 @@ public final class Session {
             config: config.path,
             rng: rng
         )
-        if case .testPassthrough = config.crypto {
+        let sealTagByteCount: Int
+        switch config.crypto {
+        case .noise:
+            sealTagByteCount = WireBudget.aeadTagByteCount
+        case .testPassthrough:
+            sealTagByteCount = 0
             // No handshake to wait for; the session-start beacon (and
             // the capability declaration) leave on the first `advance`.
             self.beaconClock.armSessionStart(at: now)
@@ -854,6 +859,7 @@ public final class Session {
             seal: { [unowned self] plaintext, aad, envelope in
                 try self.sealPayload(plaintext, aad: aad, envelope: envelope)
             },
+            sealTagByteCount: sealTagByteCount,
             // The estimator's send ledger taps the sink, recording (channel,
             // seq) → (instant, wire bytes) so dispersion samples match their
             // trains.
@@ -1291,13 +1297,11 @@ public final class Session {
         _ annexB: [UInt8],
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
-        interleave: (() -> Void)? = nil,
         now: UInt64
     ) throws -> Int {
         try ingestVideoFrameBytes(
             annexB, captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe, interleave: interleave, now: now,
-            isBorrowed: false)
+            isKeyframe: isKeyframe, now: now, isBorrowed: false)
     }
 
     /// Borrowed encoder-buffer ingress. The pointer is consumed
@@ -1307,20 +1311,17 @@ public final class Session {
         _ annexB: UnsafeBufferPointer<UInt8>,
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
-        interleave: (() -> Void)? = nil,
         now: UInt64
     ) throws -> Int {
         try ingestVideoFrameBytes(
             annexB, captureTimestampMicroseconds: captureTimestampMicroseconds,
-            isKeyframe: isKeyframe, interleave: interleave, now: now,
-            isBorrowed: true)
+            isKeyframe: isKeyframe, now: now, isBorrowed: true)
     }
 
     private func ingestVideoFrameBytes<C>(
         _ annexB: C,
         captureTimestampMicroseconds: UInt64,
         isKeyframe: Bool,
-        interleave: (() -> Void)?,
         now: UInt64,
         isBorrowed: Bool
     ) throws -> Int
@@ -1335,7 +1336,6 @@ public final class Session {
             prepared,
             context: context,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
-            interleave: interleave,
             now: now,
             isBorrowed: isBorrowed
         )
@@ -1391,9 +1391,12 @@ public final class Session {
         )
     }
 
-    /// Ordered locked half. Channel seq allocation, Noise sealing, enqueue,
-    /// repair retention, and frame-number advancement remain one critical
-    /// section with every other Session mutation.
+    /// Ordered locked half: pacer insertion, repair retention and
+    /// frame-number advancement, one critical section with every other
+    /// Session mutation. No seal runs here: chan-2 seqs and seals are
+    /// assigned as `pump` releases each shard, so the first quantum can
+    /// leave on the next pump. `interleave` is never called (nothing long
+    /// runs here any more); it stays only for source compatibility.
     @discardableResult
     public func commitPreparedVideoFrame(
         _ prepared: PreparedVideoFrame,
@@ -1413,12 +1416,11 @@ public final class Session {
         guard context.frameNumber == nextVideoFrameNumber else {
             throw SessionError.staleVideoPreparation
         }
-        let shards = try channel.ingestPrepared(
+        let shards = channel.ingestPrepared(
             prepared,
             frameNumber: context.frameNumber,
             captureTimestampMicroseconds: captureTimestampMicroseconds,
             lastInputSeq: context.lastInputSeq,
-            interleave: interleave,
             now: now,
             isBorrowed: isBorrowed
         )
@@ -2555,16 +2557,11 @@ public final class Session {
             }
         }
 
-        let enqueued: Int
-        do {
-            enqueued = try channel.enqueueRepair(
-                frame: nack.frame,
-                shardIndices: nack.missingShards,
-                now: now
-            )
-        } catch {
-            return [.sendFailed("repair frame \(nack.frame.rawValue): \(error)")]
-        }
+        let enqueued = channel.enqueueRepair(
+            frame: nack.frame,
+            shardIndices: nack.missingShards,
+            now: now
+        )
         guard enqueued > 0 else {
             return stale(.unavailable)
         }

@@ -105,7 +105,7 @@ KMS scanout ─► HostEye.EyePipeline ─► VAAPI HEVC (HostCore pens)
    60 Hz beat: import, GPU fingerprint, blit, encode (DirectEyeLeg)
         │ access unit
         ▼
-HostWire.Session.sendFrame ─► VideoChannel: packetize + RS-FEC ─► Pacer
+HostWire.Session.sendFrame ─► VideoChannel: packetize + RS-FEC ─► Pacer (seq + seal on release)
         ▲                                                        │
 PipeWire monitor ─► HostAudio Opus 5 ms ─► AudioFramer (RS 4+2) ─┤
                                                                  ▼
@@ -161,7 +161,7 @@ browser path proves today.
 
 | Where | Owner | Notes |
 |---|---|---|
-| Host `SessionWire` | one `NSLock` over `Session` and the outbox | Sequence allocation, sealing, pacer insertion and flush keep one order |
+| Host `SessionWire` | one `NSLock` over `Session` and the outbox | Pacer insertion, release (chan-2 seq and seal) and flush keep one order |
 | Host capture | `DirectEyeLeg` capture thread | Calls `sendFrame`; reads one leg snapshot per poll |
 | Host audio | 5 ms audio thread (SCHED_RR when granted) | Publishes into a mailbox; never waits on the session lock |
 | Host sender | SCHED_RR sender thread | `ppoll` on its eventfd, the sockets and the next session timer |
@@ -194,7 +194,9 @@ browser path proves today.
 ## Hot paths
 
 - **Host per frame:** fingerprint and blit on the GPU, VAAPI encode, one
-  Annex-B walk, packetize into ≤ 1112 B shards, RS parity, pacer, `sendmmsg`.
+  Annex-B walk, packetize into ≤ 1112 B shards and RS parity off the lock,
+  pacer insertion under it; each pacer release takes the next chan-2 seq
+  and seals, one quantum at a time, then `sendmmsg`.
 - **Host per datagram in:** `recvmmsg`, open (AEAD with the header as AAD),
   ARQ or feedback ingest, all under the session lock.
 - **Client per datagram:** kernel stamp, envelope decode and unseal outside

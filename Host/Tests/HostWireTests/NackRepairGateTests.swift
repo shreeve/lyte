@@ -807,11 +807,11 @@ final class NackRepairGateTests: XCTestCase {
 
         // Channel-level one-attempt: a second repair of the same shard
         // enqueues nothing.
-        XCTAssertEqual(try channel.enqueueRepair(
+        XCTAssertEqual(channel.enqueueRepair(
             frame: FrameNumber(rawValue: 3), shardIndices: [0],
             now: 5_001 * Self.ms
         ), 1)
-        XCTAssertEqual(try channel.enqueueRepair(
+        XCTAssertEqual(channel.enqueueRepair(
             frame: FrameNumber(rawValue: 3), shardIndices: [0],
             now: 5_002 * Self.ms
         ), 0)

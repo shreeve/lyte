@@ -394,10 +394,10 @@ final class VideoChannelGateTests: XCTestCase {
 
                 expectedBox.datagrams.removeAll()
                 borrowedBox.datagrams.removeAll()
-                _ = try expected.enqueueRepair(
+                _ = expected.enqueueRepair(
                     frame: frameNumber, shardIndices: [0], now: expectedNow
                 )
-                _ = try borrowed.enqueueRepair(
+                _ = borrowed.enqueueRepair(
                     frame: frameNumber, shardIndices: [0], now: borrowedNow
                 )
                 drain(expected, now: &expectedNow)
@@ -507,7 +507,7 @@ final class VideoChannelGateTests: XCTestCase {
             "fully drained — NACKs against it are path evidence again")
 
         // A repair retransmit re-opens the books until it leaves too.
-        try channel.enqueueRepair(
+        channel.enqueueRepair(
             frame: FrameNumber(rawValue: 7), shardIndices: [0], now: now
         )
         XCTAssertEqual(channel.framesWithQueuedShards(), [7])

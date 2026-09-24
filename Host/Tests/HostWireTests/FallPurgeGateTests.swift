@@ -91,7 +91,7 @@ final class FallPurgeGateTests: XCTestCase {
         XCTAssertNil(channel.repairAnchor(for: FrameNumber(rawValue: 7)),
                      "purge must invalidate the matching repair-store frame")
         XCTAssertTrue(channel.wasPurged(FrameNumber(rawValue: 7)))
-        XCTAssertEqual(try channel.enqueueRepair(
+        XCTAssertEqual(channel.enqueueRepair(
             frame: FrameNumber(rawValue: 7), shardIndices: [0], now: 1
         ), 0, "a NACK cannot resurrect a purged frame as videoTail")
         let telemetryBatch = channel.takeFrameTransmitTelemetry()
@@ -327,7 +327,7 @@ final class FallPurgeGateTests: XCTestCase {
             now = max(now + 1, wake)
         }
         let freshCount = sent.count
-        XCTAssertEqual(try channel.enqueueRepair(
+        XCTAssertEqual(channel.enqueueRepair(
             frame: FrameNumber(rawValue: 9), shardIndices: [0],
             now: now
         ), 1)

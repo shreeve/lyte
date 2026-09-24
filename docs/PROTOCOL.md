@@ -79,6 +79,13 @@ shards. Shards are balanced: every data shard but the last is
 `ceil(group / k)` bytes. Video groups are one frame; audio groups are four
 5 ms Opus packets plus two parity (RS 4+2).
 
+A video frame's shards carry contiguous chan-2 seqs in shard-index order,
+so any one shard names the group's seq range; a repair is a fresh datagram
+with its own seq. The host assigns chan-2 seqs as its pacer releases each
+datagram, so chan-2 seqs reach the wire in ascending order and a datagram
+the host drops before sending consumes none. That is sender behavior, not
+a wire-format change.
+
 Pinned by `fec-v1.json` (field, geometry ladder, recovery matrices) and
 `video-v1.json` (packetize and assembly scenarios over
 `video-corpus-v1/`).
