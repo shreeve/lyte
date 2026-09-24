@@ -52,7 +52,7 @@ esac
 
 # Plain find-identity (not -v): a self-signed cert is untrusted for chain
 # validation so -v never lists it, but codesign uses it by hash regardless.
-if ! security find-identity "$KC" 2>/dev/null | rg -q "$CN"; then
+if ! security find-identity "$KC" 2>/dev/null | grep -Fq "$CN"; then
     security import "$DIR/lyte-dev.p12" -k "$KC" -P "$PW" \
         -T /usr/bin/codesign >/dev/null 2>&1
 fi
