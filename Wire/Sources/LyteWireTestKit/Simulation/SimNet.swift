@@ -242,7 +242,7 @@ public struct SimNet: Sendable {
         }
         let lower = max(burst.minimumDatagrams, 1)
         let upper = max(burst.maximumDatagrams, lower)
-        let length = Int.random(in: lower...upper, using: &rng)
+        let length = rng.int(in: lower...upper)
         burstRemaining[direction] = length - 1
         return true
     }
