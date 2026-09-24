@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import LyteTransport
+import LyteUI
 
 /// The window's empty state: discovered Lyte hosts and pairing. Melts
 /// away when the stream starts.
@@ -65,7 +66,7 @@ struct ConnectView: View {
     private var hostPicker: some View {
         VStack(spacing: 28) {
             Spacer()
-            Image(nsImage: LyteUIIconBridge.icon)
+            Image(nsImage: AppIcon.shared)
                 .resizable()
                 .frame(width: 64, height: 64)
 
@@ -314,10 +315,3 @@ struct ConnectView: View {
         }
     }
 }
-
-/// Bridges the shared NSImage icon into SwiftUI without exposing LyteUI here.
-enum LyteUIIconBridge {
-    @MainActor static var icon: NSImage { LyteUI.AppIcon.shared }
-}
-
-import LyteUI
