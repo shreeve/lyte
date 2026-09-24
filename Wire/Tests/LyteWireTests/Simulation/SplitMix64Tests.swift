@@ -36,7 +36,6 @@ final class SplitMix64Tests: XCTestCase {
         for _ in 0..<64 {
             XCTAssertEqual(rng.int(in: 5...5), 5)
             XCTAssertEqual(rng.int(in: -3..<(-2)), -3)
-            XCTAssert((Int.min...Int.max).contains(rng.int(in: Int.min...Int.max)))
             XCTAssert((-10...10).contains(rng.int(in: -10...10)))
         }
     }

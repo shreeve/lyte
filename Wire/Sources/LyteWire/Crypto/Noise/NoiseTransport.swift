@@ -32,9 +32,10 @@
 /// as stale or opens under the wrong counter, and because the anchor only
 /// moves on a successful open, nothing would ever open again. After
 /// `resyncFailureThreshold` consecutive failures the receiver therefore
-/// also tries the next `resyncWrapCount` forward wraps of the same seq;
-/// the AEAD tag arbitrates, so a forged datagram can cost at most
-/// `resyncWrapCount` extra opens and never moves the anchor.
+/// also tries the forward wraps of the same seq; the AEAD tag
+/// arbitrates, so a forged datagram costs at most `resyncWrapCount + 1`
+/// extra opens (plus the grace-key attempt after a rekey) and never
+/// moves the anchor.
 package struct ExtendedCounterTracker: Sendable {
     /// Highest extended counter seen/sent; nil until the first datagram.
     /// The first datagram on a channel anchors at rollover 0 — extended =

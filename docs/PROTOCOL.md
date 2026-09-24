@@ -297,7 +297,8 @@ Pinned by `beacon-v1.json`.
 - **Audio:** Opus, 5 ms packets, hard CBR, RS 4+2 groups on chan 1. The
   host may gate transmission during announced silence (0x25) and replays a
   pre-roll ring on wake.
-- **Cursor:** shape and hotspot as metadata (0x24), up to 256 × 256 BGRA.
+- **Cursor:** shape and hotspot as metadata (0x24), BGRA with sides ≤ 256
+  and area ≤ 16,384 px (65,536 B); a larger crop is suppressed.
 
 Pinned by `video-v1.json` + `video-corpus-v1/`, `postures-v1.json`,
 `cursor-v1.json`; the audio interior composes the envelope and FEC formats

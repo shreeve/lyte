@@ -1,11 +1,13 @@
 // ArqEndpoint: the sans-IO reliable ordered-retransmit sublayer. One
 // endpoint owns one reliable channel in both directions: it segments
 // outbound messages, retransmits until acknowledged, deduplicates and
-// reorders inbound segments, and delivers each message exactly once, in
-// order, per group. Group 0 is the ordered stream (CTRL, feature
-// channels); each non-zero one-shot group (ascending ids) carries one
-// message and retransmits independently, so a lost one-shot never delays
-// the next.
+// reorders inbound segments, and delivers each message at most once, in
+// order, per group — exactly once on the ordered stream. Group 0 is the
+// ordered stream (CTRL, feature channels); each non-zero one-shot group
+// (ascending ids) carries one message and retransmits independently, so
+// a lost one-shot never delays the next. Past the tombstone horizon a
+// one-shot id at or behind the eviction watermark reads as closed and is
+// acknowledged without delivery (`maxClosedGroupTombstones`).
 //
 // Time is the injected `now`; `poll` returns datagram payloads for the
 // shell to wrap in envelopes (a fresh channel seq each — see
@@ -201,7 +203,8 @@ public enum ArqIgnoreReason: Hashable, Sendable {
 }
 
 public enum ArqEvent: Hashable, Sendable {
-    /// A whole message, exactly once, in order within its group.
+    /// A whole message, at most once (exactly once on the ordered
+    /// stream), in order within its group.
     case message(group: ArqGroupId, bytes: [UInt8])
     /// Sender side: a one-shot group is fully acknowledged.
     case oneShotAcknowledged(ArqGroupId)

@@ -235,13 +235,13 @@ final class AudioInteriorTests: XCTestCase {
         XCTAssertEqual(framer.counters.groupsAbandoned, 2)
     }
 
-    // MARK: Leg 4 — the retention horizon is local policy (T2-10)
+    // MARK: The retention horizon is local policy
 
-    /// A shard's DECLARED geometry must not move the horizon: before the
-    /// pin, one legal k=1 shard shrank retention to 8 packets (flushing
-    /// groups still awaiting parity) and a k=254 shard widened admission
-    /// to ~2000 packets. Both now bounce off the pinned 32-packet
-    /// (160 ms) policy while honest 4+2 traffic is untouched.
+    /// A shard's DECLARED geometry must not move the horizon: a legal k=1
+    /// shard must not shrink retention to 8 packets (flushing groups
+    /// still awaiting parity), nor a k=254 shard widen admission to ~2000
+    /// packets. Both bounce off the pinned 32-packet (160 ms) policy
+    /// while honest 4+2 traffic is untouched.
     func testDeclaredGeometryCannotMoveTheRetentionHorizon() throws {
         // Group 0 via the real framer: 3 of 4 data shards arrive, so the
         // group waits on parity for its recovery.
