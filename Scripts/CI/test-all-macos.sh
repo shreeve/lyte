@@ -73,7 +73,8 @@ build_graph_hash="$({
         Common/Package.swift Common/Package.resolved \
         Wire/Package.swift Wire/Package.resolved \
         Host/Package.swift Host/Package.resolved \
-        SystemTests/Package.swift SystemTests/Package.resolved
+        SystemTests/Package.swift SystemTests/Package.resolved \
+        Browser/Package.swift Browser/Package.resolved
     do
         if [[ -f "$manifest" ]]; then
             shasum -a 256 "$manifest"
@@ -84,7 +85,7 @@ build_graph_hash="$({
     # layout migration even when every manifest is unchanged. Make the
     # structural source graph part of cache identity so dependent packages
     # rebuild cleanly after files are added, removed, or moved.
-    for package_root in Client Common Wire Host SystemTests; do
+    for package_root in Client Common Wire Host SystemTests Browser; do
         for tree in Sources Tests Plugins; do
             source_root="$package_root/$tree"
             if [[ -d "$source_root" ]]; then
@@ -104,6 +105,30 @@ run_package_tests "Host" "$repo_root/Host" "$repo_root/Host/.build"
 run_package_tests "client" "$repo_root/Client" "$repo_root/Client/.build"
 run_package_tests \
     "SystemTests" "$repo_root/SystemTests" "$repo_root/SystemTests/.build"
+# The browser's sans-IO core, natively (its tests drive a real HostWire
+# session in process).
+run_package_tests "Browser" "$repo_root/Browser" "$repo_root/Browser/.build"
+
+# WebAssembly legs run when the pinned Swift Wasm toolchain is installed
+# (Scripts/lib/wasm-toolchain.sh has the install commands). A subshell keeps
+# the host-SDK choice for that toolchain away from the Xcode legs below.
+echo "==> WebAssembly legs"
+(
+    . "$repo_root/Scripts/lib/wasm-toolchain.sh"
+    if ! lyte_wasm_available; then
+        echo "    SKIPPED: Swift ${LYTE_WASM_TOOLCHAIN_VERSION} + ${LYTE_WASM_SDK} not installed"
+        exit 0
+    fi
+    lyte_wasm_select_host_sdk "macOS gate"
+    Browser/Scripts/build.sh
+    if command -v wasmtime >/dev/null 2>&1 \
+        || [ -x "$HOME/.wasmtime/bin/wasmtime" ]
+    then
+        Wire/Scripts/wasm-test.sh
+    else
+        echo "    SKIPPED Wire/Scripts/wasm-test.sh: wasmtime not installed"
+    fi
+)
 
 echo "==> benchmark safety tests"
 Scripts/Tests/test-benchmark-safety.sh
