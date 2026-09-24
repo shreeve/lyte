@@ -161,9 +161,8 @@ and `Scripts/` to `~/src/lyte-gates/deterministic/`, then the session:
    `/etc/systemd/system/lyte-host.service`, and the `~/.local/bin/lyte-host`
    link target.
 2. Package tests (`swift test -Xswiftc -warnings-as-errors`) for Common,
-   Wire and Host; `swift build --target LyteClientCore` and
-   `--target LyteClientSession` for Client (its manifest declares the macOS
-   targets on every platform, so its suites cannot build on Linux yet).
+   Wire, Client and Host. Off macOS the Client manifest keeps only
+   `LyteClientCore`, `LyteClientSession` and their suites.
    Each package is cleaned by the same per-package build-graph rule as on
    the Mac.
 3. Plain and release Host builds with `-warnings-as-errors`.

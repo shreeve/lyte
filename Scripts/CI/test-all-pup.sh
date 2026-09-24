@@ -249,7 +249,7 @@ main() {
     run_package_tests Wire
     # Client's manifest declares its macOS targets on every platform, so
     # only the IO-free policy targets build here.
-    run_package_tests Client --build-only LyteClientCore LyteClientSession
+    run_package_tests Client
     run_package_tests Host
 
     echo "==> plain Host build"

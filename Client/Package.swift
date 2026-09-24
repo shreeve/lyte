@@ -181,3 +181,14 @@ let package = Package(
         ),
     ]
 )
+
+// Off macOS only the IO-free client policy and its suites exist; every
+// other target needs AppKit, AVFoundation or Network.framework.
+#if !os(macOS)
+let portableTargets: Set<String> = [
+    "LyteClientCore", "LyteClientSession",
+    "LyteClientCoreTests", "LyteClientSessionTests",
+]
+package.targets = package.targets.filter { portableTargets.contains($0.name) }
+package.products = package.products.filter { portableTargets.contains($0.name) }
+#endif
