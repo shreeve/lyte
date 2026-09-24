@@ -967,8 +967,6 @@ final class ConnectionModel {
                 plcPacketsFed: player?.plcPacketsFed ?? 0,
                 ringDepthFrames: player?.ringDepthFrames ?? 0,
                 underrunFrames: player?.underrunFrames ?? 0,
-                declickProtectedUnderrunFrames:
-                    player?.underrunFrames ?? 0,
                 decodeFailures: player?.decodeFailures ?? 0,
                 routeChangeFailures: player?.routeChangeFailures ?? 0,
                 hostAnnouncedQuiet: core?.hostAnnouncedAudioQuiet ?? false),
