@@ -42,18 +42,8 @@ public enum Hex {
     /// Parses hex, tolerating whitespace and an optional 0x prefix.
     /// Returns nil on odd length or a non-hex character.
     public static func bytes(_ hex: String) -> [UInt8]? {
-        var digits: [UInt8] = []
-        var trimmed = hex.filter { !$0.isWhitespace }
-        if trimmed.hasPrefix("0x") || trimmed.hasPrefix("0X") {
-            trimmed = String(trimmed.dropFirst(2))
-        }
-        for character in trimmed {
-            guard let digit = character.hexDigitValue, digit < 16 else {
-                return nil
-            }
-            digits.append(UInt8(digit))
-        }
-        guard digits.count.isMultiple(of: 2) else { return nil }
+        guard let digits = digits(of: hex), digits.count.isMultiple(of: 2)
+        else { return nil }
         var output: [UInt8] = []
         output.reserveCapacity(digits.count / 2)
         for index in stride(from: 0, to: digits.count, by: 2) {
@@ -64,12 +54,34 @@ public enum Hex {
 
     /// Parses a hex u64 (0x-prefixed or bare) without JSON precision loss.
     public static func uint64(_ hex: String) -> UInt64? {
-        var trimmed = hex.filter { !$0.isWhitespace }
+        guard let digits = digits(of: hex), (1...16).contains(digits.count)
+        else { return nil }
+        return digits.reduce(0) { $0 << 4 | UInt64($1) }
+    }
+
+    /// The one hex grammar both parsers share: whitespace ignored, an
+    /// optional 0x prefix, then ASCII 0-9, a-f, A-F only — no sign, no
+    /// fullwidth or other Unicode digits.
+    private static func digits(of hex: String) -> [UInt8]? {
+        var trimmed = hex.filter { !$0.isWhitespace }[...]
         if trimmed.hasPrefix("0x") || trimmed.hasPrefix("0X") {
-            trimmed = String(trimmed.dropFirst(2))
+            trimmed = trimmed.dropFirst(2)
         }
-        guard !trimmed.isEmpty, trimmed.count <= 16 else { return nil }
-        return UInt64(trimmed, radix: 16)
+        var digits: [UInt8] = []
+        digits.reserveCapacity(trimmed.count)
+        for character in trimmed {
+            switch character.asciiValue {
+            case let ascii? where (0x30...0x39).contains(ascii):
+                digits.append(ascii - 0x30)
+            case let ascii? where (0x61...0x66).contains(ascii):
+                digits.append(ascii - 0x61 + 10)
+            case let ascii? where (0x41...0x46).contains(ascii):
+                digits.append(ascii - 0x41 + 10)
+            default:
+                return nil
+            }
+        }
+        return digits
     }
 
     public static func uint64String(_ value: UInt64) -> String {
