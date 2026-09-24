@@ -21,7 +21,7 @@ run by hand.
   Mac the pinned toolchain cannot compile against the macOS 27 SDK; the
   lib selects an older installed SDK, or honor `SDKROOT`.
 - **Browser smoke (optional):** Google Chrome, a GPU, Node 24 or 26,
-  `openssl`, and network access for the first `npm install` of
+  `openssl`, and network access for the sidecar's first `npm ci` of
   `rwebtransport` under `Browser/Harness/`.
 - **Python analyzer tests:** Python 3.9 or later (the gate builds a venv
   in `.build/ci-python` from `Scripts/requirements.txt`: NumPy 2, the
@@ -73,7 +73,7 @@ fakes:
 | Kit | Target | Use |
 |---|---|---|
 | `SealedCtrlPeer` | `LyteWireTestKit` | A role-agnostic sealed far end: handshake, per-channel seqs, ARQ, capability declaration, retry answers |
-| `HostSessionHarness`, `PeerBackedClient` | `HostWireTestKit` (test-only target) | A shipping `HostWire.Session` with an outbox and virtual time |
+| `HostSessionHarness`, `PeerBackedClient` | `HostWireTestKit` (product for test targets only) | A shipping `HostWire.Session` with an outbox and virtual time |
 | `ScriptedHost`, `ClientCoreHarness`, `ManualMicrosClock` | `LyteClientTestKit` | The real `LyteUdpSessionCore` without a socket, against a scripted host |
 | `SimNet`, `SplitMix64` | `LyteWireTestKit` | Deterministic impairment; 64-bit seeded draws identical on every platform |
 
@@ -215,11 +215,10 @@ session proof. It passes when every line below is present (each PASS line contin
 its measurements):
 
 ```text
-PASS  envelope-v1/nominal-video-shard
-PASS  noise-v1/snow-ik-25519-chachapoly-sha256
 PASS  control-session/noise-pair-caps
 PASS  control-session/clipboard-cap
 PASS  control-session/teardown
+PASS  control-session/feedback
 PASS  frame-present/classify
 PASS  frame-present/webcodecs
 PASS  frame-present/webgpu
@@ -234,8 +233,9 @@ PASS  audio-worklet/ring
 PASS  interaction-shell/b6
 ```
 
-The video legs are paced: the page runs one loop (ingest, decode,
-present) and presents each frame on the Conductor's clock.
+The video legs are paced: the page ingests and decodes as datagrams
+arrive and presents on `requestAnimationFrame`, each frame at its
+Conductor beat.
 `conductor-video/schedule` asserts that presented PTS sit on the beat grid
 and that no frame was shown before its PTS; `conductor-video/present`
 asserts at least five frames presented and at least three decoded ahead of
@@ -245,8 +245,7 @@ its PTS). Frame 0 always presents about 20–45 ms late (it anchors the score
 with a one-beat cushion), and frame 1 is sometimes skipped as late; both are
 the Conductor's laws working, not failures.
 
-The WebTransport carrier echo proofs (`wt-carrier/*`) are skipped in peer
-mode. Environment: `LYTE_WT_RUNTIME` (`node`|`bun`), `LYTE_CHROME`,
+Environment: `LYTE_WT_RUNTIME` (`node`|`bun`), `LYTE_CHROME`,
 `LYTE_CONTROL_PEER_PORT`, `LYTE_BROWSER_SMOKE_TIMEOUT_S`,
 `LYTE_BROWSER_CONFIGURATION`. What the smoke does and does not prove is in
 [BROWSER.md](BROWSER.md).

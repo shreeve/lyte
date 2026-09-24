@@ -275,9 +275,12 @@ a one-shot group is dropped, and a poisoned ordered stream can never
 deliver in order again, so the endpoint reports it
 (`isOrderedStreamPoisoned`, `.orderedStreamPoisoned`). Either end that
 sees its peer poison CTRL or chan 8 ends the session with a `shuttingDown`
-teardown; the macOS client then re-dials. Incomplete one-shot receive
-groups share a 1 MiB receive budget; a segment past it is refused
-unacknowledged unless it completes its message.
+teardown; the macOS client then re-dials. Each open one-shot receive group
+reserves a whole message (262,144 bytes) of a 1 MiB receive budget: a
+segment that would open a group whose reservation does not fit is refused
+unacknowledged, and an admitted group is never refused. A group given up
+(poisoned or expired) closes at the cumulative point it reached, so late
+retransmits are acknowledged truthfully and never reopen it.
 
 Pinned by `arq-v1.json`.
 

@@ -51,8 +51,8 @@ Six SwiftPM packages, Swift tools version 6.0, Swift 6 language mode.
   writes Info.plist `LyteDiagnosticEntryPoints`) obeys the benchmark and
   witness environment; every other bundle ignores it.
 - **`Browser/` — `LyteClientBrowser`:** `LyteClientBrowserCore` is the
-  browser's sans-IO core over `LyteWire`, `LyteCore` and
-  `LyteClientSession`; `LyteClientBrowser` owns the JS↔WASM boundary
+  browser's sans-IO core over `LyteWire`, `LyteCore`, `LyteClientCore`
+  and `LyteClientSession`; `LyteClientBrowser` owns the JS↔WASM boundary
   (JavaScriptKit). Page JavaScript owns WebTransport IO, WebCodecs,
   WebGPU, the AudioWorklet ring and DOM input, and never reimplements
   protocol or Conductor policy. `Host` is a test-only dependency. Current
