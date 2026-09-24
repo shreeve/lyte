@@ -100,7 +100,7 @@ public final class EyeGL {
     private var hasPreviousFingerprint = false
 
     public init(renderNode: String) throws {
-        nodeFd = open(renderNode, O_RDWR)
+        nodeFd = open(renderNode, O_RDWR | O_CLOEXEC)
         guard nodeFd >= 0 else {
             throw EyeGLError("open(\(renderNode)) failed: errno \(errno)")
         }

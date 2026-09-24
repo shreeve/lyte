@@ -7,6 +7,19 @@ import CDRM
 import Foundation
 import Glibc
 
+/// Opens a primary (card) node for observation, never as its master.
+/// The kernel makes an opener the master whenever the node has none, and
+/// a compositor starting after that (the greeter at boot, the user's
+/// shell at login) could not take the display. Observation needs no
+/// master: GETFB2 needs CAP_SYS_ADMIN, and the fd stays authenticated.
+/// Returns -1 with `errno` set when the open fails.
+public func openCardWithoutMaster(_ path: String) -> Int32 {
+    let fd = open(path, O_RDWR | O_CLOEXEC)
+    guard fd >= 0 else { return -1 }
+    if drmIsMaster(fd) != 0 { _ = drmDropMaster(fd) }
+    return fd
+}
+
 /// The DRM "type" property of a plane (primary / overlay / cursor).
 func planeType(fd: Int32, planeId: UInt32) -> UInt64? {
     guard let props = drmModeObjectGetProperties(

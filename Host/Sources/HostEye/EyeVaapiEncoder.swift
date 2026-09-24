@@ -75,7 +75,7 @@ public final class EyeVaapiEncoder {
     public static func probesMain444(
         renderNode: String = "/dev/dri/renderD128"
     ) -> Bool {
-        let fd = open(renderNode, O_RDWR)
+        let fd = open(renderNode, O_RDWR | O_CLOEXEC)
         guard fd >= 0 else { return false }
         defer { close(fd) }
         guard let display = vaGetDisplayDRM(fd) else { return false }
@@ -124,7 +124,7 @@ public final class EyeVaapiEncoder {
             chroma444: chroma444
         )
 
-        drmFd = open(renderNode, O_RDWR)
+        drmFd = open(renderNode, O_RDWR | O_CLOEXEC)
         guard drmFd >= 0 else {
             throw EyeVaapiError("open(\(renderNode)) errno \(errno)")
         }

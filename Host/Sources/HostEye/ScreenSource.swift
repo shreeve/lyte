@@ -54,7 +54,7 @@ public final class DirectScreenSource: ScreenSource {
     private var identityTracker = FramebufferIdentityTracker()
 
     public init(device: String) throws {
-        let fd = open(device, O_RDWR)
+        let fd = openCardWithoutMaster(device)
         guard fd >= 0 else {
             throw DirectScreenSourceError.openDevice(
                 path: device, errno: errno)

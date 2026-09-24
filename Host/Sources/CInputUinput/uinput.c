@@ -72,7 +72,7 @@ static int batch_send(int fd, event_batch *b, char *err, size_t errlen) {
 static int create_device(const char *name, uint16_t product,
                          int (*setup)(int fd, char *err, size_t errlen),
                          char *err, size_t errlen) {
-    int fd = open("/dev/uinput", O_RDWR | O_NONBLOCK);
+    int fd = open("/dev/uinput", O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
         fill_err(err, errlen, "open /dev/uinput");
         return -1;
