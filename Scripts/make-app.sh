@@ -135,6 +135,7 @@ mkdir -p "$STAGED_APP/Contents/MacOS" \
   "$STAGED_APP/Contents/Library/LaunchDaemons"
 cp ".build/$CONFIG/Lyte" "$STAGED_APP/Contents/MacOS/Lyte"
 cp ".build/$CONFIG/lyte-helperd" "$STAGED_APP/Contents/MacOS/lyte-helperd"
+cp Client/AppIcon/AppIcon.icns "$STAGED_APP/Contents/Resources/AppIcon.icns"
 cp Common/Sources/COpus/Upstream/opus-1.6.1/COPYING \
   "$STAGED_APP/Contents/Resources/Opus-COPYING.txt"
 cp Wire/Sources/CNanorsWire/LICENSE \
@@ -192,6 +193,7 @@ cat > "$STAGED_APP/Contents/Info.plist" <<EOF
     <key>CFBundleIdentifier</key>       <string>dev.shreeve.lyte</string>
     <key>CFBundleName</key>             <string>Lyte</string>
     <key>CFBundleDisplayName</key>      <string>Lyte</string>
+    <key>CFBundleIconFile</key>         <string>AppIcon</string>
     <key>CFBundlePackageType</key>      <string>APPL</string>
     <key>CFBundleShortVersionString</key> <string>0.5.0</string>
     <key>CFBundleVersion</key>          <string>${BUNDLE_VERSION}</string>

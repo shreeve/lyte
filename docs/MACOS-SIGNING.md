@@ -65,6 +65,7 @@ make the bundle suitable for Gatekeeper distribution.
 | CLI build+sign | `Scripts/build-cli.sh` | build `Client/` into root `.build`, then sign |
 | App build+sign | `Scripts/make-app.sh` | assembles `Lyte.app`, signs helper + app |
 | App launch | `Scripts/launch-app.sh` | force-registers the signed artifact, then opens it |
+| App icon | `Scripts/make-app-icon.sh` | regenerates `Client/AppIcon/AppIcon.icns` from its SVG masters |
 
 `make-app.sh` builds the bundle completely in a private staging directory,
 validates its property list, signs it, and then publishes it with one macOS
@@ -78,6 +79,14 @@ UUID with the preceding version. Deleting the prior bundle also deletes that
 local monotonic record; this is development packaging, not a release-version
 ledger. `LyteSourceRevision` separately records the short commit hash and a
 trailing `+` for a dirty source tree.
+
+The bundle's icon is `Client/AppIcon/AppIcon.icns` (`CFBundleIconFile`),
+committed and copied as is. Its masters are `lyte-icon.svg` (64 px and up)
+and `lyte-icon-small.svg` (16 and 32 px, without hairlines or background
+streaks); after editing either, run `Scripts/make-app-icon.sh` and commit the
+regenerated `.icns`. The menu-bar glyph is drawn in code
+(`LyteUI/MenuBarGlyph.swift`). The app packaging test fails when the bundle's
+icon is missing or differs from the committed file.
 
 `launch-app.sh` force-registers the finished bundle before opening it. This is
 important because atomic publication changes the app inode and every link

@@ -66,7 +66,7 @@ struct ConnectView: View {
     private var hostPicker: some View {
         VStack(spacing: 28) {
             Spacer()
-            Image(nsImage: AppIcon.shared)
+            Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .frame(width: 64, height: 64)
 

@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Lyte</title>
+  <desc id="desc">Two luminous translucent screens overlap on a rounded cobalt blue tile. Editable vector artwork with a transparent exterior.</desc>
+  <defs>
+    <linearGradient id="tile" x1="180" y1="960" x2="840" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#001C58"/><stop offset=".45" stop-color="#0049D9"/><stop offset=".77" stop-color="#0076FA"/><stop offset="1" stop-color="#27C2FA"/>
+    </linearGradient>
+    <radialGradient id="shade" cx="0" cy="0" r="1" gradientTransform="translate(160 872) rotate(-49) scale(680 840)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#001240" stop-opacity=".72"/><stop offset="1" stop-color="#00278A" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="704" y1="52" x2="320" y2="958" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#BAF8FF" stop-opacity=".78"/><stop offset=".25" stop-color="#4AAFFF" stop-opacity=".25"/><stop offset=".8" stop-color="#00165B" stop-opacity=".1"/><stop offset="1" stop-color="#00153F" stop-opacity=".65"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="850" y1="225" x2="470" y2="650" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C6FBFF" stop-opacity=".83"/><stop offset=".42" stop-color="#79DCFF" stop-opacity=".44"/><stop offset="1" stop-color="#1A9AFF" stop-opacity=".18"/>
+    </linearGradient>
+    <linearGradient id="smallGlass" x1="562" y1="458" x2="200" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#BDF7FF" stop-opacity=".78"/><stop offset=".5" stop-color="#70D1FF" stop-opacity=".45"/><stop offset="1" stop-color="#3DAAFF" stop-opacity=".35"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="650" y1="210" x2="450" y2="790" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/><stop offset=".45" stop-color="#E5FDFF"/><stop offset="1" stop-color="#A9F4FF"/>
+    </linearGradient>
+    <clipPath id="tileClip"><rect x="56" y="56" width="912" height="912" rx="212"/></clipPath>
+    <path id="rearScreen" d="M393 304 L842 224 Q864 220 864 243 L864 633 Q864 655 842 653 L393 621 Q376 620 376 601 L376 326 Q376 307 393 304 Z"/>
+    <path id="frontScreen" d="M191 505 L533 461 Q554 458 554 480 L554 774 Q554 795 533 793 L191 761 Q174 759 174 741 L174 526 Q174 508 191 505 Z"/>
+    </defs>
+  <g transform="translate(512 512) scale(0.9035) translate(-512 -512)">
+
+  <g id="background">
+    <rect x="56" y="56" width="912" height="912" rx="212" fill="url(#tile)"/>
+    <g clip-path="url(#tileClip)">
+      <rect x="56" y="56" width="912" height="912" fill="url(#shade)"/>
+      <path d="M56 252 Q452 135 957 104 L968 56 H56 Z" fill="#6CCFFF" opacity=".1"/>
+      <path d="M56 588 L865 233 L376 605 L56 811 Z" fill="#43BFFF" opacity=".075"/>
+      <path d="M369 772 Q697 843 968 870 V968 H56 V915 Q190 826 369 772Z" fill="#0034AB" opacity=".18"/>
+    </g>
+    <rect x="58" y="58" width="908" height="908" rx="210" stroke="url(#rim)" stroke-width="4"/>
+  </g>
+  <g id="rear-screen">
+    <use xlink:href="#rearScreen" stroke="#42CDFF" stroke-width="27" opacity=".09"/>
+    <use xlink:href="#rearScreen" stroke="#7CEBFF" stroke-width="20" opacity=".15"/>
+    <use xlink:href="#rearScreen" fill="url(#glass)" stroke="url(#edge)" stroke-width="13" stroke-linejoin="round"/>
+    <path d="M390 324 Q390 318 399 316 L840 237" stroke="#FFFFFF" stroke-opacity=".8" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <g id="front-screen">
+    <use xlink:href="#frontScreen" stroke="#42CDFF" stroke-width="27" opacity=".09"/>
+    <use xlink:href="#frontScreen" stroke="#7CEBFF" stroke-width="20" opacity=".15"/>
+    <use xlink:href="#frontScreen" fill="url(#smallGlass)" stroke="url(#edge)" stroke-width="13" stroke-linejoin="round"/>
+    <path d="M187 531 V528 Q187 520 198 518 L530 475" stroke="#FFFFFF" stroke-opacity=".8" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  </g>
+</svg>

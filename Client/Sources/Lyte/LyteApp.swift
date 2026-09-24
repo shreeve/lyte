@@ -41,18 +41,17 @@ struct LyteApp: App {
         }
 
         // The always-on menu-bar presence: status and new connections.
-        MenuBarExtra("Lyte", systemImage: "bolt.fill") {
+        MenuBarExtra {
             AgentMenu()
+        } label: {
+            Image(nsImage: MenuBarGlyph.image)
+                .accessibilityLabel("Lyte")
         }
 
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationWillFinishLaunching(_ notification: Notification) {
-        NSApp.applicationIconImage = AppIcon.shared
-    }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !DiagnosticRunIdentity.isRequested else { return }
         Task.detached(priority: .utility) {
