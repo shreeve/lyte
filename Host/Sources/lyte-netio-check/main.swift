@@ -112,9 +112,13 @@ func run() throws {
     var lastRecvAt = sendStartMono
     let recvDeadline = SystemMonotonicClock.nowSeconds + 3.0
     while received < count, SystemMonotonicClock.nowSeconds < recvDeadline {
-        let got = lyte_netio_recv_batch(rx, &slots[received],
-                                        Int32(count - received),
-                                        &err, err.count)
+        // The leaf writes count - received slots from here on: a pointer
+        // into the buffer, not an inout to one element.
+        let got = slots.withUnsafeMutableBufferPointer {
+            lyte_netio_recv_batch(rx, $0.baseAddress! + received,
+                                  Int32(count - received),
+                                  &err, err.count)
+        }
         guard got >= 0 else {
             throw CheckError("recv failed: \(String(cBuffer: err))")
         }
