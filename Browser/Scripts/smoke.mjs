@@ -214,6 +214,7 @@ const mustPass = [
   "PASS  control-session/noise-pair-caps",
   "PASS  control-session/clipboard-cap",
   "PASS  control-session/teardown",
+  "PASS  control-session/feedback",
   "PASS  frame-present/classify",
   "PASS  frame-present/webcodecs",
   "PASS  frame-present/webgpu",

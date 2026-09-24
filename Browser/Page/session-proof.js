@@ -42,6 +42,8 @@ export async function runSessionProof({
   let classified = false;
   let interaction = { passed: false, lines: [] };
   let teardownOk = false;
+  let readyAt = null;
+  let closedAt = null;
   let lastScheduledPts = 0;
   let assembled = 0;
   const beat = bridge.conductorBeatMicroseconds;
@@ -79,6 +81,7 @@ export async function runSessionProof({
     while (Date.now() < deadline && !pump.failed && !pump.closed) {
       await pump.turn(2);
       const now = nowMicros();
+      if (pump.ready && readyAt == null) readyAt = now;
       if (assembled > lastAssembled) {
         lastAssembled = assembled;
         lastProgressAt = now;
@@ -116,7 +119,8 @@ export async function runSessionProof({
     }
 
     if (pump.ready) {
-      await pump.send(bridge.controlTeardown(nowMicros()));
+      closedAt = nowMicros();
+      await pump.send(bridge.controlTeardown(closedAt));
       teardownOk = pump.closed;
       // Linger until the host acknowledged the teardown.
       for (let i = 0; i < 40 && !pump.facts().reliableQuiescent; i++) {
@@ -156,6 +160,14 @@ export async function runSessionProof({
     teardownOk
       ? `PASS  control-session/teardown — typed SessionTeardown sent${facts.reliableQuiescent ? " and acknowledged" : ""}`
       : "FAIL  control-session/teardown — not closed"
+  );
+  // The 40 ms chan-3 cadence, allowing for the proof's own awaits.
+  const reports = facts.feedbackReportsSent || 0;
+  const sessionMs = readyAt != null && closedAt != null ? (closedAt - readyAt) / 1000 : 0;
+  push(
+    sessionMs > 0 && reports >= sessionMs / 100
+      ? `PASS  control-session/feedback — ${reports} chan-3 reports over ${(sessionMs / 1000).toFixed(1)} s`
+      : `FAIL  control-session/feedback — ${reports} reports over ${sessionMs.toFixed(0)} ms`
   );
   push(
     stats.assembled >= minAssemble

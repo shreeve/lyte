@@ -4,9 +4,10 @@ import LyteCore
 import LyteWire
 
 /// The browser's sans-IO session: LyteClientSession's initiator pieces
-/// (handshake, pairing, control session, beacon echo, envelope sequencer,
-/// conn-id book, lifecycle) composed over one reliable CTRL stream, plus the
-/// demux of sealed video/audio to the playout organs.
+/// (handshake, pairing, control session and blackout-detector posture,
+/// beacon echo and host clock, exempt-CTRL classifier, feedback reporter,
+/// envelope sequencer, conn-id book, lifecycle) composed over one reliable
+/// CTRL stream, plus the demux of sealed video/audio to the playout organs.
 ///
 /// The page owns WebTransport and clocks; every call takes injected time and
 /// returns a `Step` of datagrams to send and notes to log. Per-datagram

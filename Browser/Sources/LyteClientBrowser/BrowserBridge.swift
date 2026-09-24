@@ -264,6 +264,7 @@ enum BrowserBridge {
             "unsealFailures": Double(counters.unsealFailures).jsValue,
             "message1Transmissions": Double(counters.message1Transmissions).jsValue,
             "idrRequestsSent": Double(counters.idrRequestsSent).jsValue,
+            "feedbackReportsSent": Double(counters.feedbackReportsSent).jsValue,
         ].jsValue
     }
 
