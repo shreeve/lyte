@@ -40,118 +40,6 @@ final class NackRepairClientGateTests: XCTestCase {
         }
     }
 
-    // MARK: - The client harness (the real core, virtual clock)
-
-    private final class Harness: @unchecked Sendable {
-        let host: SystemHostSession
-        let crypto: NoiseTransportCrypto
-        let demux: ReceiveDemux
-        var core: LyteUdpSessionCore!
-        let outbound = LockedBytePile()
-        let clock = LockedClock()
-        var samples: [DecodeUnit] = []
-        var notes: [String] = []
-        var recoveryDemands: [(VideoRecoveryCause, FrameNumber)] = []
-        var recoveryTrace: [VideoRecoveryTraceEvent] = []
-
-        init(
-            host: SystemHostSession,
-            coreConfig: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig()
-        ) throws {
-            self.host = host
-            let crypto = try NoiseTransportCrypto(
-                hostAddress: "10.0.0.249", hostPort: 41_081,
-                hostStaticPublicKey: host.staticKeys.publicKey,
-                staticKeys: NoiseKeyPair.generate(),
-                attempts: 3, attemptTimeoutMilliseconds: 200)
-            try crypto.performHandshake(io: host)
-            self.crypto = crypto
-            self.demux = ReceiveDemux(crypto: crypto)
-            let outbound = self.outbound
-            let clock = self.clock
-            let sender = TransportSender(crypto: crypto, transmit: {
-                outbound.append($0)
-                return true
-            })
-            self.core = LyteUdpSessionCore(
-                demux: demux,
-                sender: sender,
-                config: coreConfig,
-                now: { ClientTimestamp(microseconds: clock.value) },
-                onVideoRecoveryDemand: { [weak self] cause, frame in
-                    self?.recoveryDemands.append((cause, frame))
-                },
-                onVideoRecoveryTrace: { [weak self] event in
-                    self?.recoveryTrace.append(event)
-                },
-                videoSink: HeadlessVideoSink(receive: {
-                    [weak self] _, unit in
-                    self?.samples.append(unit)
-                }),
-                onEvent: { [weak self] event in
-                    if case .protocolNote(let note) = event {
-                        self?.notes.append(note)
-                    }
-                })
-        }
-
-        func absorb(_ bytes: [UInt8], tMicros: UInt64) {
-            let arrival = max(tMicros, host.nowMicroseconds)
-            clock.advance(to: arrival)
-            let outcome = demux.ingest(
-                datagram: bytes[...], arrivalMicroseconds: arrival)
-            switch outcome {
-            case .accepted:
-                core.handleDatagram(outcome, arrivalMicroseconds: arrival)
-            case .unsealFailed:
-                break
-            default:
-                XCTFail("host datagram refused: \(outcome)")
-            }
-        }
-
-        /// Forwards everything the client sent to the host, in order.
-        func pumpOutboundToHost(forwarded: inout Int) throws {
-            while forwarded < outbound.count {
-                try host.absorb(
-                    outbound.all[forwarded],
-                    clientMicros: clock.value
-                )
-                forwarded += 1
-            }
-        }
-    }
-
-    final class LockedClock: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: UInt64 = 1_000
-        var value: UInt64 {
-            lock.lock()
-            defer { lock.unlock() }
-            return stored
-        }
-
-        func advance(
-            to next: UInt64,
-            file: StaticString = #filePath,
-            line: UInt = #line
-        ) {
-            lock.lock()
-            guard next >= stored else {
-                let previous = stored
-                lock.unlock()
-                XCTFail(
-                    "client clock retreated from \(previous) to \(next)",
-                    file: file,
-                    line: line
-                )
-                return
-            }
-            stored = next
-            lock.unlock()
-        }
-    }
-
     private func geometry(of datagrams: [[UInt8]]) throws -> FecGeometry {
         let first = try XCTUnwrap(datagrams.first)
         let (envelope, _) = try Envelope.decode(first)
@@ -181,43 +69,16 @@ final class NackRepairClientGateTests: XCTestCase {
         return (sent, held)
     }
 
-    /// Finish the real Session's startup control flight through the real
-    /// client. The beacon echo returns through the same encrypted CTRL
-    /// path and seeds the host's actual SRTT estimator.
-    private func settleStartup(
-        host: SystemHostSession,
-        harness: Harness,
-        forwarded: inout Int,
-        at t: UInt64
-    ) throws {
-        harness.clock.advance(to: t)
-        for datagram in host.takeControlDatagrams(
-            maxAdvanceNS: 5_000_000
-        ) {
-            harness.absorb(datagram, tMicros: t)
-        }
-        try harness.pumpOutboundToHost(forwarded: &forwarded)
-        XCTAssertNotNil(
-            host.session.srttMicroseconds,
-            "the real startup beacon/echo must seed host SRTT"
-        )
-    }
-
     // MARK: - Leg A: past-parity loss → NACK → repair → byte-exact
 
     func testNackDrawsRepairAndFrameCompletesByteExact() throws {
         let corpus = try loadCorpus(4)
         let host = SystemHostSession()
-        let harness = try Harness(host: host)
+        let harness = try SystemClient(host: host)
 
         var t: UInt64 = 1_000
         var forwarded = 0
-        try settleStartup(
-            host: host,
-            harness: harness,
-            forwarded: &forwarded,
-            at: t
-        )
+        try harness.settleStartup(forwarded: &forwarded, at: t)
 
         // Frame 0 (IDR) arrives whole — the render bootstrap. Its clean
         // report also ends the host's opening-IDR exemption, so frame 1
@@ -362,7 +223,7 @@ final class NackRepairClientGateTests: XCTestCase {
         var config = LyteUdpSessionCoreConfig()
         config.nackPolicy = NackPolicyConfig(
             staleBudgetMicroseconds: 100_000)
-        let harness = try Harness(host: host, coreConfig: config)
+        let harness = try SystemClient(host: host, coreConfig: config)
 
         var t: UInt64 = 1_000
         harness.clock.advance(to: t)
@@ -416,7 +277,7 @@ final class NackRepairClientGateTests: XCTestCase {
     func testAcceptedIrapClosesOutstandingRecoveryEpisode() throws {
         let corpus = try loadCorpus(2)
         let host = SystemHostSession()
-        let harness = try Harness(host: host)
+        let harness = try SystemClient(host: host)
         var forwarded = 0
         let base: UInt64 = 1_000
 
@@ -499,7 +360,7 @@ final class NackRepairClientGateTests: XCTestCase {
     func testStormLossHealsThroughNackRepairLoop() throws {
         let corpus = try loadCorpus(5)
         let host = SystemHostSession()
-        let harness = try Harness(host: host)
+        let harness = try SystemClient(host: host)
         var net = SimNet(
             config: SimNetConfig(
                 lossRate: 0.12,
@@ -517,12 +378,7 @@ final class NackRepairClientGateTests: XCTestCase {
         var nextFrame: UInt32 = 0
         var lastFeedbackAt: UInt64 = 0
         var t: UInt64 = 1_000
-        try settleStartup(
-            host: host,
-            harness: harness,
-            forwarded: &forwardedToHost,
-            at: t
-        )
+        try harness.settleStartup(forwarded: &forwardedToHost, at: t)
 
         while t <= 1_400_000 {
             harness.clock.advance(to: t)
@@ -599,16 +455,11 @@ final class NackRepairClientGateTests: XCTestCase {
     func testAnswersAfterStragglerHealAreCountedLateAndChangeNothing() throws {
         let corpus = try loadCorpus(3)
         let host = SystemHostSession()
-        let harness = try Harness(host: host)
+        let harness = try SystemClient(host: host)
 
         var t: UInt64 = 1_000
         var forwarded = 0
-        try settleStartup(
-            host: host,
-            harness: harness,
-            forwarded: &forwarded,
-            at: t
-        )
+        try harness.settleStartup(forwarded: &forwarded, at: t)
         for datagram in try host.videoDatagrams(
             annexB: corpus[0], frameNumber: 0, hostMicros: t
         ) {
@@ -693,16 +544,11 @@ final class NackRepairClientGateTests: XCTestCase {
     func testAnswersForSupersededFrameCountAndAsksStop() throws {
         let corpus = try loadCorpus(5)
         let host = SystemHostSession()
-        let harness = try Harness(host: host)
+        let harness = try SystemClient(host: host)
 
         var t: UInt64 = 1_000
         var forwarded = 0
-        try settleStartup(
-            host: host,
-            harness: harness,
-            forwarded: &forwarded,
-            at: t
-        )
+        try harness.settleStartup(forwarded: &forwarded, at: t)
         for datagram in try host.videoDatagrams(
             annexB: corpus[0], frameNumber: 0, hostMicros: t
         ) {
@@ -787,16 +633,11 @@ final class NackRepairClientGateTests: XCTestCase {
         let host = SystemHostSession {
             $0.repairFreezeBudgetOverrideNS = 1_000_000
         }
-        let harness = try Harness(host: host)
+        let harness = try SystemClient(host: host)
 
         var t: UInt64 = 1_000
         var forwarded = 0
-        try settleStartup(
-            host: host,
-            harness: harness,
-            forwarded: &forwarded,
-            at: t
-        )
+        try harness.settleStartup(forwarded: &forwarded, at: t)
         for datagram in try host.videoDatagrams(
             annexB: corpus[0], frameNumber: 0, hostMicros: t
         ) {
