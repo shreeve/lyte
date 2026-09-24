@@ -38,6 +38,14 @@
 //     by the retransmit it failed to suppress), and are never
 //     themselves acknowledged.
 //
+// Send windows: a segment's seq is allocated when it first goes out, at
+// most `sendWindowSegments` are in flight per group, and none goes out
+// past `receiveWindowSegments` above the group's lowest unacknowledged
+// seq — so every ACK, retransmit, and window decision walks at most one
+// receive window, and a queue of any depth drains in linear time.
+// Queued messages are bounded by `ArqBounds.maxQueuedSegmentsPerGroup`
+// (`send` throws `.queueFull` past it).
+//
 // Delivery invariants (gate W-G4): per group, delivered messages are
 // exactly the sent messages, in order, each exactly once; groups never
 // block each other; when everything is acknowledged and delivered both
@@ -62,8 +70,11 @@ public struct ArqConfig: Hashable, Sendable {
     public var ptoProbeSegments: Int
     /// RFC 9002 packet threshold for ACK-driven fast retransmit.
     public var packetThreshold: Int
-    /// Sent-unacknowledged segments allowed in flight per group; must
-    /// not exceed the receive window.
+    /// Sent-unacknowledged segments allowed in flight per group
+    /// (clamped to the receive window). Independently, a fresh segment
+    /// never goes out past `receiveWindowSegments` above the group's
+    /// lowest unacknowledged seq, so a lost window head never makes an
+    /// honest sender overrun the receiver.
     public var sendWindowSegments: Int
     /// Out-of-order segments buffered past a group's cumulative; capped
     /// by what an ACK bitmap can describe (256).
@@ -81,8 +92,11 @@ public struct ArqConfig: Hashable, Sendable {
     /// Simultaneously open receive groups — protection against hostile
     /// group spray.
     public var maxActiveReceiveGroups: Int
-    /// Closed one-shot receive groups remembered for late-retransmit
-    /// dedupe and re-ACK.
+    /// Closed one-shot receive groups remembered exactly for late-
+    /// retransmit dedupe and re-ACK. Past this many, closure is
+    /// remembered as a serial watermark: a one-shot id at or behind the
+    /// highest evicted id is treated as closed (re-ACKed, never
+    /// delivered), which keeps delivery at-most-once in bounded memory.
     public var maxClosedGroupTombstones: Int
     /// Absolute lifetime for incomplete one-shot receive groups. This keeps
     /// a retransmitting abandoned sender from pinning the admission table.
@@ -211,6 +225,9 @@ public enum ArqSendError: Error, Equatable, Sendable {
     /// One-shot group ids must be fresh and serially ascending; reuse
     /// would collide with the receiver's dedupe state.
     case oneShotGroupNotAscending(ArqGroupId)
+    /// The group already holds `ArqBounds.maxQueuedSegmentsPerGroup`
+    /// unacknowledged segments — backpressure; retry after ACKs drain it.
+    case queueFull
 }
 
 public struct ArqEndpoint<ClockDomain>: Sendable {
@@ -224,54 +241,251 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
     private struct OutSegment {
         /// The encoded frame, byte-identical on every (re)transmission.
         var frameBytes: [UInt8]
-        var lastSentAt: Instant?
-        var sendCount = 0
-        /// Queued for (re)transmission at the next poll.
-        var needsSend = true
+        var lastSentAt: Instant
+        var sendCount = 1
+        /// Queued for retransmission at the next poll.
+        var needsSend = false
         /// Fast retransmit fired since the last actual send.
         var fastRetransmitConsumed = false
     }
 
+    /// One group's send state. Seqs are allocated only when a segment
+    /// first goes out, so every seq in the ring has crossed the wire and
+    /// the ring spans at most `receiveWindowSegments` seqs — serial
+    /// arithmetic inside it never wraps. Messages not yet on the wire
+    /// wait whole in `queue` and are cut into segments at poll time.
     private struct SendGroup {
-        /// Unacknowledged segments by seq.
-        var segments: [UInt16: OutSegment] = [:]
-        /// Allocation order (serial order); compacted as acks remove.
-        var order: [UInt16] = []
+        /// slots[head + i] holds seq base + i; nil once acknowledged.
+        var slots: [OutSegment?] = []
+        var head = 0
+        /// Lowest unacknowledged seq (== nextSeq when nothing is in flight).
+        var base: UInt16
+        /// The next seq to allocate.
         var nextSeq: UInt16
+        /// Live (sent, unacknowledged) segments in the ring.
+        var inFlight = 0
+        /// Whole messages awaiting their first transmission, and the
+        /// byte offset already cut from the front one.
+        var queue: [[UInt8]] = []
+        var queueHead = 0
+        var queueOffset = 0
+        var queuedSegmentCount = 0
         /// Serially highest seq any ACK ever reported received — the
         /// fast-retransmit gate.
         var highestAckedEver: UInt16?
         var backoffExponent = 0
-        /// Live segments that have crossed the wire at least once.
-        var sentSegmentCount = 0
         /// Most recent transmission instant in the group (the RFC 9002
         /// PTO base).
         var lastSendAt: Instant?
+
+        init(initialSeq: UInt16) {
+            base = initialSeq
+            nextSeq = initialSeq
+        }
+
+        var span: Int { Int(nextSeq &- base) }
+        var hasQueuedMessages: Bool { queueHead < queue.count }
+        var isDrained: Bool { inFlight == 0 && !hasQueuedMessages }
+        var outstandingSegmentCount: Int { inFlight + queuedSegmentCount }
+
+        mutating func enqueue(_ message: [UInt8], segmentCount: Int) {
+            queue.append(message)
+            queuedSegmentCount += segmentCount
+        }
+
+        /// Cuts the next segment off the queue, allocating its seq.
+        mutating func cutSegment(
+            group: ArqGroupId, bodyCeiling: Int, now: Instant
+        ) -> [UInt8] {
+            let message = queue[queueHead]
+            let end = min(queueOffset + bodyCeiling, message.count)
+            let endOfMessage = end == message.count
+            // Group, 1…ceiling body bytes: the init cannot refuse.
+            let frame = (try? ArqSegment(
+                group: group,
+                seq: ArqSegmentSeq(rawValue: nextSeq),
+                endOfMessage: endOfMessage,
+                body: Array(message[queueOffset..<end])
+            ).encode()) ?? []
+            if endOfMessage {
+                queue[queueHead] = []
+                queueHead += 1
+                queueOffset = 0
+                if queueHead >= 32, queueHead * 2 >= queue.count {
+                    queue.removeFirst(queueHead)
+                    queueHead = 0
+                }
+            } else {
+                queueOffset = end
+            }
+            queuedSegmentCount -= 1
+            slots.append(OutSegment(frameBytes: frame, lastSentAt: now))
+            nextSeq &+= 1
+            inFlight += 1
+            return frame
+        }
+
+        /// Marks the live segment at ring offset `offset` acknowledged.
+        /// Returns its send instant when it was sent exactly once (a
+        /// Karn-clean RTT sample), nil otherwise.
+        mutating func retire(
+            offset: Int
+        ) -> (retired: Bool, cleanSentAt: Instant?) {
+            guard offset >= 0, offset < slots.count - head,
+                  let out = slots[head + offset]
+            else { return (false, nil) }
+            slots[head + offset] = nil
+            inFlight -= 1
+            return (true, out.sendCount == 1 ? out.lastSentAt : nil)
+        }
+
+        /// Advances `base` past the acknowledged front of the ring.
+        mutating func compactFront() {
+            while head < slots.count, slots[head] == nil {
+                head += 1
+                base &+= 1
+            }
+            if head == slots.count {
+                slots.removeAll(keepingCapacity: true)
+                head = 0
+            } else if head >= 64, head * 2 >= slots.count {
+                slots.removeFirst(head)
+                head = 0
+            }
+        }
     }
 
     private var sendGroups: [UInt16: SendGroup] = [:]
     /// Serially highest one-shot group id ever sent — reuse guard, and
     /// the "plausibly completed" bound for late ACKs.
     private var highestOneShotSent: UInt16?
-    private var srttMicroseconds: Int64?
-    private var rttvarMicroseconds: Int64 = 0
+    private var rtt = RttEstimator()
+
+    /// RFC 9002 smoothed RTT, from Karn-clean samples only.
+    private struct RttEstimator {
+        var srttMicroseconds: Int64?
+        var rttvarMicroseconds: Int64 = 0
+
+        mutating func sample(_ sampleMicroseconds: Int64) {
+            let sample = max(sampleMicroseconds, 0)
+            if let srtt = srttMicroseconds {
+                let deviation = abs(srtt - sample)
+                rttvarMicroseconds = (3 * rttvarMicroseconds + deviation) / 4
+                srttMicroseconds = (7 * srtt + sample) / 8
+            } else {
+                srttMicroseconds = sample
+                rttvarMicroseconds = sample / 2
+            }
+        }
+
+        /// PTO = SRTT + max(4·RTTVAR, granularity), or twice the initial
+        /// RTT before any sample; clamped to the configured band.
+        func pto(_ config: ArqConfig) -> Int64 {
+            let base: Int64
+            if let srtt = srttMicroseconds {
+                base = srtt + max(
+                    4 * rttvarMicroseconds, config.granularityMicroseconds
+                )
+            } else {
+                base = 2 * config.initialRttMicroseconds
+            }
+            return min(
+                max(base, config.minPtoMicroseconds),
+                config.maxPtoMicroseconds
+            )
+        }
+    }
 
     // MARK: Receive-side state
+
+    private struct Buffered {
+        var seq: UInt16
+        var endOfMessage: Bool
+        var body: [UInt8]
+    }
 
     private struct RecvGroup {
         /// Seq of the last in-order segment (initial − 1 when none).
         var cumulative: UInt16
-        var buffered: [UInt16: (endOfMessage: Bool, body: [UInt8])] = [:]
+        /// Out-of-order segments, at slot `seq & 0xFF`: the window never
+        /// exceeds 256, so the seqs it admits map to distinct slots.
+        /// Allocated on the first out-of-order arrival.
+        var buffered: [Buffered?] = []
+        var bufferedCount = 0
         /// In-order bytes of the message being reassembled.
         var assembling: [UInt8] = []
         var poisoned = false
         var openedAt: Instant
+
+        init(cumulative: UInt16, openedAt: Instant) {
+            self.cumulative = cumulative
+            self.openedAt = openedAt
+        }
+
+        func holds(_ seq: UInt16) -> Bool {
+            bufferedCount > 0 && buffered[Int(seq & 0xFF)]?.seq == seq
+        }
+
+        mutating func store(_ entry: Buffered) {
+            if buffered.isEmpty {
+                buffered = Array(
+                    repeating: nil, count: ArqBounds.maxReceiveWindowSegments
+                )
+            }
+            buffered[Int(entry.seq & 0xFF)] = entry
+            bufferedCount += 1
+        }
+
+        /// Removes and returns the segment right after the cumulative.
+        mutating func takeNext() -> Buffered? {
+            let next = cumulative &+ 1
+            guard holds(next) else { return nil }
+            defer {
+                buffered[Int(next & 0xFF)] = nil
+                bufferedCount -= 1
+            }
+            return buffered[Int(next & 0xFF)]
+        }
+
+        mutating func dropBuffered() {
+            buffered = []
+            bufferedCount = 0
+        }
+
+        /// The canonical ACK bitmap: bit n set when `cumulative + 1 + n`
+        /// is buffered, sized by the highest set bit. Walks offsets in
+        /// serial order and stops once every buffered segment is found.
+        var ackBitmap: [UInt8] {
+            var bytes: [UInt8] = []
+            var found = 0
+            var offset = 0
+            while found < bufferedCount {
+                if holds(cumulative &+ 1 &+ UInt16(truncatingIfNeeded: offset)) {
+                    while bytes.count <= offset / 8 { bytes.append(0) }
+                    bytes[offset / 8] |= 1 << (offset % 8)
+                    found += 1
+                }
+                offset += 1
+            }
+            return bytes
+        }
+    }
+
+    private enum SegmentVerdict {
+        case duplicate
+        case beyondWindow
+        case poisoned
+        case accepted(closed: Bool)
     }
 
     private var recvGroups: [UInt16: RecvGroup] = [:]
     /// Closed one-shot groups: id → final cumulative, for re-ACK.
     private var closedRecvGroups: [UInt16: UInt16] = [:]
     private var closedRecvOrder: [UInt16] = []
+    private var closedRecvOrderHead = 0
+    /// Serially highest one-shot id whose tombstone was evicted; ids at
+    /// or behind it are closed (see `maxClosedGroupTombstones`).
+    private var evictedThrough: UInt16?
     /// Groups owed an ACK at the next poll.
     private var ackNeeded: Set<UInt16> = []
 
@@ -286,14 +500,13 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
     /// A quiescent endpoint polls to ([], nil) forever (the W-G4
     /// termination property).
     public var isQuiescent: Bool {
-        ackNeeded.isEmpty
-            && sendGroups.values.allSatisfy { $0.segments.isEmpty }
+        ackNeeded.isEmpty && sendGroups.values.allSatisfy(\.isDrained)
     }
 
     /// Sent-but-unacknowledged plus queued segment count, all groups —
     /// the boundedness handle for the adversarial gates.
     public var outstandingSegmentCount: Int {
-        sendGroups.values.reduce(0) { $0 + $1.segments.count }
+        sendGroups.values.reduce(0) { $0 + $1.outstandingSegmentCount }
     }
 
     // MARK: - Send
@@ -302,6 +515,27 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
     /// exactly-once, in order with every other stream message.
     public mutating func send(message: [UInt8], now: Instant) throws {
         try enqueue(message: message, group: .orderedStream)
+    }
+
+    /// The id `sendOneShot(message:now:)` allocates next: one past the
+    /// highest one-shot sent, skipping 0 across the u16 wrap.
+    public var nextOneShotGroup: ArqGroupId {
+        guard let highest = highestOneShotSent else {
+            return ArqGroupId(rawValue: 1)
+        }
+        let next = highest &+ 1
+        return ArqGroupId(rawValue: next == 0 ? 1 : next)
+    }
+
+    /// Queues a one-shot group's single message under the next
+    /// endpoint-allocated group id, which it returns.
+    @discardableResult
+    public mutating func sendOneShot(
+        message: [UInt8], now: Instant
+    ) throws -> ArqGroupId {
+        let group = nextOneShotGroup
+        try sendOneShot(message: message, group: group, now: now)
+        return group
     }
 
     /// Queues a one-shot group's single message. Group ids are caller-
@@ -331,26 +565,18 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         guard message.count <= config.maxMessageByteCount else {
             throw ArqSendError.messageOverBudget(message.count)
         }
-        var state = sendGroups[group.rawValue]
-            ?? SendGroup(nextSeq: config.initialSegmentSeq)
         let bodyCeiling = config.maxSegmentBodyByteCount
-        var offset = 0
-        while offset < message.count {
-            let end = min(offset + bodyCeiling, message.count)
-            let segment = try ArqSegment(
-                group: group,
-                seq: ArqSegmentSeq(rawValue: state.nextSeq),
-                endOfMessage: end == message.count,
-                body: Array(message[offset..<end])
-            )
-            state.segments[state.nextSeq] = OutSegment(
-                frameBytes: segment.encode()
-            )
-            state.order.append(state.nextSeq)
-            state.nextSeq &+= 1
-            offset = end
+        let segmentCount = (message.count + bodyCeiling - 1) / bodyCeiling
+        let outstanding = sendGroups[group.rawValue]?
+            .outstandingSegmentCount ?? 0
+        guard outstanding + segmentCount
+            <= ArqBounds.maxQueuedSegmentsPerGroup
+        else {
+            throw ArqSendError.queueFull
         }
-        sendGroups[group.rawValue] = state
+        sendGroups[group.rawValue, default: SendGroup(
+            initialSeq: config.initialSegmentSeq
+        )].enqueue(message, segmentCount: segmentCount)
     }
 
     // MARK: - Ingest
@@ -388,12 +614,26 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         ingest(payload: payload[...], now: now)
     }
 
+    private func isClosedOneShot(_ group: ArqGroupId) -> Bool {
+        let gid = group.rawValue
+        if closedRecvGroups[gid] != nil { return true }
+        guard group.isOneShot, recvGroups[gid] == nil,
+              let evictedThrough
+        else { return false }
+        return Int16(bitPattern: gid &- evictedThrough) <= 0
+    }
+
     private mutating func ingestSegment(
         _ segment: ArqSegment, now: Instant, into events: inout [ArqEvent]
     ) {
         let gid = segment.group.rawValue
 
-        if closedRecvGroups[gid] != nil {
+        if isClosedOneShot(segment.group) {
+            if closedRecvGroups[gid] == nil {
+                // Evicted tombstone: the whole message was delivered, so
+                // this segment and everything before it was received.
+                rememberClosed(gid, cumulative: segment.seq.rawValue)
+            }
             ackNeeded.insert(gid)
             events.append(.ignored(
                 .segmentOnClosedGroup(segment.group, segment.seq)
@@ -401,75 +641,80 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
             return
         }
 
-        var state: RecvGroup
-        if let existing = recvGroups[gid] {
-            state = existing
-        } else {
+        if recvGroups[gid] == nil {
             // The ordered stream (group 0) is permanent and always
             // admitted; the cap bounds one-shot group spray only — a
             // hostile peer must never starve CTRL itself.
-            if segment.group.isOneShot {
-                guard recvGroups.count < config.maxActiveReceiveGroups else {
-                    events.append(.ignored(
-                        .tooManyReceiveGroups(segment.group)
-                    ))
-                    return
-                }
+            if segment.group.isOneShot,
+               recvGroups.count >= config.maxActiveReceiveGroups {
+                events.append(.ignored(.tooManyReceiveGroups(segment.group)))
+                return
             }
-            state = RecvGroup(
-                cumulative: config.initialSegmentSeq &- 1,
-                openedAt: now
+            recvGroups[gid] = RecvGroup(
+                cumulative: config.initialSegmentSeq &- 1, openedAt: now
             )
         }
-        if state.poisoned {
-            events.append(.ignored(.messageOverBudget(segment.group)))
-            return
-        }
 
-        let distance = Int16(
-            bitPattern: segment.seq.rawValue &- state.cumulative
+        let verdict = Self.accept(
+            segment, into: &recvGroups[gid]!, config: config, events: &events
         )
-        if distance <= 0 {
-            ackNeeded.insert(gid)
-            events.append(.ignored(
-                .duplicateSegment(segment.group, segment.seq)
-            ))
-            recvGroups[gid] = state
-            return
-        }
-        guard Int(distance) <= config.receiveWindowSegments else {
+        switch verdict {
+        case .poisoned:
+            events.append(.ignored(.messageOverBudget(segment.group)))
+        case .beyondWindow:
             events.append(.ignored(
                 .beyondReceiveWindow(segment.group, segment.seq)
             ))
-            recvGroups[gid] = state
-            return
-        }
-        if state.buffered[segment.seq.rawValue] != nil {
+        case .duplicate:
             ackNeeded.insert(gid)
             events.append(.ignored(
                 .duplicateSegment(segment.group, segment.seq)
             ))
-            recvGroups[gid] = state
-            return
+        case .accepted(let closed):
+            ackNeeded.insert(gid)
+            if closed {
+                let cumulative = recvGroups.removeValue(forKey: gid)!
+                    .cumulative
+                rememberClosed(gid, cumulative: cumulative)
+            }
+        }
+    }
+
+    /// Buffers one segment and drains the in-order run, appending each
+    /// completed message. Mutates the group in place: reassembly never
+    /// copies the partial message.
+    private static func accept(
+        _ segment: ArqSegment, into state: inout RecvGroup,
+        config: ArqConfig, events: inout [ArqEvent]
+    ) -> SegmentVerdict {
+        if state.poisoned { return .poisoned }
+        let seq = segment.seq.rawValue
+        let distance = Int16(bitPattern: seq &- state.cumulative)
+        if distance <= 0 { return .duplicate }
+        guard Int(distance) <= config.receiveWindowSegments else {
+            return .beyondWindow
+        }
+        if state.holds(seq) { return .duplicate }
+        let incoming = Buffered(
+            seq: seq, endOfMessage: segment.endOfMessage, body: segment.body
+        )
+        var next: Buffered?
+        if distance == 1 {
+            next = incoming
+        } else {
+            state.store(incoming)
         }
 
-        state.buffered[segment.seq.rawValue] =
-            (segment.endOfMessage, segment.body)
-        ackNeeded.insert(gid)
-
-        // Drain the in-order run, delivering completed messages.
-        var closed = false
-        while let entry = state.buffered[state.cumulative &+ 1] {
-            state.buffered.removeValue(forKey: state.cumulative &+ 1)
-            state.cumulative &+= 1
+        while let entry = next {
+            state.cumulative = entry.seq
             guard state.assembling.count + entry.body.count
                 <= config.maxMessageByteCount
             else {
                 state.poisoned = true
                 state.assembling = []
-                state.buffered = [:]
+                state.dropBuffered()
                 events.append(.ignored(.messageOverBudget(segment.group)))
-                break
+                return .accepted(closed: false)
             }
             state.assembling.append(contentsOf: entry.body)
             if entry.endOfMessage {
@@ -478,22 +723,37 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
                 ))
                 state.assembling = []
                 if segment.group.isOneShot {
-                    closed = true
-                    break
+                    return .accepted(closed: true)
                 }
             }
+            next = state.takeNext()
         }
+        return .accepted(closed: false)
+    }
 
-        if closed {
-            recvGroups.removeValue(forKey: gid)
-            closedRecvGroups[gid] = state.cumulative
-            closedRecvOrder.append(gid)
-            if closedRecvOrder.count > config.maxClosedGroupTombstones {
-                let evicted = closedRecvOrder.removeFirst()
-                closedRecvGroups.removeValue(forKey: evicted)
+    private mutating func rememberClosed(_ gid: UInt16, cumulative: UInt16) {
+        if let existing = closedRecvGroups[gid] {
+            if Int16(bitPattern: cumulative &- existing) > 0 {
+                closedRecvGroups[gid] = cumulative
             }
-        } else {
-            recvGroups[gid] = state
+            return
+        }
+        closedRecvGroups[gid] = cumulative
+        closedRecvOrder.append(gid)
+        while closedRecvOrder.count - closedRecvOrderHead
+            > config.maxClosedGroupTombstones {
+            let evicted = closedRecvOrder[closedRecvOrderHead]
+            closedRecvOrderHead += 1
+            closedRecvGroups.removeValue(forKey: evicted)
+            if evictedThrough.map({ Int16(bitPattern: evicted &- $0) > 0 })
+                ?? true {
+                evictedThrough = evicted
+            }
+        }
+        if closedRecvOrderHead >= 64,
+           closedRecvOrderHead * 2 >= closedRecvOrder.count {
+            closedRecvOrder.removeFirst(closedRecvOrderHead)
+            closedRecvOrderHead = 0
         }
     }
 
@@ -506,7 +766,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
                 continue
             }
             let gid = block.group.rawValue
-            guard var state = sendGroups[gid] else {
+            guard sendGroups[gid] != nil else {
                 // A late duplicate ACK for a completed one-shot is
                 // routine silence; anything else is forgery-shaped.
                 let plausiblyCompleted = block.group.isOneShot
@@ -518,81 +778,88 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
                 }
                 continue
             }
-
-            // Forgery bound: nothing past the highest allocated seq may
-            // be acknowledged. (highestReported is initial − 1 when the
-            // block reports nothing; against lastAllocated that is a
-            // non-positive distance only when nothing was allocated —
-            // and a group exists only once something was.)
-            let lastAllocated = state.nextSeq &- 1
-            let claimHigh = block.highestReported.rawValue
-            guard Int16(bitPattern: claimHigh &- lastAllocated) <= 0 else {
+            guard Self.applyAck(
+                block, to: &sendGroups[gid]!, rtt: &rtt, config: config,
+                now: now
+            ) else {
                 events.append(.ignored(.ackForUnsentData(block.group)))
                 continue
             }
-
-            // Retire everything the block covers.
-            var progressed = false
-            let bitmapSeqs = Set(block.bitmapSeqs.map(\.rawValue))
-            for seq in state.order where state.segments[seq] != nil {
-                let covered =
-                    Int16(bitPattern: block.cumulative.rawValue &- seq) >= 0
-                    || bitmapSeqs.contains(seq)
-                guard covered else { continue }
-                let out = state.segments.removeValue(forKey: seq)!
-                progressed = true
-                if out.sendCount >= 1 {
-                    state.sentSegmentCount -= 1
-                }
-                if out.sendCount == 1, let sentAt = out.lastSentAt {
-                    sampleRtt(now.microseconds(since: sentAt))
-                }
-            }
-            if progressed {
-                state.backoffExponent = 0
-                let live = state.segments
-                state.order.removeAll { live[$0] == nil }
-            }
-
-            // Fast retransmit, gated on a NEW high mark (replay-proof).
-            let advanced = state.highestAckedEver.map {
-                Int16(bitPattern: claimHigh &- $0) > 0
-            } ?? true
-            if advanced {
-                state.highestAckedEver = claimHigh
-                for seq in state.order {
-                    guard var out = state.segments[seq],
-                          out.sendCount >= 1,
-                          !out.needsSend,
-                          !out.fastRetransmitConsumed,
-                          Int16(bitPattern: claimHigh &- seq)
-                              >= Int16(config.packetThreshold)
-                    else { continue }
-                    out.needsSend = true
-                    out.fastRetransmitConsumed = true
-                    state.segments[seq] = out
-                }
-            }
-
-            if block.group.isOneShot, state.segments.isEmpty {
+            if block.group.isOneShot, sendGroups[gid]!.isDrained {
                 sendGroups.removeValue(forKey: gid)
                 events.append(.oneShotAcknowledged(block.group))
-            } else {
-                sendGroups[gid] = state
             }
         }
     }
 
-    private mutating func sampleRtt(_ sampleMicroseconds: Int64) {
-        let sample = max(sampleMicroseconds, 0)
-        if let srtt = srttMicroseconds {
-            let deviation = abs(srtt - sample)
-            rttvarMicroseconds = (3 * rttvarMicroseconds + deviation) / 4
-            srttMicroseconds = (7 * srtt + sample) / 8
-        } else {
-            srttMicroseconds = sample
-            rttvarMicroseconds = sample / 2
+    /// Retires everything one ACK block covers and runs the fast-
+    /// retransmit gate. Returns false (touching nothing) for a block
+    /// claiming seqs never sent — forgery.
+    private static func applyAck(
+        _ block: ArqAck.Block, to state: inout SendGroup,
+        rtt: inout RttEstimator, config: ArqConfig, now: Instant
+    ) -> Bool {
+        // Forgery bound: nothing past the highest SENT seq may be
+        // acknowledged. (highestReported is initial − 1 when the block
+        // reports nothing, which is never past it.)
+        let lastSent = state.nextSeq &- 1
+        let claimHigh = block.highestReported.rawValue
+        guard Int16(bitPattern: claimHigh &- lastSent) <= 0 else {
+            return false
         }
+
+        var progressed = false
+        func retire(_ seq: UInt16) {
+            let outcome = state.retire(offset: Int(seq &- state.base))
+            guard outcome.retired else { return }
+            progressed = true
+            if let sentAt = outcome.cleanSentAt {
+                rtt.sample(now.microseconds(since: sentAt))
+            }
+        }
+        // Cumulative: every seq from base through the cumulative.
+        let cumulativeSpan = Int(
+            Int16(bitPattern: block.cumulative.rawValue &- state.base)
+        ) + 1
+        if cumulativeSpan > 0 {
+            for offset in 0..<cumulativeSpan {
+                retire(state.base &+ UInt16(offset))
+            }
+        }
+        // Bitmap: seqs cumulative+1+n.
+        for (byteOffset, byte) in block.receivedBitmap.enumerated()
+        where byte != 0 {
+            for bit in 0..<8 where byte & (1 << bit) != 0 {
+                retire(block.cumulative.rawValue &+ 1
+                    &+ UInt16(byteOffset * 8 + bit))
+            }
+        }
+        if progressed {
+            state.backoffExponent = 0
+            state.compactFront()
+        }
+
+        // Fast retransmit, gated on a NEW high mark (replay-proof): every
+        // live segment packetThreshold or more behind it goes again once.
+        let advanced = state.highestAckedEver.map {
+            Int16(bitPattern: claimHigh &- $0) > 0
+        } ?? true
+        if advanced {
+            state.highestAckedEver = claimHigh
+            let reach = Int(Int16(bitPattern: claimHigh &- state.base))
+                - config.packetThreshold
+            if reach >= 0 {
+                for index in state.head...(state.head + reach) {
+                    guard var out = state.slots[index],
+                          !out.needsSend, !out.fastRetransmitConsumed
+                    else { continue }
+                    out.needsSend = true
+                    out.fastRetransmitConsumed = true
+                    state.slots[index] = out
+                }
+            }
+        }
+        return true
     }
 
     // MARK: - Poll
@@ -608,57 +875,72 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         reclaimAbandonedReceiveGroups(now: now)
         firePtoTimers(now: now)
 
-        var frames: [[UInt8]] = []
-        appendAckFrames(into: &frames)
-        appendSegmentFrames(now: now, into: &frames)
+        var packer = DatagramPacker(ceiling: config.maxDatagramPayloadByteCount)
+        appendAckFrames(into: &packer)
+        appendSegmentFrames(now: now, into: &packer)
+        return (packer.finish(), nextDeadline())
+    }
 
+    /// Packs frames into datagrams in emission order, starting a new
+    /// datagram whenever the next frame would cross the ceiling.
+    private struct DatagramPacker {
+        let ceiling: Int
         var datagrams: [[UInt8]] = []
         var current: [UInt8] = []
-        for frame in frames {
-            if !current.isEmpty,
-               current.count + frame.count
-                   > config.maxDatagramPayloadByteCount {
+
+        mutating func append(_ frame: [UInt8]) {
+            if !current.isEmpty, current.count + frame.count > ceiling {
                 datagrams.append(current)
                 current = []
             }
             current.append(contentsOf: frame)
         }
-        if !current.isEmpty {
-            datagrams.append(current)
-        }
 
-        return (datagrams, nextDeadline())
+        mutating func finish() -> [[UInt8]] {
+            if !current.isEmpty { datagrams.append(current) }
+            return datagrams
+        }
     }
 
     private mutating func firePtoTimers(now: Instant) {
-        for gid in sendGroups.keys {
-            var state = sendGroups[gid]!
-            guard let deadline = groupDeadline(state),
-                  deadline <= now
-            else { continue }
-            var probes = 0
-            for seq in state.order {
-                guard probes < config.ptoProbeSegments else { break }
-                guard var out = state.segments[seq],
-                      out.sendCount >= 1, !out.needsSend
-                else { continue }
-                out.needsSend = true
-                state.segments[seq] = out
-                probes += 1
-            }
-            if probes > 0 {
-                state.backoffExponent = min(
-                    state.backoffExponent + 1, config.maxPtoBackoffExponent
-                )
-                // Re-arm from now, not from the stale send instant, so
-                // one expiry fires once.
-                state.lastSendAt = now
-            }
-            sendGroups[gid] = state
+        let pto = rtt.pto(config)
+        var index = sendGroups.startIndex
+        while index != sendGroups.endIndex {
+            Self.firePto(
+                &sendGroups.values[index], pto: pto, config: config, now: now
+            )
+            sendGroups.formIndex(after: &index)
         }
     }
 
-    private mutating func appendAckFrames(into frames: inout [[UInt8]]) {
+    /// On an expired PTO, re-queues the first `ptoProbeSegments` live
+    /// segments not already queued, and backs off.
+    private static func firePto(
+        _ state: inout SendGroup, pto: Int64, config: ArqConfig, now: Instant
+    ) {
+        guard let deadline = groupDeadline(state, pto: pto, config: config),
+              deadline <= now
+        else { return }
+        var probes = 0
+        var index = state.head
+        while probes < config.ptoProbeSegments, index < state.slots.count {
+            if let out = state.slots[index], !out.needsSend {
+                state.slots[index]!.needsSend = true
+                probes += 1
+            }
+            index += 1
+        }
+        if probes > 0 {
+            state.backoffExponent = min(
+                state.backoffExponent + 1, config.maxPtoBackoffExponent
+            )
+            // Re-arm from now, not from the stale send instant, so
+            // one expiry fires once.
+            state.lastSendAt = now
+        }
+    }
+
+    private mutating func appendAckFrames(into packer: inout DatagramPacker) {
         guard !ackNeeded.isEmpty else { return }
         var blocks: [ArqAck.Block] = []
         for gid in ackNeeded.sorted() {
@@ -668,10 +950,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
                 cumulative = closed
             } else if let state = recvGroups[gid] {
                 cumulative = state.cumulative
-                bitmap = Self.receivedBitmap(
-                    buffered: state.buffered, above: cumulative,
-                    window: config.receiveWindowSegments
-                )
+                bitmap = state.ackBitmap
             } else {
                 continue
             }
@@ -689,84 +968,64 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         while start < blocks.count {
             let end = min(start + ArqBounds.maxAckBlocks, blocks.count)
             if let ack = try? ArqAck(blocks: Array(blocks[start..<end])) {
-                frames.append(ack.encode())
+                packer.append(ack.encode())
             }
             start = end
         }
     }
 
-    /// The canonical ACK bitmap for a receive state: bit n set when
-    /// `cumulative + 1 + n` is buffered, sized by the highest set bit.
-    /// Walks offsets in serial order so the result never depends on the
-    /// buffer's iteration order.
-    private static func receivedBitmap(
-        buffered: [UInt16: (endOfMessage: Bool, body: [UInt8])],
-        above cumulative: UInt16, window: Int
-    ) -> [UInt8] {
-        guard !buffered.isEmpty else { return [] }
-        var bytes: [UInt8] = []
-        for offset in 0..<window
-        where buffered[cumulative &+ 1 &+ UInt16(offset)] != nil {
-            while bytes.count <= offset / 8 { bytes.append(0) }
-            bytes[offset / 8] |= 1 << (offset % 8)
-        }
-        return bytes
-    }
-
+    /// Per group in id order: queued retransmits in serial order, then
+    /// fresh segments while both windows allow — at most
+    /// `sendWindowSegments` in flight, and never past
+    /// `receiveWindowSegments` above the lowest unacknowledged seq.
     private mutating func appendSegmentFrames(
-        now: Instant, into frames: inout [[UInt8]]
+        now: Instant, into packer: inout DatagramPacker
     ) {
         for gid in sendGroups.keys.sorted() {
-            var state = sendGroups[gid]!
-            var inFlight = state.sentSegmentCount
-            var sentAny = false
-            for seq in state.order {
-                guard var out = state.segments[seq] else { continue }
-                if out.needsSend {
-                    let isFresh = out.sendCount == 0
-                    if isFresh, inFlight >= config.sendWindowSegments {
-                        continue
-                    }
-                    frames.append(out.frameBytes)
-                    out.lastSentAt = now
-                    out.sendCount += 1
-                    out.needsSend = false
-                    out.fastRetransmitConsumed = false
-                    state.segments[seq] = out
-                    if isFresh {
-                        inFlight += 1
-                        state.sentSegmentCount += 1
-                    }
-                    sentAny = true
-                }
-            }
-            if sentAny {
-                state.lastSendAt = now
-            }
-            sendGroups[gid] = state
-        }
-    }
-
-    private func pto() -> Int64 {
-        let base: Int64
-        if let srtt = srttMicroseconds {
-            base = srtt + max(
-                4 * rttvarMicroseconds, config.granularityMicroseconds
+            Self.emitSegments(
+                of: &sendGroups[gid]!, group: ArqGroupId(rawValue: gid),
+                config: config, now: now, into: &packer
             )
-        } else {
-            base = 2 * config.initialRttMicroseconds
         }
-        return min(
-            max(base, config.minPtoMicroseconds),
-            config.maxPtoMicroseconds
-        )
     }
 
-    private func groupDeadline(_ state: SendGroup) -> Instant? {
-        guard let lastSend = state.lastSendAt else { return nil }
-        guard state.sentSegmentCount > 0 else { return nil }
+    private static func emitSegments(
+        of state: inout SendGroup, group: ArqGroupId, config: ArqConfig,
+        now: Instant, into packer: inout DatagramPacker
+    ) {
+        var sentAny = false
+        for index in state.head..<state.slots.count {
+            guard var out = state.slots[index], out.needsSend else { continue }
+            packer.append(out.frameBytes)
+            out.lastSentAt = now
+            out.sendCount += 1
+            out.needsSend = false
+            out.fastRetransmitConsumed = false
+            state.slots[index] = out
+            sentAny = true
+        }
+        while state.hasQueuedMessages,
+              state.inFlight < config.sendWindowSegments,
+              state.span < config.receiveWindowSegments {
+            packer.append(state.cutSegment(
+                group: group, bodyCeiling: config.maxSegmentBodyByteCount,
+                now: now
+            ))
+            sentAny = true
+        }
+        if sentAny {
+            state.lastSendAt = now
+        }
+    }
+
+    private static func groupDeadline(
+        _ state: SendGroup, pto: Int64, config: ArqConfig
+    ) -> Instant? {
+        guard let lastSend = state.lastSendAt, state.inFlight > 0 else {
+            return nil
+        }
         let interval = min(
-            pto() << state.backoffExponent, config.maxPtoMicroseconds
+            pto << state.backoffExponent, config.maxPtoMicroseconds
         )
         return lastSend.advanced(byMicroseconds: interval)
     }
@@ -786,13 +1045,9 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
     }
 
     private func nextDeadline() -> Instant? {
-        var earliest: Instant?
-        for state in sendGroups.values {
-            guard let deadline = groupDeadline(state) else { continue }
-            if earliest == nil || deadline < earliest! {
-                earliest = deadline
-            }
-        }
-        return earliest
+        let pto = rtt.pto(config)
+        return sendGroups.values
+            .compactMap { Self.groupDeadline($0, pto: pto, config: config) }
+            .min()
     }
 }
