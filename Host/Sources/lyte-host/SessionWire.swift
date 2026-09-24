@@ -111,6 +111,14 @@ final class SessionWire {
     private var awaitPrimaryDatagrams = 0
     /// Unconfirmed handshakes a newer authenticated message 1 replaced.
     private(set) var handshakesSuperseded = 0
+    /// Answered handshakes discarded unconfirmed.
+    private(set) var handshakesAbandoned = 0
+    /// When the unconfirmed session's message 1 was answered.
+    private var answeredAtNS: UInt64?
+    /// A client retransmits message 1 five times a second apart and
+    /// confirms within a round trip of message 2, so an answer still
+    /// unconfirmed after this has no client behind it.
+    static let unconfirmedLifetimeNS: UInt64 = 6_000_000_000
     private var session: Session!
     /// Guards the Session and the outbox (see the header). Held across
     /// service passes, released across sleeps.
@@ -728,11 +736,17 @@ final class SessionWire {
                     ) {
                         execute(event)
                     }
-                    if session.lifecycleState == .closed {
+                    let abandoned = answeredAtNS.map {
+                        SystemMonotonicClock.nowNanoseconds &- $0
+                            >= Self.unconfirmedLifetimeNS
+                    } ?? false
+                    if !session.isPeerConfirmed,
+                       abandoned || session.lifecycleState == .closed {
                         emit("""
                             noise: answered handshake never confirmed \
                             — discarded, awaiting a client
                             """)
+                        handshakesAbandoned += 1
                         discardUnconfirmedSession()
                     }
                 }
@@ -832,6 +846,9 @@ final class SessionWire {
         }
         if let answered = session.answeredMessage1 {
             listener.answeredHandshakes.record(message1: answered)
+            if answeredAtNS == nil {
+                answeredAtNS = SystemMonotonicClock.nowNanoseconds
+            }
         }
         if !wasConfirmed, session.isPeerConfirmed {
             emit("noise: client confirmed — it holds the session keys")
@@ -862,6 +879,7 @@ final class SessionWire {
         noBufferBackoff = false
         peerGone = false
         session = nil
+        answeredAtNS = nil
     }
 
     /// The session port (the kernel's pick when bound to port 0).
