@@ -1689,22 +1689,43 @@ public final class Session {
         }
     }
 
-    /// P-1: the shell's report that the OS clipboard now holds an
-    /// image — the leaf's PNG read (genuine host copies AND the
-    /// echoes of our own applies; the shared book tells them apart,
-    /// keyed 0xFF ‖ sha256). Judges the gate, the book, the send
-    /// lane, and the 32 MiB ceiling before cargo leaves on chan 8.
-    /// Silently a no-op unless the image gate (keys 10 ∧ 12)
-    /// survived intersection. Payloads never appear in events or
-    /// logs — byte counts only.
+    /// The digest-free half of the image funnel: the image gate
+    /// (keys 10 ∧ 12, established), then the channel's empty → lane
+    /// busy → ceiling gates. Nil means only the digest-keyed sync book
+    /// remains, so the shell hashes the image (outside its lock) and
+    /// calls `noteHostClipboardImageChanged(_:sha256:now:hostMicroseconds:)`.
+    /// Otherwise the image is settled without a digest: the returned
+    /// events (empty when the gate is shut) are its whole outcome.
+    public func prejudgeHostClipboardImage(
+        byteCount: Int, now: UInt64
+    ) -> [SessionEvent]? {
+        guard agreedClipboardImages, phase == .established else {
+            return []
+        }
+        guard let refused = clipboardImageChannel
+            .refuseLocalImageBeforeDigest(byteCount: byteCount)
+        else { return nil }
+        return processImageEvents(refused, now: now)
+    }
+
+    /// The shell's report that the OS clipboard now holds an image —
+    /// the leaf's PNG read (genuine host copies AND the echoes of our
+    /// own applies; the shared book tells them apart, keyed
+    /// 0xFF ‖ sha256). Judges the gate, the send lane, the 32 MiB
+    /// ceiling and then the book before cargo leaves on chan 8.
+    /// `sha256` is the image's digest, called only once the
+    /// digest-free gates pass. Silently a no-op unless the image gate
+    /// (keys 10 ∧ 12) survived intersection. Payloads never appear in
+    /// events or logs — byte counts only.
     public func noteHostClipboardImageChanged(
-        _ data: [UInt8], now: UInt64, hostMicroseconds: UInt64
+        _ data: [UInt8], sha256: () -> [UInt8],
+        now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
         guard agreedClipboardImages, phase == .established else {
             return []
         }
         let channelEvents = clipboardImageChannel.shareLocalImage(
-            data, sha256: Sha256.digest(data),
+            data, sha256: sha256,
             book: &clipboardBook, rng: &imageRng
         )
         var events = processImageEvents(channelEvents, now: now)
@@ -1712,6 +1733,17 @@ public final class Session {
             .bulk, now: now, hostMicroseconds: hostMicroseconds
         )
         return events
+    }
+
+    /// The one-lock form: hashes `data` itself, and only once the
+    /// digest-free gates pass.
+    public func noteHostClipboardImageChanged(
+        _ data: [UInt8], now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        noteHostClipboardImageChanged(
+            data, sha256: { Sha256.digest(data) },
+            now: now, hostMicroseconds: hostMicroseconds
+        )
     }
 
     /// An orderly local close: the typed SessionTeardown leaves on the
@@ -1886,9 +1918,11 @@ public final class Session {
         }
         if clipboardImageChannel.claims(message) {
             return processImageEvents(
+                // The incoming image is hashed chunk by chunk as its
+                // prefix assembles, never as one blob at the finish.
                 clipboardImageChannel.ingest(
                     message, book: &clipboardBook,
-                    sha256: Sha256.digest
+                    hasher: { Sha256() }
                 ),
                 now: now
             )

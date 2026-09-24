@@ -1378,14 +1378,32 @@ final class SessionWire {
         }
     }
 
-    /// P-1: the leaf's report that the OS clipboard now holds an
-    /// image (whole PNG bytes) — genuine host copies AND the echoes
-    /// of our own applies; the session's shared book tells them
-    /// apart. Cargo (or the suppression verdict) happens inside the
-    /// core; an ungated session stays silent (the keys-10∧12 gate).
+    /// The leaf's report that the OS clipboard now holds an image
+    /// (whole PNG bytes) — genuine host copies AND the echoes of our
+    /// own applies; the session's shared book tells them apart. Cargo
+    /// (or the suppression verdict) happens inside the core; an
+    /// ungated session stays silent (the keys-10∧12 gate).
+    ///
+    /// Three phases: the digest-free gates under the lock, the digest
+    /// outside it (tens of MiB must not stall the receive and pacing
+    /// paths), then the full judgment under the lock again. A refused
+    /// image is never hashed.
     func noteHostClipboardImageChanged(_ data: [UInt8]) {
+        var needsDigest = false
+        withEstablishedSession { session, now, _ in
+            guard let settled = session.prejudgeHostClipboardImage(
+                byteCount: data.count, now: now)
+            else {
+                needsDigest = true
+                return []
+            }
+            return settled
+        }
+        guard needsDigest else { return }
+        let digest = Sha256.digest(data)
         withEstablishedSession {
-            $0.noteHostClipboardImageChanged(data, now: $1, hostMicroseconds: $2)
+            $0.noteHostClipboardImageChanged(
+                data, sha256: { digest }, now: $1, hostMicroseconds: $2)
         }
     }
 
