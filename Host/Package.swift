@@ -279,6 +279,7 @@ targets += [
         name: "LyteHostIntegrationTests",
         dependencies: [
             "lyte-host",
+            "CNetIO",
             .product(name: "LyteWire", package: "Wire"),
         ]
     ),

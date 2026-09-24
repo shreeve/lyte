@@ -824,6 +824,9 @@ final class SessionWire {
             + "the printed static key?")
     }
 
+    /// The session port (the kernel's pick when bound to port 0).
+    var localPort: UInt16 { lyte_netio_local_port(listenNetio) }
+
     /// wire-out mode admits only its configured peer.
     private func admitsPeer(_ tuple: FourTuple) -> Bool {
         guard let requiredPeer else { return true }
