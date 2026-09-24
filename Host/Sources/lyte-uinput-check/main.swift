@@ -1,4 +1,4 @@
-// E2 verification harness: the uinput leaf, read back from the other
+// Verification harness: the uinput leaf, read back from the other
 // side. Creates the three virtual devices through CInputUinput, finds
 // their evdev nodes by name under /sys/class/input, and asserts that
 // every emitted event arrives byte-exact where it should: keys on the

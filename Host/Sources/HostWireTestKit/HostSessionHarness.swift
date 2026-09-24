@@ -79,7 +79,7 @@ public final class HostSessionHarness {
     }
 
     /// A client dialing this session's Noise static, connected; when
-    /// `declaring` is set, its W7 declaration is queued at 1 ms. Opens
+    /// `declaring` is set, its capability declaration is queued at 1 ms. Opens
     /// only CTRL unless `openChannels` says otherwise.
     public func connectClient(
         declaring capabilities: Capabilities?,

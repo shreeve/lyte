@@ -1,14 +1,7 @@
-// lyte-host: the direct eye (60 Hz pixel observation + EGL blit + native VAAPI
-// encode — HostEye) → Annex-B file, or the Lyte-UDP session (HS-7):
-// `--wire-out HOST:PORT` (or `--wire-listen PORT`) runs
-// HostWire.Session — Noise IK responder handshake against a connecting
-// client — then capture
-// → encode → VideoChannel → seal → Pacer → CNetIO, with 1 Hz beacons,
-// conn-id TLVs, and inbound handling (echoes, IDR requests, path
-// challenges) on the same loop.
-// E5: the portal/mutter ScreenCast backends, PipeWire video, and the
-// libav encoder seat are demolished — the direct eye is the only
-// capture organ, and every muscle above the drivers is ours.
+// lyte-host: the direct eye (pixel observation + EGL blit + native VAAPI
+// encode, HostEye) → an Annex-B file, or a Lyte-UDP session
+// (`--wire-out HOST:PORT` or `--wire-listen PORT`): the Noise IK responder
+// handshake, then capture → encode → VideoChannel → seal → Pacer → CNetIO.
 
 import CNetIO
 import Foundation
@@ -28,85 +21,60 @@ enum HostApplication {}
 struct Options {
     var outputPath = "/tmp/lyte-h0a.hevc"
     /// The leg's wall-clock bound. Given explicitly, the run serves one
-    /// session; a --wire-listen run without it is the service (sessions
-    /// in turn, no clock — HostServiceLoop).
+    /// session; a --wire-listen run without it is the service.
     var seconds = 5.0
     var secondsGiven = false
     var fps: Int32 = 60
-    /// Accepted-and-ignored since E5: the portal-era quality-ratchet
-    /// prototype died with its backend. The flag survives parsing so
-    /// standing loop scripts keep working; ratchet-style refinement on
-    /// the direct leg is the filed follow-up.
+    /// Accepted and ignored so existing scripts keep working.
     var ratchet = false
-    /// HS-5/HS-7: run a session to this peer instead of writing the file.
+    /// Run a session to this peer instead of writing the file.
     var wireOut: (host: String, port: UInt16)?
-    /// HS-7: bind here and await a connecting client (Noise mode).
+    /// Bind here and await a connecting client.
     var wireListen: UInt16?
-    /// The session rate ceiling for the wire mode. HS-16's estimator
-    /// starts here and moves the live pacer rate inside
-    /// [500 kbps, this] on feedback evidence. 50 is the owner-ruled
-    /// LAN ceiling (HS-23/R2): permission, not a promise — the
-    /// estimator still governs below it, and capped-CQ means an idle
-    /// desktop at a 50 Mbps cap still costs ~0.4 Mbps.
+    /// The session rate ceiling: the estimator moves the pacer inside
+    /// [500 kbps, this]. A permission, not a promise — capped-CQ keeps an
+    /// idle desktop far below it.
     var wireRateMbps = 50.0
-    /// Pin the advertisement to one interface (e.g. the Ethernet NIC
-    /// on a wired+wireless host) so discovery never hands clients the
-    /// radio's address. Empty = all interfaces.
+    /// Pin the advertisement to one interface so discovery never hands
+    /// clients the radio's address. Empty = all interfaces.
     var advertiseInterface = ""
-    /// HS-10: advertise `_lyte._udp` via Avahi while listening. On by
-    /// default in `--wire-listen` Noise mode; Avahi being unavailable
-    /// degrades to manual host:port, never a failure.
+    /// Advertise `_lyte._udp` via Avahi while listening; Avahi being
+    /// unavailable degrades to manual host:port, never a failure.
     var advertise = true
-    /// HS-9 pairing mode: mint a 6-digit PIN, print it, and run the
-    /// CPace responder over the session's reliable CTRL stream; on
-    /// success the client's static is pinned to paired_clients.
+    /// Mint and print a PIN and run the CPace responder over the reliable
+    /// CTRL stream; on success the client's static is pinned.
     var pair = false
-    /// HS-9 enforcement: only statics already in paired_clients may
-    /// complete the handshake (the "1-RTT reconnect" half of the gate).
+    /// Only statics already in paired_clients may complete the handshake.
     var requirePaired = false
-    /// Injection backend: auto and uinput both mean kernel uinput (the
-    /// sole backend); off disables input for the run.
+    /// auto and uinput both mean kernel uinput; off disables input.
     var input: InputBackendChoice = .auto
-    /// HS-15: desktop audio on the wire (default ON in session mode —
-    /// the H2 posture: continuous 5 ms CBR audio starts at
-    /// establishment). `--no-audio` opts out.
+    /// Desktop audio on the wire (continuous 5 ms CBR from establishment).
     var audio = true
-    /// Opus hard-CBR bitrate (the dialect default).
+    /// Opus hard-CBR bitrate.
     var audioBitrate: Int32 = 128_000
-    /// HS-18: the session's starting audio-routing posture. audible =
-    /// HS-14's default-sink monitor (the host's speakers keep
-    /// playing); muted = the "Lyte Audio" virtual sink takes the
-    /// default and the physical output goes silent for the session.
-    /// A capability-negotiated client can flip it mid-session (0x18).
+    /// The starting audio-routing posture: audible keeps the host's
+    /// speakers (default-sink monitor); muted moves the default to the
+    /// "Lyte Audio" virtual sink. A client can flip it (0x18).
     var hostAudio: HostAudioRoutingMode = .hostAudible
-    /// HS-19: clipboard sync (CL-15's v1, UTF-8 text both ways).
-    /// Default OFF — the consent posture: the host operator opts in,
-    /// and capability key 10 is declared only when the leaf actually
-    /// came up (the key-9/--no-audio precedent).
+    /// Text clipboard sync, opt-in; key 10 is declared only when the leaf
+    /// came up.
     var clipboard = false
-    /// P-1: the images rung of the consent tier (the clipboard design's
-    /// Off / Text only / Text + images). `--clipboard=images` sets
-    /// both flags; key 12 is declared only when the leaf came up
-    /// with images enabled — a text-only run truthfully never
-    /// promises the image dialect.
+    /// `--clipboard=images` sets both flags; key 12 is declared only when
+    /// the leaf came up with images enabled.
     var clipboardImages = false
-    /// F-3: the STANDING PER-HOST consent toggle for incoming file
-    /// transfer (H3 §0 owner decision 1). Default OFF — a plain run
-    /// declares no key 11 and any chan-8 byte is a protocol
-    /// violation; `--accept-files[=DIR]` opts in and names the drop
-    /// directory (default ~/Downloads, created if missing).
+    /// The standing per-host consent for incoming files, opt-in. Off =
+    /// no key 11 and any chan-8 byte is a protocol violation. The drop
+    /// directory defaults to ~/Downloads, created if missing.
     var acceptFiles = false
     var acceptFilesDirectory: String?
-    /// HS-21: arm the W8 retry-cookie dial. Off = the pure HS-9
-    /// token-bucket posture (nil secret). On = a random cookie secret is
-    /// minted and require-cookie mode engages when the msg1 arrival rate
-    /// crosses the enter threshold, clearing at the exit threshold.
+    /// Arm the retry-cookie dial: a random cookie secret is minted and
+    /// require-cookie mode engages when the msg1 rate crosses the enter
+    /// threshold, clearing at the exit threshold. Off = token bucket only.
     var requireCookie = false
     var cookieEnter = 20
     var cookieExit = 5
-    /// HS-22 isolation lever: false = never arm the EncoderVbvPolicy —
-    /// the encoder keeps its opening posture for the whole run (the
-    /// pre-HS-20 posture, everything else identical). Debug only.
+    /// Debug only: false = never arm the EncoderVbvPolicy; the encoder
+    /// keeps its opening posture for the whole run.
     var vbvReconfigure = true
 
     static func parse(_ args: [String]) throws -> Options {
@@ -127,10 +95,7 @@ struct Options {
                 opts.secondsGiven = true
             case "--backend":
                 i += 1
-                // E5: the portal and mutter ScreenCast backends are
-                // demolished — the direct eye is the only capture
-                // organ. The flag survives as a no-op so holds/scripts
-                // keep working; asking for a dead backend fails loudly.
+                // A no-op kept for scripts; any other backend fails.
                 guard i < args.count, args[i] == "direct" else {
                     let asked = i < args.count ? args[i] : "(missing)"
                     throw HostError("""
@@ -143,15 +108,11 @@ struct Options {
                 }
             case "--encoder":
                 i += 1
-                // The libav seat was demolished after first-light:
-                // native VAAPI is the direct eye's only encoder. The
-                // flag survives as a no-op so holds/scripts keep
-                // working; asking for the dead seat fails loudly.
+                // A no-op kept for scripts; any other encoder fails.
                 guard i < args.count, args[i] == "native" else {
                     throw HostError("""
-                        --encoder libav was demolished \
-                        after first-light — the native VAAPI seat \
-                        is the direct eye's only encoder \
+                        --encoder libav was demolished after first-light — the \
+                        native VAAPI seat is the direct eye's only encoder \
                         (--encoder native is an accepted no-op)
                         """)
                 }
@@ -199,9 +160,8 @@ struct Options {
                 else {
                     throw HostError(
                         """
-                            --input must be auto, uinput, or off \
-                            (mutter was retired in E2 — uinput is \
-                            primary)
+                            --input must be auto, uinput, or off (mutter was \
+                            retired in E2 — uinput is primary)
                             """)
                 }
                 opts.input = choice
@@ -256,10 +216,8 @@ struct Options {
             case "--audio-bitrate-kbps":
                 i += 1
                 guard i < args.count, let v = Int32(args[i]), v > 0 else {
-                    throw HostError("""
-                        --audio-bitrate-kbps needs a \
-                        positive number
-                        """)
+                    throw HostError(
+                        "--audio-bitrate-kbps needs a positive number")
                 }
                 opts.audioBitrate = v * 1_000
             case "--help", "-h":
@@ -389,10 +347,9 @@ struct Options {
     }
 }
 
-// MARK: - Pairing surface (HS-9)
+// MARK: - Pairing surface
 
-/// The pairing service's events, executed: `.paired` is the keystore
-/// write; everything else is the gate's loud console evidence.
+/// `.paired` is the keystore write; everything else is a console line.
 func handlePairingEvent(_ event: PairingResponderService.Event) {
     switch event {
     case .attemptOpened(let attempt, let of):
@@ -403,8 +360,7 @@ func handlePairingEvent(_ event: PairingResponderService.Event) {
             let paths = try HostPaths.current()
             var store = try PairedClients.load(paths: paths)
             if store.pin(key, note: """
-                paired \
-                \(ISO8601DateFormatter().string(from: Date()))
+                paired \(ISO8601DateFormatter().string(from: Date()))
                 """) {
                 try PairedClients.save(store, paths: paths)
                 print("""
@@ -412,14 +368,11 @@ func handlePairingEvent(_ event: PairingResponderService.Event) {
                     \(try PairedClients.path(paths: paths))
                     """)
             } else {
-                print("""
-                    pairing: PAIRED — client static \(hex) was \
-                    already pinned
-                    """)
+                print(
+                    "pairing: PAIRED — client static \(hex) was already pinned")
             }
         } catch {
-            // The trust decision is made; only the persistence failed.
-            // Loud enough to pin by hand, not fatal to the session.
+            // Only persistence failed: loud, not fatal to the session.
             print("""
                 pairing: PAIRED but the keystore write FAILED \
                 (\(error)) — pin \(hex) by hand
@@ -455,10 +408,7 @@ func errString(_ buf: [CChar]) -> String {
 
 // MARK: - Main
 
-/// The organs of a session-mode run that outlive any one session: the
-/// identity and pairing posture, the consent-gated leaves, the declared
-/// capabilities, the listening socket, the advertisement, and the input
-/// devices. The listening service keeps them across sessions; each
+/// The organs of a session-mode run that outlive any one session. Each
 /// session gets a fresh SessionWire, audio leaf, capture leg and
 /// file-drop shell.
 final class SessionHost {
@@ -473,15 +423,12 @@ final class SessionHost {
     /// its own on a kernel-assigned port).
     let listener: HostListener?
     let injector: InputInjector?
-    /// Retained for the life of the run: the record stays published
-    /// while the host serves and releasing it withdraws the record.
+    /// Releasing it withdraws the record.
     private let advertiser: AvahiAdvertiser?
-    /// The drop directory when file drop came up at bring-up; key 11
-    /// was declared on it.
+    /// Set when file drop came up at bring-up (key 11 declared on it).
     private let dropDirectory: String?
     /// The bring-up shell goes to the first session; later sessions get
-    /// a fresh shell, which reloads the resume states the previous one
-    /// persisted.
+    /// a fresh shell that reloads the persisted resume states.
     private var firstBulkShell: BulkReceiveShell?
 
     init(opts: Options, screen: DirectScreenSource) throws {
@@ -499,8 +446,8 @@ final class SessionHost {
                 """)
         }
 
-        // HS-9 setup happens before the socket exists so a bad keystore
-        // fails the run instead of a live session.
+        // Before the socket exists, so a bad keystore fails the run
+        // instead of a live session.
         let paths = try HostPaths.current()
         let keys = try HostStaticKey.loadOrCreate(paths: paths)
         hostStatic = keys
@@ -508,9 +455,8 @@ final class SessionHost {
             let store = try PairedClients.load(paths: paths)
             guard !store.entries.isEmpty else {
                 throw HostError("""
-                    --require-paired with an empty \
-                    keystore would lock every client out — run \
-                    --pair once first
+                    --require-paired with an empty keystore would lock every \
+                    client out — run --pair once first
                     """)
             }
             allowed = store.publicKeys
@@ -529,25 +475,20 @@ final class SessionHost {
                 hostStaticPublicKey: keys.publicKey
             )
             print("""
-                pairing: PIN \(pin) — enter it on the client \
-                (3 wrong guesses burn it; rerun --pair for a \
-                fresh one)
+                pairing: PIN \(pin) — enter it on the client (3 wrong guesses \
+                burn it; rerun --pair for a fresh one)
                 """)
         } else {
             pairingService = nil
         }
 
-        // HS-18 housekeeping before any session traffic: put back a
-        // default sink a SIGKILLed previous run stranded (no-op when
-        // the previous shutdown was clean), and arm the SIGINT/SIGTERM
-        // flag so an interrupted run still walks the restore path.
+        // Restore a default sink a killed previous run stranded, and arm
+        // the SIGINT/SIGTERM flag so an interrupted run still restores.
         AudioWire.sweepLeftoverRouting()
         lyteInstallTerminationHandlers()
 
-        // HS-19: the clipboard leaf comes up BEFORE the declaration is
-        // built — key 10 follows the leaf, never the flag alone (a
-        // refused Mutter session must not leave the host promising a
-        // dialect it cannot speak).
+        // The leaf comes up before the declaration: key 10 follows the
+        // leaf, never the flag alone.
         var leafUp: MutterClipboardLeaf?
         if opts.clipboard {
             do {
@@ -559,8 +500,7 @@ final class SessionHost {
                 let tier = opts.clipboardImages
                     ? """
                         text + images (PNG, \
-                        \(ClipboardImageWire.maxImageByteCount) B \
-                        image ceiling)
+                        \(ClipboardImageWire.maxImageByteCount) B image ceiling)
                         """
                     : "text only"
                 print("""
@@ -577,12 +517,8 @@ final class SessionHost {
         }
         clipboardLeaf = leafUp
 
-        // F-3: the file-drop shell comes up BEFORE the declaration is
-        // built — key 11 follows the toggle AND the directory, never
-        // the flag alone (the key-10/leaf precedent: an uncreatable
-        // drop directory must not leave the host promising a dialect
-        // it cannot land bytes for). Consent is this standing toggle;
-        // the shell existing IS the yes, and Wire never sees it.
+        // Likewise key 11 follows the toggle and a usable directory.
+        // Consent is this standing toggle; Wire never sees it.
         var drop: String?
         if opts.acceptFiles {
             let dropDir = opts.acceptFilesDirectory
@@ -605,17 +541,9 @@ final class SessionHost {
         }
         dropDirectory = drop
 
-        // The W7 declaration: key 9 (hostAudioRouting, the HS-18
-        // virtual-sink mute) rides the forward-compat spine whenever
-        // the audio leg exists — the client's control strip gates its
-        // mute button on the intersection, so a --no-audio host
-        // truthfully never declares it. Key 10 (clipboardText, CL-15)
-        // rides the same spine whenever the clipboard leaf is up, and
-        // key 11 (bulkTransfer, F-3) whenever the file-drop shell is.
-        // Key 14 (audioStreamOff, postures design) rides with key 9:
-        // an audio-capable host can always honor "send me nothing".
-        // Key 15 (audioQuietPosture, the tripwire) rides the same
-        // gate: an audio-capable host can always gate its silence.
+        // Declare only what this run can honor: keys 9, 14 and 15 with
+        // the audio leg, 10 and 12 with the clipboard leaf, 11 with the
+        // drop directory.
         var declared = opts.audio
             ? Capabilities.wireDefault.declaringHostAudioRouting()
                 .declaringAudioStreamOff()
@@ -623,10 +551,7 @@ final class SessionHost {
             : .wireDefault
         if leafUp != nil {
             declared = declared.declaringClipboardText()
-            // P-1: key 12 follows the TIER, not the flag alone — the
-            // leaf must be up AND images enabled (a text-only run
-            // truthfully never promises the image dialect, and the
-            // key is independent of key 11's file consent).
+            // Key 12 is independent of key 11's file consent.
             if opts.clipboardImages {
                 declared = declared.declaringClipboardImages()
             }
@@ -634,20 +559,13 @@ final class SessionHost {
         if drop != nil {
             declared = declared.declaringBulkTransfer()
         }
-        // E3: key 13 (cursorShape) — the direct eye sends the cursor
-        // plane as metadata, never composited into the video.
+        // The cursor plane travels as metadata, never composited.
         declared = declared.declaringCursorShape()
-        // Video posture (key 16): the direct eye's keepalive can
-        // always back off honestly — announced, never inferred.
         declared = declared.declaringVideoQuietPosture()
 
-        // V-4: chroma is declared on PROOF, never a hardcoded
-        // claim. Rext landed in the native pens (#89) — so the proof
-        // is the silicon's own answer, asked at startup: only a
-        // Main444 encode entrypoint declares the Best tier. The
-        // client's singleton declaration picks the session's posture
-        // (declaration-as-choice); the leg reopens the encoder when
-        // a Best agreement lands.
+        // Chroma is declared on proof: only a Main444 encode entrypoint
+        // declares the Best tier. The client's singleton declaration
+        // picks the session's posture.
         if EyeVaapiEncoder.probesMain444() {
             declared.chromaModes = [
                 CapabilityChroma.yuv420, CapabilityChroma.yuv444,
@@ -661,10 +579,8 @@ final class SessionHost {
         }
         self.declared = declared
 
-        // HS-21: arm the retry-cookie dial when asked. A random secret,
-        // process-scoped: the host both mints and verifies with it, and
-        // no cookie needs to survive a restart (an honest client re-dials
-        // with a fresh msg1, drawing a fresh challenge).
+        // A process-scoped random secret: the host both mints and
+        // verifies, and no cookie needs to survive a restart.
         var gateConfig = HandshakeGate.Config()
         if opts.requireCookie {
             var secret = [UInt8](repeating: 0, count: RetryCookie.secretByteCount)
@@ -675,21 +591,18 @@ final class SessionHost {
                 cookieExitThreshold: opts.cookieExit
             )
             print("""
-                handshake: W8 retry-cookie dial ARMED \
-                (require-cookie engages at \(opts.cookieEnter) msg1/s, \
-                clears at \(opts.cookieExit)/s)
+                handshake: W8 retry-cookie dial ARMED (require-cookie engages \
+                at \(opts.cookieEnter) msg1/s, clears at \(opts.cookieExit)/s)
                 """)
         }
         self.gateConfig = gateConfig
 
-        // The listening socket binds once for the whole run, so the port
-        // stays bound between sessions.
+        // Binds once for the whole run, so the port stays bound between
+        // sessions.
         listener = try opts.wireListen.map { try HostListener(port: $0) }
 
-        // HS-10: the advertisement goes up BEFORE the first handshake
-        // wait, so a browsing client can find the host and then connect
-        // to it. The advertiser re-files the record whenever the daemon
-        // or a name collision withdraws it (`serviceOrgans`).
+        // Up before the first handshake wait; the advertiser re-files
+        // the record whenever it is withdrawn (`serviceOrgans`).
         var published: AvahiAdvertiser?
         if opts.advertise, let listenPort = opts.wireListen {
             do {
@@ -699,19 +612,14 @@ final class SessionHost {
                     interfaceName: opts.advertiseInterface
                 )
             } catch {
-                print("""
-                    discovery: off (\(error)) — \
-                    manual host:port still works
-                    """)
+                print(
+                    "discovery: off (\(error)) — manual host:port still works")
             }
         }
         advertiser = published
 
-        // E2: kernel-uinput injection is ready before any client can
-        // connect — no compositor session, no D-Bus, one settle at device
-        // create — and already knows the monitor it scales against. The
-        // devices stay up across sessions; each session's end releases
-        // whatever its client left held.
+        // Injection is ready before any client connects and stays up
+        // across sessions; each session's end releases what it held.
         injector = makeInputInjector(opts.input)
         if let injector {
             injector.noteMonitorExtent(
@@ -742,19 +650,15 @@ final class SessionHost {
         }
     }
 
-    /// The host organs' own service pass: the clipboard leaf (serving
-    /// host pastes; reading nothing unless attached) and the Avahi
-    /// record. Runs on the handshake wait's idle pass between sessions
-    /// and on a session's janitor during one — never both at once.
+    /// Runs on the handshake wait's idle pass between sessions and on a
+    /// session's janitor during one — never both at once.
     func serviceOrgans() {
         clipboardLeaf?.service()
         advertiser?.service()
     }
 
-    /// The run is over: destroy the input devices (releasing anything
-    /// still held) and close the clipboard leaf's RemoteDesktop session
-    /// (its selection ownership and pending transfers die with it; the
-    /// connection-owned session can never be stranded by a crash).
+    /// Destroys the input devices (releasing anything held) and closes
+    /// the clipboard leaf's RemoteDesktop session.
     func stop() {
         injector?.stop()
         clipboardLeaf?.stop()
@@ -772,12 +676,9 @@ static func run(arguments: [String]) throws {
     lyte_stdout_linebuf()
 
     let opts = try Options.parse(arguments)
-    // The cap_sys_admin file capability (the direct eye's DRM ticket)
-    // clears the dumpable flag at exec — re-arm dumpability for crash
-    // forensics (owner-machine threat model; E4's packaging owns the
-    // real answer). NOTE /proc/self/exe stays ptrace-guarded regardless
-    // (the kernel's capability-subset rule) — the benchmark rig reads
-    // its provenance witness via sudo.
+    // The cap_sys_admin file capability clears the dumpable flag at
+    // exec; re-arm it for crash forensics. /proc/self/exe stays
+    // ptrace-guarded regardless (the capability-subset rule).
     if lyte_set_dumpable() != 0 {
         print("""
             host: WARNING — could not restore dumpability \
@@ -794,8 +695,6 @@ static func run(arguments: [String]) throws {
         lyte-host — direct eye (GPU pixel observation + EGL blit) → \
         native VAAPI (our pens) → \(destination)
         """)
-    // E6b: libavcodec is out of the video path entirely — rate
-    // moves are RC misc buffers on the next frame, by construction.
     print("""
         encoder: native VAAPI seat — rate directives ride the \
         next frame's RC buffer (no libavcodec in the video path)
@@ -808,9 +707,8 @@ static func run(arguments: [String]) throws {
             """)
     }
 
-    // The scanout opens first: its geometry scales the input injector's
-    // absolute moves, which must work from the first client event. It
-    // and the eye's GL context stay open for the whole run.
+    // The scanout opens first: its geometry scales the injector's
+    // absolute moves. It and the eye's GL context live for the run.
     let screen = try DirectEyeLeg.openScreen(
         device: DirectEyeLeg.Config.defaultDevice)
     let eye = WarmEye(screen: screen)
@@ -881,10 +779,8 @@ static func serveSession(
     sessionSeconds: Double
 ) throws -> ServedSession {
     let opts = host.opts
-    // The session comes up BEFORE capture: in Noise mode the host blocks
-    // here for the client's handshake (printing the static public key the
-    // client must hold), so no frames are encoded for nobody and the
-    // first encoded frame is the session's first IDR.
+    // The session comes up before capture, so the first encoded frame
+    // is the session's first IDR.
     let w = try SessionWire(
         listener: host.listener,
         peer: opts.wireOut,
@@ -895,17 +791,13 @@ static func serveSession(
         pairing: host.pairingService,
         onPairingEvent: handlePairingEvent
     )
-    // The wire's sender thread, media sockets, wake eventfd and shell
-    // hooks end with the session, whatever path leaves this function.
     defer { w.release() }
     w.inputInjector = host.injector
     let awaitOutcome: SessionWire.ClientAwaitOutcome
     do {
-        // A listening service waits for its client as long as it
-        // takes; a wire-out run gives its peer two minutes.
-        // The clipboard leaf is serviced while no session is live: host
-        // pastes of the content a client set last are still served, and
-        // host copies are drained unread (consent starts at attach).
+        // A listening service waits forever; a wire-out run gives its
+        // peer two minutes. Unattached, the clipboard leaf still serves
+        // host pastes and drains host copies unread.
         awaitOutcome = try w.awaitClient(
             hostStatic: host.hostStatic,
             timeoutSeconds: opts.wireListen != nil ? nil : 120,
@@ -916,39 +808,27 @@ static func serveSession(
         throw error
     }
     if awaitOutcome == .terminationRequested {
-        print("""
-            session: termination requested before handshake — \
-            clean stop
-            """)
+        print("session: termination requested before handshake — clean stop")
         w.shutdown(reason: .shuttingDown, lingerSeconds: 0)
         return ServedSession(
             end: .terminatedBeforeHandshake,
             leg: .init(frames: 0, firstPacketStartsStream: false))
     }
     print("""
-        session: up — pacer \(opts.wireRateMbps) Mbps, per-packet \
-        TOS (video 0xA0 / ctrl+audio+repairs 0xC0), 1 Hz beacon \
-        on CTRL
+        session: up — pacer \(opts.wireRateMbps) Mbps, per-packet TOS (video \
+        0xA0 / ctrl+audio+repairs 0xC0), 1 Hz beacon on CTRL
         """)
 
-    // HS-20: the estimator's ceiling reaches the encoder as rate
-    // directives — the direct leg applies them live (RC misc
-    // buffer on the next frame). The baseline mirrors the native
-    // seat's opening posture: VBR under the wire-rate cap, no CBR
-    // average, VBV at the unprotectable-frame guard's ceiling
-    // (HS-25: a squeeze→clean RESTORE returns to the guarded
-    // posture and can never re-open the >255-shard hole).
+    // The estimator's ceiling reaches the encoder as rate directives.
+    // The baseline mirrors the encoder's opening posture: VBR under the
+    // wire-rate cap, VBV at the unprotectable-frame guard's ceiling, so
+    // a restore can never re-open the >255-shard hole.
     let guardBits = w.worstCaseProtectableFrameCeiling * 8
     if opts.vbvReconfigure {
         let rateBits = Int(opts.wireRateMbps * 1_000_000)
-        // The native seat applies rate moves without a reset BY
-        // CONSTRUCTION (no libavcodec, no hidden NVENC reset), so
-        // the ladder keeps the posture the vendored no-reset lib
-        // had to prove: half-rungs and exact tightens (HS-33).
-        // The loosening sustain stays at HS-27's 10 s DELIBERATELY
-        // — an eager sustain was measured live to chase every
-        // climb into a zero-loss floor limit cycle (2026-07-29
-        // armed A/B).
+        // Half-rungs and exact tightens; the native seat applies rate
+        // moves without a reset. The loosening sustain stays slow on
+        // purpose: an eager one chases every climb into a limit cycle.
         w.armEncoderVbv(EncoderVbvConfig(
             fps: Int(opts.fps),
             baselineAverageBitsPerSecond: nil,
@@ -964,15 +844,11 @@ static func serveSession(
             """)
     }
 
-    // The host organs (clipboard leaf, Avahi record) ride the
-    // janitor's off-lock service pass while the session runs.
     w.shellServiceHook = { [weak host] in
         host?.serviceOrgans()
     }
-    // HS-19: the clipboard loop — client 0x1A sets apply through
-    // the leaf; leaf-observed changes (genuine copies AND the
-    // applies' own echoes, which the session's book suppresses)
-    // flow back through noteHostClipboardChanged. Attaching first
+    // Client sets apply through the leaf; leaf-observed changes (echoes
+    // included — the session's book suppresses them) flow back. Attach
     // drains what changed while no session was live, unread.
     if let leaf = host.clipboardLeaf {
         leaf.attach()
@@ -982,10 +858,7 @@ static func serveSession(
         leaf.onLocalChange = { [weak w] text in
             w?.noteHostClipboardChanged(text)
         }
-        // P-1: the image loop rides the same seams — client
-        // images apply through the leaf; leaf-observed image
-        // copies (genuine AND the applies' echoes) flow back
-        // through the session's shared book.
+        // Images ride the same seams.
         if opts.clipboardImages {
             w.clipboardImageApplyHandler = { [weak leaf] data in
                 leaf?.apply(imageData: data)
@@ -996,23 +869,13 @@ static func serveSession(
         }
     }
 
-    // F-3: the file-drop loop — chan-8 bulk messages buffered
-    // under the session lock, driven through the shell (disk IO,
-    // hashing) on the same off-lock service pass the clipboard
-    // rides; the shell's replies re-enter through sendBulk.
     let bulkShell = host.takeBulkShell()
     w.bulkShell = bulkShell
 
-    // HS-15: audio comes up with the session, on its own capture loop
-    // thread — continuous 5 ms CBR from establishment, silence
-    // included (the cadence is the receiver's clock and the path
-    // probe). A missing default sink degrades to a warning, never a
-    // failure: the screen must stream even if audio cannot.
-    // HS-18: the leaf comes up in the --host-audio posture, and a
-    // capability-negotiated client can flip it (0x18) — the handler
-    // below rebuilds the leaf in the other routing. Its loop deadline
-    // is only a backstop behind stop(); a service session has none of
-    // its own, so the backstop is a year.
+    // Audio runs on its own thread, continuous 5 ms CBR from
+    // establishment, silence included. Failure degrades to a warning:
+    // the screen must stream even if audio cannot. The loop deadline is
+    // only a backstop behind stop() (a year for a service session).
     let audioSeconds = sessionSeconds.isFinite
         ? sessionSeconds + 20.0 : 366 * 86_400
     var audioWire: AudioWire?
@@ -1025,22 +888,17 @@ static func serveSession(
             audioWire = audio
             w.setInitialAudioRouting(opts.hostAudio)
             w.audioRoutingHandler = { mode in
-                // Runs on the janitor thread, off the session lock
-                // (SessionWire.service drains requests there). The
-                // 5 ms stream pauses across the rebuild — one leaf
-                // owns the quantum forcing, so two never overlap.
+                // Runs on the janitor thread, off the session lock. The
+                // stream pauses across the rebuild so two leaves never
+                // overlap.
                 audioWire?.stop()
                 audioWire = nil
-                // Mute-at-source (postures design, mode 0x04): stop
-                // IS the whole apply — no capture, no encode, zero
-                // packets; the host's own speakers keep playing. The
-                // return-to-streaming request rebuilds below like any
-                // other flip.
+                // Stream off: stopping is the whole apply; the host's
+                // speakers keep playing.
                 if mode == .streamOff {
                     print("""
-                        audio-routing: stream OFF — the wire \
-                        carries no audio track (host speakers \
-                        unaffected)
+                        audio-routing: stream OFF — the wire carries no audio \
+                        track (host speakers unaffected)
                         """)
                     return true
                 }
@@ -1053,9 +911,8 @@ static func serveSession(
                     return true
                 } catch {
                     print("""
-                        audio-routing: rebuild in \(mode) failed \
-                        (\(error)) — trying to come back \
-                        \(opts.hostAudio)
+                        audio-routing: rebuild in \(mode) failed (\(error)) — \
+                        trying to come back \(opts.hostAudio)
                         """)
                     if let back = try? AudioWire(
                         wire: w, bitrate: opts.audioBitrate,
@@ -1079,8 +936,6 @@ static func serveSession(
         }
     }
 
-    // E1/E5: the direct eye is capture AND encode — encoded access
-    // units go straight to the wire.
     let leg = DirectEyeLeg(
         config: .init(
             seconds: sessionSeconds,
@@ -1089,28 +944,22 @@ static func serveSession(
         screen: screen, eye: eye, wire: w, file: nil)
     leg.run()
 
-    // HS-15: quit the audio loop BEFORE the teardown so the last audio
-    // shards ride out ahead of the 0x0A, not into a closed session. The
-    // routing handler can no longer run: the leg's janitor has stopped.
+    // Audio stops before the teardown so its last shards leave ahead of
+    // the 0x0A. The routing handler can no longer run (the janitor has
+    // stopped with the leg).
     let finalAudio = audioWire
     finalAudio?.stop()
     audioWire = nil
 
-    // HS-11: the orderly exit — a typed SessionTeardown on the reliable
-    // stream (retransmitted until acknowledged or patience runs out), so
-    // the client learns the session ended instead of inferring it.
     w.shutdown(reason: .shuttingDown)
-    // E2: the uinput devices outlive the session; nothing its client
-    // held may stay pressed.
+    // The devices and the leaf outlive the session: nothing its client
+    // held may stay pressed, and the leaf stops reporting into it.
     host.injector?.releaseHeld()
-    // HS-19: the leaf outlives the session; stop reading host copies
-    // and reporting into it (it keeps serving what it owns).
     host.clipboardLeaf?.detach()
     host.clipboardLeaf?.onLocalChange = nil
     host.clipboardLeaf?.onLocalImageChange = nil
-    // F-3: the receiving end's one resume obligation — persist the
-    // mid-flight BulkResumeState beside its staging file so the next
-    // session's re-offer resumes from the gap, sha-exact.
+    // Persists mid-flight resume state so the next session's re-offer
+    // resumes from the gap.
     bulkShell?.teardown()
 
     let evidence = printLegSummary(leg)
@@ -1129,9 +978,9 @@ static func serveSession(
     return ServedSession(end: leg.end, leg: evidence)
 }
 
-/// The leg's closing lines; returns the stream evidence the service loop
-/// judges. The stream-startability gate: the native encoder must open
-/// with VPS/SPS/PPS + IRAP or the client can never join mid-life.
+/// The leg's closing lines; returns the evidence the service loop
+/// judges. The first packet must carry VPS/SPS/PPS + IRAP or the client
+/// can never join.
 static func printLegSummary(
     _ leg: DirectEyeLeg
 ) -> HostServiceLoop.LegEvidence {
@@ -1140,10 +989,9 @@ static func printLegSummary(
     if leg.frames > 0 {
         print("""
 
-        done: \(leg.frames) frames encoded (direct eye), \
-        \(leg.keyframes) IDR, \(leg.bytes) bytes, \
-        missed_grabs \(leg.missedGrabs), \
-        rate directives applied \(leg.directivesApplied)
+        done: \(leg.frames) frames encoded (direct eye), \(leg.keyframes) IDR, \
+        \(leg.bytes) bytes, missed_grabs \(leg.missedGrabs), rate directives \
+        applied \(leg.directivesApplied)
         """)
         print("first packet NALs: \(AnnexBCheck.summary(of: leg.firstPacket))")
         if startsStream {
@@ -1154,7 +1002,6 @@ static func printLegSummary(
         frames: leg.frames, firstPacketStartsStream: startsStream)
 }
 
-/// The session's books — the wire half is backend-agnostic evidence.
 static func printSessionBooks(
     wire: SessionWire, leg: DirectEyeLeg, audio: AudioWire?,
     host: SessionHost, bulkShell: BulkReceiveShell?
@@ -1165,21 +1012,15 @@ static func printSessionBooks(
     let c = wire.counters
     let s = wire.sessionCounters
     let o = wire.outboxCounters
-    // HS-19: the leaf's own books (byte-level transfer evidence),
-    // appended to the clipboard line when the leaf ran.
-    // HS-20: the final standing directive, if any moved the encoder.
     var vbvFinal = ""
     if let d = wire.lastVbvDirective {
         let avg = d.averageBitsPerSecond
             .map { " avg \($0 / 1_000) kbps," } ?? ""
         vbvFinal = """
-             — final\(avg) max \(d.maxBitsPerSecond / 1_000) \
-            kbps, vbv \(d.vbvBits / 8) B \
-            (ceiling \(d.frameByteCeiling) B)
+             — final\(avg) max \(d.maxBitsPerSecond / 1_000) kbps, vbv \
+            \(d.vbvBits / 8) B (ceiling \(d.frameByteCeiling) B)
             """
     }
-    // F-3: the shell's own books (chunk/byte-level evidence),
-    // appended to the files line when the shell ran.
     var bulkShellStats = ""
     if let shell = bulkShell {
         let b = shell.counters
@@ -1397,15 +1238,13 @@ static func windowNote(_ histogram: Histogram<UInt64>, _ window: Int) -> String 
 /// The Linux host application's one composition root. It selects the command,
 /// constructs every concrete platform organ, and owns process-level failure.
 extension HostApplication {
-    /// Swift's process entry point. Keep the global argument read at this
-    /// doorway; the real composition root below remains explicitly injectable.
     static func main() {
         main(arguments: CommandLine.arguments)
     }
 
     static func main(arguments: [String]) {
-        // Subcommands never return: `sniff` is the HS-5 Lyte-UDP header
-        // dissector; `advertise` is the HS-10 standalone Avahi surface.
+        // Subcommands never return: `sniff` is the Lyte-UDP header
+        // dissector; `advertise` is the standalone Avahi surface.
         if arguments.count > 1, arguments[1] == "sniff" {
             sniffMain(Array(arguments.dropFirst(2)))
         }

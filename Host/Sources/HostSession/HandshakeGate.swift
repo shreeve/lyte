@@ -1,33 +1,22 @@
-// HandshakeGate (HS-9, cookie escalation HS-21): the pre-handshake flood
-// throttle. A Noise message 1 costs the responder real work (X25519 +
-// AEAD before anything is authenticated), and the decision record makes
-// that flood surface ours with no RFC 9000 lineage — the host must
-// "rate-limit unauthenticated first datagrams, no allocation before
-// handshake progress" (host plan §7).
+// HandshakeGate: the pre-handshake flood throttle. A Noise message 1
+// costs the responder real work (X25519 + AEAD before anything is
+// authenticated), so unauthenticated first datagrams are rate-limited
+// with no allocation before handshake progress.
 //
 // Two postures, low to high:
 //
-//   • THE TOKEN BUCKET (HS-9, the H1-era posture): a bucket consulted
-//     BEFORE any handshake state is allocated; a message 1 beyond the
-//     budget is dropped for free. Covers an honest client's retry burst
-//     (0443beb's lesson: one msg1 retransmitted on a timer) with room
-//     over, and blunts a small flood outright.
+//   • TOKEN BUCKET: consulted BEFORE any handshake state is allocated; a
+//     message 1 beyond the budget is dropped for free. The burst covers an
+//     honest client's msg1 retransmits with room over.
 //
-//   • REQUIRE-COOKIE MODE (HS-21, the W8 dial the host never drove
-//     live): a sustained flood exhausts the bucket, so dropping is the
-//     only H1 answer — but a genuine client caught in the same second is
-//     dropped too. The stateless HMAC retry cookie (W8's 0x13/0x14,
-//     LyteWire's RetryCookie owns the crypto) fixes exactly that: once
-//     the msg1 arrival rate crosses `cookieEnterThreshold` in a
-//     `floodWindowNS` window, the gate flips to require-cookie. An
-//     un-cookied msg1 is then answered with a stateless RetryChallenge
-//     (mint = one HMAC, reply SMALLER than the request — no amplification,
-//     no per-client state, no Noise) instead of being dropped; a client
-//     that echoes a VERIFYING cookie in a RetryHandshake1 is admitted
-//     (one extra round trip, but it connects). The flip clears with
-//     hysteresis once arrivals fall to `cookieExitThreshold`. Cookie mode
-//     is OFF unless `cookieSecret` is set — a nil secret keeps the exact
-//     H1 posture, so every pre-HS-21 caller and test is unchanged.
+//   • REQUIRE-COOKIE MODE: under a sustained flood the bucket would drop
+//     genuine clients too. Once msg1 arrivals in `floodWindowNS` reach
+//     `cookieEnterThreshold`, an un-cookied msg1 is answered with a
+//     stateless RetryChallenge (0x13: one HMAC, reply SMALLER than the
+//     request, no per-client state, no Noise); a client echoing a
+//     VERIFYING cookie in a RetryHandshake1 (0x14) is admitted. The mode
+//     clears with hysteresis at `cookieExitThreshold`. It is OFF unless
+//     `cookieSecret` is set. LyteWire's RetryCookie owns the crypto.
 //
 // A verified cookie proves an address, not good intent: one real client
 // can replay the same RetryHandshake1 at line rate for the cookie's whole
@@ -47,13 +36,11 @@ public struct HandshakeGate: Sendable {
     public struct Config: Sendable {
         /// Sustained admissions per second once the burst is spent.
         public var ratePerSecond: Int
-        /// Bucket depth — how many back-to-back attempts are admitted
-        /// cold. Covers an honest client's retry burst (0443beb's
-        /// lesson: one msg1 retransmitted on a timer) with room over.
+        /// Bucket depth — back-to-back attempts admitted cold. Covers an
+        /// honest client's msg1 retransmits with room over.
         public var burst: Int
         /// The host's cookie secret (RetryCookie.secretByteCount = 32).
-        /// Nil disables require-cookie mode entirely — the pure H1
-        /// token-bucket posture (every pre-HS-21 test relies on this).
+        /// Nil disables require-cookie mode (token bucket only).
         public var cookieSecret: [UInt8]?
         /// Message-1 arrivals within `floodWindowNS` at or above which
         /// the gate flips INTO require-cookie mode.
@@ -111,7 +98,7 @@ public struct HandshakeGate: Sendable {
         case drop(Reason)
 
         public enum Reason: Equatable, Sendable {
-            /// Bucket empty and cookie mode off (the H1 posture), or a
+            /// Bucket empty and cookie mode off, or a
             /// verified cookie that is a replay or over the cookie budget.
             case throttled
             /// A cookie was presented but did not verify (wrong tuple,
@@ -158,9 +145,7 @@ public struct HandshakeGate: Sendable {
     private var bucket: TokenBucket
     private var cookieBucket: TokenBucket
     /// Recent message-1 arrival instants inside `floodWindowNS`, oldest
-    /// first — the flood detector's evidence. Capped so a pathological
-    /// flood cannot grow it without bound (the exact count past the
-    /// threshold is irrelevant to the dial).
+    /// first. Capped: the count past the threshold is irrelevant.
     private var recentArrivals = Deque<UInt64>()
     /// Cookies already admitted. A cookie binds (tuple, msg1), so an exact
     /// repeat is a replay of a handshake the host already answered.
@@ -168,7 +153,7 @@ public struct HandshakeGate: Sendable {
 
     public private(set) var admitted = 0
     public private(set) var refused = 0
-    /// RetryChallenges minted (require-cookie mode, HS-21).
+    /// RetryChallenges minted in require-cookie mode.
     public private(set) var challengesMinted = 0
     /// Cookies presented that verified — the extra-round-trip admits.
     public private(set) var cookiesVerified = 0
@@ -189,7 +174,7 @@ public struct HandshakeGate: Sendable {
             burst: config.cookieAdmissionBurst)
     }
 
-    /// The HS-21 entry point: the full flood decision for one message 1.
+    /// The full flood decision for one message 1.
     /// `presentedCookie` is non-nil only for a RetryHandshake1 (0x14);
     /// `clientTuple` is the caller's opaque serialization of the source
     /// address (the cookie binds ownership of exactly it); `message1` is
@@ -211,12 +196,9 @@ public struct HandshakeGate: Sendable {
         }
 
         // A presented cookie is judged first, in EITHER posture: a
-        // client that already holds a verifying cookie has proven its
-        // address and does not spend the msg1 bucket. It spends the
-        // cookie bucket instead, once: an exact replay is dropped. Cookie
-        // mode being off does not make a valid cookie suspect — but with
-        // no secret we cannot verify one, so it is refused as
-        // unverifiable.
+        // verifying cookie proves the address, so it spends the cookie
+        // bucket (once — an exact replay is dropped), not the msg1 bucket.
+        // With no secret it cannot be verified and is refused.
         if let presentedCookie {
             guard let secret = config.cookieSecret,
                   RetryCookie.verify(
@@ -258,8 +240,8 @@ public struct HandshakeGate: Sendable {
             return decided(.challenge(cookie: cookie))
         }
 
-        // Normal posture (or cookie mode desired but the mint refused a
-        // malformed tuple): the H1 token bucket.
+        // Normal posture (or the mint refused a malformed tuple): the
+        // token bucket.
         if spendToken() { return decided(.admit) }
         return decided(.drop(.throttled))
     }
@@ -281,9 +263,7 @@ public struct HandshakeGate: Sendable {
               now &- oldest > config.floodWindowNS {
             recentArrivals.removeFirst()
         }
-        // The dial only compares against thresholds, so a few extra
-        // entries past the cap can be dropped without changing any
-        // verdict — keep the newest.
+        // The dial only compares against thresholds; keep the newest.
         let cap = max(config.cookieEnterThreshold * 2, 1_024)
         if recentArrivals.count > cap {
             recentArrivals.removeFirst(recentArrivals.count - cap)

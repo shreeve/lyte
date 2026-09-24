@@ -1,10 +1,8 @@
-// EyePipeline: the direct eye's GPU pipeline from an observed scanout to
-// an encoded access unit — the dmabuf import of the current scanout (one
-// cached import per framebuffer identity), the pixel fingerprint, the
-// blit into an exported VAAPI input surface (NV12, or packed AYUV for
-// Rext 4:4:4), and the native encode. The production leg and the
-// standalone lyte-eye witness drive the same pipeline; pacing, damage
-// policy, and delivery stay with them.
+// The direct eye's GPU pipeline from an observed scanout to an encoded
+// access unit: dmabuf import (cached per framebuffer identity), pixel
+// fingerprint, blit into a VAAPI input surface (NV12, or packed AYUV for
+// 4:4:4), and native encode. Pacing, damage policy and delivery stay
+// with the callers.
 
 #if os(Linux)
 
@@ -200,11 +198,10 @@ public final class EyePipeline {
             bitsPerSecond: bitsPerSecond, hrdBufferBits: hrdBufferBits)
     }
 
-    /// Starts the next session's stream on the warm GL context. The
+    /// Starts the next session's stream on the warm GL context: the
     /// encoder reopens at the opening rate control in the session's
-    /// chroma, so its first frame is an IDR carrying VPS/SPS/PPS, and no
-    /// scanout import, GPU target, fingerprint or retained surface
-    /// survives from the previous session.
+    /// chroma (first frame an IDR with VPS/SPS/PPS), and no per-session
+    /// GPU state survives.
     public func beginSession(chroma444: Bool) throws {
         rateBitsPerSecond = bitrateBitsPerSecond
         hrdBufferBits = openingHrdBufferBits

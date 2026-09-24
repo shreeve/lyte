@@ -1,7 +1,5 @@
-// BulkFileStore: the one production BulkReceiveStore — plain POSIX file
-// IO on the destination directory, in HostIO so HostWire stays IO-free.
-// Direct syscalls rather than Foundation: open/pwrite/fsync/rename need
-// no macros, so the disk is an OS leaf Swift reaches directly.
+// The production BulkReceiveStore: plain POSIX file IO on the
+// destination directory, in HostIO so HostWire stays IO-free.
 //
 // Layout inside the drop directory, all of it dotted (invisible):
 //   .lyte-bulk-<16-hex transferId>.part    the staging file — chunks
@@ -11,9 +9,8 @@
 //                                          BulkResumeState (atomic
 //                                          tmp+fsync+rename)
 // Completion promotes the .part by fsync-then-rename to the sanitized
-// final name, then fsyncs the directory — a kill -9 at ANY instant
-// leaves either the dotted staging pair or the finished file, never a
-// partial in the visible listing.
+// final name, then fsyncs the directory: a kill -9 at any instant leaves
+// the dotted staging pair or the finished file, never a visible partial.
 
 #if canImport(Darwin)
 import Darwin
@@ -30,9 +27,8 @@ public enum BulkStoreError: Error, Equatable, Sendable {
     case writeFailed(String)
     case readFailed(String)
     case renameFailed(String)
-    /// A final name carrying a path separator — sanitization upstream
-    /// makes this unreachable; refused anyway (defense at the seam
-    /// where the bytes hit the filesystem).
+    /// A final name carrying a path separator. Upstream sanitization
+    /// makes this unreachable; refused anyway at the filesystem seam.
     case invalidFinalName(String)
     case noStagingOpen
 }
@@ -180,9 +176,8 @@ public final class BulkFileStore: BulkReceiveStore {
                   let state = try? BulkResumeStateCodec.decode(bytes),
                   access(stagingPath(state.transferId), F_OK) == 0
             else {
-                // A torn write or an orphaned record: weather, not an
-                // error — losing the cache costs re-received chunks,
-                // and the digest arbitrates the finish line anyway.
+                // A torn or orphaned record is not an error: losing it
+                // costs re-received chunks, and the digest arbitrates.
                 unlink(path)
                 continue
             }
@@ -237,19 +232,16 @@ public final class BulkFileStore: BulkReceiveStore {
 
     // MARK: Paths and plumbing
 
-    /// Exposed for tests that pre-seed staging bytes (the holed-map
-    /// vector replay) and audit stray files.
+    /// Exposed for tests that pre-seed staging bytes and audit strays.
     public func stagingPath(_ transferId: UInt64) -> String {
         directoryPath + """
-            /\(Self.stagingPrefix)\
-            \(Hex.string(transferId, width: 16)).part
+            /\(Self.stagingPrefix)\(Hex.string(transferId, width: 16)).part
             """
     }
 
     public func resumePath(_ transferId: UInt64) -> String {
         directoryPath + """
-            /\(Self.stagingPrefix)\
-            \(Hex.string(transferId, width: 16)).resume
+            /\(Self.stagingPrefix)\(Hex.string(transferId, width: 16)).resume
             """
     }
 

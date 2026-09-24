@@ -1,5 +1,4 @@
-// HostPaths: where the Lyte host keeps its files, per the XDG base
-// directories.
+// Where the Lyte host keeps its files, per the XDG base directories.
 //
 //   <XDG_CONFIG_HOME or ~/.config>/lyte       noise_static.key, paired_clients,
 //                                             host.conf (the unit's knobs)
@@ -101,13 +100,12 @@ public struct HostPaths: Equatable, Sendable {
 }
 
 /// How the host persists key material and trust state. The bytes go to a
-/// uniquely named temporary file (mkstemp: created 0600 with O_EXCL, never
-/// readable by anyone else, not even for an instant, and never a file
-/// someone else planted), are fsync'ed, then renamed over the target (or,
-/// for `create`, linked into place only if nothing is there) and the
+/// uniquely named temporary (mkstemp: 0600 with O_EXCL, never readable by
+/// anyone else, never a planted file), are fsync'ed, then renamed over the
+/// target (or, for `create`, linked only if nothing is there) and the
 /// directory fsync'ed. A crash leaves the old file or the new one, never a
-/// torn one; the temporary it may leave behind is swept by the next write
-/// of that file once it is `staleTemporarySeconds` old.
+/// torn one; a leftover temporary is swept by the next write of that file
+/// once it is `staleTemporarySeconds` old.
 public enum SecretFile {
     /// A temporary this old is a crashed writer's, not a live one's.
     public static let staleTemporarySeconds = 60

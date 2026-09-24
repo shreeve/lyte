@@ -30,17 +30,14 @@ enum PairedClients {
             return try ClientKeystore.parse(text)
         } catch let ClientKeystore.ParseError.malformedLine(line, contents) {
             throw HostError("""
-                paired-clients store at \(path) line \
-                \(line) is malformed (\"\(contents)\") — refusing to \
-                guess; fix or move it aside
+                paired-clients store at \(path) line \(line) is malformed \
+                (\"\(contents)\") — refusing to guess; fix or move it aside
                 """)
         }
     }
 
-    /// Full rewrite (the codec's canonical-serialization rule), 0600
-    /// like the host static, atomically (SecretFile) — a crash mid-write
-    /// never leaves a torn store that locks every client out. Only ever
-    /// the new location.
+    /// Full canonical rewrite, 0600, atomically (SecretFile) — a crash
+    /// mid-write never leaves a torn store. Only ever the new location.
     static func save(_ store: ClientKeystore, paths: HostPaths) throws {
         try SecretFile.write(Array(store.serialized().utf8), to: path(paths: paths))
     }

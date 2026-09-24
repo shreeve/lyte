@@ -1,6 +1,5 @@
-// EyeDRM: the kernel-facing half of the direct eye — plane discovery,
-// the FB_ID import identity (milestone 1), and the scanout ticket (GETFB2 +
-// dmabuf export, milestone 2). All libdrm via the CDRM module map.
+// The kernel-facing half of the direct eye: plane discovery, the FB_ID
+// import identity, and the scanout ticket (GETFB2 + dmabuf export).
 
 #if os(Linux)
 
@@ -88,14 +87,13 @@ public struct ScanoutTicket {
     }
 }
 
-/// GETFB2 + PRIME export (privileged). nil on a stale fb id — the
-/// compositor flipped and freed between poll and grab; caller skips.
+/// GETFB2 + PRIME export (privileged). nil on a stale fb id (freed
+/// between poll and grab); the caller skips.
 ///
-/// GETFB2 opens a GEM handle in this DRM file for every plane's buffer
-/// object, and the caller owns closing them. The dmabuf fds keep the BOs
-/// alive on their own, so every unique non-zero handle is closed before
-/// return on every path — an unclosed handle pins its BO for the life of
-/// the fd (one per page flip during motion).
+/// GETFB2 opens a GEM handle per plane's buffer object; the dmabuf fds
+/// keep the BOs alive on their own, so every unique non-zero handle is
+/// closed before return on every path. An unclosed handle pins its BO for
+/// the life of the fd.
 public func grabTicket(fd: Int32, fbId: UInt32) -> ScanoutTicket? {
     guard let fb2 = drmModeGetFB2(fd, fbId) else { return nil }
     defer { drmModeFreeFB2(fb2) }

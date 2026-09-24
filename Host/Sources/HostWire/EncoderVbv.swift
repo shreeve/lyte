@@ -1,52 +1,30 @@
-// EncoderVbv: the policy that makes the encoder consume the estimator's
-// live `frameByteCeiling`. Under a sustained squeeze the pacer walks down;
-// an encoder still sized for the old rate emits frames that overstay the
-// client's completion presumption, NACKs sustain rung-3 verdicts, and the
-// tail sits floor-pinned instead of re-converging. The policy turns the
-// ceiling into rate-control directives.
+// EncoderVbv: turns the estimator's live `frameByteCeiling` into encoder
+// rate-control directives, so frames shrink with the pacer's rate instead
+// of overstaying the client's completion presumption. Sans-IO: `note`
+// returns a directive the shell applies before the next frame (on the
+// native VAAPI seat, RC/HRD misc buffers: no encoder reset, no IDR).
 //
-// Sans-IO: `note` takes the live ceiling and `now` and returns a directive
-// when the encoder's rate-control posture should move; the shell applies
-// it before the next frame. On the native VAAPI seat a directive is an RC
-// and HRD misc buffer on the next frame: no encoder reset, no IDR.
+// CLEAN PATH: while ceilingRate (8×C/B) ≥ (1 − deadband) × baselineMax the
+// opening recipe rides with no directives; leaving a squeeze, one
+// sustain-gated RESTORE puts it back. Below that the rung ladder engages.
 //
-// THE CLEAN-PATH RULE. The ceiling-derived rate (8×C/B) is judged against
-// the opening recipe's own cap first:
-//   • ceilingRate ≥ (1 − deadband) × baselineMax  ⇒  CLEAN: no
-//     directives, the opening recipe rides; returning from a squeeze, one
-//     sustain-gated RESTORE directive puts it back.
-//   • below that                                  ⇒  SQUEEZED: the rung
-//     ladder engages.
+// RUNG LADDER: rung_i = baselineMax × 2^(−i/rungsPerOctave); the posture
+// takes the smallest rung ≥ the ceiling rate (never below what the wire
+// delivers; the pacer enforces the exact rate). Moves inside the applied
+// band are absorbed. At rung rate R:
+//   max = min(baselineMax, R); avg = min(baselineAvg, R) (CBR only)
+//   C'  = R×B/8, B = min(2/fps, 25 ms)
+//   vbv = min(baselineVbv, k × 8×C'), k by R/baselineMax (≥80% ⇒ 4,
+//         ≥65% ⇒ 3, ≥50% ⇒ 2, deeper ⇒ 1).
+// Nothing exceeds the opening posture; live baselines carry the one-FEC-
+// group guard as their VBV, so rung 0 and the restore land on it exactly.
 //
-// THE RUNG LADDER. The squeezed posture sits on rungs of the recipe cap,
-// rung_i = baselineMax × 2^(−i/rungsPerOctave), choosing the smallest rung
-// ≥ the live ceiling rate (the posture never sits below what the wire
-// delivers; the pacer enforces the exact rate). Estimator moves inside
-// the applied rung's band are absorbed (`rateMovesAbsorbed`). With
-// `exactTighten`, tightens land exactly on the ceiling rate instead of the
-// rung above it, and material within-band rises arm the loosen want.
-//
-// The rung mapping at rung rate R:
-//   max     = min(baselineMax, R);  avg = min(baselineAvg, R) (CBR only)
-//   C'      = R×B/8 (the rung's budget-window ceiling, B = min(2/fps,
-//             25 ms))
-//   vbvBits = min(baselineVbv, k × 8×C'), k by R/baselineMax (≥80% ⇒ 4,
-//             ≥65% ⇒ 3, ≥50% ⇒ 2, deeper ⇒ 1).
-// Every parameter caps against the opening posture, never above it; live
-// baselines carry the one-FEC-group guard as their VBV, so rung 0 and the
-// restore land exactly on the guarded posture.
-//
-// ASYMMETRIC HYSTERESIS.
-//   • TIGHTEN is immediate, but only when the ceiling is materially inside
-//     a lower band (judged at ceilingRate × (1 + deadband)); dither at a
-//     boundary changes nothing.
-//   • LOOSEN (a rung climb or the restore) fires only after the ceiling has
-//     wanted it continuously for `riseSustainNS` (10 s) and the rise hold
-//     has passed, then jumps to the rung of the MINIMUM ceiling seen across
-//     the sustain window. A saw-tooth hunt whose falls recur inside the
-//     window never loosens — the posture parks at the hunt's band. The
-//     10 s sustain is load-bearing for the estimator's probe stability: an
-//     eager sustain chases every climb into a zero-loss floor limit cycle.
+// HYSTERESIS: TIGHTEN is immediate but only when the ceiling is materially
+// inside a lower band (ceilingRate × (1 + deadband)). LOOSEN fires only
+// after the ceiling wanted it continuously for `riseSustainNS` and the
+// rise hold passed, then jumps to the rung of the window's MINIMUM
+// ceiling, so a saw-tooth hunt parks. A short sustain chases every probe
+// climb into a floor limit cycle.
 
 /// What the shell pushes into the encoder when the policy says the
 /// rate-control posture must move.
@@ -88,44 +66,33 @@ public struct EncoderRateDirective: Equatable, Sendable {
 
 public struct EncoderVbvConfig: Sendable {
     public var fps: Int
-    /// The encoder's opening rate-control posture — the ceiling caps
-    /// against it, never pushes above it. CBR opens with avg = max =
-    /// the configured bitrate and a single-frame VBV; capped-CQ opens
-    /// with only the max-rate cap (average and VBV nil). Live configs
-    /// carry the HS-25 guard ceiling as the baseline VBV.
+    /// The opening rate-control posture; directives never exceed it. CBR
+    /// opens with avg = max = the bitrate and a single-frame VBV;
+    /// capped-CQ opens with only the max cap. Live configs carry the
+    /// one-FEC-group guard ceiling as the baseline VBV.
     public var baselineAverageBitsPerSecond: Int?
     public var baselineMaxBitsPerSecond: Int
     public var baselineVbvBits: Int?
-    /// Relative move below which nothing is judged material: the clean
-    /// boundary sits at (1 − deadband) × baselineMax, and a tighten
-    /// fires only when the ceiling is this fraction INSIDE a lower
-    /// rung's band (boundary dither parks).
+    /// The clean boundary is (1 − deadband) × baselineMax, and a tighten
+    /// fires only when the ceiling is this fraction INSIDE a lower band.
     public var deadbandFraction: Double
-    /// Every loosening additionally waits this long after the last
-    /// apply; a tightening never waits.
+    /// A loosening also waits this long after the last apply; a
+    /// tightening never waits.
     public var riseHoldNS: UInt64
-    /// HS-27: a loosening (rung climb or restore) fires only after the
-    /// ceiling has wanted it CONTINUOUSLY for this long — a saw-tooth
-    /// hunt whose falls recur inside this window can never loosen, so
-    /// the posture parks and the hunt costs zero encoder resets.
+    /// A loosening fires only after the ceiling wanted it CONTINUOUSLY
+    /// this long, so a saw-tooth hunt parks instead of cycling.
     public var riseSustainNS: UInt64
-    /// Rungs per halving of the recipe cap. 1 (default) is the halving
-    /// ladder — rung_i = cap/2^i, posture/pacer slack bounded at 2×. The
-    /// native seat moves rates with no reset, so the host passes 2
-    /// (rung_i = cap × 2^(−i/2), slack ≤ √2). Only 1 and 2 are defined,
-    /// and 2 keeps the math deterministic (stdlib square root, no libm).
+    /// Rungs per halving of the recipe cap: 1 = rung_i = cap/2^i (slack
+    /// ≤ 2×); 2 = cap × 2^(−i/2) (slack ≤ √2, via stdlib square root, no
+    /// libm). Only 1 and 2 are defined.
     public var rungsPerOctave: Int
-    /// Land every TIGHTEN exactly on the ceiling-derived rate instead of
-    /// the rung above it, and retune on material within-band falls (the
-    /// ceiling more than a deadband below the applied max) instead of
-    /// absorbing them. Only honest when a directive costs no IDR, as on
-    /// the native seat (the host passes true); the estimator's 500 ms
-    /// fall limiter bounds the extra directives to ~2/s. The sustain-gated
-    /// climb and restore are unchanged, but exact mode judges BOTH edges
-    /// by rate: a material within-band RISE arms the loosen want like a
-    /// band crossing, and the sustained climb lands exactly on the
-    /// held-minimum ceiling — otherwise an exact tighten parked mid-band
-    /// would ratchet (a recovery inside one rung never changes the index).
+    /// Land every TIGHTEN exactly on the ceiling rate instead of the rung
+    /// above, and retune on material within-band falls. Only sound when a
+    /// directive costs no IDR (the native seat); the estimator's 500 ms
+    /// fall limiter bounds extra directives to ~2/s. Both edges are then
+    /// judged by rate: a material within-band RISE arms the loosen want,
+    /// and the sustained climb lands on the held-minimum ceiling, else a
+    /// mid-band exact posture would ratchet down.
     public var exactTighten: Bool
 
     public init(
@@ -165,21 +132,18 @@ public final class EncoderVbvPolicy {
     public private(set) var appliedMaxBitsPerSecond: Int
     public private(set) var appliedVbvBits: Int?
     public private(set) var directivesIssued = 0
-    /// True while the rung ladder owns the encoder posture; false while
-    /// the opening recipe rides (the HS-22 clean path).
+    /// True while the rung ladder owns the posture; false on the clean
+    /// path.
     public var squeezeEngaged: Bool { appliedRungIndex != nil }
     /// The rung the ladder currently sits on (nil while clean).
     public private(set) var appliedRungIndex: Int?
-    /// HS-27 books: estimator moves (the polled ceiling changed) that
-    /// produced NO directive — rate moves the pacer carried alone, at
-    /// zero encoder resets and zero IDRs. The beauty-bar multiplier is
-    /// directivesIssued / (directivesIssued + rateMovesAbsorbed).
+    /// Ceiling moves that produced no directive (the pacer carried them
+    /// alone).
     public private(set) var rateMovesAbsorbed = 0
     private var lastAppliedAt: UInt64?
     private var lastPolledCeilingRate: Int?
-    /// The sustained-loosening tracker: when the ceiling began wanting
-    /// a looser posture without interruption, and the smallest ceiling
-    /// rate seen since (the level the wire actually held).
+    /// When the ceiling began wanting a looser posture without
+    /// interruption, and the smallest ceiling rate seen since.
     private var looserWantedSince: UInt64?
     private var looserMinCeilingRate = Int.max
 
@@ -190,18 +154,16 @@ public final class EncoderVbvPolicy {
         self.appliedVbvBits = config.baselineVbvBits
     }
 
-    /// The clean/squeezed boundary as a rate: a ceiling-derived rate at
-    /// or above this is the wire keeping up with the opening recipe
-    /// (within the deadband's own definition of noise) — no caps.
+    /// The clean/squeezed boundary: a ceiling rate at or above this keeps
+    /// up with the opening recipe.
     public var cleanPathRateBitsPerSecond: Int {
         Int(Double(config.baselineMaxBitsPerSecond)
             * (1.0 - config.deadbandFraction))
     }
 
-    /// The multi-frame VBV ladder (HS-22): budget windows of borrowing
-    /// by squeeze depth. `squeezeFraction` = rungRate / baselineMax.
-    /// Deep squeezes keep HS-20's single-frame tool; mild ones loosen
-    /// the per-frame bound while the rate cap holds the average.
+    /// VBV budget windows by squeeze depth (`squeezeFraction` = rungRate
+    /// / baselineMax): deep squeezes get a single-frame VBV; mild ones
+    /// may borrow across frames while the rate cap holds the average.
     public static func vbvBudgetWindows(squeezeFraction: Double) -> Int {
         if squeezeFraction >= 0.80 { return 4 }
         if squeezeFraction >= 0.65 { return 3 }
@@ -221,10 +183,9 @@ public final class EncoderVbvPolicy {
         return index
     }
 
-    /// The rate rung `index` carries, bits/s: cap × 2^(−i/n) with n =
-    /// rungsPerOctave. Whole octaves stay HS-27's exact integer
-    /// halvings (pinned); the n = 2 half-rung is rung/√2 rounded to
-    /// the nearest bit/s (stdlib square root — deterministic, no libm).
+    /// The rate rung `index` carries, bits/s: cap × 2^(−i/n), n =
+    /// rungsPerOctave. Whole octaves are exact integer halvings; a
+    /// half-rung is rung/√2 rounded to the nearest bit/s.
     public func rungRate(atIndex index: Int) -> Int {
         var rung = config.baselineMaxBitsPerSecond
         for _ in 0..<(index / config.rungsPerOctave) { rung /= 2 }
@@ -247,14 +208,12 @@ public final class EncoderVbvPolicy {
         )
     }
 
-    /// The HS-20/HS-22 mapping evaluated at a rung's rate: caps against
-    /// the baseline, k-window VBV at the rung's own depth.
     private func posture(atRungIndex index: Int) -> Posture {
         posture(atRate: rungRate(atIndex: index))
     }
 
-    /// The same mapping at an arbitrary rate — the exact-tighten path
-    /// lands here directly, off the ladder.
+    /// The header's rung mapping at an arbitrary rate (exact mode lands
+    /// here directly, off the ladder).
     private func posture(atRate rate: Int) -> Posture {
         let budgetNS = RateEstimator.frameBudgetNS(fps: config.fps)
         let rungCeiling = Int(
@@ -286,10 +245,8 @@ public final class EncoderVbvPolicy {
         )
     }
 
-    /// Applies `posture` to the tracked state and wraps it as a
-    /// directive — or absorbs it silently when the encoder already
-    /// runs these exact params (rung_0 ≡ baseline is the designed
-    /// case: the flag may flip, the encoder is never touched).
+    /// Applies `posture` and wraps it as a directive, or absorbs it when
+    /// the encoder already runs exactly these params (rung 0 ≡ baseline).
     private func emit(
         _ posture: Posture, kind: EncoderRateDirective.Kind,
         frameByteCeiling: Int, now: UInt64, ceilingMoved: Bool
@@ -314,10 +271,8 @@ public final class EncoderVbvPolicy {
         )
     }
 
-    /// One look at the live ceiling — polled once per encode, where the
-    /// estimator's rate is always current. Returns the directive to
-    /// apply before this frame, or nil while the clean path / rung
-    /// band / sustain says the encoder should keep what it has.
+    /// Polled once per encode. Returns the directive to apply before this
+    /// frame, or nil when the encoder should keep its posture.
     public func note(
         frameByteCeiling: Int, now: UInt64
     ) -> EncoderRateDirective? {
@@ -338,16 +293,14 @@ public final class EncoderVbvPolicy {
 
         let clean = ceilingRate >= cleanPathRateBitsPerSecond
 
-        // THE CLEAN PATH, not engaged: the recipe rides, silence.
         if clean, !squeezeEngaged {
             looserWantedSince = nil
             return absorb()
         }
 
-        // THE SQUEEZE ENGAGE: the first look below the clean boundary
-        // lands on the required rung immediately (a WAKE-arm tightening
-        // never waits). rung_0 mins back to the baseline, so a marginal
-        // squeeze under a guarded live posture engages silently.
+        // Engage: the first look below the clean boundary lands on the
+        // required rung immediately. Rung 0 equals the baseline, so a
+        // marginal squeeze engages silently.
         if !clean, !squeezeEngaged {
             let required = rungIndex(for: ceilingRate)
             appliedRungIndex = required
@@ -362,18 +315,13 @@ public final class EncoderVbvPolicy {
             )
         }
 
-        // Engaged. TIGHTEN first — immediate, boundary-margin gated:
-        // the ceiling must sit materially INSIDE a lower band (judged
-        // at ceilingRate × (1 + deadband)) before the posture steps
-        // down; a fall that stays in the applied band changes nothing.
+        // Engaged: TIGHTEN first, immediate but margin-gated.
         let appliedIndex = appliedRungIndex ?? 0
         if !clean {
             let margined = ceilingRate
                 + Int(Double(ceilingRate) * config.deadbandFraction)
             let bandCrossed = rungIndex(for: margined) > appliedIndex
-            // Exact mode also retunes a material WITHIN-band fall (the
-            // ceiling more than a deadband below the applied max) that
-            // the ladder would absorb — a boundary dither still parks.
+            // Exact mode also retunes a material within-band fall.
             let materialFall = config.exactTighten
                 && margined < appliedMaxBitsPerSecond
             if bandCrossed || materialFall {
@@ -391,18 +339,11 @@ public final class EncoderVbvPolicy {
             }
         }
 
-        // LOOSEN — wanted while the ceiling rides ABOVE the applied
-        // rung (a clean ceiling always wants the restore). The want
-        // must hold continuously for the sustain window; the jump
-        // target is the rung of the window's MINIMUM ceiling — the
-        // level the wire actually held. A hunt's recurring falls reset
-        // the tracker, so the posture parks and the hunt is absorbed.
-        // Exact mode's mirror of materialFall: an exact tighten lands
-        // the applied max mid-band, so a recovery that stays inside
-        // the applied rung never moves the index — judged by rate,
-        // a ceiling more than a deadband ABOVE the applied max is
-        // headroom the posture is refusing, and it arms the same
-        // sustain-gated want a band-crossing rise does.
+        // LOOSEN: wanted while the ceiling rides above the applied rung
+        // (a clean ceiling wants the restore); the want must hold for
+        // the sustain window and targets the window's MINIMUM ceiling.
+        // In exact mode a ceiling more than a deadband above the applied
+        // max also arms it (the mirror of materialFall).
         let materialRise = config.exactTighten
             && ceilingRate > appliedMaxBitsPerSecond
                 + Int(Double(appliedMaxBitsPerSecond)
@@ -435,10 +376,8 @@ public final class EncoderVbvPolicy {
                 ceilingMoved: ceilingMoved
             )
         }
-        // Sustained but still squeezed: climb to the held level — the
-        // rung in ladder mode; exactly the held-minimum ceiling in
-        // exact mode (the climb's mirror of the exact landing, so the
-        // deadband parks dither in both directions around it).
+        // Sustained but still squeezed: climb to the held level (its
+        // rung, or exactly the held minimum in exact mode).
         let target = rungIndex(for: looserMinCeilingRate)
         appliedRungIndex = target
         return emit(
@@ -452,12 +391,10 @@ public final class EncoderVbvPolicy {
     }
 }
 
-/// The HRD (VBV) buffer a native encoder runs for a rate cap. Four frames
-/// of the cap is the window iHD's VBR needs for stable inter-frame
-/// quality; it is capped at the policy's VBV, which carries the
-/// one-FEC-group frame ceiling (the HS-25 guard). Under HRD conformance
-/// no frame exceeds the buffer, so an IDR at the rate ceiling comes out
-/// protectable instead of being dropped and re-demanded.
+/// The HRD (VBV) buffer a native encoder runs for a rate cap: four frames
+/// of the cap (what iHD's VBR needs for stable quality), capped at the
+/// policy's VBV, which carries the one-FEC-group frame ceiling. Under HRD
+/// conformance no frame, IDR included, outgrows what FEC can protect.
 public enum EncoderHrd {
     public static let framesOfCap = 4
 

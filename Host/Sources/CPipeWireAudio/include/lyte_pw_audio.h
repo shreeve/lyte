@@ -7,9 +7,9 @@
 extern "C" {
 #endif
 
-/* Desktop-audio capture leaf, two routing modes (HS-18):
+/* Desktop-audio capture leaf, two routing modes:
  *
- *   hostAudible (mode 0, HS-14's original): a PipeWire CAPTURE stream
+ *   hostAudible (mode 0): a PipeWire CAPTURE stream
  *   on the default sink's monitor (PW_KEY_STREAM_CAPTURE_SINK — the
  *   session manager links us to whatever the default sink is, and
  *   follows default-sink changes). The host's speakers keep playing.
@@ -29,8 +29,8 @@ extern "C" {
  *
  * Both modes request F32 interleaved 48 kHz stereo (PipeWire's native
  * graph format, so no resample/convert stage runs) with node.latency
- * 240/48000 and node.force-quantum 240 — the HS-15 lesson: the 5 ms
- * pipeline must be IDENTICAL in both modes, quantum forcing included.
+ * 240/48000 and node.force-quantum 240: the 5 ms pipeline must be
+ * identical in both modes, quantum forcing included.
  * The graph may still deliver larger buffers; callers slice to exact
  * Opus frames themselves. */
 

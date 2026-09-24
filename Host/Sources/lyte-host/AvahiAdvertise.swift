@@ -1,29 +1,22 @@
-// HS-10: LAN discovery — the host advertises `_lyte._udp` through the
-// Avahi daemon's D-Bus API, on the system bus over the house libdbus
-// plumbing (DBus.swift). No system library beyond CDBus is needed:
-// Avahi's daemon owns the mDNS socket, we only file a service
-// registration with it.
+// LAN discovery: the host advertises `_lyte._udp` through the Avahi
+// daemon's D-Bus API on the system bus (DBus.swift); the daemon owns the
+// mDNS socket, we only file a service registration.
 //
-// TXT design (transport pillar §4: "host identity key hash, protocol
-// versions, and port"): the port rides the SRV record, so TXT carries
+// The port rides the SRV record, so TXT carries
 //   v=<wire major>      checkable before any handshake is attempted
 //   pkh=<sha256 hex>    hash of the 32-byte Noise static PUBLIC key —
 //                       a paired client recognizes its pinned host (and
 //                       detects a re-key) from the browse result alone;
-//                       the key itself still travels only through pairing
-//                       (W6 PAKE) or today's printed-banner hand-carry.
+//                       the key itself travels only through pairing or
+//                       the printed banner.
 //
-// Lifetime: an Avahi entry group lives as long as the D-Bus connection
-// that created it — and as long as the daemon does. The listening
-// service outlives daemon restarts and LAN name collisions, so the
-// advertiser is serviced (`service()`, on the host's between-session
-// idle pass and a session's janitor — never both at once): it watches
-// the daemon's bus name and its entry group's StateChanged, and files
-// the record again with back-off (AdvertisementSchedule) when either
-// says it is gone. Dropping the object (or exiting) withdraws the
-// record. Avahi being unreachable is never fatal — discovery degrades
-// to manual host:port with a doctor-style line (build-plan risk
-// register) and keeps retrying.
+// Lifetime: an entry group lives as long as its D-Bus connection and the
+// daemon. `service()` (the between-session idle pass or a session's
+// janitor — never both at once) watches the daemon's bus name and the
+// group's StateChanged, and re-files with back-off (AdvertisementSchedule)
+// when the record is gone. Dropping the object withdraws the record.
+// Avahi being unreachable is never fatal: discovery degrades to manual
+// host:port and keeps retrying.
 
 import CDBus
 import Foundation
@@ -54,11 +47,9 @@ final class AvahiAdvertiser {
     /// error (an unknown interface); an unreachable bus or daemon is
     /// printed and retried by `service()`.
     ///
-    /// `interfaceName` pins the advertisement to ONE interface (e.g.
-    /// pup's Ethernet NIC): a host on wired+wireless otherwise
-    /// advertises on both, the client resolver picks whichever, and
-    /// sessions silently ride the radio (the owner's .249-vs-.232
-    /// hunt). Empty = all interfaces, exactly as before.
+    /// `interfaceName` pins the advertisement to ONE interface: a host
+    /// on wired+wireless otherwise advertises on both and sessions may
+    /// silently ride the radio. Empty = all interfaces.
     init(port: UInt16, staticPublicKey: [UInt8], name: String? = nil,
          interfaceName: String = "") throws {
         self.port = port
@@ -66,10 +57,8 @@ final class AvahiAdvertiser {
         if !interfaceName.isEmpty {
             let index = if_nametoindex(interfaceName)
             guard index != 0 else {
-                throw HostError("""
-                    --advertise-interface \(interfaceName): \
-                    no such interface
-                    """)
+                throw HostError(
+                    "--advertise-interface \(interfaceName): no such interface")
             }
             ifIndex = Int32(index)
         }
@@ -317,9 +306,8 @@ final class AvahiAdvertiser {
         dbus_message_iter_close_container(&iter, &outer)
     }
 
-    /// The mDNS instance name: the machine's short hostname — what the
-    /// client's browse UI shows, matching Sunshine's convention so "pup"
-    /// is "pup" in both lists until the crutch retires.
+    /// The mDNS instance name: the machine's short hostname, what the
+    /// client's browse UI shows.
     static func machineName() -> String {
         var buf = [CChar](repeating: 0, count: 256)
         gethostname(&buf, buf.count - 1)
@@ -333,10 +321,8 @@ final class AvahiAdvertiser {
 
 // MARK: - `lyte-host advertise` subcommand
 
-/// Standalone advertisement for gate evidence and doctoring: publish the
-/// record for a while with no capture session attached, so a Mac-side
-/// `dns-sd -B _lyte._udp` / `dns-sd -L` browse can verify the LAN story
-/// in isolation.
+/// Standalone advertisement with no capture session attached, so a
+/// Mac-side `dns-sd -B _lyte._udp` / `dns-sd -L` can verify discovery.
 func advertiseMain(_ args: [String]) -> Never {
     var port: UInt16 = 41000
     var seconds = 60.0

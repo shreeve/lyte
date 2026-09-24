@@ -1,11 +1,7 @@
-// SniffFormat: the header dissector behind `lyte-host sniff` (HS-5).
-// One received datagram → one text line of decoded envelope + fec fields.
-// The envelope rides as cleartext AAD by design (overview §2), so this
-// formatter stays honest when Noise lands at HS-7 — only the payload
-// bytes go dark, and payload decryption behind a key flag is explicitly
-// a later slice (master plan's deferred list). Pure formatting, no IO:
-// the Linux-only socket loop lives in lyte-host; this part runs (and is
-// tested) on the Mac.
+// SniffFormat: the header dissector behind `lyte-host sniff`. One
+// received datagram → one text line of decoded envelope + fec fields. The
+// envelope is cleartext AAD, so only the payload is opaque. Pure
+// formatting; the socket loop lives in lyte-host.
 
 import LyteCore
 import LyteWire

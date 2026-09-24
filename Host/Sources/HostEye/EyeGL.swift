@@ -1,9 +1,8 @@
-// EyeGL: the 3D-engine leg of the direct eye — headless EGL on the
-// render node (GBM platform, surfaceless desktop-GL context), the
-// modifier-aware dmabuf import the ccs-import-probe proved, and the
-// RGB→NV12 blit (BT.709 limited range) into VAAPI-exported planes.
-// All via module maps; the single extension-only entry point
-// (glEGLImageTargetTexture2DOES) loads through eglGetProcAddress.
+// The 3D-engine leg of the direct eye: headless EGL on the render node
+// (GBM platform, surfaceless desktop-GL context), modifier-aware dmabuf
+// import, and the RGB→NV12 blit (BT.709 limited range) into
+// VAAPI-exported planes. glEGLImageTargetTexture2DOES is extension-only
+// and loads through eglGetProcAddress.
 
 #if os(Linux)
 
@@ -93,9 +92,8 @@ public final class EyeGL {
     private var srcSizeLoc444: GLint = -1
     private var srcSizeLocFingerprint: GLint = -1
     private var fingerprintTarget: FingerprintTarget?
-    /// Two persistent readback buffers, swapped per beat: `currentWords`
-    /// receives the new fingerprint, `previousWords` holds the last one
-    /// (valid only while `hasPreviousFingerprint`). No per-beat allocation.
+    /// Readback buffers swapped per beat; `previousWords` is valid only
+    /// while `hasPreviousFingerprint`.
     private var currentWords: [UInt32] = []
     private var previousWords: [UInt32] = []
     private var hasPreviousFingerprint = false
@@ -116,7 +114,7 @@ public final class EyeGL {
         guard eglBindAPI(EGLenum(EGL_OPENGL_API)) == EGL_TRUE else {
             throw EyeGLError("eglBindAPI(OPENGL) failed")
         }
-        // Surfaceless, configless context — the probe-proven recipe.
+        // Surfaceless, configless context.
         let ctxAttribs: [EGLint] = [EGLint(EGL_NONE)]
         context = ctxAttribs.withUnsafeBufferPointer {
             eglCreateContext(display, nil, nil, $0.baseAddress)
@@ -144,7 +142,7 @@ public final class EyeGL {
     // MARK: - Shaders
 
     // Fullscreen triangle from gl_VertexID; no buffers, no attribs
-    // (compatibility-profile context — the probe got Mesa 4.6 compat).
+    // (compatibility-profile context).
     private static let vertex = """
     #version 130
     void main() {
@@ -340,9 +338,8 @@ public final class EyeGL {
         imported = ImportedTexture(image: nil, texture: 0)
     }
 
-    /// Full teardown of an NV12 target (the chroma re-open path):
-    /// FBOs, textures, EGL images — the exported dmabuf fds were
-    /// closed at import time.
+    /// Tears down an NV12 target's FBOs, textures and EGL images (the
+    /// exported dmabuf fds were closed at import time).
     public func destroy(_ target: inout NV12Target) {
         var fbos = [target.fboY, target.fboUV]
         glDeleteFramebuffers(2, &fbos)
@@ -483,8 +480,7 @@ public final class EyeGL {
     }
 
     /// Wrap an exported packed AYUV surface (one layer) as an FBO
-    /// render target, imported as ARGB8888 (byte-identical layout —
-    /// see frag444 for the channel mapping).
+    /// render target, imported as ARGB8888 (see frag444).
     public func makeAyuvTarget(
         width: Int32, height: Int32, modifier: UInt64,
         plane: (fd: Int32, offset: UInt32, pitch: UInt32)
@@ -501,8 +497,7 @@ public final class EyeGL {
     // MARK: - The blit
 
     /// RGB scanout → NV12 target, two passes, then a full GPU sync so
-    /// the encoder never reads a half-written surface (prototype-grade
-    /// sync; the production organ graduates to fences).
+    /// the encoder never reads a half-written surface.
     public func blit(source: ImportedTexture, srcWidth: Int32, srcHeight: Int32,
               into target: NV12Target) {
         glActiveTexture(GLenum(GL_TEXTURE0))
@@ -523,9 +518,8 @@ public final class EyeGL {
         glFinish()
     }
 
-    /// RGB scanout → packed AYUV target, one pass at full resolution
-    /// (the 4:4:4 tier keeps every chroma sample), same prototype
-    /// glFinish sync as the NV12 blit.
+    /// RGB scanout → packed AYUV target, one pass at full resolution,
+    /// with the same glFinish sync as the NV12 blit.
     public func blit444(
         source: ImportedTexture, srcWidth: Int32, srcHeight: Int32,
         into target: AyuvTarget

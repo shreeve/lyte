@@ -1,10 +1,10 @@
-/// Why a fresh keyframe is owed (the estimator-ramp hunt's IDR books):
-/// every source coalesces here and one frame can answer several at once.
+/// Why a fresh keyframe is owed: every source coalesces here and one
+/// frame can answer several at once.
 public struct FreshKeyframeDemand: OptionSet, Sendable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }
 
-    /// HS-12: a path promotion re-anchors the new primary.
+    /// A path promotion re-anchors the new primary.
     public static let pathPromotion = FreshKeyframeDemand(rawValue: 1 << 0)
     /// A client 0x10 IDR request.
     public static let clientRequest = FreshKeyframeDemand(rawValue: 1 << 1)
@@ -12,7 +12,7 @@ public struct FreshKeyframeDemand: OptionSet, Sendable {
     public static let machineWake = FreshKeyframeDemand(rawValue: 1 << 2)
     /// The lifecycle machine's RECOVERY (forceIdr, .halfStaleEstimate).
     public static let machineRecovery = FreshKeyframeDemand(rawValue: 1 << 3)
-    /// HS-25: an unprotectable frame was dropped — re-anchor references.
+    /// An unprotectable frame was dropped — re-anchor references.
     public static let unprotectableDrop = FreshKeyframeDemand(rawValue: 1 << 4)
     /// A rate fall purged queued video mid-flight — re-anchor.
     public static let fallPurge = FreshKeyframeDemand(rawValue: 1 << 5)

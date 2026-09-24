@@ -1,15 +1,11 @@
-// HostServiceLoop: what lyte-host does when a session ends. The listening
-// service serves sessions in turn inside one process — the scanout, the
-// GL context, the listening socket, the advertisement and the input
-// devices stay up, and each client gets a fresh session — with no
-// wall-clock bound on a session. Every other posture (file mode, a
-// wire-out test run, an explicit --seconds bound, a pairing run) serves
-// one session and exits, as the process always did.
+// What lyte-host does when a session ends. The listening service serves
+// sessions in turn inside one process (scanout, GL context, socket,
+// advertisement and input devices stay up) with no wall-clock bound.
+// Every other posture serves one session and exits.
 //
-// A failure never loops: a leg that failed may have left the GPU or the
-// encoder in an unknown state, so the process exits non-zero and the
-// service manager starts a fresh one. A display mode change also exits,
-// because the warm scanout holds the old geometry.
+// A failure never loops: it may have left the GPU or encoder in an
+// unknown state, so the process exits non-zero and the service manager
+// starts a fresh one. A display mode change also exits.
 //
 // Sans-IO: the shell reports how each session ended; this decides.
 

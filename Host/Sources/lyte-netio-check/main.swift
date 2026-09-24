@@ -1,4 +1,4 @@
-// HS-4 verification harness: proves the CNetIO leaf can drive per-packet
+// Verification harness: proves the CNetIO leaf can drive per-packet
 // DSCP and kernel TX timestamps on loopback. Sends one sendmmsg batch to a
 // paired socket with a rotating TOS cycle (0xB8/EF-46 for contrast,
 // 0xA0/CS5-40 video, 0xC0/CS6-48 audio), reads the received TOS per packet

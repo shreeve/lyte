@@ -1,11 +1,9 @@
-// CCuda: the sliver of the CUDA *driver* API that NVENC needs — a
-// CUDA context to hand nvEncOpenEncodeSessionEx (E6a feeds frames
-// through NVENC's own system-memory input buffers, so no device
-// allocations live here). Declared by hand against the stable,
-// documented driver ABI (libcuda.so.1 ships with the display driver;
-// the CUDA *toolkit* — and its cuda.h — is deliberately NOT a
-// dependency). The _v2 names are the real exported symbols for the
-// post-3.2 ABI.
+// CCuda: the CUDA *driver* API sliver NVENC needs — a context for
+// nvEncOpenEncodeSessionEx (frames go through NVENC's own system-memory
+// input buffers, so no device allocations). Declared by hand against the
+// stable driver ABI (libcuda.so.1 ships with the display driver); the
+// CUDA toolkit and its cuda.h are deliberately not a dependency. The _v2
+// names are the real exported symbols.
 
 #ifndef LYTE_CCUDA_SHIM_H
 #define LYTE_CCUDA_SHIM_H

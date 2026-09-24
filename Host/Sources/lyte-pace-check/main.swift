@@ -1,5 +1,5 @@
-// HS-6 verification harness: proves the pure Pacer schedule drives real
-// sendmmsg batches sanely through the CNetIO leaf (HS-4) on loopback.
+// Verification harness: proves the pure Pacer schedule drives real
+// sendmmsg batches sanely through the CNetIO leaf on loopback.
 // A 60 fps mix (5 ms audio, 10 ms control, 2-shard P-frames) plus one
 // forced IDR runs through the Pacer against the real monotonic clock;
 // each emitted batch becomes one lyte_netio_send_batch call with
@@ -9,7 +9,7 @@
 // Kernel software TX timestamps then measure what actually left the
 // host: inter-batch spacing during the saturated IDR drain (≈ one
 // quantum), the IDR's wall-clock drain, and audio's worst queue delay.
-// Exits nonzero when any HS-6 gate bound is violated. No protocol,
+// Exits nonzero when any gate bound is violated. No protocol,
 // no envelope — byte counts and class tags only.
 
 import LyteIO
@@ -34,12 +34,6 @@ func realtimeNS() -> UInt64 {
     return UInt64(ts.tv_sec) * 1_000_000_000 + UInt64(ts.tv_nsec)
 }
 
-/// Class → IPv4 TOS byte: HostCore's WireTos, the product policy the
-/// session shell also applies (HS-20 unified the two verbatim copies).
-func tos(for c: PacerClass) -> UInt8 {
-    WireTos.byte(for: c)
-}
-
 func fmtMS(_ ns: UInt64) -> String { String(format: "%7.3f", Double(ns) / 1e6) }
 func fmtMS(_ ns: Double) -> String { String(format: "%7.3f", ns / 1e6) }
 
@@ -54,8 +48,7 @@ let rateBPS = 20_000_000
 let idrShardBytes = 2400
 // 20 × 2,400 = 48,000 B: well under the 60,000 B frameByteCeiling at
 // 20 Mbps, leaving headroom for usleep scheduling overshoot on the ~20
-// wakeups the drain needs (the sim proves the tight bound; the harness
-// proves real syscalls under a real clock stay inside it).
+// wakeups the drain needs.
 let idrShards = 20
 let idrAt = 30 * ms
 let runLength = 100 * ms
@@ -169,7 +162,7 @@ func run() throws {
                                 count: t.bytes)
                 pkts.append(lyte_netio_pkt(data: scratch.advanced(by: off),
                                            len: t.bytes,
-                                           tos: tos(for: t.priorityClass)))
+                                           tos: WireTos.byte(for: t.priorityClass)))
                 off += t.bytes
             }
             var firstID: UInt32 = 0
@@ -249,7 +242,7 @@ func run() throws {
 
     // Per-class TOS marking, verified at the receiver via IP_RECVTOS.
     var sentTosTally: [UInt8: Int] = [:]
-    for p in packets { sentTosTally[tos(for: p.cls), default: 0] += 1 }
+    for p in packets { sentTosTally[WireTos.byte(for: p.cls), default: 0] += 1 }
     let tallyLine = sentTosTally.keys.sorted(by: >).map { t in
         let hex = Hex.string(t, uppercase: true, prefix: true)
         return "\(hex) sent \(sentTosTally[t] ?? 0) recv \(rxTosTally[t] ?? 0)"

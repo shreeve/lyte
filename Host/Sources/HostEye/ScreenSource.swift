@@ -60,10 +60,7 @@ public final class DirectScreenSource: ScreenSource {
                 path: device, errno: errno)
         }
         // UNIVERSAL_PLANES exposes cursor planes; ATOMIC exposes the
-        // CRTC_X/Y props the cursor hotspot derivation needs. Without
-        // ATOMIC those props are absent and every plane read collapses
-        // to a fake (0,0) — the E3 "legacy lie" that stamped tip=(0,0)
-        // on resize chrome.
+        // CRTC_X/Y props the cursor hotspot derivation needs.
         drmSetClientCap(
             fd, UInt64(DRM_CLIENT_CAP_UNIVERSAL_PLANES), 1)
         drmSetClientCap(

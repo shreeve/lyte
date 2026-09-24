@@ -1,4 +1,4 @@
-// HS-14 verification harness: desktop-monitor audio → 5 ms Opus packets,
+// Verification harness: desktop-monitor audio → 5 ms Opus packets,
 // with a decode-back path so verification is trivial. Captures the default
 // sink's monitor via CPipeWireAudio, slices to exact 240-sample frames,
 // encodes with HostAudio's Swift codec policy (CELT restricted-lowdelay,
@@ -7,9 +7,9 @@
 //                                 [u32le size][u64le graph-ts µs][bytes]
 //   /tmp/lyte-audio-check.wav  — the packets decoded straight back to
 //                                 PCM s16, so ffprobe/ffmpeg judge the loop.
-// Prints cadence/size/timestamp stats and exits nonzero if the HS-14 gate
-// is violated: ~200 pkt/s, strictly monotonic graph-clock timestamps,
-// every packet loop-decodes. No wire, no envelope — that is HS-15.
+// Prints cadence/size/timestamp stats and exits nonzero if the gate is
+// violated: ~200 pkt/s, strictly monotonic graph-clock timestamps, every
+// packet loop-decodes. No wire, no envelope.
 //
 // usage: lyte-audio-check [seconds] [bitrate] [--vbr]
 // (--vbr is evidence mode: silence-vs-signal packet sizes prove the

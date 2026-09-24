@@ -14,9 +14,8 @@ enum HostStaticKey {
     /// private key, mode 0600, beside paired_clients; the public key
     /// derives and is never stored. Loud on a corrupt file: a wrong-sized
     /// key is someone else's write, never something to regenerate over
-    /// silently. The mint is create-if-absent: when two starters race
-    /// (the service and a hand-run `--pair` or `advertise`), one key
-    /// lands and both run with it.
+    /// silently. The mint is create-if-absent: when two starters race,
+    /// one key lands and both run with it.
     static func loadOrCreate(paths: HostPaths) throws -> NoiseKeyPair {
         let path = try HostIdentityFile.path(fileName, paths: paths)
         if let pair = try load(path) {

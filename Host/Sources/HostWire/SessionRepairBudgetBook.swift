@@ -1,6 +1,6 @@
 import LyteWire
 
-/// The sans-IO owner of the Host session's HS-32 repair-budget evidence.
+/// The sans-IO owner of the Host session's repair-budget evidence.
 ///
 /// Feedback cadence derives the ordinary freeze budget. Before anything has
 /// plausibly reached the client glass, the opening IDR may instead use a

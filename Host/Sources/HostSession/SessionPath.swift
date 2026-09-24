@@ -1,18 +1,11 @@
-// SessionPath + PathValidator: the host's connection-migration decision
-// logic (HS-12). Sessions are identified by ConnectionId, not 4-tuple
-// (resiliency §6); when datagrams bearing a known connection ID arrive
-// from a NEW source 4-tuple, the host must not just believe the address —
-// it validates the path with an echo challenge (QUIC §9 semantics) and
-// only then promotes it, requesting a fresh IDR so the client can decode
-// immediately on the new path (the RECOVERY rule: fresh IDR on a new
-// path, resiliency §4/§6).
+// SessionPath + PathValidator: the host's connection-migration logic.
+// Sessions are identified by ConnectionId, not 4-tuple; when datagrams
+// bearing a known connection ID arrive from a NEW source 4-tuple, the host
+// validates the path with an echo challenge (QUIC §9 semantics) before
+// promoting it, then requests a fresh IDR so the client decodes at once.
 //
-// Sans-IO in the HostCore/Pacer style: no sockets, no threads, no clock —
-// every entry point takes `now` (monotonic ns), randomness is an injected
-// generator, and outputs are value-typed events the send loop executes
-// (send this challenge datagram on that tuple; switch the peer address;
-// force a keyframe). The wire shell that rebinds the socket is deliberately
-// thin; everything decidable is decided here, under test on every platform.
+// Sans-IO: every entry point takes `now` (monotonic ns), randomness is
+// injected, and outputs are value-typed events the send loop executes.
 //
 // The state machine, per candidate 4-tuple relative to one session:
 //
@@ -28,16 +21,13 @@
 //   FALLBACK ──retention window expires──▶ unknown
 //
 // One probe slot: while a probe is outstanding, datagrams from *other*
-// new tuples are ignored rather than queued — probe thrash is an attack
-// surface (an off-path flooder must not be able to evict a genuine
-// client's probe), and a genuine roam re-triggers on its next datagram.
+// new tuples are ignored, not queued — an off-path flooder must not evict
+// a genuine client's probe; a genuine roam re-triggers on its next datagram.
 //
-// Anti-amplification (the reflection-attack guard, QUIC §8 shape): until
-// a tuple is validated, bytes sent to it are capped at
-// `amplificationFactor ×` bytes received from it (factor 3, QUIC's
-// number). The validator does its own accounting for the challenges it
-// emits, and they are the only datagrams a candidate tuple ever receives:
-// media flows to the primary until promotion, which is the stronger rule.
+// Anti-amplification (QUIC §8 shape): until a tuple is validated, bytes
+// sent to it are capped at `amplificationFactor ×` bytes received from it.
+// Challenges are the only datagrams a candidate tuple ever receives; media
+// flows to the primary until promotion.
 
 import LyteWire
 
@@ -75,9 +65,7 @@ public struct SessionPath: Hashable, Sendable {
     }
 }
 
-/// What the send loop must do. Values, not callbacks — the caller
-/// executes them in order, which keeps the machine testable and the
-/// syscall layer thin.
+/// What the send loop must do, in order.
 public enum PathValidatorEvent: Hashable, Sendable {
     /// Transmit this challenge body (CTRL, ARQ-exempt, conn-id TLV
     /// attached by the send loop) on the given — unvalidated — tuple.
@@ -87,8 +75,7 @@ public enum PathValidatorEvent: Hashable, Sendable {
     /// retention window lapses.
     case promoted(primary: SessionPath, fallback: SessionPath)
     /// Fires exactly once per promotion: force the encoder's next frame
-    /// to be an IDR (VideoChannel's urgent-keyframe path drains it ahead
-    /// of queued P-frames).
+    /// to be an IDR.
     case freshKeyframeNeeded
     /// A probe timed out unanswered — spoofed, or the roam evaporated.
     case probeAbandoned(FourTuple)
@@ -98,8 +85,7 @@ public enum PathValidatorEvent: Hashable, Sendable {
 
 public struct PathValidatorConfig: Sendable {
     /// How long a challenge may sit unanswered before the probe slot
-    /// frees. Generous versus any sane RTT; a genuine roam simply
-    /// re-probes on its next datagram.
+    /// frees; a genuine roam re-probes on its next datagram.
     public var validationTimeoutNS: UInt64
     /// How long the demoted primary stays known after a promotion — the
     /// escape hatch if the new path dies immediately.
@@ -108,8 +94,7 @@ public struct PathValidatorConfig: Sendable {
     public var amplificationFactor: Int
     /// What one challenge costs against the budget on the wire: 24 B
     /// envelope + 11 B conn-id TLV block + 10 B body + 16 B AEAD tag
-    /// = 61 B (HS-7: challenges are sealed like every post-handshake
-    /// datagram).
+    /// = 61 B (challenges are sealed like every post-handshake datagram).
     public var challengeDatagramByteCount: Int
 
     public init(
@@ -183,11 +168,9 @@ public struct PathValidator {
         else { return events }
 
         if var active = probe {
-            // One probe slot (header comment). Same tuple: account the
-            // bytes — they raise the amplification budget — but the
-            // outstanding token stands; no re-challenge storm. The one
-            // resend case: the budget withheld the challenge earlier
-            // (a runt first datagram) and the new bytes now afford it.
+            // One probe slot. Same tuple: the bytes raise the budget but
+            // the outstanding token stands. The one resend: the budget
+            // withheld the challenge earlier and now affords it.
             if active.tuple == tuple {
                 active.bytesReceived += byteCount
                 if active.bytesSent == 0,
@@ -271,10 +254,8 @@ public struct PathValidator {
         return deadline
     }
 
-    /// The fresh-IDR seam: true exactly once after each promotion. The
-    /// encoder loop polls this (exactly like a client 0x0302 IDR
-    /// request) and feeds the forced IDR into VideoChannel, whose
-    /// keyframe shards enqueue urgent (HS-5) — that is the whole wiring.
+    /// True exactly once after each promotion; the encoder loop polls it
+    /// like a client IDR request.
     public mutating func takeFreshKeyframeRequest() -> Bool {
         defer { keyframePending = false }
         return keyframePending

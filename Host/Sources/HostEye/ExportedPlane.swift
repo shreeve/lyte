@@ -1,7 +1,5 @@
-// ExportedPlane: one exported NV12 plane of a VAAPI surface — the
-// contract between the encoder's surface pool and the GL blit's
-// render targets (a dmabuf fd plus its layout), produced by
-// EyeVaapiEncoder.exportSurface.
+// One exported plane of a VAAPI surface (a dmabuf fd plus its layout):
+// the contract between the encoder's surface pool and the GL blit.
 
 #if os(Linux)
 
