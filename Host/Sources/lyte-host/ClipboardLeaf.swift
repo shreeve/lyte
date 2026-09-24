@@ -27,8 +27,9 @@
 //     which the session's pre-armed sync book suppresses (the
 //     boomerang proof); the leaf stays dumb by design.
 //
-// Threading: NONE. Everything runs on the video-loop tick thread —
-// `service()` (SessionWire's off-lock clipboard hook) drains the bus
+// Threading: NONE. Everything runs on the janitor thread (the leg's
+// 10 ms shell-service sweep) — `service()` (SessionWire's off-lock
+// clipboard hook) drains the bus
 // non-blockingly and pumps the fd state machines with O_NONBLOCK
 // descriptors, so a slow selection owner can never stall a frame.
 // No new C shim: CDBus carries the D-Bus plumbing (fds ride the 'h'

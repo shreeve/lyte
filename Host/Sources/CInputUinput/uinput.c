@@ -19,8 +19,9 @@ struct lyte_uinput {
     int kbd;
     int mouse;
     int tablet;
-    /* Written by set_extent on the capture thread, read by absolute
-       moves on the wire-drain thread — atomics, not plain ints. A
+    /* Written by set_extent before the session starts, read by
+       absolute moves on whichever thread receives input — atomics, not
+       plain ints. A
        mid-change mismatched pair scales one event against the old
        axis; a mid-session geometry change tears the session down
        anyway (the P-3 law). */

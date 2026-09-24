@@ -53,8 +53,9 @@ final class UinputInjector: InputInjector {
     /// keys when it closed; a kernel device has no such janitor, so
     /// the injector is its own — stop() releases everything still
     /// held (the ⌘Tab latch, a click mid-teardown) before the
-    /// devices are destroyed. inject() and stop() both run on the
-    /// wire-drain thread; no lock needed.
+    /// devices are destroyed. inject() runs under SessionWire's session
+    /// lock (whichever thread received the event); stop() runs on main
+    /// after the session's threads have stopped — never concurrently.
     private var heldCodes: Set<UInt32> = []
     private var stopped = false
 

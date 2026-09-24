@@ -60,8 +60,8 @@ struct Options {
     /// HS-9 enforcement: only statics already in paired_clients may
     /// complete the handshake (the "1-RTT reconnect" half of the gate).
     var requirePaired = false
-    /// HS-13 injection backend: auto = Mutter RemoteDesktop, falling
-    /// back to uinput; off disables input for the run.
+    /// Injection backend: auto and uinput both mean kernel uinput (the
+    /// sole backend); off disables input for the run.
     var input: InputBackendChoice = .auto
     /// HS-15: desktop audio on the wire (default ON in session mode —
     /// the H2 posture: continuous 5 ms CBR audio starts at
@@ -845,7 +845,7 @@ static func run(arguments: [String]) throws {
             audioWire = audio
             w.setInitialAudioRouting(opts.hostAudio)
             w.audioRoutingHandler = { mode in
-                // Runs on the video-loop thread, off the session lock
+                // Runs on the janitor thread, off the session lock
                 // (SessionWire.service drains requests there). The
                 // 5 ms stream pauses across the rebuild — one leaf
                 // owns the quantum forcing, so two never overlap.

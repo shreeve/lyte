@@ -1,16 +1,16 @@
-// DirectEyeLeg (direct-eye plan E1): the fused capture+encode backend
-// — a phase-stable screen beat paces it, HostEye observes pixels on the GPU,
-// grabs/blits/encodes changed scanout on the Arc
-// media engine, and encoded access units go straight to the session's
-// sendFrame (or the probe file). No PipeWire, no portal, no Mutter:
-// the compositor cannot wedge a register read.
+// DirectEyeLeg: the host's capture leg. A phase-stable 60 Hz screen beat
+// drives HostEye's EyePipeline (scanout import, GPU pixel fingerprint,
+// blit, native VAAPI encode), and encoded access units go straight to the
+// session's sendFrame (or the probe file). No PipeWire, no portal, no
+// Mutter: the compositor cannot wedge a register read.
 //
-// Honored session levers:
-//   - forced-IDR demands (0x0302 / opening) → forceIDR encode
-//   - capture timestamps: monotonic µs at ticket grab
-//   - encoder rate directives (E6b): the directive's bit cap rides
-//     the next frame's RC misc buffer — the native seat is the only
-//     seat since the E5 demolition.
+// Session levers it honors, from one snapshot per poll: forced-IDR
+// demands (a client 0x10, a path promotion, lifecycle recovery, an
+// unprotectable drop, a fall purge), served on a still screen by
+// re-encoding the retained frame; encoder rate directives (cap plus HRD
+// buffer, applied on the next frame with no reset); the agreed chroma
+// posture (the encoder opens once in it); the quiet video posture; and
+// pre-encode admission against the queued video's latency budget.
 
 #if os(Linux)
 

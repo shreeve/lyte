@@ -1,57 +1,30 @@
-// SessionWire: lyte-host's Lyte-UDP session leg (HS-7's Linux half, thin
-// over HostWire.Session — which owns the Noise responder handshake, the
-// seal discipline, the 1 Hz beacon, the conn-id TLV, path validation, and
-// the shared pacer). This file is only syscalls and scheduling: CNetIO
-// bind/connect, recvmmsg → Session.receive with real source tuples,
-// Session's paced datagrams → sendmmsg with per-class TOS (HostCore's
-// WireTos policy: ctrl/audio/repairs 0xC0 CS6, video 0xA0 CS5 — DSCP 40
-// per packet is J-G1's tcpdump check), and the forced-IDR + VBV polls
-// the encoder consults before each frame.
+// SessionWire: lyte-host's Lyte-UDP session shell over HostWire.Session
+// (which owns the Noise responder handshake, sealing, beacons, the
+// conn-id TLV, path validation, the pacer, and the estimator). This file
+// is syscalls, threads, and scheduling: CNetIO sockets, recvmmsg into
+// Session.receive with real source tuples, Session's paced datagrams
+// through SocketOutbox into sendmmsg with per-class TOS (HostCore's
+// WireTos: control/audio/repairs 0xC0, video 0xA0), and the per-poll
+// snapshot the capture leg reads.
 //
-// Mode (extending HS-5's --wire-out into a real session):
-//   • Noise: bind, print the host static public key, block
-//     until a client's IK message 1 arrives (that datagram's source is
-//     the session's initial validated tuple), connect() to it, complete
-//     the handshake, then stream. `--wire-listen PORT` binds a fixed
-//     port; `--wire-out HOST:PORT` pre-connects and still awaits msg1.
+// Sockets: one listening socket bound to the session port and never
+// connected — it hears message 1 from any client and a migrated client's
+// new path, and carries every explicitly addressed datagram. When a
+// handshake completes, a video socket (SO_PRIORITY 4) and a latency
+// socket (control and audio, 6) join the port via SO_REUSEPORT and
+// connect to the authenticated client; a path promotion re-connects them.
 //
-// Threading honesty, amended at HS-15 and again at the fps-ceiling fix:
-// the VIDEO PipeWire loop thread runs capture → encode → sendFrame
-// (ingest only) and the idle-floor tick's service pass; audio arrives on
-// ITS OWN PipeWire loop thread (CPipeWireAudio owns a separate
-// pw_main_loop) at the 5 ms cadence — a cadence the ~16.7 ms video tick
-// could never honor, which is exactly why audio cannot funnel through
-// the video thread. One NSLock therefore guards the (single-threaded by
-// design) Session and the outbox. Audio capture never waits for that
-// broad lock: it publishes each 5 ms packet into a narrow FIFO mailbox
-// and wakes the elevated sender. Sequence allocation, Noise sealing,
-// pacer insertion, and socket flush still happen under the Session lock,
-// preserving one mutation order. Large video ingests cooperatively drain
-// the mailbox between small shard groups, so packetize/FEC/seal cannot
-// monopolize the lock across an audio deadline.
-//
-// THE FPS-CEILING FIX (Q-1's red row, hunted 2026-07-29): sendFrame
-// used to drain the pacer to empty before returning — the capture
-// thread paid the frame's full wire serialization time (~8·bytes/rate:
-// ~11 ms for a 61 KB motion frame at 50 Mbps) IN SERIES with the ~7 ms
-// NVENC encode, so the loop cycled at ~21 ms and the compositor only
-// got a buffer back ~48 times a second. The drain now runs on a
-// DEDICATED SENDER THREAD (`drainLoop`, parked on a condition variable
-// while the pacer is idle): sendFrame ingests, signals, and returns in
-// ~1.5 ms, so capture+encode of frame N+1 overlaps the wire time of
-// frame N. Backpressure moved with it: the capture loop consults
-// `videoBacklogWireTimeNS` pre-encode and SKIPS a capture frame while
-// more than the resiliency bound of video wire-time is queued — the
-// same frame the old synchronous drain silently starved out of the
-// PipeWire buffer pool, now counted and cheap (no encode is spent on
-// it). `--no-idle-floor` still stalls beacons between damage frames
-// while the pacer is empty (the documented stub limitation).
-//
-// HS-12 rebind wiring: media re-routing executes .promoted by
-// connect()ing to the new tuple, and challenges to unvalidated tuples
-// ride lyte_netio_send_to (per-datagram address + TOS on the connected
-// socket) — the exact-tuple rule §6 demands. The live G7 roam run is
-// still owed when a second client address exists to roam to.
+// Threads: the capture thread (DirectEyeLeg) calls sendFrame and
+// takeLegSnapshot; the audio thread only publishes into a narrow mailbox
+// (packets and track states) and tries the session lock without waiting;
+// the janitor runs service() every 10 ms for shell work (clipboard, bulk
+// files, audio routing, pairing) off the lock; the SCHED_RR sender thread
+// waits in ppoll on its wake eventfd, the sockets, and the session's next
+// timer, then services and flushes. One NSLock guards the Session and the
+// outbox, so sequence allocation, sealing, pacer insertion, and socket
+// flush keep one order; console lines are formatted under it and printed
+// after it is released. The agreed capability flags the audio and capture
+// threads poll live under a separate narrow config lock.
 
 import LyteIO
 import LyteCore
@@ -564,7 +537,7 @@ final class SessionWire {
         // ingest signals it); it holds `self` for its lifetime, so the
         // shell must stop it (shutdown does) before the process lets
         // the SessionWire go. SessionWire is cross-thread by design
-        // (video loop, audio loop, sender thread) with `lock` as the
+        // (capture, audio, janitor, sender threads) with `lock` as the
         // discipline — the unsafe capture states that fact to the
         // compiler, exactly like the audio thread's Unmanaged
         // trampoline does implicitly.
@@ -954,7 +927,9 @@ final class SessionWire {
     }
 
     /// One encoded Annex-B packet → sealed shards on the wire. Runs on
-    /// the PipeWire loop thread; returns once the pacer fully drained.
+    /// the capture thread: validation and RS-FEC happen off the session
+    /// lock, sealing and pacer insertion under it; the first quantum
+    /// leaves on this stack and the sender thread paces out the rest.
     func sendFrame(
         data: UnsafePointer<UInt8>, size: Int, isKeyframe: Bool,
         captureMicros: UInt64

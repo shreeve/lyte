@@ -88,6 +88,10 @@ sudo setcap cap_sys_admin+ep /usr/local/bin/lyte-host   # hand-run only
 sudo systemctl start lyte-host
 ```
 
+The hand-run `setcap` is temporary by design: the service gets its
+capability from the unit (`AmbientCapabilities`), and the next install
+replaces the binary and drops the file capability.
+
 The paired identity persists in `~/.config/lyte-host/paired_clients`
 beside the host's Noise key (`noise_static.key`) — both are minted on
 first run and survive reinstalls and uninstalls.

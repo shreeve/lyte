@@ -112,10 +112,6 @@ products.append(.executable(name: "lyte-host", targets: ["lyte-host"]))
 products.append(.executable(name: "lyte-eye", targets: ["lyte-eye"]))
 products.append(.executable(name: "lyte-nvenc", targets: ["lyte-nvenc"]))
 
-// E5: the vendored no-reset FFmpeg is GONE — the portal path it
-// served is demolished. LYTE_FFMPEG_PREFIX is accepted-and-ignored
-// so existing build recipes keep working; nothing links libav.
-
 targets += [
     .systemLibrary(
         name: "CDBus",

@@ -1235,13 +1235,12 @@ public final class Session {
         // HS-25: a frame beyond what one FEC group can protect is
         // UNSHIPPABLE (the 255-shard GF(2⁸) block; the fec field binds
         // one group per frame number, so splitting is a wire-contract
-        // change, not an option here). Throwing killed the live session
-        // — the 279-shard IDR at the 50 Mbps/p4 recipe — so the frame
-        // is dropped instead: counted, its frame number unconsumed (the
-        // client sees no numbering gap), and a fresh IDR armed through
-        // the same coalesced latch client 0x10s pull, because whatever
-        // referenced the dropped frame must be re-anchored. The shell's
-        // opening VBV cap makes the re-encode fit by construction.
+        // change, not an option here). The frame is dropped: counted,
+        // its frame number unconsumed (the client sees no numbering
+        // gap), and a fresh IDR armed through the same coalesced latch
+        // client 0x10s pull, because whatever referenced the dropped
+        // frame must be re-anchored. The shell bounds the encoder's HRD
+        // buffer by this ceiling (EncoderHrd), so the re-encode fits.
         let ceiling = channel.maxProtectableFrameByteCount(
             hasLastInputSeq: lastInputSeq != nil
         )
@@ -1390,12 +1389,10 @@ public final class Session {
     }
 
     /// Video-class bytes (fresh + repair tail) still waiting in the
-    /// shared pacer — the capture loop's backpressure gate reads this
-    /// (the fps-ceiling fix): at 8×this/pacerRate of standing wire
-    /// time, encoding another capture frame only deepens the queue,
-    /// so the frame is skipped pre-encode instead (the same drop that
-    /// used to happen invisibly at the PipeWire buffer pool while the
-    /// loop thread sat inside a synchronous drain).
+    /// shared pacer or the shell's socket outbox. The kernel-pressure
+    /// governor turns them into wire time, which the capture leg's
+    /// pre-encode admission (VideoAdmissionGate) weighs against the
+    /// queue budget.
     public var queuedVideoBytes: Int {
         channel.queuedBytes(.freshVideo) + channel.queuedBytes(.videoTail)
             + socketPending.videoByteCount
