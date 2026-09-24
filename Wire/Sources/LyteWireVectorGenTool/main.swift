@@ -1,21 +1,12 @@
 // Authoring tool for the Wire/Vectors/ artifacts. Run once per file,
 // commit the output, and treat the committed file as frozen: a byte
 // difference against it is a wire-contract break to investigate, never a
-// prompt to regenerate. See Vectors/README.md for the freeze policy and
-// each file's anchor against hand-computed bytes.
+// prompt to regenerate. See Vectors/README.md for the freeze policy.
 //
-// Usage: swift run lyte-wire-vectorgen <envelope|fec|video|beacon|noise|session|arq|lifecycle|pairing|capabilities|retry|control|clipboard|bulk|clipboard-images|cursor|repair-refusal|postures> <output-path>
-//   `video` reads the corpus from <output-dir>/video-corpus-v1/.
-//
-// The `video-roundtrip` subcommand is not an authoring tool but the
-// W-G3 decode-evidence harness: it packetizes an Annex-B file, runs the
-// shards through seeded shuffle + per-group loss at the parity limit,
-// assembles, verifies byte-exactness, and writes the reassembled stream
-// for an external `ffmpeg -f null -` decode check.
-// Usage: swift run lyte-wire-vectorgen video-roundtrip <in.hevc> <out.hevc>
+// `video` reads the corpus from <output-dir>/video-corpus-v1/.
+// `video-roundtrip` is the decode-evidence harness (VideoRoundTrip.swift).
 
 import Foundation
-import LyteWire
 import LyteWireTestKit
 import LyteWireVectorGen
 
@@ -24,111 +15,48 @@ func die(_ message: String) -> Never {
     exit(64)
 }
 
-guard (3...4).contains(CommandLine.arguments.count) else {
+/// Every vector kind and its builder; the argument is the output path.
+let builders: KeyValuePairs<String, (String) throws -> any FrozenVectorFile> = [
+    "envelope": { _ in try makeEnvelopeVectorFile() },
+    "fec": { _ in try makeFecVectorFile() },
+    "video": { output in
+        try makeVideoVectorFile(corpusDirectory: URL(fileURLWithPath: output)
+            .deletingLastPathComponent().path + "/video-corpus-v1")
+    },
+    "beacon": { _ in try makeBeaconVectorFile() },
+    "noise": { _ in try makeNoiseVectorFile() },
+    "session": { _ in try makeSessionVectorFile() },
+    "arq": { _ in try makeArqVectorFile() },
+    "lifecycle": { _ in try makeLifecycleVectorFile() },
+    "pairing": { _ in try makePairingVectorFile() },
+    "capabilities": { _ in try makeCapabilityVectorFile() },
+    "retry": { _ in try makeRetryVectorFile() },
+    "control": { _ in try makeControlVectorFile() },
+    "clipboard": { _ in try makeClipboardVectorFile() },
+    "bulk": { _ in try makeBulkVectorFile() },
+    "clipboard-images": { _ in try makeClipboardImageVectorFile() },
+    "cursor": { _ in try makeCursorVectorFile() },
+    "repair-refusal": { _ in try makeRepairRefusalVectorFile() },
+    "postures": { _ in try makePostureVectorFile() },
+]
+
+let arguments = CommandLine.arguments
+guard (3...4).contains(arguments.count) else {
     die("""
-    usage: lyte-wire-vectorgen <envelope|fec|video|beacon|noise|session|arq|lifecycle|pairing|capabilities|retry|control|clipboard|bulk|clipboard-images|cursor|repair-refusal|postures> <output-path>
+    usage: lyte-wire-vectorgen <\(builders.map(\.key).joined(separator: "|"))> <output-path>
            lyte-wire-vectorgen video-roundtrip <input.hevc> <output.hevc>
     """)
 }
-
-let encoder = JSONEncoder()
-encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-
-let json: Data
-let count: Int
-switch CommandLine.arguments[1] {
-case "envelope":
-    let file = try makeEnvelopeVectorFile()
-    json = try encoder.encode(file)
-    count = file.vectors.count
-case "fec":
-    let file = try makeFecVectorFile()
-    json = try encoder.encode(file)
-    count = file.fieldVectors.count + file.geometryRows.count
-        + file.recoveryMatrices.count
-case "video":
-    let outputDir = URL(fileURLWithPath: CommandLine.arguments[2])
-        .deletingLastPathComponent().path
-    let file = try makeVideoVectorFile(
-        corpusDirectory: outputDir + "/video-corpus-v1"
-    )
-    json = try encoder.encode(file)
-    count = file.frames.count + file.scenarios.count
-case "beacon":
-    let file = try makeBeaconVectorFile()
-    json = try encoder.encode(file)
-    count = file.beaconVectors.count + file.feedbackVectors.count + 1
-case "noise":
-    let file = try makeNoiseVectorFile()
-    json = try encoder.encode(file)
-    count = file.handshakeVectors.count + file.transportVectors.count
-case "session":
-    let file = try makeSessionVectorFile()
-    json = try encoder.encode(file)
-    count = file.vectors.count
-case "arq":
-    let file = try makeArqVectorFile()
-    json = try encoder.encode(file)
-    count = file.vectors.count
-case "lifecycle":
-    let file = try makeLifecycleVectorFile()
-    json = try encoder.encode(file)
-    count = file.vectors.count
-case "pairing":
-    let file = try makePairingVectorFile()
-    json = try encoder.encode(file)
-    count = file.exchangeVectors.count + file.messageVectors.count
-        + file.draftVectors.lowOrder.cases.count
-case "capabilities":
-    let file = try makeCapabilityVectorFile()
-    json = try encoder.encode(file)
-    count = file.cborVectors.count + file.setVectors.count
-        + file.intersectVectors.count + file.messageVectors.count
-case "retry":
-    let file = try makeRetryVectorFile()
-    json = try encoder.encode(file)
-    count = file.cookieVectors.count + file.messageVectors.count
-case "control":
-    let file = try makeControlVectorFile()
-    json = try encoder.encode(file)
-    count = file.vectors.count
-case "clipboard":
-    let file = try makeClipboardVectorFile()
-    json = try encoder.encode(file)
-    count = file.vectors.count
-case "bulk":
-    let file = try makeBulkVectorFile()
-    json = try encoder.encode(file)
-    count = file.messageVectors.count + file.capabilityVectors.count
-        + file.transferVectors.count
-case "clipboard-images":
-    let file = try makeClipboardImageVectorFile()
-    json = try encoder.encode(file)
-    count = file.vectors.count
-case "cursor":
-    let file = try makeCursorVectorFile()
-    json = try encoder.encode(file)
-    count = file.vectors.count
-case "repair-refusal":
-    let file = try makeRepairRefusalVectorFile()
-    json = try encoder.encode(file)
-    count = file.vectors.count
-case "postures":
-    let file = try makePostureVectorFile()
-    json = try encoder.encode(file)
-    count = file.vectors.count
-case "video-roundtrip":
+if arguments[1] == "video-roundtrip" {
     try runVideoRoundTrip(
-        inputPath: CommandLine.arguments[2],
-        outputPath: CommandLine.arguments.count > 3
-            ? CommandLine.arguments[3] : CommandLine.arguments[2] + ".roundtrip"
+        inputPath: arguments[2],
+        outputPath: arguments.count > 3 ? arguments[3] : arguments[2] + ".roundtrip"
     )
     exit(0)
-default:
-    die("unknown vector kind '\(CommandLine.arguments[1])' — expected envelope, fec, video, beacon, noise, session, arq, lifecycle, pairing, capabilities, retry, control, clipboard, bulk, clipboard-images, cursor, repair-refusal, postures, or video-roundtrip")
 }
-
-try (json + Data("\n".utf8)).write(
-    to: URL(fileURLWithPath: CommandLine.arguments[2])
-)
-print("wrote \(count) vectors to \(CommandLine.arguments[2])")
+guard let build = builders.first(where: { $0.key == arguments[1] })?.value else {
+    die("unknown vector kind '\(arguments[1])' — expected \(builders.map(\.key).joined(separator: ", ")), or video-roundtrip")
+}
+let file = try build(arguments[2])
+try file.canonicalJSON().write(to: URL(fileURLWithPath: arguments[2]))
+print("wrote \(file.vectorNameGroups.joined().count) vectors to \(arguments[2])")
