@@ -171,7 +171,7 @@ final class ArqCodecTests: XCTestCase {
     func testDecodeNeverTrapsOnArbitraryBytes() {
         var rng = SplitMix64(seed: 0xA2_00_00_01)
         for _ in 0..<20_000 {
-            let length = Int.random(in: 0...1200, using: &rng)
+            let length = rng.int(in: 0...1200)
             var bytes = rng.bytes(length)
             // Bias toward the parser's edges: valid-looking frame types
             // with hostile interiors.

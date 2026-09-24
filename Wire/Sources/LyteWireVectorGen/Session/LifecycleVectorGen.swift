@@ -111,7 +111,7 @@ public func makeLifecycleVectorFile() throws -> LifecycleVectorFile {
     return LifecycleVectorFile(
         format: LifecycleVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         vectors: vectors
     )
 }

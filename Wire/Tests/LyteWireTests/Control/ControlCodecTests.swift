@@ -169,6 +169,46 @@ final class ControlCodecTests: XCTestCase {
         XCTAssertNil(try LastInputSeqTlv.decode(extensions: []))
     }
 
+    /// Hosts turn coordinates into integers with trapping conversions,
+    /// so a non-finite coordinate must never leave the decoder: every
+    /// NaN/±Inf class in every f64 slot of every kind rejects, naming the
+    /// offending bit pattern.
+    func testNonFiniteCoordinatesRejectInEverySlot() {
+        let nonFinite: [UInt64] = [
+            0x7FF8_0000_0000_0000, 0xFFF8_0000_0000_0000,
+            0x7FF0_0000_0000_0001, 0x7FFF_FFFF_FFFF_FFFF,
+            Double.infinity.bitPattern, (-Double.infinity).bitPattern,
+        ]
+        let bodies: [(Double, Double) -> InputEvent.Body] = [
+            { .pointerMotionAbsolute(x: $0, y: $1) },
+            { .pointerMotionRelative(dx: $0, dy: $1) },
+            { .pointerAxis(dx: $0, dy: $1, finish: false) },
+        ]
+        for bits in nonFinite {
+            let bad = Double(bitPattern: bits)
+            for body in bodies {
+                for event in [body(bad, 1), body(1, bad)] {
+                    let bytes = InputEvent(
+                        seq: 1, clientMicroseconds: 2, body: event
+                    ).encode()
+                    XCTAssertThrowsError(try InputEvent.decode(bytes)) {
+                        XCTAssertEqual(
+                            $0 as? InputMessageError,
+                            .nonFiniteCoordinate(bits), "\(event)"
+                        )
+                    }
+                }
+            }
+        }
+        let finite = InputEvent(
+            seq: 1, clientMicroseconds: 2,
+            body: .pointerMotionRelative(
+                dx: .greatestFiniteMagnitude, dy: -.leastNonzeroMagnitude
+            )
+        )
+        XCTAssertEqual(try InputEvent.decode(finite.encode()), finite)
+    }
+
     // MARK: AudioRoutingRequest/Status (0x18/0x19)
 
     func testRoutingCodecsPinBytes() throws {

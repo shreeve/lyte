@@ -433,6 +433,9 @@ final class ClipboardImageChannelTests: XCTestCase {
         )
         let events = channel.declineCargo(cargo)
         XCTAssertEqual(abortIn(events)?.reason, .declined)
+        // A consent refusal is reported as one, never as a mime problem
+        // (the cargo here is the supported image/png).
+        XCTAssertTrue(events.contains(.refused(.consentDeclined)))
         XCTAssertFalse(channel.isReceiveActive)
         let offer = try BulkOffer(
             transferId: 13, totalByteCount: 10,

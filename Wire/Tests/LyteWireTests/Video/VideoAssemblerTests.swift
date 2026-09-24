@@ -41,6 +41,27 @@ final class VideoAssemblerTests: XCTestCase {
         }
     }
 
+    /// A non-positive group capacity clamps to one: the frame in hand is
+    /// always trackable, and the first shard never finds a "full" empty
+    /// tracker.
+    func testNonPositiveTrackedGroupCapacityTracksOneGroup() throws {
+        for capacity in [0, -5] {
+            let config = VideoAssemblerConfig(maxTrackedGroups: capacity)
+            XCTAssertEqual(config.maxTrackedGroups, 1)
+            var assembler = VideoAssembler(config: config)
+            var units: [DecodeUnit] = []
+            for (number, seq) in [(UInt32(0), UInt16(0)), (1, 20)] {
+                let frame = number == 0 ? idrFrame(400) : pFrame(400)
+                for shard in try packetize(frame, number: number, firstSeq: seq) {
+                    units += decodedUnits(assembler.ingest(
+                        envelope: shard.envelope, payload: shard.payload, now: t0
+                    ))
+                }
+            }
+            XCTAssertEqual(units.map(\.frameNumber.rawValue), [0, 1])
+        }
+    }
+
     // MARK: - Decode paths
 
     func testInOrderDeliveryEmitsByteExactUnit() throws {
@@ -574,31 +595,27 @@ final class VideoAssemblerTests: XCTestCase {
         XCTAssertEqual(alreadyOrdered.fecImpossibleThresholdPackets, 10)
     }
 
-    func testContiguousPrefixTracksLeadingFilledSlots() throws {
-        // k=3 m=2: out-of-order fill must not advance the leading prefix
-        // past a hole; closing the hole must jump the prefix forward.
-        let shards = try packetize(pFrame(3000, fill: 0x91), number: 0, firstSeq: 0)
+    func testOutOfOrderFillWaitsOnTheHoleThenDecodes() throws {
+        // k=3 m=2: shards 0 and 2 leave a hole at 1 — pending, nothing
+        // emitted; closing the hole completes the frame byte-exact.
+        let frame = pFrame(3000, fill: 0x91)
+        let shards = try packetize(frame, number: 0, firstSeq: 0)
+        let number = FrameNumber(rawValue: 0)
         var assembler = VideoAssembler()
-        _ = assembler.ingest(
-            envelope: shards[0].envelope, payload: shards[0].payload, now: t0
-        )
-        XCTAssertEqual(
-            assembler.testingContiguousPrefix(of: FrameNumber(rawValue: 0)), 1)
-
-        _ = assembler.ingest(
-            envelope: shards[2].envelope, payload: shards[2].payload, now: t0
-        )
-        XCTAssertEqual(
-            assembler.testingContiguousPrefix(of: FrameNumber(rawValue: 0)), 1,
-            "a hole at index 1 must pin the contiguous prefix")
-
-        _ = assembler.ingest(
+        for index in [0, 2] {
+            XCTAssertTrue(decodedUnits(assembler.ingest(
+                envelope: shards[index].envelope,
+                payload: shards[index].payload, now: t0
+            )).isEmpty)
+        }
+        XCTAssertEqual(assembler.status(of: number), .recoverablePending(
+            receivedShards: 2, dataShards: 3, parityShards: 2
+        ))
+        let units = decodedUnits(assembler.ingest(
             envelope: shards[1].envelope, payload: shards[1].payload, now: t0
-        )
-        // Three data shards complete the group — prefix is gone with it.
-        XCTAssertNil(
-            assembler.testingContiguousPrefix(of: FrameNumber(rawValue: 0)),
-            "decoded group leaves the tracker")
+        ))
+        XCTAssertEqual(units.map(\.annexB), [frame])
+        XCTAssertNil(assembler.status(of: number), "decoded group leaves the tracker")
     }
 
     func testSweepSettlesOnceAbsentSeqsAreWrittenOff() throws {
@@ -619,8 +636,6 @@ final class VideoAssemblerTests: XCTestCase {
         }
         XCTAssertEqual(
             assembler.status(of: FrameNumber(rawValue: 0)), .fecImpossible)
-        XCTAssertEqual(
-            assembler.testingSweepSettled(of: FrameNumber(rawValue: 0)), true)
 
         // Further channel advance must not re-mint NACK/fec events for
         // a settled group — the latch is the early-out.

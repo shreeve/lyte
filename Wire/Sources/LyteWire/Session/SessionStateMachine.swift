@@ -14,10 +14,11 @@
 //   - WAKE is the IDLE→ACTIVE transition, not a state.
 //
 // Sender transitions:
-//   - ACTIVE, ratchet converges → send the final frame on a video-idle
+//   - ACTIVE, ratchet converges → send the final frame on a CTRL
 //     one-shot group; only its acknowledgement flips to IDLE and emits
 //     mode=idle, so the receiver holds the converged frame first. New
-//     damage before the ack aborts the pending flip.
+//     damage before the ack aborts the pending flip. Dormant in v1: no
+//     host feeds `.ratchetConverged`, so the host stays ACTIVE.
 //   - IDLE, input or damage → WAKE: mode=active, next damage frame is an
 //     IDR paced at `.lastGoodRate`.
 //   - ACTIVE/IDLE, `blackoutSilence` with no media-path evidence (feedback
@@ -125,8 +126,8 @@ public enum SessionAction: Hashable, Sendable {
     case sendModeMessage(SessionWireMode)
     /// Encode a SessionTeardown and send it on the ARQ stream.
     case sendTeardownMessage(SessionTeardownReason)
-    /// Hand the converged ratchet frame to a fresh video-idle one-shot
-    /// ARQ group; report its acknowledgement back as
+    /// Hand the converged ratchet frame to a fresh CTRL one-shot ARQ
+    /// group; report its acknowledgement back as
     /// `.finalFrameAcknowledged`.
     case sendFinalFrameReliably
     /// WAKE: mark the next encoded damage frame as an IDR, paced per

@@ -6,9 +6,10 @@ import LyteWireTestKit
 // segment datagrams across two groups — the ordered stream (two
 // messages, seqs i, i+1) and one-shot group 7 (one message in three
 // segments) — enumerated over every combination of ≤2 losses, ≤2
-// duplications, and every delivery order of the surviving multiset.
-// For each of the ~166k scenarios (the whole space, twice: once at
-// initial seq 0 and once crossing the u16 wrap):
+// duplications, and every distinct delivery order of the surviving
+// multiset (a duplicate is indistinguishable from its original, so each
+// order appears once). For each of the 45,120 scenarios (the whole space,
+// twice: once at initial seq 0 and once crossing the u16 wrap):
 //
 //   - exactly-once, in-order, byte-exact delivery per group at every
 //     step of the scripted phase;
@@ -92,24 +93,27 @@ final class ArqExhaustiveTests: XCTestCase {
         for initialSeq in [UInt16(0), UInt16(0xFFFE)] {
             scenarios += try runEnumeration(initialSeq: initialSeq)
         }
-        // The full space: Σ C(5,L)·C(5−L,D)·(5−L+D)! over L,D ≤ 2
-        // = 82,620, run twice (plain + wrap-crossing).
-        XCTAssertEqual(scenarios, 165_240)
+        // The full space: Σ C(5,L)·C(5−L,D)·(5−L+D)!/2^D over L,D ≤ 2
+        // = 22,560 distinct orders, run twice (plain + wrap-crossing).
+        XCTAssertEqual(scenarios, 45_120)
     }
 
     private func runEnumeration(initialSeq: UInt16) throws -> Int {
         let (payloads, streamNeeds, oneShotNeeds) =
             try Self.makePayloads(initialSeq: initialSeq)
+        // The recovery sender is a value: every scenario copies it.
+        let sender = try Self.makeSender(initialSeq: initialSeq)
         var scenarios = 0
 
         for lossMask in subsets(of: Array(0..<5), maxCount: 2) {
             let survivors = (0..<5).filter { !lossMask.contains($0) }
             for dupSet in subsets(of: survivors, maxCount: 2) {
                 let instances = survivors + dupSet
-                forEachPermutation(instances) { order in
+                forEachDistinctPermutation(instances) { order in
                     scenarios += 1
                     self.runScenario(
                         order: order,
+                        sender: sender,
                         payloads: payloads,
                         streamNeeds: streamNeeds,
                         oneShotNeeds: oneShotNeeds,
@@ -123,13 +127,14 @@ final class ArqExhaustiveTests: XCTestCase {
 
     private func runScenario(
         order: [Int],
+        sender template: Endpoint,
         payloads: [[UInt8]],
         streamNeeds: [Set<Int>],
         oneShotNeeds: Set<Int>,
         initialSeq: UInt16
     ) {
-        // Messages are built only on failure: 165k scenarios make
-        // eager interpolation the dominant cost.
+        // Messages are built only on failure: 45k scenarios make eager
+        // interpolation the dominant cost.
         func label() -> String { "seq \(initialSeq), order \(order)" }
         var receiver = Endpoint(
             channel: .ctrl, config: Self.config(initialSeq: initialSeq)
@@ -197,9 +202,7 @@ final class ArqExhaustiveTests: XCTestCase {
         // Recovery phase: a fresh sender offers every segment again over
         // a lossless in-order pipe; the receiver's dedupe and the ACK
         // machinery must converge to full delivery and quiescence.
-        guard var sender = try? Self.makeSender(initialSeq: initialSeq) else {
-            return XCTFail("\(label()): sender rebuild failed")
-        }
+        var sender = template
         var round = 0
         var oneShotAckSeen = false
         while round < 50 {
@@ -265,30 +268,20 @@ final class ArqExhaustiveTests: XCTestCase {
         return result
     }
 
-    /// Heap's algorithm; duplicate instances yield repeated orders,
-    /// which is harmless (the space stays exhaustive).
-    private func forEachPermutation(
+    /// Every distinct ordering of the multiset `items`, each exactly
+    /// once, in lexicographic order (the next-permutation walk).
+    private func forEachDistinctPermutation(
         _ items: [Int], _ body: ([Int]) -> Void
     ) {
-        var a = items
-        func heap(_ k: Int) {
-            if k == 1 {
-                body(a)
-                return
-            }
-            for i in 0..<k {
-                heap(k - 1)
-                if k % 2 == 0 {
-                    a.swapAt(i, k - 1)
-                } else {
-                    a.swapAt(0, k - 1)
-                }
-            }
-        }
-        if a.isEmpty {
+        var a = items.sorted()
+        while true {
             body(a)
-        } else {
-            heap(a.count)
+            guard let pivot = a.indices.dropLast().last(where: {
+                a[$0] < a[$0 + 1]
+            }) else { return }
+            let successor = a.indices.last { a[$0] > a[pivot] }!
+            a.swapAt(pivot, successor)
+            a[(pivot + 1)...].reverse()
         }
     }
 }

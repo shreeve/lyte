@@ -276,7 +276,7 @@ public func makeArqVectorFile() throws -> ArqVectorFile {
     return ArqVectorFile(
         format: ArqVectorFile.expectedFormat,
         formatVersion: 1,
-        wireVersion: Int(WireVersion.major),
+        wireVersion: 1,
         vectors: vectors
     )
 }

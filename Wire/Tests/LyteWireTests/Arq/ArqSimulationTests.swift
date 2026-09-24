@@ -72,7 +72,7 @@ final class ArqSimulationTests: XCTestCase {
 
         // Endpoint config: shared knobs, occasional wrap crossing,
         // small segment bodies so multi-segment paths exercise cheaply.
-        let initialSeq: UInt16 = Int.random(in: 0..<4, using: &rng) == 0
+        let initialSeq: UInt16 = rng.int(in: 0..<4) == 0
             ? 0xFFF0 &+ UInt16.random(in: 0...31, using: &rng)
             : 0
         let bodyCeiling = [16, 64, 256].randomElement(using: &rng)!
@@ -102,12 +102,12 @@ final class ArqSimulationTests: XCTestCase {
         var sent = [SentLedger(), SentLedger()]
         var pending: [PendingSend] = []
         let streamCounts = [
-            Int.random(in: 0...3, using: &rng),
-            Int.random(in: 0...2, using: &rng),
+            rng.int(in: 0...3),
+            rng.int(in: 0...2),
         ]
         let oneShotCounts = [
-            Int.random(in: 0...2, using: &rng),
-            Int.random(in: 0...1, using: &rng),
+            rng.int(in: 0...2),
+            rng.int(in: 0...1),
         ]
         for source in 0...1 {
             for _ in 0..<streamCounts[source] {
@@ -117,7 +117,7 @@ final class ArqSimulationTests: XCTestCase {
                     isOneShot: false,
                     group: nil,
                     bytes: rng.bytes(
-                        Int.random(in: 1...(3 * bodyCeiling), using: &rng)
+                        rng.int(in: 1...(3 * bodyCeiling))
                     )
                 ))
             }
@@ -128,7 +128,7 @@ final class ArqSimulationTests: XCTestCase {
                     isOneShot: true,
                     group: nil,
                     bytes: rng.bytes(
-                        Int.random(in: 1...(3 * bodyCeiling), using: &rng)
+                        rng.int(in: 1...(3 * bodyCeiling))
                     )
                 ))
             }

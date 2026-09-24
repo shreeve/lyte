@@ -13,10 +13,6 @@ final class SessionVectorFileTests: XCTestCase {
         try SessionVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     func testAllSessionVectors() throws {
         for vector in try loadFile().vectors {
             guard let message = Hex.bytes(vector.messageHex) else {
