@@ -11,7 +11,9 @@
 //
 // When the budget is spent the PIN BURNS: the service goes silent on
 // further pairing traffic (no oracle) and is never resurrected; the
-// operator restarts pairing mode for a fresh PIN. With 6-digit PINs and
+// operator restarts pairing mode for a fresh PIN. It burns the moment no
+// run that could still succeed remains: the last guess's run fails, or is
+// abandoned (a newer share A, a re-handshake, or the session's end). With 6-digit PINs and
 // 3 guesses an online attacker's odds are 3 in 10⁶ per displayed PIN, and
 // the CPace transcript yields nothing offline-testable.
 //
@@ -120,11 +122,34 @@ public final class PairingResponderService {
     /// THIS session's transcript and statics. Guess accounting and the
     /// throttle survive reconnects on purpose — a client cannot refill
     /// its budget by re-handshaking.
+    @discardableResult
     public func sessionEstablished(
         clientStaticPublicKey: [UInt8], noiseHandshakeHash: [UInt8]
-    ) {
+    ) -> Output {
         binding = (clientStaticPublicKey, noiseHandshakeHash)
+        return abandonRun()
+    }
+
+    /// Call when the carrying session ends: its in-flight run can never
+    /// confirm. If that was the budget's last guess the PIN burns now,
+    /// not at the next client's share A.
+    @discardableResult
+    public func sessionEnded() -> Output {
+        binding = nil
+        return abandonRun()
+    }
+
+    private func abandonRun() -> Output {
         responder = nil
+        return Output(events: burnIfSpent())
+    }
+
+    /// Burns (once) when the budget is spent and no run is in flight.
+    private func burnIfSpent() -> [Event] {
+        guard !burned, !isPaired, responder == nil,
+              attemptsUsed >= config.maxAttempts else { return [] }
+        burned = true
+        return [.pinBurned]
     }
 
     /// Feeds one ARQ-delivered CTRL message. Returns nil when the type
@@ -160,8 +185,8 @@ public final class PairingResponderService {
             return Output(events: [.malformed])
         }
         if attemptsUsed >= config.maxAttempts {
-            burned = true
-            return Output(events: [.pinBurned])
+            // A newer share A abandons the last guess's run.
+            return abandonRun()
         }
         if let last = lastOpenNS,
            now &- last < config.minAttemptIntervalNS {
@@ -222,14 +247,10 @@ public final class PairingResponderService {
             return Output(events: [.paired(clientStaticPublicKey: client)])
         } catch {
             // Wrong PIN or tampered binding — one wire reason for both.
-            var events: [Event] = [.rejected(
+            let events: [Event] = [.rejected(
                 .confirmationFailed,
                 attemptsRemaining: config.maxAttempts - attemptsUsed
-            )]
-            if attemptsUsed >= config.maxAttempts {
-                burned = true
-                events.append(.pinBurned)
-            }
+            )] + burnIfSpent()
             return Output(
                 replies: [
                     PairingReject(reason: .confirmationFailed).encode()
@@ -245,11 +266,6 @@ public final class PairingResponderService {
             return Output(events: [.malformed])
         }
         responder = nil
-        var events: [Event] = [.clientAborted(reject.reason)]
-        if attemptsUsed >= config.maxAttempts {
-            burned = true
-            events.append(.pinBurned)
-        }
-        return Output(events: events)
+        return Output(events: [.clientAborted(reject.reason)] + burnIfSpent())
     }
 }
