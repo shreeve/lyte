@@ -4,15 +4,19 @@
 //
 // Decode takes every assembled frame in order (late and handoff-refused
 // frames included: later P-frames reference them). Presentation pops only
-// what the Conductor says is due. Decoded VideoFrames are GPU-pool objects:
-// each is closed when overwritten, when presented, or once a newer frame
-// has been presented.
-
-import { pickHevcConfig } from "./lyte-io.js";
+// what the Conductor says is due, and a decoded frame waits for its beat.
+//
+// The stream has no reordering, so decode order, output order and PTS
+// order agree. That makes liveness local: once the Conductor names a due
+// PTS, every held frame before it is dead, and if that PTS is neither held,
+// in the decoder, nor queued for decode, it never will be. Decoded
+// VideoFrames are GPU-pool objects, so decode is throttled by what the page
+// holds rather than evicting frames the Conductor has yet to ask for.
+import { nowMicros, pickHevcConfig } from "./lyte-io.js";
 
 const MAX_QUEUED_DECODES = 2;
-// Decoded-but-unpresented frames held at once; the decoder's output pool
-// stalls if the page keeps more.
+// Decoded-but-unpresented frames held at once, counting frames still inside
+// the decoder; the decoder's output pool stalls if the page keeps more.
 const MAX_HELD_FRAMES = 8;
 
 const WGSL = `
@@ -125,13 +129,23 @@ export class VideoSink {
     this.codec = picked.config.codec;
     this.presenter = presenter;
     this.queue = []; // scheduled-frame metadata in decode order
-    this.decoded = new Map(); // presentation µs → VideoFrame
+    this.inDecoder = new Map(); // presentation µs → metadata, submitted, not yet output
+    this.decoded = new Map(); // presentation µs → { frame, meta, decodedAt }
     this.pendingDue = null;
     this.awaitingKeyFrame = false;
     this.error = null;
     this.frameSize = null;
-    this.stats = { decoded: 0, presented: 0, missing: 0, skippedForKey: 0, closedStale: 0 };
-    this.presentedPts = [];
+    this.stats = {
+      decoded: 0,
+      presented: 0,
+      missing: 0,
+      skippedForKey: 0,
+      closedUnshown: 0,
+      dueNeverDecoded: 0,
+    };
+    // One record per presented frame: when it decoded and when it showed,
+    // against the PTS the Conductor gave it (all client-clock µs).
+    this.presentations = [];
     this.firstDecodedPts = null;
     this.onFirstKeyFrame = null;
     this.decoder = new VideoDecoder({
@@ -148,25 +162,34 @@ export class VideoSink {
     for (const meta of scheduled) this.queue.push(meta);
   }
 
+  /** True while decode input or output is still outstanding. */
+  get busy() {
+    return this.queue.length > 0 || this.inDecoder.size > 0 || this.pendingDue != null;
+  }
+
   accept(frame) {
     this.stats.decoded += 1;
     this.frameSize = { width: frame.displayWidth, height: frame.displayHeight };
-    const previous = this.decoded.get(frame.timestamp);
-    if (previous) previous.close();
-    this.decoded.set(frame.timestamp, frame);
-    const due = this.pendingDue?.presentationMicroseconds;
-    while (this.decoded.size > MAX_HELD_FRAMES) {
-      // Never evict the frame the Conductor is waiting to present.
-      const oldest = Math.min(...[...this.decoded.keys()].filter((t) => t !== due));
-      this.decoded.get(oldest).close();
-      this.decoded.delete(oldest);
-      this.stats.closedStale += 1;
+    const meta = this.inDecoder.get(frame.timestamp);
+    this.inDecoder.delete(frame.timestamp);
+    // Late frames were decoded only to keep the reference chain.
+    if (!meta?.shouldPresent) {
+      frame.close();
+      this.stats.closedUnshown += 1;
+      return;
     }
+    this.decoded.get(frame.timestamp)?.frame.close();
+    this.decoded.set(frame.timestamp, { frame, meta, decodedAt: nowMicros() });
   }
 
   /** Feeds the decoder in Conductor order without flooding it. */
   pumpDecode() {
-    while (!this.error && this.queue.length && this.decoder.decodeQueueSize < MAX_QUEUED_DECODES) {
+    while (
+      !this.error &&
+      this.queue.length &&
+      this.decoder.decodeQueueSize < MAX_QUEUED_DECODES &&
+      this.decoded.size + this.inDecoder.size < MAX_HELD_FRAMES
+    ) {
       const meta = this.queue.shift();
       const bytes = this.bridge.mediaTakeAnnexB(meta.frameNumber);
       if (!bytes) {
@@ -188,6 +211,7 @@ export class VideoSink {
         this.onFirstKeyFrame = null;
       }
       try {
+        this.inDecoder.set(meta.presentationMicroseconds, meta);
         this.decoder.decode(
           new EncodedVideoChunk({
             type: meta.isRandomAccess ? "key" : "delta",
@@ -197,43 +221,67 @@ export class VideoSink {
         );
         if (this.firstDecodedPts == null) this.firstDecodedPts = meta.presentationMicroseconds;
       } catch (error) {
+        this.inDecoder.delete(meta.presentationMicroseconds);
         this.error = error;
       }
     }
   }
 
-  /** Presents the Conductor's due frame once it has decoded. */
+  /**
+   * Presents the Conductor's due frame once it has decoded. Returns true
+   * when a frame was presented.
+   */
   pumpPresent(now) {
-    if (!this.pendingDue) {
-      this.pendingDue = this.bridge.mediaPopDue(now);
-      if (!this.pendingDue) return false;
+    for (;;) {
+      if (!this.pendingDue) {
+        this.pendingDue = this.bridge.mediaPopDue(now);
+        if (!this.pendingDue) {
+          // Everything the Conductor will still present is due after
+          // `now`, so a held frame at or before it is never shown.
+          this.closeHeld((pts) => pts <= now);
+          return false;
+        }
+      }
+      const due = this.pendingDue;
+      const pts = due.presentationMicroseconds;
+      this.closeHeld((held) => held < pts);
+      const held = this.decoded.get(pts);
+      if (!held) {
+        if (this.inDecoder.has(pts) || this.queue.some((m) => m.frameNumber === due.frameNumber)) {
+          return false; // still on its way through the decoder
+        }
+        // Dropped before decode (evicted or skipped for a key frame).
+        this.stats.dueNeverDecoded += 1;
+        this.pendingDue = null;
+        continue;
+      }
+      this.pendingDue = null;
+      this.decoded.delete(pts);
+      try {
+        const shown = this.presenter.present(held.frame);
+        this.bridge.mediaNotePresented(due.frameNumber);
+        this.stats.presented += 1;
+        this.presentations.push({
+          frameNumber: due.frameNumber,
+          pts,
+          decodedAt: held.decodedAt,
+          presentedAt: now,
+        });
+        this.lastPresent = shown;
+      } finally {
+        held.frame.close();
+      }
+      return true;
     }
-    const pts = this.pendingDue.presentationMicroseconds;
-    const frame = this.decoded.get(pts);
-    if (!frame) return false;
-    const due = this.pendingDue;
-    this.pendingDue = null;
-    this.decoded.delete(pts);
-    try {
-      const shown = this.presenter.present(frame);
-      this.bridge.mediaNotePresented(due.frameNumber);
-      this.stats.presented += 1;
-      this.presentedPts.push(pts);
-      this.lastPresent = shown;
-    } finally {
-      frame.close();
-    }
-    this.closeOlderThan(pts);
-    return true;
   }
 
-  /** Frames behind the presented one will never be shown. */
-  closeOlderThan(pts) {
-    for (const [timestamp, frame] of this.decoded) {
-      if (timestamp < pts) {
-        frame.close();
-        this.decoded.delete(timestamp);
-        this.stats.closedStale += 1;
+  /** Closes held frames the Conductor will never present. */
+  closeHeld(isDead) {
+    for (const [pts, held] of this.decoded) {
+      if (isDead(pts)) {
+        held.frame.close();
+        this.decoded.delete(pts);
+        this.stats.closedUnshown += 1;
       }
     }
   }
@@ -244,7 +292,7 @@ export class VideoSink {
     } catch {
       /* already closed by an error */
     }
-    for (const frame of this.decoded.values()) frame.close();
+    for (const held of this.decoded.values()) held.frame.close();
     this.decoded.clear();
     this.presenter.destroy();
   }

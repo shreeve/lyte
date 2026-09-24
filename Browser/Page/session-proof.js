@@ -105,7 +105,7 @@ export async function runSessionProof({
 
   const facts = bridge.controlFacts();
   const stats = bridge.mediaStats();
-  const presentedPts = sink?.presentedPts || [];
+  const presentedPts = (sink?.presentations || []).map((p) => p.pts);
   const beat = bridge.conductorBeatMicroseconds;
   // Successive presented PTS differ by whole Conductor beats (±1 µs bump).
   let beatOk = presentedPts.length >= 2;
