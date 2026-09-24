@@ -79,7 +79,6 @@ public struct PacerBatch: Sendable {
 public struct PacerClassCounters: Sendable {
     public var tokensEnqueued = 0
     public var tokensSent = 0
-    public var bytesEnqueued = 0
     public var bytesSent = 0
     public var maxQueueDelayNS: UInt64 = 0
 
@@ -199,7 +198,6 @@ public final class Pacer {
                                enqueuedAt: now)
         queues[priorityClass.rawValue].push(token)
         telemetry.perClass[priorityClass.rawValue].tokensEnqueued += 1
-        telemetry.perClass[priorityClass.rawValue].bytesEnqueued += bytes
     }
 
     public var isEmpty: Bool {

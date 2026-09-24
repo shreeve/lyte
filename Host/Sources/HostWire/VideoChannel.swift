@@ -160,18 +160,11 @@ public struct VideoChannelCounters: Sendable {
     public var shardsEnqueued = 0
     public var datagramsSent = 0
     public var bytesSent = 0
-    public var repairShardsEnqueued = 0
-    /// Requested shards the store no longer held (evicted, or an index
-    /// the frame never had).
-    public var repairShardsUnavailable = 0
     /// Repair requests refused because the shard already rode one.
     public var repairShardsAlreadySent = 0
     /// Repair datagrams dropped from videoTail after their usefulness
     /// deadline elapsed while fresher/higher-priority work was ahead.
     public var repairShardsExpiredQueued = 0
-    /// Repair-store frames invalidated with a queue purge. They can no
-    /// longer be resurrected by a later NACK.
-    public var repairFramesPurged = 0
     /// Sealed datagrams assembled by growing the pre-sized AAD header
     /// buffer in place (one final wire buffer, rather than encoding a
     /// third header+payload array after sealing).
@@ -586,16 +579,10 @@ public final class VideoChannel {
     public func enqueueRepair(
         frame: FrameNumber, shardIndices: [UInt8], now: UInt64
     ) throws -> Int {
-        guard var stored = store[frame.rawValue] else {
-            counters.repairShardsUnavailable += shardIndices.count
-            return 0
-        }
+        guard var stored = store[frame.rawValue] else { return 0 }
         var enqueued = 0
         for index in shardIndices {
-            guard Int(index) < stored.shards.count else {
-                counters.repairShardsUnavailable += 1
-                continue
-            }
+            guard Int(index) < stored.shards.count else { continue }
             guard !stored.shards[Int(index)].repaired else {
                 counters.repairShardsAlreadySent += 1
                 continue
@@ -633,14 +620,11 @@ public final class VideoChannel {
             enqueued += 1
         }
         store[frame.rawValue] = stored
-        counters.repairShardsEnqueued += enqueued
         return enqueued
     }
 
     /// Bytes currently retained for repair (tests and the stats line).
     public var repairStoreBytes: Int { storeBytes }
-    /// Frames currently retained for repair.
-    public var repairStoreFrameCount: Int { store.count }
 
     /// Whether a queue purge deliberately invalidated this frame. Session
     /// recovery treats a later NACK as superseded, not as a new IDR demand.
@@ -938,7 +922,6 @@ public final class VideoChannel {
                 appendCompletedTelemetry(telemetry)
             }
         }
-        counters.repairFramesPurged += frames.count
         return (datagrams, bytes)
     }
 

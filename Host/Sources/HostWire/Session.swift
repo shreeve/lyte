@@ -474,8 +474,6 @@ public struct SessionCounters: Equatable, Sendable {
     /// its in-flight offer window. Encode-time is not delivery proof; after
     /// the window a continuing episode may re-arm.
     public var idrRequestsSupersededByKeyframe = 0
-    /// Reliable CTRL messages the ARQ delivered.
-    public var arqMessages = 0
     /// Ingested ARQ bytes the endpoint refused or deduplicated.
     public var arqIgnored = 0
     /// Sealed CTRL datagrams carrying ARQ frames, both fresh and
@@ -566,10 +564,6 @@ public struct SessionCounters: Equatable, Sendable {
     public var audioRoutingStatusesSent = 0
     /// 0x1A clipboard sets delivered (past the capability gate).
     public var clipboardSetsReceived = 0
-    /// 0x25 track-state announcements sent.
-    public var audioTrackStatesSent = 0
-    /// 0x26 video posture announcements sent.
-    public var videoPostureStatesSent = 0
     /// 0x1B clipboard announces sent.
     public var clipboardAnnouncesSent = 0
     /// Leaf-reported changes the book/ceiling suppressed.
@@ -702,10 +696,6 @@ public final class Session {
     public var lifecycleState: SessionState? { lifecycleLane.state }
     /// The wire mode beneath any overlay; nil before establishment.
     public var wireMode: SessionWireMode? { lifecycleLane.wireMode }
-    /// Why the session closed, once it has.
-    public var sessionCloseReason: SessionCloseReason? {
-        lifecycleLane.closeReason
-    }
     /// The agreed capability set; nil until the client's declaration
     /// lands (a client that sends none stays nil, which is not an error).
     public var agreedCapabilities: Capabilities? { negotiator.agreed }
@@ -1627,7 +1617,6 @@ public final class Session {
                 AudioTrackState(state: state).encode(),
                 now: now, hostMicroseconds: hostMicroseconds
             )
-            counters.audioTrackStatesSent += 1
             return [.audioTrackStateSent(state)]
         } catch {
             return [.sendFailed("audio track state: \(error)")]
@@ -1644,7 +1633,6 @@ public final class Session {
             try sendReliable(
                 state.encode(), now: now, hostMicroseconds: hostMicroseconds
             )
-            counters.videoPostureStatesSent += 1
             return [.videoPostureStateSent(state)]
         } catch {
             return [.sendFailed("video posture state: \(error)")]
@@ -2039,7 +2027,6 @@ public final class Session {
         for event in arqEvents {
             switch event {
             case .message(let group, let bytes):
-                counters.arqMessages += 1
                 if let consumed = consumeReliable(
                     bytes, now: now, hostMicroseconds: hostMicroseconds
                 ) {

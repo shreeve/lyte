@@ -40,7 +40,6 @@ public struct SessionLifecycleLane: Sendable {
     public var isEstablished: Bool { machine != nil }
     public var state: SessionState? { machine?.state }
     public var wireMode: SessionWireMode? { machine?.wireMode }
-    public var closeReason: SessionCloseReason? { machine?.closeReason }
     public var isRecovering: Bool { machine?.state == .recovery }
 
     /// A newly established machine needs one first service pass to project

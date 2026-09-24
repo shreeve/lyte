@@ -214,12 +214,8 @@ final class SessionWire {
     private(set) var inputInjected = 0
     private(set) var inputInjectFailures = 0
     private var inputNoInjectorWarned = false
-    /// Monotonic µs of the most recent successful injection (0 = never).
-    /// Written under `lock`.
-    private var lastInputInjectedAt: UInt64 = 0
     /// Only pointer motion owes an embedded-cursor damage frame; other
     /// input may draw nothing, so it is no capture-liveness witness.
-    private var pointerMotionInjected = 0
     private var lastPointerMotionInjectedAt: UInt64 = 0
     /// The last absolute pointer injected (monitor device pixels): the
     /// cursor watcher's hotspot anchor (hotspot = injected position −
@@ -231,7 +227,6 @@ final class SessionWire {
     /// Key 13 was agreed: the next service pass sends the standing shape.
     private var cursorAnnounceOwed = false
 
-    private(set) var framesSent = 0
     /// Most recent admitted frame, for the encoder callback's telemetry.
     private var lastFrameForTelemetry: FrameNumber?
     /// The audio thread's publications, in capture order.
@@ -261,7 +256,6 @@ final class SessionWire {
     private(set) var receiveAllMaxNS: UInt64 = 0
     /// Mutated under `lock` (the mailbox counters above use
     /// `audioMailboxLock`).
-    private(set) var audioPacketsSent = 0
     private(set) var audioSendFailures = 0
     private(set) var audioPacketsDroppedPreSession = 0
     /// Read after shutdown.
@@ -276,7 +270,6 @@ final class SessionWire {
     private var currentLatencySocketOutqBytes = 0
     private var kernelPressureGovernor = KernelPressureGovernor()
     private var kernelPressureDecision: KernelPressureDecision?
-    private(set) var lastSendError: String?
     private(set) var sendErrors = 0
     /// Agreed capability flags, published once at agreement. Under
     /// `configLock`, never the session lock, so the audio and capture
@@ -300,18 +293,6 @@ final class SessionWire {
         lock.lock()
         defer { lock.unlock() }
         return vbvPolicy?.rateMovesAbsorbed ?? 0
-    }
-    /// 0 = no input injected yet this session.
-    var lastInputInjectedAtMicros: UInt64 {
-        lock.lock()
-        defer { lock.unlock() }
-        return lastInputInjectedAt
-    }
-    /// Pointer-motion count and latest time, read in one acquisition.
-    var pointerMotionWitness: (count: Int, lastAtMicros: UInt64) {
-        lock.lock()
-        defer { lock.unlock() }
-        return (pointerMotionInjected, lastPointerMotionInjectedAt)
     }
     /// ECONNREFUSED (LYTE_NETIO_PEER_GONE): the client's socket is
     /// closed — session-ending, not an I/O failure.
@@ -1011,7 +992,6 @@ final class SessionWire {
             lock.unlock()
             throw error
         }
-        framesSent += 1
         // First quantum leaves on this stack (one batch, tens of µs).
         pumpForSocketState(session)
         do {
@@ -1124,7 +1104,6 @@ final class SessionWire {
                     )
                     pumpForSocketState(session)
                     try flushOutbox()
-                    audioPacketsSent += 1
                 } catch {
                     audioSendFailures += 1
                     noteSendError(error)
@@ -1432,7 +1411,6 @@ final class SessionWire {
     /// Requires `lock`.
     private func noteSendError(_ error: Error) {
         sendErrors += 1
-        lastSendError = String(describing: error)
         if sendErrors <= 3 {
             emit("session: send path error (\(sendErrors)): \(error)")
         }
@@ -1493,9 +1471,6 @@ final class SessionWire {
             do {
                 wait = try drainPass()
             } catch {
-                lock.lock()
-                lastSendError = String(describing: error)
-                lock.unlock()
                 drainCondition.lock()
                 let firstFailure = !drainFailed
                 drainFailed = true
@@ -2035,14 +2010,11 @@ final class SessionWire {
         }
         let injectMicros = SystemMonotonicClock.nowMicroseconds
         inputInjected += 1
-        lastInputInjectedAt = injectMicros
         switch event.body {
         case .pointerMotionAbsolute(let x, let y):
-            pointerMotionInjected += 1
             lastPointerMotionInjectedAt = injectMicros
             lastAbsolutePointer = (x, y)
         case .pointerMotionRelative:
-            pointerMotionInjected += 1
             lastPointerMotionInjectedAt = injectMicros
         case .keyKeycode, .pointerButton, .pointerAxis:
             break
@@ -2099,7 +2071,6 @@ final class SessionWire {
         case .peerGone:
             notePeerGone()
         case .failed(let why):
-            lastSendError = why
             throw HostError("session send failed: \(why)")
         }
     }
