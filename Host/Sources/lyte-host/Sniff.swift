@@ -1,10 +1,7 @@
-// `lyte-host sniff` (HS-5): the live Lyte-UDP header dissector. Binds a
-// UDP port through CNetIO and prints one decoded line per datagram —
-// envelope fields plus the fec interior (chan/seq/frame/ts/k/m/idx) —
-// via HostWire.SniffFormat, whose output format is pinned by the macOS
-// tests. The envelope is cleartext AAD by design, so this keeps working
-// unchanged once Noise (HS-7) seals payloads; payload decryption behind
-// a key flag is an explicitly deferred slice.
+// `lyte-host sniff`: the live Lyte-UDP header dissector. Binds a UDP port
+// through CNetIO and prints one line per datagram — envelope fields plus
+// the fec interior — via HostWire.SniffFormat. The envelope is cleartext
+// AAD, so this works on sealed traffic; payloads are not decrypted.
 
 import LyteIO
 import LyteCore

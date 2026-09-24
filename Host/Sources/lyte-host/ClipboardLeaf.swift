@@ -1,57 +1,37 @@
-// The Linux clipboard OS leaf (HS-19, closing CL-15's queued
-// follow-up): the real `HostClipboardLeaf`, driving the
-// RemoteDesktop-session clipboard API the design doc names
-// (docs/decisions/20260722-231500-lyte-clipboard.md §7; host build plan §6 —
-// selection-change signals + fd-based transfer, both directions).
+// The Linux clipboard OS leaf: the real `HostClipboardLeaf`, driving
+// Mutter's RemoteDesktop session clipboard API
+// (org.gnome.Mutter.RemoteDesktop) — selection-change signals and fd-based
+// transfer, both directions. On GNOME the portal Clipboard wraps this same
+// API, and no data-control protocol is available
+// (docs/decisions/20260807-015743-wayland-clipboard-gnome-blocker.md).
+// The leaf holds its OWN session on its OWN bus connection: `--input off`
+// must not kill clipboard, and vice versa.
 //
-// WHICH RemoteDesktop session: the Mutter-internal one
-// (org.gnome.Mutter.RemoteDesktop). Input left this API family in E2
-// (uinput); clipboard could not — the Wayland-helper /
-// portal-without-Mutter-RD replacement is blocked on Ubuntu GNOME
-// (docs/decisions/20260807-015743-wayland-clipboard-gnome-blocker.md): no
-// wlr/ext-data-control, wl-clipboard hangs, portal RD Start still
-// auto-denies headless (CP-5 Q1). On GNOME the portal Clipboard is a
-// thin wrapper over this same Mutter session API, so the leaf drives
-// the implementation directly. `wl-clipboard` stays a probe tool, not
-// a carriage. The leaf holds its OWN session on its OWN bus
-// connection: `--input off` must not kill clipboard, and vice versa.
-//
-// The protocol, proven live on pup before this file was written:
+// The protocol:
 //   • a foreign copy → SelectionOwnerChanged (mime-types,
-//     session-is-owner=false) → SelectionRead(mime) → fd → the text;
+//     session-is-owner=false) → SelectionRead(mime) → fd → the bytes;
 //   • apply (a client 0x1A) → SetSelection(mime-types) → we own the
-//     selection; every paste in a host app → SelectionTransfer(mime,
-//     serial) → SelectionWrite(serial) → fd → SelectionWriteDone;
-//   • our own SetSelection also fires SelectionOwnerChanged with
-//     session-is-owner=true — reported upward as the apply's echo,
-//     which the session's pre-armed sync book suppresses (the
-//     boomerang proof); the leaf stays dumb by design.
+//     selection; every host paste → SelectionTransfer(mime, serial) →
+//     SelectionWrite(serial) → fd → SelectionWriteDone;
+//   • our own SetSelection fires SelectionOwnerChanged with
+//     session-is-owner=true — reported upward as the apply's echo, which
+//     the session's pre-armed sync book suppresses; the leaf stays dumb.
 //
-// Lifetime: one leaf (one RemoteDesktop session) serves every session
-// of the process. It is live only between `attach()` and `detach()`:
-// outside a session a foreign copy is never read (HostSelectionChange —
-// consent starts at session start), yet the leaf is still serviced, so
-// a host app pasting the content a client set last is served from the
-// owned bytes instead of hanging until Mutter's transfer timeout.
+// Lifetime: one leaf serves every session of the process. Foreign copies
+// are read only between `attach()` and `detach()` (consent starts at
+// session start), but the leaf is serviced between sessions too, so host
+// pastes of the last client-set content are served, not left to time out.
 //
-// Threading: NONE. `service()` drains the bus non-blockingly and pumps
-// the fd state machines with O_NONBLOCK descriptors, so a slow selection
-// owner can never stall a frame. During a session it runs on the
-// janitor thread (the leg's 10 ms shell-service sweep, SessionWire's
-// off-lock clipboard hook); between sessions on the main thread, from
-// the handshake wait's idle hook — never both at once.
-// No new C shim: CDBus carries the D-Bus plumbing (fds ride the 'h'
-// type SessionBus already decodes) and Glibc carries the fd syscalls.
-// Payloads never log — byte counts only, the CL-15 rule.
+// Threading: none. `service()` drains the bus non-blockingly and pumps
+// O_NONBLOCK fds, so a slow selection owner never stalls a frame. It runs
+// on the janitor thread during a session and on the main thread's
+// handshake idle hook between sessions — never both at once.
+// Payloads never log — byte counts only.
 //
-// P-1 (clipboard v2) adds the image half on the SAME machinery: on
-// the images tier (`--clipboard=images`) a foreign owner offering no
-// text flavor but a PNG one is read whole (32 MiB + 1 cap) and
-// reported through `onLocalImageChange`; a client image landing
-// becomes ownership with the PNG flavor, served per SelectionTransfer
-// exactly like text. Text always wins when both flavors are offered
-// (ClipboardImageFlavor's rule). Off the images tier the leaf is
-// byte-identical to its v1 self.
+// Images (`--clipboard=images`): a foreign owner offering no text flavor
+// but a PNG one is read whole and reported through `onLocalImageChange`;
+// a client image becomes ownership with the PNG flavor. Text wins when
+// both are offered. Off the images tier, image flavors are never touched.
 
 import LyteIO
 import Foundation
@@ -63,14 +43,12 @@ import CDBus
 
 final class MutterClipboardLeaf: HostClipboardLeaf {
     var onLocalChange: ((String) -> Void)?
-    /// P-1: image copies (whole PNG bytes), echoes included — nil
-    /// callback or `imagesEnabled == false` both mean the text-only
-    /// tier, where non-text flavors stay ignored weather (v1 exactly).
+    /// Image copies (whole PNG bytes), echoes included. Nil or
+    /// `imagesEnabled == false` means the text-only tier.
     var onLocalImageChange: (([UInt8]) -> Void)?
 
-    /// P-1: the consent tier's leaf half (`--clipboard=images`). When
-    /// false the leaf is byte-identical to its v1 self: image flavors
-    /// are never read, never offered, never reported.
+    /// `--clipboard=images`. When false image flavors are never read,
+    /// offered or reported.
     private let imagesEnabled: Bool
 
     private let bus: SessionBus
@@ -80,15 +58,13 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
     private static let sessionInterface =
         "org.gnome.Mutter.RemoteDesktop.Session"
 
-    /// Read caps: the wire ceiling plus one byte — enough to KNOW a
-    /// copy is over-ceiling (the session suppresses it as overBudget
-    /// weather) without swallowing an arbitrarily large pipe. Images
-    /// get the P-1 ceiling (32 MiB) the same way.
+    /// Read caps: the wire ceiling plus one byte — enough to KNOW a copy
+    /// is over-ceiling (the session suppresses it as overBudget) without
+    /// swallowing an arbitrarily large pipe.
     private static let textReadCap = ClipboardWire.maxTextByteCount + 1
     private static let imageReadCap =
         ClipboardImageWire.maxImageByteCount + 1
-    /// A transfer that makes no progress for this long is abandoned
-    /// (the owner died mid-pipe; routine weather, counted).
+    /// A transfer with no progress for this long is abandoned, counted.
     private static let transferTimeoutSeconds = 2.0
 
     /// What we own on the OS clipboard (the last applied client set),
@@ -97,7 +73,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
         case none
         /// UTF-8 bytes of an applied 0x1A.
         case text([UInt8])
-        /// PNG bytes of an applied clipboard-image landing (P-1).
+        /// PNG bytes of an applied clipboard-image landing.
         case image([UInt8])
 
         var bytes: [UInt8] {
@@ -143,16 +119,13 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
     private(set) var nonTextChangesIgnored = 0
     private(set) var baselineReplaysSkipped = 0
     private(set) var changesOutsideSessionSkipped = 0
-    // P-1: the image lane's own books.
     private(set) var imageChangesReported = 0
     private(set) var imageAppliesTaken = 0
 
     init(imagesEnabled: Bool = false) throws {
         self.imagesEnabled = imagesEnabled
-        // A dedicated connection: the clipboard session's lifetime is
-        // this object's, independent of capture and input (a SIGKILL
-        // closes the connection, which closes the session — nothing
-        // stranded).
+        // A dedicated connection: the clipboard session lives and dies
+        // with this object (a SIGKILL closes the connection and session).
         bus = try SessionBus()
         let createReply = try bus.call(
             dest: Self.rdService, path: "/org/gnome/Mutter/RemoteDesktop",
@@ -187,13 +160,9 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
         dbus_message_unref(enableReply)
 
         // Mutter replays the STANDING selection owner right after
-        // EnableClipboard (observed live: a pre-session copy arrived
-        // as a fresh SelectionOwnerChanged). The client half never
-        // reads pre-consent pasteboard content (PasteboardSync
-        // re-baselines at start); the leaf holds the symmetric line —
-        // clipboards carry passwords, and whatever sat on the host
-        // clipboard from before the session is not the session's to
-        // narrate. Drain and discard the replay window.
+        // EnableClipboard. Pre-session clipboard content (passwords
+        // included) is not the session's to report: drain and discard
+        // the replay window, as the client re-baselines at start.
         let drainDeadline = SystemMonotonicClock.nowSeconds + 0.4
         while SystemMonotonicClock.nowSeconds < drainDeadline {
             _ = dbus_connection_read_write(bus.conn, 50)
@@ -235,9 +204,8 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
         }
     }
 
-    /// A client 0x1A landed (the session's gate + book already ran):
-    /// become the selection owner. The text is retained and served
-    /// lazily per SelectionTransfer — the Wayland ownership model.
+    /// A client 0x1A landed (gate and book already ran): become the
+    /// selection owner; the text is served lazily per SelectionTransfer.
     func apply(text: String) {
         owned = .text(Array(text.utf8))
         appliesTaken += 1
@@ -247,9 +215,8 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
         )
     }
 
-    /// P-1: a sha-verified client image landed (the session's gate +
-    /// book already ran): become the selection owner with the PNG
-    /// flavor, served lazily like text.
+    /// A sha-verified client image landed: become the selection owner
+    /// with the PNG flavor, served lazily like text.
     func apply(imageData: [UInt8]) {
         owned = .image(imageData)
         imageAppliesTaken += 1
@@ -276,8 +243,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
         }
     }
 
-    /// The off-lock service pass (video tick cadence): drain queued
-    /// D-Bus signals, pump the transfer state machines.
+    /// Drains queued D-Bus signals and pumps the transfer machines.
     func service() {
         guard !rdSession.isEmpty else { return }
         _ = dbus_connection_read_write(bus.conn, 0)
@@ -340,9 +306,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             changesOutsideSessionSkipped += 1
             return
         case .reportOwnEcho:
-            // Our own SetSelection landing — the apply's echo. Report
-            // it upward; the session's pre-armed book suppresses it
-            // (the boomerang proof runs through the REAL signal path).
+            // The apply's echo: reported; the session's book suppresses it.
             switch owned {
             case .none:
                 break
@@ -391,9 +355,8 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             if n > 0 {
                 read.buffer.append(contentsOf: scratch[0..<n])
                 if read.buffer.count >= cap {
-                    // Over the wire ceiling: enough is known. Deliver
-                    // what we have — the session judges it overBudget
-                    // and suppresses; the payload never leaves.
+                    // Over the ceiling: deliver what we have; the session
+                    // judges it overBudget and it never leaves.
                     close(read.fd)
                     pendingRead = nil
                     finishRead(read)
@@ -590,10 +553,8 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             dbus_message_iter_recurse(&kv, &value) // into the variant
             switch key {
             case "mime-types":
-                // Mutter wraps the list as a variant holding a STRUCT
-                // containing the array — type "(as)", verified live on
-                // pup — so unwrap one struct level if present (and
-                // accept a bare "as" should the shape ever simplify).
+                // Mutter wraps the list as "(as)"; unwrap one struct
+                // level if present (a bare "as" also works).
                 var container = value
                 if dbus_message_iter_get_arg_type(&container)
                     == DType.structType {

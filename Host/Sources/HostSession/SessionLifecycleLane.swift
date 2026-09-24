@@ -7,7 +7,7 @@ public struct SessionLifecycleVerdict: Sendable {
     public var stateChangedTo: SessionState?
 }
 
-/// The sans-IO owner of the Host session's W4b lifecycle projection.
+/// The sans-IO owner of the Host session's lifecycle projection.
 ///
 /// The shared Wire machine owns transition policy. This Host-role lane owns
 /// when that machine exists, converts its microsecond timer into the session's

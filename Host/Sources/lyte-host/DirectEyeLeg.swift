@@ -1,16 +1,10 @@
 // DirectEyeLeg: the host's capture leg. A phase-stable 60 Hz screen beat
 // drives HostEye's EyePipeline (scanout import, GPU pixel fingerprint,
-// blit, native VAAPI encode), and encoded access units go straight to the
-// session's sendFrame (or the probe file). No PipeWire, no portal, no
-// Mutter: the compositor cannot wedge a register read.
-//
-// Session levers it honors, from one snapshot per poll: forced-IDR
-// demands (a client 0x10, a path promotion, lifecycle recovery, an
-// unprotectable drop, a fall purge), served on a still screen by
-// re-encoding the retained frame; encoder rate directives (cap plus HRD
-// buffer, applied on the next frame with no reset); the agreed chroma
-// posture (the encoder opens once in it); the quiet video posture; and
-// pre-encode admission against the queued video's latency budget.
+// blit, native VAAPI encode); access units go straight to the session's
+// sendFrame (or the probe file). Per poll it honors one session snapshot:
+// forced-IDR demands (served on a still screen by re-encoding the retained
+// frame), rate directives (no reset), the agreed chroma posture, the quiet
+// video posture, and pre-encode admission against the latency budget.
 
 #if os(Linux)
 
@@ -36,10 +30,9 @@ final class WarmEye {
         self.height = screen.height
     }
 
-    /// The pipeline for the next session, in its chroma posture, with
-    /// its first frame an IDR at the opening rate control. The first
-    /// call opens it with `config`'s encoder posture, which every
-    /// session of a run shares.
+    /// The pipeline for the next session, in its chroma posture, first
+    /// frame an IDR. The first call opens it with `config`'s encoder
+    /// posture, which every session of a run shares.
     func pipeline(
         config: DirectEyeLeg.Config, chroma444: Bool
     ) throws -> EyePipeline {
@@ -89,28 +82,21 @@ final class DirectEyeLeg {
     private(set) var keyframes = 0
     private(set) var missedGrabs = 0
     private(set) var directivesApplied = 0
-    /// E5 audit GAP 1: forced-IDR demands arriving while the screen
-    /// is static are served by re-encoding the last surface — armed
-    /// here, counted for the books.
+    /// An IDR is owed; on a static screen it is served by re-encoding
+    /// the retained surface.
     private var staticIdrWanted = false
-    /// Why the owed IDR is owed (the IDR books' cause tags), attached to
-    /// the keyframe that finally leaves.
+    /// The owed IDR's cause tags, attached to the keyframe that leaves.
     private var pendingCauses: [String] = []
-    /// Frames the session refused (prepare or send errors). Counted and
-    /// printed, never leg-fatal: the session's own end (peer gone, the
-    /// liveness timeout, a failed drain) stops the leg.
+    /// Frames the session refused. Never leg-fatal: the session's own
+    /// end stops the leg.
     private(set) var deliveryFailures = 0
-    /// Changed frames skipped before encode because the queued video
-    /// already held its latency budget.
     private(set) var admission = VideoAdmissionGate()
     private var lastDeliveryFailureWallSeconds = 0.0
     static let refusedIdrRetrySeconds = 1.0 / 60
     private var lastEncodedCaptureUs: UInt64 = 0
     private(set) var staticIdrsServed = 0
-    /// E5 audit item 3: the quiet-desktop heartbeat cadence. One
-    /// retained re-encode per second is enough to keep the clock
-    /// model fed and the wire warm; the full-rate idle floor (and
-    /// ratchet refinement) remain the portal's until post-E5 work.
+    /// Quiet-desktop heartbeat: one retained re-encode per second keeps
+    /// the clock model fed and the wire warm.
     static let keepaliveSeconds = 1.0
     /// The screen beat and the encoder's frame rate.
     static let fps = 60
@@ -120,19 +106,15 @@ final class DirectEyeLeg {
     static let logCheckIntervalMicros: UInt64 = 60_000_000
     private var lastDeliveryWallSeconds = 0.0
     private(set) var keepalivesSent = 0
-    /// The video quiet ladder (postures design): engaged only under
-    /// the key-16 agreement; every step and wake is announced (0x26).
+    /// The video quiet ladder: engaged only under the key-16 agreement;
+    /// every step and wake is announced (0x26).
     private var quietPacer = VideoQuietPacer()
     private(set) var postureAnnouncements = 0
-    /// V-4: true once the encoder runs Rext 4:4:4 — the stats block
-    /// reports the encoder that RAN.
+    /// True once the encoder runs Rext 4:4:4 (what actually ran).
     private(set) var chroma444Active = false
-    /// E5 audit item 4: set when the leg ended because the display's
-    /// geometry changed under it — a clean, deliberate exit, not an
-    /// error.
+    /// The display's geometry changed under the leg: a clean exit, not
+    /// an error.
     private(set) var modeChangeEnded = false
-    /// The session ended under the leg (teardown, liveness timeout, peer
-    /// gone, drain failure).
     private(set) var sessionEnded = false
     /// SIGINT or SIGTERM stopped the leg.
     private(set) var terminationRequested = false
@@ -148,19 +130,15 @@ final class DirectEyeLeg {
     private(set) var cursorShapesSeen = 0
     private(set) var cursorReadFailures = 0
     private(set) var cursorHotspotCorrections = 0
-    /// E3 hotspot self-heal: the derivation at shape-change time uses
-    /// the newest injected pointer against a cursor plane that can lag
-    /// it by a frame mid-motion, so the derived hotspot can be off by
-    /// the lag (the owner's "clicks land beside the arrow"). Once the
-    /// pointer RESTS the compositor has settled the plane exactly at
-    /// pointer − hotspot, so a re-read of the plane position gives the
-    /// exact answer. One armed recheck per shape.
+    /// Hotspot self-heal: mid-motion the plane can lag the newest
+    /// injected pointer by a frame, so the derived hotspot can be off.
+    /// At rest the plane sits exactly at pointer − hotspot, so one armed
+    /// recheck per shape re-derives it.
     private var lastCursorFrame: CursorFrame?
     private var sentHotspot: (x: Int, y: Int)?
     private var hotspotRecheckArmed = false
-    /// The screen observer's stage clocks explain where a late observation
-    /// spent its time. Content cadence is deliberately absent: a 30 fps video
-    /// on a 60 Hz observation grid is normal, not a skipped capture beat.
+    /// Where a late observation spent its time. Content cadence is absent:
+    /// 30 fps video on a 60 Hz grid is normal, not a skipped beat.
     private struct StageClocks {
         var cursorUs: UInt64 = 0
         var grabUs: UInt64 = 0
@@ -191,12 +169,9 @@ final class DirectEyeLeg {
     }
     private var lastStages = StageClocks()
     private var maxStages = StageClocks()
-    /// The janitor (the #84 finding made law): the shell service —
-    /// clipboard D-Bus applies, audio-routing moves, bulk file I/O —
-    /// used to ride the capture thread and stalled it 106 ms at
-    /// connect; a mid-session file drop would stall it for the whole
-    /// write. Now a dedicated thread sweeps every 10 ms and the eye
-    /// only watches. `serviceLock` guards the shared clocks/flag.
+    /// The janitor thread runs the shell service (clipboard D-Bus,
+    /// audio routing, bulk file I/O) so it never stalls the capture
+    /// thread. `serviceLock` guards the shared clocks/flag.
     private let serviceLock = NSLock()
     private var serviceStopRequested = false
     private var serviceMaxMicroseconds: UInt64 = 0
@@ -212,9 +187,8 @@ final class DirectEyeLeg {
         self.file = file
     }
 
-    /// Opens the scanout the leg will watch. The composition root opens it
-    /// before the session exists, so its geometry reaches the input
-    /// injector before the first client event can.
+    /// Opens the scanout before the session exists, so its geometry
+    /// reaches the input injector before the first client event can.
     static func openScreen(device: String) throws -> DirectScreenSource {
         do {
             return try DirectScreenSource(device: device)
@@ -239,14 +213,10 @@ final class DirectEyeLeg {
         let width = screen.width
         let height = screen.height
 
-        // The shell service cadence: the agreed-time pendings (the
-        // 0x19 starting posture, the standing 0x24 cursor shape,
-        // clipboard applies, bulk file I/O, pairing outcomes) flush ONLY
-        // through service() — sendFrame's serviceOnce covers protocol
-        // timers, not the shell. A dedicated janitor thread sweeps it
-        // every 10 ms so the screen beat never stalls on shell IO.
-        // SessionWire is cross-thread by design with `lock` as the
-        // discipline; this thread is service()'s ONLY caller.
+        // Shell pendings (0x19 posture, the 0x24 cursor shape,
+        // clipboard, bulk file I/O, pairing outcomes) flush ONLY through
+        // service(); sendFrame covers protocol timers, not the shell.
+        // This janitor thread is service()'s only caller, every 10 ms.
         if let wire {
             nonisolated(unsafe) let leg = self
             nonisolated(unsafe) let wire = wire
@@ -286,14 +256,10 @@ final class DirectEyeLeg {
             }
         }
 
-        // Chroma is a session posture: the encoder opens once, in the
-        // posture the client's declaration picks. The janitor above is
-        // what receives that declaration, so it runs during the wait.
+        // The encoder opens once, in the chroma the client declares; the
+        // janitor above receives that declaration during the wait.
         let chroma = awaitOpeningChroma()
 
-        // The encoder seat: the native VAAPI pens — zero libavcodec, rate
-        // directives apply live (the RC misc buffer rides the next frame).
-        // The warm eye opens it once and restarts its stream per session.
         let pipeline: EyePipeline
         do {
             pipeline = try eye.pipeline(
@@ -313,9 +279,8 @@ final class DirectEyeLeg {
              (rate directives apply live)
             """)
 
-        // E3: the cursor plane travels as metadata, never as video.
-        // The watcher shares the DRM fd and loop cadence; a session-
-        // less (file-mode) leg has no one to tell, so it skips.
+        // The cursor plane travels as metadata (0x24), never as video;
+        // file mode has no one to tell.
         let cursorWatcher = wire != nil ? EyeCursorWatcher(fd: fd) : nil
         if wire != nil {
             print(cursorWatcher != nil
@@ -336,9 +301,8 @@ final class DirectEyeLeg {
         // The stillness clock: last pixel change or client input.
         var lastActivityWallSeconds = t0
 
-        // Recovery and quiet-desktop traffic do not depend on a fresh pixel
-        // observation. This is deliberately serviced from the 1 ms shell
-        // loop while screen reads stay on their independent 60 Hz grid.
+        // Recovery and keepalive frames run on the 1 ms poll, independent
+        // of the 60 Hz observation grid.
         func serveRetainedFrameIfNeeded(
             _ snapshot: SessionWire.LegSnapshot?
         ) throws -> Bool {
@@ -414,23 +378,20 @@ final class DirectEyeLeg {
 
         var lastCursorPollUs: UInt64 = 0
         while SystemMonotonicClock.nowSeconds - t0 < config.seconds {
-            // One session-lock round trip per poll: end, agreement,
-            // directive, and IDR demand together.
+            // One session-lock round trip per poll.
             let snapshot = wire?.takeLegSnapshot()
             if snapshot?.ended == true {
                 sessionEnded = true
                 break
             }
-            // HS-18: an interrupted run (SIGINT/SIGTERM) exits through
-            // the same door as a completed one, so the audio-routing
+            // A signal exits through the normal door, so audio-routing
             // restore and the typed teardown both happen.
             if lyteTerminationRequested != 0 {
                 print("session: termination signal — closing cleanly")
                 terminationRequested = true
                 break
             }
-            // The cursor plane is read on the screen's own 60 Hz grid, not
-            // every 1 ms poll.
+            // The cursor plane is read on the 60 Hz grid, not every poll.
             let cursorStart = SystemMonotonicClock.nowMicroseconds
             if cursorStart &- lastCursorPollUs >= Self.cursorPollMicroseconds {
                 lastCursorPollUs = cursorStart
@@ -439,11 +400,9 @@ final class DirectEyeLeg {
                     SystemMonotonicClock.nowMicroseconds - cursorStart
             }
 
-            // A Best agreement that lands after the opening wait lapsed
-            // reopens the encoder in Rext 4:4:4 (at most once per
-            // session). The fresh encoder's first frame is the IDR the
-            // client needs; resetting the sampling and identity state
-            // makes the current screen fresh even on a static desktop.
+            // A late Best agreement reopens the encoder in 4:4:4 (once);
+            // resetting sampling and identity makes the current screen
+            // fresh, so the new encoder's first IDR carries it.
             if !pipeline.chroma444,
                ChromaPosture.from(
                    agreedChromaModes: snapshot?.agreedChromaModes
@@ -464,8 +423,7 @@ final class DirectEyeLeg {
                 }
             }
 
-            // Rate directives apply live: the cap becomes the VBR
-            // envelope on the next frame's RC misc buffer.
+            // The cap becomes the next frame's VBR envelope; no reset.
             if let directive = snapshot?.directive {
                 pipeline.setRateControl(
                     bitsPerSecond: Int64(directive.maxBitsPerSecond),
@@ -483,13 +441,9 @@ final class DirectEyeLeg {
                 }
             }
 
-            // Demands are taken EVERY poll, not only when pixels change —
-            // a client recovering on a static desktop must not wait for
-            // the next damage to get its IDR. With no new pixels, the
-            // retained surface still holds the screen: re-encode it as
-            // the IDR, stamped with its ORIGINAL capture time (recovery
-            // re-encodes are quality/dependency events, not network-late
-            // frames).
+            // Demands are taken every poll so recovery on a static desktop
+            // never waits for damage; the retained surface is re-encoded
+            // with its ORIGINAL capture time (not a network-late frame).
             let demand = snapshot?.demand ?? []
             if !demand.isEmpty {
                 pendingCauses += demand.names
@@ -558,9 +512,8 @@ final class DirectEyeLeg {
             }
             changedObservations += 1
             lastActivityWallSeconds = SystemMonotonicClock.nowSeconds
-            // Pre-encode admission: a queue already holding its latency
-            // budget gets no new frame. The fingerprint resets so the
-            // newest pixels are re-observed — and encoded — next beat.
+            // A queue at its latency budget gets no new frame; the reset
+            // fingerprint re-observes the newest pixels next beat.
             if let wire {
                 let posture = wire.videoAdmissionPosture
                 guard admission.admit(
@@ -579,8 +532,7 @@ final class DirectEyeLeg {
             if frames == 0 { pendingCauses.append("opening") }
 
             do {
-                // 1-in-1-out: keyframe truth rides ON THE PACKET, and the
-                // armed causes attach to the IDR when it emerges.
+                // 1-in-1-out: keyframe truth rides on the packet.
                 var deliverStart: UInt64 = 0
                 try pipeline.encodeFresh(forceIDR: forceIdr) {
                     bytes, keyframe in
@@ -601,8 +553,7 @@ final class DirectEyeLeg {
             }
         }
 
-        // No drain: the native seat is 1-in-1-out; nothing is held
-        // back at close.
+        // No drain: the encoder is 1-in-1-out.
         print("""
             direct: eye closed — \(frames) frames, \(bytes) bytes, \
             \(keyframes) IDRs, missed_grabs=\(missedGrabs), \
@@ -633,14 +584,9 @@ final class DirectEyeLeg {
             """)
     }
 
-    /// E3: one cursor poll — fb changes become 0x24s. The hotspot is
-    /// recovered as (last injected pointer − plane CRTC − crop
-    /// origin): the compositor places the plane at pointer − hotspot,
-    /// and i915 has no HOTSPOT props to ask instead. Mid-motion the
-    /// plane can lag the newest injection by a frame, so the derived
-    /// point is clamped into the image; the next shape change
-    /// re-derives it at rest. Plane CRTC requires ATOMIC client cap —
-    /// see `CursorHotspot` / `ScreenSource`.
+    /// One cursor poll: fb changes become 0x24s. The hotspot is
+    /// pointer − plane CRTC − crop origin (i915 has no HOTSPOT props);
+    /// see `CursorHotspot`.
     private func pollCursor(_ watcher: EyeCursorWatcher?) {
         guard let watcher, let wire else { return }
         switch watcher.poll() {
@@ -665,8 +611,7 @@ final class DirectEyeLeg {
                 planeCrtc: plane,
                 crop: .init(x: frame.cropX, y: frame.cropY),
                 width: frame.width, height: frame.height)
-            // The first few shapes print their full inputs so a wrong
-            // hotspot reads straight back to which term lied.
+            // The first shapes print their inputs for diagnosis.
             if cursorShapesSeen <= 6 {
                 let planeDesc = plane.map { "\($0.x),\($0.y)" }
                     ?? "nil"
@@ -698,11 +643,8 @@ final class DirectEyeLeg {
         }
     }
 
-    /// The at-rest half of the hotspot derivation: 150 ms after the
-    /// last pointer injection, plane position = pointer − hotspot
-    /// EXACTLY, so recompute and re-send only if the mid-motion guess
-    /// was wrong. The client wears the corrected shape; the session's
-    /// dedupe passes it because the hotspot differs.
+    /// 150 ms after the last pointer injection the plane sits exactly at
+    /// pointer − hotspot: re-derive, and re-send only if it differs.
     private func recheckHotspotAtRest(
         _ watcher: EyeCursorWatcher, _ wire: SessionWire
     ) {
@@ -744,9 +686,8 @@ final class DirectEyeLeg {
             pixels: frame.pixels))
     }
 
-    /// The chroma posture to open the encoder in: the agreed one, or 4:2:0
-    /// when no declaration lands within the opening wait (a pre-W7 peer)
-    /// or there is no session (file mode).
+    /// The agreed chroma posture, or 4:2:0 when no declaration lands
+    /// within the opening wait or there is no session (file mode).
     private func awaitOpeningChroma() -> ChromaPosture {
         guard let wire else { return .yuv420 }
         let start = SystemMonotonicClock.nowNanoseconds
@@ -761,9 +702,8 @@ final class DirectEyeLeg {
         }
     }
 
-    /// Delivers one access unit with the owed IDR causes attached when it
-    /// is a keyframe. A keyframe the session refused leaves the IDR owed —
-    /// causes included — so the next poll serves it again.
+    /// Delivers one access unit, attaching the owed causes to a keyframe.
+    /// A refused keyframe leaves the IDR (and its causes) owed.
     private func deliverTakingCauses(
         _ packet: UnsafeRawBufferPointer, keyframe: Bool, captureUs: UInt64
     ) {
