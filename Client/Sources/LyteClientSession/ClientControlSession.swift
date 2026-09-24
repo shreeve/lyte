@@ -125,10 +125,14 @@ public struct ClientControlSession: Sendable {
 
     /// Returns the client's declaration exactly once for the shell to send as
     /// its first post-establishment reliable word.
+    /// - Throws: `CapabilityMessageError` when the local capabilities do
+    ///   not encode.
     public mutating func start() throws -> [UInt8]? {
         try capabilities.start()
     }
 
+    /// - Throws: `AudioRoutingAskError` without negotiated key 9 or before
+    ///   the capability exchange settled.
     public func requestHostAudioRouting(
         _ mode: HostAudioRoutingMode
     ) throws -> [UInt8] {
@@ -228,6 +232,8 @@ public struct ClientControlSession: Sendable {
 
     /// Routes every reliable word currently owned by client-control policy.
     /// `nil` leaves media and feature words to their narrower organs.
+    /// - Throws: only `ClientCapabilitySession.receive`'s contract break;
+    ///   hostile bytes become events, never errors.
     public mutating func receiveReliable(
         _ bytes: [UInt8],
         now: ClientTimestamp

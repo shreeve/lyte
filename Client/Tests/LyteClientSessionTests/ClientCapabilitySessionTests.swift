@@ -91,6 +91,28 @@ final class ClientCapabilitySessionTests: XCTestCase {
         XCTAssertTrue(decision.outboundReliable.isEmpty)
     }
 
+    /// The ack carries a status byte the update lacks, so an update that
+    /// fills the 1024 B ceiling cannot be echoed. That is a malformed
+    /// update from this end's view, never an error escaping the session.
+    func testUpdateTooLargeToEchoIsMalformedNotThrown() throws {
+        var session = ClientCapabilitySession(local: local)
+        _ = try session.receive(try CapabilityDeclaration(
+            capabilities: local).encode())
+        var filler = 1_000
+        var update: [UInt8] = []
+        while update.count < CapabilityDeclaration.maxEncodedByteCount {
+            update = try CapabilityUpdate(parameters: [CapabilityParameter(
+                key: 23, value: .text(String(repeating: "x", count: filler))
+            )]).encode()
+            filler += 1
+        }
+        XCTAssertEqual(update.count, CapabilityDeclaration.maxEncodedByteCount)
+
+        let decision = try XCTUnwrap(session.receive(update))
+        XCTAssertEqual(decision.event, .malformed(.update))
+        XCTAssertTrue(decision.outboundReliable.isEmpty)
+    }
+
     func testUnrelatedReliableWordIsNotClaimed() throws {
         var session = ClientCapabilitySession(local: local)
         XCTAssertNil(try session.receive(

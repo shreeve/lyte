@@ -72,6 +72,7 @@ public struct ClientHandshakeInitiator: Sendable {
     private var lastMessage1Micros: UInt64 = 0
     private var finished = false
 
+    /// - Throws: `NoiseError` when the host static is not a valid key.
     public init(
         hostStaticPublicKey: [UInt8],
         clientStatic: NoiseKeyPair,
@@ -95,6 +96,7 @@ public struct ClientHandshakeInitiator: Sendable {
     }
 
     /// The first message-1 carriage.
+    /// - Throws: `WireError` only if the fixed carriage fails to encode.
     public mutating func begin(nowMicros: UInt64) throws -> [UInt8] {
         try message1Carriage(nowMicros: nowMicros)
     }
