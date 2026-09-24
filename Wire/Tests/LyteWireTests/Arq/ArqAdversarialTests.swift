@@ -117,7 +117,7 @@ final class ArqAdversarialTests: XCTestCase {
         var rng = SplitMix64(seed: 0xADD_002)
         runUnderAttack(messageCount: 4) { _, a in
             for _ in 0..<25 {
-                var bytes = rng.bytes(Int.random(in: 0...600, using: &rng))
+                var bytes = rng.bytes(rng.int(in: 0...600))
                 if !bytes.isEmpty, Bool.random(using: &rng) {
                     bytes[0] = Bool.random(using: &rng)
                         ? CtrlMessageType.arqSegment
@@ -147,7 +147,7 @@ final class ArqAdversarialTests: XCTestCase {
                     rawValue: UInt16.random(in: .min ... .max, using: &rng)
                 ),
                 endOfMessage: Bool.random(using: &rng),
-                body: rng.bytes(Int.random(in: 1...32, using: &rng))
+                body: rng.bytes(rng.int(in: 1...32))
             )
             _ = b.ingest(payload: segment.encode(), now: at(500))
         }

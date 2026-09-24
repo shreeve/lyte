@@ -66,7 +66,7 @@ final class VideoCorpusTests: XCTestCase {
                 let geometry = try FecGeometryTable.geometry(
                     forGroupByteCount: frame.count, regime: regime
                 )
-                shards.shuffle(using: &rng)
+                rng.shuffle(&shards)
                 shards.removeLast(geometry.parityShards) // loss at the limit
                 var assembler = VideoAssembler()
                 var units: [DecodeUnit] = []
@@ -131,11 +131,11 @@ final class VideoCorpusTests: XCTestCase {
             let geometry = try FecGeometryTable.geometry(
                 forGroupByteCount: frame.count, regime: regime
             )
-            shards.shuffle(using: &rng)
+            rng.shuffle(&shards)
             shards.removeLast(geometry.parityShards)
             window += shards
             if index % 2 == 1 {
-                window.shuffle(using: &rng) // interleave the frame pair
+                rng.shuffle(&window) // interleave the frame pair
                 try flush(window)
                 window = []
             }
