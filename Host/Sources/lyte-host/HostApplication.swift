@@ -27,7 +27,11 @@ enum HostApplication {}
 
 struct Options {
     var outputPath = "/tmp/lyte-h0a.hevc"
+    /// The leg's wall-clock bound. Given explicitly, the run serves one
+    /// session; a --wire-listen run without it is the service (sessions
+    /// in turn, no clock — HostServiceLoop).
     var seconds = 5.0
+    var secondsGiven = false
     var fps: Int32 = 60
     /// Accepted-and-ignored since E5: the portal-era quality-ratchet
     /// prototype died with its backend. The flag survives parsing so
@@ -120,6 +124,7 @@ struct Options {
                     throw HostError("--seconds needs a positive number")
                 }
                 opts.seconds = v
+                opts.secondsGiven = true
             case "--backend":
                 i += 1
                 // E5: the portal and mutter ScreenCast backends are
@@ -265,6 +270,13 @@ struct Options {
                 + EGL blit, needs CAP_SYS_ADMIN) and encodes native VAAPI
                 HEVC — to Annex-B PATH (default /tmp/lyte-h0a.hevc) or a
                 Lyte-UDP session.
+                  --seconds N       bound the leg to N s and serve one
+                                    session (default 5). A --wire-listen
+                                    run without it is the service: it
+                                    serves sessions in turn with no
+                                    clock, keeping the eye, listening
+                                    socket, advertisement and input
+                                    devices up between them
                   --backend direct  accepted no-op: the direct eye is the
                                     only backend (portal and mutter were
                                     demolished after first-light)
@@ -442,6 +454,308 @@ func errString(_ buf: [CChar]) -> String {
 
 // MARK: - Main
 
+/// The organs of a session-mode run that outlive any one session: the
+/// identity and pairing posture, the consent-gated leaves, the declared
+/// capabilities, the listening socket, the advertisement, and the input
+/// devices. The listening service keeps them across sessions; each
+/// session gets a fresh SessionWire, audio leaf, capture leg and
+/// file-drop shell.
+final class SessionHost {
+    let opts: Options
+    let hostStatic: NoiseKeyPair
+    let allowed: [[UInt8]]?
+    let pairingService: PairingResponderService?
+    let clipboardLeaf: MutterClipboardLeaf?
+    let declared: Capabilities
+    let gateConfig: HandshakeGate.Config
+    /// The listening socket (nil for a wire-out run, whose wire opens
+    /// its own on a kernel-assigned port).
+    let listener: HostListener?
+    let injector: InputInjector?
+    /// Retained for the life of the run: the record stays published
+    /// while the host serves and releasing it withdraws the record.
+    private let advertiser: AvahiAdvertiser?
+    /// The drop directory when file drop came up at bring-up; key 11
+    /// was declared on it.
+    private let dropDirectory: String?
+    /// The bring-up shell goes to the first session; later sessions get
+    /// a fresh shell, which reloads the resume states the previous one
+    /// persisted.
+    private var firstBulkShell: BulkReceiveShell?
+
+    init(opts: Options, screen: DirectScreenSource) throws {
+        self.opts = opts
+        if opts.pair, opts.requirePaired {
+            throw HostError("""
+                --pair admits a not-yet-paired client; \
+                --require-paired contradicts it
+                """)
+        }
+        if !opts.audio, opts.hostAudio == .hostMuted {
+            throw HostError("""
+                --host-audio muted routes audio to the wire \
+                instead of the speakers; --no-audio contradicts it
+                """)
+        }
+
+        // HS-9 setup happens before the socket exists so a bad keystore
+        // fails the run instead of a live session.
+        let keys = try HostStaticKey.loadOrCreate()
+        hostStatic = keys
+        if opts.requirePaired {
+            let store = try PairedClients.load()
+            guard !store.entries.isEmpty else {
+                throw HostError("""
+                    --require-paired with an empty \
+                    keystore would lock every client out — run \
+                    --pair once first
+                    """)
+            }
+            allowed = store.publicKeys
+            print("""
+                pairing: enforcing \(store.entries.count) paired \
+                client static(s) from \(PairedClients.path.path)
+                """)
+        } else {
+            allowed = nil
+        }
+        if opts.pair {
+            var rng = SystemRandomNumberGenerator()
+            let pin = PairingResponderService.mintPin(using: &rng)
+            pairingService = PairingResponderService(
+                pin: Array(pin.utf8),
+                hostStaticPublicKey: keys.publicKey
+            )
+            print("""
+                pairing: PIN \(pin) — enter it on the client \
+                (3 wrong guesses burn it; rerun --pair for a \
+                fresh one)
+                """)
+        } else {
+            pairingService = nil
+        }
+
+        // HS-18 housekeeping before any session traffic: put back a
+        // default sink a SIGKILLed previous run stranded (no-op when
+        // the previous shutdown was clean), and arm the SIGINT/SIGTERM
+        // flag so an interrupted run still walks the restore path.
+        AudioWire.sweepLeftoverRouting()
+        lyteInstallTerminationHandlers()
+
+        // HS-19: the clipboard leaf comes up BEFORE the declaration is
+        // built — key 10 follows the leaf, never the flag alone (a
+        // refused Mutter session must not leave the host promising a
+        // dialect it cannot speak).
+        var leafUp: MutterClipboardLeaf?
+        if opts.clipboard {
+            do {
+                let leaf = try MutterClipboardLeaf(
+                    imagesEnabled: opts.clipboardImages
+                )
+                try leaf.start()
+                leafUp = leaf
+                let tier = opts.clipboardImages
+                    ? """
+                        text + images (PNG, \
+                        \(ClipboardImageWire.maxImageByteCount) B \
+                        image ceiling)
+                        """
+                    : "text only"
+                print("""
+                    clipboard: leaf up — RemoteDesktop-session \
+                    clipboard (Mutter), \(tier), \
+                    \(ClipboardWire.maxTextByteCount) B text ceiling
+                    """)
+            } catch {
+                print("""
+                    clipboard: leaf unavailable (\(error)) — \
+                    clipboard sync OFF this run, key 10 not declared
+                    """)
+            }
+        }
+        clipboardLeaf = leafUp
+
+        // F-3: the file-drop shell comes up BEFORE the declaration is
+        // built — key 11 follows the toggle AND the directory, never
+        // the flag alone (the key-10/leaf precedent: an uncreatable
+        // drop directory must not leave the host promising a dialect
+        // it cannot land bytes for). Consent is this standing toggle;
+        // the shell existing IS the yes, and Wire never sees it.
+        var drop: String?
+        if opts.acceptFiles {
+            let dropDir = opts.acceptFilesDirectory
+                ?? FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent("Downloads").path
+            do {
+                firstBulkShell = try BulkReceiveShell(directoryPath: dropDir)
+                drop = dropDir
+                print("""
+                    files: accepting incoming transfers → \(dropDir) \
+                    (staging + fsync + atomic rename, resumable; \
+                    one transfer at a time)
+                    """)
+            } catch {
+                print("""
+                    files: drop directory unavailable (\(error)) — \
+                    file drop OFF this run, key 11 not declared
+                    """)
+            }
+        }
+        dropDirectory = drop
+
+        // The W7 declaration: key 9 (hostAudioRouting, the HS-18
+        // virtual-sink mute) rides the forward-compat spine whenever
+        // the audio leg exists — the client's control strip gates its
+        // mute button on the intersection, so a --no-audio host
+        // truthfully never declares it. Key 10 (clipboardText, CL-15)
+        // rides the same spine whenever the clipboard leaf is up, and
+        // key 11 (bulkTransfer, F-3) whenever the file-drop shell is.
+        // Key 14 (audioStreamOff, postures design) rides with key 9:
+        // an audio-capable host can always honor "send me nothing".
+        // Key 15 (audioQuietPosture, the tripwire) rides the same
+        // gate: an audio-capable host can always gate its silence.
+        var declared = opts.audio
+            ? Capabilities.wireDefault.declaringHostAudioRouting()
+                .declaringAudioStreamOff()
+                .declaringAudioQuietPosture()
+            : .wireDefault
+        if leafUp != nil {
+            declared = declared.declaringClipboardText()
+            // P-1: key 12 follows the TIER, not the flag alone — the
+            // leaf must be up AND images enabled (a text-only run
+            // truthfully never promises the image dialect, and the
+            // key is independent of key 11's file consent).
+            if opts.clipboardImages {
+                declared = declared.declaringClipboardImages()
+            }
+        }
+        if drop != nil {
+            declared = declared.declaringBulkTransfer()
+        }
+        // E3: key 13 (cursorShape) — the direct eye sends the cursor
+        // plane as metadata, never composited into the video.
+        declared = declared.declaringCursorShape()
+        // Video posture (key 16): the direct eye's keepalive can
+        // always back off honestly — announced, never inferred.
+        declared = declared.declaringVideoQuietPosture()
+
+        // V-4: chroma is declared on PROOF, never a hardcoded
+        // claim. Rext landed in the native pens (#89) — so the proof
+        // is the silicon's own answer, asked at startup: only a
+        // Main444 encode entrypoint declares the Best tier. The
+        // client's singleton declaration picks the session's posture
+        // (declaration-as-choice); the leg reopens the encoder when
+        // a Best agreement lands.
+        if EyeVaapiEncoder.probesMain444() {
+            declared.chromaModes = [
+                CapabilityChroma.yuv420, CapabilityChroma.yuv444,
+            ]
+            print("""
+                chroma: Main444 probe GREEN — declaring \
+                [420, 444] (Best tier open, Rext native pens)
+                """)
+        } else {
+            print("chroma: no Main444 encode entrypoint — declaring [420] only")
+        }
+        self.declared = declared
+
+        // HS-21: arm the retry-cookie dial when asked. A random secret,
+        // process-scoped: the host both mints and verifies with it, and
+        // no cookie needs to survive a restart (an honest client re-dials
+        // with a fresh msg1, drawing a fresh challenge).
+        var gateConfig = HandshakeGate.Config()
+        if opts.requireCookie {
+            var secret = [UInt8](repeating: 0, count: RetryCookie.secretByteCount)
+            for i in secret.indices { secret[i] = UInt8.random(in: 0...255) }
+            gateConfig = HandshakeGate.Config(
+                cookieSecret: secret,
+                cookieEnterThreshold: opts.cookieEnter,
+                cookieExitThreshold: opts.cookieExit
+            )
+            print("""
+                handshake: W8 retry-cookie dial ARMED \
+                (require-cookie engages at \(opts.cookieEnter) msg1/s, \
+                clears at \(opts.cookieExit)/s)
+                """)
+        }
+        self.gateConfig = gateConfig
+
+        // The listening socket binds once for the whole run, so the port
+        // stays bound between sessions.
+        listener = try opts.wireListen.map { try HostListener(port: $0) }
+
+        // HS-10: the advertisement goes up BEFORE the first handshake
+        // wait, so a browsing client can find the host and then connect
+        // to it — commit-and-retain is all Avahi needs (the entry group
+        // lives as long as the D-Bus connection; no servicing loop).
+        var published: AvahiAdvertiser?
+        if opts.advertise, let listenPort = opts.wireListen {
+            do {
+                published = try AvahiAdvertiser(
+                    port: listenPort,
+                    staticPublicKey: keys.publicKey,
+                    interfaceName: opts.advertiseInterface
+                )
+            } catch {
+                print("""
+                    discovery: unavailable (\(error)) — \
+                    manual host:port still works
+                    """)
+            }
+        }
+        advertiser = published
+
+        // E2: kernel-uinput injection is ready before any client can
+        // connect — no compositor session, no D-Bus, one settle at device
+        // create — and already knows the monitor it scales against. The
+        // devices stay up across sessions; each session's end releases
+        // whatever its client left held.
+        injector = makeInputInjector(opts.input)
+        if let injector {
+            injector.noteMonitorExtent(
+                width: UInt32(screen.width), height: UInt32(screen.height))
+            print("""
+                input: injection via \(injector.name) \
+                (echo tuples + lastInputSeq stamping active)
+                """)
+        }
+    }
+
+    /// The file-drop shell for the next session; nil when file drop is
+    /// off, or when the directory stopped being usable.
+    func takeBulkShell() -> BulkReceiveShell? {
+        if let shell = firstBulkShell {
+            firstBulkShell = nil
+            return shell
+        }
+        guard let dropDirectory else { return nil }
+        do {
+            return try BulkReceiveShell(directoryPath: dropDirectory)
+        } catch {
+            print("""
+                files: drop directory unavailable (\(error)) — \
+                file drop OFF this session
+                """)
+            return nil
+        }
+    }
+
+    /// The run is over: destroy the input devices (releasing anything
+    /// still held) and close the clipboard leaf's RemoteDesktop session
+    /// (its selection ownership and pending transfers die with it; the
+    /// connection-owned session can never be stranded by a crash).
+    func stop() {
+        injector?.stop()
+        clipboardLeaf?.stop()
+    }
+}
+
+/// One served session's end and its leg's stream evidence.
+struct ServedSession {
+    var end: HostServiceLoop.SessionEnd
+    var leg: HostServiceLoop.LegEvidence
+}
+
 private extension HostApplication {
 static func run(arguments: [String]) throws {
     lyte_stdout_linebuf()
@@ -484,348 +798,191 @@ static func run(arguments: [String]) throws {
     }
 
     // The scanout opens first: its geometry scales the input injector's
-    // absolute moves, which must work from the first client event.
+    // absolute moves, which must work from the first client event. It
+    // and the eye's GL context stay open for the whole run.
     let screen = try DirectEyeLeg.openScreen(
         device: DirectEyeLeg.Config.defaultDevice)
+    let eye = WarmEye(screen: screen)
+    guard sessionMode else {
+        try runFileLeg(opts, screen: screen, eye: eye)
+        return
+    }
 
+    let host = try SessionHost(opts: opts, screen: screen)
+    defer { host.stop() }
+    var loop = HostServiceLoop(posture: HostServiceLoop.posture(
+        listening: opts.wireListen != nil,
+        secondsGiven: opts.secondsGiven,
+        pairing: opts.pair,
+        seconds: opts.seconds))
+    if loop.posture == .service {
+        print("""
+            service: serving sessions in turn with no session clock — \
+            the eye, listening socket, advertisement and input devices \
+            stay up between sessions
+            """)
+    }
+    while true {
+        let served = try serveSession(
+            host, eye: eye, screen: screen,
+            sessionSeconds: loop.sessionSeconds)
+        switch loop.sessionEnded(served.end, leg: served.leg) {
+        case .serveAnother:
+            print("""
+                service: session \(loop.sessionsServed) closed \
+                (\(served.end)) — awaiting the next client
+                """)
+        case .exit(failure: nil):
+            return
+        case .exit(failure: let failure?):
+            throw HostError(failure)
+        }
+    }
+}
+
+/// The probe mode: one leg into an Annex-B file.
+static func runFileLeg(
+    _ opts: Options, screen: DirectScreenSource, eye: WarmEye
+) throws {
+    guard let file = fopen(opts.outputPath, "wb") else {
+        throw HostError("cannot open \(opts.outputPath) for writing")
+    }
+    let leg = DirectEyeLeg(
+        config: .init(seconds: opts.seconds),
+        screen: screen, eye: eye, wire: nil, file: file)
+    leg.run()
+    fclose(file)
+    let evidence = printLegSummary(leg)
+    print("output: \(opts.outputPath)")
+    var loop = HostServiceLoop(posture: .singleSession(seconds: opts.seconds))
+    if case .exit(failure: let failure?) = loop.sessionEnded(
+        leg.end, leg: evidence) {
+        throw HostError(failure)
+    }
+}
+
+/// One session, from the handshake wait to the books. The wire, the
+/// audio leaf, the leg and the file-drop shell are this session's and
+/// are released before it returns; the host's organs stay up.
+static func serveSession(
+    _ host: SessionHost, eye: WarmEye, screen: DirectScreenSource,
+    sessionSeconds: Double
+) throws -> ServedSession {
+    let opts = host.opts
     // The session comes up BEFORE capture: in Noise mode the host blocks
     // here for the client's handshake (printing the static public key the
     // client must hold), so no frames are encoded for nobody and the
     // first encoded frame is the session's first IDR.
-    var wire: SessionWire?
-    var openingVbvBits: Int?
-    var advertiser: AvahiAdvertiser?
-    var pairingService: PairingResponderService?
-    var clipboardLeaf: MutterClipboardLeaf?
-    var bulkShell: BulkReceiveShell?
-    if sessionMode {
-        if opts.pair, opts.requirePaired {
-            throw HostError("""
-                --pair admits a not-yet-paired client; \
-                --require-paired contradicts it
-                """)
-        }
-        if !opts.audio, opts.hostAudio == .hostMuted {
-            throw HostError("""
-                --host-audio muted routes audio to the wire \
-                instead of the speakers; --no-audio contradicts it
-                """)
-        }
-
-        // HS-9 setup happens before the socket exists so a bad keystore
-        // fails the run instead of a live session.
-        let hostStatic: NoiseKeyPair
-        var allowed: [[UInt8]]?
-        let keys = try HostStaticKey.loadOrCreate()
-        hostStatic = keys
-        if opts.requirePaired {
-            let store = try PairedClients.load()
-            guard !store.entries.isEmpty else {
-                throw HostError("""
-                    --require-paired with an empty \
-                    keystore would lock every client out — run \
-                    --pair once first
-                    """)
-            }
-            allowed = store.publicKeys
-            print("""
-                pairing: enforcing \(store.entries.count) paired \
-                client static(s) from \(PairedClients.path.path)
-                """)
-        }
-        if opts.pair {
-            var rng = SystemRandomNumberGenerator()
-            let pin = PairingResponderService.mintPin(using: &rng)
-            pairingService = PairingResponderService(
-                pin: Array(pin.utf8),
-                hostStaticPublicKey: keys.publicKey
-            )
-            print("""
-                pairing: PIN \(pin) — enter it on the client \
-                (3 wrong guesses burn it; rerun --pair for a \
-                fresh one)
-                """)
-        }
-
-        // HS-18 housekeeping before any session traffic: put back a
-        // default sink a SIGKILLed previous run stranded (no-op when
-        // the previous shutdown was clean), and arm the SIGINT/SIGTERM
-        // flag so an interrupted run still walks the restore path.
-        AudioWire.sweepLeftoverRouting()
-        lyteInstallTerminationHandlers()
-
-        // HS-19: the clipboard leaf comes up BEFORE the declaration is
-        // built — key 10 follows the leaf, never the flag alone (a
-        // refused Mutter session must not leave the host promising a
-        // dialect it cannot speak).
-        if opts.clipboard {
-            do {
-                let leaf = try MutterClipboardLeaf(
-                    imagesEnabled: opts.clipboardImages
-                )
-                try leaf.start()
-                clipboardLeaf = leaf
-                let tier = opts.clipboardImages
-                    ? """
-                        text + images (PNG, \
-                        \(ClipboardImageWire.maxImageByteCount) B \
-                        image ceiling)
-                        """
-                    : "text only"
-                print("""
-                    clipboard: leaf up — RemoteDesktop-session \
-                    clipboard (Mutter), \(tier), \
-                    \(ClipboardWire.maxTextByteCount) B text ceiling
-                    """)
-            } catch {
-                print("""
-                    clipboard: leaf unavailable (\(error)) — \
-                    clipboard sync OFF this run, key 10 not declared
-                    """)
-            }
-        }
-
-        // F-3: the file-drop shell comes up BEFORE the declaration is
-        // built — key 11 follows the toggle AND the directory, never
-        // the flag alone (the key-10/leaf precedent: an uncreatable
-        // drop directory must not leave the host promising a dialect
-        // it cannot land bytes for). Consent is this standing toggle;
-        // the shell existing IS the yes, and Wire never sees it.
-        if opts.acceptFiles {
-            let dropDir = opts.acceptFilesDirectory
-                ?? FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent("Downloads").path
-            do {
-                let shell = try BulkReceiveShell(directoryPath: dropDir)
-                bulkShell = shell
-                print("""
-                    files: accepting incoming transfers → \(dropDir) \
-                    (staging + fsync + atomic rename, resumable; \
-                    one transfer at a time)
-                    """)
-            } catch {
-                print("""
-                    files: drop directory unavailable (\(error)) — \
-                    file drop OFF this run, key 11 not declared
-                    """)
-            }
-        }
-
-        // The W7 declaration: key 9 (hostAudioRouting, the HS-18
-        // virtual-sink mute) rides the forward-compat spine whenever
-        // the audio leg exists — the client's control strip gates its
-        // mute button on the intersection, so a --no-audio host
-        // truthfully never declares it. Key 10 (clipboardText, CL-15)
-        // rides the same spine whenever the clipboard leaf is up, and
-        // key 11 (bulkTransfer, F-3) whenever the file-drop shell is.
-        // Key 14 (audioStreamOff, postures design) rides with key 9:
-        // an audio-capable host can always honor "send me nothing".
-        // Key 15 (audioQuietPosture, the tripwire) rides the same
-        // gate: an audio-capable host can always gate its silence.
-        var declared = opts.audio
-            ? Capabilities.wireDefault.declaringHostAudioRouting()
-                .declaringAudioStreamOff()
-                .declaringAudioQuietPosture()
-            : .wireDefault
-        if clipboardLeaf != nil {
-            declared = declared.declaringClipboardText()
-            // P-1: key 12 follows the TIER, not the flag alone — the
-            // leaf must be up AND images enabled (a text-only run
-            // truthfully never promises the image dialect, and the
-            // key is independent of key 11's file consent).
-            if opts.clipboardImages {
-                declared = declared.declaringClipboardImages()
-            }
-        }
-        if bulkShell != nil {
-            declared = declared.declaringBulkTransfer()
-        }
-        // E3: key 13 (cursorShape) — the direct eye sends the cursor
-        // plane as metadata, never composited into the video.
-        declared = declared.declaringCursorShape()
-        // Video posture (key 16): the direct eye's keepalive can
-        // always back off honestly — announced, never inferred.
-        declared = declared.declaringVideoQuietPosture()
-
-        // V-4: chroma is declared on PROOF, never a hardcoded
-        // claim. Rext landed in the native pens (#89) — so the proof
-        // is the silicon's own answer, asked at startup: only a
-        // Main444 encode entrypoint declares the Best tier. The
-        // client's singleton declaration picks the session's posture
-        // (declaration-as-choice); the leg reopens the encoder when
-        // a Best agreement lands.
-        if EyeVaapiEncoder.probesMain444() {
-            declared.chromaModes = [
-                CapabilityChroma.yuv420, CapabilityChroma.yuv444,
-            ]
-            print("""
-                chroma: Main444 probe GREEN — declaring \
-                [420, 444] (Best tier open, Rext native pens)
-                """)
-        } else {
-            print("chroma: no Main444 encode entrypoint — declaring [420] only")
-        }
-
-        // HS-21: arm the retry-cookie dial when asked. A random secret,
-        // process-scoped: the host both mints and verifies with it, and
-        // no cookie needs to survive a restart (an honest client re-dials
-        // with a fresh msg1, drawing a fresh challenge).
-        var gateConfig = HandshakeGate.Config()
-        if opts.requireCookie {
-            var secret = [UInt8](repeating: 0, count: RetryCookie.secretByteCount)
-            for i in secret.indices { secret[i] = UInt8.random(in: 0...255) }
-            gateConfig = HandshakeGate.Config(
-                cookieSecret: secret,
-                cookieEnterThreshold: opts.cookieEnter,
-                cookieExitThreshold: opts.cookieExit
-            )
-            print("""
-                handshake: W8 retry-cookie dial ARMED \
-                (require-cookie engages at \(opts.cookieEnter) msg1/s, \
-                clears at \(opts.cookieExit)/s)
-                """)
-        }
-
-        let w = try SessionWire(
-            listenPort: opts.wireListen,
-            peer: opts.wireOut,
-            rateBitsPerSecond: Int(opts.wireRateMbps * 1_000_000),
-            capabilities: declared,
-            allowedClientStatics: allowed,
-            handshakeGateConfig: gateConfig,
-            pairing: pairingService,
-            onPairingEvent: handlePairingEvent
-        )
-        // HS-10: the advertisement goes up BEFORE the handshake wait,
-        // so a browsing client can find the host and then connect to
-        // it — commit-and-retain is all Avahi needs (the entry group
-        // lives as long as the D-Bus connection; no servicing loop).
-        if opts.advertise, let listenPort = opts.wireListen {
-            do {
-                advertiser = try AvahiAdvertiser(
-                    port: listenPort,
-                    staticPublicKey: hostStatic.publicKey,
-                    interfaceName: opts.advertiseInterface
-                )
-            } catch {
-                print("""
-                    discovery: unavailable (\(error)) — \
-                    manual host:port still works
-                    """)
-            }
-        }
-        // E2: kernel-uinput injection is ready before any client can
-        // connect — no compositor session, no D-Bus, one settle at device
-        // create — and already knows the monitor it scales against.
-        if let injector = makeInputInjector(opts.input) {
-            w.inputInjector = injector
-            w.noteMonitorExtent(
-                width: UInt32(screen.width), height: UInt32(screen.height))
-            print("""
-                input: injection via \(injector.name) \
-                (echo tuples + lastInputSeq stamping active)
-                """)
-        }
-        let awaitOutcome: SessionWire.ClientAwaitOutcome
-        do {
-            // A listening service waits for its client as long as it
-            // takes; a wire-out run gives its peer two minutes.
-            awaitOutcome = try w.awaitClient(
-                hostStatic: hostStatic,
-                timeoutSeconds: opts.wireListen != nil ? nil : 120,
-                stopRequested: { lyteTerminationRequested != 0 })
-        } catch {
-            w.shutdown(reason: .shuttingDown, lingerSeconds: 0)
-            throw error
-        }
-        if awaitOutcome == .terminationRequested {
-            print("""
-                session: termination requested before handshake — \
-                clean stop
-                """)
-            w.shutdown(reason: .shuttingDown, lingerSeconds: 0)
-            w.inputInjector?.stop()
-            clipboardLeaf?.stop()
-            bulkShell?.teardown()
-            withExtendedLifetime(advertiser) {}
-            return
-        }
-        wire = w
-        print("""
-            session: up — pacer \(opts.wireRateMbps) Mbps, per-packet \
-            TOS (video 0xA0 / ctrl+audio+repairs 0xC0), 1 Hz beacon \
-            on CTRL
-            """)
-
-        // HS-20: the estimator's ceiling reaches the encoder as rate
-        // directives — the direct leg applies them live (RC misc
-        // buffer on the next frame). The baseline mirrors the native
-        // seat's opening posture: VBR under the wire-rate cap, no CBR
-        // average, VBV at the unprotectable-frame guard's ceiling
-        // (HS-25: a squeeze→clean RESTORE returns to the guarded
-        // posture and can never re-open the >255-shard hole).
-        let guardBits = w.worstCaseProtectableFrameCeiling * 8
-        openingVbvBits = guardBits
-        if opts.vbvReconfigure {
-            let rateBits = Int(opts.wireRateMbps * 1_000_000)
-            // The native seat applies rate moves without a reset BY
-            // CONSTRUCTION (no libavcodec, no hidden NVENC reset), so
-            // the ladder keeps the posture the vendored no-reset lib
-            // had to prove: half-rungs and exact tightens (HS-33).
-            // The loosening sustain stays at HS-27's 10 s DELIBERATELY
-            // — an eager sustain was measured live to chase every
-            // climb into a zero-loss floor limit cycle (2026-07-29
-            // armed A/B).
-            w.armEncoderVbv(EncoderVbvConfig(
-                fps: Int(opts.fps),
-                baselineAverageBitsPerSecond: nil,
-                baselineMaxBitsPerSecond: rateBits,
-                baselineVbvBits: guardBits,
-                rungsPerOctave: 2,
-                exactTighten: true
-            ))
-        } else {
-            print("""
-                encoder-vbv: DISABLED (--no-vbv-reconfigure) — the \
-                opening posture rides the whole run
-                """)
-        }
-
-        // HS-19: the clipboard loop — client 0x1A sets apply through
-        // the leaf; leaf-observed changes (genuine copies AND the
-        // applies' own echoes, which the session's book suppresses)
-        // flow back through noteHostClipboardChanged. All of it rides
-        // the video tick's off-lock service pass.
-        if let leaf = clipboardLeaf {
-            w.clipboardApplyHandler = { [weak leaf] text in
-                leaf?.apply(text: text)
-            }
-            w.clipboardServiceHook = { [weak leaf] in
-                leaf?.service()
-            }
-            leaf.onLocalChange = { [weak w] text in
-                w?.noteHostClipboardChanged(text)
-            }
-            // P-1: the image loop rides the same seams — client
-            // images apply through the leaf; leaf-observed image
-            // copies (genuine AND the applies' echoes) flow back
-            // through the session's shared book.
-            if opts.clipboardImages {
-                w.clipboardImageApplyHandler = { [weak leaf] data in
-                    leaf?.apply(imageData: data)
-                }
-                leaf.onLocalImageChange = { [weak w] data in
-                    w?.noteHostClipboardImageChanged(data)
-                }
-            }
-        }
-
-        // F-3: the file-drop loop — chan-8 bulk messages buffered
-        // under the session lock, driven through the shell (disk IO,
-        // hashing) on the same off-lock service pass the clipboard
-        // rides; the shell's replies re-enter through sendBulk.
-        w.bulkShell = bulkShell
+    let w = try SessionWire(
+        listener: host.listener,
+        peer: opts.wireOut,
+        rateBitsPerSecond: Int(opts.wireRateMbps * 1_000_000),
+        capabilities: host.declared,
+        allowedClientStatics: host.allowed,
+        handshakeGateConfig: host.gateConfig,
+        pairing: host.pairingService,
+        onPairingEvent: handlePairingEvent
+    )
+    // The wire's sender thread, media sockets, wake eventfd and shell
+    // hooks end with the session, whatever path leaves this function.
+    defer { w.release() }
+    w.inputInjector = host.injector
+    let awaitOutcome: SessionWire.ClientAwaitOutcome
+    do {
+        // A listening service waits for its client as long as it
+        // takes; a wire-out run gives its peer two minutes.
+        awaitOutcome = try w.awaitClient(
+            hostStatic: host.hostStatic,
+            timeoutSeconds: opts.wireListen != nil ? nil : 120,
+            stopRequested: { lyteTerminationRequested != 0 })
+    } catch {
+        w.shutdown(reason: .shuttingDown, lingerSeconds: 0)
+        throw error
     }
+    if awaitOutcome == .terminationRequested {
+        print("""
+            session: termination requested before handshake — \
+            clean stop
+            """)
+        w.shutdown(reason: .shuttingDown, lingerSeconds: 0)
+        return ServedSession(
+            end: .terminatedBeforeHandshake,
+            leg: .init(frames: 0, firstPacketStartsStream: false))
+    }
+    print("""
+        session: up — pacer \(opts.wireRateMbps) Mbps, per-packet \
+        TOS (video 0xA0 / ctrl+audio+repairs 0xC0), 1 Hz beacon \
+        on CTRL
+        """)
+
+    // HS-20: the estimator's ceiling reaches the encoder as rate
+    // directives — the direct leg applies them live (RC misc
+    // buffer on the next frame). The baseline mirrors the native
+    // seat's opening posture: VBR under the wire-rate cap, no CBR
+    // average, VBV at the unprotectable-frame guard's ceiling
+    // (HS-25: a squeeze→clean RESTORE returns to the guarded
+    // posture and can never re-open the >255-shard hole).
+    let guardBits = w.worstCaseProtectableFrameCeiling * 8
+    if opts.vbvReconfigure {
+        let rateBits = Int(opts.wireRateMbps * 1_000_000)
+        // The native seat applies rate moves without a reset BY
+        // CONSTRUCTION (no libavcodec, no hidden NVENC reset), so
+        // the ladder keeps the posture the vendored no-reset lib
+        // had to prove: half-rungs and exact tightens (HS-33).
+        // The loosening sustain stays at HS-27's 10 s DELIBERATELY
+        // — an eager sustain was measured live to chase every
+        // climb into a zero-loss floor limit cycle (2026-07-29
+        // armed A/B).
+        w.armEncoderVbv(EncoderVbvConfig(
+            fps: Int(opts.fps),
+            baselineAverageBitsPerSecond: nil,
+            baselineMaxBitsPerSecond: rateBits,
+            baselineVbvBits: guardBits,
+            rungsPerOctave: 2,
+            exactTighten: true
+        ))
+    } else {
+        print("""
+            encoder-vbv: DISABLED (--no-vbv-reconfigure) — the \
+            opening posture rides the whole run
+            """)
+    }
+
+    // HS-19: the clipboard loop — client 0x1A sets apply through
+    // the leaf; leaf-observed changes (genuine copies AND the
+    // applies' own echoes, which the session's book suppresses)
+    // flow back through noteHostClipboardChanged. All of it rides
+    // the video tick's off-lock service pass.
+    if let leaf = host.clipboardLeaf {
+        w.clipboardApplyHandler = { [weak leaf] text in
+            leaf?.apply(text: text)
+        }
+        w.clipboardServiceHook = { [weak leaf] in
+            leaf?.service()
+        }
+        leaf.onLocalChange = { [weak w] text in
+            w?.noteHostClipboardChanged(text)
+        }
+        // P-1: the image loop rides the same seams — client
+        // images apply through the leaf; leaf-observed image
+        // copies (genuine AND the applies' echoes) flow back
+        // through the session's shared book.
+        if opts.clipboardImages {
+            w.clipboardImageApplyHandler = { [weak leaf] data in
+                leaf?.apply(imageData: data)
+            }
+            leaf.onLocalImageChange = { [weak w] data in
+                w?.noteHostClipboardImageChanged(data)
+            }
+        }
+    }
+
+    // F-3: the file-drop loop — chan-8 bulk messages buffered
+    // under the session lock, driven through the shell (disk IO,
+    // hashing) on the same off-lock service pass the clipboard
+    // rides; the shell's replies re-enter through sendBulk.
+    let bulkShell = host.takeBulkShell()
+    w.bulkShell = bulkShell
 
     // HS-15: audio comes up with the session, on its own capture loop
     // thread — continuous 5 ms CBR from establishment, silence
@@ -834,14 +991,18 @@ static func run(arguments: [String]) throws {
     // failure: the screen must stream even if audio cannot.
     // HS-18: the leaf comes up in the --host-audio posture, and a
     // capability-negotiated client can flip it (0x18) — the handler
-    // below rebuilds the leaf in the other routing.
+    // below rebuilds the leaf in the other routing. Its loop deadline
+    // is only a backstop behind stop(); a service session has none of
+    // its own, so the backstop is a year.
+    let audioSeconds = sessionSeconds.isFinite
+        ? sessionSeconds + 20.0 : 366 * 86_400
     var audioWire: AudioWire?
-    if sessionMode, opts.audio, let w = wire {
+    if opts.audio {
         do {
             let audio = try AudioWire(
                 wire: w, bitrate: opts.audioBitrate, mode: opts.hostAudio
             )
-            audio.start(seconds: opts.seconds + 20.0)
+            audio.start(seconds: audioSeconds)
             audioWire = audio
             w.setInitialAudioRouting(opts.hostAudio)
             w.audioRoutingHandler = { mode in
@@ -868,7 +1029,7 @@ static func run(arguments: [String]) throws {
                     let flipped = try AudioWire(
                         wire: w, bitrate: opts.audioBitrate, mode: mode
                     )
-                    flipped.start(seconds: opts.seconds + 20.0)
+                    flipped.start(seconds: audioSeconds)
                     audioWire = flipped
                     return true
                 } catch {
@@ -881,7 +1042,7 @@ static func run(arguments: [String]) throws {
                         wire: w, bitrate: opts.audioBitrate,
                         mode: opts.hostAudio
                     ) {
-                        back.start(seconds: opts.seconds + 20.0)
+                        back.start(seconds: audioSeconds)
                         audioWire = back
                     }
                     return false
@@ -899,303 +1060,43 @@ static func run(arguments: [String]) throws {
         }
     }
 
-    var file: UnsafeMutablePointer<FILE>?
-    if !sessionMode {
-        guard let f = fopen(opts.outputPath, "wb") else {
-            throw HostError("cannot open \(opts.outputPath) for writing")
-        }
-        file = f
-    }
-
     // E1/E5: the direct eye is capture AND encode — encoded access
-    // units go straight to the wire (or the probe file).
+    // units go straight to the wire.
     let leg = DirectEyeLeg(
         config: .init(
-            seconds: opts.seconds,
-            bitrateBitsPerSecond: wire != nil
-                ? Int64(opts.wireRateMbps * 1_000_000) : 0,
-            vbvBits: openingVbvBits),
-        screen: screen, wire: wire, file: file)
+            seconds: sessionSeconds,
+            bitrateBitsPerSecond: Int64(opts.wireRateMbps * 1_000_000),
+            vbvBits: guardBits),
+        screen: screen, eye: eye, wire: w, file: nil)
     leg.run()
 
-    if let file { fclose(file) }
-
     // HS-15: quit the audio loop BEFORE the teardown so the last audio
-    // shards ride out ahead of the 0x0A, not into a closed session.
-    audioWire?.stop()
+    // shards ride out ahead of the 0x0A, not into a closed session. The
+    // routing handler can no longer run: the leg's janitor has stopped.
+    let finalAudio = audioWire
+    finalAudio?.stop()
+    audioWire = nil
 
     // HS-11: the orderly exit — a typed SessionTeardown on the reliable
     // stream (retransmitted until acknowledged or patience runs out), so
     // the client learns the session ended instead of inferring it.
-    wire?.shutdown(reason: .shuttingDown)
-    // HS-13: close the Mutter RemoteDesktop session (uinput devices die
-    // with the process either way).
-    wire?.inputInjector?.stop()
-    // HS-19: close the clipboard leaf's RemoteDesktop session (its
-    // selection ownership and pending transfers die with it; the
-    // connection-owned session can never be stranded by a crash).
-    clipboardLeaf?.stop()
+    w.shutdown(reason: .shuttingDown)
+    // E2: the uinput devices outlive the session; nothing its client
+    // held may stay pressed.
+    host.injector?.releaseHeld()
+    // HS-19: the leaf outlives the session; stop reporting into it.
+    host.clipboardLeaf?.onLocalChange = nil
+    host.clipboardLeaf?.onLocalImageChange = nil
     // F-3: the receiving end's one resume obligation — persist the
     // mid-flight BulkResumeState beside its staging file so the next
     // session's re-offer resumes from the gap, sha-exact.
     bulkShell?.teardown()
 
-    if let failure = leg.lastError {
-        throw HostError(failure)
-    }
-    if leg.frames == 0 {
-        throw HostError("""
-            direct eye produced no frames in \
-            \(Int(opts.seconds))s
-            """)
-    }
-    print("""
-
-    done: \(leg.frames) frames encoded (direct eye), \
-    \(leg.keyframes) IDR, \(leg.bytes) bytes, \
-    missed_grabs \(leg.missedGrabs), \
-    rate directives applied \(leg.directivesApplied)
-    """)
-    // The stream-startability gate: the native encoder must open with
-    // VPS/SPS/PPS + IRAP or the client can never join mid-life.
-    let directNals = AnnexBCheck.nalUnits(in: leg.firstPacket)
-    print("first packet NALs: \(AnnexBCheck.summary(of: leg.firstPacket))")
-    guard AnnexBCheck.startsWithParameterSetsAndIrap(leg.firstPacket) else {
-        throw HostError("""
-            the direct eye's first packet does not begin \
-            with VPS/SPS/PPS + an IRAP picture (got: \
-            \(directNals.map { HevcNalType.name($0.type) }.joined(separator: " ")))
-            """)
-    }
-    print("first packet starts with parameter sets + IDR: OK")
-
-    // The session books — the wire half is backend-agnostic evidence.
-    if let wire {
-        let t = wire.pacerTelemetry
-        let c = wire.counters
-        let s = wire.sessionCounters
-        let o = wire.outboxCounters
-        // HS-19: the leaf's own books (byte-level transfer evidence),
-        // appended to the clipboard line when the leaf ran.
-        // HS-20: the final standing directive, if any moved the encoder.
-        var vbvFinal = ""
-        if let d = wire.lastVbvDirective {
-            let avg = d.averageBitsPerSecond
-                .map { " avg \($0 / 1_000) kbps," } ?? ""
-            vbvFinal = """
-                 — final\(avg) max \(d.maxBitsPerSecond / 1_000) \
-                kbps, vbv \(d.vbvBits / 8) B \
-                (ceiling \(d.frameByteCeiling) B)
-                """
-        }
-        // F-3: the shell's own books (chunk/byte-level evidence),
-        // appended to the files line when the shell ran.
-        var bulkShellStats = ""
-        if let shell = bulkShell {
-            let b = shell.counters
-            bulkShellStats = " (shell: \(b.offersAccepted) accepted"
-            bulkShellStats += ", \(b.chunksStored) chunks"
-            bulkShellStats += " / \(b.bytesStored) B stored"
-            bulkShellStats += ", \(b.filesCompleted) completed"
-            bulkShellStats += ", \(b.transfersAborted) aborted"
-            bulkShellStats += ", \(b.offersRefusedBusy) busy"
-            bulkShellStats += ", \(b.storageFailures) storage failures"
-            bulkShellStats += ", \(b.resumeStatesLoaded) resumes loaded)"
-        }
-        var clipboardLeafStats = ""
-        if let leaf = clipboardLeaf {
-            clipboardLeafStats = " (leaf: \(leaf.appliesTaken) applies"
-            clipboardLeafStats += ", \(leaf.changesReported) changes reported"
-            clipboardLeafStats += ", \(leaf.imageAppliesTaken) image applies"
-            clipboardLeafStats += ", \(leaf.imageChangesReported) image changes"
-            clipboardLeafStats += ", \(leaf.transfersServed) transfers served"
-            clipboardLeafStats += ", \(leaf.transfersFailed) failed"
-            clipboardLeafStats += ", \(leaf.readsAbandoned) reads abandoned"
-            clipboardLeafStats += ", \(leaf.nonTextChangesIgnored) non-text ignored"
-            clipboardLeafStats += ", \(leaf.baselineReplaysSkipped) baseline skipped)"
-        }
-        print("""
-        session: \(c.framesIngested) frames → \(c.shardsEnqueued) shards → \
-        \(o.datagramsSent) datagrams (\(o.bytesSent) B) in \
-        \(t.batches) paced batches; max batch wire time \
-        \(t.maxBatchWireTimeNS) ns (quantum 1000000); freshVideo max queue \
-        delay \(t[.freshVideo].maxQueueDelayNS) ns
-        socket: \(o.wouldBlockCount) would-block retries, pending max \
-        \(o.pendingMaxDatagrams) datagrams / \
-        \(o.pendingMaxBytes) B; audio blocked \
-        \(o.audioWouldBlockCount) times, outbox max \
-        \(o.audioOutboxMaxNS) ns at seq \
-        \(o.audioWorstSeq.map(String.init) ?? "—") \
-        (enqueued/accepted \
-        \(o.audioWorstEnqueuedAtNS.map(String.init) ?? "—")/\
-        \(o.audioWorstAcceptedAtNS.map(String.init) ?? "—"), \
-        behind video \(o.audioWorstBlockedByVideo)); kernel sndbuf \
-        \(wire.socketSendBufferBytes) B, outq max \
-        \(wire.socketOutqMaxBytes) B; latency lane sndbuf \
-        \(wire.latencySocketSendBufferBytes) B, outq max \
-        \(wire.latencySocketOutqMaxBytes) B; ENOBUFS \
-        \(o.noBufferCount), outq query failures \
-        \(wire.socketOutqQueryFailures); pressure \
-        \(wire.kernelPressureState), video debt \
-        \(wire.kernelVideoServiceDebtNS) ns, EAGAIN video/latency \
-        \(o.videoWouldBlockCount)/\
-        \(o.latencyWouldBlockCount), ENOBUFS video/latency \
-        \(o.videoNoBufferCount)/\
-        \(o.latencyNoBufferCount), transient send/receive errors \
-        \(o.transientErrors)/\(wire.receiveTransientErrors), stale fresh shed \
-        \(o.freshVideoShedDatagrams) datagrams / \
-        \(o.freshVideoShedBytes) B
-        session: \(s.beaconsSent) beacons, \(s.beaconEchoes) echoes \
-        (last offset \(wire.clock.lastOffsetMicroseconds.map(String.init) ?? "—") µs, \
-        min rtt \(wire.clock.minRttMicroseconds.map(String.init) ?? "—") µs), \
-        \(s.idrRequests) IDR requests \
-        (\(s.idrRequestsSupersededByKeyframe) superseded retries), \
-        \(s.unsealFailures) unseal failures, \
-        \(s.ctrlQueueFullRefusals)/\(s.bulkQueueFullRefusals) ctrl/bulk \
-        arq queue-full refusals, \
-        \(s.feedbackDatagrams) feedback datagrams, \
-        \(s.handshakesThrottled) msg1 throttled
-        handshake-flood: \(s.handshakeChallengesMinted) cookies minted \
-        (0x13), \(s.handshakeCookiesVerified) verified / \
-        \(s.handshakeCookiesRejected) rejected (0x14), require-cookie now \
-        \(wire.handshakeCookieMode ? "ON" : "off")
-        lifecycle: \(s.modeTransitionsSent) mode transitions, \
-        \(s.videoFramesSuppressed) frames suppressed (FROZEN/closed), \
-        \(s.videoFramesUnprotectable) dropped unprotectable \
-        (ceiling \(wire.protectableFrameCeiling) B), \
-        final state \(wire.lifecycleState.map { "\($0)" } ?? "—") \
-        (wire mode \(wire.currentWireMode.map { "\($0)" } ?? "—"))
-        chroma: agreed \(wire.agreedChromaModes.map { "\($0)" } ?? "— (no declaration)"), \
-        encoder \(leg.chroma444Active ? "4:4:4 (Rext)" : "4:2:0") (native VAAPI)
-        input: \(s.inputEventsReceived) events received, \
-        \(wire.inputInjected) injected \
-        (\(wire.inputInjectFailures) failed), \
-        \(s.inputEchoTuplesSent) echo tuples sent; receive→inject \
-        p50 \(wire.inputLatency.p50.map(String.init) ?? "—") µs / \
-        p99 \(wire.inputLatency.p99.map(String.init) ?? "—") µs / \
-        max \(wire.inputLatency.maxValue.map(String.init) ?? "—") µs\
-        \(Self.windowNote(wire.inputLatency, SessionWire.inputLatencyWindow))
-        audio: \(s.audioPacketsIngested) packets → \
-        \(s.audioDatagramsEnqueued) datagrams \
-        (\(s.audioGroupsCompleted) RS 4+2 groups, \
-        \(s.audioGroupsAbandoned) abandoned), \
-        \(s.audioPacketsSuppressed) suppressed, \
-        \(wire.audioSendFailures) send failures, \
-        \(wire.audioPacketsDroppedPreSession) dropped pre-session; \
-        max audio queue delay \(t[.audio].maxQueueDelayNS) ns; \
-        mailbox depth max \(wire.audioMailboxMaxDepth), \
-        dwell p99 \(wire.audioMailboxDwell.p99.map(String.init) ?? "—") ns / \
-        max \(wire.audioMailboxMaxDwellNS) ns\
-        \(Self.windowNote(
-            wire.audioMailboxDwell, SessionWire.audioMailboxDwellWindow
-        )), \
-        overflows \(wire.audioMailboxOverflows)
-        session-lock: video prepare max \(wire.videoPrepareMaxNS) ns off-lock, \
-        commit wait/hold max \(wire.videoCommitLockWaitMaxNS)/\
-        \(wire.videoCommitLockHoldMaxNS) ns, service/receive max \
-        \(wire.serviceOnceMaxNS)/\(wire.receiveAllMaxNS) ns
-        audio-routing: final \(wire.currentAudioRouting), \
-        \(s.audioRoutingRequestsReceived) flip requests, \
-        \(s.audioRoutingStatusesSent) statuses sent
-        clipboard: leaf \(clipboardLeaf != nil ? "ACTIVE" : "none"), \
-        \(s.clipboardSetsReceived) sets received, \
-        \(s.clipboardAnnouncesSent) announces sent, \
-        \(s.clipboardAnnouncesSuppressed) suppressed\(clipboardLeafStats)
-        cursor: \(s.cursorShapesSent) shapes sent (0x24), \
-        \(s.cursorShapesSuppressed) suppressed
-        clipboard-images: tier \(opts.clipboardImages ? "ON" : "off"), \
-        \(wire.clipboardImageCounters.sharesCompleted)/\
-        \(wire.clipboardImageCounters.sharesStarted) shares completed, \
-        \(wire.clipboardImageCounters.imagesApplied) applied, \
-        \(wire.clipboardImageCounters.sharesSuppressed) suppressed, \
-        \(wire.clipboardImageCounters.receivesRefused) refused, \
-        \(wire.clipboardImageCounters.sharesAborted)+\
-        \(wire.clipboardImageCounters.receivesAborted) aborted
-        files: \(bulkShell != nil ? "ACCEPTING" : "off"), \
-        \(s.bulkMessagesReceived) bulk messages received, \
-        \(s.bulkArqDatagramsSent) chan-8 datagrams sent\(bulkShellStats)
-        estimator: rate \(wire.estimatedRate / 1_000) kbps \
-        (pacer \(wire.pacerRate / 1_000) kbps, ceiling \
-        \(Int(opts.wireRateMbps * 1_000)) kbps), delivery \
-        \(wire.measuredDeliveryRate.map { "\($0 / 1_000) kbps" } ?? "—") \
-        (burst max \(wire.deliveryRate.map { "\($0 / 1_000)" } ?? "—"), \
-        belief \(wire.capacityBelief.map { "\($0 / 1_000)" } ?? "—")), \
-        queuing delay \(wire.queuingDelayMicros.map { "\($0) µs" } ?? "—"); \
-        \(wire.estimatorStats.reportsIngested) reports \
-        (\(s.feedbackReportsParsed) parsed, \
-        \(s.feedbackReportsMalformed) malformed), \
-        \(wire.estimatorStats.deliverySamples) delivery samples \
-        (\(wire.estimatorStats.dispersionSamplesMatched) matched / \
-        \(wire.estimatorStats.dispersionSamplesUnmatched) unmatched; \
-        \(wire.estimatorStats.honestSamples) honest / \
-        \(wire.estimatorStats.censoredSamples) censored full trains \
-        (\(wire.estimatorStats.stretchedTrainsRecused) hole-recused, \
-        \(wire.estimatorStats.burstGeometryTrainsRecused) burst-recused), \
-        \(wire.estimatorStats.beliefRaises) belief raises / \
-        \(wire.estimatorStats.beliefDemotions) demotions), \
-        \(wire.estimatorStats.downshifts) downshifts \
-        (\(wire.estimatorStats.lossDownshifts) loss, \
-        \(wire.estimatorStats.overuseVerdicts) overuse verdicts, \
-        \(wire.estimatorStats.selfReferenceHolds) self-ref holds, \
-        \(wire.estimatorStats.stallHolds) stall holds, \
-        \(wire.estimatorStats.fallDeferrals) dwell deferrals, \
-        \(wire.estimatorStats.sparseEvidenceHolds) sparse holds), \
-        \(wire.estimatorStats.upshifts) upshifts \
-        (\(wire.estimatorStats.upshiftsDamped) probe-damped, \
-        \(wire.estimatorStats.upshiftsCadenceHeld) cadence-held), \
-        \(s.rateChanges) pacer moves, \
-        \(s.fallPurges) fall purges (\(s.fallPurgedVideoBytes) B dropped \
-        pre-stale); frameByteCeiling@\(opts.fps)fps \
-        \(wire.frameByteCeiling(fps: Int(opts.fps))) B; borrowed ingress \
-        \(wire.borrowedFrameBytesIngested) B (entry-copy bytes avoided)
-        encoder-vbv: \(wire.vbvDirectivesIssued) directives, \
-        \(leg.directivesApplied) applied, \
-        \(wire.vbvRateMovesAbsorbed) rate moves absorbed \
-        (pacer-only, no encoder reset); applied live — native seat, \
-        zero reset, zero IDR by construction\(vbvFinal)
-        idr-demand: \(wire.freshKeyframeDemandCounts.demands) consumed \
-        (path \(wire.freshKeyframeDemandCounts.pathPromotions), \
-        client \(wire.freshKeyframeDemandCounts.clientRequests), \
-        wake \(wire.freshKeyframeDemandCounts.machineWakes), \
-        recovery \(wire.freshKeyframeDemandCounts.machineRecoveries), \
-        unprotectable \(wire.freshKeyframeDemandCounts.unprotectableDrops), \
-        fall-purge \(wire.freshKeyframeDemandCounts.fallPurges))
-        repair: \(s.nackEntriesReceived) NACK entries \
-        (\(s.nacksHonored) honored → \(s.repairDatagramsEnqueued) repair \
-        datagrams, \(s.nacksJudgedStale) stale, \
-        \(s.repairRefusalsSent) refusals sent, \
-        \(s.openingExemptRepairsHonored) opening-exempt, \
-        client-owned recovery; budget \(wire.repairBudgetMS) ms), \
-        \(wire.estimatorStats.nackShardsCounted) post-FEC shards counted \
-        (\(wire.estimatorStats.nackShardsRecused) recused as self-drain), \
-        \(wire.estimatorStats.postFecDownshifts) rung-3 downshifts, \
-        \(s.fecRegimeSteps) regime steps (final \(wire.fecRegime.rawValue)); \
-        srtt \(wire.srttMicros.map { "\($0) µs" } ?? "—"), \
-        store \(wire.repairStoreBytes) B
-        """)
-        if let audio = audioWire {
-            let trip = audio.tripwireCounters
-            let negotiated = audio.negotiated.map {
-                ", negotiated F32 \($0.rate) Hz \($0.channels)ch"
-            } ?? ", no buffers arrived"
-            let tripwire = trip.quietEntries > 0 ? """
-                ; tripwire \(trip.quietEntries) quiet, \(trip.wakes) wakes, \
-                \(trip.packetsGated) gated, \(trip.preRollShipped) pre-roll shipped
-                """ : ""
-            let negotiationError = audio.negotiationError.map {
-                "; ERROR \($0)"
-            } ?? ""
-            let runError = audio.runError.map { "; run error \($0)" } ?? ""
-            print("""
-                audio: \(audio.packetsEncoded) packets encoded \
-                (\(audio.encodeFailures) encode failures)\(negotiated)\
-                \(tripwire)\(negotiationError)\(runError)
-                """)
-        }
-    } else {
-        print("output: \(opts.outputPath)")
-    }
-    if let pairing = pairingService {
+    let evidence = printLegSummary(leg)
+    printSessionBooks(
+        wire: w, leg: leg, audio: finalAudio, host: host,
+        bulkShell: bulkShell)
+    if let pairing = host.pairingService {
         if let key = pairing.pairedClientStaticPublicKey {
             print("pairing: result — PAIRED, client \(Hex.string(key))")
         } else if pairing.isBurned {
@@ -1204,10 +1105,262 @@ static func run(arguments: [String]) throws {
             print("pairing: result — no client paired this run")
         }
     }
+    return ServedSession(end: leg.end, leg: evidence)
+}
 
-    // The advertiser is retained to this line on purpose: the record
-    // stays published for the whole session and returning withdraws it.
-    withExtendedLifetime(advertiser) {}
+/// The leg's closing lines; returns the stream evidence the service loop
+/// judges. The stream-startability gate: the native encoder must open
+/// with VPS/SPS/PPS + IRAP or the client can never join mid-life.
+static func printLegSummary(
+    _ leg: DirectEyeLeg
+) -> HostServiceLoop.LegEvidence {
+    let startsStream = AnnexBCheck.startsWithParameterSetsAndIrap(
+        leg.firstPacket)
+    if leg.frames > 0 {
+        print("""
+
+        done: \(leg.frames) frames encoded (direct eye), \
+        \(leg.keyframes) IDR, \(leg.bytes) bytes, \
+        missed_grabs \(leg.missedGrabs), \
+        rate directives applied \(leg.directivesApplied)
+        """)
+        print("first packet NALs: \(AnnexBCheck.summary(of: leg.firstPacket))")
+        if startsStream {
+            print("first packet starts with parameter sets + IDR: OK")
+        }
+    }
+    return HostServiceLoop.LegEvidence(
+        frames: leg.frames, firstPacketStartsStream: startsStream)
+}
+
+/// The session's books — the wire half is backend-agnostic evidence.
+static func printSessionBooks(
+    wire: SessionWire, leg: DirectEyeLeg, audio: AudioWire?,
+    host: SessionHost, bulkShell: BulkReceiveShell?
+) {
+    let opts = host.opts
+    let clipboardLeaf = host.clipboardLeaf
+    let t = wire.pacerTelemetry
+    let c = wire.counters
+    let s = wire.sessionCounters
+    let o = wire.outboxCounters
+    // HS-19: the leaf's own books (byte-level transfer evidence),
+    // appended to the clipboard line when the leaf ran.
+    // HS-20: the final standing directive, if any moved the encoder.
+    var vbvFinal = ""
+    if let d = wire.lastVbvDirective {
+        let avg = d.averageBitsPerSecond
+            .map { " avg \($0 / 1_000) kbps," } ?? ""
+        vbvFinal = """
+             — final\(avg) max \(d.maxBitsPerSecond / 1_000) \
+            kbps, vbv \(d.vbvBits / 8) B \
+            (ceiling \(d.frameByteCeiling) B)
+            """
+    }
+    // F-3: the shell's own books (chunk/byte-level evidence),
+    // appended to the files line when the shell ran.
+    var bulkShellStats = ""
+    if let shell = bulkShell {
+        let b = shell.counters
+        bulkShellStats = " (shell: \(b.offersAccepted) accepted"
+        bulkShellStats += ", \(b.chunksStored) chunks"
+        bulkShellStats += " / \(b.bytesStored) B stored"
+        bulkShellStats += ", \(b.filesCompleted) completed"
+        bulkShellStats += ", \(b.transfersAborted) aborted"
+        bulkShellStats += ", \(b.offersRefusedBusy) busy"
+        bulkShellStats += ", \(b.storageFailures) storage failures"
+        bulkShellStats += ", \(b.resumeStatesLoaded) resumes loaded)"
+    }
+    var clipboardLeafStats = ""
+    if let leaf = clipboardLeaf {
+        clipboardLeafStats = " (leaf: \(leaf.appliesTaken) applies"
+        clipboardLeafStats += ", \(leaf.changesReported) changes reported"
+        clipboardLeafStats += ", \(leaf.imageAppliesTaken) image applies"
+        clipboardLeafStats += ", \(leaf.imageChangesReported) image changes"
+        clipboardLeafStats += ", \(leaf.transfersServed) transfers served"
+        clipboardLeafStats += ", \(leaf.transfersFailed) failed"
+        clipboardLeafStats += ", \(leaf.readsAbandoned) reads abandoned"
+        clipboardLeafStats += ", \(leaf.nonTextChangesIgnored) non-text ignored"
+        clipboardLeafStats += ", \(leaf.baselineReplaysSkipped) baseline skipped)"
+    }
+    print("""
+    session: \(c.framesIngested) frames → \(c.shardsEnqueued) shards → \
+    \(o.datagramsSent) datagrams (\(o.bytesSent) B) in \
+    \(t.batches) paced batches; max batch wire time \
+    \(t.maxBatchWireTimeNS) ns (quantum 1000000); freshVideo max queue \
+    delay \(t[.freshVideo].maxQueueDelayNS) ns
+    socket: \(o.wouldBlockCount) would-block retries, pending max \
+    \(o.pendingMaxDatagrams) datagrams / \
+    \(o.pendingMaxBytes) B; audio blocked \
+    \(o.audioWouldBlockCount) times, outbox max \
+    \(o.audioOutboxMaxNS) ns at seq \
+    \(o.audioWorstSeq.map(String.init) ?? "—") \
+    (enqueued/accepted \
+    \(o.audioWorstEnqueuedAtNS.map(String.init) ?? "—")/\
+    \(o.audioWorstAcceptedAtNS.map(String.init) ?? "—"), \
+    behind video \(o.audioWorstBlockedByVideo)); kernel sndbuf \
+    \(wire.socketSendBufferBytes) B, outq max \
+    \(wire.socketOutqMaxBytes) B; latency lane sndbuf \
+    \(wire.latencySocketSendBufferBytes) B, outq max \
+    \(wire.latencySocketOutqMaxBytes) B; ENOBUFS \
+    \(o.noBufferCount), outq query failures \
+    \(wire.socketOutqQueryFailures); pressure \
+    \(wire.kernelPressureState), video debt \
+    \(wire.kernelVideoServiceDebtNS) ns, EAGAIN video/latency \
+    \(o.videoWouldBlockCount)/\
+    \(o.latencyWouldBlockCount), ENOBUFS video/latency \
+    \(o.videoNoBufferCount)/\
+    \(o.latencyNoBufferCount), transient send/receive errors \
+    \(o.transientErrors)/\(wire.receiveTransientErrors), stale fresh shed \
+    \(o.freshVideoShedDatagrams) datagrams / \
+    \(o.freshVideoShedBytes) B
+    session: \(s.beaconsSent) beacons, \(s.beaconEchoes) echoes \
+    (last offset \(wire.clock.lastOffsetMicroseconds.map(String.init) ?? "—") µs, \
+    min rtt \(wire.clock.minRttMicroseconds.map(String.init) ?? "—") µs), \
+    \(s.idrRequests) IDR requests \
+    (\(s.idrRequestsSupersededByKeyframe) superseded retries), \
+    \(s.unsealFailures) unseal failures, \
+    \(s.ctrlQueueFullRefusals)/\(s.bulkQueueFullRefusals) ctrl/bulk \
+    arq queue-full refusals, \
+    \(s.feedbackDatagrams) feedback datagrams, \
+    \(s.handshakesThrottled) msg1 throttled
+    handshake-flood: \(s.handshakeChallengesMinted) cookies minted \
+    (0x13), \(s.handshakeCookiesVerified) verified / \
+    \(s.handshakeCookiesRejected) rejected (0x14), require-cookie now \
+    \(wire.handshakeCookieMode ? "ON" : "off")
+    lifecycle: \(s.modeTransitionsSent) mode transitions, \
+    \(s.videoFramesSuppressed) frames suppressed (FROZEN/closed), \
+    \(s.videoFramesUnprotectable) dropped unprotectable \
+    (ceiling \(wire.protectableFrameCeiling) B), \
+    final state \(wire.lifecycleState.map { "\($0)" } ?? "—") \
+    (wire mode \(wire.currentWireMode.map { "\($0)" } ?? "—"))
+    chroma: agreed \(wire.agreedChromaModes.map { "\($0)" } ?? "— (no declaration)"), \
+    encoder \(leg.chroma444Active ? "4:4:4 (Rext)" : "4:2:0") (native VAAPI)
+    input: \(s.inputEventsReceived) events received, \
+    \(wire.inputInjected) injected \
+    (\(wire.inputInjectFailures) failed), \
+    \(s.inputEchoTuplesSent) echo tuples sent; receive→inject \
+    p50 \(wire.inputLatency.p50.map(String.init) ?? "—") µs / \
+    p99 \(wire.inputLatency.p99.map(String.init) ?? "—") µs / \
+    max \(wire.inputLatency.maxValue.map(String.init) ?? "—") µs\
+    \(Self.windowNote(wire.inputLatency, SessionWire.inputLatencyWindow))
+    audio: \(s.audioPacketsIngested) packets → \
+    \(s.audioDatagramsEnqueued) datagrams \
+    (\(s.audioGroupsCompleted) RS 4+2 groups, \
+    \(s.audioGroupsAbandoned) abandoned), \
+    \(s.audioPacketsSuppressed) suppressed, \
+    \(wire.audioSendFailures) send failures, \
+    \(wire.audioPacketsDroppedPreSession) dropped pre-session; \
+    max audio queue delay \(t[.audio].maxQueueDelayNS) ns; \
+    mailbox depth max \(wire.audioMailboxMaxDepth), \
+    dwell p99 \(wire.audioMailboxDwell.p99.map(String.init) ?? "—") ns / \
+    max \(wire.audioMailboxMaxDwellNS) ns\
+    \(Self.windowNote(
+        wire.audioMailboxDwell, SessionWire.audioMailboxDwellWindow
+    )), \
+    overflows \(wire.audioMailboxOverflows)
+    session-lock: video prepare max \(wire.videoPrepareMaxNS) ns off-lock, \
+    commit wait/hold max \(wire.videoCommitLockWaitMaxNS)/\
+    \(wire.videoCommitLockHoldMaxNS) ns, service/receive max \
+    \(wire.serviceOnceMaxNS)/\(wire.receiveAllMaxNS) ns
+    audio-routing: final \(wire.currentAudioRouting), \
+    \(s.audioRoutingRequestsReceived) flip requests, \
+    \(s.audioRoutingStatusesSent) statuses sent
+    clipboard: leaf \(clipboardLeaf != nil ? "ACTIVE" : "none"), \
+    \(s.clipboardSetsReceived) sets received, \
+    \(s.clipboardAnnouncesSent) announces sent, \
+    \(s.clipboardAnnouncesSuppressed) suppressed\(clipboardLeafStats)
+    cursor: \(s.cursorShapesSent) shapes sent (0x24), \
+    \(s.cursorShapesSuppressed) suppressed
+    clipboard-images: tier \(opts.clipboardImages ? "ON" : "off"), \
+    \(wire.clipboardImageCounters.sharesCompleted)/\
+    \(wire.clipboardImageCounters.sharesStarted) shares completed, \
+    \(wire.clipboardImageCounters.imagesApplied) applied, \
+    \(wire.clipboardImageCounters.sharesSuppressed) suppressed, \
+    \(wire.clipboardImageCounters.receivesRefused) refused, \
+    \(wire.clipboardImageCounters.sharesAborted)+\
+    \(wire.clipboardImageCounters.receivesAborted) aborted
+    files: \(bulkShell != nil ? "ACCEPTING" : "off"), \
+    \(s.bulkMessagesReceived) bulk messages received, \
+    \(s.bulkArqDatagramsSent) chan-8 datagrams sent\(bulkShellStats)
+    estimator: rate \(wire.estimatedRate / 1_000) kbps \
+    (pacer \(wire.pacerRate / 1_000) kbps, ceiling \
+    \(Int(opts.wireRateMbps * 1_000)) kbps), delivery \
+    \(wire.measuredDeliveryRate.map { "\($0 / 1_000) kbps" } ?? "—") \
+    (burst max \(wire.deliveryRate.map { "\($0 / 1_000)" } ?? "—"), \
+    belief \(wire.capacityBelief.map { "\($0 / 1_000)" } ?? "—")), \
+    queuing delay \(wire.queuingDelayMicros.map { "\($0) µs" } ?? "—"); \
+    \(wire.estimatorStats.reportsIngested) reports \
+    (\(s.feedbackReportsParsed) parsed, \
+    \(s.feedbackReportsMalformed) malformed), \
+    \(wire.estimatorStats.deliverySamples) delivery samples \
+    (\(wire.estimatorStats.dispersionSamplesMatched) matched / \
+    \(wire.estimatorStats.dispersionSamplesUnmatched) unmatched; \
+    \(wire.estimatorStats.honestSamples) honest / \
+    \(wire.estimatorStats.censoredSamples) censored full trains \
+    (\(wire.estimatorStats.stretchedTrainsRecused) hole-recused, \
+    \(wire.estimatorStats.burstGeometryTrainsRecused) burst-recused), \
+    \(wire.estimatorStats.beliefRaises) belief raises / \
+    \(wire.estimatorStats.beliefDemotions) demotions), \
+    \(wire.estimatorStats.downshifts) downshifts \
+    (\(wire.estimatorStats.lossDownshifts) loss, \
+    \(wire.estimatorStats.overuseVerdicts) overuse verdicts, \
+    \(wire.estimatorStats.selfReferenceHolds) self-ref holds, \
+    \(wire.estimatorStats.stallHolds) stall holds, \
+    \(wire.estimatorStats.fallDeferrals) dwell deferrals, \
+    \(wire.estimatorStats.sparseEvidenceHolds) sparse holds), \
+    \(wire.estimatorStats.upshifts) upshifts \
+    (\(wire.estimatorStats.upshiftsDamped) probe-damped, \
+    \(wire.estimatorStats.upshiftsCadenceHeld) cadence-held), \
+    \(s.rateChanges) pacer moves, \
+    \(s.fallPurges) fall purges (\(s.fallPurgedVideoBytes) B dropped \
+    pre-stale); frameByteCeiling@\(opts.fps)fps \
+    \(wire.frameByteCeiling(fps: Int(opts.fps))) B; borrowed ingress \
+    \(wire.borrowedFrameBytesIngested) B (entry-copy bytes avoided)
+    encoder-vbv: \(wire.vbvDirectivesIssued) directives, \
+    \(leg.directivesApplied) applied, \
+    \(wire.vbvRateMovesAbsorbed) rate moves absorbed \
+    (pacer-only, no encoder reset); applied live — native seat, \
+    zero reset, zero IDR by construction\(vbvFinal)
+    idr-demand: \(wire.freshKeyframeDemandCounts.demands) consumed \
+    (path \(wire.freshKeyframeDemandCounts.pathPromotions), \
+    client \(wire.freshKeyframeDemandCounts.clientRequests), \
+    wake \(wire.freshKeyframeDemandCounts.machineWakes), \
+    recovery \(wire.freshKeyframeDemandCounts.machineRecoveries), \
+    unprotectable \(wire.freshKeyframeDemandCounts.unprotectableDrops), \
+    fall-purge \(wire.freshKeyframeDemandCounts.fallPurges))
+    repair: \(s.nackEntriesReceived) NACK entries \
+    (\(s.nacksHonored) honored → \(s.repairDatagramsEnqueued) repair \
+    datagrams, \(s.nacksJudgedStale) stale, \
+    \(s.repairRefusalsSent) refusals sent, \
+    \(s.openingExemptRepairsHonored) opening-exempt, \
+    client-owned recovery; budget \(wire.repairBudgetMS) ms), \
+    \(wire.estimatorStats.nackShardsCounted) post-FEC shards counted \
+    (\(wire.estimatorStats.nackShardsRecused) recused as self-drain), \
+    \(wire.estimatorStats.postFecDownshifts) rung-3 downshifts, \
+    \(s.fecRegimeSteps) regime steps (final \(wire.fecRegime.rawValue)); \
+    srtt \(wire.srttMicros.map { "\($0) µs" } ?? "—"), \
+    store \(wire.repairStoreBytes) B
+    """)
+    if let audio {
+        let trip = audio.tripwireCounters
+        let negotiated = audio.negotiated.map {
+            ", negotiated F32 \($0.rate) Hz \($0.channels)ch"
+        } ?? ", no buffers arrived"
+        let tripwire = trip.quietEntries > 0 ? """
+            ; tripwire \(trip.quietEntries) quiet, \(trip.wakes) wakes, \
+            \(trip.packetsGated) gated, \(trip.preRollShipped) pre-roll shipped
+            """ : ""
+        let negotiationError = audio.negotiationError.map {
+            "; ERROR \($0)"
+        } ?? ""
+        let runError = audio.runError.map { "; run error \($0)" } ?? ""
+        print("""
+            audio: \(audio.packetsEncoded) packets encoded \
+            (\(audio.encodeFailures) encode failures)\(negotiated)\
+            \(tripwire)\(negotiationError)\(runError)
+            """)
+    }
 }
 
 /// Names a rolling histogram's window once it has dropped samples: the

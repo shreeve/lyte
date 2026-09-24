@@ -158,9 +158,13 @@ RemoteDesktop session.
 # The real thing — a Lyte-UDP session host (prints its Noise static pubkey;
 # audio + Avahi advertisement default-on; --pair for PIN pairing;
 # --require-paired to enforce the keystore). A listening host waits for its
-# client as long as it takes; --seconds bounds the session once it starts.
+# client as long as it takes. Without --seconds it is the service: it serves
+# sessions in turn in one process, keeping the eye, listening socket,
+# advertisement and input devices up between them, with no session clock.
+# --seconds N (or --pair) serves one session, bounded to N s once it starts.
 # 41000-range ports by convention; test hosts take fresh 41xxx ports with
 # --no-advertise.
+./.build/release/lyte-host --wire-listen 41000
 ./.build/release/lyte-host --wire-listen 41000 --seconds 330
 
 # HS-18: mute the host's own speakers for the session — desktop audio is
@@ -171,8 +175,8 @@ RemoteDesktop session.
 ```
 
 (`--backend direct`, `--encoder native`, and `--ratchet` are accepted
-no-ops kept for the owner's standing loop line; the demolished portal/
-mutter backends and the libav seat fail loudly by name.)
+no-ops kept for older conf lines; the demolished portal/mutter backends
+and the libav seat fail loudly by name.)
 
 ## Verify the output
 

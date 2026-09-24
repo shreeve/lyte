@@ -42,6 +42,8 @@ public final class EyePipeline {
     /// The rate control in force, carried across a chroma reopen.
     private var rateBitsPerSecond: Int64
     private var hrdBufferBits: Int64?
+    /// The opening HRD buffer, restored for every new session.
+    private let openingHrdBufferBits: Int64?
     private var nv12Targets: [VASurfaceID: NV12Target] = [:]
     private var ayuvTargets: [VASurfaceID: AyuvTarget] = [:]
     private var scanout: ImportedTexture?
@@ -60,6 +62,7 @@ public final class EyePipeline {
         self.bitrateBitsPerSecond = bitrateBitsPerSecond
         self.rateBitsPerSecond = bitrateBitsPerSecond
         self.hrdBufferBits = hrdBufferBits
+        self.openingHrdBufferBits = hrdBufferBits
         self.chroma444 = chroma444
         gl = try EyeGL(renderNode: renderNode)
         encoder = try EyeVaapiEncoder(
@@ -195,6 +198,17 @@ public final class EyePipeline {
         self.hrdBufferBits = hrdBufferBits
         encoder.setRateControl(
             bitsPerSecond: bitsPerSecond, hrdBufferBits: hrdBufferBits)
+    }
+
+    /// Starts the next session's stream on the warm GL context. The
+    /// encoder reopens at the opening rate control in the session's
+    /// chroma, so its first frame is an IDR carrying VPS/SPS/PPS, and no
+    /// scanout import, GPU target, fingerprint or retained surface
+    /// survives from the previous session.
+    public func beginSession(chroma444: Bool) throws {
+        rateBitsPerSecond = bitrateBitsPerSecond
+        hrdBufferBits = openingHrdBufferBits
+        try reopen(chroma444: chroma444)
     }
 
     /// Reopens the encoder in the other chroma posture. Every GPU target

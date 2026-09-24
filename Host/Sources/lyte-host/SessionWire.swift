@@ -9,10 +9,14 @@
 //
 // Sockets: one listening socket bound to the session port and never
 // connected — it hears message 1 from any client and a migrated client's
-// new path, and carries every explicitly addressed datagram. When a
-// handshake completes, a video socket (SO_PRIORITY 4) and a latency
-// socket (control and audio, 6) join the port via SO_REUSEPORT and
-// connect to the authenticated client; a path promotion re-connects them.
+// new path, and carries every explicitly addressed datagram. The
+// listening service owns it in a HostListener that outlives each
+// session, so the port stays bound between sessions. When a handshake
+// completes, a video socket (SO_PRIORITY 4) and a latency socket
+// (control and audio, 6) join the port via SO_REUSEPORT and connect to
+// the authenticated client; a path promotion re-connects them. They
+// belong to the session and close with it (`release`), so a finished
+// session's socket can never share the port's traffic with the next.
 //
 // Threads: the capture thread (DirectEyeLeg) calls sendFrame and
 // takeLegSnapshot; the audio thread only publishes into a narrow mailbox
@@ -68,6 +72,28 @@ func elevateCurrentThread(_ label: String, rtPriority: Int32) {
     #endif
 }
 
+/// The listening service's socket: bound once to the session port and
+/// never connected. Every session in turn reads message 1 from it, so the
+/// port never goes unbound between sessions and a client that dials in
+/// the gap is heard by the next one.
+final class HostListener {
+    let netio: OpaquePointer
+
+    init(port: UInt16) throws {
+        var err = [CChar](repeating: 0, count: 256)
+        guard let n = lyte_netio_new("0.0.0.0", port, &err, err.count) else {
+            throw HostError("session socket open failed: \(errString(err))")
+        }
+        guard lyte_netio_set_priority(n, 6) == 0 else {
+            lyte_netio_free(n)
+            throw HostError("listening socket SO_PRIORITY failed")
+        }
+        netio = n
+    }
+
+    deinit { lyte_netio_free(netio) }
+}
+
 final class SessionWire {
     enum ClientAwaitOutcome: Equatable {
         case established
@@ -80,6 +106,9 @@ final class SessionWire {
     /// also carries every datagram addressed explicitly (path challenges,
     /// pre-establishment replies).
     private let listenNetio: OpaquePointer
+    /// The listening socket's owner: the service's shared listener, or a
+    /// private one on a kernel-assigned port for a wire-out run.
+    private let listener: HostListener
     /// The media sockets, connected to the client's primary tuple once it
     /// is known (SO_REUSEPORT members of the listening port, so the wire
     /// 4-tuple is one): video at SO_PRIORITY 4, control and audio at 6,
@@ -363,7 +392,9 @@ final class SessionWire {
     /// The sender thread's wake (an eventfd): capture, audio, and the
     /// janitor signal it when bytes were enqueued; it also wakes on socket
     /// readability and at the session's next timer (drainLoop).
-    private let wakeFd: Int32
+    private var wakeFd: Int32
+    /// `release()` ran: the media sockets and the wake eventfd are closed.
+    private var released = false
     /// Guards the sender thread's lifecycle flags below. Lock order:
     /// `lock` → `drainCondition` (takeLegSnapshot), never the reverse.
     private let drainCondition = NSCondition()
@@ -477,12 +508,12 @@ final class SessionWire {
     var repairBudgetMS: UInt64 { session.repairFreezeBudgetNS / 1_000_000 }
 
     /// - Parameters:
-    ///   - listenPort: bind here and await a connecting client (nil =
+    ///   - listener: the service's listening socket (nil = open one on a
     ///     kernel-assigned port, requires `peer`).
     ///   - peer: optional pre-connected far end; Noise message 1 must
     ///     still arrive from it before the session is established.
     init(
-        listenPort: UInt16?,
+        listener: HostListener?,
         peer: (host: String, port: UInt16)?,
         rateBitsPerSecond: Int,
         capabilities: Capabilities = .wireDefault,
@@ -492,7 +523,7 @@ final class SessionWire {
         onPairingEvent: @escaping (PairingResponderService.Event) -> Void
             = { _ in }
     ) throws {
-        precondition(listenPort != nil || peer != nil,
+        precondition(listener != nil || peer != nil,
                      "a session needs a port to listen on or a peer")
         // A-23: every validation that can refuse lives ABOVE the first
         // allocation. A throw after the drain thread holds `self` would
@@ -506,19 +537,11 @@ final class SessionWire {
         self.onPairingEvent = onPairingEvent
 
         self.requiredPeer = peer
-        var err = [CChar](repeating: 0, count: 256)
-        guard let n = lyte_netio_new("0.0.0.0", listenPort ?? 0,
-                                     &err, err.count) else {
-            throw HostError("session socket open failed: \(errString(err))")
-        }
-        listenNetio = n
-        guard lyte_netio_set_priority(n, 6) == 0 else {
-            lyte_netio_free(n)
-            throw HostError("listening socket SO_PRIORITY failed")
-        }
+        let listening = try listener ?? HostListener(port: 0)
+        self.listener = listening
+        listenNetio = listening.netio
         wakeFd = lyte_netio_wake_new()
         guard wakeFd >= 0 else {
-            lyte_netio_free(n)
             throw HostError("sender wake eventfd failed (errno \(errno))")
         }
         scratch = UnsafeMutablePointer<UInt8>.allocate(
@@ -562,16 +585,46 @@ final class SessionWire {
     }
 
     deinit {
+        closeSessionDescriptors()
         scratch.deallocate()
         recvScratch.deallocate()
+    }
+
+    /// Ends this wire's hold on the process, deterministically rather than
+    /// at deinit: stops the sender thread, closes the media sockets and
+    /// the wake eventfd, and drops the shell hooks — the audio-routing
+    /// handler retains this wire, so without this the wire and its
+    /// sockets would outlive the session. The listening socket stays
+    /// with its HostListener for the next session. Call after
+    /// `shutdown`, once the books are read and every thread that calls
+    /// in (capture, audio, janitor) has stopped. Idempotent.
+    func release() {
+        stopDrain()
+        inputInjector = nil
+        audioRoutingHandler = nil
+        clipboardApplyHandler = nil
+        clipboardImageApplyHandler = nil
+        clipboardServiceHook = nil
+        bulkShell = nil
+        lock.lock()
+        closeSessionDescriptors()
+        lock.unlock()
+        try? handshakeWitness?.close()
+    }
+
+    private func closeSessionDescriptors() {
+        guard !released else { return }
+        released = true
         if let latencyNetio {
             lyte_netio_free(latencyNetio)
+            self.latencyNetio = nil
         }
         if let videoNetio {
             lyte_netio_free(videoNetio)
+            self.videoNetio = nil
         }
-        lyte_netio_free(listenNetio)
         close(wakeFd)
+        wakeFd = -1
     }
 
     private func traceHandshake(
@@ -1485,6 +1538,7 @@ final class SessionWire {
     /// Wakes the sender thread: bytes were enqueued (or leftovers were
     /// observed) and the pacer needs pumping at its own wake instants.
     private func signalDrain() {
+        guard wakeFd >= 0 else { return } // released
         lyte_netio_wake_signal(wakeFd)
     }
 

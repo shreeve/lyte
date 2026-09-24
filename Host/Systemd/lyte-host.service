@@ -37,8 +37,9 @@ Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/lyte-seat-uid-set-by-in
 ExecStart=/bin/sh -c 'exec /usr/local/bin/lyte-host $LYTE_HOST_ARGS >> /tmp/lyte-host-session.log 2>&1'
 AmbientCapabilities=CAP_SYS_ADMIN
 CapabilityBoundingSet=CAP_SYS_ADMIN
-# The 2 h leg ends by design (--seconds in LYTE_HOST_ARGS) and a
-# session teardown exits the process; both are normal — respawn.
+# The service serves sessions in turn and exits only on SIGTERM, a
+# failure, or a display mode change (or, with --seconds in
+# LYTE_HOST_ARGS, after its one session); any exit respawns.
 Restart=always
 RestartSec=2
 StandardOutput=journal

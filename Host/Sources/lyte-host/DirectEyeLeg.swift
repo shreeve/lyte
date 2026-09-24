@@ -22,11 +22,52 @@ import HostEye
 import HostWire
 import LyteWire
 
+/// The eye that outlives sessions: the GL context and the pipeline open
+/// once, and every later session begins a fresh encoder stream on them
+/// (`EyePipeline.beginSession`), so a re-dial costs an encoder reopen,
+/// not an EGL bring-up.
+final class WarmEye {
+    private let width: Int32
+    private let height: Int32
+    private var pipeline: EyePipeline?
+
+    init(screen: DirectScreenSource) {
+        self.width = screen.width
+        self.height = screen.height
+    }
+
+    /// The pipeline for the next session, in its chroma posture, with
+    /// its first frame an IDR at the opening rate control. The first
+    /// call opens it with `config`'s encoder posture, which every
+    /// session of a run shares.
+    func pipeline(
+        config: DirectEyeLeg.Config, chroma444: Bool
+    ) throws -> EyePipeline {
+        if let pipeline {
+            try pipeline.beginSession(chroma444: chroma444)
+            return pipeline
+        }
+        let opened = try EyePipeline(
+            width: width, height: height,
+            renderNode: config.renderNode, qp: config.qp,
+            bitrateBitsPerSecond: config.bitrateBitsPerSecond,
+            hrdBufferBits: config.bitrateBitsPerSecond > 0
+                ? Int64(EncoderHrd.bufferBits(
+                    capBitsPerSecond: Int(config.bitrateBitsPerSecond),
+                    fps: DirectEyeLeg.fps, vbvBits: config.vbvBits))
+                : nil,
+            chroma444: chroma444)
+        pipeline = opened
+        return opened
+    }
+}
+
 final class DirectEyeLeg {
     struct Config {
         static let defaultDevice = "/dev/dri/card1"
         var device = Config.defaultDevice
         var renderNode = "/dev/dri/renderD128"
+        /// The leg's wall-clock bound; `.infinity` for a service session.
         var seconds: Double
         var qp: Int32 = 24
         var pollUs: UInt32 = 1000
@@ -39,6 +80,7 @@ final class DirectEyeLeg {
 
     private let config: Config
     private let screen: DirectScreenSource
+    private let eye: WarmEye
     private let wire: SessionWire?
     private let file: UnsafeMutablePointer<FILE>?
     private(set) var frames = 0
@@ -87,6 +129,20 @@ final class DirectEyeLeg {
     /// geometry changed under it — a clean, deliberate exit, not an
     /// error.
     private(set) var modeChangeEnded = false
+    /// The session ended under the leg (teardown, liveness timeout, peer
+    /// gone, drain failure).
+    private(set) var sessionEnded = false
+    /// SIGINT or SIGTERM stopped the leg.
+    private(set) var terminationRequested = false
+
+    /// How the leg ended, for the service loop.
+    var end: HostServiceLoop.SessionEnd {
+        if let lastError { return .failed(lastError) }
+        if modeChangeEnded { return .displayModeChanged }
+        if terminationRequested { return .terminationRequested }
+        if sessionEnded { return .sessionEnded }
+        return .clockExpired
+    }
     private(set) var cursorShapesSeen = 0
     private(set) var cursorReadFailures = 0
     private(set) var cursorHotspotCorrections = 0
@@ -145,10 +201,11 @@ final class DirectEyeLeg {
     private let serviceDone = DispatchSemaphore(value: 0)
     var lastError: String?
 
-    init(config: Config, screen: DirectScreenSource, wire: SessionWire?,
-         file: UnsafeMutablePointer<FILE>?) {
+    init(config: Config, screen: DirectScreenSource, eye: WarmEye,
+         wire: SessionWire?, file: UnsafeMutablePointer<FILE>?) {
         self.config = config
         self.screen = screen
+        self.eye = eye
         self.wire = wire
         self.file = file
     }
@@ -228,18 +285,11 @@ final class DirectEyeLeg {
 
         // The encoder seat: the native VAAPI pens — zero libavcodec, rate
         // directives apply live (the RC misc buffer rides the next frame).
+        // The warm eye opens it once and restarts its stream per session.
         let pipeline: EyePipeline
         do {
-            pipeline = try EyePipeline(
-                width: width, height: height,
-                renderNode: config.renderNode, qp: config.qp,
-                bitrateBitsPerSecond: config.bitrateBitsPerSecond,
-                hrdBufferBits: config.bitrateBitsPerSecond > 0
-                    ? Int64(EncoderHrd.bufferBits(
-                        capBitsPerSecond: Int(config.bitrateBitsPerSecond),
-                        fps: Self.fps, vbvBits: config.vbvBits))
-                    : nil,
-                chroma444: chroma == .yuv444)
+            pipeline = try eye.pipeline(
+                config: config, chroma444: chroma == .yuv444)
         } catch {
             lastError = "direct: init failed: \(error)"
             return
@@ -359,12 +409,16 @@ final class DirectEyeLeg {
             // One session-lock round trip per poll: end, agreement,
             // directive, and IDR demand together.
             let snapshot = wire?.takeLegSnapshot()
-            if snapshot?.ended == true { break }
+            if snapshot?.ended == true {
+                sessionEnded = true
+                break
+            }
             // HS-18: an interrupted run (SIGINT/SIGTERM) exits through
             // the same door as a completed one, so the audio-routing
             // restore and the typed teardown both happen.
             if lyteTerminationRequested != 0 {
                 print("session: termination signal — closing cleanly")
+                terminationRequested = true
                 break
             }
             // The cursor plane is read on the screen's own 60 Hz grid, not

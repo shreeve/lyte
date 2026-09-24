@@ -37,6 +37,9 @@ protocol InputInjector: AnyObject {
     /// The recorded monitor's pixel size, once capture reads it (the
     /// uinput tablet scales absolute moves against it).
     func noteMonitorExtent(width: UInt32, height: UInt32)
+    /// Releases every key and button still held — a session ended with
+    /// its client's press outstanding. The devices stay up.
+    func releaseHeld()
     func stop()
 }
 
@@ -51,11 +54,12 @@ final class UinputInjector: InputInjector {
     /// Every key/button currently held down, by evdev code. E2's
     /// release-all law: the retired Mutter session released latched
     /// keys when it closed; a kernel device has no such janitor, so
-    /// the injector is its own — stop() releases everything still
-    /// held (the ⌘Tab latch, a click mid-teardown) before the
-    /// devices are destroyed. inject() runs under SessionWire's session
-    /// lock (whichever thread received the event); stop() runs on main
-    /// after the session's threads have stopped — never concurrently.
+    /// the injector is its own — releaseHeld() at every session end and
+    /// stop() release everything still held (the ⌘Tab latch, a click
+    /// mid-teardown). inject() runs under SessionWire's session lock
+    /// (whichever thread received the event); releaseHeld() and stop()
+    /// run on main after the session's threads have stopped — never
+    /// concurrently.
     private var heldCodes: Set<UInt32> = []
     private var stopped = false
 
@@ -114,16 +118,19 @@ final class UinputInjector: InputInjector {
         }
     }
 
-    func stop() {
-        guard !stopped else { return }
-        stopped = true
-        guard !heldCodes.isEmpty else { return }
+    func releaseHeld() {
+        guard !stopped, !heldCodes.isEmpty else { return }
         var err = [CChar](repeating: 0, count: 256)
         for code in heldCodes {
             _ = lyte_uinput_key(handle, code, 0, &err, err.count)
         }
-        print("input: released \(heldCodes.count) held key(s) at stop")
+        print("input: released \(heldCodes.count) held key(s)")
         heldCodes.removeAll()
+    }
+
+    func stop() {
+        releaseHeld()
+        stopped = true
     }
 }
 
