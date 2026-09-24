@@ -1,7 +1,5 @@
-/// THE GAUGE WINDOW (owner ruling 2026-07-30): every overlay gauge describes
-/// the last ~3 seconds — one mental model, no per-stat cleverness. Two
-/// physics-imposed exceptions remain documented at their call sites:
-/// roundtrip/jitter rides 10 seconds, and input latency rides an event ring.
+/// Every overlay gauge describes the last ~3 seconds, except roundtrip/jitter
+/// (10 seconds) and input latency (an event ring), documented at their sites.
 public let overlayGaugeWindowSeconds = 3.0
 
 /// A trailing-window rate from a monotonically growing counter. Feed the

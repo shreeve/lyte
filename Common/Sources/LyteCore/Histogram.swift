@@ -13,7 +13,6 @@ public enum PercentileRank: Sendable {
     /// The conventional nearest-rank index: `ceil(q * count) - 1`.
     case nearest
     /// Promote exact boundaries to the next sample: `floor(q * count)`.
-    /// This preserves the delivery gauge's established boundary behavior.
     case upperBoundary
 }
 
@@ -24,12 +23,9 @@ public enum PercentileRank: Sendable {
 /// that has crossed its retention boundary from one that still contains every
 /// sample recorded.
 ///
-/// Choose capacity and retention deliberately. The defaults (65,536 samples,
-/// `.prefix`) freeze the percentiles once the pool fills: at 200 samples a
-/// second that is the first five and a half minutes of a session, and every
-/// later sample only moves `count`, `minValue` and `maxValue`. A gauge that
-/// describes "now" wants `.rolling` sized to its window, and each query
-/// sorts the whole retained pool.
+/// The defaults (65,536 samples, `.prefix`) freeze the percentiles once the
+/// pool fills; a gauge that describes "now" wants `.rolling` sized to its
+/// window. Each query sorts the whole retained pool.
 public struct Histogram<Value: Comparable & Sendable>: Sendable {
     public private(set) var count = 0
     public private(set) var minValue: Value?
@@ -99,8 +95,6 @@ public struct Histogram<Value: Comparable & Sendable>: Sendable {
     }
 
     /// Apply the same percentile contract to an already-owned sample set.
-    /// This lets records with several measured fields share the ordering law
-    /// without allocating a second persistent histogram for every field.
     public static func percentile(
         of values: [Value],
         _ q: Double,

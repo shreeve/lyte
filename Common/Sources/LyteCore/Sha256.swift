@@ -1,6 +1,5 @@
-// The one shared SHA-256 implementation. Streaming is the primitive so
-// large file-transfer payloads never require a whole-file allocation;
-// one-shot hashing is only a convenience over the same state machine.
+// The one shared SHA-256 implementation. Streaming is the primitive so large
+// payloads never need a whole-file allocation.
 
 /// FIPS 180-4 SHA-256, sans IO and byte-exact on every Swift platform.
 ///

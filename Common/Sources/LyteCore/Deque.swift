@@ -1,12 +1,7 @@
-// Shared FIFO storage for sans-IO policies. Two shapes cover every queue
-// and window in the policy layers:
-//
-//   Deque        — an unbounded FIFO: amortized O(1) append and removeFirst.
-//   BoundedRing  — a fixed-capacity window that overwrites its oldest element.
-//
-// Both are value types, iterate oldest to newest, and never allocate in a
-// steady state. Members are @inlinable so hot callers in other modules
-// (the host pacer, the handshake gate) get specialized code.
+// Shared FIFO storage for sans-IO policies: `Deque` (unbounded) and
+// `BoundedRing` (fixed capacity, overwrites the oldest). Both are value
+// types that iterate oldest to newest and never allocate in a steady state;
+// members are @inlinable so hot callers in other modules specialize.
 
 /// A FIFO queue over an array with a head index.
 ///

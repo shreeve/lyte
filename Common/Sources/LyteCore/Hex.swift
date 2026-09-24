@@ -1,6 +1,5 @@
-// One hex vocabulary for shared bytes and explicitly formatted unsigned
-// integers. Byte strings are canonical lowercase unless a diagnostic asks
-// for uppercase; parsing preserves the vector/CLI grammar that predates Core.
+// One hex vocabulary for bytes and formatted unsigned integers. Byte
+// strings are lowercase unless a diagnostic asks for uppercase.
 
 public enum Hex {
     private static let lowerDigits = Array("0123456789abcdef".utf8)
