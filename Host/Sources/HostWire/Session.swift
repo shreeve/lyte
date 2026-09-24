@@ -640,6 +640,8 @@ public final class Session {
     /// stream, so a file cannot head-of-line-block a keystroke. Nil when
     /// the consent toggle left key 11 undeclared.
     private var bulkArqLane: SessionArqLane?
+    /// Set once a peer poisoned an ordered stream and the teardown left.
+    private var orderedStreamPoisoned = false
 
     /// Message-1 admissions, consulted before any handshake allocation.
     private var handshakeGate: HandshakeGate
@@ -1917,6 +1919,9 @@ public final class Session {
                 events += consumeBulkStreamMessage(bytes, now: now)
             case .oneShotAcknowledged:
                 break // bulk rides the ordered stream only (group 0)
+            case .ignored(.orderedStreamPoisoned):
+                events += tearDownPoisonedStream(
+                    now: now, hostMicroseconds: hostMicroseconds)
             case .ignored(let reason):
                 counters.arqIgnored += 1
                 events.append(.arqIgnored(reason))
@@ -1969,6 +1974,21 @@ public final class Session {
         }
         counters.bulkMessagesReceived += 1
         return [.bulkMessageReceived(message)]
+    }
+
+    /// A peer message past the ARQ budget poisoned an ordered stream (CTRL
+    /// or bulk): it can never deliver in order again, so the session ends
+    /// with a typed teardown the first time, and every later segment on
+    /// that stream is counted without another event.
+    private func tearDownPoisonedStream(
+        now: UInt64, hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        counters.arqIgnored += 1
+        guard !orderedStreamPoisoned else { return [] }
+        orderedStreamPoisoned = true
+        return [.arqIgnored(.orderedStreamPoisoned)] + runLifecycle(
+            .teardownRequest(.shuttingDown),
+            now: now, hostMicroseconds: hostMicroseconds)
     }
 
     /// Image-lane channel events → chan-8 sends + session events.
@@ -2062,6 +2082,9 @@ public final class Session {
                 }
             case .oneShotAcknowledged(let group):
                 events.append(.reliableOneShotAcknowledged(group))
+            case .ignored(.orderedStreamPoisoned):
+                events += tearDownPoisonedStream(
+                    now: now, hostMicroseconds: hostMicroseconds)
             case .ignored(let reason):
                 counters.arqIgnored += 1
                 events.append(.arqIgnored(reason))
