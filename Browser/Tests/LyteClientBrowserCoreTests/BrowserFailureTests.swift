@@ -23,7 +23,7 @@ final class BrowserFailureTests: XCTestCase {
     }
 
     func testHostPairingRejectFailsTheSessionAndSaysSo() throws {
-        var host = ScriptedHost()
+        var host = ScriptedBrowserHost()
         let client = try host.establish()
         try host.peer.send(
             PairingReject(reason: .confirmationFailed).encode(),
@@ -39,7 +39,7 @@ final class BrowserFailureTests: XCTestCase {
     /// An unworkable capability intersection composes a typed teardown;
     /// it must reach the host even when its first copy is lost.
     func testCapabilityFailureStillSendsItsTeardown() throws {
-        var host = ScriptedHost()
+        var host = ScriptedBrowserHost()
         let client = try host.establish()
         var unworkable = Capabilities.wireDefault
         unworkable.chromaModes = [CapabilityChroma.yuv444]
@@ -59,7 +59,7 @@ final class BrowserFailureTests: XCTestCase {
     }
 
     func testMalformedInputEchoIsCountedAndDropped() throws {
-        var host = ScriptedHost()
+        var host = ScriptedBrowserHost()
         let client = try host.establish()
         try host.peer.send([CtrlMessageType.inputEcho, 0xFF], nowMicros: host.nowMicros)
         let steps = try host.flush(to: client)
@@ -67,6 +67,29 @@ final class BrowserFailureTests: XCTestCase {
         XCTAssertEqual(client.currentStatus, .established)
         XCTAssertEqual(client.counters.malformedControl, 1)
         XCTAssertFalse(steps.flatMap(\.events).contains { $0.hasPrefix("FAIL") })
+    }
+
+    /// A host message over the shared ARQ ceiling poisons the ordered
+    /// stream; the browser ends the session with a typed teardown instead
+    /// of streaming on deaf to every later control word.
+    func testOverBudgetHostMessageEndsTheSessionWithATypedTeardown() throws {
+        var config = ArqConfig()
+        config.maxMessageByteCount = 1 << 20
+        var host = ScriptedBrowserHost(arqConfig: config)
+        let client = try host.establish()
+        try host.peer.send(
+            [CtrlMessageType.clipboardAnnounce] + [UInt8](repeating: 0x61, count: 262_144),
+            nowMicros: host.nowMicros)
+        var events: [String] = []
+        for _ in 0..<50 where client.currentStatus != .closed {
+            host.nowMicros += 5_000
+            events += try host.flush(to: client).flatMap(\.events)
+            try host.absorb(client.tick(nowMicros: host.nowMicros))
+        }
+
+        XCTAssertEqual(client.currentStatus, .closed, events.joined(separator: " | "))
+        XCTAssertEqual(client.closeReason, .localTeardown(.shuttingDown))
+        XCTAssertEqual(host.peer.take(type: CtrlMessageType.sessionTeardown).count, 1)
     }
 
     func testTeardownAfterTheHostClosedIsANoOp() throws {
@@ -89,13 +112,13 @@ final class BrowserFailureTests: XCTestCase {
 /// A scripted far end for the paths the shipping host never takes: a
 /// `SealedCtrlPeer` in the responder role that answers message 1 and then
 /// says exactly what a test tells it to.
-struct ScriptedHost {
+struct ScriptedBrowserHost {
     let staticKeys = NoiseKeyPair.generate()
     var peer: SealedCtrlPeer<HostClock>
     var nowMicros: UInt64 = 1_000_000
 
-    init() {
-        peer = SealedCtrlPeer(responderWith: staticKeys)
+    init(arqConfig: ArqConfig = ArqConfig()) {
+        peer = SealedCtrlPeer(responderWith: staticKeys, arqConfig: arqConfig)
     }
 
     /// A browser session dialed at this host and established.

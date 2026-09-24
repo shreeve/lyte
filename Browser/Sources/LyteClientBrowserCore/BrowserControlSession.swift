@@ -281,22 +281,30 @@ public final class BrowserControlSession {
     public func teardown(nowMicros: UInt64) -> Step {
         // The session already ended; its own teardown (if any) is queued.
         if isDraining { return step(outbound: []) }
-        guard status == .ready || status == .established, var control else {
+        guard status == .ready || status == .established, let control else {
             return failStep("teardown before established")
         }
         do {
-            let decision = control.advance(
-                .teardownRequest(.shuttingDown),
-                now: ClientTimestamp(microseconds: nowMicros)
-            )
-            self.control = control
-            try apply(decision, nowMicros: nowMicros)
-            status = .closed
-            note("teardown: shuttingDown")
+            try closeLocally(control, nowMicros: nowMicros)
             return step(outbound: try pollArq(nowMicros: nowMicros))
         } catch {
             return failStep("teardown: \(error)")
         }
+    }
+
+    /// Queues the typed SessionTeardown and closes; the caller polls ARQ.
+    private func closeLocally(
+        _ control: ClientControlSession, nowMicros: UInt64
+    ) throws {
+        var control = control
+        let decision = control.advance(
+            .teardownRequest(.shuttingDown),
+            now: ClientTimestamp(microseconds: nowMicros)
+        )
+        self.control = control
+        try apply(decision, nowMicros: nowMicros)
+        status = .closed
+        note("teardown: shuttingDown")
     }
 
     /// Queues one input event captured at `nowMicros`. Key and button edges
@@ -564,8 +572,17 @@ public final class BrowserControlSession {
         case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
             var outbound: [[UInt8]] = []
             for event in arq.ingest(payload: plaintext, now: now) {
-                if case .message(_, let message) = event {
+                switch event {
+                case .message(_, let message):
                     try handleReliable(message, nowMicros: nowMicros)
+                case .ignored(.orderedStreamPoisoned):
+                    // A host message over the ceiling: nothing on this
+                    // stream can be delivered in order again.
+                    guard !isDraining, let control else { break }
+                    note("CTRL ordered stream poisoned by an over-budget host message — session ends")
+                    try closeLocally(control, nowMicros: nowMicros)
+                default:
+                    break
                 }
             }
             outbound += try pollArq(nowMicros: nowMicros)
