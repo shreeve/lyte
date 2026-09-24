@@ -11,7 +11,9 @@ import LyteWire
 /// The page owns WebTransport and clocks; every call takes injected time and
 /// returns a `Step` of datagrams to send and notes to log. Per-datagram
 /// faults are counted and dropped; only protocol and policy failures end
-/// the session.
+/// the session. A closed or failed session keeps ingesting acknowledgements
+/// and retransmitting until its reliable stream is quiescent, so a
+/// teardown it queued reaches the host.
 public final class BrowserControlSession {
     public enum Status: String, Sendable {
         case idle
@@ -221,6 +223,8 @@ public final class BrowserControlSession {
             return ingestHandshake(datagram, nowMicros: nowMicros)
         case .established, .ready, .closed:
             return ingestSealed(datagram, nowMicros: nowMicros)
+        case .failed where transport != nil:
+            return ingestSealed(datagram, nowMicros: nowMicros)
         case .idle, .failed:
             return step(outbound: [])
         }
@@ -234,18 +238,20 @@ public final class BrowserControlSession {
             return handshakeTick(nowMicros: nowMicros)
         case .established, .ready, .closed:
             break
+        case .failed where transport != nil:
+            break
         case .idle, .failed:
             return step(outbound: [])
         }
         do {
             var outbound: [[UInt8]] = []
-            if status != .closed {
+            if !isDraining {
                 try advanceLifecycle(nowMicros: nowMicros)
                 for line in video.evictStale(nowMicros: nowMicros) {
                     note(line)
                 }
                 outbound += try idrRequestsDue(nowMicros: nowMicros)
-                if status != .closed, nowMicros >= nextFeedbackMicros {
+                if !isDraining, nowMicros >= nextFeedbackMicros {
                     outbound += feedbackReport(nowMicros: nowMicros)
                 }
             }
@@ -260,6 +266,8 @@ public final class BrowserControlSession {
     /// Keep ticking and ingesting until `isReliableQuiescent` so it is
     /// retransmitted until acknowledged.
     public func teardown(nowMicros: UInt64) -> Step {
+        // The session already ended; its own teardown (if any) is queued.
+        if isDraining { return step(outbound: []) }
         guard status == .ready || status == .established, var control else {
             return failStep("teardown before established")
         }
@@ -471,7 +479,7 @@ public final class BrowserControlSession {
         _ envelope: Envelope, _ plaintext: [UInt8], nowMicros: UInt64
     ) throws -> Step {
         let now = ClientTimestamp(microseconds: nowMicros)
-        if status == .closed {
+        if isDraining {
             // After close only acknowledgements matter: they let the
             // teardown's retransmits stop.
             if envelope.channel == .ctrl,
@@ -580,11 +588,11 @@ public final class BrowserControlSession {
                     paired = true
                     note("pairing: PAIRED — host static pinned")
                 case .pinMismatch:
-                    _ = failStep("pairing: PIN mismatch")
+                    fail("pairing: PIN mismatch")
                 case .invalidShare:
-                    _ = failStep("pairing: invalid share")
+                    fail("pairing: invalid share")
                 case .hostRejected(let reason):
-                    _ = failStep("pairing: host rejected (\(reason))")
+                    fail("pairing: host rejected (\(reason))")
                 case .malformed:
                     counters.malformedControl += 1
                 }
@@ -595,7 +603,10 @@ public final class BrowserControlSession {
 
         // Input echoes are host→client accounting.
         if message.first == CtrlMessageType.inputEcho {
-            let echo = try InputEcho.decode(message)
+            guard let echo = try? InputEcho.decode(message) else {
+                counters.malformedControl += 1
+                return
+            }
             inputEchoes += UInt64(echo.tuples.count)
             return
         }
@@ -625,7 +636,11 @@ public final class BrowserControlSession {
             }
             note(detail)
         case .capability(.failed(let err)):
-            _ = failStep("capabilities failed: \(err)")
+            // The composed teardown leaves before the session fails.
+            if let lifecycle = decision.lifecycle {
+                try apply(lifecycle, nowMicros: nowMicros)
+            }
+            fail("capabilities failed: \(err)")
             return
         case .lifecycle(.sessionTeardown):
             note("teardown: received from host")
@@ -811,14 +826,20 @@ public final class BrowserControlSession {
         )
     }
 
+    /// Ends the session once; the FAIL note rides the step being built.
+    private func fail(_ message: String) {
+        guard status != .failed else { return }
+        status = .failed
+        failure = message
+        note("FAIL  \(message)")
+    }
+
     private func failStep(_ message: String) -> Step {
-        if status != .failed {
-            status = .failed
-            failure = message
-            note("FAIL  \(message)")
-        }
+        fail(message)
         return step(outbound: [])
     }
+
+    private var isDraining: Bool { status == .closed || status == .failed }
 }
 
 public enum BrowserControlError: Error {
