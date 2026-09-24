@@ -68,7 +68,8 @@ public struct VideoAssemblerConfig: Hashable, Sendable {
     ) {
         self.holdbackFrameCount = holdbackFrameCount
         self.staleAfterMicroseconds = staleAfterMicroseconds
-        self.maxTrackedGroups = maxTrackedGroups
+        // At least the frame being assembled must be trackable.
+        self.maxTrackedGroups = max(maxTrackedGroups, 1)
         self.reorderThresholdPackets = reorderThresholdPackets
         // Write-off must never be looser than NACK presumption: a seq
         // cannot be written off before it is NACK-worthy. Clamp rather
@@ -368,8 +369,8 @@ public struct VideoAssembler: Sendable {
     private mutating func makeRoom(
         for frame: FrameNumber, into events: inout [VideoAssemblerEvent]
     ) -> [VideoAssemblerEvent]? {
-        guard groups.count >= config.maxTrackedGroups else { return nil }
-        let lowest = groups.keys.min()!
+        guard groups.count >= config.maxTrackedGroups,
+              let lowest = groups.keys.min() else { return nil }
         guard frame.rawValue > lowest else {
             return events + [.shardDropped(.staleFrame(frame))]
         }

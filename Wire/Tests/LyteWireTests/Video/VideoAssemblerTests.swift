@@ -41,6 +41,26 @@ final class VideoAssemblerTests: XCTestCase {
         }
     }
 
+    /// A non-positive group capacity once trapped on the first shard
+    /// (`groups.keys.min()!` over nothing); it now tracks one group.
+    func testNonPositiveTrackedGroupCapacityTracksOneGroup() throws {
+        for capacity in [0, -5] {
+            let config = VideoAssemblerConfig(maxTrackedGroups: capacity)
+            XCTAssertEqual(config.maxTrackedGroups, 1)
+            var assembler = VideoAssembler(config: config)
+            var units: [DecodeUnit] = []
+            for (number, seq) in [(UInt32(0), UInt16(0)), (1, 20)] {
+                let frame = number == 0 ? idrFrame(400) : pFrame(400)
+                for shard in try packetize(frame, number: number, firstSeq: seq) {
+                    units += decodedUnits(assembler.ingest(
+                        envelope: shard.envelope, payload: shard.payload, now: t0
+                    ))
+                }
+            }
+            XCTAssertEqual(units.map(\.frameNumber.rawValue), [0, 1])
+        }
+    }
+
     // MARK: - Decode paths
 
     func testInOrderDeliveryEmitsByteExactUnit() throws {
