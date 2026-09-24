@@ -254,8 +254,8 @@ final class ConnectionModel {
                 "error": String(describing: error),
             ])
             guard isCurrent(generation) else { return }
-            // The Keychain path needs the stable "Lyte Dev" signature —
-            // builds via Scripts/make-app.sh (docs/MACOS-SIGNING.md).
+            // The Keychain grant follows a stable signature: builds via
+            // Scripts/make-app.sh (docs/MACOS-SIGNING.md).
             phase = .failed(.ordinary("client identity: \(error)"))
             return
         }
