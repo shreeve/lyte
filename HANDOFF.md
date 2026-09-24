@@ -14,27 +14,27 @@
 
 ## Live rig
 
-- **pup** (standing host) is reachable on Wi-Fi only, `10.0.0.249`. The
-  wired `enxf8e43b7ede7c` leg is absent, and `host.conf` advertises on it,
-  so `Lyte.app` (mDNS only) can't see pup until `host.conf` advertises
-  on `wlp0s20f3` ([OPERATIONS](docs/OPERATIONS.md#the-rig)); `wire-view`
-  dials `10.0.0.249`; benchmarks need `LYTE_BENCHMARK_HOST=10.0.0.249`.
-- `lyte-host.service` serves UDP **41151** from the XDG layout:
-  `~/.local/bin/lyte-host` → `versions/17fad55a8c21` (the #245 tree),
-  deployed with `Host/Scripts/deploy-host.sh`. The in-process session loop is on
-  (no `--seconds`); the PID survives client reconnects. `host.conf` passes
-  only `--wire-listen 41151 --clipboard=images --advertise-interface …`.
-- Identity is `~/.config/lyte/`; the pre-XDG `~/.config/lyte-host/` and
-  `/etc/lyte/lyte-host.conf` are leftovers the owner may delete
-  ([OPERATIONS](docs/OPERATIONS.md#pre-xdg-leftovers)). Log:
-  `~/.local/state/lyte/host.log`. No benchmark or second app while the
-  owner's `Lyte.app` is open.
+- **pup** is on Wi-Fi only (`10.0.0.249`; wired `enxf8e43b7ede7c` absent),
+  so `host.conf` advertises on `wlp0s20f3` and mDNS finds "pup"; benchmarks
+  need `LYTE_BENCHMARK_HOST=10.0.0.249` (the default is the wired `.232`).
+- `lyte-host.service` serves UDP **41151**: `~/.local/bin/lyte-host` →
+  `versions/1877bfeb924f` (#247 tree; previous `17fad55a8c21` kept), via
+  `Host/Scripts/deploy-host.sh`. Session loop on; `host.conf` passes only
+  `--wire-listen 41151 --clipboard=images --advertise-interface wlp0s20f3`.
+- Identity `~/.config/lyte/`; log `~/.local/state/lyte/host.log`. Kept for
+  the owner: pre-XDG `~/.config/lyte-host/`, `~/lyte-revamp-backup/`,
+  `~/lyte-migration-*`, `/etc/lyte/*.pre-release-opus-*`.
+- **This Mac is paired** (`lyte-cli wire-pair`; pin in `~/Library/Application
+  Support/Lyte/`), but `Lyte.app` has never been granted **Local Network**
+  here: it logs `Local network prohibited` and never dials. Grant it once in
+  System Settings → Privacy & Security → Local Network. No benchmark or
+  second app while the owner's `Lyte.app` is open.
 
 ## Next
 
-1. Live checks only a person at the Mac can run: pair this Mac (discovery
-   needs `--advertise-interface wlp0s20f3` while pup is Wi-Fi only), ⌘
-   shortcuts not reaching GNOME, no stuck keys, app clipboard both ways,
-   roam on `systemctl restart lyte-host`, helper restores awdl0 on quit,
-   one `benchmark-app.sh motion`.
-2. Deferred work: [TODO.md](TODO.md).
+1. Owner: grant Lyte Local Network access, then check in the app: ⌘
+   shortcuts don't reach GNOME, no stuck keys, clipboard both ways, roam on
+   `sudo systemctl restart lyte-host`, AirDrop back after quitting.
+2. Then `LYTE_BENCHMARK_HOST=10.0.0.249 Scripts/benchmark-app.sh motion`
+   (it failed only on the missing Local Network grant).
+3. Deferred work: [TODO.md](TODO.md).

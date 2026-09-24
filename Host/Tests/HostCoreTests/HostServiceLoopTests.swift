@@ -87,8 +87,19 @@ final class HostServiceLoopTests: XCTestCase {
 
         var idle = HostServiceLoop(posture: .singleSession(seconds: 5))
         XCTAssertEqual(
-            idle.sessionEnded(.sessionEnded, leg: empty),
+            idle.sessionEnded(.clockExpired, leg: empty),
             .exit(failure: "direct eye produced no frames in 5s"))
+
+        var interrupted = HostServiceLoop(posture: .singleSession(seconds: 5))
+        XCTAssertEqual(
+            interrupted.sessionEnded(.terminationRequested, leg: empty),
+            .exit(failure: "direct eye produced no frames in 5s"))
+
+        var paired = HostServiceLoop(posture: .singleSession(seconds: 5))
+        XCTAssertEqual(
+            paired.sessionEnded(.sessionEnded, leg: empty),
+            .exit(failure: nil),
+            "a client that leaves before the first frame (pairing) is no eye fault")
 
         var early = HostServiceLoop(posture: .singleSession(seconds: 5))
         XCTAssertEqual(
