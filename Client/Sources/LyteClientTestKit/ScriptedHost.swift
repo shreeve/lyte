@@ -97,26 +97,29 @@ public final class ClientCoreHarness<Host: ScriptedHost>: @unchecked Sendable {
     private let collected = CoreCollected()
     /// How many of `outbound` the host has absorbed.
     public var forwarded = 0
-    public let clock = ManualMicrosClock()
+    public let clock: ManualMicrosClock
 
     public init(
         host: Host,
+        hostAddress: String = "10.0.0.249",
         hostPort: UInt16,
+        clientKeys: NoiseKeyPair = .generate(),
+        clock: ManualMicrosClock = ManualMicrosClock(),
         coreConfig: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig(),
         imageHasher: @escaping @Sendable () -> any ClipboardImageHasher = {
             Sha256()
         }
     ) throws {
         self.host = host
+        self.clock = clock
         let crypto = try NoiseTransportCrypto(
-            hostAddress: "10.0.0.249", hostPort: hostPort,
+            hostAddress: hostAddress, hostPort: hostPort,
             hostStaticPublicKey: host.staticKeys.publicKey,
-            staticKeys: NoiseKeyPair.generate(),
+            staticKeys: clientKeys,
             attempts: 3, attemptTimeoutMilliseconds: 200)
         try crypto.performHandshake(io: host)
         self.crypto = crypto
         self.demux = ReceiveDemux(crypto: crypto)
-        let clock = self.clock
         let collected = self.collected
         let sender = TransportSender(crypto: crypto, transmit: { datagram in
             collected.outbound.append(datagram)
