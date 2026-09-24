@@ -418,6 +418,19 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// Beat-context bookkeeping (guarded by `lock`): the stamp last
     /// fed to the machine.
     private var lastFedEvidenceMicros: UInt64 = 0
+    /// Lifecycle decisions are numbered under `lock` as they are made
+    /// (the beat and the receive thread both make them) so their state
+    /// and mode edges reach the owner in decision order: an edge older
+    /// than one already delivered is superseded and dropped.
+    /// `lifecycleTicketsIssued` is guarded by `lock`;
+    /// `lifecycleEdgeDelivered` by `edgeLock`, which is held across the
+    /// edge callbacks.
+    private var lifecycleTicketsIssued: UInt64 = 0
+    private var lifecycleEdgeDelivered: UInt64 = 0
+    private let edgeLock = NSLock()
+    /// Runs between a lifecycle decision and its execution — the edge
+    /// ordering pin interleaves a second decision here.
+    var testingBeforeLifecycleExecution: (() -> Void)?
     /// Upstream half of the renderer recovery gate. Sample construction may
     /// already be queued when assembler damage is discovered; this fence
     /// prevents those completed P samples from racing the handoff flush.
@@ -1272,16 +1285,28 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         lock.lock()
         let decision = controlSession.advance(input, now: now)
         machineFrozen.store(decision.state == .frozen, ordering: .relaxed)
+        let ticket = issueLifecycleTicketLocked()
         lock.unlock()
 
-        executeLifecycle(decision, now: now)
+        executeLifecycle(decision, ticket: ticket, now: now)
     }
 
-    /// Executes a pure lifecycle decision after the session lock is released.
+    /// Runs under `lock`, in the same critical section that made the
+    /// decision.
+    private func issueLifecycleTicketLocked() -> UInt64 {
+        lifecycleTicketsIssued += 1
+        return lifecycleTicketsIssued
+    }
+
+    /// Executes a pure lifecycle decision after the session lock is
+    /// released. Actions always run; state and mode edges are delivered
+    /// only when no newer decision's edges already were.
     private func executeLifecycle(
         _ decision: ClientSessionLifecycleDecision,
+        ticket: UInt64,
         now: ClientTimestamp
     ) {
+        testingBeforeLifecycleExecution?()
         for action in decision.actions {
             switch action {
             case .sendTeardownMessage(let reason):
@@ -1301,6 +1326,12 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 break   // sender-role actions; a receiver never emits them
             }
         }
+        guard decision.wireModeChange != nil || decision.stateChange != nil
+        else { return }
+        edgeLock.lock()
+        defer { edgeLock.unlock() }
+        guard ticket > lifecycleEdgeDelivered else { return }
+        lifecycleEdgeDelivered = ticket
         if let mode = decision.wireModeChange {
             onEvent(.modeChanged(mode))
         }
@@ -1375,9 +1406,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         for counter in decision?.counters ?? [] {
             counters.bump(counter)
         }
+        var lifecycleTicket: UInt64 = 0
         if let lifecycle = decision?.lifecycle {
             machineFrozen.store(
                 lifecycle.state == .frozen, ordering: .relaxed)
+            lifecycleTicket = issueLifecycleTicketLocked()
         }
         lock.unlock()
         guard let decision else { return }
@@ -1424,7 +1457,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             break
         }
         if let lifecycle = decision.lifecycle {
-            executeLifecycle(lifecycle, now: now)
+            executeLifecycle(lifecycle, ticket: lifecycleTicket, now: now)
         }
     }
 
