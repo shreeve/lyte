@@ -205,6 +205,17 @@ public final class AudioJitterBuffer {
             stats.duplicatesDropped += 1
             return
         }
+        // Before playout nothing bounds the pending numbers' spread, and
+        // serial order is ambiguous across 2^31: a packet far from those
+        // pending re-primes from itself, so every pending pair stays
+        // within the hard cap and the oldest is well defined.
+        if !started, let pendingNumber = pending.keys.first,
+           Int32(bitPattern: packet.number &- pendingNumber).magnitude
+               > UInt32(config.hardCapPackets) {
+            stats.packetsDroppedInRecenter += UInt64(pending.count)
+            pending.removeAll()
+            noteIntentionalGap()
+        }
         // Only packets admitted to the playout epoch describe the path.
         // Late/replayed packets carry stale or retransmit timing and must
         // not perturb target, skew, or diagnostic windows.
