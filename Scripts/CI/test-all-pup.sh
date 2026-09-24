@@ -1,6 +1,13 @@
 #!/bin/bash
 # The deterministic Linux gate on the reference host. This deliberately does
 # not restart or deploy the owner's standing systemd service.
+#
+# One ssh session runs the whole remote side. It validates the mirror, takes
+# an flock on it, waits while this side rsyncs the tree, then builds and
+# tests. The lock is held by that session's processes and dies with them,
+# and the session terminates its workload as soon as its control channel
+# (this script's fd 3) closes, so an interrupted gate never leaves
+# `swift test` running in a mirror that the next gate enters.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -8,173 +15,94 @@ cd "$repo_root"
 
 pup="${LYTE_PUP_HOST:-pup}"
 pup_gate_root="src/lyte-gates/deterministic"
-pup_gate_lock="src/lyte-gates/.deterministic.lock"
-lock_acquired=0
+# The packages pup builds. Browser needs Swift 6.2 (JavaScriptKit) and
+# SystemTests needs the macOS client, so neither is mirrored.
+packages="Client Common Wire Host"
+local_state="$(mktemp -d)"
+trap 'rm -rf -- "$local_state"' EXIT
+lock_token="lyte-pup-gate-locked-$$-$RANDOM$RANDOM"
+mkfifo "$local_state/control"
 
-release_gate_lock() {
-    if (( lock_acquired )); then
-        ssh "$pup" rmdir -- "$pup_gate_lock" >/dev/null 2>&1 || true
+# Remote stdout passes through, except the token line that says the mirror
+# is locked and ready to sync.
+{
+    status=0
+    ssh -o ConnectTimeout=10 "$pup" 'bash -s' < "$local_state/control" \
+        || status=$?
+    echo "$status" 2>/dev/null > "$local_state/remote-status" || true
+} | while IFS= read -r line; do
+    if [[ "$line" == "$lock_token" ]]; then
+        : > "$local_state/locked"
+    else
+        printf '%s\n' "$line"
     fi
-}
-trap release_gate_lock EXIT
+done &
+remote_job=$!
+exec 3> "$local_state/control"
 
-if ! ssh "$pup" 'bash -se' <<'PREFLIGHT'
+{
+    printf 'lock_token=%q\n' "$lock_token"
+    printf 'gate_owner=%q\n' "$(hostname -s):$repo_root (pid $$)"
+    printf 'packages=%q\n' "$packages"
+    cat <<'REMOTE'
 set -euo pipefail
-namespace="$HOME/src/lyte-gates"
-gate_root="$namespace/deterministic"
-gate_lock="$namespace/.deterministic.lock"
-mount_targets=""
-
-if ! command -v findmnt >/dev/null 2>&1; then
-    echo "pup gate FAILED: findmnt is required for deletion safety" >&2
-    exit 1
-fi
-if ! mount_targets="$(findmnt -rn -o TARGET)"; then
-    echo "pup gate FAILED: cannot inspect mounted filesystems" >&2
-    exit 1
-fi
-refuse_mounts_below() {
-    local root="$1"
-    local mounted
-    while IFS= read -r mounted; do
-        case "$mounted" in
-            "$root"|"$root"/*)
-                echo "pup gate FAILED: gate mirror contains a mount: $mounted" >&2
-                exit 1
-                ;;
-        esac
-    done <<< "$mount_targets"
-}
-
-if [[ -L "$namespace" || ( -e "$namespace" && ! -d "$namespace" ) ]]; then
-    echo "pup gate FAILED: fixed gate namespace is not a real directory" >&2
-    exit 1
-fi
-refuse_mounts_below "$namespace"
-mkdir -p "$namespace"
-if [[ "$(readlink -f -- "$namespace")" != "$HOME/src/lyte-gates" ]]; then
-    echo "pup gate FAILED: fixed gate namespace resolves elsewhere" >&2
-    exit 1
-fi
-if [[ -L "$gate_root" || ( -e "$gate_root" && ! -d "$gate_root" ) ]]; then
-    echo "pup gate FAILED: fixed gate root is not a real directory" >&2
-    exit 1
-fi
-mkdir -p "$gate_root"
-if [[ "$(readlink -f -- "$gate_root")" != "$HOME/src/lyte-gates/deterministic" ]]; then
-    echo "pup gate FAILED: fixed gate root resolved outside its namespace" >&2
-    exit 1
-fi
-for package in Browser Client Common Wire Host SystemTests; do
-    target="$gate_root/$package"
-    if [[ -L "$target" ]]; then
-        echo "pup gate FAILED: package mirror is a symlink: $target" >&2
-        exit 1
-    fi
-    if [[ -e "$target" && ! -d "$target" ]]; then
-        echo "pup gate FAILED: package mirror is not a directory: $target" >&2
-        exit 1
-    fi
-    if [[ -d "$target" && "$(readlink -f -- "$target")" != "$target" ]]; then
-        echo "pup gate FAILED: package mirror resolves elsewhere: $target" >&2
-        exit 1
-    fi
-    refuse_mounts_below "$target"
-    mkdir -p "$target"
-done
-if ! mkdir "$gate_lock"; then
-    echo "pup gate FAILED: another deterministic gate holds the pup mirror" >&2
-    exit 1
-fi
-PREFLIGHT
-then
-    exit 1
-fi
-lock_acquired=1
-
-echo "==> sync Browser, Client, Common, Wire, Host, and SystemTests to $pup:$pup_gate_root"
-# Remove only the retired client-package paths inside the validated,
-# lock-owned deterministic mirror. They must not survive as a second package.
-ssh "$pup" 'bash -se' <<'RETIRE_ROOT_CLIENT'
-set -euo pipefail
-gate_root="$HOME/src/lyte-gates/deterministic"
-if ! command -v findmnt >/dev/null 2>&1; then
-    echo "pup gate FAILED: findmnt is required for deletion safety" >&2
-    exit 1
-fi
-if [[ "$(readlink -f -- "$gate_root")" != "$HOME/src/lyte-gates/deterministic" ]]; then
-    echo "pup gate FAILED: refusing to retire paths outside the gate mirror" >&2
-    exit 1
-fi
-for path in Package.swift Package.resolved Sources Tests; do
-    target="$gate_root/$path"
-    if [[ -L "$target" ]]; then
-        echo "pup gate FAILED: stale root client path is a symlink: $target" >&2
-        exit 1
-    fi
-done
-if ! mount_targets="$(findmnt -rn -o TARGET)"; then
-    echo "pup gate FAILED: cannot inspect mounted filesystems" >&2
-    exit 1
-fi
-while IFS= read -r mounted; do
-    case "$mounted" in
-        "$gate_root/Sources"|"$gate_root/Sources"/*|\
-        "$gate_root/Tests"|"$gate_root/Tests"/*)
-            echo "pup gate FAILED: stale root client tree contains a mount: $mounted" >&2
-            exit 1
-            ;;
-    esac
-done <<< "$mount_targets"
-rm -f -- "$gate_root/Package.swift" "$gate_root/Package.resolved"
-for directory in "$gate_root/Sources" "$gate_root/Tests"; do
-    if [[ -d "$directory" ]]; then
-        find "$directory" -xdev -depth -delete
-    elif [[ -e "$directory" ]]; then
-        echo "pup gate FAILED: stale root client path is not a directory: $directory" >&2
-        exit 1
-    fi
-done
-RETIRE_ROOT_CLIENT
-rsync -a --delete --exclude .build --exclude .serve \
-    Browser/ "$pup:$pup_gate_root/Browser/"
-rsync -a --delete --exclude .build Client/ "$pup:$pup_gate_root/Client/"
-rsync -a --delete --exclude .build Common/ "$pup:$pup_gate_root/Common/"
-rsync -a --delete --exclude .build Wire/ "$pup:$pup_gate_root/Wire/"
-rsync -a --delete --exclude .build Host/ "$pup:$pup_gate_root/Host/"
-rsync -a --delete --exclude .build \
-    SystemTests/ "$pup:$pup_gate_root/SystemTests/"
-rsync -a Scripts/Tests/test-hermetic-linkage.sh \
-    "$pup:$pup_gate_root/test-hermetic-linkage.sh"
-rsync -a LICENSE "$pup:$pup_gate_root/LICENSE"
-ssh "$pup" mkdir -p -- "$pup_gate_root/docs" "$pup_gate_root/Scripts/Tests"
-rsync -a docs/THIRD-PARTY.md \
-    "$pup:$pup_gate_root/docs/THIRD-PARTY.md"
-rsync -a Scripts/verify-opus-upstream.sh \
-    "$pup:$pup_gate_root/Scripts/verify-opus-upstream.sh"
-rsync -a Scripts/Tests/test-host-package-image.sh \
-    "$pup:$pup_gate_root/Scripts/Tests/test-host-package-image.sh"
-rsync -a Scripts/Tests/test-host-installer.sh \
-    "$pup:$pup_gate_root/Scripts/Tests/test-host-installer.sh"
-rsync -a Scripts/Tests/test-host-deploy.sh \
-    "$pup:$pup_gate_root/Scripts/Tests/test-host-deploy.sh"
-
-ssh "$pup" 'bash -se' <<'REMOTE'
-set -euo pipefail
+shopt -s inherit_errexit
 
 export LD_LIBRARY_PATH="$HOME/.local/lib/swift-compat${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-gate_root="$HOME/src/lyte-gates/deterministic"
+namespace="$HOME/src/lyte-gates"
+gate_root="$namespace/deterministic"
+gate_lock="$namespace/.deterministic.flock"
+# Gates from older checkouts lock the mirror with this directory instead.
+legacy_lock="$namespace/.deterministic.lock"
+holds_legacy_lock=0
 package_image_parent=""
+watchdog=""
+before_state=""
+mount_targets=""
+
+fail() {
+    echo "pup gate FAILED: $*" >&2
+    exit 1
+}
+
+# descendants PID: every live process below PID. SwiftPM starts test
+# runners in their own process group, so a group signal would miss them.
+descendants() {
+    local child
+    for child in $(pgrep -P "$1"); do
+        echo "$child"
+        descendants "$child"
+    done
+}
+
+# real_directory PATH: PATH is a directory (created if absent) that is not a
+# symlink, resolves to itself and contains no mount.
+real_directory() {
+    local path="$1" mounted
+    if [[ -L "$path" || ( -e "$path" && ! -d "$path" ) ]]; then
+        fail "gate path is not a real directory: $path"
+    fi
+    while IFS= read -r mounted; do
+        case "$mounted" in
+            "$path"|"$path"/*) fail "gate path contains a mount: $mounted" ;;
+        esac
+    done <<< "$mount_targets"
+    mkdir -p "$path"
+    [[ "$(readlink -f -- "$path")" == "$path" ]] \
+        || fail "gate path resolves elsewhere: $path"
+}
 
 # Identity, the service's knobs, the deployed version and the installed unit
 # must be byte-identical after the gate. The XDG identity and host.conf are
 # required; pre-XDG copies are covered whenever they exist.
 protected_state_fingerprint() {
     local config="$HOME/.config/lyte" file
-    test -f "$config/noise_static.key"
-    test -f "$config/paired_clients"
-    test -f "$config/host.conf"
-
+    for file in noise_static.key paired_clients host.conf; do
+        if [[ ! -f "$config/$file" ]]; then
+            echo "pup gate FAILED: required $config/$file is missing" >&2
+            return 1
+        fi
+    done
     {
         for file in \
             "$config/noise_static.key" \
@@ -199,19 +127,23 @@ protected_state_fingerprint() {
     } | sha256sum | awk '{print $1}'
 }
 
-before_state="$(protected_state_fingerprint)"
-
 verify_protected_state() {
     local after_state
-    after_state="$(protected_state_fingerprint)"
+    after_state="$(protected_state_fingerprint)" || return 1
     if [[ "$before_state" != "$after_state" ]]; then
         echo "pup gate FAILED: protected host state or metadata changed" >&2
         return 1
     fi
 }
+
 on_remote_exit() {
     local status=$?
     trap - EXIT
+    trap '' PIPE
+    set +e
+    if [[ -n "$watchdog" ]]; then
+        kill "$watchdog" 2>/dev/null
+    fi
     if [[ -n "$package_image_parent" && -d "$package_image_parent" ]]; then
         case "$(readlink -f -- "$package_image_parent")" in
             /tmp/lyte-host-image.*)
@@ -223,53 +155,35 @@ on_remote_exit() {
                 ;;
         esac
     fi
-    if ! verify_protected_state; then
-        exit 1
+    if [[ -n "$before_state" ]] && ! verify_protected_state; then
+        status=1
+    fi
+    if (( holds_legacy_lock )); then
+        rmdir -- "$legacy_lock"
     fi
     exit "$status"
 }
 trap on_remote_exit EXIT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+trap 'exit 141' PIPE
 
-build_graph_hash="$({
-    for manifest in \
-        "$gate_root/Client/Package.swift" \
-        "$gate_root/Client/Package.resolved" \
-        "$gate_root/Common/Package.swift" \
-        "$gate_root/Common/Package.resolved" \
-        "$gate_root/Wire/Package.swift" \
-        "$gate_root/Wire/Package.resolved" \
-        "$gate_root/Host/Package.swift" \
-        "$gate_root/Host/Package.resolved" \
-        "$gate_root/SystemTests/Package.swift" \
-        "$gate_root/SystemTests/Package.resolved" \
-        "$gate_root/Browser/Package.swift" \
-        "$gate_root/Browser/Package.resolved"
-    do
-        if [[ -f "$manifest" ]]; then
-            sha256sum "$manifest"
-        fi
-    done
-
-    # Include the source graph so a layout change invalidates stale SwiftPM
-    # workspaces that still name removed dependency paths.
-    cd "$gate_root"
-    for package_root in Client Common Wire Host SystemTests Browser; do
-        for tree in Sources Tests Plugins; do
-            source_root="$package_root/$tree"
-            if [[ -d "$source_root" ]]; then
-                find "$source_root" -type f -print
-            fi
-        done
-    done | LC_ALL=C sort
-} | sha256sum | awk '{print $1}')"
-
+# run_package_tests PACKAGE [--build-only TARGET...]: resolve PACKAGE, then
+# test it (or build only TARGETs), cleaning its build state first when its
+# build graph changed.
 run_package_tests() {
-    local label="$1"
-    local path="$2"
+    local package="$1" path="$gate_root/$1" target
+    shift
     local marker="$path/.build/.lyte-build-graph-sha256"
-    local installed_hash=""
+    local build_graph_hash installed_hash=""
+    build_graph_hash="$(lyte_build_graph_hash "$gate_root" "$package")"
 
-    echo "==> $label tests"
+    if [[ "${1:-}" == --build-only ]]; then
+        shift
+        echo "==> $package builds: $*"
+    else
+        echo "==> $package tests"
+    fi
     if [[ -f "$marker" ]]; then
         installed_hash="$(<"$marker")"
     fi
@@ -277,86 +191,140 @@ run_package_tests() {
         echo "    package or source-path graph changed; invalidating stale SwiftPM build state"
         (cd "$path" && swift package clean)
     fi
-    (cd "$path" && swift package resolve \
-        && swift test -Xswiftc -warnings-as-errors)
+    (cd "$path" && swift package resolve)
+    if (( $# )); then
+        for target in "$@"; do
+            (cd "$path" \
+                && swift build --target "$target" -Xswiftc -warnings-as-errors)
+        done
+    else
+        (cd "$path" && swift test -Xswiftc -warnings-as-errors)
+    fi
     mkdir -p "$path/.build"
     printf '%s\n' "$build_graph_hash" > "$marker"
 }
 
-run_package_tests "Common" "$gate_root/Common"
-run_package_tests "Wire" "$gate_root/Wire"
+main() {
+    local go="" package
 
-echo "==> IO-free client policy builds"
-client_path="$gate_root/Client"
-client_marker="$client_path/.build/.lyte-build-graph-sha256"
-client_installed_hash=""
-if [[ -f "$client_marker" ]]; then
-    client_installed_hash="$(<"$client_marker")"
-fi
-if [[ "$client_installed_hash" != "$build_graph_hash" ]]; then
-    echo "    package or source-path graph changed; invalidating stale SwiftPM build state"
-    (cd "$client_path" && swift package clean)
-fi
-(cd "$client_path" \
-    && swift package resolve \
-    && swift build --target LyteClientCore -Xswiftc -warnings-as-errors \
-    && swift build --target LyteClientSession -Xswiftc -warnings-as-errors)
-mkdir -p "$client_path/.build"
-printf '%s\n' "$build_graph_hash" > "$client_marker"
+    command -v findmnt >/dev/null 2>&1 \
+        || fail "findmnt is required for deletion safety"
+    command -v flock >/dev/null 2>&1 || fail "flock is required to lock the mirror"
+    mount_targets="$(findmnt -rn -o TARGET)" \
+        || fail "cannot inspect mounted filesystems"
+    real_directory "$namespace"
+    exec 9>>"$gate_lock"
+    if ! flock -n 9; then
+        fail "another deterministic gate holds the pup mirror: $(cat "$gate_lock")"
+    fi
+    printf '%s, since %s\n' "$gate_owner" "$(date -u +%FT%TZ)" > "$gate_lock"
+    if ! mkdir -- "$legacy_lock" 2>/dev/null; then
+        fail "a gate from an older checkout holds $legacy_lock" \
+            "(rmdir it if no such gate is running)"
+    fi
+    holds_legacy_lock=1
+    real_directory "$gate_root"
+    for package in $packages Scripts docs; do
+        real_directory "$gate_root/$package"
+    done
 
-run_package_tests "Host" "$gate_root/Host"
+    # The mirror is ours: let the local side sync it, then run. From here on
+    # the end of the control channel means the local gate is gone.
+    echo "$lock_token"
+    read -r go || true
+    [[ "$go" == go ]] || fail "the local gate ended before its sync finished"
+    exec 8<&0
+    (
+        exec 9>&-
+        while read -r _ <&8; do :; done
+        kill -TERM $(descendants $$ | grep -vx "$BASHPID") $$
+    ) </dev/null >/dev/null 2>&1 &
+    watchdog=$!
+    exec 8<&-
 
-echo "==> plain Host build"
-(cd "$gate_root/Host" && swift build -Xswiftc -warnings-as-errors)
+    source "$gate_root/Scripts/lib/build-graph.sh"
+    before_state="$(protected_state_fingerprint)"
 
-echo "==> release Host build"
-(cd "$gate_root/Host" \
-    && swift build -c release -Xswiftc -warnings-as-errors)
+    run_package_tests Common
+    run_package_tests Wire
+    # Client's manifest declares its macOS targets on every platform, so
+    # only the IO-free policy targets build here.
+    run_package_tests Client --build-only LyteClientCore LyteClientSession
+    run_package_tests Host
 
-host_binary="$gate_root/Host/.build/release/lyte-host"
-audio_check_binary="$gate_root/Host/.build/release/lyte-audio-check"
-test -x "$host_binary"
-test -x "$audio_check_binary"
+    echo "==> plain Host build"
+    (cd "$gate_root/Host" && swift build -Xswiftc -warnings-as-errors)
 
-echo "==> rootless Linux host release image"
-package_image_parent="$(mktemp -d -t lyte-host-image.XXXXXX)"
-package_image="$package_image_parent/root"
-LYTE_REPOSITORY_ROOT="$gate_root" \
-    "$gate_root/Host/Scripts/stage-host-image.sh" "$package_image"
-"$gate_root/Scripts/Tests/test-host-package-image.sh" "$package_image"
-"$gate_root/Scripts/Tests/test-host-installer.sh" "$package_image"
-"$gate_root/Scripts/Tests/test-host-installer.sh" --self-test
-"$gate_root/test-hermetic-linkage.sh" \
-    "$package_image/bin/lyte-host"
-find "$package_image_parent" -xdev -depth -delete
-package_image_parent=""
+    echo "==> release Host build"
+    (cd "$gate_root/Host" \
+        && swift build -c release -Xswiftc -warnings-as-errors)
 
-if ldd "$host_binary" \
-    | grep -Eiq 'libav(codec|device|filter|format|util)|libswresample|libswscale'
-then
-    echo "pup gate FAILED: lyte-host regained a media-library dependency" >&2
+    local host_binary="$gate_root/Host/.build/release/lyte-host"
+    local audio_check_binary="$gate_root/Host/.build/release/lyte-audio-check"
+    local tests="$gate_root/Scripts/Tests"
+    [[ -x "$host_binary" ]] || fail "no release lyte-host"
+    [[ -x "$audio_check_binary" ]] || fail "no release lyte-audio-check"
+
+    echo "==> rootless Linux host release image"
+    package_image_parent="$(mktemp -d -t lyte-host-image.XXXXXX)"
+    local package_image="$package_image_parent/root"
+    LYTE_REPOSITORY_ROOT="$gate_root" \
+        "$gate_root/Host/Scripts/stage-host-image.sh" "$package_image"
+    "$tests/test-host-package-image.sh" "$package_image"
+    "$tests/test-host-installer.sh" "$package_image"
+    "$tests/test-host-installer.sh" --self-test
+    "$tests/test-hermetic-linkage.sh" "$package_image/bin/lyte-host"
+    find "$package_image_parent" -xdev -depth -delete
+    package_image_parent=""
+
+    # Output is captured before grep: with pipefail, `grep -q` exiting early
+    # can SIGPIPE the producer and turn a match into a failed pipeline.
+    local libraries symbols binary
+    libraries="$(ldd "$host_binary")"
+    if grep -Eiq 'libav(codec|device|filter|format|util)|libswresample|libswscale' \
+        <<< "$libraries"
+    then
+        fail "lyte-host regained a media-library dependency"
+    fi
+
+    "$tests/test-hermetic-linkage.sh" "$host_binary" "$audio_check_binary"
+    for binary in "$host_binary" "$audio_check_binary"; do
+        symbols="$(nm -g --defined-only "$binary")"
+        grep -Eq ' opus_encode_float$' <<< "$symbols" \
+            || fail "pinned Opus encoder absent from $binary"
+    done
+
+    echo "==> Linux socket and pacing harnesses"
+    "$gate_root/Host/.build/debug/lyte-netio-check"
+    "$gate_root/Host/.build/debug/lyte-pace-check"
+
+    verify_protected_state || exit 1
+    before_state=""
+    echo "pup gate PASSED; protected host state is unchanged"
+}
+
+main; exit
+REMOTE
+} >&3
+
+until [[ -e "$local_state/locked" || -e "$local_state/remote-status" ]]; do
+    sleep 0.1
+done
+if [[ ! -e "$local_state/locked" ]]; then
+    wait "$remote_job" || true
     exit 1
 fi
 
-"$gate_root/test-hermetic-linkage.sh" "$host_binary" "$audio_check_binary"
-for binary in "$host_binary" "$audio_check_binary"; do
-    symbols="$(nm -g --defined-only "$binary")"
-    if ! grep -Eq ' opus_encode_float$' <<< "$symbols"; then
-        echo "pup gate FAILED: pinned Opus encoder absent from $binary" >&2
-        exit 1
-    fi
+echo "==> sync $packages and Scripts to $pup:$pup_gate_root"
+for package in $packages; do
+    rsync -a --delete --exclude .build \
+        "$package/" "$pup:$pup_gate_root/$package/"
 done
+rsync -a --delete Scripts/ "$pup:$pup_gate_root/Scripts/"
+rsync -a LICENSE "$pup:$pup_gate_root/LICENSE"
+rsync -a docs/THIRD-PARTY.md "$pup:$pup_gate_root/docs/THIRD-PARTY.md"
+echo go >&3
 
-echo "==> Linux socket and pacing harnesses"
-"$gate_root/Host/.build/debug/lyte-netio-check"
-"$gate_root/Host/.build/debug/lyte-pace-check"
-
-verify_protected_state
-trap - EXIT
-
-echo "pup gate PASSED; protected host state is unchanged"
-REMOTE
-
-release_gate_lock
-lock_acquired=0
-trap - EXIT
+wait "$remote_job" || true
+remote_status="$(cat "$local_state/remote-status" 2>/dev/null || echo 1)"
+exit "$remote_status"

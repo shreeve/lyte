@@ -12,14 +12,19 @@ if [[ ! -d "$DEVELOPER_DIR" ]]; then
     exit 1
 fi
 
-run_package_tests() {
-    local label="$1"
-    local package_path="$2"
-    local scratch_path="$3"
-    local marker="$scratch_path/.lyte-build-graph-sha256"
-    local installed_hash=""
-    echo "==> $label tests"
+source "$repo_root/Scripts/lib/build-graph.sh"
 
+# run_package_tests PACKAGE: resolve and test PACKAGE in its own scratch
+# directory, cleaning it first when its build graph changed.
+run_package_tests() {
+    local package="$1"
+    local package_path="$repo_root/$package"
+    local scratch_path="$package_path/.build"
+    local marker="$scratch_path/.lyte-build-graph-sha256"
+    local build_graph_hash installed_hash=""
+    echo "==> $package tests"
+
+    build_graph_hash="$(lyte_build_graph_hash "$repo_root" "$package")"
     if [[ -f "$marker" ]]; then
         installed_hash="$(<"$marker")"
     fi
@@ -61,11 +66,13 @@ verify_frozen_vectors() {
     fi
 
     # Vectors are append-only: a committed vector file may never be modified,
-    # deleted, renamed, or retyped. New vector files and README prose are fine.
+    # deleted, renamed, or retyped. New vector files and README.md prose at
+    # any depth are fine. Without rename detection a rename is a deletion,
+    # so a vector moved onto a README path still fails.
     echo "==> frozen-vector contract (append-only)"
     local changed
-    changed="$(git diff --name-only --diff-filter=MDRT "$base" -- Wire/Vectors/ \
-        | grep -v '^Wire/Vectors/README\.md$' || true)"
+    changed="$(git diff --no-renames --name-only --diff-filter=MDT "$base" \
+        -- Wire/Vectors/ | grep -Ev '^Wire/Vectors/(.*/)?README\.md$' || true)"
     if [[ -n "$changed" ]]; then
         echo "macOS gate FAILED: committed vectors changed:" >&2
         echo "$changed" >&2
@@ -75,70 +82,64 @@ verify_frozen_vectors() {
 
 verify_frozen_vectors
 
-build_graph_hash="$({
-    for manifest in \
-        Client/Package.swift Client/Package.resolved \
-        Common/Package.swift Common/Package.resolved \
-        Wire/Package.swift Wire/Package.resolved \
-        Host/Package.swift Host/Package.resolved \
-        SystemTests/Package.swift SystemTests/Package.resolved \
-        Browser/Package.swift Browser/Package.resolved
-    do
-        if [[ -f "$manifest" ]]; then
-            shasum -a 256 "$manifest"
-        fi
-    done
-
-    # SwiftPM can retain absolute dependency paths after a file-only layout
-    # move; make the source graph part of cache identity.
-    for package_root in Client Common Wire Host SystemTests Browser; do
-        for tree in Sources Tests Plugins; do
-            source_root="$package_root/$tree"
-            if [[ -d "$source_root" ]]; then
-                find "$source_root" -type f -print
-            fi
-        done
-    done | LC_ALL=C sort
-} | shasum -a 256 | awk '{print $1}')"
-
-run_package_tests "Common" "$repo_root/Common" "$repo_root/Common/.build"
-run_package_tests "Wire" "$repo_root/Wire" "$repo_root/Wire/.build"
-run_package_tests "Host" "$repo_root/Host" "$repo_root/Host/.build"
+run_package_tests Common
+run_package_tests Wire
+run_package_tests Host
 # `.build/Lyte.app` is the published app and may be running; SwiftPM
-# `clean` removes the whole scratch root, so Client verification uses a
-# package-local scratch directory.
-run_package_tests "client" "$repo_root/Client" "$repo_root/Client/.build"
-run_package_tests \
-    "SystemTests" "$repo_root/SystemTests" "$repo_root/SystemTests/.build"
+# `clean` removes the whole scratch root, so every package, Client
+# included, uses its package-local scratch directory.
+run_package_tests Client
+run_package_tests SystemTests
 # The browser's sans-IO core, natively (its tests drive a real HostWire
 # session in process).
-run_package_tests "Browser" "$repo_root/Browser" "$repo_root/Browser/.build"
+run_package_tests Browser
 
-# WebAssembly legs run when the pinned Swift Wasm toolchain is installed
-# (Scripts/lib/wasm-toolchain.sh has the install commands). A subshell keeps
-# the host-SDK choice for that toolchain away from the Xcode legs below.
-echo "==> WebAssembly legs"
-(
+# The WebAssembly and page legs need toolchains Xcode does not ship
+# (docs/TESTING.md#requirements). A missing one fails the gate: "LyteWire
+# stays WebAssembly-compilable" is law, not a best effort. Only
+# LYTE_GATE_ALLOW_SKIP=1 skips a leg, and the summary names it.
+ran_legs=""
+skipped_legs=""
+# The probes run in subshells so swiftly's PATH never reaches the Xcode legs.
+wasm_toolchain_installed() (
     . "$repo_root/Scripts/lib/wasm-toolchain.sh"
-    if ! lyte_wasm_available; then
-        echo "    SKIPPED: Swift ${LYTE_WASM_TOOLCHAIN_VERSION} + ${LYTE_WASM_SDK} not installed"
-        exit 0
-    fi
-    lyte_wasm_select_host_sdk "macOS gate"
-    Browser/Scripts/build.sh
-    if lyte_wasmtime >/dev/null; then
-        Wire/Scripts/wasm-test.sh
-    else
-        echo "    SKIPPED Wire/Scripts/wasm-test.sh: wasmtime not installed"
-    fi
+    lyte_wasm_available
 )
+wasm_suite_runnable() (
+    . "$repo_root/Scripts/lib/wasm-toolchain.sh"
+    lyte_wasm_available && lyte_wasmtime >/dev/null
+)
+node_installed() { command -v node >/dev/null; }
+# optional_leg NAME PROBE COMMAND...
+optional_leg() {
+    local name="$1" probe="$2"
+    shift 2
+    echo "==> $name"
+    if ! "$probe"; then
+        if [[ "${LYTE_GATE_ALLOW_SKIP:-0}" != 1 ]]; then
+            echo "macOS gate FAILED: $name cannot run ($probe failed);" \
+                "install the toolchain (docs/TESTING.md#requirements)" \
+                "or set LYTE_GATE_ALLOW_SKIP=1" >&2
+            exit 1
+        fi
+        echo "    SKIPPED: $probe failed and LYTE_GATE_ALLOW_SKIP=1"
+        skipped_legs="${skipped_legs:+$skipped_legs, }$name"
+        return 0
+    fi
+    "$@"
+    ran_legs="${ran_legs:+$ran_legs, }$name"
+}
 
-echo "==> browser page tests"
-if command -v node >/dev/null; then
+optional_leg "browser WebAssembly build" wasm_toolchain_installed \
+    Browser/Scripts/build.sh
+optional_leg "Wire suite on WebAssembly" wasm_suite_runnable \
+    Wire/Scripts/wasm-test.sh
+optional_leg "browser page tests" node_installed \
     node --test Browser/Tests/Page/page.test.mjs
-else
-    echo "    SKIPPED: node not installed"
-fi
+
+echo "==> shell script lint and gate helpers"
+Scripts/Tests/test-shell-assertions.sh
+Scripts/Tests/test-build-graph.sh
 
 echo "==> benchmark safety tests"
 Scripts/Tests/test-benchmark-safety.sh
@@ -150,6 +151,7 @@ Scripts/Tests/test-host-installer.sh --self-test
 
 echo "==> signing policy tests"
 Scripts/Tests/test-sign-dev.sh
+Scripts/Tests/test-setup-dev-signing.sh
 
 echo "==> analyzer tests"
 python_env="$repo_root/.build/ci-python"
@@ -162,9 +164,9 @@ if [[ ! -x "$python_bootstrap" ]]; then
     exit 1
 fi
 if ! "$python_bootstrap" -c \
-    'import sys; raise SystemExit(not ((3, 9) <= sys.version_info[:2] < (3, 13)))'
+    'import sys; raise SystemExit(sys.version_info[:2] < (3, 9))'
 then
-    echo "macOS gate FAILED: NumPy 2.0.2 needs Python 3.9–3.12; " \
+    echo "macOS gate FAILED: the analyzer tests need Python 3.9 or later;" \
         "set LYTE_CI_PYTHON to a compatible interpreter" >&2
     exit 1
 fi
@@ -212,7 +214,11 @@ LYTE_APP_DESTINATION="$ci_app" Scripts/make-app.sh release
 second_ci_bundle_version="$(
     plutil -extract CFBundleVersion raw -o - "$ci_app/Contents/Info.plist"
 )"
-[[ "$second_ci_bundle_version" -gt "$first_ci_bundle_version" ]]
+[[ "$second_ci_bundle_version" -gt "$first_ci_bundle_version" ]] || {
+    echo "macOS gate FAILED: bundle version did not increase" \
+        "($first_ci_bundle_version then $second_ci_bundle_version)" >&2
+    exit 1
+}
 Scripts/Tests/test-app-packaging.sh "$ci_app" "$ci_app_root"
 codesign --verify --strict "$ci_app/Contents/MacOS/Lyte"
 codesign --verify --strict "$ci_app/Contents/MacOS/lyte-helperd"
@@ -221,4 +227,9 @@ Scripts/Tests/test-hermetic-linkage.sh \
     "$ci_app/Contents/MacOS/Lyte" \
     "$ci_app/Contents/MacOS/lyte-helperd"
 
-echo "macOS gate PASSED"
+echo "toolchain legs run: ${ran_legs:-none}"
+if [[ -n "$skipped_legs" ]]; then
+    echo "macOS gate PASSED WITH SKIPPED LEGS: $skipped_legs"
+else
+    echo "macOS gate PASSED"
+fi
