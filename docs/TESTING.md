@@ -23,9 +23,10 @@ run by hand.
 - **Browser smoke (optional):** Google Chrome, a GPU, Node 24 or 26,
   `openssl`, and network access for the first `npm install` of
   `rwebtransport` under `Browser/Harness/`.
-- **Python analyzer tests:** Python 3.9–3.12 (the gate builds a venv in
-  `.build/ci-python` from `Scripts/requirements.txt`, NumPy 2.0.2); set
-  `LYTE_CI_PYTHON` to pick the interpreter.
+- **Python analyzer tests:** Python 3.9 or later (the gate builds a venv
+  in `.build/ci-python` from `Scripts/requirements.txt`: NumPy 2, the
+  newest release the interpreter supports); set `LYTE_CI_PYTHON` to pick
+  the interpreter.
 
 ## Package tests
 

@@ -161,9 +161,9 @@ if [[ ! -x "$python_bootstrap" ]]; then
     exit 1
 fi
 if ! "$python_bootstrap" -c \
-    'import sys; raise SystemExit(not ((3, 9) <= sys.version_info[:2] < (3, 13)))'
+    'import sys; raise SystemExit(sys.version_info[:2] < (3, 9))'
 then
-    echo "macOS gate FAILED: NumPy 2.0.2 needs Python 3.9–3.12; " \
+    echo "macOS gate FAILED: the analyzer tests need Python 3.9 or later;" \
         "set LYTE_CI_PYTHON to a compatible interpreter" >&2
     exit 1
 fi
