@@ -1,35 +1,32 @@
-import XCTest
-import LyteClientTestKit
 import Foundation
-import LyteTransport
+import LyteClientCore
+import LyteTestKit
 import LyteWire
+import XCTest
 
-// THE GATE (H4 V-5): the client half of owner decision 1 — the
-// three-tier Chroma control's mechanics, pinned:
+// The three-tier Chroma control's mechanics:
 //
 //   1. DECLARATION-AS-CHOICE: each tier declares exactly ONE chroma
 //      mode (Good → [yuv420], Best → [yuv444]); the agreed
-//      intersection against a V-4 host ([420, 444]) is the singleton,
-//      and the singleton IS the choice. Better is DORMANT — no yuv422
-//      wire id exists (that append is a Wire/ slice) — so it declares
-//      nothing and cannot be selected.
+//      intersection against a 4:4:4-capable host ([420, 444]) is the
+//      singleton, and the singleton IS the choice. Better is dormant —
+//      no yuv422 wire id exists — so it declares nothing and cannot be
+//      selected.
 //   2. THE FALLBACK VERDICT: a non-Good declaration meeting a host
 //      without the tier draws the typed `noCommonChromaMode`; the
 //      policy's verdict is re-dial at Good (banner alongside), and
 //      ONLY that failure on ONLY a non-Good tier — a codec mismatch
 //      is not a chroma problem and Good has nowhere lower to go.
-//   3. PER-HOST PERSISTENCE: the tier rides PinnedHost like the CL-13
-//      "start muted" and CL-15 clipboard preferences — optional field
-//      (old files decode unchanged), raw-string stored (a future
-//      tier's file reads as the default here), Good stored as nil
-//      (clean files), preserved across a pin refresh.
-//   4. THE STREAM AUDIT: SPS `chroma_format_idc` parsed off real
-//      encoder output — the committed 4:2:0 corpus IDR and a frozen
-//      Rext 4:4:4 SPS from pup's production leaf (EPBs included) —
-//      and the audit's one-confirmation / doctor-on-mismatch
-//      discipline.
+//   3. THE SPS READ: `chroma_format_idc` parsed off real encoder
+//      output — the committed 4:2:0 corpus IDR and a frozen Rext 4:4:4
+//      SPS (emulation-prevention bytes included).
+//   4. THE STREAM AUDIT: one confirmation, a doctor line on each
+//      mismatch edge.
+//
+// Per-host persistence of the tier is LyteTransport's
+// (ChromaTierPersistenceTests).
 
-final class ChromaTierGateTests: XCTestCase {
+final class ChromaTierTests: XCTestCase {
 
     // MARK: - 1. Declaration-as-choice
 
@@ -118,83 +115,12 @@ final class ChromaTierGateTests: XCTestCase {
             .fail)
     }
 
-    // MARK: - 3. Per-host persistence
+    // MARK: - 3. The SPS chroma read, on real encoder output
 
-    private func makePinnedStore() -> (PinnedHostStore, pkh: String) {
-        var store = PinnedHostStore()
-        let key: [UInt8] = (0..<32).map { UInt8($0) }
-        store.pin(staticPublicKey: key, name: "pup",
-                  address: "10.0.0.249", port: 41_151,
-                  pairedAt: "2026-07-22T00:00:00Z")
-        let pkh = LyteDiscovery.publicKeyHash(ofStaticPublicKey: key)
-        return (store, pkh)
-    }
-
-    func testChromaTierPersistsPerHostAndDefaultsToGood() throws {
-        let made = makePinnedStore()
-        var store = made.0
-        let pkh = made.pkh
-        // Unset = Good (the shipped posture).
-        XCTAssertEqual(store.host(publicKeyHash: pkh)?.sessionChromaTier,
-                       .good)
-        XCTAssertTrue(store.setChromaTier(publicKeyHash: pkh, tier: .best))
-        XCTAssertEqual(store.host(publicKeyHash: pkh)?.sessionChromaTier,
-                       .best)
-        // Round-trips through the JSON shelf shape.
-        let decoded = try JSONDecoder().decode(
-            PinnedHostStore.self, from: try JSONEncoder().encode(store))
-        XCTAssertEqual(decoded.host(publicKeyHash: pkh)?.sessionChromaTier,
-                       .best)
-        // Good writes nil — the default keeps the file clean (the
-        // setShareClipboard precedent).
-        XCTAssertTrue(store.setChromaTier(publicKeyHash: pkh, tier: .good))
-        XCTAssertNil(store.host(publicKeyHash: pkh)?.chromaTier)
-        // An unpinned hash has nothing to hang the preference on.
-        XCTAssertFalse(store.setChromaTier(
-            publicKeyHash: String(repeating: "ab", count: 32),
-            tier: .best))
-    }
-
-    func testUnknownAndUnselectableStoredTiersReadAsGood() {
-        let made = makePinnedStore()
-        var store = made.0
-        let pkh = made.pkh
-        // A future build's tier this build doesn't know: decode fine,
-        // read as the default — the connect must always have a
-        // declarable tier in hand.
-        store.hosts[pkh]?.chromaTier = "ultra"
-        XCTAssertEqual(store.host(publicKeyHash: pkh)?.sessionChromaTier,
-                       .good)
-        // The dormant Better can land in a file only by hand-editing;
-        // it is not declarable, so it reads as Good too.
-        store.hosts[pkh]?.chromaTier = "better"
-        XCTAssertEqual(store.host(publicKeyHash: pkh)?.sessionChromaTier,
-                       .good)
-    }
-
-    func testPinRefreshPreservesTheChromaTier() {
-        let made = makePinnedStore()
-        var store = made.0
-        let pkh = made.pkh
-        _ = store.setChromaTier(publicKeyHash: pkh, tier: .best)
-        // A re-pair is a trust event, not a settings reset (the
-        // CL-13/CL-15 preference rule, third verse).
-        let key: [UInt8] = (0..<32).map { UInt8($0) }
-        store.pin(staticPublicKey: key, name: "pup",
-                  address: "10.0.0.7", port: 41_151,
-                  pairedAt: "2026-07-29T00:00:00Z")
-        XCTAssertEqual(store.host(publicKeyHash: pkh)?.sessionChromaTier,
-                       .best)
-    }
-
-    // MARK: - 4. The SPS chroma read, on real encoder output
-
-    /// The frozen Rext 4:4:4 SPS — pup's production leaf
-    /// (lyte-encode-check, EncoderRecipe.best444: p4/ull/qres +
-    /// rext/rgb_mode yuv444, cq4) encoding 1920×1080, captured
-    /// 2026-07-29. Carries emulation-prevention bytes (00 00 03 runs
-    /// in the compat flags and VUI), so this vector exercises the RBSP
-    /// strip too.
+    /// A frozen Rext 4:4:4 SPS from the host's NVENC leaf (p4/ull/qres,
+    /// rext yuv444, cq4) encoding 1920×1080. It carries
+    /// emulation-prevention bytes (00 00 03 runs in the compat flags and
+    /// VUI), so this vector exercises the RBSP strip too.
     private static let rext444SpsHex = "4201010408000003009e08000003"
         + "00007b900078100220f89cb2e94842322ffc602d4043414100000300010"
         + "00003003c6005de5100002625a000002625a010"
@@ -222,8 +148,8 @@ final class ChromaTierGateTests: XCTestCase {
         // The frozen video corpus is the shipped 4:2:0 path — its IDR
         // carries in-band parameter sets, exactly what the session's
         // audit reads.
-        let idrPath = ClientTestPaths.videoCorpus
-            + "/frame-000-idr.annexb"
+        let idrPath = RepositorySourceTree().repositoryRoot.path
+            + "/Wire/Vectors/video-corpus-v1/frame-000-idr.annexb"
         let annexB = [UInt8](try Data(
             contentsOf: URL(fileURLWithPath: idrPath)))
         XCTAssertEqual(HevcSpsChroma.chromaFormatIdc(inAnnexB: annexB), 1)
@@ -248,7 +174,7 @@ final class ChromaTierGateTests: XCTestCase {
             inSpsNal: [0x42, 0x01] + [UInt8](repeating: 0, count: 4)))
     }
 
-    // MARK: - 5. The stream audit's discipline
+    // MARK: - 4. The stream audit's discipline
 
     func testAuditConfirmsOnceAndDoctorsOnMismatchEdges() {
         var audit = ChromaStreamAudit()

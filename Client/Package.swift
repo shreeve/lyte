@@ -27,7 +27,13 @@ let package = Package(
     targets: [
         // Pure client-role policy: injected time, value-state decisions,
         // and no platform frameworks or IO.
-        .target(name: "LyteClientCore"),
+        .target(
+            name: "LyteClientCore",
+            dependencies: [
+                .product(name: "LyteCore", package: "Common"),
+                .product(name: "LyteWire", package: "Wire"),
+            ]
+        ),
         // IO-free initiator/session orchestration over LyteWire. Platform
         // shells inject clocks and execute the returned decisions.
         .target(
@@ -42,6 +48,7 @@ let package = Package(
         .target(
             name: "LyteTransport",
             dependencies: [
+                "LyteClientCore",
                 "LyteClientSession",
                 .product(name: "COpus", package: "Common"),
                 .product(name: "LyteCore", package: "Common"),
@@ -82,6 +89,7 @@ let package = Package(
             dependencies: [
                 "LyteUI",
                 "LyteHelperProtocol",
+                "LyteClientCore",
                 "LyteClientSession",
                 "LyteTransport",
                 "LyteCorpus",
@@ -120,7 +128,12 @@ let package = Package(
         ),
         .testTarget(
             name: "LyteClientCoreTests",
-            dependencies: ["LyteClientCore"]
+            dependencies: [
+                "LyteClientCore",
+                .product(name: "LyteTestKit", package: "Common"),
+                .product(name: "LyteWire", package: "Wire"),
+                .product(name: "LyteWireTestKit", package: "Wire"),
+            ]
         ),
         .testTarget(
             name: "LyteClientSessionTests",

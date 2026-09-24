@@ -1,17 +1,17 @@
-// AudioJitterBuffer (CL-11): the adaptive playout buffer the
-// audio-continuity decision doc sized this slice for. The recorded
-// verdict (docs/20260720-145840): delay VARIANCE, not loss, is the
-// dominant impairment — so the buffer targets variance absorption with
-// a statistical target (the doc's §5.3 percentile idea at 5 ms-packet
-// granularity), conceals true gaps through Opus PLC (§5.4 — the
-// verdict the caller turns into a decode(nil)), and never grows
-// unbounded (late packets are dropped, a post-stall burst re-centers).
-// WSOLA time-scale modification (§5.2) is deliberately NOT here — the
-// CL-17 AudioAccelerator lives on the pump's PCM side; this buffer
-// hands it the band between target and the hard cap (the re-center is
-// now the blunt tool past the cap and for number jumps only), and its
-// target computation detrends sender/receiver clock skew (§5.5) so a
-// slow drift reads as a rate to absorb, never as depth to cover.
+// AudioJitterBuffer: the adaptive audio playout buffer. Per
+// docs/20260720-145840-audio-continuity.md, delay VARIANCE, not loss,
+// is the dominant impairment — so the buffer targets variance
+// absorption with a statistical target (the doc's §5.3 percentile idea
+// at 5 ms-packet granularity), conceals true gaps through Opus PLC
+// (§5.4 — the verdict the caller turns into a decode(nil)), and never
+// grows unbounded (late packets are dropped, a post-stall burst
+// re-centers). WSOLA time-scale modification (§5.2) is deliberately NOT
+// here — LyteTransport's AudioAccelerator lives on the pump's PCM side;
+// this buffer hands it the band between target and the hard cap (the
+// re-center is now the blunt tool past the cap and for number jumps
+// only), and its target computation detrends sender/receiver clock skew
+// (§5.5) so a slow drift reads as a rate to absorb, never as depth to
+// cover.
 //
 // Pull model (how the production shell drives it): the render side
 // consumes a PCM ring at exactly the hardware rate; a pump thread

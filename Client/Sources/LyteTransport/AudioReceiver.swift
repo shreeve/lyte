@@ -14,6 +14,7 @@
 // receive thread's wakeup jitter is noise the adaptation window absorbs.
 
 import Foundation
+import LyteClientCore
 import LyteCore
 import LyteWire
 

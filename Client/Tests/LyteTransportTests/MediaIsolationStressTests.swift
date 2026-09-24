@@ -1,4 +1,5 @@
 import AVFoundation
+import LyteClientCore
 import LyteClientTestKit
 import Foundation
 import LyteCore

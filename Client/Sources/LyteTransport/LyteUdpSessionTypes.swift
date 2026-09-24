@@ -1,6 +1,7 @@
 // The public vocabulary of the client session: the events it surfaces,
 // its counters, and the core's configuration.
 
+import LyteClientCore
 import LyteClientSession
 import LyteWire
 

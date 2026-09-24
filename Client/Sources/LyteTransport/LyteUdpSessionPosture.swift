@@ -1,3 +1,4 @@
+import LyteClientCore
 import LyteWire
 
 extension LyteUdpSession.Config {

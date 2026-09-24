@@ -1,15 +1,13 @@
-// ChromaTier (H4 V-5): owner decision 1's client half — mode selection
-// is declaration-as-choice surfaced as a three-tier "Chroma" control:
-// Good = 4:2:0 / Better = 4:2:2 / Best = 4:4:4. The client declares
-// exactly ONE chroma mode per the chosen tier (the agreed intersection
-// is a singleton and the singleton IS the choice — ChromaPosture's
-// mirror on the host). The Better tier is DORMANT from day one: no
-// yuv422 wire id exists yet (that append is a Wire/ slice) and no host
-// silicon offers it (Ada NVENC has no 4:2:2 encode — Blackwell
-// 9th-gen only), so the control renders it visible but disabled. An
-// empty intersection (Best against a 4:2:0-only host) is the typed
+// ChromaTier: chroma mode selection is declaration-as-choice, surfaced
+// as a three-tier "Chroma" control: Good = 4:2:0 / Better = 4:2:2 /
+// Best = 4:4:4. The client declares exactly ONE chroma mode per the
+// chosen tier (the agreed intersection is a singleton and the singleton
+// IS the choice — ChromaPosture's mirror on the host). Better is
+// dormant: no yuv422 wire id exists and no host encoder offers 4:2:2,
+// so the control renders it visible but disabled. An empty
+// intersection (Best against a 4:2:0-only host) is the typed
 // `noCommonChromaMode` failure; `ChromaFallbackPolicy` below is the
-// auto-re-dial-at-Good verdict the app executes, never silently.
+// re-dial-at-Good verdict the app executes, never silently.
 
 import LyteCore
 import LyteWire
@@ -101,7 +99,7 @@ public enum ChromaFallbackPolicy {
     }
 }
 
-// MARK: - The stream audit (plan V-5: assert stream chroma == posture)
+// MARK: - The stream audit (stream chroma == negotiated posture)
 
 /// The negotiated-posture audit: the client asserts what the wire
 /// actually carries against what the capability exchange agreed —
