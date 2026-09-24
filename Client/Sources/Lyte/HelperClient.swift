@@ -20,8 +20,6 @@ final class HelperClient {
     private(set) var engaged = false
     private var promptedThisRun = false
 
-    var status: SMAppService.Status { service.status }
-
     /// The ground truth the watchdog trusts: awdl0's own UP flag, read
     /// directly via getifaddrs (no privileges needed). The XPC call is
     /// fire-and-forget — a daemon that failed to spawn produces no
@@ -43,23 +41,12 @@ final class HelperClient {
         return false
     }
 
-    var statusDescription: String {
-        switch service.status {
-        case .notRegistered: return "notRegistered — registration didn't stick"
-        case .enabled: return "enabled — daemon ready"
-        case .requiresApproval: return "requiresApproval — waiting for System Settings → Login Items"
-        case .notFound: return "notFound — plist/binary missing from bundle or registration rejected"
-        @unknown default: return "unknown (\(service.status.rawValue))"
-        }
-    }
-
-    /// App-launch refresh: EVERY rebuild re-signs the helper, and the
+    /// App-launch refresh: every rebuild re-signs the helper, and the
     /// lightweight code requirement (LWCR) BTM stored at registration
     /// goes stale — launchd then refuses the spawn with EX_CONFIG
-    /// forever ("needs LWCR update" in launchctl print; found live
-    /// 2026-07-30 after 28,916 silent crash-loops). Unregister +
-    /// re-register refreshes the LWCR; BTM keys the user's approval
-    /// by identifier, so the toggle normally survives the cycle.
+    /// ("needs LWCR update" in launchctl print). Unregister + re-register
+    /// refreshes the LWCR; BTM keys the user's approval by identifier, so
+    /// the toggle normally survives the cycle.
     nonisolated static func refreshRegistration() {
         // SMAppService performs synchronous BTM/XPC work and emits Apple's
         // main-thread performance diagnostic when called from app launch.
@@ -75,27 +62,6 @@ final class HelperClient {
                     + "\(refreshService.status.rawValue)")
         } catch {
             NSLog("lyte helper: refresh register FAILED — \(error.localizedDescription)")
-        }
-    }
-
-    /// Explicit registration entry point used by the headless maintenance
-    /// command. Normal app launches use `refreshRegistration()` instead.
-    /// A missing service means the app bundle is incomplete or disappeared;
-    /// asking ServiceManagement to register that state crashes inside
-    /// `_load_plist_from_bundle` on macOS 26.6, so it must fail soft here.
-    func registerIfNeeded() {
-        switch service.status {
-        case .notRegistered:
-            do {
-                try service.register()   // may flip straight to enabled or requiresApproval
-                NSLog("lyte helper: registered, status now \(service.status.rawValue)")
-            } catch {
-                NSLog("lyte helper: register FAILED — \(error.localizedDescription)")
-            }
-        case .notFound:
-            NSLog("lyte helper: unavailable — embedded service is missing")
-        default:
-            NSLog("lyte helper: status \(service.status.rawValue) (0=notReg 1=enabled 2=requiresApproval 3=notFound)")
         }
     }
 

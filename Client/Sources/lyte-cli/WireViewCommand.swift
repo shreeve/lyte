@@ -51,8 +51,6 @@ struct WireView: AsyncParsableCommand {
     var clipboardImages = false
     @Option(name: .long, help: "V-5: the chroma tier this client DECLARES — 420 (Good, the default) or 444 (Best). Declaration-as-choice: the singleton is the ask; a host without the tier answers the typed noCommonChromaMode teardown (that refusal is the harness's fallback evidence — the debug shell never auto-re-dials; the app does)")
     var chroma: String = "420"
-    @Option(name: .long, help: "Debug: send one reliable CTRL ping every N seconds (0 = off) — exercises the CL-7 ARQ leg live")
-    var arqPing: Int = 0
     @Option(name: .long, help: """
         CL-9 gating: scripted synthetic input, semicolon-separated \
         "<at_ms> <kind> <args>" entries sent on the reliable stream. Kinds: \
@@ -342,31 +340,6 @@ struct WireView: AsyncParsableCommand {
                 + (clipboardImages ? "∧12" : "") + " pending agreement)")
         }
 
-        // The CL-7 live probe: reliable pings on the ordered stream.
-        // The type byte 0x7F is a debug placeholder — unregistered, so
-        // the host's dispatch only logs the delivery.
-        let pinger: DispatchSourceTimer? = arqPing <= 0 ? nil : {
-            let source = DispatchSource.makeTimerSource(queue: .global())
-            source.schedule(deadline: .now() + .seconds(arqPing),
-                            repeating: .seconds(arqPing))
-            let counter = LockedCell<UInt32>(0)
-            source.setEventHandler { @Sendable in
-                let n = counter.value
-                counter.value = n + 1
-                var body: [UInt8] = [0x7F]
-                withUnsafeBytes(of: n.littleEndian) { body += $0 }
-                do {
-                    try core.reliable.send(body)
-                    print("wire-view: reliable ping #\(n) queued")
-                } catch {
-                    print("wire-view: reliable ping #\(n) refused: \(error)")
-                }
-            }
-            source.resume()
-            print("wire-view: reliable CTRL ping every \(arqPing)s (debug type 0x7f)")
-            return source
-        }()
-
         // The CL-9 gating surface: scripted synthetic input through the
         // production sendInput path (seq, capture stamp, reliable
         // stream) — the same bytes the app's NSEvent capture sends.
@@ -409,7 +382,6 @@ struct WireView: AsyncParsableCommand {
             guard !already else { return }
             print("wire-view: finishing (\(trigger))")
             ticker.cancel()
-            pinger?.cancel()
             pasteboardBox.value?.stop()
             // A locally-triggered end says goodbye on the wire (typed
             // 0x0A + ACK linger); a session-closed end (peer teardown,
@@ -452,7 +424,6 @@ struct WireView: AsyncParsableCommand {
         streamRetainer.append(contentsOf: [
             delegate, ticker, sigint, session, window,
         ])
-        if let pinger { streamRetainer.append(pinger) }
     }
 }
 
