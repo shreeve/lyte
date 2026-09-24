@@ -230,8 +230,13 @@ final class SessionWire {
     /// Set at capability agreement when hostAudioRouting survived the
     /// intersection: the client is owed one starting-posture 0x19.
     private var routingAnnounceOwed = false
-    /// receive→inject per event, µs (the HS-13 p99 < 2 ms gate edge).
-    private(set) var inputLatency = Histogram<UInt64>()
+    /// receive→inject per event, µs (the HS-13 p99 < 2 ms gate edge),
+    /// over the most recent `inputLatencyWindow` events so a long
+    /// session's summary describes its end, not its first minutes.
+    static let inputLatencyWindow = 16_384
+    private(set) var inputLatency = Histogram<UInt64>(
+        capacity: inputLatencyWindow, retention: .rolling
+    )
     private(set) var inputInjected = 0
     private(set) var inputInjectFailures = 0
     private var inputNoInjectorWarned = false
@@ -278,7 +283,11 @@ final class SessionWire {
     private(set) var audioMailboxMaxDepth = 0
     private(set) var audioMailboxOverflows = 0
     private(set) var audioMailboxMaxDwellNS: UInt64 = 0
-    private(set) var audioMailboxDwell = Histogram<UInt64>()
+    /// Mailbox dwell per 5 ms packet over the last 60 s (12,000 packets).
+    static let audioMailboxDwellWindow = 12_000
+    private(set) var audioMailboxDwell = Histogram<UInt64>(
+        capacity: audioMailboxDwellWindow, retention: .rolling
+    )
     /// Root-cause telemetry for the split video path. Preparation includes
     /// Annex-B classification + RS-FEC and is now deliberately off-lock;
     /// commit includes seq allocation, Noise sealing, and pacer insertion.

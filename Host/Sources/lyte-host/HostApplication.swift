@@ -1073,7 +1073,8 @@ static func run(arguments: [String]) throws {
         \(s.inputEchoTuplesSent) echo tuples sent; receive→inject \
         p50 \(wire.inputLatency.p50.map(String.init) ?? "—") µs / \
         p99 \(wire.inputLatency.p99.map(String.init) ?? "—") µs / \
-        max \(wire.inputLatency.maxValue.map(String.init) ?? "—") µs
+        max \(wire.inputLatency.maxValue.map(String.init) ?? "—") µs\
+        \(Self.windowNote(wire.inputLatency, SessionWire.inputLatencyWindow))
         audio: \(s.audioPacketsIngested) packets → \
         \(s.audioDatagramsEnqueued) datagrams \
         (\(s.audioGroupsCompleted) RS 4+2 groups, \
@@ -1084,7 +1085,10 @@ static func run(arguments: [String]) throws {
         max audio queue delay \(t[.audio].maxQueueDelayNS) ns; \
         mailbox depth max \(wire.audioMailboxMaxDepth), \
         dwell p99 \(wire.audioMailboxDwell.p99.map(String.init) ?? "—") ns / \
-        max \(wire.audioMailboxMaxDwellNS) ns, \
+        max \(wire.audioMailboxMaxDwellNS) ns\
+        \(Self.windowNote(
+            wire.audioMailboxDwell, SessionWire.audioMailboxDwellWindow
+        )), \
         overflows \(wire.audioMailboxOverflows)
         session-lock: video prepare max \(wire.videoPrepareMaxNS) ns off-lock, \
         commit wait/hold max \(wire.videoCommitLockWaitMaxNS)/\
@@ -1204,6 +1208,14 @@ static func run(arguments: [String]) throws {
     // The advertiser is retained to this line on purpose: the record
     // stays published for the whole session and returning withdraws it.
     withExtendedLifetime(advertiser) {}
+}
+
+/// Names a rolling histogram's window once it has dropped samples: the
+/// percentiles before it then describe only the newest `window` samples.
+static func windowNote(_ histogram: Histogram<UInt64>, _ window: Int) -> String {
+    histogram.saturated
+        ? " (last \(window) of \(histogram.count))"
+        : ""
 }
 }
 
