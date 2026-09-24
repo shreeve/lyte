@@ -64,12 +64,10 @@ public final class EyeVaapiEncoder {
     private var codedBuffer = VABufferID(VA_INVALID_ID)
     private let recipe: HevcHeaderRecipe
     private let bitrateBitsPerSecond: Int64
-    private var pendingRate: (bitsPerSecond: Int64, hrdBufferBits: Int64?)?
-    /// The rate and HRD buffer the driver currently holds — a directive's
-    /// move must survive later IDR re-sends (which rebuild the RC/HRD
-    /// buffers).
-    private var currentRate: Int64 = 0
-    private var currentHrdBufferBits: Int64?
+    /// The rate and HRD buffer the next RC/HRD buffers carry: a
+    /// directive lands on the next frame (an IDR included) and survives
+    /// later IDR re-sends.
+    private var rate: EncoderRateLatch
     private var frameIndex: Int64 = 0
     private var poc: UInt32 = 0
     private var previousRecon = VASurfaceID(VA_INVALID_ID)
@@ -125,8 +123,8 @@ public final class EyeVaapiEncoder {
         self.qp = qp
         self.chroma444 = chroma444
         self.bitrateBitsPerSecond = bitrateBitsPerSecond
-        self.currentRate = bitrateBitsPerSecond
-        self.currentHrdBufferBits = hrdBufferBits
+        self.rate = EncoderRateLatch(
+            bitsPerSecond: bitrateBitsPerSecond, hrdBufferBits: hrdBufferBits)
         // The BRC dialect (pinned to ffmpeg's on this driver): under
         // rate control the PPS baseline is QP 30 and per-CU QP deltas
         // are declared at 8x8 granularity (depth = the SPS's
@@ -297,13 +295,13 @@ public final class EyeVaapiEncoder {
     }
 
     /// E6b's lever: takes effect with the NEXT frame's RC misc
-    /// buffer — no reset, no IDR, no reopen. `hrdBufferBits` is the HRD
-    /// (VBV) buffer to run (HostWire.EncoderHrd); nil keeps the
-    /// four-frame window.
+    /// buffer, an IDR included — no reset, no IDR, no reopen.
+    /// `hrdBufferBits` is the HRD (VBV) buffer to run
+    /// (HostWire.EncoderHrd); nil keeps the four-frame window.
     public func setRateControl(
         bitsPerSecond: Int64, hrdBufferBits: Int64? = nil
     ) {
-        pendingRate = (bitsPerSecond, hrdBufferBits)
+        rate.request(bitsPerSecond: bitsPerSecond, hrdBufferBits: hrdBufferBits)
     }
 
     // MARK: Surface export (the E1 raw-offset parse, verbatim — the
@@ -411,26 +409,20 @@ public final class EyeVaapiEncoder {
             for buffer in buffers { vaDestroyBuffer(display, buffer) }
         }
 
+        let posture = bitrateBitsPerSecond > 0 ? rate.take(forIDR: idr) : nil
         if idr {
             buffers.append(try makeSequenceBuffer())
             buffers.append(try makePackedParam(
                 type: VAEncPackedHeaderSequence,
                 bitLength: try packedParameterSets().count * 8))
             buffers.append(try makePackedData(try packedParameterSets()))
-            if bitrateBitsPerSecond > 0 {
-                buffers.append(try makeRateControlBuffer(
-                    capBitsPerSecond: currentRate))
-                buffers.append(try makeHRDBuffer(
-                    capBitsPerSecond: currentRate))
-                buffers.append(try makeFrameRateBuffer())
-            }
-        } else if let rate = pendingRate, bitrateBitsPerSecond > 0 {
-            currentRate = rate.bitsPerSecond
-            currentHrdBufferBits = rate.hrdBufferBits
+        }
+        if let posture {
             buffers.append(try makeRateControlBuffer(
-                capBitsPerSecond: currentRate))
-            buffers.append(try makeHRDBuffer(capBitsPerSecond: currentRate))
-            pendingRate = nil
+                capBitsPerSecond: posture.bitsPerSecond))
+            buffers.append(try makeHRDBuffer(
+                capBitsPerSecond: posture.bitsPerSecond))
+            if idr { buffers.append(try makeFrameRateBuffer()) }
         }
 
         buffers.append(try makePictureBuffer(
@@ -647,7 +639,7 @@ public final class EyeVaapiEncoder {
     /// driver's VBR math degenerates and inter-frame quality collapses
     /// (the yellow-smear artifact — caught by eyeball, not by decode).
     private func vbvBufferBits(capBitsPerSecond: Int64) -> Int64 {
-        currentHrdBufferBits ?? capBitsPerSecond * 4 / Int64(fps)
+        rate.current.hrdBufferBits ?? capBitsPerSecond * 4 / Int64(fps)
     }
 
     private func makeRateControlBuffer(
