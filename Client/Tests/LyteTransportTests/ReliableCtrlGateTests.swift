@@ -509,16 +509,18 @@ final class ReliableCtrlGateTests: XCTestCase {
         XCTAssertTrue(host.idrSeen,
                       "the exempt IDR request must land mid-storm")
 
-        print("CL-7 gate: \(clientStream.count)+\(clientOneShotMessages.count) client and "
-            + "\(hostStream.count)+\(hostOneShots.count) host messages "
-            + "exactly-once in-order through 5% loss / 2% dup / 4 ms jitter "
-            + "(\(net.lostCount) lost, \(net.duplicatedCount) duplicated of "
-            + "\(net.sentCount) datagrams; \(stats.datagramsSent) client ARQ "
-            + "datagrams, \(host.clientConnIdTags) conn-id-tagged; converged at "
-            + "\(converged.map(String.init) ?? "-") µs virtual; "
-            + "\(harness.beaconSeqsSeen.count) beacons through the peek, "
-            + "none retransmitted; \(harness.replayDrops)+\(host.replayDrops) "
-            + "replay drops)")
+        let convergedText = converged.map(String.init) ?? "-"
+        print("""
+            CL-7 gate: \(clientStream.count)+\(clientOneShotMessages.count) \
+            client and \(hostStream.count)+\(hostOneShots.count) host \
+            messages exactly-once in-order through 5% loss / 2% dup / 4 ms \
+            jitter (\(net.lostCount) lost, \(net.duplicatedCount) duplicated \
+            of \(net.sentCount) datagrams; \(stats.datagramsSent) client ARQ \
+            datagrams, \(host.clientConnIdTags) conn-id-tagged; converged at \
+            \(convergedText) µs virtual; \(harness.beaconSeqsSeen.count) \
+            beacons through the peek, none retransmitted; \
+            \(harness.replayDrops)+\(host.replayDrops) replay drops)
+            """)
     }
 
     // MARK: PTO wake clears armed-deadline book before service

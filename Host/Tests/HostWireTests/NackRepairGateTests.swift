@@ -1157,14 +1157,16 @@ final class NackRepairGateTests: XCTestCase {
             "audio inter-send p99 deviation \(Double(p99) / 1e6) ms > "
             + "2 ms through the repair storm")
 
-        print("HS-17 gate (R-G8 + repair storm) @5 s virtual: "
-            + "\(session.counters.nacksHonored) NACKs honored → "
-            + "\(repairCount) repair datagrams on videoTail; "
-            + "\(dataSends.count) audio packets, inter-send deviation "
-            + "p99 \(Double(p99) / 1e6) ms, worst "
-            + "\(Double(deviations.last!) / 1e6) ms; audio max queue "
-            + "delay "
-            + "\(Double(session.pacerTelemetry[.audio].maxQueueDelayNS) / 1e6)"
-            + " ms")
+        let worstMS = Double(deviations.last!) / 1e6
+        let audioQueueMS =
+            Double(session.pacerTelemetry[.audio].maxQueueDelayNS) / 1e6
+        print("""
+            HS-17 gate (R-G8 + repair storm) @5 s virtual: \
+            \(session.counters.nacksHonored) NACKs honored → \
+            \(repairCount) repair datagrams on videoTail; \
+            \(dataSends.count) audio packets, inter-send deviation \
+            p99 \(Double(p99) / 1e6) ms, worst \(worstMS) ms; \
+            audio max queue delay \(audioQueueMS) ms
+            """)
     }
 }

@@ -90,6 +90,7 @@ var targets: [Target] = [
             "HostWire",
             "HostAudio",
             .product(name: "LyteCore", package: "Common"),
+            .product(name: "LyteIO", package: "Common"),
             .product(name: "LyteWire", package: "Wire"),
         ]
     ),

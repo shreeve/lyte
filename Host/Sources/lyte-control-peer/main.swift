@@ -15,6 +15,7 @@ import HostAudio
 import HostSession
 import HostWire
 import LyteCore
+import LyteIO
 import LyteWire
 
 #if canImport(Darwin)
@@ -153,16 +154,6 @@ func loadCorpusFrames(from directory: String) throws -> [[UInt8]] {
         throw PeerError.message("frame-000 is not IRAP-shaped")
     }
     return frames
-}
-
-func nowNS() -> UInt64 {
-#if canImport(Darwin)
-    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-#else
-    var ts = timespec()
-    clock_gettime(CLOCK_MONOTONIC, &ts)
-    return UInt64(ts.tv_sec) * 1_000_000_000 + UInt64(ts.tv_nsec)
-#endif
 }
 
 func logPeer(_ message: String) {
@@ -585,12 +576,12 @@ final class ControlPeer {
     }
 
     func run() throws {
-        let deadline = nowNS() + UInt64(seconds * 1e9)
-        let handshakeDeadline = nowNS() + 30_000_000_000
+        let deadline = SystemMonotonicClock.nowNanoseconds + UInt64(seconds * 1e9)
+        let handshakeDeadline = SystemMonotonicClock.nowNanoseconds + 30_000_000_000
         print("noise: awaiting client handshake…")
 
-        while nowNS() < deadline && !closed {
-            let now = nowNS()
+        while SystemMonotonicClock.nowNanoseconds < deadline && !closed {
+            let now = SystemMonotonicClock.nowNanoseconds
             if let packet = sock.recv() {
                 if session == nil {
                     guard looksLikeHandshakeInitiation(packet.bytes) else { continue }
@@ -706,7 +697,7 @@ final class ControlPeer {
             )
         }
         if let session, !closed {
-            let now = nowNS()
+            let now = SystemMonotonicClock.nowNanoseconds
             let events = session.beginTeardown(
                 reason: .shuttingDown,
                 now: now,
