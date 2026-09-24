@@ -27,7 +27,8 @@ func sniffMain(_ args: [String]) -> Never {
             port = v
         case "--seconds":
             i += 1
-            guard i < args.count, let v = Double(args[i]), v > 0 else {
+            guard i < args.count, let v = Double(args[i]), v > 0,
+                  v.isFinite else {
                 FileHandle.standardError.write(
                     Data("lyte-host sniff: --seconds needs a positive number\n".utf8))
                 exit(1)

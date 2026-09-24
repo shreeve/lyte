@@ -384,7 +384,8 @@ func advertiseMain(_ args: [String]) -> Never {
                 port = p
             case "--seconds":
                 i += 1
-                guard i < args.count, let s = Double(args[i]), s > 0 else {
+                guard i < args.count, let s = Double(args[i]), s > 0,
+                      s.isFinite else {
                     throw HostError("--seconds needs a positive number")
                 }
                 seconds = s

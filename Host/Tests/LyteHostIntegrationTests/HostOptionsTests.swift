@@ -42,6 +42,20 @@ final class HostOptionsTests: XCTestCase {
             try Options.parse(["lyte-host", "--drm-device", "card0"]))
     }
 
+    /// "inf" and "nan" parse as Doubles; either would trap where the
+    /// clock and the rate become integers.
+    func testNonFiniteDurationsAndRatesAreRefused() {
+        for value in ["inf", "-inf", "nan", "infinity"] {
+            XCTAssertThrowsError(
+                try Options.parse(["lyte-host", "--seconds", value]), value)
+            XCTAssertThrowsError(
+                try Options.parse(["lyte-host", "--wire-rate-mbps", value]),
+                value)
+        }
+        XCTAssertEqual(
+            try Options.parse(["lyte-host", "--seconds", "2.5"]).seconds, 2.5)
+    }
+
     func testTheCookieThresholdsMustLeaveHysteresis() {
         XCTAssertThrowsError(try Options.parse([
             "lyte-host", "--cookie-enter", "10", "--cookie-exit", "10",

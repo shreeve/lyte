@@ -83,8 +83,9 @@ func parseArgs(_ argv: [String]) throws -> Options {
             opts.pin = argv[i]
         case "--seconds":
             i += 1
-            guard i < argv.count, let s = Double(argv[i]) else {
-                throw PeerError.message("--seconds needs a number")
+            guard i < argv.count, let s = Double(argv[i]), s > 0,
+                  s.isFinite else {
+                throw PeerError.message("--seconds needs a positive number")
             }
             opts.seconds = s
         case "--sessions":

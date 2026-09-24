@@ -88,7 +88,8 @@ struct Options {
                 opts.outputPath = args[i]
             case "--seconds":
                 i += 1
-                guard i < args.count, let v = Double(args[i]), v > 0 else {
+                guard i < args.count, let v = Double(args[i]), v > 0,
+                      v.isFinite else {
                     throw HostError("--seconds needs a positive number")
                 }
                 opts.seconds = v
@@ -106,7 +107,8 @@ struct Options {
                 opts.wireOut = (String(parts[0]), port)
             case "--wire-rate-mbps":
                 i += 1
-                guard i < args.count, let v = Double(args[i]), v > 0 else {
+                guard i < args.count, let v = Double(args[i]), v > 0,
+                      v.isFinite else {
                     throw HostError("--wire-rate-mbps needs a positive number")
                 }
                 opts.wireRateMbps = v
