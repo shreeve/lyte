@@ -74,9 +74,9 @@ Client never depends on Host and Host never depends on Client. Only
 
 | Target | Kind | Owns |
 |---|---|---|
-| `LyteClientCore` | sans-IO | Dependency-free client policy: `RoamingPolicy`, `RadioHoldPolicy`, `MacEvdevKeyMap`, `LinkHealthMeter` |
-| `LyteClientSession` | sans-IO | The initiator shared by native and browser shells: handshake/retry (`ClientHandshakeInitiator`), pairing, capabilities, lifecycle, IDR recovery, beacon echo, carriage and conn-id books, clipboard/cursor/audio-routing/media-posture sessions |
-| `LyteTransport` | macOS IO | `LyteUdpSession` (shell) and `LyteUdpSessionCore` (locked core), UDP endpoint, demux, ARQ endpoints, video pipeline, renderer handoff, audio receiver and player, input, feedback, pairing, discovery, identity, stats formatter |
+| `LyteClientCore` | sans-IO | Client policy over `LyteCore` and `LyteWire`: `RoamingPolicy`, `RadioHoldPolicy`, `MacEvdevKeyMap`, `LinkHealthMeter`, `AudioJitterBuffer`, `SeqGapTracker`, `ChromaTier`, `HevcSpsChroma` |
+| `LyteClientSession` | sans-IO | The initiator shared by native and browser shells: handshake and its retry schedules (`ClientHandshakeInitiator`), pairing, capabilities, lifecycle and the blackout-detector posture, IDR recovery and the render gate, NACK repair (`ClientNackPolicy`), feedback report content (`ClientFeedbackReporter`), the host-clock fit (`ClientHostClock`), beacon echo, exempt CTRL (`ClientExemptControl`: beacon, path challenge, repair refusal), carriage and conn-id books, clipboard/cursor/audio-routing/media-posture sessions |
+| `LyteTransport` | macOS IO | `LyteUdpSession` (shell) and `LyteUdpSessionCore` (locked core), UDP endpoint, demux, ARQ endpoints, video pipeline, renderer handoff, audio receiver and player, input, the feedback cadence, the locks around the session's shared values (`HostClockModel`, `NackPolicy`, `IdrRequester`), pairing, discovery, identity, stats formatter |
 | `LyteCorpus` | diagnostic | Corpus frames and gates, PSNR/SSIM, readback tap, synthetic motion reference |
 | `LyteUI` | AppKit shims | Control-strip policy, pasteboard sync, video layer view |
 | `LyteHelperProtocol` / `LyteHelperSecurity` | helper | XPC contract; code-requirement derivation |
@@ -135,9 +135,11 @@ process and systemd restarts it (`HostServiceLoop`).
 UdpReceiveEndpoint (receive thread, SO_TIMESTAMP_MONOTONIC)
   └─► ReceiveDemux: Envelope.openDatagram (decode + unseal)
         ├─ chan 0/8 ─► ReliableCtrlEndpoint (ARQ) ─► LyteClientSession decisions
+        ├─ chan 0   ─► ClientExemptControl: beacon echo, PathResponse, repair refusal
         ├─ chan 2   ─► LyteVideoPipeline: VideoAssembler ─► NackPolicy / IdrRequester
         │                 └─► sampleQueue: CMSampleBuffer ─► VideoRendererHandoff
-        │                       └─► delivery queue: VideoBeatConductor ─► AVSampleBufferVideoRenderer
+        │                       (VideoBeatConductor schedules on the submitting thread)
+        │                       └─► delivery queue ─► AVSampleBufferVideoRenderer
         └─ chan 1   ─► AudioReceiver (depacketize, jitter buffer)
                           └─► LyteAudioPlayer pump ─► SPSC ring ─► AVAudioEngine
 TransportSender ─► feedback (chan 3), beacon echoes, input, IDR requests, ARQ
@@ -167,7 +169,7 @@ browser path proves today.
 | Host sender | SCHED_RR sender thread | `ppoll` on its eventfd, the sockets and the next session timer |
 | Host janitor | 10 ms service thread | Clipboard, bulk files, audio routing, pairing outcomes |
 | Client receive | `UdpReceiveEndpoint` thread | Decode, unseal and demux inline |
-| Client core | `LyteUdpSessionCore` lock | ARQ, control decisions and books; callbacks run outside it |
+| Client core | `LyteUdpSessionCore` lock | ARQ, control decisions and books; callbacks run outside it, except that state and mode edges are delivered in decision order under a separate edge lock |
 | Client video | `sampleQueue`, then the handoff's delivery queue | Sample build off the receive thread; renderer enqueue off the main thread |
 | Client audio | pump timer thread + render callback | The render callback only reads the lock-free ring |
 | Client UI | `@MainActor` | `ConnectionModel` and views |
@@ -201,7 +203,7 @@ browser path proves today.
   ARQ or feedback ingest, all under the session lock.
 - **Client per datagram:** kernel stamp, envelope decode and unseal outside
   the demux lock, assembler insert under the pipeline lock.
-- **Client per frame:** sample build on `sampleQueue`, Conductor schedule and
-  renderer enqueue on the delivery queue.
+- **Client per frame:** sample build on `sampleQueue`, Conductor schedule on
+  that same submitting thread, renderer enqueue on the delivery queue.
 - **Browser per burst:** one packed `Uint8Array` into WASM per batch; quiet
   ticks return `null`.

@@ -426,6 +426,36 @@ final class VideoPipelineTests: XCTestCase {
         XCTAssertNotNil(stats.firstSampleMicroseconds)
     }
 
+    /// An IDR whose parameter sets CoreMedia refuses decoded whole, so
+    /// the repair policy already heard `.frameDecoded`: the build failure
+    /// is the only witness the reference chain broke, and it must reach
+    /// the recovery seam instead of only a counter.
+    func testSampleBuildFailureRaisesRecovery() throws {
+        func nal(_ header: UInt8) -> [UInt8] {
+            [0, 0, 0, 1, header, 0x01] + [UInt8](repeating: 0x5A, count: 12)
+        }
+        let bogusIdr = nal(0x40) + nal(0x42) + nal(0x44) + nal(0x26)
+        XCTAssertTrue(AnnexBCheck.containsIrap(bogusIdr))
+        var packetizer = VideoPacketizer()
+        let shards = try packetizer.packetize(
+            frame: bogusIdr, frameNumber: FrameNumber(rawValue: 7),
+            captureTimestamp: HostTimestamp(microseconds: 0),
+            isIDR: true, regime: .clean)
+
+        final class Failures: @unchecked Sendable { var frames: [UInt32] = [] }
+        let failures = Failures()
+        let pipeline = LyteVideoPipeline(
+            nowNanoseconds: { 0 },
+            sink: HeadlessVideoSink(),
+            onSampleFailure: { failures.frames.append($0.rawValue) })
+        for shard in shards {
+            pipeline.ingest(envelope: shard.envelope, payload: shard.payload,
+                            now: ClientTimestamp(microseconds: 1_000))
+        }
+        XCTAssertEqual(pipeline.snapshotStats().sampleFailures, 1)
+        XCTAssertEqual(failures.frames, [7])
+    }
+
     // MARK: - The HS-22 quality window (the overlay/wire-view line)
 
     /// The receive-side quality snapshot derives entirely from decoded

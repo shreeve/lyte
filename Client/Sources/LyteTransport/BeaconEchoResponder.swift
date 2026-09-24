@@ -3,25 +3,29 @@
 // with stats, the closed-sample hook, and the emit seam.
 
 import LyteIO
-import Foundation
 import LyteClientSession
 import LyteWire
+import Synchronization
 
-public final class BeaconEchoResponder: @unchecked Sendable {
+public final class BeaconEchoResponder: Sendable {
     public struct Stats: Sendable {
         public var beaconsReceived: UInt64 = 0
         public var echoesSent: UInt64 = 0
         public var malformedBeacons: UInt64 = 0
         public var clockSamples: UInt64 = 0
+        /// Mirrors refused as forged or implausible (see the book).
+        public var mirrorsRefused: UInt64 = 0
+    }
+
+    private struct State {
+        var stats = Stats()
+        var book = ClientBeaconEchoBook()
     }
 
     private let emit: @Sendable (BeaconEcho) -> Void
     private let now: @Sendable () -> ClientTimestamp
     private let onClockSample: (@Sendable (ClockSample) -> Void)?
-
-    private let lock = NSLock()
-    private var stats = Stats()
-    private var book = ClientBeaconEchoBook()
+    private let state = Mutex(State())
 
     /// - Parameters:
     ///   - emit: sends one echo.
@@ -47,39 +51,42 @@ public final class BeaconEchoResponder: @unchecked Sendable {
         _ payload: [UInt8],
         arrivalMicroseconds: UInt64
     ) -> Bool {
-        guard CtrlMessageType.peek(payload) == CtrlMessageType.clockBeacon else {
+        switch ClientExemptControl(payload: payload) {
+        case .clockBeacon(let beacon):
+            answer(beacon, arrivalMicroseconds: arrivalMicroseconds)
+        case .malformed(type: CtrlMessageType.clockBeacon):
+            noteMalformedBeacon()
+        default:
             return false
         }
-        let beacon: ClockBeacon
-        do {
-            beacon = try ClockBeacon.decode(payload)
-        } catch {
-            lock.lock()
-            stats.malformedBeacons += 1
-            lock.unlock()
-            return true   // it named itself a beacon; it was consumed here
-        }
-
-        let t2 = ClientTimestamp(microseconds: arrivalMicroseconds)
-        let t3 = now()
-
-        lock.lock()
-        let (echo, closed) = book.answer(beacon, receivedAt: t2, sendingAt: t3)
-        stats.beaconsReceived += 1
-        stats.echoesSent += 1
-        if closed != nil {
-            stats.clockSamples += 1
-        }
-        lock.unlock()
-
-        if let closed { onClockSample?(closed) }
-        emit(echo)
         return true
     }
 
+    /// Echoes one decoded beacon, stamping t3 now.
+    public func answer(_ beacon: ClockBeacon, arrivalMicroseconds: UInt64) {
+        let t2 = ClientTimestamp(microseconds: arrivalMicroseconds)
+        let t3 = now()
+
+        let (echo, closed) = state.withLock {
+            let answered = $0.book.answer(
+                beacon, receivedAt: t2, sendingAt: t3)
+            $0.stats.beaconsReceived += 1
+            $0.stats.echoesSent += 1
+            if answered.sample != nil { $0.stats.clockSamples += 1 }
+            $0.stats.mirrorsRefused = $0.book.mirrorsRefused
+            return answered
+        }
+
+        if let closed { onClockSample?(closed) }
+        emit(echo)
+    }
+
+    /// A payload named itself a beacon and did not decode.
+    public func noteMalformedBeacon() {
+        state.withLock { $0.stats.malformedBeacons += 1 }
+    }
+
     public func snapshotStats() -> Stats {
-        lock.lock()
-        defer { lock.unlock() }
-        return stats
+        state.withLock { $0.stats }
     }
 }

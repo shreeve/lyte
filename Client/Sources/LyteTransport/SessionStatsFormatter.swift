@@ -170,7 +170,7 @@ public enum SessionStatsFormatter {
             line += String(
                 format: " · roundtrip min %.1f ms · jitter %.1f ms",
                 Double(minRtt) / 1000,
-                Double(p90 - minRtt) / 1000)
+                (Double(p90) - Double(minRtt)) / 1000)
         }
         if totals.unsealFailures > 0 {
             line += ", \(totals.unsealFailures) unseal-failed"

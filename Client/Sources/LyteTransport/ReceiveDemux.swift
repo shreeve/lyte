@@ -5,6 +5,7 @@
 
 import Foundation
 import LyteClientCore
+import LyteClientSession
 import LyteWire
 
 /// What became of one datagram fed to the demux.
@@ -58,14 +59,10 @@ public struct DemuxTotals: Sendable {
     public var arrivalSamplesDropped: UInt64 = 0
 }
 
-/// One accepted datagram's arrival record, for the feedback report's
-/// dispersion section.
-public struct ArrivalSample: Sendable {
-    public var channel: UInt8
-    public var seq: UInt16
-    /// SystemMonotonicClock µs; meaningful only as spacing.
-    public var arrivalMicroseconds: UInt64
-}
+/// One accepted datagram's arrival record (SystemMonotonicClock µs,
+/// meaningful only as spacing), for the feedback report's dispersion
+/// section.
+public typealias ArrivalSample = ClientFeedbackReporter.Arrival
 
 public final class ReceiveDemux: @unchecked Sendable {
     /// Arrival samples retained between feedback drains; sized for several
@@ -138,8 +135,8 @@ public final class ReceiveDemux: @unchecked Sendable {
                     arrivalMicroseconds: arrivalMicroseconds)
         if arrivals.count < Self.maxRetainedArrivalSamples {
             arrivals.append(ArrivalSample(
-                channel: envelope.channel.rawValue,
-                seq: envelope.seq.rawValue,
+                channel: envelope.channel,
+                seq: envelope.seq,
                 arrivalMicroseconds: arrivalMicroseconds))
         } else {
             // Drop the newest and count it.

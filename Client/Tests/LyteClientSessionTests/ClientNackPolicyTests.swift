@@ -1,16 +1,71 @@
-import LyteClientTestKit
-import LyteTransport
+import LyteClientSession
 import LyteWire
 import XCTest
 
-final class NackPolicyTests: XCTestCase {
+final class ClientNackPolicyTests: XCTestCase {
     // MARK: - Policy discipline (dedupe, deadline, permanence)
 
+    /// Every shell feeds the policy the same signals from the same
+    /// assembler events; verdicts that are not repair signals stay out.
+    func testAssemblerEventsTranslateToRepairSignals() {
+        let frame = FrameNumber(rawValue: 12)
+        XCTAssertEqual(
+            VideoRepairSignal(.evicted(frame, reason: .stale)),
+            .framesGone(from: frame, through: frame))
+        XCTAssertEqual(
+            VideoRepairSignal(.repairShardAccepted(frame, shardIndex: 3)),
+            .repairShardAccepted(frame: frame, shardIndex: 3))
+        XCTAssertNil(VideoRepairSignal(.fecImpossible(
+            frame, presumedLostDataShards: 3, bestCaseParityShards: 1)))
+    }
+
+    /// A host that jumps frame numbers by ~2^32 makes the assembler skip a
+    /// range that wide. The policy's work is bounded by its books, not the
+    /// range: the one asked frame inside escalates and heals the rest.
+    func testHugeGoneRangeCostsOnlyTheBooks() {
+        var escalated: [FrameNumber] = []
+        let policy = NackBench(
+            rtt: { 1_000 },
+            emit: { _ in },
+            escalate: { frame, _ in escalated.append(frame) })
+        let t0 = ClientTimestamp(microseconds: 1_000)
+        let asked = FrameNumber(rawValue: 0xFFFF_FFF0)
+        policy.handle(.nackCandidates(
+            frame: asked, missingShardIndices: [0, 1],
+            parityShards: 1, frameAgeMicroseconds: 0), now: t0)
+        let started = ContinuousClock.now
+        policy.handle(.framesGone(
+            from: FrameNumber(rawValue: 0xFFFF_FF00),
+            through: FrameNumber(rawValue: 0xFFFF_FEFF)), now: t0)
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(1))
+        XCTAssertEqual(escalated, [asked])
+        XCTAssertEqual(policy.snapshotStats().framesEscalatedToIdr, 1)
+        XCTAssertEqual(policy.snapshotStats().whollyLostEscalations, 0)
+    }
+
+    /// The RTT is host-influenced: an absurd one refuses the ask as
+    /// stale instead of overflowing rule 3's sum.
+    func testHostileRttRefusesTheAskWithoutTrapping() {
+        let emitted = Pile()
+        for rtt in [Int64.max, Int64.min] {
+            let policy = NackBench(
+                rtt: { rtt },
+                emit: { _ in emitted.append([1]) },
+                escalate: { _, _ in })
+            policy.handle(.nackCandidates(
+                frame: FrameNumber(rawValue: 3), missingShardIndices: [0, 1, 2],
+                parityShards: 1, frameAgeMicroseconds: Int64.max - 1),
+                now: ClientTimestamp(microseconds: 1))
+            XCTAssertEqual(policy.snapshotStats().asksSuppressedStale, 1)
+        }
+        XCTAssertEqual(emitted.count, 0)
+    }
+
     func testPolicyAsksOnceEverAndEscalatesOnDeadline() throws {
-        let emitted = LockedBytePile()
-        let escalated = LockedBytePile()
-        let policy = NackPolicy(
-            config: NackPolicyConfig(
+        let emitted = Pile()
+        let escalated = Pile()
+        let policy = NackBench(
+            config: ClientNackPolicy.Config(
                 staleBudgetMicroseconds: 250_000,
                 repairDeadlineMicroseconds: 100_000),
             rtt: { 5_000 },
@@ -80,9 +135,9 @@ final class NackPolicyTests: XCTestCase {
     /// heals everything), and a range already covered by a rule-4
     /// asked-frame escalation must NOT double-fire.
     func testWhollyLostFrameEscalatesToIdrOncePerRange() throws {
-        let escalated = LockedBytePile()
-        let policy = NackPolicy(
-            config: NackPolicyConfig(
+        let escalated = Pile()
+        let policy = NackBench(
+            config: ClientNackPolicy.Config(
                 staleBudgetMicroseconds: 250_000,
                 repairDeadlineMicroseconds: 100_000),
             rtt: { 5_000 },
@@ -121,9 +176,9 @@ final class NackPolicyTests: XCTestCase {
     /// frames emitted (no reference break), and an already-escalated
     /// range never re-fires.
     func testWholeLossRuleIgnoresSettledBooks() throws {
-        let escalated = LockedBytePile()
-        let policy = NackPolicy(
-            config: NackPolicyConfig(
+        let escalated = Pile()
+        let policy = NackBench(
+            config: ClientNackPolicy.Config(
                 staleBudgetMicroseconds: 250_000,
                 repairDeadlineMicroseconds: 100_000),
             rtt: { 5_000 },
@@ -157,10 +212,10 @@ final class NackPolicyTests: XCTestCase {
     }
 
     func testPolicyStaleRefusalIsPermanentAndCompletionCounts() throws {
-        let emitted = LockedBytePile()
-        let escalated = LockedBytePile()
-        let policy = NackPolicy(
-            config: NackPolicyConfig(staleBudgetMicroseconds: 50_000),
+        let emitted = Pile()
+        let escalated = Pile()
+        let policy = NackBench(
+            config: ClientNackPolicy.Config(staleBudgetMicroseconds: 50_000),
             rtt: { 40_000 },   // a slow path: 40 ms RTT
             emit: { entries in
                 for _ in entries { emitted.append([]) }
@@ -233,9 +288,9 @@ final class NackPolicyTests: XCTestCase {
     }
 
     func testRefusalActsOnceOnlyForALiveAsk() throws {
-        let emitted = LockedBytePile()
-        let escalated = LockedBytePile()
-        let policy = NackPolicy(
+        let emitted = Pile()
+        let escalated = Pile()
+        let policy = NackBench(
             rtt: { 1_000 },
             emit: { entries in
                 for _ in entries { emitted.append([]) }
@@ -269,4 +324,57 @@ final class NackPolicyTests: XCTestCase {
         XCTAssertEqual(stats.refusalsIgnored, 2)
     }
 
+}
+
+/// Records what the tests' exits saw, in order.
+private final class Pile {
+    private(set) var all: [[UInt8]] = []
+    var count: Int { all.count }
+    func append(_ bytes: [UInt8]) { all.append(bytes) }
+}
+
+/// The policy with its decisions run through exits, the way a shell runs
+/// them: entries first, then escalations.
+private final class NackBench {
+    private var policy: ClientNackPolicy
+    private let rtt: () -> Int64?
+    private let emit: ([FeedbackReport.NackEntry]) -> Void
+    private let escalate: (FrameNumber, ClientTimestamp) -> Void
+
+    init(
+        config: ClientNackPolicy.Config = ClientNackPolicy.Config(),
+        rtt: @escaping () -> Int64?,
+        emit: @escaping ([FeedbackReport.NackEntry]) -> Void,
+        escalate: @escaping (FrameNumber, ClientTimestamp) -> Void
+    ) {
+        self.policy = ClientNackPolicy(config: config)
+        self.rtt = rtt
+        self.emit = emit
+        self.escalate = escalate
+    }
+
+    func snapshotStats() -> ClientNackPolicy.Stats { policy.stats }
+
+    func handle(_ signal: VideoRepairSignal, now: ClientTimestamp) {
+        run(policy.handle(signal, rttMicroseconds: rtt(), now: now), now)
+    }
+
+    func handleRefusal(frame: FrameNumber, now: ClientTimestamp) {
+        run(policy.handleRefusal(frame: frame, now: now), now)
+    }
+
+    func shouldDeferFecImpossible(
+        frame: FrameNumber, now: ClientTimestamp
+    ) -> Bool {
+        policy.shouldDeferFecImpossible(frame: frame, now: now)
+    }
+
+    func tick(now: ClientTimestamp) {
+        run(policy.tick(now: now), now)
+    }
+
+    private func run(_ decision: ClientNackPolicy.Decision, _ now: ClientTimestamp) {
+        if !decision.nacks.isEmpty { emit(decision.nacks) }
+        for frame in decision.escalations { escalate(frame, now) }
+    }
 }

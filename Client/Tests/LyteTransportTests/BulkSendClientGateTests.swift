@@ -387,6 +387,46 @@ final class BulkSendClientGateTests: XCTestCase {
             + "the wire, terminal state, handle closed")
     }
 
+    // MARK: Leg 5b — a chunk the engine refuses
+
+    /// A file that shrank after its offer reads short: the engine refuses
+    /// the mis-sized chunk. That is a read failure — the transfer aborts
+    /// and releases the file — never a transfer stalled forever.
+    func testRefusedChunkAbortsLikeAReadFailure() throws {
+        final class ShrunkReader: BulkChunkReading, @unchecked Sendable {
+            var closed = false
+            func read(
+                offset: UInt64, byteCount: Int,
+                completion: @escaping @Sendable (Result<[UInt8], Error>) -> Void
+            ) {
+                completion(.success([UInt8](repeating: 1, count: byteCount / 2)))
+            }
+            func close() { closed = true }
+        }
+        let payload = [UInt8](repeating: 1, count: 8_192)
+        let offer = try BulkOffer(
+            transferId: 0xF4_05, totalByteCount: UInt64(payload.count),
+            chunkByteCount: 4_096, sha256: Sha256.digest(payload),
+            name: "shrunk.bin")
+        let reader = ShrunkReader()
+        let wire = WireBox()
+        let events = EventBox()
+        let shell = BulkSendShell(
+            offer: offer, reader: reader, send: wire.sendClosure,
+            onEvent: { events.append($0) })
+        let receiver = ScriptedReceiver(window: 4)
+        try shell.begin()
+        var delivered = 0
+        try settle(wire: wire, receiver: receiver,
+                   delivered: &delivered) { shell.ingest($0) }
+
+        XCTAssertEqual(shell.state, .aborted(.cancelled, byRemote: false))
+        XCTAssertTrue(events.contains {
+            if case .readFailed = $0 { return true }; return false
+        })
+        XCTAssertTrue(reader.closed)
+    }
+
     // MARK: - Coordinator harness (sync executor = virtual time)
 
     private final class EventBox: @unchecked Sendable {

@@ -18,15 +18,6 @@ enum DialFailure: Equatable {
             self = .localNetwork(problem)
             return
         }
-        // The transport reports exhaustion only as text. Both exhaustion
-        // messages carry its counters; a typed exhaustion case in
-        // TransportCryptoError should replace this reading.
-        guard case TransportCryptoError.handshakeFailed(let why) = error,
-              why.hasPrefix("no response") || why.contains("[kernel accepted ")
-        else {
-            self = .refused
-            return
-        }
-        self = .unanswered
+        self = error is HandshakeExhausted ? .unanswered : .refused
     }
 }

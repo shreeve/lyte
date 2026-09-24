@@ -26,11 +26,12 @@ final class LoopbackEndpointTests: XCTestCase {
             port: 0, bindAddress: "127.0.0.1", crypto: crypto,
             receiveTimeout: Self.receiveTimeout)
         XCTAssertThrowsError(try endpoint.start()) { error in
-            guard case TransportCryptoError.handshakeFailed(let message) = error else {
-                return XCTFail("expected handshakeFailed, got \(error)")
+            guard let exhausted = error as? HandshakeExhausted else {
+                return XCTFail("expected HandshakeExhausted, got \(error)")
             }
-            XCTAssertTrue(message.contains("kernel accepted 2 sends"))
-            XCTAssertTrue(message.contains("received 0 datagrams"))
+            XCTAssertEqual(exhausted.counters.message1Transmissions, 2)
+            XCTAssertEqual(exhausted.datagramsReceived, 0)
+            XCTAssertNil(exhausted.lastRejection)
         }
     }
 

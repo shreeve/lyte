@@ -29,6 +29,26 @@ final class PinnedHostStoreTests: XCTestCase {
         ).filter { $0.lastPathComponent.contains(".corrupt-") }
     }
 
+    /// The file names hosts and LAN addresses: only its owner reads it.
+    /// An entry whose key is not its own static's hash would make
+    /// recognition dial a different key, so it never loads.
+    func testSavedFileIsOwnerOnlyAndMiskeyedEntriesNeverLoad() throws {
+        var store = PinnedHostStore()
+        let key = [UInt8](repeating: 0x11, count: 32)
+        store.pin(staticPublicKey: key, name: "pup", address: "10.0.0.5",
+                  port: 41_151, pairedAt: "2026-09-24T00:00:00Z")
+        let good = try XCTUnwrap(store.hosts.first)
+        store.hosts[String(repeating: "0", count: 64)] = good.value
+        try store.save(to: storeURL)
+
+        let mode = try FileManager.default.attributesOfItem(
+            atPath: storeURL.path)[.posixPermissions] as? Int
+        XCTAssertEqual(mode, 0o600)
+        XCTAssertEqual(
+            PinnedHostStore.load(from: storeURL).hosts.keys.sorted(),
+            [good.key])
+    }
+
     func testAbsentFileLoadsEmptyWithoutQuarantine() throws {
         let result = PinnedHostStore.loadQuarantiningUnreadable(from: storeURL)
         XCTAssertEqual(result.store, PinnedHostStore())

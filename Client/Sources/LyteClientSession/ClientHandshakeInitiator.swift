@@ -11,12 +11,15 @@ import LyteWire
 ///   completes this transcript.
 /// - A `0x13` retry challenge is answered with that same message 1 and the
 ///   echoed cookie (`0x14`). Answering spends no attempt: the challenge is the
-///   host's liveness.
+///   host's liveness. A host challenges each message 1 at most once, so only
+///   one challenge per transmission is answered; answering a flood would
+///   reflect it at the host's tuple.
 /// - A message 2 that fails to read leaves the handshake untouched, so a later
 ///   genuine one still completes it.
 public struct ClientHandshakeInitiator: Sendable {
     /// Message-1 retransmit schedule: `attempts` transmissions, each given
     /// `intervalMicroseconds` for an answer before the next (or failure).
+    /// Every shell dials on one of these schedules; the default is 5 × 1 s.
     public struct Retry: Sendable, Equatable {
         public var attempts: Int
         public var intervalMicroseconds: UInt64
@@ -25,6 +28,15 @@ public struct ClientHandshakeInitiator: Sendable {
             self.attempts = max(1, attempts)
             self.intervalMicroseconds = max(1, intervalMicroseconds)
         }
+
+        /// A connect's first dial: 5 × 2 s, so a host still waking (or a
+        /// radio still associating) has 10 s to answer.
+        public static let firstDial = Retry(
+            attempts: 5, intervalMicroseconds: 2_000_000)
+        /// Every later dial — a connect's next round, a roaming probe:
+        /// 3 × 700 ms, so a dead target frees the ladder in about 2 s.
+        public static let redial = Retry(
+            attempts: 3, intervalMicroseconds: 700_000)
     }
 
     public struct Counters: Sendable, Equatable {
@@ -33,6 +45,8 @@ public struct ClientHandshakeInitiator: Sendable {
         public var retryChallengesAnswered: UInt64 = 0
         /// Retry challenges that did not decode or could not be answered.
         public var malformedRetryChallenges: UInt64 = 0
+        /// Challenges past the first for one message-1 transmission.
+        public var retryChallengesIgnored: UInt64 = 0
         /// Message-2 candidates the handshake rejected.
         public var rejectedMessage2: UInt64 = 0
         /// Datagrams whose envelope did not decode.
@@ -70,8 +84,11 @@ public struct ClientHandshakeInitiator: Sendable {
     private var session: NoiseSession
     private let message1: [UInt8]
     private var lastMessage1Micros: UInt64 = 0
+    /// The transmission (by count) the last challenge answer spent.
+    private var challengeAnsweredFor: UInt64?
     private var finished = false
 
+    /// - Throws: `NoiseError` when the host static is not a valid key.
     public init(
         hostStaticPublicKey: [UInt8],
         clientStatic: NoiseKeyPair,
@@ -95,6 +112,7 @@ public struct ClientHandshakeInitiator: Sendable {
     }
 
     /// The first message-1 carriage.
+    /// - Throws: `WireError` only if the fixed carriage fails to encode.
     public mutating func begin(nowMicros: UInt64) throws -> [UInt8] {
         try message1Carriage(nowMicros: nowMicros)
     }
@@ -129,6 +147,10 @@ public struct ClientHandshakeInitiator: Sendable {
         }
         switch type {
         case CtrlMessageType.retryChallenge:
+            guard challengeAnsweredFor != counters.message1Transmissions else {
+                counters.retryChallengesIgnored += 1
+                return .ignored
+            }
             guard let challenge = try? RetryChallenge.decode(payload),
                   let resubmission = try? RetryHandshake1(
                       echoing: challenge, message1: message1
@@ -140,6 +162,7 @@ public struct ClientHandshakeInitiator: Sendable {
                 return .ignored
             }
             counters.retryChallengesAnswered += 1
+            challengeAnsweredFor = counters.message1Transmissions
             return .reply(carriage)
 
         case CtrlMessageType.noiseHandshake2:

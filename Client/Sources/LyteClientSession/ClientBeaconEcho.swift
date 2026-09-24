@@ -21,6 +21,16 @@ public struct ClockSample: Hashable, Sendable {
         self.rttMicroseconds = rttMicroseconds
         self.measuredAt = measuredAt
     }
+
+    /// The longest round trip a sample may claim. A path slower than this
+    /// cannot stream anyway, and the bound keeps every RTT sum the fit and
+    /// the repair gate form far from overflow.
+    public static let maxPlausibleRttMicroseconds: Int64 = 5_000_000
+
+    /// A sample fit to model the host clock: its RTT is a real duration.
+    public var isPlausible: Bool {
+        (0...Self.maxPlausibleRttMicroseconds).contains(rttMicroseconds)
+    }
 }
 
 /// The beacon-echo exchange, IO-free. The host maps its clock over the
@@ -31,7 +41,9 @@ public struct ClockSample: Hashable, Sendable {
 /// A beacon may mirror the host's view of the last echo it received (t3
 /// verbatim, t4 as measured). With the t1/t2 this book remembered for that
 /// beaconSeq, the client closes the same (offset, RTT) sample the host did.
-/// No filtering happens here; HostClockModel owns that.
+/// A mirror closes a sample only when its t3 is the one this book sent and
+/// the sample is plausible: every other timestamp is host-chosen, and a
+/// forged turnaround or RTT must never reach the clock fit.
 public struct ClientBeaconEchoBook: Sendable {
     /// Echoed beacons whose mirror is still awaited. The host mirrors the
     /// last echo, so a handful covers reordering.
@@ -41,8 +53,11 @@ public struct ClientBeaconEchoBook: Sendable {
         var seq: UInt32
         var t1: HostTimestamp
         var t2: ClientTimestamp
+        var t3: ClientTimestamp
     }
     private var pending: [Pending] = []
+    /// Mirrors that matched a pending echo but closed no sample.
+    public private(set) var mirrorsRefused: UInt64 = 0
 
     public init() {}
 
@@ -59,26 +74,35 @@ public struct ClientBeaconEchoBook: Sendable {
             hostSend: beacon.hostSend,
             clientReceive: t2,
             clientSend: t3)
-        pending.append(Pending(seq: beacon.beaconSeq, t1: beacon.hostSend, t2: t2))
+        pending.append(Pending(
+            seq: beacon.beaconSeq, t1: beacon.hostSend, t2: t2, t3: t3))
         if pending.count > Self.maxPendingEchoes {
             pending.removeFirst(pending.count - Self.maxPendingEchoes)
         }
         guard let mirror = beacon.lastEcho,
               let match = pending.first(where: { $0.seq == mirror.beaconSeq })
         else { return (echo, nil) }
+        pending.removeAll { $0.seq == mirror.beaconSeq }
+        guard mirror.clientSend == match.t3 else {
+            mirrorsRefused += 1
+            return (echo, nil)
+        }
         let outbound = Int64(bitPattern:
             match.t2.microseconds &- match.t1.microseconds)
         let inbound = Int64(bitPattern:
-            mirror.clientSend.microseconds &- mirror.hostReceive.microseconds)
+            match.t3.microseconds &- mirror.hostReceive.microseconds)
         let roundTrip = Int64(bitPattern:
             mirror.hostReceive.microseconds &- match.t1.microseconds)
-        let turnaround = Int64(bitPattern:
-            mirror.clientSend.microseconds &- match.t2.microseconds)
-        pending.removeAll { $0.seq == mirror.beaconSeq }
-        return (echo, ClockSample(
+        let turnaround = match.t3.microseconds(since: match.t2)
+        let sample = ClockSample(
             beaconSeq: mirror.beaconSeq,
             offsetMicroseconds: (outbound &+ inbound) / 2,
             rttMicroseconds: roundTrip &- turnaround,
-            measuredAt: match.t2))
+            measuredAt: match.t2)
+        guard turnaround >= 0, sample.isPlausible else {
+            mirrorsRefused += 1
+            return (echo, nil)
+        }
+        return (echo, sample)
     }
 }

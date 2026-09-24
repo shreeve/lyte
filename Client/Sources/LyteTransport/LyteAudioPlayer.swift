@@ -215,8 +215,22 @@ public final class LyteAudioPlayer: @unchecked Sendable {
     private var lastWindowZeroCrossingHz: Double = 0
     private let statsLock = NSLock()
 
-    public var muted: Bool = false {
-        didSet { engine.mainMixerNode.outputVolume = muted ? 0 : 1 }
+    private let mutedFlag = Atomic<Bool>(false)
+    /// Playback keeps consuming; only the mixer goes quiet. The volume is
+    /// applied on the route queue under `engineLock`, so it never races a
+    /// start or a route rebuild, and the setter never blocks its caller.
+    public var muted: Bool {
+        get { mutedFlag.load(ordering: .relaxed) }
+        set {
+            mutedFlag.store(newValue, ordering: .relaxed)
+            routeQueue.async { [weak self] in self?.applyVolume() }
+        }
+    }
+
+    private func applyVolume() {
+        engineLock.lock()
+        engine.mainMixerNode.outputVolume = muted ? 0 : 1
+        engineLock.unlock()
     }
 
     public init(receiver: AudioReceiver) throws {

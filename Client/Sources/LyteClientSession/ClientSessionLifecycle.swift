@@ -159,8 +159,12 @@ public struct ClientSessionLifecycle: Sendable {
     }
 
     /// Rebuilds the receiver detector around a new timing policy while
-    /// preserving the peer's last announced wire mode. Edge reporting remains
-    /// deferred until the next `advance`, matching ordinary machine input.
+    /// preserving the peer's last announced wire mode. The rebuilt machine
+    /// is ACTIVE with fresh evidence clocks at `now` — FROZEN and the
+    /// liveness clock both restart — so call it only on authenticated
+    /// evidence, which ends FROZEN and refreshes liveness anyway. Edge
+    /// reporting remains deferred until the next `advance`, matching
+    /// ordinary machine input. False once closed.
     @discardableResult
     public mutating func reconfigure(
         _ config: SessionMachineConfig,

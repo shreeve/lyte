@@ -101,16 +101,20 @@ client                                   host
                               ◄──        0x13 retry challenge (cookie mode only)
 0x14 ‖ cookie ‖ msg1          ──►
                               ◄──        0x06 ‖ Noise IK msg2
-sealed traffic, both ways; each side's first ARQ message is 0x0F
+sealed traffic, both ways; in a streaming session each side's first ARQ
+message is 0x0F (a pairing-only run opens with share A, 0x0B)
 ```
 
 - Suite `Noise_IK_25519_ChaChaPoly_SHA256`. The client knows the host's
   static key from pairing. The first handshake payload byte each way is
   the wire major version (1); a mismatch aborts before any transport key.
-- The client sends one message 1 and retransmits the same bytes (5
-  transmissions, 1 s apart, `ClientHandshakeInitiator.Retry`), so a late
-  answer to any copy completes the transcript. Answering a retry challenge
-  spends no attempt.
+- The client sends one message 1 and retransmits the same bytes on a
+  schedule `ClientHandshakeInitiator.Retry` owns — by default 5
+  transmissions 1 s apart; a connect's first dial allows 5 × 2 s
+  (`.firstDial`), its later rounds and roaming probes 3 × 700 ms
+  (`.redial`) — so a late answer to any copy completes the transcript.
+  Answering a retry challenge spends no attempt; the client answers at
+  most one challenge per message-1 transmission.
 - The host rate-limits message 1 (`HostSession.HandshakeGate`). Under a
   flood it switches to cookie mode: a stateless 24-byte HMAC cookie binds
   the client tuple, a timestamp (30 s lifetime) and message 1 verbatim.
@@ -164,9 +168,9 @@ the message codecs).
 
 ## Capabilities
 
-Each side's first ARQ message is a capability declaration (0x0F): a
-deterministic-CBOR map. The agreed set is the intersection, computed the
-same way on both ends; there is no accept round. Unknown keys are ignored
+In a streaming session each side's first ARQ message is a capability
+declaration (0x0F): a deterministic-CBOR map. The agreed set is the
+intersection, computed the same way on both ends; there is no accept round. Unknown keys are ignored
 and preserved, and survive intersection only when both sides declare
 byte-equal values.
 
