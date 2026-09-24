@@ -132,6 +132,20 @@ final class ClientInitiatorPiecesTests: XCTestCase {
         XCTAssertEqual(recovery.stats.requestsSent, 2)
     }
 
+    /// The open episode gates rendering: dependent frames wait for the
+    /// IRAP that closes it.
+    func testOpenEpisodeAdmitsOnlyRandomAccessFrames() {
+        var recovery = ClientIdrRecovery()
+        XCTAssertTrue(recovery.admits(isRandomAccess: false))
+        XCTAssertFalse(recovery.recordDemand(frame: FrameNumber(rawValue: 3)))
+        XCTAssertTrue(recovery.recordDemand(frame: FrameNumber(rawValue: 4)),
+                      "a second verdict joins the open episode")
+        XCTAssertFalse(recovery.admits(isRandomAccess: false))
+        XCTAssertTrue(recovery.admits(isRandomAccess: true))
+        recovery.noteUsableIrapAccepted()
+        XCTAssertTrue(recovery.admits(isRandomAccess: false))
+    }
+
     // MARK: Beacon echo
 
     func testMirrorClosesTheSampleTheHostMeasured() {

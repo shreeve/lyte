@@ -81,10 +81,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     private let edgeLock = NSLock()
     /// Test hook between a lifecycle decision and its execution.
     var testingBeforeLifecycleExecution: (() -> Void)?
-    /// Upstream half of the renderer recovery gate: P samples already
-    /// queued when damage is discovered must not race the handoff flush.
-    /// Closed only by `noteVideoIrapEnqueued`, like IdrRequester's gate.
-    private var videoRecoveryOutstanding = false
 
     public init(
         demux: ReceiveDemux,
@@ -228,10 +224,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     func admitVideoUnit(_ unit: DecodeUnit) -> Bool {
         // Input→photon: delivery (not shard arrival) of a frame stamped
         // with lastInputSeq closes every pending event at or below it.
-        lock.lock()
-        let mayRender = !videoRecoveryOutstanding || unit.isIDR
-        lock.unlock()
-        guard mayRender else {
+        // Upstream half of the renderer recovery gate: P samples already
+        // queued when damage is discovered must not race the handoff flush.
+        guard idrRequester.admits(isRandomAccess: unit.isIDR) else {
             onVideoRecoveryTrace(.init(
                 kind: "coreRejectedNonIrap",
                 frame: unit.frameNumber,
@@ -382,9 +377,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public func noteVideoIrapEnqueued(
         frame: FrameNumber = FrameNumber(rawValue: 0)
     ) {
-        lock.lock()
-        videoRecoveryOutstanding = false
-        lock.unlock()
         idrRequester.noteUsableIrapAccepted()
         onVideoRecoveryTrace(.init(
             kind: "coreRecoveryClosedAfterIrapEnqueue",
@@ -397,18 +389,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         frame: FrameNumber,
         now: ClientTimestamp
     ) {
-        lock.lock()
-        let overlap = videoRecoveryOutstanding
-        videoRecoveryOutstanding = true
-        lock.unlock()
+        // The episode gates this core's render seam at once; the
+        // handoff's own gate follows before any later sink submit.
+        let overlap = idrRequester.recordRecoveryDemand(frame: frame, now: now)
         onVideoRecoveryTrace(.init(
             kind: overlap ? "coreDamageOverlap" : "coreDamageKnown",
             frame: frame,
             cause: cause))
-        // Gate the renderer before requesting, so the serial handoff sees
-        // it before any later sink submit.
         onVideoRecoveryDemand(cause, frame)
-        idrRequester.recordRecoveryDemand(frame: frame, now: now)
     }
 
     // MARK: Host audio routing
