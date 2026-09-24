@@ -494,12 +494,8 @@ final class InputPathGateTests: XCTestCase {
     /// the STAMPED shard budget (the HS-13 geometry-honesty rule) so
     /// every datagram fits 1152 B with the TLV aboard.
     private final class HostInputStandIn: NoiseHandshakeIO {
-        let staticKeys = NoiseKeyPair.generate()
-        let connectionId: ConnectionId
-        var transport: NoiseTransport?
-        var ctrlSeq: UInt16 = 0
+        var peer: SealedCtrlPeer<HostClock>
         var videoSeq = ChannelSeq(rawValue: 0)
-        var arq: ArqEndpoint<HostClock>
         private var handshakeOutbox: [[UInt8]] = []
 
         /// Synthetic receive→inject delay, host µs — the deterministic
@@ -523,59 +519,28 @@ final class InputPathGateTests: XCTestCase {
 
         init() {
             var rng = SplitMix64(seed: 0xC1_09)
-            connectionId = ConnectionId.random(using: &rng)
-            var config = ArqConfig()
-            config.maxDatagramPayloadByteCount =
-                WireBudget.maxConnectionIdTaggedPlaintextByteCount
-            arq = ArqEndpoint(channel: .ctrl, config: config)
+            peer = SealedCtrlPeer(
+                connectionId: ConnectionId.random(using: &rng))
         }
+
+        var staticKeys: NoiseKeyPair { peer.staticKeys }
 
         // NoiseHandshakeIO — answered in-process.
 
         func sendToHost(_ datagram: [UInt8]) throws {
-            guard let (envelope, payload) = try? Envelope.decode(datagram[...]),
-                  envelope.channel == .ctrl,
-                  payload.first == CtrlMessageType.noiseHandshake1
-            else { return }
-            var responder = try NoiseSession(
-                role: .responder, staticKeys: staticKeys)
-            _ = try responder.readMessage1(payload.dropFirst())
-            let message2 = try responder.writeMessage2()
-            transport = try responder.makeTransport()
-            let carriage = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: 0,
-                fec: 0,
-                extensions: [connectionId.wireExtension]
-            )
-            ctrlSeq &+= 1
-            handshakeOutbox.append(try carriage.encode(
-                payload: [CtrlMessageType.noiseHandshake2] + message2))
+            if let message2 = try peer.answerMessage1(datagram) {
+                handshakeOutbox.append(message2)
+            }
         }
 
         func receiveDatagram(timeoutMilliseconds: Int) throws -> [UInt8]? {
             handshakeOutbox.isEmpty ? nil : handshakeOutbox.removeFirst()
         }
 
-        // The established send path (the CL-8 stand-in's, verbatim).
+        // The established send path: conn-id-tagged, sealed.
 
         func sealedCtrl(body: [UInt8], hostMicros: UInt64) throws -> [UInt8] {
-            let envelope = Envelope(
-                channel: .ctrl,
-                seq: ChannelSeq(rawValue: ctrlSeq),
-                frame: FrameNumber(rawValue: 0),
-                timestamp: hostMicros,
-                fec: 0,
-                extensions: [connectionId.wireExtension]
-            )
-            ctrlSeq &+= 1
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            let datagram = try envelope.encode(payload: payload)
+            let datagram = try peer.datagram(body: body, timestamp: hostMicros)
             XCTAssertLessThanOrEqual(
                 datagram.count, WireBudget.maxDatagramByteCount)
             return datagram
@@ -584,39 +549,30 @@ final class InputPathGateTests: XCTestCase {
         /// One client datagram: unseal → route. Input events "inject"
         /// after the fixed synthetic delay; echoes buffer for advance.
         func absorb(_ bytes: [UInt8], hostMicros: UInt64) throws {
-            let (envelope, payload) = try Envelope.decode(bytes)
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext: [UInt8]
-            do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
-            } catch NoiseError.replayedSequence, NoiseError.staleSequence {
-                return // network duplicate; routine
-            }
-            guard envelope.channel == .ctrl else { return }
-            switch plaintext.first {
-            case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
-                for event in arq.ingest(
-                    payload: plaintext,
-                    now: HostTimestamp(microseconds: hostMicros)
-                ) {
-                    guard case .message(_, let message) = event else { continue }
+            switch try peer.absorb(bytes, nowMicros: hostMicros) {
+            case .reliable(_, _, let events):
+                for case .message(_, let message) in events {
                     dispatchReliable(message, hostMicros: hostMicros)
                 }
-            case CtrlMessageType.beaconEcho:
-                // The mirror's food: t3 echoed verbatim, t4 measured
-                // here — rides the NEXT beacon (W4a's lastEcho rule).
-                if let echo = try? BeaconEcho.decode(plaintext) {
-                    pendingMirror = ClockBeacon.LastEcho(
-                        beaconSeq: echo.beaconSeq,
-                        clientSend: echo.clientSend,
-                        hostReceive: HostTimestamp(microseconds: hostMicros))
+            case .plain(let envelope, let plaintext):
+                guard envelope.channel == .ctrl else { return }
+                switch plaintext.first {
+                case CtrlMessageType.beaconEcho:
+                    // The mirror's food: t3 echoed verbatim, t4 measured
+                    // here — rides the NEXT beacon (W4a's lastEcho rule).
+                    if let echo = try? BeaconEcho.decode(plaintext) {
+                        pendingMirror = ClockBeacon.LastEcho(
+                            beaconSeq: echo.beaconSeq,
+                            clientSend: echo.clientSend,
+                            hostReceive: HostTimestamp(microseconds: hostMicros))
+                    }
+                case CtrlMessageType.idrRequest:
+                    idrRequestsSeen += 1
+                default:
+                    XCTFail("unexpected client CTRL type \(plaintext.first ?? 0)")
                 }
-            case CtrlMessageType.idrRequest:
-                idrRequestsSeen += 1
-            default:
-                XCTFail("unexpected client CTRL type \(plaintext.first ?? 0)")
+            case .handshakeCompleted, .duplicate, .unopened:
+                break // duplicates: network weather, routine
             }
         }
 
@@ -646,11 +602,11 @@ final class InputPathGateTests: XCTestCase {
         /// (≤ 32 per 0x17 — the flushInputEchoes rule), the 1 Hz
         /// mirrored beacon, and the ARQ's due output.
         func advance(hostMicros: UInt64) throws -> [[UInt8]] {
-            guard transport != nil else { return [] }
+            guard peer.isEstablished else { return [] }
             var out: [[UInt8]] = []
             while !pendingEchoes.isEmpty {
                 let batch = Array(pendingEchoes.prefix(InputEcho.maxTupleCount))
-                try arq.send(
+                try peer.arq.send(
                     message: InputEcho(tuples: batch).encode(),
                     now: HostTimestamp(microseconds: hostMicros))
                 pendingEchoes.removeFirst(batch.count)
@@ -667,7 +623,7 @@ final class InputPathGateTests: XCTestCase {
                 out.append(try sealedCtrl(
                     body: beacon.encode(), hostMicros: hostMicros))
             }
-            let (payloads, _) = arq.poll(
+            let (payloads, _) = peer.arq.poll(
                 now: HostTimestamp(microseconds: hostMicros))
             for payload in payloads {
                 out.append(try sealedCtrl(
@@ -716,11 +672,8 @@ final class InputPathGateTests: XCTestCase {
                         LastInputSeqTlv.wireExtension(seq: stamp))
                 }
                 videoSeq = videoSeq.next
-                let header = try envelope.encode(payload: [])
-                let sealed = try transport!.seal(
-                    plaintext: payload[...], aad: header[...],
-                    envelope: envelope)
-                let datagram = try envelope.encode(payload: sealed)
+                let datagram = try peer.transport!.sealDatagram(
+                    envelope, plaintext: payload)
                 XCTAssertLessThanOrEqual(
                     datagram.count, WireBudget.maxDatagramByteCount,
                     "a stamped shard must still fit the 1152 B budget")
@@ -740,7 +693,7 @@ final class InputPathGateTests: XCTestCase {
         let demux: ReceiveDemux
         var core: LyteUdpSessionCore!
         let outbound = LockedBytePile()
-        let clock = LockedClock()
+        let clock = ManualMicrosClock()
         var deliveredFrames: [UInt32] = []
 
         init(host: HostInputStandIn) throws {
@@ -781,15 +734,6 @@ final class InputPathGateTests: XCTestCase {
             default:
                 XCTFail("host datagram refused: \(outcome)")
             }
-        }
-    }
-
-    final class LockedClock: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: UInt64 = 1_000
-        var value: UInt64 {
-            get { lock.lock(); defer { lock.unlock() }; return stored }
-            set { lock.lock(); stored = newValue; lock.unlock() }
         }
     }
 
