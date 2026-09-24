@@ -83,13 +83,14 @@ public final class HostSessionHarness {
     /// only CTRL unless `openChannels` says otherwise.
     public func connectClient(
         declaring capabilities: Capabilities?,
-        openChannels: Set<ChannelId>? = [.ctrl]
+        openChannels: Set<ChannelId>? = [.ctrl],
+        arqConfig: ArqConfig = ArqConfig()
     ) throws -> SealedCtrlPeer<ClientClock> {
         guard case .noise(let hostStatic) = session.config.crypto else {
             preconditionFailure("connectClient needs a Noise session")
         }
         var client = try SealedCtrlPeer<ClientClock>(
-            initiatorTo: hostStatic.publicKey
+            initiatorTo: hostStatic.publicKey, arqConfig: arqConfig
         )
         client.openChannels = openChannels
         try connect(&client)
@@ -160,4 +161,43 @@ public final class HostSessionHarness {
             idle = (forwarded, client.progressMark) == before ? idle + 1 : 0
         }
     }
+}
+
+/// A gate's own client: a `SealedCtrlPeer` plus the evidence that gate
+/// records in `absorb`. The peer's CTRL surface is forwarded so gate
+/// bodies read `client.arq`, `client.take(type:)`, `client.pollOut`.
+public protocol PeerBackedClient: HostSessionClient {
+    var peer: SealedCtrlPeer<ClientClock> { get set }
+    /// One host datagram through the peer, judged by the gate.
+    mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws
+}
+
+extension PeerBackedClient {
+    public var arq: ArqEndpoint<ClientClock> {
+        get { peer.arq }
+        set { peer.arq = newValue }
+    }
+
+    public var transport: NoiseTransport? { peer.transport }
+
+    public var received: [(group: ArqGroupId, bytes: [UInt8])] {
+        get { peer.received }
+        set { peer.received = newValue }
+    }
+
+    public mutating func take(type: UInt8) -> [[UInt8]] {
+        peer.take(type: type)
+    }
+
+    public mutating func pollOut(nowMicros: UInt64) throws -> [[UInt8]] {
+        try peer.pollOut(nowMicros: nowMicros)
+    }
+
+    public mutating func receiveFromHost(
+        _ bytes: [UInt8], nowMicros: UInt64
+    ) throws {
+        try absorb(bytes, nowMicros: nowMicros)
+    }
+
+    public var progressMark: Int { peer.received.count }
 }
