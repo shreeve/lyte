@@ -95,6 +95,18 @@ struct InputForwardingPolicy {
         return .swallow
     }
 
+    /// A lock key's state flip (Caps Lock): macOS reports no press or
+    /// release, so each flip is one full tap on the host — never held,
+    /// so the host has nothing to repeat or strand.
+    func lockToggled(_ code: UInt32) -> Verdict {
+        Verdict(
+            sends: [
+                .keyKeycode(keycode: code, pressed: true),
+                .keyKeycode(keycode: code, pressed: false),
+            ],
+            consumed: true)
+    }
+
     /// A mouse button edge. `onVideo` is the hit test: true when the
     /// point belongs to the video surface rather than an overlay.
     mutating func button(

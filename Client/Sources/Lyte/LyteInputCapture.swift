@@ -19,6 +19,7 @@
 // with the pointer's edge geometry for the strip's reveal policy.
 
 import AppKit
+import Carbon.HIToolbox
 import LyteClientCore
 import LyteTransport
 import LyteWire
@@ -215,19 +216,28 @@ final class LyteInputCapture {
     private func handleKey(_ event: NSEvent) -> NSEvent? {
         guard let window, event.window === window, window.isKeyWindow else { return event }
         let commandHeld = event.modifierFlags.contains(.command)
+        let iso = KBGetLayoutType(Int16(LMGetKbdType()))
+            == PhysicalKeyboardLayoutType(kKeyboardISO)
 
         switch event.type {
         case .keyDown:
-            let code = MacEvdevKeyMap.evdevKeycode(forMacKeyCode: event.keyCode)
+            let code = MacEvdevKeyMap.evdevKeycode(
+                forMacKeyCode: event.keyCode, isoKeyboard: iso)
             return execute(forwarding.keyDown(
                 code, isRepeat: event.isARepeat, commandHeld: commandHeld,
                 isLocalShortcut: commandHeld
                     && Self.isLocalShortcut(event)), event)
 
         case .keyUp:
-            let code = MacEvdevKeyMap.evdevKeycode(forMacKeyCode: event.keyCode)
+            let code = MacEvdevKeyMap.evdevKeycode(
+                forMacKeyCode: event.keyCode, isoKeyboard: iso)
             return execute(
                 forwarding.keyUp(code, commandHeld: commandHeld), event)
+
+        case .flagsChanged where event.keyCode == MacEvdevKeyMap.capsLockKeyCode:
+            guard let code = MacEvdevKeyMap.evdevKeycode(
+                forMacKeyCode: event.keyCode) else { return event }
+            return execute(forwarding.lockToggled(code), event)
 
         case .flagsChanged:
             guard let (keycode, deviceMask) =

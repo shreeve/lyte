@@ -78,6 +78,19 @@ final class InputForwardingPolicyTests: XCTestCase {
                                       isLocalShortcut: true), .passThrough)
     }
 
+    /// macOS reports Caps Lock only as a lock-state flip; each flip is one
+    /// full press on the host, never a held key the host could repeat.
+    func testCapsLockFlipIsOneTapOnTheHost() {
+        let policy = InputForwardingPolicy()
+        let capsLock: UInt32 = 58
+        for _ in 0..<2 {
+            let verdict = policy.lockToggled(capsLock)
+            XCTAssertEqual(verdict.sends, [down(capsLock), up(capsLock)])
+            XCTAssertTrue(verdict.consumed)
+            XCTAssertTrue(policy.heldKeys.isEmpty)
+        }
+    }
+
     // MARK: - ⌘ as Super, only for host chords
 
     func testLocalOnlyChordNeverTapsSuperOnTheHost() {
