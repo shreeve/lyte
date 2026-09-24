@@ -576,8 +576,12 @@ public final class RateEstimator {
     }
 
     /// One beacon-echo RTT sample: min-gated for telemetry, EWMA'd
-    /// (RFC 6298's 1/8 gain) into the retransmit gate's SRTT.
+    /// (RFC 6298's 1/8 gain) into the retransmit gate's SRTT. Samples
+    /// outside `SessionBeaconClock.plausibleRttMicroseconds` are ignored,
+    /// so SRTT and min-RTT always stay inside that range.
     public func noteRtt(microseconds: Int64) {
+        guard SessionBeaconClock.plausibleRttMicroseconds
+            .contains(microseconds) else { return }
         if minRttMicroseconds.map({ microseconds < $0 }) ?? true {
             minRttMicroseconds = microseconds
         }
@@ -1109,7 +1113,8 @@ public final class RateEstimator {
             )
             guard let baseline else { continue }
             haveBaseline = true
-            let inflation = reportMin - min(baseline, reportMin)
+            let inflation = saturatingDifference(
+                reportMin, min(baseline, reportMin))
             worstInflation = max(worstInflation, inflation)
         }
         guard haveBaseline else {
@@ -1179,8 +1184,8 @@ public final class RateEstimator {
             // censored samples is us measuring ourselves.
             let anchor = overuseAnchorRate.map(Int.init) ?? rateBitsPerSecond
             let queueGrew = inflatedStreakStartMicros.map {
-                (queuingDelayMicroseconds ?? 0)
-                    >= $0 + config.overuseThresholdMicroseconds
+                saturatingDifference(queuingDelayMicroseconds ?? 0, $0)
+                    >= config.overuseThresholdMicroseconds
             } ?? false
             let honestMedian = honestAnchorRate
             let belief = beliefBits ?? Double(rateBitsPerSecond)
@@ -1405,4 +1410,13 @@ public final class RateEstimator {
         recoveryWindowSawOveruse = false
         return [clean]
     }
+}
+
+/// a − b pinned to Int64's range instead of trapping. One-way delays mix
+/// the host's clock with client-supplied arrival stamps, so their
+/// differences can span more than Int64 holds.
+private func saturatingDifference(_ a: Int64, _ b: Int64) -> Int64 {
+    let (difference, overflow) = a.subtractingReportingOverflow(b)
+    guard overflow else { return difference }
+    return b < 0 ? .max : .min
 }

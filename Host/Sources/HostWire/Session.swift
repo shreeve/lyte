@@ -410,6 +410,9 @@ public enum SessionDropReason: Equatable, Sendable {
     /// than the one it was answered on: message 2 goes only to the
     /// tuple that asked, so a replayer cannot aim it elsewhere.
     case handshakeRepeatOffPath
+    /// A BeaconEcho naming no beacon still awaiting its echo, or whose
+    /// round trip is implausible against the host's own t1: no sample.
+    case beaconEchoUnmatched
     /// A chan-3 payload FeedbackReport.decode refused. Still counted as
     /// media-path evidence (an authenticated arrival) but never fed to the
     /// estimator.
@@ -2998,9 +3001,12 @@ public final class Session {
     private func accept(
         echo: BeaconEcho, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
-        let sample = beaconClock.accept(
+        guard let sample = beaconClock.accept(
             echo: echo, hostMicroseconds: hostMicroseconds
-        )
+        ) else {
+            counters.dropped += 1
+            return [.dropped(.beaconEchoUnmatched)]
+        }
         counters.beaconEchoes += 1
         // RTT evidence into the estimator (telemetry and the retransmit
         // gate; the rate law runs on dispersion).
