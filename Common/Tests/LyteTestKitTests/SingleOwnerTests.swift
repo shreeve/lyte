@@ -80,6 +80,10 @@ final class SingleOwnerTests: XCTestCase {
         ConfinedUse(tokens: ["SessionStateMachine"],
                     owner: .directory("Host/Sources/HostSession/"),
                     scope: "Host/Sources/"),
+        // Encryption is always on: no production shell selects the
+        // session's plaintext test mode.
+        ConfinedUse(tokens: ["testPassthrough"],
+                    owner: .directory("Host/Sources/HostWire/")),
         // Decoded samples leave the session only through VideoSink.
         ConfinedUse(tokens: ["(", "CMSampleBuffer", "DecodeUnit", ")"],
                     owner: .nowhere),
