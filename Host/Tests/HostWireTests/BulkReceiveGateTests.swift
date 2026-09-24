@@ -288,6 +288,11 @@ final class BulkReceiveGateTests: XCTestCase {
             ("evil\u{0000}name.txt", "evilname.txt"),
             ("bell\u{07}~\u{7F}.png", "bell~.png"),
             (" padded name.txt ", "padded name.txt"),
+            // C1 and bidi controls vanish: no name displays spoofed.
+            ("invoice\u{202E}fdp.exe", "invoicefdp.exe"),
+            ("a\u{2066}b\u{2069}\u{200F}c\u{061C}.txt", "abc.txt"),
+            ("csi\u{9B}31m\u{85}.log", "csi31m.log"),
+            ("two\u{2028}lines\u{2029}.md", "twolines.md"),
             // Trailing dots trim (Windows-hostile, dedupe-hostile).
             ("archive.tar.gz...", "archive.tar.gz"),
             // Nothing left → the fallback.

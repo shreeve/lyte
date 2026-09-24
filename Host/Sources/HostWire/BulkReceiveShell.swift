@@ -406,7 +406,10 @@ public enum BulkFileNaming {
     public static let maxNameByteCount = 200
 
     /// Path separators dropped (only the final component survives),
-    /// control bytes removed, leading dots stripped (no dotfiles —
+    /// control and format characters removed (C0, DEL, C1, the bidi
+    /// overrides and isolates that let "invoice\u{202E}fdp.exe" display
+    /// as "invoiceexe.pdf", line and paragraph separators), leading dots
+    /// stripped (no dotfiles —
     /// nothing lands invisible or overrides shell config), trailing
     /// dots/spaces trimmed, empty → the fallback, overlong truncated
     /// on a character boundary with the extension preserved.
@@ -417,9 +420,8 @@ public enum BulkFileNaming {
         if let separator = name.lastIndex(where: { $0 == "/" || $0 == "\\" }) {
             name = String(name[name.index(after: separator)...])
         }
-        // Control bytes (NUL, escapes, DEL) have no place in a name.
         name = String(String.UnicodeScalarView(
-            name.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7F }
+            name.unicodeScalars.filter { !isHiddenControl($0) }
         ))
         while let first = name.first, first == "." || first == " " {
             name.removeFirst()
@@ -447,6 +449,18 @@ public enum BulkFileNaming {
             if name.isEmpty { return fallbackName }
         }
         return name
+    }
+
+    /// Scalars that have no place in a displayed file name: controls
+    /// (C0, DEL, C1), bidi embeddings, overrides, isolates and marks, and
+    /// the line and paragraph separators.
+    private static func isHiddenControl(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x00...0x1F, 0x7F...0x9F: return true
+        case 0x061C, 0x200E, 0x200F, 0x2028...0x202E, 0x2066...0x2069:
+            return true
+        default: return false
+        }
     }
 
     /// The highest collision number tried before a promotion fails.
