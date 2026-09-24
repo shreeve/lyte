@@ -135,6 +135,31 @@ final class BrowserMediaPathTests: XCTestCase {
         })
     }
 
+    /// The browser's blackout detector matches the native shell's: an idle
+    /// host's 1 Hz beacons are not a blackout, and the first audio datagram
+    /// tightens the bound to 350 ms.
+    func testAudioEvidenceTightensTheBlackoutDetector() throws {
+        let host = BrowserHostPeer()
+        let (client, readyNotes) = try host.readyClient()
+        var notes = readyNotes
+        _ = host.drain()
+
+        _ = client.tick(nowMicros: host.nowMicros + 1_000_000)
+        XCTAssertEqual(client.sessionState, .active, "a quiet second is an idle host")
+
+        host.advance(microseconds: 1_000_000)
+        try host.session.ingestAudioPacket(
+            [0xF8, 0xFF, 0xFE], captureTimestampMicroseconds: host.hostMicros,
+            now: host.hostMicros * 1_000)
+        host.run(client, notes: &notes, beats: 4) { _ in false }
+        XCTAssertTrue(
+            notes.contains { $0.contains("blackout detector tightened to 350 ms") },
+            notes.joined(separator: " | "))
+        _ = host.drain()
+        _ = client.tick(nowMicros: host.nowMicros + 400_000)
+        XCTAssertEqual(client.sessionState, .frozen)
+    }
+
     // MARK: Helpers
 
     /// Frame 0 (IDR) arrives whole; frame 1 loses parity + 2 data shards;

@@ -191,12 +191,6 @@ public struct ClientControlSession: Sendable {
         clipboard.receiveBulk(message, hasher: hasher)
     }
 
-    /// Media-posture bookkeeping only; a shell that tightens the detector
-    /// calls `noteAudioEvidence(now:)` instead.
-    public mutating func noteAudioEvidence() {
-        mediaPosture.noteAudioEvidence()
-    }
-
     /// One authenticated audio datagram: the track is active again and, on
     /// the first one, the detector tightens.
     public mutating func noteAudioEvidence(

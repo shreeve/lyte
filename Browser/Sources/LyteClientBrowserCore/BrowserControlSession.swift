@@ -45,6 +45,12 @@ public final class BrowserControlSession {
     public static let feedbackIntervalMicroseconds: UInt64 = 40_000
     /// Arrival samples kept between reports.
     public static let maxRetainedArrivalSamples = 512
+    /// The receiver machine's timing, the native shell's: the baseline
+    /// blackout bound sits past an idle host's 1 Hz beacons, and the first
+    /// audio datagram (a dense path probe) tightens it.
+    public static let machineConfig = SessionMachineConfig(
+        blackoutSilenceMicroseconds: 2_500_000)
+    public static let tightenedBlackoutSilenceMicroseconds: Int64 = 350_000
 
     public struct Counters: Sendable, Equatable {
         /// Datagrams whose envelope did not decode.
@@ -139,6 +145,8 @@ public final class BrowserControlSession {
     public var audioPacketsPopped: UInt64 { audio.packetsPopped }
     public var audioPacketsDroppedStale: UInt64 { audio.packetsDroppedStale }
     public var clipboardNegotiated: Bool { control?.clipboardNegotiated ?? false }
+    /// The client lifecycle machine's state (FROZEN is a local overlay).
+    public var sessionState: SessionState? { control?.state }
     /// True when every reliable CTRL word sent has been acknowledged.
     public var isReliableQuiescent: Bool { arq.isQuiescent }
 
@@ -399,9 +407,11 @@ public final class BrowserControlSession {
 
         var control = ClientControlSession(
             localCapabilities: .wireDefault.declaringClipboardText(),
-            machineConfig: SessionMachineConfig(),
+            machineConfig: Self.machineConfig,
             desiredHostAudioRouting: nil,
             clipboardSharingAtStart: true,
+            tightenedBlackoutSilenceMicroseconds:
+                Self.tightenedBlackoutSilenceMicroseconds,
             now: now
         )
         var pairing = try ClientPairing(
@@ -495,7 +505,7 @@ public final class BrowserControlSession {
                 outbound: feedbackReport(nowMicros: nowMicros),
                 scheduled: ingested.scheduled)
         case .audio:
-            control?.noteAudioEvidence()
+            note(posture: control?.noteAudioEvidence(now: now))
             for line in audio.ingestShard(envelope: envelope, payload: plaintext[...]) {
                 note(line)
             }
@@ -604,6 +614,7 @@ public final class BrowserControlSession {
         if let line = decision.note {
             note("control: \(line)")
         }
+        note(posture: decision.detectorPosture)
         switch decision.event {
         case .capability(.agreed(let caps)):
             capabilitiesAgreed = true
@@ -768,6 +779,17 @@ public final class BrowserControlSession {
 
     private func note(_ line: String) {
         events.append(line)
+    }
+
+    private func note(posture: ClientDetectorPosture?) {
+        switch posture {
+        case .tightened(let bound):
+            note("audio evidence — blackout detector tightened to \(bound / 1_000) ms")
+        case .relaxed(let bound):
+            note("audio quiet announced — blackout detector relaxed to \(bound / 1_000) ms")
+        case nil:
+            break
+        }
     }
 
     /// Builds a step and drains the notes, so each note is reported once.
