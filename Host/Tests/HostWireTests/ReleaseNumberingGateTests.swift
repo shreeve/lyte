@@ -229,5 +229,54 @@ final class ReleaseNumberingGateTests: XCTestCase {
                        "each token priced its datagram's exact wire image")
     }
 
+    /// A shard the seal refuses leaves its frame undecodable: the rest of
+    /// that frame is dropped unsealed and unsent, without spending seqs,
+    /// no repair of it is offered, and the next frame flows normally.
+    func testASealRefusalDropsTheRestOfItsFrame() throws {
+        struct Refused: Error {}
+        let hostKeys = NoiseKeyPair.generate()
+        var initiator = try NoiseSession(
+            role: .initiator, staticKeys: NoiseKeyPair.generate(),
+            remoteStaticPublicKey: hostKeys.publicKey)
+        var responder = try NoiseSession(role: .responder, staticKeys: hostKeys)
+        _ = try responder.readMessage1(try initiator.writeMessage1()[...])
+        _ = try initiator.readMessage2(try responder.writeMessage2()[...])
+        let box = Box(try responder.makeTransport())
+        let channel = VideoChannel(
+            config: VideoChannelConfig(rateBitsPerSecond: 1_000_000_000),
+            now: 0,
+            seal: { plaintext, aad, envelope in
+                box.sealCalls += 1
+                if box.sealCalls == 3 { throw Refused() }
+                return try box.host.seal(
+                    plaintext: plaintext, aad: aad, envelope: envelope)
+            },
+            send: { box.sent.append($0) })
+        var client = Receiver(transport: try initiator.makeTransport())
+
+        var now: UInt64 = 1_000_000
+        let broken = try channel.ingest(
+            frame: frame(20_000), frameNumber: FrameNumber(rawValue: 0),
+            captureTimestampMicroseconds: 0, isKeyframe: false, now: now)
+        XCTAssertGreaterThan(broken, 5)
+        drain(channel, from: &now)
+        XCTAssertEqual(box.sent.count, 2, "only the shards before the refusal")
+        XCTAssertEqual(box.sealCalls, 3, "nothing after it is sealed")
+        XCTAssertEqual(channel.counters.releaseSealFailures, 1)
+        XCTAssertTrue(channel.framesWithQueuedShards().isEmpty)
+        XCTAssertEqual(channel.enqueueRepair(
+            frame: FrameNumber(rawValue: 0), shardIndices: [5], now: now), 0,
+            "no repair of a frame that cannot decode")
+
+        let next = try channel.ingest(
+            frame: frame(20_000), frameNumber: FrameNumber(rawValue: 1),
+            captureTimestampMicroseconds: 16_000, isKeyframe: false, now: now)
+        drain(channel, from: &now)
+        XCTAssertEqual(box.sent.count, 2 + next)
+        box.sent.forEach { client.receive($0) }
+        XCTAssertTrue(client.refused.isEmpty)
+        XCTAssertTrue(client.missing.isEmpty, "no seq was spent on a drop")
+    }
+
     private struct FecFieldMismatch: Error {}
 }
