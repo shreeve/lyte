@@ -37,7 +37,8 @@ public final class PairingResponderService {
         using rng: inout some RandomNumberGenerator
     ) -> String {
         let digits = String(rng.next(upperBound: UInt32(1_000_000)))
-        return String(repeating: "0", count: 6 - digits.count) + digits
+        let padding = PairingPin.digitCount - digits.count
+        return String(repeating: "0", count: padding) + digits
     }
 
     public struct Config: Sendable {

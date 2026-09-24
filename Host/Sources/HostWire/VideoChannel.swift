@@ -1113,37 +1113,10 @@ public final class VideoChannel {
         guard let seal else {
             return try envelope.encode(plaintextShard: plaintext)
         }
-        let datagram = try SealedDatagram.assemble(
-            envelope: envelope, plaintext: plaintext[...], seal: seal)
+        let datagram = try envelope.sealedDatagram(plaintext[...]) {
+            plaintext, aad in try seal(plaintext, aad, envelope)
+        }
         counters.sealedDatagramsAssembledInPlace += 1
-        return datagram
-    }
-}
-
-/// The one sealed-datagram assembler (video shards, audio, CTRL, bulk).
-/// The encoded envelope header is both the AEAD's associated data and the
-/// buffer the datagram grows into: it is pre-sized before sealing, and
-/// the sealer's ciphertext‖tag is appended in place — one allocation for
-/// the datagram, byte-identical to encoding the header over the payload.
-enum SealedDatagram {
-    static func assemble(
-        envelope: Envelope,
-        plaintext: ArraySlice<UInt8>,
-        seal: (_ plaintext: ArraySlice<UInt8>, _ aad: ArraySlice<UInt8>,
-               _ envelope: Envelope) throws -> [UInt8]
-    ) throws -> [UInt8] {
-        var datagram = try envelope.encode(payload: [])
-        datagram.reserveCapacity(
-            datagram.count + plaintext.count + WireBudget.aeadTagByteCount)
-        let sealed = try seal(plaintext, datagram[...], envelope)
-        guard sealed.count <= WireBudget.maxWirePayloadByteCount else {
-            throw WireError.payloadOverBudget(sealed.count)
-        }
-        let total = datagram.count + sealed.count
-        guard total <= WireBudget.maxDatagramByteCount else {
-            throw WireError.datagramOverBudget(total)
-        }
-        datagram.append(contentsOf: sealed)
         return datagram
     }
 }

@@ -1373,9 +1373,8 @@ public final class Session {
     private func encodeSealedAudio(
         envelope: Envelope, plaintext: [UInt8]
     ) throws -> [UInt8] {
-        let datagram = try SealedDatagram.assemble(
-            envelope: envelope, plaintext: plaintext[...]
-        ) { plaintext, aad, envelope in
+        let datagram = try envelope.sealedDatagram(plaintext[...]) {
+            plaintext, aad in
             try sealPayload(plaintext, aad: aad, envelope: envelope)
         }
         counters.audioSealedDatagramsAssembledInPlace += 1
@@ -3043,9 +3042,7 @@ public final class Session {
         guard sealed else {
             return (envelope, try envelope.encode(payload: body))
         }
-        let bytes = try SealedDatagram.assemble(
-            envelope: envelope, plaintext: body[...]
-        ) { plaintext, aad, envelope in
+        let bytes = try envelope.sealedDatagram(body[...]) { plaintext, aad in
             try sealPayload(plaintext, aad: aad, envelope: envelope)
         }
         return (envelope, bytes)
