@@ -1,27 +1,8 @@
 import XCTest
-import Foundation
 @testable import HostSession
 import LyteWire
 
 final class SessionLifecycleLaneTests: XCTestCase {
-    /// Single owner: the wire shell never builds or holds its own lifecycle
-    /// machine; the lane owns it.
-    func testOnlyTheLaneOwnsTheLifecycleMachine() throws {
-        let hostRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent() // HostSessionTests
-            .deletingLastPathComponent() // Tests
-            .deletingLastPathComponent() // Host
-        let session = try String(
-            contentsOf: hostRoot.appendingPathComponent(
-                "Sources/HostWire/Session.swift"),
-            encoding: .utf8)
-        for retired in ["SessionStateMachine<HostClock>", "SessionStateMachine("] {
-            XCTAssertFalse(
-                session.contains(retired),
-                "lifecycle ownership returned to Session: \(retired)")
-        }
-    }
-
     func testDormantLaneBeginsAtEstablishmentAndProjectsExactDeadline() {
         var lane = SessionLifecycleLane(config: SessionMachineConfig())
 

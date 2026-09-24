@@ -105,6 +105,34 @@ final class HostPathsTests: XCTestCase {
         XCTAssertEqual(try snapshot(paths.legacyConfig("noise_static.key")), legacyBefore)
     }
 
+    /// Adoption creates the new-location file only if nothing is there:
+    /// an entry it did not see as a file — here a symlink to a volume not
+    /// yet mounted — is neither replaced nor removed.
+    func testAdoptionNeverReplacesAnEntryAtTheNewLocation() throws {
+        let paths = HostPaths(home: home)
+        try write([1, 1], to: paths.legacyConfig("noise_static.key"), mode: 0o600)
+        let legacyBefore = try snapshot(paths.legacyConfig("noise_static.key"))
+        try FileManager.default.createDirectory(
+            atPath: paths.configDirectory, withIntermediateDirectories: true)
+        let target = paths.config("noise_static.key")
+        let mountPoint = home + "/unmounted/noise_static.key"
+        XCTAssertEqual(symlink(mountPoint, target), 0)
+
+        let (path, note) = try paths.adoptConfigFile("noise_static.key")
+
+        XCTAssertEqual(path, target)
+        XCTAssertNil(note)
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: target),
+            mountPoint, "the new-location entry is untouched")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mountPoint))
+        XCTAssertEqual(try snapshot(paths.legacyConfig("noise_static.key")),
+                       legacyBefore)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: paths.configDirectory),
+            ["noise_static.key"], "no temporary is left behind")
+    }
+
     func testNeitherPresentCreatesNothing() throws {
         let paths = HostPaths(home: home)
         let (path, note) = try paths.adoptConfigFile("noise_static.key")
