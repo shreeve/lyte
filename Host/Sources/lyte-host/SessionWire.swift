@@ -157,11 +157,16 @@ final class SessionWire {
         set { withConfigLock { _inputInjector = newValue } }
     }
 
-    /// Restarts the audio leaf in the requested routing and returns
-    /// whether it stuck; nil = requests get the standing posture. Called
-    /// off the session lock: a flip is a PipeWire connect (milliseconds).
-    private var _audioRoutingHandler: ((HostAudioRoutingMode) -> Bool)?
-    var audioRoutingHandler: ((HostAudioRoutingMode) -> Bool)? {
+    /// Restarts the audio leaf for (requested, standing) and returns the
+    /// posture that actually runs afterwards (`AudioRoutingFlip`); nil =
+    /// requests get the standing posture. Called off the session lock: a
+    /// flip is a PipeWire connect (milliseconds).
+    private var _audioRoutingHandler: ((
+        _ requested: HostAudioRoutingMode, _ standing: HostAudioRoutingMode
+    ) -> HostAudioRoutingMode)?
+    var audioRoutingHandler: ((
+        _ requested: HostAudioRoutingMode, _ standing: HostAudioRoutingMode
+    ) -> HostAudioRoutingMode)? {
         get { withConfigLock { _audioRoutingHandler } }
         set { withConfigLock { _audioRoutingHandler = newValue } }
     }
@@ -1321,7 +1326,7 @@ final class SessionWire {
     }
 
     /// One 0x18 answered: flip the leaf, then report the posture that
-    /// actually stands (a failed flip reports the old one).
+    /// actually runs (a failed flip reports its fallback).
     private func applyAudioRouting(_ mode: HostAudioRoutingMode) {
         lock.lock()
         let standing = currentAudioRouting
@@ -1338,19 +1343,14 @@ final class SessionWire {
             noteAudioRoutingApplied(standing)
             return
         }
-        if handler(mode) {
-            lock.lock()
-            currentAudioRouting = mode
-            lock.unlock()
-            print("audio-routing: flipped to \(mode)")
-            noteAudioRoutingApplied(mode)
-        } else {
-            print("""
-                audio-routing: flip to \(mode) FAILED — posture \
-                stays \(standing)
-                """)
-            noteAudioRoutingApplied(standing)
-        }
+        let running = handler(mode, standing)
+        lock.lock()
+        currentAudioRouting = running
+        lock.unlock()
+        print(running == mode
+            ? "audio-routing: flipped to \(mode)"
+            : "audio-routing: flip to \(mode) FAILED — running \(running)")
+        noteAudioRoutingApplied(running)
     }
 
     /// The applied-posture 0x19 (a no-op unless hostAudioRouting was

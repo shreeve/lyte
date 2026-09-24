@@ -857,42 +857,33 @@ static func serveSession(
             audio.start(seconds: audioSeconds)
             audioWire = audio
             w.setInitialAudioRouting(opts.hostAudio)
-            w.audioRoutingHandler = { mode in
+            w.audioRoutingHandler = { requested, standing in
                 // Runs on the janitor thread, off the session lock. The
                 // stream pauses across the rebuild so two leaves never
                 // overlap.
                 audioWire?.stop()
                 audioWire = nil
-                // Stream off: stopping is the whole apply; the host's
-                // speakers keep playing.
-                if mode == .streamOff {
+                let running = AudioRoutingFlip.apply(
+                    requested: requested, standing: standing
+                ) { mode in
+                    do {
+                        let leaf = try AudioWire(
+                            wire: w, bitrate: opts.audioBitrate, mode: mode)
+                        leaf.start(seconds: audioSeconds)
+                        audioWire = leaf
+                        return true
+                    } catch {
+                        print("audio-routing: rebuild in \(mode) failed (\(error))")
+                        return false
+                    }
+                }
+                if running == .streamOff {
                     print("""
                         audio-routing: stream OFF — the wire carries no audio \
                         track (host speakers unaffected)
                         """)
-                    return true
                 }
-                do {
-                    let flipped = try AudioWire(
-                        wire: w, bitrate: opts.audioBitrate, mode: mode
-                    )
-                    flipped.start(seconds: audioSeconds)
-                    audioWire = flipped
-                    return true
-                } catch {
-                    print("""
-                        audio-routing: rebuild in \(mode) failed (\(error)) — \
-                        trying to come back \(opts.hostAudio)
-                        """)
-                    if let back = try? AudioWire(
-                        wire: w, bitrate: opts.audioBitrate,
-                        mode: opts.hostAudio
-                    ) {
-                        back.start(seconds: audioSeconds)
-                        audioWire = back
-                    }
-                    return false
-                }
+                return running
             }
             let capture = opts.hostAudio == .hostMuted
                 ? "\"Lyte Audio\" virtual-sink capture (host MUTED)"
