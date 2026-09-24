@@ -104,7 +104,7 @@ public final class EyePipeline {
 
     /// Whether the imported scanout's pixels differ from the last
     /// fingerprint (always true after an import or a reset).
-    public func pixelsChanged() throws -> Bool {
+    public func scanoutChanged() throws -> Bool {
         guard let scanout else {
             throw EyeGLError("scanout import disappeared")
         }

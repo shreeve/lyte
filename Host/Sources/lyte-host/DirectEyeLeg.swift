@@ -465,7 +465,7 @@ final class DirectEyeLeg {
             let pixelsChanged: Bool
             let fingerprintStart = SystemMonotonicClock.nowMicroseconds
             do {
-                pixelsChanged = try pipeline.pixelsChanged()
+                pixelsChanged = try pipeline.scanoutChanged()
             } catch {
                 lastError = "direct: scanout fingerprint: \(error)"
                 return

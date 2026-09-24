@@ -183,7 +183,7 @@ func runNativeCapture(
         }
         do {
             let tFingerprint = SystemMonotonicClock.nowSeconds
-            let changed = try pipeline.pixelsChanged()
+            let changed = try pipeline.scanoutChanged()
             fingerprintMs +=
                 (SystemMonotonicClock.nowSeconds - tFingerprint) * 1e3
             guard changed else { continue }
