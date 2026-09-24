@@ -1051,6 +1051,8 @@ static func run(arguments: [String]) throws {
         \(s.idrRequests) IDR requests \
         (\(s.idrRequestsSupersededByKeyframe) superseded retries), \
         \(s.unsealFailures) unseal failures, \
+        \(s.ctrlQueueFullRefusals)/\(s.bulkQueueFullRefusals) ctrl/bulk \
+        arq queue-full refusals, \
         \(s.feedbackDatagrams) feedback datagrams, \
         \(s.handshakesThrottled) msg1 throttled
         handshake-flood: \(s.handshakeChallengesMinted) cookies minted \

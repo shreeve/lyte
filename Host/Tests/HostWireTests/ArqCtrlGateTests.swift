@@ -1,7 +1,7 @@
 import XCTest
 import HostCore
 import HostSession
-import HostWire
+@_spi(Testing) import HostWire
 import LyteWire
 import LyteWireTestKit
 
@@ -752,5 +752,38 @@ final class ArqCtrlGateTests: XCTestCase {
             try live.sendReliableOneShot([0x10], now: 1_000, hostMicroseconds: 1),
             ArqGroupId(rawValue: 2)
         )
+    }
+
+    /// A peer that never acknowledges fills a group's segment bound: the
+    /// next send is refused as backpressure, counted, and the session
+    /// stays serviceable.
+    func testQueueFullIsCountedBackpressure() throws {
+        let session = Session(
+            config: SessionConfig(
+                crypto: .testPassthrough, rateBitsPerSecond: Self.rateBPS
+            ),
+            clientTuple: Self.tupleA,
+            now: 0,
+            rng: SplitMix64(seed: 0x51)
+        ) { _ in }
+        let message = [UInt8](repeating: 0x10, count: 262_144)
+        var refusal: (any Error)?
+        var queued = 0
+        for _ in 0..<1_000 {
+            do {
+                try session.sendReliable(message, now: 0, hostMicroseconds: 0)
+                queued += 1
+            } catch {
+                refusal = error
+                break
+            }
+        }
+        XCTAssertEqual(refusal as? ArqSendError, .queueFull)
+        XCTAssertGreaterThan(queued, 100, "the bound is ~32k segments")
+        XCTAssertEqual(session.counters.ctrlQueueFullRefusals, 1)
+        XCTAssertEqual(session.counters.bulkQueueFullRefusals, 0)
+        XCTAssertNoThrow(try session.sendReliable(
+            [0x10], now: 0, hostMicroseconds: 0
+        ), "a message that fits the remaining bound still queues")
     }
 }

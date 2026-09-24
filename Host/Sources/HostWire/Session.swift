@@ -538,6 +538,11 @@ public struct SessionCounters: Equatable, Sendable {
     public var datagramsReceived = 0
     public var dropped = 0
     public var unsealFailures = 0
+    /// Reliable sends refused with `ArqSendError.queueFull` on the CTRL
+    /// and bulk endpoints: the peer stopped acknowledging long enough to
+    /// fill a group's segment bound. Never fatal; see `enqueueReliable`.
+    public var ctrlQueueFullRefusals = 0
+    public var bulkQueueFullRefusals = 0
     public var beaconsSent = 0
     public var beaconEchoes = 0
     public var idrRequests = 0
@@ -1726,14 +1731,16 @@ public final class Session {
     /// own CTRL type byte (the registry rule). Throws
     /// `SessionError.notEstablished` before the transport exists —
     /// reliable CTRL is sealed traffic — and `ArqSendError` for an
-    /// empty or over-budget message.
+    /// empty, over-budget, or backpressured (`queueFull`) message.
     public func sendReliable(
         _ message: [UInt8], now: UInt64, hostMicroseconds: UInt64
     ) throws {
         guard phase == .established else {
             throw SessionError.notEstablished
         }
-        try ctrlArqLane.send(message, now: now)
+        try enqueueReliable(on: .ctrl) {
+            try ctrlArqLane.send(message, now: now)
+        }
         _ = serviceArqLane(
             .control, now: now, hostMicroseconds: hostMicroseconds
         )
@@ -1752,7 +1759,9 @@ public final class Session {
         guard phase == .established else {
             throw SessionError.notEstablished
         }
-        let group = try ctrlArqLane.sendOneShot(message, now: now)
+        let group = try enqueueReliable(on: .ctrl) {
+            try ctrlArqLane.sendOneShot(message, now: now)
+        }
         _ = serviceArqLane(
             .control, now: now, hostMicroseconds: hostMicroseconds
         )
@@ -1788,10 +1797,36 @@ public final class Session {
         guard agreedBulkTransfer, bulkArqLane != nil else {
             throw SessionError.bulkNotNegotiated
         }
-        try bulkArqLane!.send(message, now: now)
+        try enqueueReliable(on: .bulkTransfer) {
+            try bulkArqLane!.send(message, now: now)
+        }
         _ = serviceArqLane(
             .bulk, now: now, hostMicroseconds: hostMicroseconds
         )
+    }
+
+    /// Queues on the CTRL or bulk ARQ endpoint. `ArqSendError.queueFull`
+    /// is backpressure from a peer that stopped acknowledging: the
+    /// message is not queued, the refusal is counted, and it propagates
+    /// to the call site, which is never fatal. Sites that keep state
+    /// retry on their next call (the input-echo book keeps its tuples,
+    /// the cursor dedupe slot and the clipboard book only advance on
+    /// success); one-off announcements (mode, posture, track state,
+    /// routing, bulk replies) surface as `.sendFailed` and are lost. A
+    /// peer that stays silent is ended by the liveness timeout, not here.
+    private func enqueueReliable<T>(
+        on channel: ChannelId, _ enqueue: () throws -> T
+    ) throws -> T {
+        do {
+            return try enqueue()
+        } catch ArqSendError.queueFull {
+            if channel == .bulkTransfer {
+                counters.bulkQueueFullRefusals += 1
+            } else {
+                counters.ctrlQueueFullRefusals += 1
+            }
+            throw ArqSendError.queueFull
+        }
     }
 
     /// Chan-8 ingest events → session events: delivered messages
@@ -1876,7 +1911,9 @@ public final class Session {
             switch event {
             case .send(let bytes):
                 do {
-                    try bulkArqLane?.send(bytes, now: now)
+                    try enqueueReliable(on: .bulkTransfer) {
+                        try bulkArqLane?.send(bytes, now: now)
+                    }
                 } catch {
                     events.append(
                         .sendFailed("clipboard image: \(error)")
