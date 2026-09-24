@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 import LyteWireTestKit
 import LyteWireVectorGen
@@ -17,11 +18,26 @@ final class VectorRegenerationTests: XCTestCase {
     ) throws {
         let committed = try File.loadCommitted().canonicalJSON()
         let rebuilt = try build().canonicalJSON()
-        XCTAssertTrue(
-            committed == rebuilt,
-            "\(File.fileName): builder output differs from the committed file",
+        guard committed != rebuilt else { return }
+        XCTFail(
+            "\(File.fileName): builder output differs from the committed file\(firstDifference(committed, rebuilt))",
             file: file, line: line
         )
+    }
+
+    /// Where two canonical JSON renderings first diverge, so a failure
+    /// names the drifted field instead of just the file.
+    private func firstDifference(_ committed: Data, _ rebuilt: Data) -> String {
+        let old = String(decoding: committed, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
+        let new = String(decoding: rebuilt, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
+        for index in 0..<max(old.count, new.count) {
+            let was = index < old.count ? String(old[index]) : "<end>"
+            let now = index < new.count ? String(new[index]) : "<end>"
+            if was != now {
+                return " at line \(index + 1): committed `\(was)`, rebuilt `\(now)`"
+            }
+        }
+        return ""
     }
 
     func testEnvelope() throws { try assertRegenerates(makeEnvelopeVectorFile) }

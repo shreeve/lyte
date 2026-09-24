@@ -246,9 +246,7 @@ public struct BulkOffer: Hashable, Sendable {
         guard (UInt32(BulkWire.minChunkByteCount)...UInt32(BulkWire.maxChunkByteCount))
             .contains(chunkByteCount)
         else {
-            throw BulkMessageError.chunkSizeOutOfBounds(
-                Int(clamping: chunkByteCount)
-            )
+            throw BulkMessageError.chunkSizeOutOfBounds(chunkByteCount)
         }
         guard sha256.count == BulkWire.sha256ByteCount else {
             throw BulkMessageError.invalidSha256ByteCount(sha256.count)
@@ -711,8 +709,9 @@ public enum BulkMessageError: Error, Hashable, Sendable {
     case zeroTransferId
     /// totalByteCount 0 — v1 does not transfer empty blobs.
     case emptyTransfer
-    /// chunkByteCount outside [4,096, 131,072].
-    case chunkSizeOutOfBounds(Int)
+    /// chunkByteCount outside [4,096, 131,072], carried at its wire
+    /// width so the refused value is exact on every platform.
+    case chunkSizeOutOfBounds(UInt32)
     /// A digest field that is not exactly 32 bytes (construction-side;
     /// the wire layout fixes the width).
     case invalidSha256ByteCount(Int)
