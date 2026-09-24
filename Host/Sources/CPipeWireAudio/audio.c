@@ -69,6 +69,7 @@ struct lyte_pw_audio {
     /* roundtrip plumbing (the pw_core_sync/done pattern) */
     int sync_seq;
     int sync_pending;
+    int trip_failed; /* a core error or the guard timer ended this trip */
 };
 
 static void set_err(char *err, size_t errlen, const char *fmt, ...)
@@ -104,6 +105,7 @@ static void on_core_error(void *data, uint32_t id, int seq, int res,
                  "pipewire core error %d: %s", res,
                  message ? message : "(unspecified)");
         a->exit_reason = -1;
+        a->trip_failed = 1;
         pw_main_loop_quit(a->loop);
     }
 }
@@ -130,13 +132,17 @@ static void on_roundtrip_timeout(void *data, uint64_t expirations)
     snprintf(a->error, sizeof(a->error),
              "pipewire roundtrip timed out (%ds)", ROUNDTRIP_TIMEOUT_SEC);
     a->exit_reason = -1;
+    a->trip_failed = 1;
     pw_main_loop_quit(a->loop);
 }
 
 /* One server roundtrip: everything we asked for before the sync is
    processed (and its events delivered) before this returns. Returns
-   0, or -1 when the core reported an error mid-trip or the guard
-   timer expired. */
+   0 only once the sync's done arrived, -1 when the core reported an
+   error during this trip or the guard timer expired. Any other exit of
+   the loop (a stop queued earlier, a stream error's quit) re-enters it,
+   so a stale quit can never report an unflushed change as done, and an
+   earlier trip's error never fails this one. */
 static int roundtrip(struct lyte_pw_audio *a)
 {
     struct pw_loop *loop = pw_main_loop_get_loop(a->loop);
@@ -146,12 +152,14 @@ static int roundtrip(struct lyte_pw_audio *a)
         struct timespec value = { .tv_sec = ROUNDTRIP_TIMEOUT_SEC };
         pw_loop_update_timer(loop, guard, &value, NULL, false);
     }
+    a->trip_failed = 0;
     a->sync_pending = 1;
     a->sync_seq = pw_core_sync(a->core, PW_ID_CORE, 0);
-    pw_main_loop_run(a->loop);
+    while (a->sync_pending && !a->trip_failed)
+        pw_main_loop_run(a->loop);
     if (guard)
         pw_loop_destroy_source(loop, guard);
-    return a->exit_reason == -1 ? -1 : 0;
+    return a->trip_failed ? -1 : 0;
 }
 
 /* --- registry + metadata (hostMuted only) --- */
