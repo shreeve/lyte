@@ -131,11 +131,7 @@ struct Options {
                 guard i < args.count,
                       let choice = InputBackendChoice(rawValue: args[i])
                 else {
-                    throw HostError(
-                        """
-                            --input must be auto, uinput, or off (mutter was \
-                            retired in E2 — uinput is primary)
-                            """)
+                    throw HostError("--input must be auto, uinput, or off")
                 }
                 opts.input = choice
             case "--no-audio":
@@ -218,10 +214,9 @@ struct Options {
                                     (advertises _lyte._udp via Avahi)
                   --wire-rate-mbps  session ceiling: pacer rate + the
                                     estimator's negotiated cap
-                                    (default 50 — the owner-ruled LAN
-                                    ceiling; in session mode the
-                                    encoder recipe pairs to it unless
-                                    --bitrate-mbps splits them)
+                                    (default 50, the LAN ceiling; in
+                                    session mode the encoder recipe
+                                    pairs to it)
                   --no-advertise    skip the Avahi _lyte._udp advertisement
                   --advertise-interface NAME
                                     advertise on ONE interface (e.g. the
@@ -239,11 +234,11 @@ struct Options {
                                     may complete the Noise handshake
                                     (reconnects are plain 1-RTT IK)
                   --input MODE      injection backend for client input
-                                    events (E2): auto/uinput (kernel
+                                    events: auto/uinput (kernel
                                     uinput, compositor-agnostic;
                                     needs the setup-host.sh udev
                                     rule), or off
-                  --no-audio        skip the HS-15 audio leg (default in
+                  --no-audio        skip the audio leg (default in
                                     session mode: default-sink monitor →
                                     5 ms Opus → RS 4+2 → chan 1 at
                                     DSCP 48, continuous from
@@ -259,8 +254,8 @@ struct Options {
                                     up, so a plain run truthfully
                                     negotiates no clipboard
                   --clipboard=images
-                                    the consent tier's third rung
-                                    (P-1): text AND images (PNG, both
+                                    the consent tier's third rung:
+                                    text AND images (PNG, both
                                     ways, 32 MiB ceiling) as chan-8
                                     cargo. Key 12 declared only when
                                     the leaf comes up with images
@@ -269,7 +264,7 @@ struct Options {
                                     never couples to the clipboard)
                   --accept-files[=DIR]
                                     the standing per-host file-drop
-                                    consent (F-3, client→host only in
+                                    consent (client→host only in
                                     v1): incoming bulk transfers land
                                     in DIR (default ~/Downloads,
                                     created if missing) via staging +
@@ -283,8 +278,7 @@ struct Options {
                   --no-vbv-reconfigure
                                     debug: never reconfigure the
                                     encoder's rate control from the
-                                    estimator's ceiling (HS-22's
-                                    isolation lever — the opening
+                                    estimator's ceiling (the opening
                                     posture rides the whole run)
                   --host-audio MODE audible (default) keeps the host's
                                     speakers playing (default-sink
@@ -297,7 +291,7 @@ struct Options {
                                     next start)
 
                 subcommands: lyte-host sniff --port PORT  (header dissector)
-                             lyte-host advertise …        (HS-10 discovery)
+                             lyte-host advertise …        (mDNS discovery)
                 """)
                 exit(0)
             default:
@@ -553,7 +547,7 @@ final class SessionHost {
                 cookieExitThreshold: opts.cookieExit
             )
             print("""
-                handshake: W8 retry-cookie dial ARMED (require-cookie engages \
+                handshake: retry-cookie dial ARMED (require-cookie engages \
                 at \(opts.cookieEnter) msg1/s, clears at \(opts.cookieExit)/s)
                 """)
         }

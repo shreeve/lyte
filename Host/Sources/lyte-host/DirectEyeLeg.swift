@@ -197,7 +197,7 @@ final class DirectEyeLeg {
         } catch DirectScreenSourceError.initialTicketDenied {
             throw HostError("""
                 direct: GETFB2 refused — the direct backend \
-                needs CAP_SYS_ADMIN (run under sudo or the E4 unit)
+                needs CAP_SYS_ADMIN (run under sudo or the systemd unit)
                 """)
         } catch {
             throw HostError("direct: screen source failed: \(error)")

@@ -1873,10 +1873,7 @@ final class SessionWire {
             emit(
                 "repair: NACK frame \(frame.rawValue) judged stale (\(reason))")
         case .fecRegimeChanged(let regime):
-            emit("""
-                fec: regime → \(regime.rawValue) \
-                (§5.2 \(regime == .lossy ? "lossy" : "clean") column)
-                """)
+            emit("fec: regime → \(regime.rawValue)")
         case .audioRoutingRequested(let mode):
             // Buffer only: the flip runs off-lock in service().
             emit("audio-routing: client requested \(mode) (0x18)")
