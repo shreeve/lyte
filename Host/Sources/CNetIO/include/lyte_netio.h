@@ -77,6 +77,14 @@ typedef struct {
 lyte_netio *lyte_netio_new(const char *bind_ip, uint16_t bind_port,
                            char *err, size_t errlen);
 
+/* The listening socket: lyte_netio_new, but it fails with `err` filled
+   when any socket already holds the port. SO_REUSEPORT (which the
+   session's media sockets need to join the listening port) would
+   otherwise let a second host on the same port silently share its
+   traffic. Port 0 takes a fresh kernel-assigned port the same way. */
+lyte_netio *lyte_netio_new_listener(const char *bind_ip, uint16_t bind_port,
+                                    char *err, size_t errlen);
+
 /* The locally bound port, host order — the answer after binding port 0. */
 uint16_t lyte_netio_local_port(const lyte_netio *n);
 

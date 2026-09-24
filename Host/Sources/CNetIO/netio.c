@@ -112,6 +112,37 @@ fail:
     return NULL;
 }
 
+lyte_netio *lyte_netio_new_listener(const char *bind_ip, uint16_t bind_port,
+                                    char *err, size_t errlen)
+{
+    struct sockaddr_in sa;
+    if (parse_addr(bind_ip, bind_port, &sa, err, errlen) != 0)
+        return NULL;
+    /* A bind without SO_REUSEPORT conflicts with every holder of the
+       port, SO_REUSEPORT members included. The probe is released just
+       before the real bind. */
+    int probe = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (probe < 0) {
+        sys_err(err, errlen, "socket(AF_INET, SOCK_DGRAM) failed");
+        return NULL;
+    }
+    if (bind(probe, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        set_err(err, errlen, "port %u is already bound by another socket "
+                "(is another host running?): %s", bind_port, strerror(errno));
+        close(probe);
+        return NULL;
+    }
+    struct sockaddr_in bound;
+    socklen_t blen = sizeof(bound);
+    if (getsockname(probe, (struct sockaddr *)&bound, &blen) < 0) {
+        sys_err(err, errlen, "getsockname failed");
+        close(probe);
+        return NULL;
+    }
+    close(probe);
+    return lyte_netio_new(bind_ip, ntohs(bound.sin_port), err, errlen);
+}
+
 uint16_t lyte_netio_local_port(const lyte_netio *n)
 {
     return n->local_port;

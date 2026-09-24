@@ -65,13 +65,16 @@ func sniffMain(_ args: [String]) -> Never {
 
     lyte_stdout_linebuf()
     var err = [CChar](repeating: 0, count: 256)
-    guard let rx = lyte_netio_new("0.0.0.0", port, &err, err.count) else {
+    // A port another socket holds (the standing service) is refused:
+    // SO_REUSEPORT would otherwise share that service's traffic.
+    guard let rx = lyte_netio_new_listener(
+        "0.0.0.0", port, &err, err.count
+    ) else {
         FileHandle.standardError.write(Data(
             "lyte-host sniff: bind 0.0.0.0:\(port) failed: \(String(cBuffer: err))\n"
                 .utf8))
         exit(1)
     }
-    defer { lyte_netio_free(rx) }
     print("sniff: listening on 0.0.0.0:\(port)")
 
     // Slots sized to the datagram budget with slack; anything larger is
@@ -79,7 +82,6 @@ func sniffMain(_ args: [String]) -> Never {
     let slotCap = 2048
     let storage = UnsafeMutablePointer<UInt8>.allocate(
         capacity: Int(LYTE_NETIO_MAX_BATCH) * slotCap)
-    defer { storage.deallocate() }
     var slots = (0..<Int(LYTE_NETIO_MAX_BATCH)).map { k -> lyte_netio_slot in
         var slot = lyte_netio_slot()
         slot.data = storage.advanced(by: k * slotCap)

@@ -65,7 +65,9 @@ final class HostListener {
 
     init(port: UInt16) throws {
         var err = [CChar](repeating: 0, count: 256)
-        guard let n = lyte_netio_new("0.0.0.0", port, &err, err.count) else {
+        guard let n = lyte_netio_new_listener(
+            "0.0.0.0", port, &err, err.count
+        ) else {
             throw HostError("session socket open failed: \(String(cBuffer: err))")
         }
         guard lyte_netio_set_priority(n, 6) == 0 else {
