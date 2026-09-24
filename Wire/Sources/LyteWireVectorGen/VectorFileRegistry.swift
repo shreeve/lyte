@@ -51,4 +51,9 @@ public let vectorFileBuilders: [VectorFileBuilder] = [
     VectorFileBuilder("repair-refusal", makeRepairRefusalVectorFile),
     VectorFileBuilder("postures", makePostureVectorFile),
     VectorFileBuilder("input-coordinates", makeInputCoordinateVectorFile),
+    VectorFileBuilder("video-decisions") {
+        try makeVideoDecisionVectorFile(
+            corpusDirectory: WireVectors.path("video-corpus-v1")
+        )
+    },
 ]

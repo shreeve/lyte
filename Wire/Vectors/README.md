@@ -61,7 +61,8 @@ file; never rewrite a committed replay.
   ladder as data, and RS recovery matrices (W1).
 - `video-v1.json` — video-interior vectors (W2): packetize vectors
   (frame → frozen shard datagrams) and assembly scenarios (scripted
-  delivery → expected DecodeUnits and decision outputs).
+  delivery → expected DecodeUnits and fec-impossible verdicts; the
+  whole decision stream is frozen in `video-decisions-v1.json`).
 - `video-corpus-v1/` — real HEVC access units from the H0a host, the
   golden corpus the video vectors pin by sha256 (own README inside).
 - `beacon-v1.json` — the W4a codecs: CTRL clock-beacon pair and the
@@ -242,6 +243,15 @@ file; never rewrite a committed replay.
   slot, all as `nonFiniteCoordinate`. Vectors reuse the control file's
   shape (`codec = inputEvent`). `InputCoordinateVectorFileTests`
   asserts both sides of the edge are pinned for every f64 kind.
+- `video-decisions-v1.json` — for every assembly scenario in
+  `video-v1.json` (same names, same frames), the default assembler's
+  whole ordered event stream as one line per event: decodes, skipped
+  ranges, fec-impossible verdicts, NACK candidates (new seqs, missing
+  shard indices, parity, age), repairs, evictions and dropped shards
+  with their reasons. Pinned self-consistent (`provenance` says so): it
+  exists to make any drift in the recovery policy the client depends on
+  loud. `VideoDecisionVectorFileTests` replays every scenario and
+  requires every video-v1 scenario to be pinned.
 
 Every file above must be byte-for-byte its builder's output
 (see Authoring above).

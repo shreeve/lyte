@@ -96,7 +96,8 @@ public enum VideoShardDropReason: Hashable, Sendable {
     /// the group. (A different seq base with matching geometry is a repair
     /// shard, accepted.)
     case inconsistentGroup(FrameNumber)
-    /// This shard index already arrived (duplicate datagram).
+    /// This shard index already arrived (duplicate datagram), or the
+    /// group already decoded and waits its turn — the shard adds nothing.
     case duplicateShard(FrameNumber, shardIndex: UInt8)
 }
 
