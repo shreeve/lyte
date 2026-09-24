@@ -15,6 +15,8 @@
 // stale, never ambiguous; detection stays continuous — the check-in
 // cadence bounds staleness, not wake latency.
 
+import LyteCore
+
 /// One gated packet held for the wake burst: the encoded bytes and
 /// the capture stamp they were born with.
 public struct AudioTripwirePacket: Equatable, Sendable {
@@ -102,11 +104,11 @@ public struct AudioTripwire: Sendable {
     }
 
     private var state: State = .transmitting(silentRun: 0)
-    private var ring: [AudioTripwirePacket] = []
+    private var ring: BoundedRing<AudioTripwirePacket>
 
     public init(config: AudioTripwireConfig = AudioTripwireConfig()) {
         self.config = config
-        ring.reserveCapacity(config.preRollPackets)
+        ring = BoundedRing(capacity: config.preRollPackets)
     }
 
     /// True while transmission is gated (the books' posture line).
@@ -139,8 +141,8 @@ public struct AudioTripwire: Sendable {
             push(AudioTripwirePacket(
                 bytes: packet, captureMicroseconds: captureMicroseconds))
             if run >= config.tripPackets {
-                let preRoll = ring
-                ring.removeAll(keepingCapacity: true)
+                let preRoll = Array(ring)
+                ring.removeAll()
                 state = .transmitting(silentRun: 0)
                 counters.wakes += 1
                 counters.preRollShipped += preRoll.count
@@ -159,8 +161,5 @@ public struct AudioTripwire: Sendable {
     private mutating func push(_ packet: AudioTripwirePacket) {
         counters.packetsGated += 1
         ring.append(packet)
-        if ring.count > config.preRollPackets {
-            ring.removeFirst(ring.count - config.preRollPackets)
-        }
     }
 }

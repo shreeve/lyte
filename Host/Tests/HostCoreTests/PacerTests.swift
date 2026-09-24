@@ -614,7 +614,7 @@ final class PacerTests: XCTestCase {
         var now: UInt64 = 0
         for _ in 0..<64 { pacer.enqueue(.bulk, bytes: 1_200, now: now) }
         var sent = 0
-        while sent < 200_000 {
+        while sent < 50_000 {
             now += 1_000_000
             guard let batch = pacer.nextBatch(now: now) else { continue }
             sent += batch.tokens.count

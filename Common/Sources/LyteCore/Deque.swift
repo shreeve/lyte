@@ -98,6 +98,24 @@ public struct Deque<Element> {
         head = 0
     }
 
+    /// Borrows the live elements, oldest first, as one contiguous buffer.
+    /// The pointer is valid only for the duration of `body`.
+    @inlinable
+    public func withUnsafeBufferPointer<R>(
+        _ body: (UnsafeBufferPointer<Element>) throws -> R
+    ) rethrows -> R {
+        try storage.withUnsafeBufferPointer {
+            try body(UnsafeBufferPointer(rebasing: $0[head...]))
+        }
+    }
+
+    @inlinable
+    public func withContiguousStorageIfAvailable<R>(
+        _ body: (UnsafeBufferPointer<Element>) throws -> R
+    ) rethrows -> R? {
+        try withUnsafeBufferPointer(body)
+    }
+
     @inlinable
     mutating func reclaim() {
         if head == storage.count {
