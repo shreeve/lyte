@@ -86,22 +86,38 @@ public enum ClientNoiseIdentity {
     public static func loadOrCreate(
         allowAuthenticationUI: Bool = true
     ) throws -> NoiseKeyPair {
-        if let existing = try load(
-            allowAuthenticationUI: allowAuthenticationUI
-        ) { return existing }
+        try loadOrCreate(
+            allowAuthenticationUI: allowAuthenticationUI,
+            load: { try load(allowAuthenticationUI: $0) },
+            add: { fresh in
+                let add: [CFString: Any] = [
+                    kSecClass: kSecClassGenericPassword,
+                    kSecAttrService: service,
+                    kSecAttrAccount: account,
+                    kSecAttrLabel: label,
+                    kSecUseDataProtectionKeychain: false,
+                    kSecValueData: Data(fresh.privateKey),
+                ]
+                return SecItemAdd(add as CFDictionary, nil)
+            })
+    }
+
+    /// The mint-or-load decision over injected Keychain calls. Every load,
+    /// the duplicate-item re-read included, carries the caller's
+    /// authentication-UI policy.
+    static func loadOrCreate(
+        allowAuthenticationUI: Bool,
+        load: (Bool) throws -> NoiseKeyPair?,
+        add: (NoiseKeyPair) -> OSStatus
+    ) throws -> NoiseKeyPair {
+        if let existing = try load(allowAuthenticationUI) { return existing }
         let fresh = NoiseKeyPair.generate()
-        let add: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: account,
-            kSecAttrLabel: label,
-            kSecUseDataProtectionKeychain: false,
-            kSecValueData: Data(fresh.privateKey),
-        ]
-        let status = SecItemAdd(add as CFDictionary, nil)
+        let status = add(fresh)
         if status == errSecDuplicateItem {
-            // Raced another process to first-mint: theirs won, use it.
-            if let existing = try load() { return existing }
+            // Another process minted first: its key is the identity.
+            if let existing = try load(allowAuthenticationUI) {
+                return existing
+            }
         }
         guard status == errSecSuccess else {
             throw ClientNoiseIdentityError.keychain(status)
