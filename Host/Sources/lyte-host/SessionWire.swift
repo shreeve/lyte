@@ -1008,25 +1008,16 @@ final class SessionWire {
         )
     }
 
-    /// Atomic pre-encode admission posture. The queue's wire time and
-    /// clean/impaired budget come from the same locked Session snapshot,
-    /// so a regime/rate move cannot mix eras in the admission decision.
-    var videoAdmissionPosture: (
-        backlogWireTimeNS: UInt64, budgetNS: UInt64, regime: FecRegime,
-        kernelState: KernelPressureState
-    ) {
+    /// The capture leg's pre-encode admission inputs (VideoAdmissionGate):
+    /// the queued video's wire time and the budget in force, from one
+    /// locked Session snapshot so a regime or rate move cannot mix eras.
+    var videoAdmissionPosture: (backlogWireTimeNS: UInt64, budgetNS: UInt64) {
         lock.lock()
         defer { lock.unlock() }
-        guard let session else {
-            return (0, 50_000_000, .clean, .calm)
-        }
+        guard let session else { return (0, UInt64.max) }
         let pressure = observeKernelPressure(
             session, now: SystemMonotonicClock.nowNanoseconds)
-        return (
-            pressure.totalVideoServiceDebtNS,
-            pressure.admissionBudgetNS,
-            session.fecRegime,
-            pressure.state)
+        return (pressure.totalVideoServiceDebtNS, pressure.admissionBudgetNS)
     }
 
     /// HS-15: one encoded 5 ms Opus packet from the AUDIO capture

@@ -53,6 +53,9 @@ final class DirectEyeLeg {
     /// printed, never leg-fatal: the session's own end (peer gone, the
     /// liveness timeout, a failed drain) stops the leg.
     private(set) var deliveryFailures = 0
+    /// Changed frames skipped before encode because the queued video
+    /// already held its latency budget.
+    private(set) var admission = VideoAdmissionGate()
     private var lastDeliveryFailureWallSeconds = 0.0
     static let refusedIdrRetrySeconds = 1.0 / 60
     private var lastEncodedCaptureUs: UInt64 = 0
@@ -457,6 +460,19 @@ final class DirectEyeLeg {
             }
             changedObservations += 1
             lastActivityWallSeconds = SystemMonotonicClock.nowSeconds
+            // Pre-encode admission: a queue already holding its latency
+            // budget gets no new frame. The fingerprint resets so the
+            // newest pixels are re-observed — and encoded — next beat.
+            if let wire {
+                let posture = wire.videoAdmissionPosture
+                guard admission.admit(
+                    backlogWireTimeNS: posture.backlogWireTimeNS,
+                    budgetNS: posture.budgetNS)
+                else {
+                    pipeline.resetFingerprint()
+                    if idle(snapshot) { continue } else { return }
+                }
+            }
             // Pixel equality, not framebuffer identity, is damage truth.
             let captureUs = observationClock
 
@@ -500,6 +516,7 @@ final class DirectEyeLeg {
             + "observation_beats_skipped=\(skippedObservationBeats), "
             + "posture_announcements=\(postureAnnouncements), "
             + "delivery_failures=\(deliveryFailures), "
+            + "admission_skips=\(admission.skipped), "
             + "cursor_shapes=\(cursorShapesSeen), "
             + "hotspot_corrections=\(cursorHotspotCorrections)")
         serviceLock.lock()
