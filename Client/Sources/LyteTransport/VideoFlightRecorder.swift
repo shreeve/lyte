@@ -1,12 +1,9 @@
 import LyteCore
 import Foundation
 
-/// Bounded, per-frame timing ledger for the real app delivery path.
-///
-/// A host timestamp gap identifies source/capture cadence. The matching
-/// client-ready gap identifies everything through assembly/sample creation.
-/// Queue wait and enqueue duration isolate the app/renderer handoff. Apple
-/// renderer metrics close the final decode/display boundary.
+/// Bounded per-frame timing ledger for the app delivery path: host gaps
+/// (capture cadence), client-ready gaps (through sample creation), queue
+/// wait and enqueue (the handoff), and Apple renderer metrics.
 public final class VideoFlightRecorder: @unchecked Sendable {
     public enum Provenance: String, Sendable, Equatable, Codable {
         case freshCapture
@@ -310,10 +307,8 @@ public final class VideoFlightRecorder: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Counts a recovery that discarded no already-pending frame. The
-    /// triggering incoming frame is rejected by the subsequent await-IDR
-    /// policy outcome, so there is otherwise no observation on which to
-    /// carry the episode marker.
+    /// Counts a recovery that discarded no pending frame (no observation
+    /// would otherwise carry the episode marker).
     public func recordRendererRecovery() {
         lock.lock()
         rendererRecoveries &+= 1

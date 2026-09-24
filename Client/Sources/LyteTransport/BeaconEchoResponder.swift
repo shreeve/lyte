@@ -8,7 +8,6 @@ import LyteClientSession
 import LyteWire
 
 public final class BeaconEchoResponder: @unchecked Sendable {
-    /// Echo-path counters, snapshotted for the CLI.
     public struct Stats: Sendable {
         public var beaconsReceived: UInt64 = 0
         public var echoesSent: UInt64 = 0
@@ -25,11 +24,8 @@ public final class BeaconEchoResponder: @unchecked Sendable {
     private var book = ClientBeaconEchoBook()
 
     /// - Parameters:
-    ///   - emit: sends one echo (TransportSender via CTRL in production,
-    ///     a capture closure in tests).
-    ///   - onClockSample: fires once per closed sample, outside the lock —
-    ///     HostClockModel.ingest in production, which retains the window
-    ///     every reader uses.
+    ///   - emit: sends one echo.
+    ///   - onClockSample: fires once per closed sample, outside the lock.
     public init(
         now: @escaping @Sendable () -> ClientTimestamp = {
             ClientTimestamp(microseconds: SystemMonotonicClock.nowMicroseconds)
@@ -42,13 +38,10 @@ public final class BeaconEchoResponder: @unchecked Sendable {
         self.emit = emit
     }
 
-    /// Feeds one CTRL payload. Non-beacon types pass through untouched
-    /// (false); malformed beacons count and drop — hostile bytes never
-    /// stop the echo path. `arrivalMicroseconds` becomes t2 and MUST be
-    /// in the same domain as the injected `now` (t3 = now() at emit;
-    /// t3 − t2 is the turnaround the host subtracts). The session passes
-    /// its own `now()` read on the receive thread, within microseconds of
-    /// true arrival.
+    /// Feeds one CTRL payload; non-beacons return false, malformed beacons
+    /// count and drop. `arrivalMicroseconds` becomes t2 and must share the
+    /// injected `now`'s domain (t3 − t2 is the turnaround the host
+    /// subtracts).
     @discardableResult
     public func handleCtrlPayload(
         _ payload: [UInt8],

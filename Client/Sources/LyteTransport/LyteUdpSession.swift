@@ -12,25 +12,19 @@ import Synchronization
 
 public final class LyteUdpSession: @unchecked Sendable {
     public struct Config: Sendable {
-        /// The local bind (0 = kernel-assigned; wire-view binds its
-        /// argued port for tcpdump-friendly runs).
+        /// The local bind (0 = kernel-assigned).
         public var bindPort: UInt16 = 0
         public var bindAddress: String = "0.0.0.0"
         public var core = LyteUdpSessionCoreConfig()
         /// How long `close()` waits for the teardown segment's ACK
         /// before tearing the socket down anyway.
         public var teardownLingerMilliseconds = 500
-        /// decode + play the audio channel (AVAudioEngine).
-        /// Default on — audio just plays; the receiver's stats exist
-        /// either way. wire-view surfaces this as --audio.
+        /// Decode and play the audio channel.
         public var audioPlayback = true
 
         public init() {}
     }
 
-    /// The crypto seam, prepared by the caller: NoiseTransportCrypto
-    /// with persistent identity for the app's paired path or a throwaway
-    /// identity for the --host-key debug posture.
     public let crypto: any TransportCrypto
     public let config: Config
     public private(set) var endpoint: UdpReceiveEndpoint?
@@ -50,10 +44,8 @@ public final class LyteUdpSession: @unchecked Sendable {
         @Sendable (VideoRecoveryTraceEvent) -> Void
     private let closing = Atomic<Bool>(false)
     public let clockModel: HostClockModel
-    /// CoreAudio engine start/stop runs here, never on the caller's
-    /// thread: AVAudioEngine.start() can block on HAL/device arbitration,
-    /// which would wedge a main-actor caller. One serial queue keeps
-    /// start/stop ordered.
+    /// Audio engine start/stop runs here: AVAudioEngine.start() can block
+    /// on the HAL, which would wedge a main-actor caller.
     private let audioQueue = DispatchQueue(
         label: "lyte.audio.engine", qos: .userInitiated)
     private lazy var orderedInput = OrderedInputSender {
@@ -86,19 +78,13 @@ public final class LyteUdpSession: @unchecked Sendable {
         self.onEvent = onEvent
     }
 
-    /// Bind → Noise handshake (blocking, retry timer inside; answers a
-    /// retry challenge with the verbatim msg1) → core published →
-    /// capability declaration as the first reliable word → receive
-    /// thread → timers. Throws TransportCryptoError /
-    /// TransportEndpointError on a dial that never became a session.
+    /// Bind → handshake (blocking) → core published → capability
+    /// declaration → receive thread → timers. Throws TransportCryptoError
+    /// or TransportEndpointError when the dial never became a session.
     ///
-    /// The core is built after the handshake (its lifecycle clocks start
-    /// at construction) and published before the receive thread starts,
-    /// so the host's first datagrams — its declaration and session-start
-    /// beacon, sent the moment the session establishes — wait in the
-    /// kernel buffer instead of reaching a nil core. The declaration
-    /// leaves before any of them is read, so nothing they provoke can
-    /// precede it on the reliable stream.
+    /// The core is published and the declaration sent before the receive
+    /// thread starts, so the host's first datagrams wait in the kernel
+    /// buffer and nothing they provoke precedes the declaration.
     public func start() throws {
         let endpoint = UdpReceiveEndpoint(
             port: config.bindPort,
@@ -131,10 +117,8 @@ public final class LyteUdpSession: @unchecked Sendable {
         endpoint.startReceiving()
         core.startTimers()
 
-        // Audio out: a refused device is weather, never fatal —
-        // the screen must stream even when audio cannot (the host's
-        // rule, mirrored). Construction is cheap and synchronous; the
-        // engine spin-up goes to the audio queue (see its comment).
+        // A refused audio device is never fatal; the engine spin-up goes
+        // to the audio queue.
         if config.audioPlayback {
             do {
                 let player = try LyteAudioPlayer(receiver: core.audio)
@@ -155,16 +139,13 @@ public final class LyteUdpSession: @unchecked Sendable {
         }
     }
 
-    /// The stream window's mute toggle: playback keeps
-    /// consuming (buffer discipline unaffected); only the mixer goes
-    /// quiet.
+    /// Playback keeps consuming; only the mixer goes quiet.
     public func setAudioMuted(_ muted: Bool) {
         audioPlayer?.muted = muted
     }
 
-    /// Orderly close: the typed 0x0A on the ordered stream, a linger
-    /// for its ACK (≤ the configured window), then teardown. Blocking —
-    /// call off the main thread.
+    /// Orderly close: the typed 0x0A, a linger for its ACK, then
+    /// teardown. Blocking.
     public func close(reason: SessionTeardownReason = .shuttingDown) {
         guard !closing.exchange(true, ordering: .relaxed) else { return }
         orderedInput.finishAndDrain()
@@ -181,10 +162,8 @@ public final class LyteUdpSession: @unchecked Sendable {
         stopParts()
     }
 
-    /// Production UI funnel: capture returns immediately; one dedicated
-    /// serial sender preserves event order while ARQ, sealing, and sendto
-    /// execute away from MainActor. Jobs observe `closing` before touching
-    /// session state, so teardown cannot resurrect a dead sender.
+    /// UI input funnel: returns immediately; one serial sender keeps order
+    /// off MainActor, and jobs check `closing` first.
     public func enqueueInput(_ body: InputEvent.Body) {
         orderedInput.enqueue(body)
     }
@@ -193,9 +172,7 @@ public final class LyteUdpSession: @unchecked Sendable {
         orderedInput.snapshot
     }
 
-    /// Hard stop, no wire goodbye — the path after a peer teardown or
-    /// liveness close (the machine is already closed; there is nothing
-    /// to say and possibly nobody to say it to).
+    /// Hard stop, no wire goodbye (after a peer teardown or liveness close).
     public func stop() {
         guard !closing.exchange(true, ordering: .relaxed) else { return }
         stopParts()
@@ -216,9 +193,7 @@ public final class LyteUdpSession: @unchecked Sendable {
 /// The renderer handoff binds the shell before `start()` publishes a core,
 /// so the shell is the recovery peer and routes to the core once it exists.
 extension LyteUdpSession: VideoRecoveryPeer {
-    /// Renderer-side broken-reference seam. It joins the same coalescing
-    /// episode as FEC/repair failures: one immediate 0x10, slow retries,
-    /// and no second episode until a usable IRAP reaches the pipeline.
+    /// Joins the same coalesced IDR recovery as FEC/repair failures.
     public func requestVideoRecovery(
         after frame: FrameNumber,
         cause: VideoRecoveryCause

@@ -1,9 +1,5 @@
-// The session's stats rows, one formatter for both readers: the app's
-// overlay renders them as a two-column ledger, and wire-view prints them
-// as its headline block ahead of its engineering books. Values come from
-// the session core's own books plus the few facts only the shell owns
-// (input capture, the radio watchdog, the renderer-side delivery gauges),
-// which arrive in `SessionStatsContext`.
+// The session's stats rows for both the app overlay and wire-view, from
+// the core's books plus the shell-owned facts in `SessionStatsContext`.
 //
 // Wording rules: nominal states are lowercase so a healthy ledger holds
 // no capitals; only alarms (FROZEN, NOT CAPTURED, AWDL LOOSE) shout. Loss
@@ -149,10 +145,8 @@ public enum SessionStatsFormatter {
         return mode
     }
 
-    /// The input books' overlay line without its "user:" lead-in (the
-    /// ledger's label column carries it). "0 events sent" is the datum
-    /// that tells a capture failure from a host-side one, so the row is
-    /// unconditional.
+    /// The input line without its "user:" lead-in; unconditional, since
+    /// "0 events sent" tells a capture failure from a host-side one.
     private static func userLine(_ stats: InputSenderStats) -> String {
         let line = stats.overlayLine()
         guard line.hasPrefix("user:") else { return line }

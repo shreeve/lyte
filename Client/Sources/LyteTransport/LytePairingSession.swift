@@ -1,21 +1,9 @@
-// The whole client pairing flow as one blocking call — what the CLI
-// (`wire-pair`) and the app's pairing sheet both drive:
+// The client pairing flow as one blocking call (CLI and app sheet): Noise
+// IK with the persistent client static, then PairingInitiatorService over
+// the sealed ordered CTRL stream, echoing beacons meanwhile.
 //
-//   Noise IK (NoiseTransportCrypto, PERSISTENT client static)
-//     → UdpReceiveEndpoint (bind, handshake, receive thread)
-//     → LytePairingFlow: ReliableCtrlEndpoint (pairing messages ride the
-//       sealed ordered CTRL stream, exactly-once, in order) and
-//       PairingInitiatorService (share A → share B/Tb → confirm)
-//
-// plus beacon echoes while connected (the host's clock stays honest
-// during the run) — video datagrams from a `--pair` host that is also
-// streaming are counted by the demux and otherwise ignored.
-//
-// "Paired" is only reported once the confirm's ARQ segment is
-// acknowledged (reliable endpoint quiescent): the host really consumed
-// the message that completes ITS side, so both keystores can move
-// together. Persistence is the caller's move on `.paired` — this file
-// touches neither the Keychain nor the pinned-host store.
+// "Paired" is reported only once the confirm is acknowledged, so both
+// keystores move together. Persistence is the caller's job.
 
 import LyteIO
 import Dispatch
@@ -23,25 +11,19 @@ import Foundation
 import LyteWire
 
 public enum LytePairing {
-    /// Everything one pairing run needs. The host key comes from the
-    /// host's console banner (or a prior pin) — the TXT record only
-    /// carries its hash; `LyteDiscovery.publicKeyHash` validates a
-    /// pasted key against an advertisement before dialing.
+    /// Everything one pairing run needs.
     public struct Config: Sendable {
         public var hostAddress: String
         public var hostPort: UInt16
-        /// The host's 32-byte Noise static — dialed trust-on-first-use;
-        /// pairing's confirmation is what earns it the pin.
+        /// The host's 32-byte Noise static, dialed trust-on-first-use.
         public var hostStaticPublicKey: [UInt8]
         /// The PIN shown on the host's console, as typed.
         public var pin: String
-        /// The client's persistent identity (ClientNoiseIdentity) — the
-        /// static the host pins.
+        /// The client's persistent identity, which the host pins.
         public var clientStaticKeys: NoiseKeyPair
         /// Overall deadline for the run, handshake included.
         public var timeoutSeconds: Double
-        /// Progress lines for the console / UI, fired from worker
-        /// threads.
+        /// Progress lines, fired from worker threads.
         public var onProgress: (@Sendable (String) -> Void)?
 
         public init(
@@ -64,29 +46,23 @@ public enum LytePairing {
     }
 
     public enum Outcome: Equatable, Sendable {
-        /// Confirmed both ways: pin this static (the caller's
-        /// PinnedHostStore write).
+        /// Confirmed both ways: pin this static.
         case paired(hostStaticPublicKey: [UInt8])
-        /// Our PIN entry disagreed with the host's tag (or the session
-        /// was tampered with — indistinguishable by design). We aborted
-        /// with the typed reject.
+        /// The PIN disagreed with the host's tag (or tampering; the two
+        /// are indistinguishable). We aborted with the typed reject.
         case pinMismatch
-        /// The host refused: wrong PIN spent host-side, a burned PIN's
-        /// silence would surface as `timedOut` instead — 0x0E carries
-        /// only the typed reasons.
+        /// The host refused with a typed 0x0E reason.
         case hostRejected(PairingRejectReason)
-        /// The host's share was cryptographically invalid (G.I abort).
+        /// The host's share was cryptographically invalid.
         case invalidShare
         /// No verdict inside the deadline — wrong port, dead host, or a
         /// burned PIN's deliberate wire silence.
         case timedOut
-        /// The stack failed before pairing could speak (bind, handshake,
-        /// send errors) — the message says where.
+        /// The stack failed before pairing could speak.
         case failed(String)
     }
 
-    /// Runs one pairing flow to its verdict. Blocking — call it off the
-    /// main thread (the CLI's async run() context or a Task).
+    /// Runs one pairing flow to its verdict. Blocking.
     public static func run(_ config: Config) -> Outcome {
         let progress = config.onProgress ?? { _ in }
 
@@ -151,28 +127,21 @@ public enum LytePairing {
             return .failed("share A send: \(error)")
         }
 
-        // Wait for the verdict; honesty needs quiescence (the confirm or
-        // reject really reached the host and was acknowledged).
+        // Wait for an acknowledged verdict.
         let deadline = SystemMonotonicClock.nowNanoseconds
             + UInt64(Int(config.timeoutSeconds * 1000)) * 1_000_000
         while SystemMonotonicClock.nowNanoseconds < deadline {
             if let outcome = flow.settledOutcome { return outcome }
             usleep(50_000)
         }
-        // Deadline with a verdict in hand but ACKs outstanding: report
-        // the verdict anyway — the ARQ retransmitted for the whole
-        // window, and a lost final ACK must not un-pair a paired run.
+        // A lost final ACK must not un-pair a paired run.
         return flow.outcome ?? .timedOut
     }
 }
 
-/// One pairing run's composition over an established Noise session, with
-/// the datagram IO injected: sealed sends go to `transmit`, accepted
-/// datagrams come in through `handle`, and time is `now`. The ARQ carries
-/// the pairing words on the sealed ordered CTRL stream, beacons are echoed
-/// while the run lasts, and host video/audio is ignored. `LytePairing.run`
-/// drives it over a UDP endpoint; the cross-role gate drives it in virtual
-/// time against a real host session.
+/// One pairing run over an established Noise session with injected IO:
+/// sealed sends go to `transmit`, accepted datagrams come in through
+/// `handle`. Beacons are echoed; host video/audio is ignored.
 public final class LytePairingFlow: @unchecked Sendable {
     private let service: PairingInitiatorService
     private let reliable: ReliableCtrlEndpoint
@@ -245,8 +214,7 @@ public final class LytePairingFlow: @unchecked Sendable {
         try reliable.send(try service.start(), now: now)
     }
 
-    /// One demuxed datagram. Only CTRL matters: ARQ frames feed the
-    /// pairing words, beacons are echoed.
+    /// Only CTRL matters: ARQ frames feed pairing, beacons are echoed.
     public func handle(_ outcome: IngestOutcome) {
         handle(outcome, now: now())
     }
@@ -262,8 +230,7 @@ public final class LytePairingFlow: @unchecked Sendable {
         echo.handleCtrlPayload(payload, arrivalMicroseconds: now.microseconds)
     }
 
-    /// Virtual-time PTO beat (production arms the reliable endpoint's
-    /// own timer with `startTimers`).
+    /// Virtual-time PTO beat.
     public func tick(now: ClientTimestamp) {
         reliable.tick(now: now)
     }
@@ -276,8 +243,7 @@ public final class LytePairingFlow: @unchecked Sendable {
         lock.withLock { verdict }
     }
 
-    /// The verdict once it is also acknowledged: the confirm or reject
-    /// reached the host, so both keystores can move together.
+    /// The verdict once the host acknowledged it.
     public var settledOutcome: LytePairing.Outcome? {
         guard let outcome, reliable.isQuiescent else { return nil }
         return outcome
@@ -328,8 +294,7 @@ public final class LytePairingFlow: @unchecked Sendable {
     }
 }
 
-/// Tiny locked box for the late-binding construction order (the
-/// file-private LockedCell pattern; types don't travel between files).
+/// Locked box for late-binding construction.
 final class PairingLockedBox<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: T

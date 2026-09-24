@@ -6,9 +6,7 @@ import LyteIO
 import LyteWire
 import Synchronization
 
-/// The platform renderer surface the handoff drives. AVFoundation's
-/// `AVSampleBufferVideoRenderer` is the production conformer; tests drive
-/// the handoff through a scripted renderer.
+/// The platform renderer surface the handoff drives.
 public protocol VideoRendererPort: AnyObject {
     var isReadyForMoreMediaData: Bool { get }
     var status: AVQueuedSampleBufferRenderingStatus { get }
@@ -39,10 +37,8 @@ public protocol VideoRecoveryPeer: AnyObject, Sendable {
 /// The client's production video sink: serial, bounded ownership of
 /// compressed samples between the sample-build worker and the renderer.
 ///
-/// - Samples hop off the receive/build thread onto `queue` before touching
-///   the renderer: `enqueue` can block against a main-thread CA transaction
-///   (a live window resize), and the receive thread must keep demuxing
-///   audio meanwhile. The serial hop keeps frame order.
+/// - Samples hop onto the serial `queue` before touching the renderer:
+///   `enqueue` can block against a main-thread CA transaction.
 /// - `isReadyForMoreMediaData == false` queues the complete dependency
 ///   chain (BoundedRendererHandoff); pressure, a stale entry, or renderer
 ///   failure discards the whole episode, flushes the renderer, and awaits
@@ -129,8 +125,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
         layer.controlTimebase = timebase
     }
 
-    /// The renderer's own verdict — the honest render evidence (it goes
-    /// `.failed`, with the decoder's error, when samples do not decode).
+    /// The renderer's own verdict (`.failed` when samples do not decode).
     public var rendererStateDescription: String {
         switch renderer.status {
         case .rendering: return "rendering"
@@ -216,11 +211,9 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
         }
     }
 
-    /// Retires the handoff without blocking the caller. Queued samples are
-    /// discarded unrecorded (a teardown is not a renderer verdict); with
-    /// `flushingRenderer`, the renderer is flushed after the last sample
-    /// this handoff could enqueue — ordered on the delivery queue, so a
-    /// successor handoff on the same queue starts from a clean renderer.
+    /// Retires the handoff without blocking. Queued samples are discarded
+    /// unrecorded; with `flushingRenderer`, the flush is ordered on the
+    /// delivery queue so a successor starts from a clean renderer.
     public func stop(flushingRenderer: Bool = false) {
         guard !stopped.exchange(true, ordering: .relaxed) else { return }
         queue.async { [self] in

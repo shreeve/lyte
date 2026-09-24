@@ -11,8 +11,7 @@ public typealias AudioRoutingAskError = LyteClientSession.AudioRoutingAskError
 // MARK: - Bulk channel
 
 /// A bulk send without key 11 in the agreed set is refused before a byte
-/// leaves: the client offers only into an agreed set, and the host's
-/// standing consent toggle decides whether it declares the key.
+/// leaves.
 public enum BulkChannelError: Error, Equatable, Sendable {
     case notNegotiated
 }
@@ -24,54 +23,39 @@ public typealias ClipboardShareOutcome =
 
 // MARK: - Events
 
-/// Everything the session surfaces to its owner (the CLI's printer,
-/// the app's ConnectionModel). Fired from receive/timer threads —
-/// UI owners hop to the main actor themselves.
+/// Everything the session surfaces to its owner. Fired from receive/timer
+/// threads; UI owners hop to the main actor themselves.
 public enum LyteUdpSessionEvent: Sendable {
     /// The capability exchange settled: this is the session's agreed set.
     case capabilitiesAgreed(Capabilities)
-    /// The peer's declaration produced an unworkable intersection; the
-    /// typed teardown followed automatically. The app's chroma fallback
-    /// keys on `.noCommonChromaMode` (a Best declaration against a
-    /// 4:2:0-only host re-dials at Good).
+    /// The intersection was unworkable; the typed teardown followed
+    /// automatically. The app's chroma fallback keys on
+    /// `.noCommonChromaMode`.
     case capabilitiesFailed(CapabilityNegotiationError)
     /// A host renegotiation proposal (0x11) was answered (0x12).
     case capabilityUpdateAnswered(accepted: Bool)
-    /// The wire mode changed (a delivered ModeTransition, or RECOVERY
-    /// re-entry semantics on the host's side reflected here).
+    /// The wire mode changed.
     case modeChanged(SessionWireMode)
     /// The lifecycle state changed — `frozen` is the path-dark pill.
     /// Edges arrive in decision order.
     case stateChanged(SessionState)
     /// A reliable idle frame (0x15) arrived, with what became of it.
     case idleFrameReceived(frame: UInt32, outcome: ReliableFrameOutcome)
-    /// A 0x19 applied-posture status arrived: where the host's own
-    /// speakers actually stand. The host sends one at capability
-    /// agreement and after every flip attempt (a failed flip reports the
-    /// old posture). Fires on every status, changed or not, so the UI can
-    /// settle a pending toggle either way.
+    /// A 0x19 status: where the host's speakers actually stand. Fires on
+    /// every status, changed or not, so the UI can settle a pending toggle.
     case hostAudioRoutingStatus(HostAudioRoutingMode)
-    /// A 0x1B clipboard announce passed every gate (negotiated, sharing
-    /// on); the owner applies `text` to the pasteboard. The sync book is
-    /// already armed against the apply's echo. Never fires while sharing
-    /// is off: content must not land on the pasteboard without consent.
+    /// A 0x1B announce passed every gate; the owner applies `text` to the
+    /// pasteboard (the sync book is already armed against its echo). Never
+    /// fires while sharing is off.
     case hostClipboardChanged(String)
-    /// A 0x24 cursor shape arrived with key 13 agreed: the host's video
-    /// carries no cursor, so the owner wears this image as the local
-    /// cursor over the video view. `.hidden` (zero-sized) means the host
-    /// cursor is hidden. No consent toggle: a cursor shape is
-    /// presentation state, not content.
+    /// A 0x24 cursor shape (key 13): the video carries no cursor, so the
+    /// owner wears this as the local cursor. `.hidden` means hidden.
     case hostCursorShapeChanged(CursorShape)
-    /// A host clipboard image landed digest-verified off the chan-8
-    /// clipboard lane and passed every gate (keys 10 and 12 agreed,
-    /// sharing and the images rung on); the owner applies `data` (PNG) to
-    /// the pasteboard. The sync book is already armed against the apply's
-    /// echo. Never fires while the rung is off: an unwelcome marker draws
-    /// abort(declined) instead, because the sender waits on a verdict.
+    /// A digest-verified host clipboard image passed every gate; the
+    /// owner applies `data` (PNG) to the pasteboard (the sync book is
+    /// already armed against its echo). Never fires while the rung is off.
     case hostClipboardImageChanged(data: [UInt8], mime: String)
-    /// One decoded chan-8 file-lane message (accept/ack/complete/abort
-    /// answers for the client's sending role), key 11 agreed; the owner
-    /// feeds it to its BulkSendCoordinator.
+    /// One decoded chan-8 file-lane message for the BulkSendCoordinator.
     case bulkMessageReceived(BulkMessage)
     /// Our typed teardown left on the ordered stream.
     case teardownSent(SessionTeardownReason)
@@ -82,8 +66,7 @@ public enum LyteUdpSessionEvent: Sendable {
     case protocolNote(String)
 }
 
-/// The first dependency-breaking fact that opened a video recovery episode.
-/// This is app telemetry/control vocabulary only; it never changes wire bytes.
+/// What opened a video recovery episode (telemetry only; not wire).
 public enum VideoRecoveryCause: String, Sendable, Codable, CaseIterable {
     case fecAssemblerDamage
     case hostPurgeInferredDamage
@@ -119,21 +102,17 @@ public struct LyteUdpSessionCounters: Sendable {
     public var capabilityUpdatesAnswered: UInt64 = 0
     public var unknownReliableTypes: UInt64 = 0
     public var malformedReliableMessages: UInt64 = 0
-    /// 0x17 echo messages consumed (tuple-level books live on
-    /// `InputSender`'s stats).
+    /// 0x17 echo messages consumed.
     public var inputEchoMessagesReceived: UInt64 = 0
     /// Chan-1 datagrams routed to the audio receiver.
     public var audioDatagramsReceived: UInt64 = 0
-    /// 0x18 flip requests this end put on the ordered stream, the
-    /// session-start posture ask included.
+    /// 0x18 flip requests sent, the session-start ask included.
     public var audioRoutingRequestsSent: UInt64 = 0
     /// 0x19 applied-posture statuses consumed.
     public var audioRoutingStatusesReceived: UInt64 = 0
-    /// 0x25 audio track-state announcements received (gate closes,
-    /// still-quiet check-ins, and wakes all count here).
+    /// 0x25 audio track-state announcements received.
     public var audioTrackStatesReceived: UInt64 = 0
-    /// 0x26 video posture announcements received (ladder steps and
-    /// wakes).
+    /// 0x26 video posture announcements received.
     public var videoPostureStatesReceived: UInt64 = 0
     /// Loud audio-routing drops: an unnegotiated 0x19, or a
     /// role-confused 0x18 arriving at the client.
@@ -146,8 +125,7 @@ public struct LyteUdpSessionCounters: Sendable {
     public var cursorShapesReceived: UInt64 = 0
     /// Local changes the sync book suppressed (echo or duplicate).
     public var clipboardLoopSuppressed: UInt64 = 0
-    /// Announces that arrived while sharing was off — counted, never
-    /// applied.
+    /// Announces that arrived while sharing was off (never applied).
     public var clipboardIgnoredDisabled: UInt64 = 0
     /// Loud clipboard drops: an unnegotiated 0x1B or 0x22, or a
     /// role-confused 0x1A arriving at the client.
@@ -184,44 +162,28 @@ extension LyteUdpSessionCounters {
 // MARK: - Config
 
 public struct LyteUdpSessionCoreConfig: Sendable {
-    /// What this client declares (0x0F). The default is the wire default
-    /// (HEVC, 4:2:0, idle silence on, 1152 B ceiling) plus every optional
-    /// capability key this client can speak: 9 host-audio routing, audio
-    /// stream off, 10 clipboard text, 11 bulk transfer, 12 clipboard
-    /// images, 13 cursor shape, 15 audio quiet posture, 16 video quiet
-    /// posture. Declaration is dialect, not consent: whether a feature
-    /// moves is decided by the host's declaration (the intersection) and
-    /// by this end's live consent toggles.
+    /// What this client declares (0x0F): the wire default plus every
+    /// optional key it speaks. Declaration is dialect, not consent: the
+    /// intersection and the live consent toggles decide what moves.
     public var capabilities: Capabilities
-    /// The receiver machine's timing. The default blackout is 2.5 s,
-    /// past the 1 Hz beacon cadence of an idle host, where the only
-    /// evidence is beacons and CTRL (see LyteUdpSessionCore).
+    /// The receiver machine's timing (default blackout 2.5 s, past an
+    /// idle host's 1 Hz beacons).
     public var machineConfig: SessionMachineConfig
-    /// Once an authenticated audio datagram arrives, the blackout
-    /// detector re-arms at this threshold (the 5 ms audio stream is a
-    /// dense path probe). Evidence-gated because no capability key
-    /// announces audio: a host without audio never tightens. Nil disables
-    /// tightening.
+    /// Blackout threshold once authenticated audio arrives (a dense path
+    /// probe). Evidence-gated: a host without audio never tightens. Nil
+    /// disables tightening.
     public var tightenedBlackoutSilenceMicroseconds: Int64?
-    /// The audio playout buffer's policy.
     public var audioJitter: AudioJitterConfig
-    /// The targeted-repair ask policy.
     public var nackPolicy: NackPolicyConfig
-    /// The session-start host-speaker posture. When set and key 9
-    /// survived intersection, the host's first 0x19 (its starting
-    /// posture, sent at agreement) is compared against this and one 0x18
-    /// leaves if they differ — exactly once per session; the strip's
-    /// toggle is the live override. Default `.hostMuted` (sound follows
-    /// the viewer); nil takes the host's default without comment.
+    /// The session-start host-speaker posture: with key 9 agreed, one
+    /// 0x18 leaves if the host's first 0x19 differs (once per session).
+    /// Nil takes the host's default.
     public var desiredHostAudioRouting: HostAudioRoutingMode?
-    /// The session's starting clipboard-sharing consent (default off:
-    /// clipboards carry passwords). Toggled live by
-    /// `setClipboardSharing`; while off nothing leaves and nothing lands.
+    /// Starting clipboard-sharing consent (default off: clipboards carry
+    /// passwords).
     public var shareClipboard: Bool
-    /// The images rung of the consent tier. Images move only when this
-    /// and `shareClipboard` are both on; default off. An unwelcome
-    /// inbound marker draws abort(declined) rather than silence, because
-    /// the image sender waits on a verdict.
+    /// The images rung; images move only when this and `shareClipboard`
+    /// are both on.
     public var shareClipboardImages: Bool
 
     public init(

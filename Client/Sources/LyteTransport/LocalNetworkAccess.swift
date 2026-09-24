@@ -8,9 +8,7 @@ public enum LocalNetworkAccessProblem: Sendable, Equatable {
     case permissionRequired
     case routeOrPermissionUnavailable
 
-    /// DNSServiceErrorType.policyDenied. Keeping the wire value here makes
-    /// this classifier directly constructible in tests without importing a
-    /// second C module solely for one DNS-SD constant.
+    /// DNSServiceErrorType.policyDenied (avoids importing DNS-SD).
     private static let dnsServicePolicyDenied: Int32 = -65_570
 
     public static func browserError(_ error: NWError) -> Self? {
@@ -50,9 +48,7 @@ public enum LocalNetworkAccessProblem: Sendable, Equatable {
     }
 }
 
-/// Ordered evidence owned by one serial browser queue. Kept separate from
-/// the browser shell so denial followed by readiness is a pinned transition,
-/// not an incidental callback implementation detail.
+/// Ordered browser evidence, owned by one serial browser queue.
 struct LocalNetworkAccessEvidence {
     private(set) var problem: LocalNetworkAccessProblem?
 

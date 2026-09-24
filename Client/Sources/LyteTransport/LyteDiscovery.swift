@@ -1,31 +1,18 @@
-// CL-5: Lyte-UDP host discovery — browse `_lyte._udp` (the HS-10 Avahi
-// advertisement) via NWBrowser, resolve each instance to a numeric
-// address + SRV port, and parse the TXT identity records:
-//
-//   v=<wire major>      checked against WireVersion.major before any
-//                       handshake is attempted
-//   pkh=<64 hex>        sha256 of the host's raw 32-byte Noise static
-//                       PUBLIC key — a client that has pinned a host key
-//                       recognizes it in the browse list (and detects a
-//                       re-key) without touching the network; the key
-//                       itself never rides the advertisement.
-//
-// Discovery is a convenience layer; explicit host:port remains available
-// to diagnostic callers. Bonjour service names are not connect targets, so
-// each result resolves through an NWConnection — UDP here, which reaches
-// `.ready` on path resolution alone, sending nothing — and the numeric
-// address + port are read off the established path's remote endpoint.
+// Lyte-UDP host discovery: browse `_lyte._udp`, resolve each instance to a
+// numeric address + SRV port, and parse the TXT records `v=<wire major>`
+// and `pkh=<sha256 of the host's Noise static public key>` (recognition of
+// pinned hosts without touching the network; the key itself never rides
+// the advertisement).
 
 import Foundation
 import Network
 import LyteCore
 import LyteWire
 
-/// One advertised Lyte host, resolved and parsed. `wireVersion` and
-/// `publicKeyHash` are nil when the advertisement omitted or mangled
-/// them — an old or foreign record, still listed so the operator sees it.
+/// One advertised Lyte host. `wireVersion` and `publicKeyHash` are nil
+/// when the advertisement omitted or mangled them; the host is still listed.
 public struct DiscoveredLyteHost: Sendable, Equatable, Identifiable {
-    /// Stable per dial target (SwiftUI sheet/list identity).
+    /// Stable per dial target.
     public var id: String { "\(address):\(port)" }
 
     /// Bonjour instance name — the host's short hostname (e.g. "pup"),
@@ -53,25 +40,19 @@ public struct DiscoveredLyteHost: Sendable, Equatable, Identifiable {
     /// Whether this host advertises the wire major this build speaks.
     public var speaksOurWireVersion: Bool { wireVersion == WireVersion.major }
 
-    /// Whether the advertised identity hash matches a pinned host static
-    /// public key (the raw 32 bytes handed over at pairing or via
-    /// lyte-host's printed banner). Recognition only — trust still comes
-    /// from the Noise IK handshake against the pinned key itself.
+    /// Recognition only: trust comes from the Noise IK handshake against
+    /// the pinned key itself.
     public func matches(pinnedStaticPublicKey key: [UInt8]) -> Bool {
         publicKeyHash == LyteDiscovery.publicKeyHash(ofStaticPublicKey: key)
     }
 }
 
-/// One bounded Bonjour scan. Hosts and access diagnosis are independent:
-/// already-observed hosts remain useful evidence even if the browser later
-/// reports a policy problem.
+/// One bounded Bonjour scan; hosts and access diagnosis are independent.
 public struct LyteDiscoveryScan: Sendable, Equatable {
     public let hosts: [DiscoveredLyteHost]
     public let accessProblem: LocalNetworkAccessProblem?
 
-    /// A scan-level access problem blocks progress only when the scan found no
-    /// usable dial target. Independent stale or unreachable advertisements
-    /// remain diagnostic evidence without eclipsing a resolved host.
+    /// An access problem blocks only when no usable dial target was found.
     public var blockingAccessProblem: LocalNetworkAccessProblem? {
         hosts.isEmpty ? accessProblem : nil
     }
@@ -88,16 +69,13 @@ public struct LyteDiscoveryScan: Sendable, Equatable {
 public enum LyteDiscovery {
     public static let serviceType = "_lyte._udp"
 
-    /// The TXT `pkh` value for a raw 32-byte Noise static public key —
-    /// The same shared digest the host advertises, for matching pinned
-    /// keys against browse results.
+    /// The TXT `pkh` value for a raw 32-byte Noise static public key.
     public static func publicKeyHash(ofStaticPublicKey key: [UInt8]) -> String {
         Hex.string(Sha256.digest(key))
     }
 
-    /// Parses the advertisement's TXT dictionary. Tolerant by design —
-    /// a missing or malformed record yields nil for that field, never a
-    /// dropped host: the operator should still SEE a stale advertiser.
+    /// A missing or malformed record yields nil for that field, never a
+    /// dropped host.
     public static func parseTxt(_ txt: [String: String])
         -> (wireVersion: UInt8?, publicKeyHash: String?)
     {
@@ -110,10 +88,9 @@ public enum LyteDiscovery {
         return (version, pkh)
     }
 
-    /// Browse for `duration` seconds, then resolve each instance to a
-    /// numeric address + port. Hosts that fail to resolve within the
-    /// timeout are not returned as connect targets, but their presence is
-    /// retained as qualified route-or-permission evidence for the UI.
+    /// Browse for `duration` seconds, then resolve each instance. Hosts that
+    /// fail to resolve are not dial targets but count as route-or-permission
+    /// evidence.
     public static func scan(duration: TimeInterval = 3.0) async
         -> LyteDiscoveryScan
     {
@@ -156,12 +133,9 @@ public enum LyteDiscovery {
                 hadUnresolvedService: hadUnresolvedService))
     }
 
-    /// Reduce independently timed browser and resolver evidence into one
-    /// honest operator diagnosis. A discovered Bonjour instance that cannot
-    /// become a numeric target is not an empty network: it proves either a
-    /// route/resolution problem or a Local Network privacy denial. Preserve
-    /// that qualified diagnosis even when Network.framework surfaces no
-    /// classifiable NWError for the failed resolver child.
+    /// Reduces browser and resolver evidence to one diagnosis. An instance
+    /// that cannot resolve proves a route problem or a Local Network denial,
+    /// even without a classifiable NWError.
     static func combinedAccessProblem(
         browserProblem: LocalNetworkAccessProblem?,
         resolutionProblems: [LocalNetworkAccessProblem],
@@ -179,9 +153,7 @@ public enum LyteDiscovery {
         return hadUnresolvedService ? .routeOrPermissionUnavailable : nil
     }
 
-    /// Compatibility surface for roaming and CLI discovery. Those callers
-    /// consume sightings only; the app's host picker uses `scan` so it can
-    /// offer a truthful recovery path.
+    /// Sightings only; the app's host picker uses `scan`.
     public static func browse(duration: TimeInterval = 3.0) async
         -> [DiscoveredLyteHost]
     {
@@ -251,9 +223,7 @@ public enum LyteDiscovery {
             for: .bonjourWithTXTRecord(type: serviceType, domain: nil),
             using: NWParameters())
         let collector = Collector()
-        // Network delivers every browser callback on its start queue. A
-        // private serial queue makes policy-denied → ready ordering and the
-        // bounded deadline one chronology; a concurrent global queue cannot.
+        // A private serial queue orders every callback and the deadline.
         let queue = DispatchQueue(label: "dev.shreeve.lyte.discovery.scan")
         return await withCheckedContinuation { cont in
             browser.browseResultsChangedHandler = { browseResults, _ in
@@ -289,11 +259,8 @@ public enum LyteDiscovery {
 
     // MARK: - Resolve
 
-    /// IPv4 preferred: the transport underneath (UdpReceiveEndpoint,
-    /// sockaddr_in) is IPv4-today, and Avahi advertises on both protocols
-    /// — an IPv6-resolved result would name a host the session path can't
-    /// dial yet. Fall back to whatever resolves on v6-only networks; the
-    /// row is still informative even before the transport can use it.
+    /// IPv4 preferred (the transport is IPv4-only); falls back to whatever
+    /// resolves on v6-only networks.
     private static func resolve(
         _ endpoint: NWEndpoint, timeout: TimeInterval = 2.0
     ) async -> EndpointResolution {
@@ -319,10 +286,8 @@ public enum LyteDiscovery {
         }
     }
 
-    /// Resolve a Bonjour service endpoint to (numeric address, port) by
-    /// opening a UDP flow to it and reading the remote tuple off the
-    /// established path. UDP `.ready` is path resolution, not traffic —
-    /// no datagram leaves the machine.
+    /// Reads (numeric address, port) off a UDP flow's established path;
+    /// UDP `.ready` sends nothing.
     private static func resolve(
         _ endpoint: NWEndpoint, using parameters: NWParameters,
         timeout: TimeInterval
@@ -369,8 +334,7 @@ public enum LyteDiscovery {
                         case .name(let name, _): address = name
                         @unknown default: break
                         }
-                        // Strip any interface scope ("%en0") — not part
-                        // of the address.
+                        // Strip any interface scope ("%en0").
                         if let a = address, let bare = a.split(separator: "%").first {
                             address = String(bare)
                         }

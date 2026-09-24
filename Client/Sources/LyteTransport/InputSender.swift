@@ -1,36 +1,16 @@
-// InputSender (CL-9): the client half of HS-13's input path, sans-IO.
-// Owns the per-session seq counter, encodes 0x16 InputEvents onto the
-// reliable ordered CTRL stream (a reordered keystroke is corruption,
-// not weather — the transport pillar's ruling), and closes the two
-// latency loops the host's accounting makes possible:
+// InputSender: owns the per-session input seq, encodes 0x16 InputEvents
+// onto the reliable ordered CTRL stream (a reordered keystroke is
+// corruption), and measures two latency edges:
 //
-//   input→inject — the host answers every injection with a 0x17 echo
-//     tuple (seq, rxMicros, injectMicros) in the beacon's host-µs
-//     domain; the CL-10 HostClockModel maps injectMicros onto the
-//     client's own timeline, so the edge is (mapped inject − capture).
-//     The host-side receive→inject edge (inject − rx, no clock model
-//     needed) is kept too — it is HS-13's own gate figure and a free
-//     cross-check.
+//   input→inject — the host's 0x17 echo tuple (seq, rx, inject) in host µs,
+//     mapped onto the client clock by HostClockModel. The host-side
+//     receive→inject edge is kept too.
+//   input→photon — the first delivered frame stamped with lastInputSeq
+//     (TLV 0x03) ≥ seq closes the loop. Delivery is the renderer handoff;
+//     decode and scan-out ride on top.
 //
-//   input→photon — the host stamps lastInputSeq (TLV 0x03) on every
-//     shard of every post-injection video frame; the first DELIVERED
-//     sample whose frame carries a stamp ≥ seq closes the loop at
-//     (delivery − capture). Honest naming caveat, the CL-8 pattern:
-//     delivery is the sample-buffer handoff to the renderer — VT decode
-//     + display scan-out ride on top (HS-13's spike measured that tail
-//     at ~13 ms); the wire+assembly path is what this edge owns.
-//
-// Pre-arm (W4b via HS-13): the host runs `.preArmInput` on EVERY
-// delivered 0x16 BEFORE injecting — a keypress in IDLE is the WAKE and
-// one during a blackout survives FROZEN into RECOVERY's IDR. Driving
-// that seam from this end therefore means exactly one thing: send the
-// event promptly and NEVER gate on the wire mode or the local overlay.
-// `send` deliberately has no mode check.
-//
-// Sans-IO: no clock reads, no sockets — every entry point takes `now`,
-// the send leg is an injected closure (the session wires it to
-// ReliableCtrlEndpoint.send), and tests drive the whole loop in virtual
-// time. One lock confines the pending books and the histograms.
+// `send` never gates on wire mode: the host pre-arms on every delivered
+// event, so input in IDLE is the wake. Every entry point takes `now`.
 
 import LyteIO
 import LyteCore
@@ -38,59 +18,39 @@ import Foundation
 import LyteWire
 import Synchronization
 
-// The edge books use LyteCore's rolling histogram; its retention and rank
-// doctrine are shared with every other percentile surface.
-
 /// One coherent snapshot of the sender's books.
 public struct InputSenderStats: Sendable {
     /// 0x16 messages queued on the reliable stream.
     public var eventsSent: UInt64 = 0
-    /// Sends the reliable endpoint refused (thrown) — the caller saw
-    /// the same error; counted here for the stats line.
+    /// Sends the reliable endpoint refused (the caller saw the error).
     public var sendFailures: UInt64 = 0
     /// Echo tuples consumed from delivered 0x17 messages.
     public var echoTuplesReceived: UInt64 = 0
-    /// Echo tuples naming a seq this sender never sent (or already
-    /// aged out) — protocol weather worth a counter, never fatal.
+    /// Echo tuples naming a seq never sent or already aged out.
     public var unmatchedEchoTuples: UInt64 = 0
-    /// Echo tuples that arrived before the clock model had a fit —
-    /// their receive→inject edge still recorded; input→inject skipped.
+    /// Echo tuples before the clock model had a fit (input→inject skipped).
     public var echoesWithoutClockFit: UInt64 = 0
-    /// Video shards whose lastInputSeq TLV was malformed (duplicate or
-    /// wrong width) — loud counter, per the conn-id TLV's decode rule.
+    /// Video shards whose lastInputSeq TLV was malformed.
     public var malformedFrameStamps: UInt64 = 0
     /// The newest lastInputSeq stamp seen on any video shard.
     public var lastStampSeen: UInt32?
-    /// input→inject: capture → host injection, mapped onto the client
-    /// clock via the CL-10 model (µs). Every input gauge rolls over the
-    /// last 360 samples — the queue-wait gauge's window.
+    /// Capture → host injection on the client clock (µs). Every input
+    /// gauge rolls over the last 360 samples.
     public var inputToInject = Histogram<UInt64>(
         capacity: 360, retention: .rolling)
-    /// input→photon: capture → the first delivered sample stamped at or
-    /// past the event's seq (µs; see the file comment's honesty caveat).
+    /// Capture → first delivered frame stamped at or past the seq (µs).
     public var inputToPhoton = Histogram<UInt64>(
         capacity: 360, retention: .rolling)
-    /// The host's own receive→inject edge (host µs, no clock mapping)
-    /// — HS-13's gate figure, echoed back for free.
+    /// The host's own receive→inject edge (host µs, no clock mapping).
     public var hostReceiveToInject = Histogram<UInt64>(
         capacity: 360, retention: .rolling)
 }
 
 extension InputSenderStats {
-    /// The stream overlay's input line (CL-16). Rendered
-    /// UNCONDITIONALLY while a session runs: "input 0 sent" is the
-    /// datum that discriminates a client-capture failure from a
-    /// host-side one, so hiding the line at zero hid exactly the
-    /// interesting case. Carries the capture-install verdict for the
-    /// same reason — a failed install must be distinguishable from a
-    /// dead host.
+    /// The overlay's input line, shown even at zero: "0 sent" separates
+    /// a client-capture failure from a host-side one. "Applied on host"
+    /// because the measurement includes the network leg.
     public func overlayLine() -> String {
-        // Naming (owner-shaped, two consult rounds, 2026-07-30):
-        // "applied on host" not "inject" — the measurement rides host
-        // echoes and INCLUDES the network leg, so the honest claim is
-        // "your action took effect on the host", not an OS-injection
-        // micro-timing. Capture state moved to the overlay's state
-        // line (it's a session state, not a metric).
         var line = "user:    \(eventsSent) "
             + (eventsSent == 1 ? "event" : "events") + " sent to host"
         let pair = inputToInject.percentiles([0.50, 0.99])
@@ -104,14 +64,11 @@ extension InputSenderStats {
 }
 
 public final class InputSender: @unchecked Sendable {
-    /// Pending books are bounded: input with injection off (the host's
-    /// `--input off`) never echoes, and an unmatched book must not grow
-    /// for the length of a session. Oldest entries fall off first —
-    /// they were failed measurements already.
+    /// Pending books are bounded (a host with input off never echoes);
+    /// oldest entries fall off first.
     static let maxPendingEntries = 4_096
-    /// frame → stamp associations kept for the delivery lookup. Frames
-    /// deliver within the assembler's holdback window, so a small ring
-    /// of recent frames is plenty.
+    /// Recent frame → stamp associations; frames deliver within the
+    /// assembler's holdback window.
     static let maxFrameStampEntries = 512
 
     private let sendMessage: (_ message: [UInt8], _ now: ClientTimestamp) throws -> Void
@@ -127,23 +84,16 @@ public final class InputSender: @unchecked Sendable {
     private var awaitingEcho: [UInt32: UInt64] = [:]
     /// seq → capture µs, awaiting a stamped frame (input→photon).
     private var awaitingPhoton: [UInt32: UInt64] = [:]
-    /// Insertion-ordered seqs for bounded eviction (one order serves
-    /// both books — seqs are allocated ascending).
+    /// Ascending seqs for bounded eviction of both books.
     private var pendingOrder = Deque<UInt32>()
     /// frame number → lastInputSeq stamp, from shard TLVs.
     private var frameStamps: [UInt32: UInt32] = [:]
     private var frameStampOrder = Deque<UInt32>()
     private var stats = InputSenderStats()
-    /// True while either pending book holds an event — the video hot
-    /// path's fast-out. Every video shard used to pay a TLV decode
-    /// plus a lock round-trip (~3k/s) to maintain the frame→stamp
-    /// book, which is only ever CONSUMED while events pend: a stamp
-    /// carried by a pre-send frame is always < the new event's seq
-    /// (the host can only stamp seqs it has injected) and can close
-    /// nothing. Skipping while both books are empty is therefore
-    /// lossless for the latency math; the one honest trade is that
-    /// malformed stamps go uncounted during no-input stretches.
-    /// Updated under `lock`, read relaxed on the receive thread.
+    /// True while either pending book holds an event: the video hot
+    /// path's fast-out. Lossless, because a stamp seen before a send is
+    /// always below that event's seq; malformed stamps go uncounted while
+    /// no input pends. Written under `lock`, read relaxed.
     private let hasPendingInput = Atomic<Bool>(false)
 
     public init(
@@ -156,9 +106,7 @@ public final class InputSender: @unchecked Sendable {
 
     // MARK: Send
 
-    /// Encodes and queues one input event on the reliable ordered
-    /// stream, stamped with `now` as both the capture instant and the
-    /// send instant — the virtual-time form of `send(_:captured:now:)`.
+    /// `send(_:captured:now:)` with `now` as the capture instant.
     @discardableResult
     public func send(
         _ body: InputEvent.Body, now: ClientTimestamp
@@ -166,15 +114,10 @@ public final class InputSender: @unchecked Sendable {
         try send(body, captured: now, now: now)
     }
 
-    /// Encodes and queues one input event on the reliable ordered
-    /// stream. `captured` stamps the event and its latency books; `now`
-    /// is the send instant handed to the reliable endpoint, whose RTT
-    /// and PTO clocks must not see queue wait. Never gates on wire mode
-    /// — an event in IDLE is the host's WAKE, one in FROZEN persists
-    /// into RECOVERY (the pre-arm rule; see the file comment). Throws
-    /// what the reliable endpoint throws; a refused send allocates no
-    /// seq. Safe from concurrent callers: seqs are unique and enqueue in
-    /// ascending order.
+    /// Encodes and queues one input event. `captured` stamps the event and
+    /// its latency books; `now` drives ARQ, whose RTT must not see queue
+    /// wait. A refused send allocates no seq. Concurrent callers get
+    /// unique seqs enqueued in ascending order.
     @discardableResult
     public func send(
         _ body: InputEvent.Body,
@@ -190,8 +133,7 @@ public final class InputSender: @unchecked Sendable {
             seq: seq, clientMicroseconds: captured.microseconds, body: body
         )
 
-        // The reliable send outside the book lock (it takes its own and
-        // fires fresh segments synchronously).
+        // Outside the book lock: the endpoint takes its own.
         do {
             try sendMessage(event.encode(), now)
         } catch {
@@ -215,12 +157,9 @@ public final class InputSender: @unchecked Sendable {
 
     // MARK: Echo consumption
 
-    /// Consumes one delivered 0x17: every tuple closes its seq's
-    /// input→inject edge (via the clock model's current fit) and
-    /// records the host's own receive→inject edge verbatim.
+    /// Consumes one delivered 0x17 echo.
     public func handleEcho(_ echo: InputEcho, now: ClientTimestamp) {
-        // One fit for the whole message — mapping tuples against a
-        // window that moves between tuples would smear the math.
+        // One fit for the whole message.
         let fit = clockModel.estimate()
         lock.lock()
         defer {
@@ -255,13 +194,9 @@ public final class InputSender: @unchecked Sendable {
 
     // MARK: Frame stamps (input→photon)
 
-    /// Records one video shard's lastInputSeq TLV (any shard of the
-    /// frame serves — per-shard stamping is exactly so the association
-    /// survives shard loss). Call from the datagram ingest path with
-    /// the envelope's extensions.
+    /// Records one video shard's lastInputSeq TLV (every shard carries it,
+    /// so the association survives shard loss).
     public func noteVideoShard(envelope: Envelope) {
-        // The receive thread's fast-out: no pending event, nothing any
-        // stamp could close — skip the decode and the lock entirely.
         guard hasPendingInput.load(ordering: .relaxed) else { return }
         let stamp: UInt32?
         do {
@@ -286,10 +221,8 @@ public final class InputSender: @unchecked Sendable {
         frameStamps[frame] = stamp
     }
 
-    /// Closes the photon loop for one DELIVERED frame: every pending
-    /// event with seq ≤ the frame's stamp (wrap-aware) completes at
-    /// `now`. Call from the VideoSink seam — delivery, not shard
-    /// arrival, is the honest instant.
+    /// Closes the photon loop for every pending seq ≤ the delivered
+    /// frame's stamp (wrap-aware).
     public func noteFrameDelivered(frame: FrameNumber, now: ClientTimestamp) {
         lock.lock()
         defer { lock.unlock() }
@@ -316,7 +249,7 @@ public final class InputSender: @unchecked Sendable {
         return stats
     }
 
-    /// Events still awaiting an echo (the live gate's quiescence probe).
+    /// Events still awaiting an echo.
     public var pendingEchoCount: Int {
         lock.lock()
         defer { lock.unlock() }
@@ -325,7 +258,6 @@ public final class InputSender: @unchecked Sendable {
 
     // MARK: Interior
 
-    /// Oldest-first eviction once the pending books outgrow the bound.
     /// Runs under the lock.
     private func evictOverflowLocked() {
         while pendingOrder.count > Self.maxPendingEntries {
@@ -335,8 +267,7 @@ public final class InputSender: @unchecked Sendable {
         }
     }
 
-    /// Re-derive the receive thread's fast-out flag after any book
-    /// mutation. Runs under the lock.
+    /// Runs under the lock after any book mutation.
     private func refreshPendingFlagLocked() {
         hasPendingInput.store(
             !awaitingEcho.isEmpty || !awaitingPhoton.isEmpty,
@@ -384,9 +315,8 @@ public final class InputSendTiming: @unchecked Sendable {
     }
 }
 
-/// IO-side ordered hop used by the app capture path. The pure InputSender
-/// remains synchronous for virtual-time gates; production enqueues here so
-/// ARQ/seal/socket work never executes on MainActor.
+/// The app capture path's ordered hop, so ARQ/seal/socket work never runs
+/// on MainActor.
 public final class OrderedInputSender: @unchecked Sendable {
     private let queue = DispatchQueue(
         label: "lyte.input.sender", qos: .userInteractive)
@@ -414,10 +344,8 @@ public final class OrderedInputSender: @unchecked Sendable {
             lock.unlock()
             return false
         }
-        // Acceptance and queue insertion are one critical section.
-        // finishAndDrain cannot observe an empty queue after saying no
-        // to new work while an already-accepted event is still between
-        // the gate and DispatchQueue.async.
+        // Acceptance and queue insertion are one critical section, so
+        // finishAndDrain never misses an accepted event.
         timing.queued()
         queue.async { [self] in
             lock.lock()

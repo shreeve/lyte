@@ -1,23 +1,9 @@
-// The client's Noise IK initiator over LyteWire.NoiseSession, plugged into
-// the TransportCrypto seam so ReceiveDemux and TransportSender need no
-// changes:
-//
-//   • config carries the host's pinned static public key (from pairing or
-//     an operator-supplied key) and the host's address, because the
-//     initiator speaks first.
-//   • the handshake is LyteClientSession's ClientHandshakeInitiator (bare
-//     CTRL carriage, verbatim message-1 retransmit, retry-challenge
-//     answers) driven here over blocking datagram IO and the monotonic
-//     clock — the same machine the browser drives.
-//   • after Split, every payload both ways seals under the transport with
-//     the exact envelope header bytes as AAD and the (chan, seq)
-//     extended-counter discipline — all inside LyteWire.NoiseTransport;
-//     this file only holds the state and locks.
-//
-// The socket is the endpoint's; the handshake needs it before the receive
-// thread exists, so `HandshakingTransportCrypto` is the seam
-// UdpReceiveEndpoint drives between bind and thread start, handing this
-// object blocking datagram IO aimed at the configured host.
+// The client's Noise IK initiator behind the TransportCrypto seam. The
+// handshake is LyteClientSession's ClientHandshakeInitiator (the same
+// machine the browser drives) over blocking datagram IO, which
+// UdpReceiveEndpoint provides between bind and receive-thread start. After
+// Split, LyteWire.NoiseTransport seals every payload; this file only holds
+// the state and locks.
 
 import LyteIO
 import Foundation
@@ -25,8 +11,7 @@ import LyteCore
 import LyteClientSession
 import LyteWire
 
-/// Blocking datagram IO for the pre-thread handshake window. The endpoint
-/// implements it over the bound socket; tests implement it in-process.
+/// Blocking datagram IO for the pre-thread handshake window.
 public protocol NoiseHandshakeIO {
     /// Sends one datagram to the configured host tuple.
     func sendToHost(_ datagram: [UInt8]) throws
@@ -34,19 +19,15 @@ public protocol NoiseHandshakeIO {
     func receiveDatagram(timeoutMilliseconds: Int) throws -> [UInt8]?
 }
 
-/// A TransportCrypto whose open step needs the socket (handshake over the
-/// wire). The endpoint binds first, then calls `performHandshake`, then
-/// starts the receive thread — `open()` becomes the post-hoc assertion
-/// that the transport really exists before any payload is accepted.
+/// A TransportCrypto that handshakes over the bound socket before the
+/// receive thread starts; `open()` then asserts the transport exists.
 public protocol HandshakingTransportCrypto: TransportCrypto {
     var hostAddress: String { get }
     var hostPort: UInt16 { get }
     func performHandshake(io: any NoiseHandshakeIO) throws
 }
 
-/// Test-only operation instrumentation. It runs inside the directional
-/// critical sections so tests can prove opposite directions overlap and
-/// same-direction mutations do not. Production instances have no probe.
+/// Test-only instrumentation inside the directional critical sections.
 final class NoiseTransportOperationProbe: @unchecked Sendable {
     private let condition = NSCondition()
     private let rendezvousDirections: Bool
@@ -132,10 +113,9 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
     private let attempts: Int
     private let attemptTimeoutMilliseconds: Int
 
-    // Handshake publication and diagnostics are brief state operations.
-    // Transport mutation is direction-disjoint: each copy owns exactly
-    // the direction used under its lock. This preserves Noise's nonce /
-    // replay serialization without making send wait for receive.
+    // Each directional transport copy is used only under its own lock:
+    // Noise's nonce/replay serialization holds without send waiting on
+    // receive.
     private let stateLock = NSLock()
     private let sendLock = NSLock()
     private let receiveLock = NSLock()
@@ -148,16 +128,12 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
     private var operationProbe: NoiseTransportOperationProbe?
 
     /// - Parameters:
-    ///   - hostStaticPublicKey: the host's pinned 32-byte X25519 static
-    ///     (from the pinned-host store, or printed by lyte-host at start).
-    ///   - staticKeys: the client's Noise static identity. nil mints a
-    ///     throwaway pair for this connection — fine for debug harnesses,
-    ///     but pairing and `--require-paired` reconnects need the
-    ///     PERSISTENT identity here: the host pins/authenticates exactly
-    ///     the static message 1 delivers.
+    ///   - hostStaticPublicKey: the host's pinned 32-byte X25519 static.
+    ///   - staticKeys: the client's Noise static identity; nil mints a
+    ///     throwaway pair. Pairing and paired reconnects need the
+    ///     persistent identity: the host pins exactly this static.
     ///   - attempts/attemptTimeoutMilliseconds: the client-owned retry
-    ///     timer — a lost message 1 or 2 meets a fresh attempt, and the
-    ///     host answers each message 1 from fresh responder state.
+    ///     timer for a lost message 1 or 2.
     public init(
         hostAddress: String,
         hostPort: UInt16,
@@ -200,8 +176,8 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
     /// The static public key message 1 will present to the host.
     public var clientStaticPublicKey: [UInt8] { staticKeys.publicKey }
 
-    /// The completed session's Noise handshake hash — the W6 pairing
-    /// binding (sid). Nil until `performHandshake` succeeds.
+    /// The Noise handshake hash (the pairing binding); nil until
+    /// `performHandshake` succeeds.
     public var handshakeHashSnapshot: [UInt8]? {
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -239,17 +215,14 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         return handshakeMilliseconds
     }
 
-    /// Retry challenges (0x13) this dial answered with a 0x14
-    /// resubmission — the W8 client leg's evidence counter.
+    /// Retry challenges (0x13) this dial answered with a 0x14.
     public var retryChallengesAnsweredSnapshot: Int {
         stateLock.lock()
         defer { stateLock.unlock() }
         return retryChallengesAnswered
     }
 
-    /// The seam's contract: no payload before the transport exists. The
-    /// endpoint calls `performHandshake` between bind and thread start;
-    /// this only asserts it happened.
+    /// Asserts the handshake completed: no payload before the transport.
     public func open() throws {
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -328,10 +301,8 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
             case .rejectedMessage2(let error):
                 lastFailure = "message 2 rejected: \(error)"
             case .established(let made):
-                // Lock order is state → send → receive everywhere a
-                // transition touches more than one domain. The state lock
-                // publishes both directional copies and the handshake hash
-                // as one atomic post-handshake state to every operation.
+                // Lock order is state → send → receive everywhere; both
+                // copies and the hash publish as one atomic state.
                 stateLock.lock()
                 sendLock.lock()
                 receiveLock.lock()
@@ -364,10 +335,7 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         }
         operationProbe?.enteredUnseal()
         defer { operationProbe?.exitedUnseal() }
-        // The AEAD's fresh buffer IS the result — no re-slice, no second
-        // copy at the demux. Failures surface as the Wire transport's own
-        // typed error (replay, stale, authentication): a flood of junk
-        // datagrams costs no per-failure string.
+        // Typed Wire errors: junk floods cost no per-failure string.
         return try receiveTransport!.unseal(
             wirePayload: wirePayload, aad: aad, envelope: envelope)
     }
