@@ -49,6 +49,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// Every IDR's SPS chroma_format_idc against the agreed chroma.
     private var chromaAudit = ChromaStreamAudit()
     private var counters = LyteUdpSessionCounters()
+    private var streamPoisoned = false
     /// The production machine-poll wake; nil until `startTimers()`.
     private var machineTimer: DispatchSourceTimer?
 
@@ -779,6 +780,14 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// Local overlay only: the path is dark. Never a wire state.
     public var isFrozen: Bool { state == .frozen }
 
+    /// True once a host message over the ARQ ceiling ended the session
+    /// (the close itself reads `.localTeardown(.shuttingDown)`).
+    public var orderedStreamPoisoned: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return streamPoisoned
+    }
+
     /// True once authenticated audio tightened the blackout detector, until
     /// an announced audio quiet relaxes it.
     public var detectorTightened: Bool {
@@ -881,6 +890,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// routed here with no second list; the shell keeps only the media
     /// words. Hostile bytes are counted, never fatal.
     private func dispatchReliable(_ event: ArqEvent) {
+        if Self.poisonsOrderedStream(event) {
+            return endPoisonedSession(lane: "CTRL")
+        }
         guard case .message(_, let bytes) = event else { return }
         let now = now()
         if receiveControlWord(bytes, now: now) { return }
@@ -989,6 +1001,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// has its own capability gate; refused bytes drop loud, payload never
     /// logged.
     private func dispatchBulk(_ event: ArqEvent) {
+        if Self.poisonsOrderedStream(event) {
+            return endPoisonedSession(lane: "chan-8")
+        }
         guard case .message(_, let bytes) = event else { return }
         let now = now()
         if bytes.first == CtrlMessageType.clipboardImageCargo {
@@ -1076,6 +1091,35 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         )
         onEvent(.idleFrameReceived(
             frame: idle.frame.rawValue, outcome: outcome))
+    }
+
+    /// The segment that crosses the ceiling reports the over-budget
+    /// message; every later one reports the poisoned stream.
+    private static func poisonsOrderedStream(_ event: ArqEvent) -> Bool {
+        switch event {
+        case .ignored(.orderedStreamPoisoned):
+            return true
+        case .ignored(.messageOverBudget(let group)):
+            return group == .orderedStream
+        default:
+            return false
+        }
+    }
+
+    /// The host broke an ordered stream with a message over the shared
+    /// ceiling: it can never deliver in order again, so the session ends
+    /// with a typed teardown. Later poisoned segments repeat the verdict;
+    /// only the first acts.
+    private func endPoisonedSession(lane: String) {
+        lock.lock()
+        let first = !streamPoisoned
+        streamPoisoned = true
+        lock.unlock()
+        guard first else { return }
+        onEvent(.protocolNote(
+            "\(lane) ordered stream poisoned by an over-budget host "
+            + "message — session ends"))
+        applyMachine(.teardownRequest(.shuttingDown), now: now())
     }
 
     private func noteMalformed(_ what: String) {
