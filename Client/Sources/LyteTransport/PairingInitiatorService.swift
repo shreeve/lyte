@@ -33,8 +33,6 @@ public final class PairingInitiatorService: @unchecked Sendable {
         lock.withLock { pairing.pairedHostStaticPublicKey }
     }
 
-    public var isPaired: Bool { pairedHostStaticPublicKey != nil }
-
     public var isTerminal: Bool { lock.withLock { pairing.isTerminal } }
 
     public func start() throws -> [UInt8] {

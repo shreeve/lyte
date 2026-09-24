@@ -66,7 +66,9 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
     private let renderer: any VideoRendererPort
     private let queue: DispatchQueue
     private let clockModel: HostClockModel
-    private let playout: VideoBeatConductorController
+    /// The Conductor is scheduled on the submitting thread and told of
+    /// IRAPs on the delivery queue.
+    private let playout: Mutex<VideoBeatConductor>
     private let books: VideoDeliveryBooks
     private let recorder: VideoFlightRecorder
     private let onDimensionsChanged: @Sendable (Int32, Int32) -> Void
@@ -106,7 +108,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
         self.books = books
         self.recorder = recorder
         self.onDimensionsChanged = onDimensionsChanged
-        self.playout = VideoBeatConductorController(config: playoutConfig)
+        self.playout = Mutex(VideoBeatConductor(config: playoutConfig))
     }
 
     /// Points `layer` at the host time clock, rate 1: the handoff retimes
@@ -146,10 +148,12 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
         let dispatched = SystemMonotonicClock.nowNanoseconds
         let arrival = dispatched / 1_000
         let mapped = clockModel.map(unit.timestamp)?.microseconds ?? arrival
-        let decision = playout.schedule(
-            mappedCaptureMicroseconds: mapped,
-            arrivalMicroseconds: arrival,
-            sourceCaptureMicroseconds: unit.timestamp.microseconds)
+        let decision = playout.withLock {
+            $0.schedule(
+                mappedCaptureMicroseconds: mapped,
+                arrivalMicroseconds: arrival,
+                sourceCaptureMicroseconds: unit.timestamp.microseconds)
+        }
         if PipelineWitness.isEnabled {
             PipelineWitness.record("frameReady", fields: [
                 "frame": String(unit.frameNumber.rawValue),
@@ -417,7 +421,7 @@ public final class VideoRendererHandoff: VideoSink, @unchecked Sendable {
             }
             if pending.unit.isIDR {
                 policy.noteRandomAccessEnqueued()
-                playout.noteRandomAccessEnqueued()
+                playout.withLock { $0.noteRandomAccessEnqueued() }
                 peer.withLock { $0.value }?.noteVideoIrapEnqueued(
                     frame: pending.unit.frameNumber)
                 if closesRecovery {

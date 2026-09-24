@@ -1,34 +1,27 @@
-import Foundation
 import LyteCore
+import Synchronization
 
 /// Cross-queue synchronization shell for the sans-IO delivery gauge. The
 /// receive/delivery path records hops while the main actor reads the overlay;
 /// all arithmetic and retention policy remain single-threaded LyteCore state.
-public final class VideoDeliveryBooks: @unchecked Sendable {
-    private let lock = NSLock()
-    private var gauge = VideoDeliveryGauge()
+public final class VideoDeliveryBooks: Sendable {
+    private let gauge = Mutex(VideoDeliveryGauge())
 
     public init() {}
 
     public func record(hopMilliseconds: Double) {
-        lock.lock()
-        gauge.record(hopMilliseconds: hopMilliseconds)
-        lock.unlock()
+        gauge.withLock { $0.record(hopMilliseconds: hopMilliseconds) }
     }
 
     public func reset() {
-        lock.lock()
-        gauge.reset()
-        lock.unlock()
+        gauge.withLock { $0.reset() }
     }
 
     public func snapshot(
         nowMicroseconds: UInt64
     ) -> VideoDeliveryGauge.Snapshot {
-        lock.lock()
-        let evidence = gauge.collectEvidence(
-            nowMicroseconds: nowMicroseconds)
-        lock.unlock()
-        return evidence.snapshot()
+        gauge.withLock {
+            $0.collectEvidence(nowMicroseconds: nowMicroseconds)
+        }.snapshot()
     }
 }
