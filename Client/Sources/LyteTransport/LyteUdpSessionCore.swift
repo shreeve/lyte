@@ -253,16 +253,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// Sends the capability declaration (0x0F) as the first reliable
     /// word, so everything gated on a capability orders behind it.
     public func open(now: ClientTimestamp) throws {
-        lock.lock()
-        let declaration: [UInt8]?
-        do {
-            declaration = try controlSession.start()
-        } catch {
-            lock.unlock()
-            throw error
-        }
-        lock.unlock()
-        guard let declaration else { return }
+        guard let declaration = try lock.withLock({
+            try controlSession.start()
+        }) else { return }
         try reliable.send(declaration, now: now)
     }
 
@@ -408,16 +401,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public func requestHostAudioRouting(
         _ mode: HostAudioRoutingMode, now: ClientTimestamp
     ) throws {
-        lock.lock()
-        let bytes: [UInt8]
-        do {
-            bytes = try controlSession.requestHostAudioRouting(mode)
-        } catch {
-            lock.unlock()
-            throw error
+        let bytes = try lock.withLock {
+            let bytes = try controlSession.requestHostAudioRouting(mode)
+            counters.audioRoutingRequestsSent += 1
+            return bytes
         }
-        counters.audioRoutingRequestsSent += 1
-        lock.unlock()
         try reliable.send(bytes, now: now)
     }
 
@@ -429,24 +417,18 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     /// True when capability key 10 survived intersection.
     public var clipboardNegotiated: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return controlSession.clipboardNegotiated
+        lock.withLock { controlSession.clipboardNegotiated }
     }
 
     /// Nothing leaves and nothing lands while false.
     public var clipboardSharingEnabled: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return controlSession.clipboardSharingEnabled
+        lock.withLock { controlSession.clipboardSharingEnabled }
     }
 
     /// Local policy only (no wire message): a disabled end goes quiet
     /// and deaf.
     public func setClipboardSharing(_ enabled: Bool) {
-        lock.lock()
-        controlSession.setClipboardSharing(enabled)
-        lock.unlock()
+        lock.withLock { controlSession.setClipboardSharing(enabled) }
     }
 
     /// Shares one local clipboard change as 0x1A when policy allows.
@@ -489,30 +471,22 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// True when keys 10 and 12 survived intersection. Key 11 (files) is
     /// deliberately not consulted: the tiers do not couple.
     public var clipboardImagesNegotiated: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return controlSession.clipboardImagesNegotiated
+        lock.withLock { controlSession.clipboardImagesNegotiated }
     }
 
     /// Images move only when sharing and this rung are both on.
     public var clipboardImageSharingEnabled: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return controlSession.clipboardImageSharingEnabled
+        lock.withLock { controlSession.clipboardImageSharingEnabled }
     }
 
     /// Local policy only; a disabled end answers an inbound marker with
     /// abort(declined) because the image sender waits on a verdict.
     public func setClipboardImageSharing(_ enabled: Bool) {
-        lock.lock()
-        controlSession.setClipboardImageSharing(enabled)
-        lock.unlock()
+        lock.withLock { controlSession.setClipboardImageSharing(enabled) }
     }
 
     public var clipboardImageCounters: ClipboardImageChannelCounters {
-        lock.lock()
-        defer { lock.unlock() }
-        return controlSession.clipboardImageCounters
+        lock.withLock { controlSession.clipboardImageCounters }
     }
 
     /// Shares one local image copy as 0x22 cargo on chan 8 when policy
@@ -557,7 +531,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     ) -> ClipboardShareOutcome {
         var outcome = decision.shareOutcome ?? .shared
         for bytes in decision.outboundBulk {
-            bulkReliable.adoptConnectionId(reliable.learnedConnectionId)
             do {
                 try bulkReliable.send(bytes, now: now)
             } catch {
@@ -605,9 +578,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     /// True when key 11 survived intersection: the host accepts files.
     public var bulkTransferNegotiated: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return controlSession.agreedCapabilities?.bulkTransfer == true
+        lock.withLock {
+            controlSession.agreedCapabilities?.bulkTransfer == true
+        }
     }
 
     /// Queues one bulk message on chan 8; refused without key 11.
@@ -621,9 +594,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         }
         counters.bulkMessagesSent += 1
         lock.unlock()
-        // Chan 8 borrows the CTRL-learned connection ID so its first
-        // datagram already carries the tag.
-        bulkReliable.adoptConnectionId(reliable.learnedConnectionId)
         try bulkReliable.send(message, now: now)
     }
 
@@ -650,6 +620,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             ) {
                 handleExemptCtrl(payload, now: now)
             }
+            // Chan 8 borrows the conn-id the moment CTRL learns it, so its
+            // first datagram already carries the tag.
+            bulkReliable.adoptConnectionId(reliable.learnedConnectionId)
         } else if envelope.channel == pipeline.channel {
             // Record the lastInputSeq TLV before ingest: delivery may
             // fire from this same pass.
@@ -657,7 +630,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             pipeline.ingest(envelope: envelope, payload: payload, now: now)
         } else if envelope.channel == .bulkTransfer {
             // Chan 8 is wholly ARQ.
-            bulkReliable.adoptConnectionId(reliable.learnedConnectionId)
             _ = bulkReliable.handleCtrlDatagram(
                 envelope: envelope, payload: payload, now: now)
         } else if envelope.channel == .audio {
@@ -697,9 +669,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 _ = try sender.send(
                     channel: .ctrl, timestamp: self.now(),
                     plaintext: response.encode(), extensions: tag ?? [])
-                lock.lock()
-                counters.pathChallengesAnswered += 1
-                lock.unlock()
+                lock.withLock { counters.pathChallengesAnswered += 1 }
             } catch {
                 onEvent(.protocolNote("path response send refused: \(error)"))
             }
@@ -750,37 +720,27 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     /// The last accepted video posture announcement, or nil.
     public var announcedVideoPosture: VideoPostureState? {
-        lock.lock()
-        defer { lock.unlock() }
-        return controlSession.announcedVideoPosture
+        lock.withLock { controlSession.announcedVideoPosture }
     }
 
     /// True between an accepted quiet announcement and the next accepted
     /// active announcement or authenticated audio datagram.
     public var hostAnnouncedAudioQuiet: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return controlSession.hostAnnouncedAudioQuiet
+        lock.withLock { controlSession.hostAnnouncedAudioQuiet }
     }
 
     /// Observed stream chroma ("4:2:0"/"4:4:4"); nil before the first
     /// IDR with in-band parameter sets.
     public var streamChromaDescription: String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return chromaAudit.observedDescription
+        lock.withLock { chromaAudit.observedDescription }
     }
 
     public var state: SessionState {
-        lock.lock()
-        defer { lock.unlock() }
-        return controlSession.state
+        lock.withLock { controlSession.state }
     }
 
     public var wireMode: SessionWireMode {
-        lock.lock()
-        defer { lock.unlock() }
-        return controlSession.wireMode
+        lock.withLock { controlSession.wireMode }
     }
 
     /// Local overlay only: the path is dark. Never a wire state.
@@ -789,46 +749,34 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// True once a host message over the ARQ ceiling ended the session
     /// (the close itself reads `.localTeardown(.shuttingDown)`).
     public var orderedStreamPoisoned: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return streamPoisoned
+        lock.withLock { streamPoisoned }
     }
 
     /// True once authenticated audio tightened the blackout detector, until
     /// an announced audio quiet relaxes it.
     public var detectorTightened: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return controlSession.detectorTightened
+        lock.withLock { controlSession.detectorTightened }
     }
 
     public var agreedCapabilities: Capabilities? {
-        lock.lock()
-        defer { lock.unlock() }
-        return controlSession.agreedCapabilities
+        lock.withLock { controlSession.agreedCapabilities }
     }
 
     /// True when capability key 9 survived intersection.
     public var hostAudioRoutingNegotiated: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return controlSession.hostAudioRoutingNegotiated
+        lock.withLock { controlSession.hostAudioRoutingNegotiated }
     }
 
     /// The host speakers' 0x19-confirmed posture; nil until the first
     /// status. Never optimistic.
     public var hostAudioRoutingPosture: HostAudioRoutingMode? {
-        lock.lock()
-        defer { lock.unlock() }
-        return controlSession.hostAudioRoutingPosture
+        lock.withLock { controlSession.hostAudioRoutingPosture }
     }
 
     public var isReliableQuiescent: Bool { reliable.isQuiescent }
 
     public func snapshotCounters() -> LyteUdpSessionCounters {
-        lock.lock()
-        defer { lock.unlock() }
-        return counters
+        lock.withLock { counters }
     }
 
     // MARK: The machine
@@ -911,15 +859,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                 noteMalformed("input echo")
                 return
             }
-            lock.lock()
-            counters.inputEchoMessagesReceived += 1
-            lock.unlock()
+            lock.withLock { counters.inputEchoMessagesReceived += 1 }
             input.handleEcho(echo, now: now)
 
         default:
-            lock.lock()
-            counters.unknownReliableTypes += 1
-            lock.unlock()
+            lock.withLock { counters.unknownReliableTypes += 1 }
             onEvent(.protocolNote(
                 "unregistered reliable CTRL type "
                     + Hex.string(bytes.first ?? 0, width: 2, prefix: true)
@@ -1017,9 +961,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             return
         }
         guard let message = try? BulkMessage.decode(bytes) else {
-            lock.lock()
-            counters.bulkDropsLoud += 1
-            lock.unlock()
+            lock.withLock { counters.bulkDropsLoud += 1 }
             onEvent(.protocolNote(
                 "malformed bulk message dropped (type "
                     + Hex.string(bytes.first ?? 0, width: 2, prefix: true)
@@ -1087,9 +1029,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             noteMalformed("idle frame")
             return
         }
-        lock.lock()
-        counters.idleFramesReceived += 1
-        lock.unlock()
+        lock.withLock { counters.idleFramesReceived += 1 }
         let outcome = pipeline.ingestReliableFrame(
             frame: idle.frame,
             captureTimestampMicroseconds: idle.captureTimestampMicroseconds,
@@ -1129,9 +1069,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     }
 
     private func noteMalformed(_ what: String) {
-        lock.lock()
-        counters.malformedReliableMessages += 1
-        lock.unlock()
+        lock.withLock { counters.malformedReliableMessages += 1 }
         onEvent(.protocolNote("malformed \(what) dropped"))
     }
 }
