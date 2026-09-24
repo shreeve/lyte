@@ -21,24 +21,65 @@ source "$repo_root/Scripts/lib/assert.sh"
 source "$repo_root/Scripts/lib/benchmark-process.sh"
 
 # benchmark-app.sh and make-app.sh run hermetically from a private
-# repository root (its Scripts/ is this checkout's, its .build bundles are
-# fixtures, its Git history one empty commit): codesign, ssh, rsync and
-# swift are fakes that stop the run and the pup destination cannot resolve,
-# so a reordered preflight can never reach pup, a compiler, the owner's app
-# or the owner's artifact lock.
+# repository root (its Scripts/ is this checkout's, its .build bundle a
+# fixture, its Git history one empty commit): codesign, ssh, rsync, swift
+# and the benchmark's make-app are fakes that stop the run, and the pup
+# destination cannot resolve, so a reordered preflight can never reach pup,
+# a compiler, the owner's app or the owner's artifact lock.
 fake_root="$test_root/repo"
 mkdir -p "$fake_root/.build" "$test_root/bin"
 ln -s "$repo_root/Scripts" "$fake_root/Scripts"
 git -C "$fake_root" init -q
 git -C "$fake_root" -c user.name=fixture -c user.email=fixture@invalid \
     -c commit.gpgsign=false commit -q --allow-empty -m fixture
-for tool in codesign ssh rsync swift; do
+for tool in ssh rsync swift; do
     printf '#!/bin/sh\necho "fake %s reached: $*" >&2\nexit 73\n' "$tool" \
         > "$test_root/bin/$tool"
     chmod +x "$test_root/bin/$tool"
 done
+# codesign stops the run; with FAKE_CODESIGN_HANG it waits there instead
+# (recording its PID) so a test can interrupt a run that built the app.
+cat > "$test_root/bin/codesign" <<'EOF'
+#!/bin/sh
+echo "fake codesign reached: $*" >&2
+if [ -n "${FAKE_CODESIGN_HANG:-}" ]; then
+    echo $$ > "$FAKE_CODESIGN_HANG"
+    while :; do sleep 0.05; done
+fi
+exit 73
+EOF
+chmod +x "$test_root/bin/codesign"
 everyday_app="$fake_root/.build/Lyte.app"
-diagnostic_app="$fake_root/.build/Lyte-diagnostic.app"
+# The benchmark's make-app: logs its arguments, requires the default
+# destination and a free app-artifact lock (the real one does both), then
+# publishes a plain or diagnostic fixture at .build/Lyte.app. A plain build
+# fails when FAKE_RESTORE=fail.
+make_app_log="$test_root/make-app.log"
+: > "$make_app_log"
+fake_make_app="$test_root/fake-make-app"
+cat > "$fake_make_app" <<'EOF'
+#!/bin/bash
+set -eu
+printf '%s\n' "$*" >> "$FAKE_MAKE_APP_LOG"
+[[ -z "${LYTE_APP_DESTINATION:-}" ]] || { echo "destination set" >&2; exit 76; }
+exec 8>"$PWD/.build/.lyte-app-artifact.lock"
+lockf -s -t 0 8 || { echo lock-held >> "$FAKE_MAKE_APP_LOG"; exit 75; }
+key=""
+if [[ "$1" == --diagnostics ]]; then
+    key='<key>LyteDiagnosticEntryPoints</key><true/>'
+elif [[ "${FAKE_RESTORE:-ok}" == fail ]]; then
+    echo "fake make-app: plain build failed" >&2
+    exit 1
+fi
+app="$PWD/.build/Lyte.app"
+mkdir -p "$app/Contents/MacOS"
+printf '#!/bin/sh\n' > "$app/Contents/MacOS/Lyte"
+chmod +x "$app/Contents/MacOS/Lyte"
+printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<plist version="1.0"><dict>' "$key" '</dict></plist>' \
+    > "$app/Contents/Info.plist"
+EOF
+chmod +x "$fake_make_app"
 fake_pgrep="$test_root/fake-pgrep"
 cat > "$fake_pgrep" <<'EOF'
 #!/bin/sh
@@ -58,15 +99,16 @@ run_benchmark() {
         PATH="$test_root/bin:$PATH" \
         LYTE_PUP_HOST=fake-pup.invalid \
         LYTE_PGREP="$fake_pgrep" \
+        LYTE_MAKE_APP="$fake_make_app" FAKE_MAKE_APP_LOG="$make_app_log" \
         "$fake_root/Scripts/benchmark-app.sh" --no-build \
         --out "$test_root/$name-output" "$@" \
         >"$test_root/$name.stdout" 2>"$test_root/$name.stderr"
 }
-# fixture_app DIAGNOSTICS [APP]: a bundle (default: the benchmark's
-# diagnostic path) whose Info.plist enables the diagnostic entry points when
+# fixture_app DIAGNOSTICS [APP]: a bundle (default: the everyday
+# .build/Lyte.app) whose Info.plist enables the diagnostic entry points when
 # DIAGNOSTICS=1.
 fixture_app() {
-    local app="${2:-$diagnostic_app}" key=""
+    local app="${2:-$everyday_app}" key=""
     rm -rf "$app"
     mkdir -p "$app/Contents/MacOS"
     printf '#!/bin/sh\n' > "$app/Contents/MacOS/Lyte"
@@ -104,7 +146,7 @@ if LYTE_FAKE_PGREP_RESULT=empty run_benchmark missing handshake-only; then
 fi
 [[ -d "$test_root/missing-output" ]] \
     || fail "an admitted benchmark created no output"
-grep -Fq 'missing signed diagnostic app' "$test_root/missing.stderr"
+grep -Fq 'missing signed app' "$test_root/missing.stderr"
 
 # A bundle without the diagnostic entry points would ignore the benchmark
 # environment: refused before signing checks, the lock or pup.
@@ -122,17 +164,85 @@ if LYTE_FAKE_PGREP_RESULT=empty run_benchmark diagnostic handshake-only; then
 fi
 grep -Fq 'fake codesign reached' "$test_root/diagnostic.stderr"
 
-# The everyday bundle is never the benchmark's, even when it is a
-# diagnostic build: without the benchmark's own bundle the run stops.
-rm -rf "$diagnostic_app"
-fixture_app 1 "$everyday_app"
-if LYTE_FAKE_PGREP_RESULT=empty run_benchmark everyday handshake-only; then
-    fail "benchmark ran the everyday app"
-fi
-grep -Fq 'missing signed diagnostic app' "$test_root/everyday.stderr"
-refute grep -Fq 'fake codesign reached' "$test_root/everyday.stderr"
+# Nothing above built, so nothing was restored.
+[[ ! -s "$make_app_log" ]] || fail "a --no-build run ran make-app"
 
-# make_app NAME [VAR=VALUE...] -- ARG...: one make-app.sh run in the
+# plist_is_diagnostic APP: the bundle enables the diagnostic entry points.
+plist_is_diagnostic() {
+    local value
+    value="$(plutil -extract LyteDiagnosticEntryPoints raw \
+        -o - "$1/Contents/Info.plist" 2>/dev/null || true)"
+    [[ "$value" == true ]] || return 1
+}
+# build_benchmark NAME [VAR=VALUE...]: one building run (fake make-app) that
+# stops at codesign, or waits there under FAKE_CODESIGN_HANG.
+build_benchmark() {
+    local name="$1"
+    shift
+    : > "$make_app_log"
+    env -u PUP -u LYTE_BENCHMARK_PUP -u LYTE_APP_DESTINATION \
+        PATH="$test_root/bin:$PATH" LYTE_PUP_HOST=fake-pup.invalid \
+        LYTE_PGREP="$fake_pgrep" LYTE_FAKE_PGREP_RESULT=empty \
+        LYTE_MAKE_APP="$fake_make_app" FAKE_MAKE_APP_LOG="$make_app_log" \
+        "$@" "$fake_root/Scripts/benchmark-app.sh" \
+        --out "$test_root/$name-output" handshake-only \
+        >"$test_root/$name.stdout" 2>"$test_root/$name.stderr"
+}
+
+# A building run makes the one .build/Lyte.app a diagnostic build, and its
+# exit restores the plain build — after releasing the artifact lock it took.
+fixture_app 0
+if build_benchmark restored; then
+    fail "benchmark passed a fake-signed app"
+fi
+grep -Fq 'fake codesign reached' "$test_root/restored.stderr"
+[[ "$(<"$make_app_log")" == $'--diagnostics release\nrelease' ]] \
+    || fail "make-app ran as: $(<"$make_app_log")"
+refute plist_is_diagnostic "$everyday_app"
+grep -Fq 'restoring the everyday app' "$test_root/restored.stderr"
+refute grep -Fq 'WARNING' "$test_root/restored.stderr"
+
+# An interrupted run restores too, and still exits 128+signal.
+rm -f "$test_root/codesign.pid"
+: > "$make_app_log"
+# Backgrounded directly (not through the function) so $! is the benchmark.
+env -u PUP -u LYTE_BENCHMARK_PUP -u LYTE_APP_DESTINATION \
+    PATH="$test_root/bin:$PATH" LYTE_PUP_HOST=fake-pup.invalid \
+    LYTE_PGREP="$fake_pgrep" LYTE_FAKE_PGREP_RESULT=empty \
+    LYTE_MAKE_APP="$fake_make_app" FAKE_MAKE_APP_LOG="$make_app_log" \
+    FAKE_CODESIGN_HANG="$test_root/codesign.pid" \
+    "$fake_root/Scripts/benchmark-app.sh" \
+    --out "$test_root/interrupted-output" handshake-only \
+    >"$test_root/interrupted.stdout" 2>"$test_root/interrupted.stderr" &
+benchmark_pid=$!
+for _ in {1..200}; do
+    [[ -s "$test_root/codesign.pid" ]] && break
+    sleep 0.05
+done
+[[ -s "$test_root/codesign.pid" ]] || fail "the interrupted run never built"
+plist_is_diagnostic "$everyday_app" \
+    || fail "the running benchmark's app is not a diagnostic build"
+kill -TERM "$benchmark_pid"
+kill "$(<"$test_root/codesign.pid")"
+benchmark_status=0
+wait "$benchmark_pid" || benchmark_status=$?
+[[ "$benchmark_status" -eq 143 ]] \
+    || fail "an interrupted benchmark exited $benchmark_status; want 143"
+[[ "$(<"$make_app_log")" == $'--diagnostics release\nrelease' ]] \
+    || fail "an interrupted run's make-app ran as: $(<"$make_app_log")"
+refute plist_is_diagnostic "$everyday_app"
+
+# A restore that fails says so loudly, with the command that fixes it.
+if build_benchmark unrestored FAKE_RESTORE=fail; then
+    fail "benchmark passed a fake-signed app"
+fi
+plist_is_diagnostic "$everyday_app" || fail "the fake restore did not fail"
+grep -Fq '.build/Lyte.app is STILL A DIAGNOSTIC BUILD' \
+    "$test_root/unrestored.stderr"
+grep -Fq 'Scripts/make-app.sh release' "$test_root/unrestored.stderr"
+fixture_app 0
+
+# make_app NAME [VAR=VALUE...] -- ARG...: one real make-app.sh run in the
 # private root; the fake swift ends it at the first compile.
 make_app() {
     local name="$1"
@@ -146,24 +256,19 @@ make_app() {
         "$fake_root/Scripts/make-app.sh" "$@" \
         >"$test_root/$name.stdout" 2>"$test_root/$name.stderr"
 }
-fixture_app 0 "$everyday_app"
-everyday_plist="$(shasum -a 256 "$everyday_app/Contents/Info.plist")"
 
-# A diagnostic build aimed at the everyday bundle is refused before any
-# compile, and the everyday bundle is untouched.
+# The diagnostic build publishes at the everyday .build/Lyte.app, the one
+# physical copy: make-app proceeds to the compiler.
 if make_app diagnostic-live -- --diagnostics release; then
-    fail "make-app built a diagnostic bundle at .build/Lyte.app"
+    fail "make-app finished without a compiler"
 fi
-grep -Fq 'a diagnostic bundle is never published at' \
-    "$test_root/diagnostic-live.stderr"
-refute grep -Fq 'fake swift reached' "$test_root/diagnostic-live.stderr"
+grep -Fq 'fake swift reached' "$test_root/diagnostic-live.stderr"
 
 # An exported LYTE_APP_DIAGNOSTICS=1 (the owner's shell, the macOS gate)
-# selects nothing: the everyday build proceeds as a plain build.
+# selects nothing, and says so.
 if make_app inherited LYTE_APP_DIAGNOSTICS=1 -- release; then
     fail "make-app finished without a compiler"
 fi
-refute grep -Fq 'never published at' "$test_root/inherited.stderr"
 grep -Fq 'ignores LYTE_APP_DIAGNOSTICS' "$test_root/inherited.stderr"
 grep -Fq 'fake swift reached' "$test_root/inherited.stderr"
 
@@ -171,22 +276,6 @@ if make_app bad-flag -- --diagnostic release; then
     fail "make-app accepted an unknown flag"
 fi
 grep -Fq 'usage: Scripts/make-app.sh' "$test_root/bad-flag.stderr"
-
-# The benchmark builds its own bundle: make-app accepts its destination
-# (it would refuse the everyday one) and reaches the compiler.
-rm -rf "$diagnostic_app"
-if env -u PUP -u LYTE_BENCHMARK_PUP -u LYTE_APP_DESTINATION \
-    PATH="$test_root/bin:$PATH" LYTE_PUP_HOST=fake-pup.invalid \
-    LYTE_PGREP="$fake_pgrep" LYTE_FAKE_PGREP_RESULT=empty \
-    "$fake_root/Scripts/benchmark-app.sh" --out "$test_root/build-output" \
-    handshake-only >"$test_root/build.stdout" 2>"$test_root/build.stderr"
-then
-    fail "benchmark finished without a compiler"
-fi
-refute grep -Fq 'never published at' "$test_root/build.stderr"
-grep -Fq 'fake swift reached' "$test_root/build.stderr"
-[[ "$(shasum -a 256 "$everyday_app/Contents/Info.plist")" == "$everyday_plist" ]] \
-    || fail "a diagnostic build rewrote the everyday bundle"
 
 # The packaging gate knows which kind of app it checks: the gate's plain
 # app with diagnostic entry points fails, and so does a diagnostic app
