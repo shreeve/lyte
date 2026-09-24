@@ -128,7 +128,8 @@ In order:
    a `README.md` (at any depth) is modified, deleted, renamed or retyped
    relative to
    `LYTE_GATE_BASE_SHA` (default: merge base with `origin/main`). New files
-   are allowed. `LYTE_ALLOW_VECTOR_CHANGES=1` overrides, deliberately.
+   are allowed; a base that is not a commit fails the gate.
+   `LYTE_ALLOW_VECTOR_CHANGES=1` overrides, deliberately.
 2. **Package tests** for Common, Wire, Host, Client, SystemTests and
    Browser, as above.
 3. **WebAssembly legs:** `Browser/Scripts/build.sh`, then
@@ -142,7 +143,8 @@ In order:
 5. **Script tests:** `test-shell-assertions.sh` (every tracked `*.sh`
    parses, and none states a check as a bare `[[ … ]]`, `(( … ))` or
    `! cmd`, which macOS bash 3.2 never fails under `set -e`; tests use
-   `Scripts/lib/assert.sh`), `test-build-graph.sh`, `test-benchmark-safety.sh`,
+   `Scripts/lib/assert.sh`), `test-build-graph.sh`, `test-gate-lock.sh`,
+   `test-frozen-vectors.sh`, `test-benchmark-safety.sh`,
    `test-host-release-posture.sh`, `test-host-package-image.sh --self-test`,
    `test-host-installer.sh --self-test` (which also runs
    `test-host-deploy.sh`), `test-sign-dev.sh`, `test-setup-dev-signing.sh`.
@@ -158,14 +160,18 @@ In order:
 
 ## The pup gate — `Scripts/CI/test-all-pup.sh`
 
-One ssh session to `LYTE_PUP_HOST` (default `pup`) takes an `flock` on
+One ssh session to `LYTE_PUP_HOST` (default `pup`) fingerprints protected
+state (step 1 below) before it writes anything, then takes an `flock` on
 `~/src/lyte-gates/.deterministic.flock`, which then names the holder; a
-second gate fails at once with that name. The lock lives as long as the
+second gate fails at once with that name, and a lock path that is a symlink
+or not a regular file fails the gate untouched. The lock lives as long as the
 session's processes, and the session terminates its whole process tree
 when the local gate goes away, so an interrupted gate leaves nothing
 running. Under the lock the local side mirrors Client, Common, Wire, Host,
 `Scripts/`, `LICENSE` and `docs/THIRD-PARTY.md` (the host image carries
-both) to `~/src/lyte-gates/deterministic/`, then the session:
+both) to `~/src/lyte-gates/deterministic/`, plus only the manifest and
+`Sources/` of Browser and SystemTests (Common's lints scan them), then the
+session:
 
 1. Fingerprints protected state: `~/.config/lyte/{noise_static.key,
    paired_clients,host.conf}` (required: a missing one fails the gate
@@ -187,8 +193,8 @@ both) to `~/src/lyte-gates/deterministic/`, then the session:
 7. Verifies the protected-state fingerprint is unchanged.
 
 The pup gate never deploys or restarts the standing service. Browser is
-not mirrored or built on pup: its JavaScriptKit dependency needs Swift 6.2
-or later. SystemTests composes the macOS client and is not mirrored either.
+not built on pup: its JavaScriptKit dependency needs Swift 6.2 or later.
+SystemTests composes the macOS client and is not built either.
 
 ## WebAssembly
 

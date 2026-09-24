@@ -80,8 +80,9 @@ else
 fi
 
 # App publication refuses app matches, helper matches, and unreadable process
-# state before invoking the compiler.
-mkdir -p "$test_root/bin"
+# state before invoking the compiler. make-app requires its destination's
+# parent, .build, to exist; a fresh checkout has none.
+mkdir -p "$repo_root/.build" "$test_root/bin"
 fake_swift_log="$test_root/swift.log"
 cat > "$test_root/bin/swift" <<'EOF'
 #!/bin/sh
@@ -101,9 +102,13 @@ for result in app helper error; do
     fi
     [[ ! -e "$fake_swift_log" ]] || fail "make-app compiled with process state: $result"
 done
-grep -Fq 'Lyte PID 4242' "$test_root/make-app.stderr"
-grep -Fq 'lyte-helperd PID 4343' "$test_root/make-helper.stderr"
-grep -Fq 'cannot inspect Lyte process state' "$test_root/make-error.stderr"
+for result in 'app:Lyte PID 4242' 'helper:lyte-helperd PID 4343' \
+    'error:cannot inspect Lyte process state'
+do
+    grep -Fq "${result#*:}" "$test_root/make-${result%%:*}.stderr" \
+        || fail "make-app refused ${result%%:*} state without saying" \
+            "'${result#*:}': $(cat "$test_root/make-${result%%:*}.stderr")"
+done
 
 # The artifact lock serializes version allocation, publication, registration,
 # and launch. A second owner must fail rather than wait behind stale inputs.
@@ -131,7 +136,6 @@ grep -Fq 'another Lyte app assembly or launch is in progress' \
 wait "$lock_holder"
 lock_holder=""
 
-mkdir -p "$repo_root/.build"
 bad_app_root="$(mktemp -d \
     "$repo_root/.build/.lyte-test-bad-version.XXXXXX")"
 bad_app="$bad_app_root/Lyte.app"
