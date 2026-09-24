@@ -32,6 +32,7 @@ export class SessionPump {
     this.status = "idle";
     this.failure = null;
     this.ingested = 0;
+    this.batches = 0;
     this.onScheduled = null;
   }
 
@@ -92,6 +93,7 @@ export class SessionPump {
     const batch = this.reader.take();
     if (batch.length) {
       this.ingested += batch.length;
+      this.batches += 1;
       this.apply(this.bridge.controlIngestBatch(packDatagrams(batch), nowMicros()));
     }
     if (this.reader.done && !this.failed && !this.closed) {

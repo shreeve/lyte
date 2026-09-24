@@ -158,6 +158,7 @@ export async function runSessionProof({
   const meta =
     `assembled=${stats.assembled} presented=${presentedPts.length} ` +
     `skippedLate=${stats.skippedLate} ingestedDatagrams=${pump?.ingested || 0} ` +
+    `ingestBatches=${pump?.batches || 0} ` +
     `unsealFailures=${facts.unsealFailures} idrRequests=${facts.idrRequestsSent}\n` +
     `pts=[${presentedPts.slice(0, 6).join(",")},…]\n` +
     `inputsSent=${ix.inputsSent} inputEchoes=${ix.inputEchoes} ` +
