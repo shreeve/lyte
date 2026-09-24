@@ -25,7 +25,6 @@ struct Options {
     /// session; a --wire-listen run without it is the service.
     var seconds = 5.0
     var secondsGiven = false
-    var fps: Int32 = 60
     /// Run a session to this peer instead of writing the file.
     var wireOut: (host: String, port: UInt16)?
     /// Bind here and await a connecting client.
@@ -802,7 +801,7 @@ static func serveSession(
         // moves without a reset. The loosening sustain stays slow on
         // purpose: an eager one chases every climb into a limit cycle.
         w.armEncoderVbv(EncoderVbvConfig(
-            fps: Int(opts.fps),
+            fps: DirectEyeLeg.fps,
             baselineAverageBitsPerSecond: nil,
             baselineMaxBitsPerSecond: rateBits,
             baselineVbvBits: guardBits,
@@ -1145,8 +1144,8 @@ static func printSessionBooks(
     \(wire.estimatorStats.upshiftsCadenceHeld) cadence-held), \
     \(s.rateChanges) pacer moves, \
     \(s.fallPurges) fall purges (\(s.fallPurgedVideoBytes) B dropped \
-    pre-stale); frameByteCeiling@\(opts.fps)fps \
-    \(wire.frameByteCeiling(fps: Int(opts.fps))) B; borrowed ingress \
+    pre-stale); frameByteCeiling@\(DirectEyeLeg.fps)fps \
+    \(wire.frameByteCeiling(fps: DirectEyeLeg.fps)) B; borrowed ingress \
     \(wire.borrowedFrameBytesIngested) B (entry-copy bytes avoided)
     encoder-vbv: \(wire.vbvDirectivesIssued) directives, \
     \(leg.directivesApplied) applied, \
@@ -1211,6 +1210,7 @@ extension HostApplication {
     }
 
     static func main(arguments: [String]) {
+        lyteIgnoreBrokenPipes()
         // Subcommands never return: `sniff` is the Lyte-UDP header
         // dissector; `advertise` is the standalone Avahi surface.
         if arguments.count > 1, arguments[1] == "sniff" {

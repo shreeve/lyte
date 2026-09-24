@@ -92,7 +92,8 @@ final class DirectEyeLeg {
     /// end stops the leg.
     private(set) var deliveryFailures = 0
     private(set) var admission = VideoAdmissionGate()
-    private var lastDeliveryFailureWallSeconds = 0.0
+    /// Monotonic seconds, like every clock below.
+    private var lastDeliveryFailureSeconds = 0.0
     static let refusedIdrRetrySeconds = 1.0 / 60
     private var lastEncodedCaptureUs: UInt64 = 0
     private(set) var staticIdrsServed = 0
@@ -105,7 +106,7 @@ final class DirectEyeLeg {
     static let cursorPollMicroseconds: UInt64 = 16_667
     /// How often a running session's janitor bounds host.log.
     static let logCheckIntervalMicros: UInt64 = 60_000_000
-    private var lastDeliveryWallSeconds = 0.0
+    private var lastDeliverySeconds = 0.0
     private(set) var keepalivesSent = 0
     /// The video quiet ladder: engaged only under the key-16 agreement;
     /// every step and wake is announced (0x26).
@@ -299,7 +300,7 @@ final class DirectEyeLeg {
         var observationSkipEvents: UInt64 = 0
         let t0 = SystemMonotonicClock.nowSeconds
         // The stillness clock: last pixel change or client input.
-        var lastActivityWallSeconds = t0
+        var lastActivitySeconds = t0
 
         // Recovery and keepalive frames run on the 1 ms poll, independent
         // of the 60 Hz observation grid.
@@ -308,7 +309,7 @@ final class DirectEyeLeg {
         ) throws -> Bool {
             // A refused IDR is retried no sooner than one beat later.
             if staticIdrWanted,
-               SystemMonotonicClock.nowSeconds - lastDeliveryFailureWallSeconds
+               SystemMonotonicClock.nowSeconds - lastDeliveryFailureSeconds
                    >= Self.refusedIdrRetrySeconds {
                 staticIdrWanted = false
                 let served: Void? = try pipeline.encodeRetained(forceIDR: true) {
@@ -321,7 +322,7 @@ final class DirectEyeLeg {
                     staticIdrWanted = true // nothing retained yet
                 } else {
                     staticIdrsServed += 1
-                    lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
+                    lastDeliverySeconds = SystemMonotonicClock.nowSeconds
                     print("""
                         direct: static-screen IDR served \
                         (re-encoded retained surface)
@@ -334,7 +335,7 @@ final class DirectEyeLeg {
             if let wire, let snapshot {
                 let inputSeconds = Double(snapshot.lastInputActivityNS) / 1e9
                 let idle = SystemMonotonicClock.nowSeconds
-                    - max(lastActivityWallSeconds, inputSeconds)
+                    - max(lastActivitySeconds, inputSeconds)
                 if snapshot.videoQuietPostureAgreed {
                     let verdict = quietPacer.assess(idleSeconds: idle)
                     keepaliveInterval = verdict.keepaliveSeconds
@@ -347,7 +348,7 @@ final class DirectEyeLeg {
                 }
             }
             if wire != nil,
-               SystemMonotonicClock.nowSeconds - lastDeliveryWallSeconds
+               SystemMonotonicClock.nowSeconds - lastDeliverySeconds
                    >= keepaliveInterval {
                 let served: Void? = try pipeline.encodeRetained(forceIDR: false) {
                     bytes, keyframe in
@@ -356,7 +357,7 @@ final class DirectEyeLeg {
                 }
                 if served != nil {
                     keepalivesSent += 1
-                    lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
+                    lastDeliverySeconds = SystemMonotonicClock.nowSeconds
                     return true
                 }
             }
@@ -509,7 +510,7 @@ final class DirectEyeLeg {
                 if idle(snapshot) { continue } else { return }
             }
             changedObservations += 1
-            lastActivityWallSeconds = SystemMonotonicClock.nowSeconds
+            lastActivitySeconds = SystemMonotonicClock.nowSeconds
             // A queue at its latency budget gets no new frame; the reset
             // fingerprint re-observes the newest pixels next beat.
             if let wire {
@@ -544,7 +545,7 @@ final class DirectEyeLeg {
                 lastStages.deliverUs = SystemMonotonicClock.nowMicroseconds - deliverStart
                 maxStages.formMax(lastStages)
                 frames += 1
-                lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
+                lastDeliverySeconds = SystemMonotonicClock.nowSeconds
             } catch {
                 lastError = "direct: frame \(frames): \(error)"
                 return
@@ -647,8 +648,8 @@ final class DirectEyeLeg {
               let injected = wire.lastAbsolutePointerInjection(),
               let pointer = InputCoordinate.pixel(x: injected.x, y: injected.y)
         else { return }
-        let nowMicros = UInt64(SystemMonotonicClock.nowSeconds * 1_000_000)
-        guard nowMicros &- injected.atMicros > 150_000 else { return }
+        guard SystemMonotonicClock.nowMicroseconds &- injected.atMicros
+            > 150_000 else { return }
         guard let plane = watcher.planeCrtcPosition(),
               CursorHotspot.canRecheck(
                   planeCrtc: .init(x: plane.x, y: plane.y))
@@ -729,7 +730,7 @@ final class DirectEyeLeg {
                         : [])
             } catch {
                 deliveryFailures += 1
-                lastDeliveryFailureWallSeconds = SystemMonotonicClock.nowSeconds
+                lastDeliveryFailureSeconds = SystemMonotonicClock.nowSeconds
                 if deliveryFailures <= 3 {
                     print("""
                         direct: session refused frame \

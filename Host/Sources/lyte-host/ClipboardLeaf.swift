@@ -173,7 +173,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
             interface: Self.sessionInterface, method: "EnableClipboard",
             timeoutMs: SessionBus.setupTimeoutMs,
             appendArgs: { iter in
-                try self.bus.appendOptions(&iter, [])
+                try self.bus.appendEmptyOptions(&iter)
             })
         dbus_message_unref(enableReply)
 
@@ -522,8 +522,7 @@ final class MutterClipboardLeaf: HostClipboardLeaf {
     // MARK: - D-Bus plumbing
 
     /// Appends `a{sv}` holding one "mime-types" → `as` entry (the
-    /// SetSelection options shape; SessionBus's generic options helper
-    /// carries only scalar variants).
+    /// SetSelection options shape).
     private func appendMimeTypesOptions(
         _ iter: inout DBusMessageIter, _ mimes: [String]
     ) throws {

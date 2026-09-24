@@ -631,7 +631,8 @@ final class SessionWire {
                 latencyENOBUFSCount: outbox.counters.latencyNoBufferCount,
                 pacerRateBitsPerSecond: session.pacerRateBitsPerSecond,
                 videoQueueBudgetNS: session.videoQueueBudgetNS,
-                frameBudgetBytes: session.frameByteCeiling(fps: 60)))
+                frameBudgetBytes: session.frameByteCeiling(
+                    fps: DirectEyeLeg.fps)))
         kernelPressureDecision = decision
         return decision
     }
@@ -2140,12 +2141,6 @@ final class SessionWire {
         guard let released = inputInjector?.releaseHeld(), released > 0
         else { return }
         emit("input: released \(released) held key(s) — \(why)")
-    }
-
-    /// Capture negotiation → the injector's absolute-coordinate scaling
-    /// (the uinput tablet needs the monitor size; Mutter ignores it).
-    func noteMonitorExtent(width: UInt32, height: UInt32) {
-        inputInjector?.noteMonitorExtent(width: width, height: height)
     }
 
     private func flushOutbox() throws {

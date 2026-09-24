@@ -1,6 +1,6 @@
 // Thin Swift layer over libdbus: a private session- or system-bus
-// connection, blocking method calls, a{sv} option dictionaries, and reply
-// readers. Mutter's clipboard (RemoteDesktop) and Avahi ride it.
+// connection, blocking method calls, and reply readers. Mutter's clipboard
+// (RemoteDesktop) and Avahi ride it.
 
 import CDBus
 
@@ -19,13 +19,6 @@ enum DType {
     static let dictEntry: Int32 = 101 // 'e'
     static let structType: Int32 = 114 // 'r'
     static let unixFd: Int32 = 104 // 'h'
-}
-
-/// Values we place into a{sv} option dictionaries.
-enum DBusVariant {
-    case u32(UInt32)
-    case string(String)
-    case bool(Bool)
 }
 
 final class SessionBus {
@@ -95,37 +88,6 @@ final class SessionBus {
         if ok == 0 { throw HostError("dbus append failed (out of memory)") }
     }
 
-    private func appendOptionsDict(_ iter: inout DBusMessageIter,
-                                   _ options: [(String, DBusVariant)]) throws {
-        var arrayIter = DBusMessageIter()
-        guard dbus_message_iter_open_container(&iter, DType.array, "{sv}", &arrayIter) != 0
-        else { throw HostError("dbus open_container(array) failed") }
-
-        for (key, value) in options {
-            var entryIter = DBusMessageIter()
-            dbus_message_iter_open_container(&arrayIter, DType.dictEntry, nil, &entryIter)
-            try appendBasicString(&entryIter, type: DType.string, value: key)
-
-            var variantIter = DBusMessageIter()
-            switch value {
-            case .u32(let v):
-                dbus_message_iter_open_container(&entryIter, DType.variant, "u", &variantIter)
-                var raw = v
-                dbus_message_iter_append_basic(&variantIter, DType.uint32, &raw)
-            case .string(let s):
-                dbus_message_iter_open_container(&entryIter, DType.variant, "s", &variantIter)
-                try appendBasicString(&variantIter, type: DType.string, value: s)
-            case .bool(let b):
-                dbus_message_iter_open_container(&entryIter, DType.variant, "b", &variantIter)
-                var raw: dbus_bool_t = b ? 1 : 0
-                dbus_message_iter_append_basic(&variantIter, DType.boolean, &raw)
-            }
-            dbus_message_iter_close_container(&entryIter, &variantIter)
-            dbus_message_iter_close_container(&arrayIter, &entryIter)
-        }
-        dbus_message_iter_close_container(&iter, &arrayIter)
-    }
-
     // MARK: - Generic calls
 
     /// Issues a blocking method call; the closure appends arguments.
@@ -159,9 +121,13 @@ final class SessionBus {
         try appendBasicString(&iter, type: type, value: value)
     }
 
-    func appendOptions(_ iter: inout DBusMessageIter,
-                       _ options: [(String, DBusVariant)]) throws {
-        try appendOptionsDict(&iter, options)
+    /// An empty `a{sv}` options dictionary.
+    func appendEmptyOptions(_ iter: inout DBusMessageIter) throws {
+        var array = DBusMessageIter()
+        guard dbus_message_iter_open_container(
+            &iter, DType.array, "{sv}", &array) != 0
+        else { throw HostError("dbus open_container(a{sv}) failed") }
+        dbus_message_iter_close_container(&iter, &array)
     }
 
     static func objectPathReply(_ reply: OpaquePointer) throws -> String {
