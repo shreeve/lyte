@@ -686,7 +686,9 @@ final class SessionWire {
     /// discarded. So no replayed, spoofed or abandoned message 1 can lock
     /// out the next client. A wire-out host accepts only its peer.
     ///
-    /// `idle` runs off the lock once per wait pass (~2 ms).
+    /// `idle` runs off the lock once per wait pass: every 10 ms while no
+    /// handshake is answered, every 2 ms while an answered one's timers
+    /// run, and at once when a datagram arrives.
     func awaitClient(
         hostStatic: NoiseKeyPair,
         timeoutSeconds: Double?,
@@ -745,6 +747,7 @@ final class SessionWire {
                 throw error
             }
             let done = session?.isPeerConfirmed == true
+            let answered = session != nil
             lock.unlock()
             flushLogLines()
             if done {
@@ -752,7 +755,7 @@ final class SessionWire {
                 return .established
             }
             idle()
-            usleep(2_000)
+            awaitReadable(timeoutNS: answered ? 2_000_000 : 10_000_000)
         }
         if stopRequested() {
             return .terminationRequested
@@ -762,6 +765,18 @@ final class SessionWire {
             — is lyte-cli wire-view pointed at this host and holding \
             the printed static key?
             """)
+    }
+
+    /// Waits, off the lock, until a socket this wire reads is readable or
+    /// `timeoutNS` elapses (a signal also ends it).
+    private func awaitReadable(timeoutNS: Int64) {
+        var fds = [lyte_netio_fd(listenNetio)]
+        if let videoNetio { fds.append(lyte_netio_fd(videoNetio)) }
+        if let latencyNetio { fds.append(lyte_netio_fd(latencyNetio)) }
+        let events = [Int16](repeating: Int16(POLLIN), count: fds.count)
+        var revents = [Int16](repeating: 0, count: fds.count)
+        _ = lyte_netio_wait(
+            fds, events, &revents, Int32(fds.count), timeoutNS)
     }
 
     /// Requires `lock`. One datagram while awaiting a confirmed client.
