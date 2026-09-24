@@ -71,6 +71,8 @@ struct Options {
     /// `cookieExit`, which must be lower.
     var cookieEnter = 20
     var cookieExit = 5
+    /// The DRM card node whose primary plane is captured.
+    var drmDevice = DirectEyeLeg.Config.defaultDevice
     /// Debug only: false = never arm the EncoderVbvPolicy; the encoder
     /// keeps its opening posture for the whole run.
     var vbvReconfigure = true
@@ -178,6 +180,12 @@ struct Options {
                     throw HostError("--cookie-exit needs a non-negative integer")
                 }
                 opts.cookieExit = v
+            case "--drm-device":
+                i += 1
+                guard i < args.count, args[i].hasPrefix("/") else {
+                    throw HostError("--drm-device needs an absolute card path")
+                }
+                opts.drmDevice = args[i]
             case "--no-vbv-reconfigure":
                 opts.vbvReconfigure = false
             case "--audio-bitrate-kbps":
@@ -278,6 +286,9 @@ struct Options {
                                     directory came up, so a plain run
                                     truthfully negotiates no file
                                     transfer
+                  --drm-device PATH the DRM card node to capture (default
+                                    /dev/dri/card1); the render node is
+                                    that GPU's own
                   --no-vbv-reconfigure
                                     debug: never reconfigure the
                                     encoder's rate control from the
@@ -543,7 +554,7 @@ final class SessionHost {
         // Chroma is declared on proof: only a Main444 encode entrypoint
         // declares the Best tier. The client's singleton declaration
         // picks the session's posture.
-        if EyeVaapiEncoder.probesMain444() {
+        if EyeVaapiEncoder.probesMain444(renderNode: screen.renderNode) {
             declared.chromaModes = [
                 CapabilityChroma.yuv420, CapabilityChroma.yuv444,
             ]
@@ -669,7 +680,7 @@ static func run(arguments: [String]) throws {
     // The scanout opens first: its geometry scales the injector's
     // absolute moves. It and the eye's GL context live for the run.
     let screen = try DirectEyeLeg.openScreen(
-        device: DirectEyeLeg.Config.defaultDevice)
+        device: opts.drmDevice)
     let eye = WarmEye(screen: screen)
     guard sessionMode else {
         try runFileLeg(opts, screen: screen, eye: eye)

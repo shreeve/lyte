@@ -73,7 +73,7 @@ public final class EyeVaapiEncoder {
     /// declares 4:4:4 only on this proof. Uses a short-lived display of
     /// its own, closed before return.
     public static func probesMain444(
-        renderNode: String = "/dev/dri/renderD128"
+        renderNode: String
     ) -> Bool {
         let fd = open(renderNode, O_RDWR | O_CLOEXEC)
         guard fd >= 0 else { return false }
@@ -98,7 +98,7 @@ public final class EyeVaapiEncoder {
 
     public init(
         width: Int32, height: Int32, fps: Int32, qp: Int32,
-        renderNode: String = "/dev/dri/renderD128",
+        renderNode: String,
         bitrateBitsPerSecond: Int64 = 0,
         hrdBufferBits: Int64? = nil,
         inputSurfaceCount: Int = 8,

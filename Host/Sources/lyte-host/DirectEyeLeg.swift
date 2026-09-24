@@ -23,11 +23,13 @@ import LyteWire
 final class WarmEye {
     private let width: Int32
     private let height: Int32
+    private let renderNode: String
     private var pipeline: EyePipeline?
 
     init(screen: DirectScreenSource) {
         self.width = screen.width
         self.height = screen.height
+        self.renderNode = screen.renderNode
     }
 
     /// The pipeline for the next session, in its chroma posture, first
@@ -42,7 +44,7 @@ final class WarmEye {
         }
         let opened = try EyePipeline(
             width: width, height: height,
-            renderNode: config.renderNode, qp: config.qp,
+            renderNode: renderNode, qp: config.qp,
             bitrateBitsPerSecond: config.bitrateBitsPerSecond,
             hrdBufferBits: config.bitrateBitsPerSecond > 0
                 ? Int64(EncoderHrd.bufferBits(
@@ -57,9 +59,8 @@ final class WarmEye {
 
 final class DirectEyeLeg {
     struct Config {
+        /// The card node observed unless --drm-device names another.
         static let defaultDevice = "/dev/dri/card1"
-        var device = Config.defaultDevice
-        var renderNode = "/dev/dri/renderD128"
         /// The leg's wall-clock bound; `.infinity` for a service session.
         var seconds: Double
         var qp: Int32 = 24
@@ -272,7 +273,8 @@ final class DirectEyeLeg {
             ? "vbr \(config.bitrateBitsPerSecond / 1_000_000) Mbps cap"
             : "cqp \(config.qp)"
         print("""
-            direct: eye open — \(width)x\(height) on \(config.device), native \
+            direct: eye open — \(width)x\(height) on \(screen.device) \
+            (render \(screen.renderNode)), native \
             VAAPI \(rc), \(chroma == .yuv444 ? "Rext 4:4:4 (AYUV)" : "4:2:0") \
             (rate directives apply live)
             """)

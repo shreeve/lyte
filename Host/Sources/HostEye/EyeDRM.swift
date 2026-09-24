@@ -20,6 +20,15 @@ public func openCardWithoutMaster(_ path: String) -> Int32 {
     return fd
 }
 
+/// The render node of the GPU behind an open card fd — on a multi-GPU
+/// host the one that can import this card's scanout. Nil when the
+/// driver exposes none (a scanout-only device).
+public func renderNode(forCard fd: Int32) -> String? {
+    guard let name = drmGetRenderDeviceNameFromFd(fd) else { return nil }
+    defer { free(name) }
+    return String(cString: name)
+}
+
 /// The DRM "type" property of a plane (primary / overlay / cursor).
 func planeType(fd: Int32, planeId: UInt32) -> UInt64? {
     guard let props = drmModeObjectGetProperties(

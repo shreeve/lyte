@@ -31,6 +31,17 @@ final class HostOptionsTests: XCTestCase {
         XCTAssertTrue(challenged, "a flood meets the cookie challenge")
     }
 
+    func testTheCapturedCardCanBeNamed() throws {
+        XCTAssertEqual(
+            try Options.parse(["lyte-host"]).drmDevice, "/dev/dri/card1")
+        XCTAssertEqual(
+            try Options.parse(["lyte-host", "--drm-device", "/dev/dri/card0"])
+                .drmDevice,
+            "/dev/dri/card0")
+        XCTAssertThrowsError(
+            try Options.parse(["lyte-host", "--drm-device", "card0"]))
+    }
+
     func testTheCookieThresholdsMustLeaveHysteresis() {
         XCTAssertThrowsError(try Options.parse([
             "lyte-host", "--cookie-enter", "10", "--cookie-exit", "10",

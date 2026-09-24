@@ -48,9 +48,17 @@ public final class DirectScreenSource: ScreenSource {
     public let width: Int32
     public let height: Int32
     public let fileDescriptor: Int32
+    /// The card node this source observes.
+    public let device: String
+    /// The render node of the same GPU, which imports, blits and
+    /// encodes this card's scanout.
+    public let renderNode: String
 
     private let primaryPlaneId: UInt32
     private var identityTracker = FramebufferIdentityTracker()
+
+    /// Where the render node comes from when the driver names none.
+    public static let fallbackRenderNode = "/dev/dri/renderD128"
 
     public init(device: String) throws {
         let fd = openCardWithoutMaster(device)
@@ -74,6 +82,8 @@ public final class DirectScreenSource: ScreenSource {
         }
 
         fileDescriptor = fd
+        self.device = device
+        renderNode = HostEye.renderNode(forCard: fd) ?? Self.fallbackRenderNode
         primaryPlaneId = planes.primary.id
         width = Int32(probe.width)
         height = Int32(probe.height)
