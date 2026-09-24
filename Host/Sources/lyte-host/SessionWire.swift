@@ -1,34 +1,22 @@
-// SessionWire: lyte-host's Lyte-UDP session shell over HostWire.Session
-// (which owns the Noise responder handshake, sealing, beacons, the
-// conn-id TLV, path validation, the pacer, and the estimator). This file
-// is syscalls, threads, and scheduling: CNetIO sockets, recvmmsg into
-// Session.receive with real source tuples, Session's paced datagrams
-// through SocketOutbox into sendmmsg with per-class TOS (HostCore's
-// WireTos: control/audio/repairs 0xC0, video 0xA0), and the per-poll
-// snapshot the capture leg reads.
+// SessionWire: lyte-host's Lyte-UDP session shell over HostWire.Session,
+// which owns the protocol. This file is syscalls, threads and scheduling:
+// recvmmsg into Session.receive with real source tuples, and Session's
+// paced datagrams through SocketOutbox into sendmmsg with per-class TOS.
 //
-// Sockets: one listening socket bound to the session port and never
-// connected — it hears message 1 from any client and a migrated client's
-// new path, and carries every explicitly addressed datagram. The
-// listening service owns it in a HostListener that outlives each
-// session, so the port stays bound between sessions. When a handshake
-// completes, a video socket (SO_PRIORITY 4) and a latency socket
-// (control and audio, 6) join the port via SO_REUSEPORT and connect to
-// the authenticated client; a path promotion re-connects them. They
-// belong to the session and close with it (`release`), so a finished
-// session's socket can never share the port's traffic with the next.
+// Sockets: the HostListener's socket is bound to the session port, never
+// connected, and outlives each session. After a handshake a video socket
+// (SO_PRIORITY 4) and a latency socket (control and audio, 6) join the
+// port via SO_REUSEPORT and connect to the client; they close with the
+// session (`release`), so they never share the port with the next one.
 //
-// Threads: the capture thread (DirectEyeLeg) calls sendFrame and
-// takeLegSnapshot; the audio thread only publishes into a narrow mailbox
-// (packets and track states) and tries the session lock without waiting;
-// the janitor runs service() every 10 ms for shell work (clipboard, bulk
-// files, audio routing, pairing) off the lock; the SCHED_RR sender thread
-// waits in ppoll on its wake eventfd, the sockets, and the session's next
-// timer, then services and flushes. One NSLock guards the Session and the
-// outbox, so sequence allocation, sealing, pacer insertion, and socket
-// flush keep one order; console lines are formatted under it and printed
-// after it is released. The agreed capability flags the audio and capture
-// threads poll live under a separate narrow config lock.
+// Threads: the capture thread calls sendFrame and takeLegSnapshot; the
+// audio thread publishes into a narrow mailbox and only tries the session
+// lock; the janitor runs service() every 10 ms for shell work off the
+// lock; the SCHED_RR sender thread ppolls its wake eventfd, the sockets
+// and the session's next timer, then services and flushes. One NSLock
+// guards the Session and the outbox, so seq allocation, sealing, pacer
+// insertion and flush keep one order; console lines are printed after it
+// is released. Agreed capability flags live under a separate config lock.
 
 import LyteIO
 import LyteCore
@@ -39,15 +27,9 @@ import HostSession
 import HostWire
 import LyteWire
 
-/// Best-effort realtime elevation for a latency-owning thread. The 1 ms
-/// pacing drain and the 5 ms audio cadence rode default CFS against
-/// NVENC submission and the compositor; SCHED_RR buys their tail
-/// behavior on a LOADED box (the idle reference pair never showed the
-/// cost — `maxQueueDelayNS` books are the evidence surface). Degrades
-/// gracefully in order: SCHED_RR → per-thread nice −10 (Linux tasks
-/// carry their own nice) → accept and say so once. Unprivileged runs
-/// need an rtprio rlimit (see Host/README) — the host must run fine
-/// without one.
+/// Best-effort realtime elevation for a latency-owning thread, degrading
+/// SCHED_RR → per-thread nice −10 → default CFS (said once). Unprivileged
+/// runs need an rtprio rlimit; the host must run fine without one.
 func elevateCurrentThread(_ label: String, rtPriority: Int32) {
     #if os(Linux)
     var param = sched_param()
@@ -72,16 +54,13 @@ func elevateCurrentThread(_ label: String, rtPriority: Int32) {
     #endif
 }
 
-/// The listening service's socket: bound once to the session port and
-/// never connected. Every session in turn reads message 1 from it, so the
-/// port never goes unbound between sessions and a client that dials in
-/// the gap is heard by the next one.
+/// The listening service's socket, bound once and never connected, so a
+/// client that dials between sessions is heard by the next one.
 final class HostListener {
     let netio: OpaquePointer
-    /// Message 1s any session of this process answered: a replay, or a
-    /// stale retransmit still queued here after its session ended, is
-    /// dropped before a session reads it. Touched only by `awaitClient`,
-    /// under the waiting wire's lock — one session waits at a time.
+    /// Message 1s any session of this process answered; a replay or stale
+    /// retransmit is dropped unread. Touched only by `awaitClient` under
+    /// the waiting wire's lock (one session waits at a time).
     var answeredHandshakes = AnsweredHandshakeMemory()
 
     init(port: UInt16) throws {
@@ -105,19 +84,16 @@ final class SessionWire {
         case terminationRequested
     }
 
-    /// The listening socket: bound to the session port and never
-    /// connected, so it receives every tuple no connected socket claims —
-    /// message 1 from any client, and a migrated client's new path. It
-    /// also carries every datagram addressed explicitly (path challenges,
-    /// pre-establishment replies).
+    /// Never connected: receives every tuple no connected socket claims
+    /// (message 1, a migrated client's new path) and carries every
+    /// explicitly addressed datagram.
     private let listenNetio: OpaquePointer
     /// The listening socket's owner: the service's shared listener, or a
     /// private one on a kernel-assigned port for a wire-out run.
     private let listener: HostListener
-    /// The media sockets, connected to the client's primary tuple once it
-    /// is known (SO_REUSEPORT members of the listening port, so the wire
-    /// 4-tuple is one): video at SO_PRIORITY 4, control and audio at 6,
-    /// each with its own kernel send buffer. Nil until then.
+    /// The media sockets (SO_REUSEPORT members of the listening port,
+    /// connected to the client's primary tuple; nil until it is known):
+    /// video at SO_PRIORITY 4, control and audio at 6.
     private var videoNetio: OpaquePointer?
     private var latencyNetio: OpaquePointer?
     /// wire-out mode: only this peer may complete a handshake.
@@ -132,54 +108,39 @@ final class SessionWire {
     /// Unconfirmed handshakes a newer authenticated message 1 replaced.
     private(set) var handshakesSuperseded = 0
     private var session: Session!
-    /// HS-15: serializes Session/outbox access between the video
-    /// capture loop thread and the audio capture loop thread (see the
-    /// threading note in the header). Held across service passes,
-    /// released across sleeps.
+    /// Guards the Session and the outbox (see the header). Held across
+    /// service passes, released across sleeps.
     private let lock = NSLock()
     private let rateBitsPerSecond: Int
-    /// What this host declares in the W7 exchange (HS-18: key 9 rides
-    /// here when the audio leg is on).
+    /// What this host declares in the capability exchange.
     private let capabilities: Capabilities
-    /// HS-9: non-nil = only these client statics may complete message 1
-    /// (the paired set, loaded from the keystore by --require-paired).
+    /// Non-nil = only these client statics may complete message 1.
     private let allowedClientStatics: [[UInt8]]?
-    /// HS-21: the pre-handshake flood throttle + require-cookie dial
-    /// config, threaded into every session this shell makes.
     private let handshakeGateConfig: HandshakeGate.Config
-    /// HS-9: non-nil = pairing mode. The service consumes the pairing
-    /// CTRL types off the reliable stream; replies ride sendReliable.
+    /// Non-nil = pairing mode: the service consumes the pairing CTRL
+    /// types off the reliable stream; replies ride sendReliable.
     private let pairing: PairingResponderService?
     private let onPairingEvent: (PairingResponderService.Event) -> Void
 
-    /// Datagrams handed over by the session's paced sink, flushed as
-    /// sendmmsg batches.
     private var outbox = SocketOutbox()
 
-    /// Scratch for one sendmmsg batch: pointers must stay valid for the
-    /// duration of the call, so datagrams are staged here.
+    /// Staging for one sendmmsg batch: pointers must outlive the call.
     private let scratch: UnsafeMutablePointer<UInt8>
     private static let scratchCapacity = Int(LYTE_NETIO_MAX_BATCH) * 1_200
-    /// One batch's packet descriptors, reused across flushes.
     private var sendPackets: [lyte_netio_pkt] = []
     private var sendError = [CChar](repeating: 0, count: 256)
 
-    /// One flat region for recv_batch slots (stable pointers, one slot
-    /// stride per batch position).
+    /// One flat region for recv_batch slots, one stride per position.
     private let recvScratch: UnsafeMutablePointer<UInt8>
     private static let recvSlotCapacity = 2_048
-    /// Reused by every receive drain. All receive paths hold `lock`, so
-    /// this vector has one owner and its pointers remain fixed on the
-    /// lifetime-stable `recvScratch` allocation across recvmmsg calls.
+    /// Reused by every receive drain; all receive paths hold `lock`, and
+    /// the pointers stay fixed on `recvScratch`.
     private var recvSlots: [lyte_netio_slot]
     private var recvError = [CChar](repeating: 0, count: 256)
 
-    /// T2-13: the six surfaces below are published by main AFTER the
-    /// drain thread is live (injector and shells exist only once the
-    /// backend/consent policy has run). Every access snapshots under
-    /// this dedicated lock — never the session `lock`, so the callers'
-    /// off-lock discipline is preserved, and the lock is never held
-    /// across a callback (the accessor releases before returning).
+    /// The surfaces below are published by main after the drain thread
+    /// is live. Every access snapshots under this lock — never the
+    /// session `lock` — and it is never held across a callback.
     private let configLock = NSLock()
     private func withConfigLock<T>(_ body: () -> T) -> T {
         configLock.lock()
@@ -187,89 +148,65 @@ final class SessionWire {
         return body()
     }
 
-    /// HS-13: the injection sink for client input events. Nil = input
-    /// disabled (counted loud, never fatal). Set by main after the
-    /// backend policy runs.
+    /// Nil = input disabled (counted loud, never fatal).
     private var _inputInjector: InputInjector?
     var inputInjector: InputInjector? {
         get { withConfigLock { _inputInjector } }
         set { withConfigLock { _inputInjector = newValue } }
     }
 
-    /// HS-18: the shell's audio-leaf flipper — stop the leaf, bring it
-    /// back in the requested routing, return whether it stuck. Nil =
-    /// no flip surface this run (requests answered with the standing
-    /// posture). Set by main once audio is up. Called OFF the session
-    /// lock: a flip is a PipeWire connect (milliseconds, and it must
-    /// not stall the 5 ms audio thread against the lock).
+    /// Restarts the audio leaf in the requested routing and returns
+    /// whether it stuck; nil = requests get the standing posture. Called
+    /// off the session lock: a flip is a PipeWire connect (milliseconds).
     private var _audioRoutingHandler: ((HostAudioRoutingMode) -> Bool)?
     var audioRoutingHandler: ((HostAudioRoutingMode) -> Bool)? {
         get { withConfigLock { _audioRoutingHandler } }
         set { withConfigLock { _audioRoutingHandler = newValue } }
     }
 
-    /// HS-19: the shell's clipboard-apply sink (the leaf's
-    /// SetSelection). Nil = no leaf this run — the session core never
-    /// surfaces 0x1A then anyway (key 10 undeclared), so the arm is
-    /// defensive. Called OFF the session lock: SetSelection is a
-    /// blocking D-Bus round-trip.
+    /// The clipboard leaf's SetSelection; nil = no leaf this run. Called
+    /// off the session lock: SetSelection is a blocking D-Bus round-trip.
     private var _clipboardApplyHandler: ((String) -> Void)?
     var clipboardApplyHandler: ((String) -> Void)? {
         get { withConfigLock { _clipboardApplyHandler } }
         set { withConfigLock { _clipboardApplyHandler = newValue } }
     }
-    /// P-1: the image half of the same sink (the leaf's SetSelection
-    /// with the PNG flavor). Same off-lock discipline.
+    /// The PNG half of the same sink, same off-lock discipline.
     private var _clipboardImageApplyHandler: (([UInt8]) -> Void)?
     var clipboardImageApplyHandler: (([UInt8]) -> Void)? {
         get { withConfigLock { _clipboardImageApplyHandler } }
         set { withConfigLock { _clipboardImageApplyHandler = newValue } }
     }
-    /// The host organs' off-lock service pass (the clipboard leaf's
-    /// D-Bus drain and fd transfer pumps, the Avahi record's watch), run
-    /// once per `service()` like the routing work — never under the
-    /// lock, never on the audio thread.
+    /// The host organs' service pass (clipboard D-Bus pumps, Avahi
+    /// watch), run once per `service()`, never under the lock.
     private var _shellServiceHook: (() -> Void)?
     var shellServiceHook: (() -> Void)? {
         get { withConfigLock { _shellServiceHook } }
         set { withConfigLock { _shellServiceHook = newValue } }
     }
-    /// 0x1A texts delivered by the session (under the lock), awaiting
-    /// the shell's apply outside it (drained by `service()`).
+    // The pending queues below are filled under the lock and drained
+    // outside it by `service()`.
     private var pendingClipboardApplies: [String] = []
-    /// P-1: sha-verified images delivered by the session (under the
-    /// lock), awaiting the leaf apply outside it.
     private var pendingClipboardImageApplies: [[UInt8]] = []
 
-    /// F-3: the file-drop shell. Nil = the standing consent toggle is
-    /// OFF this run — the session core never surfaces bulk messages
-    /// then anyway (key 11 undeclared, chan 8 drops loud), so the arm
-    /// is defensive. Driven OFF the session lock: every store action
-    /// is a pwrite + fsync and the verify is a whole-file hash.
+    /// The file-drop shell; nil = consent is off this run. Driven off the
+    /// session lock: store actions are pwrite + fsync and the verify is a
+    /// whole-file hash.
     private var _bulkShell: BulkReceiveShell?
     var bulkShell: BulkReceiveShell? {
         get { withConfigLock { _bulkShell } }
         set { withConfigLock { _bulkShell = newValue } }
     }
-    /// Chan-8 messages delivered by the session (under the lock),
-    /// awaiting the shell's disk work outside it (drained by
-    /// `service()`).
     private var pendingBulkMessages: [BulkMessage] = []
-    /// The posture the audio leaf is actually running (main seeds it;
-    /// applied flips move it). Mutated under `lock`.
+    /// The posture the audio leaf is actually running. Mutated under
+    /// `lock`.
     private(set) var currentAudioRouting: HostAudioRoutingMode = .hostAudible
-    /// Pairing outcomes delivered under the lock, executed (keystore
-    /// write, console lines) outside it by `service()`.
     private var pendingPairingEvents: [PairingResponderService.Event] = []
-    /// 0x18 requests delivered by the session, awaiting the shell's
-    /// flip outside the lock (drained by `service()`).
     private var pendingAudioRouting: [HostAudioRoutingMode] = []
-    /// Set at capability agreement when hostAudioRouting survived the
-    /// intersection: the client is owed one starting-posture 0x19.
+    /// hostAudioRouting was agreed: the client is owed one 0x19.
     private var routingAnnounceOwed = false
-    /// receive→inject per event, µs (the HS-13 p99 < 2 ms gate edge),
-    /// over the most recent `inputLatencyWindow` events so a long
-    /// session's summary describes its end, not its first minutes.
+    /// receive→inject per event, µs, over the most recent
+    /// `inputLatencyWindow` events so the summary describes the end.
     static let inputLatencyWindow = 16_384
     private(set) var inputLatency = Histogram<UInt64>(
         capacity: inputLatencyWindow, retention: .rolling
@@ -278,42 +215,32 @@ final class SessionWire {
     private(set) var inputInjectFailures = 0
     private var inputNoInjectorWarned = false
     /// Monotonic µs of the most recent successful injection (0 = never).
-    /// Written under `lock` on the service thread; the capture tick's
-    /// starvation tripwire reads it through the locked accessor below.
+    /// Written under `lock`.
     private var lastInputInjectedAt: UInt64 = 0
-    /// Pointer-motion is the only input kind that structurally owes an
-    /// EMBEDDED-cursor damage frame. Keys/buttons/scroll may target a
-    /// surface that draws nothing, so treating any input as a capture
-    /// liveness witness manufactures false starvation on a static desk.
+    /// Only pointer motion owes an embedded-cursor damage frame; other
+    /// input may draw nothing, so it is no capture-liveness witness.
     private var pointerMotionInjected = 0
     private var lastPointerMotionInjectedAt: UInt64 = 0
-    /// E3: the last absolute pointer position injected (monitor
-    /// device pixels) — the cursor watcher's hotspot anchor (hotspot
-    /// = injected position − cursor plane CRTC position; i915 exposes
-    /// no HOTSPOT_X/Y props to ask directly).
+    /// The last absolute pointer injected (monitor device pixels): the
+    /// cursor watcher's hotspot anchor (hotspot = injected position −
+    /// cursor plane CRTC position; i915 exposes no HOTSPOT_X/Y).
     private var lastAbsolutePointer: (x: Double, y: Double)?
-    /// E3: the eye's latest cursor shape, standing — re-offered when
-    /// capabilities agree so a client that connects mid-run wears the
-    /// current cursor, not a default.
+    /// Re-offered at agreement so a mid-run client wears the current
+    /// cursor, not a default.
     private var standingCursorShape: CursorShape?
-    /// E3: capabilities just agreed with key 13 — the client is owed
-    /// the standing shape. Buffered; the next service pass sends it
-    /// off the agreement stack (the routingAnnounceOwed pattern).
+    /// Key 13 was agreed: the next service pass sends the standing shape.
     private var cursorAnnounceOwed = false
 
     private(set) var framesSent = 0
-    /// Most recent successfully admitted frame, for the synchronous
-    /// encoder callback to attach QP/IDR-cause fields to its flight.
+    /// Most recent admitted frame, for the encoder callback's telemetry.
     private var lastFrameForTelemetry: FrameNumber?
-    /// What the audio capture thread publishes, in capture order: 5 ms
-    /// packets and the tripwire's track-state announcements.
+    /// The audio thread's publications, in capture order.
     private enum AudioMailboxEntry {
         case packet(bytes: [UInt8], captureMicros: UInt64, offeredAtNS: UInt64)
         case trackState(AudioTrackState.State)
     }
-    /// The audio capture thread owns only this narrow publication lock.
-    /// The Session owner swaps the whole FIFO out before doing any
-    /// framing/sealing work, so capture never waits for video.
+    /// The audio thread takes only this lock; the Session owner swaps the
+    /// whole FIFO out before sealing, so capture never waits for video.
     private let audioMailboxLock = NSLock()
     private var audioMailbox: [AudioMailboxEntry] = []
     private static let audioMailboxCapacity = 64
@@ -325,21 +252,19 @@ final class SessionWire {
     private(set) var audioMailboxDwell = Histogram<UInt64>(
         capacity: audioMailboxDwellWindow, retention: .rolling
     )
-    /// Root-cause telemetry for the split video path. Preparation includes
-    /// Annex-B classification + RS-FEC and is now deliberately off-lock;
-    /// commit includes seq allocation, Noise sealing, and pacer insertion.
+    /// Split video path timing: prepare (Annex-B + RS-FEC) is off-lock;
+    /// commit (seq allocation, sealing, pacer insertion) is under it.
     private(set) var videoPrepareMaxNS: UInt64 = 0
     private(set) var videoCommitLockWaitMaxNS: UInt64 = 0
     private(set) var videoCommitLockHoldMaxNS: UInt64 = 0
     private(set) var serviceOnceMaxNS: UInt64 = 0
     private(set) var receiveAllMaxNS: UInt64 = 0
-    /// HS-15 audio-thread counters (mutated under `lock`, except mailbox
-    /// publication counters above which use `audioMailboxLock`).
+    /// Mutated under `lock` (the mailbox counters above use
+    /// `audioMailboxLock`).
     private(set) var audioPacketsSent = 0
     private(set) var audioSendFailures = 0
     private(set) var audioPacketsDroppedPreSession = 0
-    /// The socket outbox's own books (sends, would-blocks, ENOBUFS,
-    /// shedding, audio outbox delay). Read after shutdown.
+    /// Read after shutdown.
     var outboxCounters: SocketOutboxCounters { outbox.counters }
     private(set) var socketSendBufferBytes = 0
     private(set) var latencySocketSendBufferBytes = 0
@@ -353,53 +278,46 @@ final class SessionWire {
     private var kernelPressureDecision: KernelPressureDecision?
     private(set) var lastSendError: String?
     private(set) var sendErrors = 0
-    /// The agreed capability flags the capture and audio threads poll,
-    /// published once at agreement (the agreement never changes after
-    /// it lands). Read and written under `configLock`, never the session
-    /// lock, so the 5 ms audio path and the 1 ms capture poll never wait
-    /// behind a video commit.
+    /// Agreed capability flags, published once at agreement. Under
+    /// `configLock`, never the session lock, so the audio and capture
+    /// polls never wait behind a video commit.
     private struct AgreedMediaPosture {
         var audioQuiet = false
         var videoQuiet = false
         var chromaModes: [UInt64]?
     }
     private var _agreedPosture = AgreedMediaPosture()
-    /// HS-16 log throttle: the last rate a `rate:` line reported.
+    /// Log throttle: the last rate a `rate:` line reported.
     private var lastPrintedRate: Int?
-    /// HS-20: the encoder-VBV policy (armed by main once the encoder's
-    /// opening posture is known) and its evidence counters. Mutated
-    /// under `lock`.
+    /// Armed by main once the encoder's opening posture is known.
+    /// Mutated under `lock`.
     private var vbvPolicy: EncoderVbvPolicy?
     private(set) var vbvDirectivesIssued = 0
     private(set) var lastVbvDirective: EncoderRateDirective?
-    /// HS-27 books: estimator moves the rung ladder absorbed — the
-    /// pacer carried them alone, zero encoder resets, zero IDRs.
+    /// Estimator moves the rung ladder absorbed: the pacer carried them
+    /// alone, with no encoder reset or IDR.
     var vbvRateMovesAbsorbed: Int {
         lock.lock()
         defer { lock.unlock() }
         return vbvPolicy?.rateMovesAbsorbed ?? 0
     }
-    /// The starvation tripwire's input-recency witness (0 = no input
-    /// injected yet this session).
+    /// 0 = no input injected yet this session.
     var lastInputInjectedAtMicros: UInt64 {
         lock.lock()
         defer { lock.unlock() }
         return lastInputInjectedAt
     }
-    /// Atomic starvation witness: successful pointer-motion count and
-    /// latest injection time from one lock acquisition.
+    /// Pointer-motion count and latest time, read in one acquisition.
     var pointerMotionWitness: (count: Int, lastAtMicros: UInt64) {
         lock.lock()
         defer { lock.unlock() }
         return (pointerMotionInjected, lastPointerMotionInjectedAt)
     }
-    /// ECONNREFUSED evidence (LYTE_NETIO_PEER_GONE): the client's socket
-    /// is closed — session-ending, not an I/O failure (HS-11).
+    /// ECONNREFUSED (LYTE_NETIO_PEER_GONE): the client's socket is
+    /// closed — session-ending, not an I/O failure.
     private(set) var peerGone = false
 
-    /// The sender thread's wake (an eventfd): capture, audio, and the
-    /// janitor signal it when bytes were enqueued; it also wakes on socket
-    /// readability and at the session's next timer (drainLoop).
+    /// The sender thread's wake eventfd, signaled when bytes are enqueued.
     private var wakeFd: Int32
     /// `release()` ran: the media sockets and the wake eventfd are closed.
     private var released = false
@@ -412,19 +330,16 @@ final class SessionWire {
     /// for POLLOUT) or on ENOBUFS (a short back-off). Under `lock`.
     private var blockedLane: SocketLane?
     private var noBufferBackoff = false
-    /// A drain-thread send failure (not peer-gone — that has its own
-    /// flag): recorded loud and session-ending, mirroring what a thrown
-    /// sendFrame used to do to the capture loop.
+    /// A drain-thread send failure other than peer-gone: loud and
+    /// session-ending.
     private var drainFailed = false
 
-    /// Everything the capture loop consults per poll, taken with one
-    /// session-lock acquisition (the agreed flags and the input stamp come
-    /// from the narrow config lock). Taking it consumes the pending IDR
-    /// demand and rate directive.
+    /// Everything the capture loop consults per poll, in one session-lock
+    /// acquisition. Taking it consumes the pending IDR demand and rate
+    /// directive.
     struct LegSnapshot {
-        /// Nothing more can usefully happen: the peer's socket is closed,
-        /// the lifecycle reached `closed` (teardown or the 30 s liveness
-        /// timeout), or the drain thread failed. The capture loop quits.
+        /// The peer is gone, the lifecycle closed, or the drain thread
+        /// failed: the capture loop quits.
         var ended: Bool
         var agreedChromaModes: [UInt64]?
         var videoQuietPostureAgreed: Bool
@@ -462,23 +377,20 @@ final class SessionWire {
     var freshKeyframeDemandCounts: FreshKeyframeDemandCounts {
         session.freshKeyframeDemandCounts
     }
-    /// P-1: the image lane's books (share/apply/refuse verdicts).
     var clipboardImageCounters: ClipboardImageChannelCounters {
         session.clipboardImageCounters
     }
-    /// V-4: the agreed chroma list (nil until the client's declaration
-    /// lands — or forever, for a grandfathered pre-W7 peer). The Sink
-    /// branches the encoder posture on it at open.
+    /// Nil until the client's declaration lands. The Sink branches the
+    /// encoder posture on it at open.
     var agreedChromaModes: [UInt64]? {
         withConfigLock { _agreedPosture.chromaModes }
     }
-    /// HS-21: whether the flood dial currently demands a retry cookie.
+    /// Whether the flood dial currently demands a retry cookie.
     var handshakeCookieMode: Bool { session?.handshakeCookieMode ?? false }
     var clock: SessionClockStats { session.clock }
     var pacerTelemetry: PacerTelemetry { session.pacerTelemetry }
     var lifecycleState: SessionState? { session?.lifecycleState }
     var currentWireMode: SessionWireMode? { session?.wireMode }
-    // HS-16 estimator surfaces for the final stats block.
     var estimatorStats: RateEstimatorStats { session.estimatorStats }
     var estimatedRate: Int { session.estimatedRateBitsPerSecond }
     var pacerRate: Int { session.pacerRateBitsPerSecond }
@@ -493,9 +405,8 @@ final class SessionWire {
         kernelPressureDecision?.totalVideoServiceDebtNS ?? 0
     }
     func frameByteCeiling(fps: Int) -> Int { session.frameByteCeiling(fps: fps) }
-    // HS-25 unprotectable-frame guard surfaces: the live drop count
-    // (the Sink logs increments) and the worst-case ceiling the shell
-    // caps the encoder's opening VBV to.
+    // Unprotectable-frame guard: the live drop count and the worst-case
+    // ceiling the shell caps the encoder's opening VBV to.
     var videoFramesUnprotectable: Int {
         session.counters.videoFramesUnprotectable
     }
@@ -505,14 +416,12 @@ final class SessionWire {
     var worstCaseProtectableFrameCeiling: Int {
         session.worstCaseProtectableFrameByteCeiling
     }
-    // HS-17 repair surfaces for the final stats block.
     var fecRegime: FecRegime { session.fecRegime }
     var srttMicros: Int64? { session.srttMicroseconds }
     var repairStoreBytes: Int { session.repairStoreBytes }
-    /// Exact bytes that entered through the borrowed callback seam. The
-    /// former implementation allocated and copied this many bytes here.
+    /// Bytes that entered through the borrowed (zero-copy) callback seam.
     private(set) var borrowedFrameBytesIngested: UInt64 = 0
-    /// HS-32: the derived freeze budget in force (ms), for the books.
+    /// The derived freeze budget in force (ms).
     var repairBudgetMS: UInt64 { session.repairFreezeBudgetNS / 1_000_000 }
 
     /// - Parameters:
@@ -533,10 +442,8 @@ final class SessionWire {
     ) throws {
         precondition(listener != nil || peer != nil,
                      "a session needs a port to listen on or a peer")
-        // A-23: every validation that can refuse lives ABOVE the first
-        // allocation. A throw after the drain thread holds `self` would
-        // leave that thread on a deinit'd object — nothing may throw
-        // past thread.start() below.
+        // Nothing may throw past thread.start() below: the drain thread
+        // would be left holding a deinit'd `self`.
         self.rateBitsPerSecond = rateBitsPerSecond
         self.capabilities = capabilities
         self.allowedClientStatics = allowedClientStatics
@@ -573,18 +480,12 @@ final class SessionWire {
             try connectMedia(host: peer.host, port: peer.port)
         }
 
-        // The sender thread comes up parked (no work until the first
-        // ingest signals it); it holds `self` for its lifetime, so the
-        // shell must stop it (shutdown does) before the process lets
-        // the SessionWire go. SessionWire is cross-thread by design
-        // (capture, audio, janitor, sender threads) with `lock` as the
-        // discipline — the unsafe capture states that fact to the
-        // compiler, exactly like the audio thread's Unmanaged
-        // trampoline does implicitly.
+        // The sender thread comes up parked and holds `self` until
+        // stopped (shutdown does). SessionWire is cross-thread by design
+        // with `lock` as the discipline; the unsafe capture says so.
         nonisolated(unsafe) let shared = self
         let thread = Thread {
-            // The drain owns 1 ms-quantum pacing precision via usleep;
-            // audio (12) outranks it — its cadence bound is tighter.
+            // Audio (12) outranks the drain: its cadence bound is tighter.
             elevateCurrentThread("wire-drain", rtPriority: 10)
             shared.drainLoop()
         }
@@ -598,14 +499,10 @@ final class SessionWire {
         recvScratch.deallocate()
     }
 
-    /// Ends this wire's hold on the process, deterministically rather than
-    /// at deinit: stops the sender thread, closes the media sockets and
-    /// the wake eventfd, and drops the shell hooks — the audio-routing
-    /// handler retains this wire, so without this the wire and its
-    /// sockets would outlive the session. The listening socket stays
-    /// with its HostListener for the next session. Call after
-    /// `shutdown`, once the books are read and every thread that calls
-    /// in (capture, audio, janitor) has stopped. Idempotent.
+    /// Stops the sender thread, closes the media sockets and wake eventfd,
+    /// and drops the shell hooks (the audio-routing handler retains this
+    /// wire). The listening socket stays with its HostListener. Call after
+    /// `shutdown`, once every calling thread has stopped. Idempotent.
     func release() {
         stopDrain()
         inputInjector = nil
@@ -649,9 +546,7 @@ final class SessionWire {
         handshakeWitness.write(Data([0x0A]))
     }
 
-    /// Points the media sockets at the client: opens them on first use
-    /// (bound to the listening port) or re-connects them (a path
-    /// promotion).
+    /// Opens the media sockets on first use, else re-connects them.
     private func connectMedia(host: String, port: UInt16) throws {
         var err = [CChar](repeating: 0, count: 256)
         func open(priority: Int32, _ what: String) throws -> OpaquePointer {
@@ -761,26 +656,18 @@ final class SessionWire {
         }
     }
 
-    /// Noise mode: block until a client completes the handshake AND
-    /// proves it holds the session keys (its first authenticated
-    /// datagram), for up to `timeoutSeconds` (nil = as long as it takes,
-    /// the listening service's posture). Prints the static public key the
-    /// client must hold. Call before capture opens so no video is encoded
-    /// for nobody.
+    /// Blocks until a client completes the handshake and proves it holds
+    /// the session keys (its first authenticated datagram), for up to
+    /// `timeoutSeconds` (nil = forever). Call before capture opens.
     ///
-    /// Until then the host is bound to no client: only plausible
-    /// handshake initiations reach a session, from any tuple (a wire-out
-    /// host accepts only its peer), and the one that authenticates is
-    /// answered on its own path. Answering commits nothing — Noise IK
-    /// message 1 carries no freshness, so a replayed one authenticates
-    /// too. A message 1 some session of this process already answered is
-    /// dropped unread; a newer one that authenticates while the answered
-    /// session is unconfirmed replaces it; an unconfirmed session whose
-    /// lifecycle closes is discarded. A replayed, spoofed, abandoned or
-    /// unanswered message 1 therefore cannot lock out the next client.
+    /// Answering commits nothing — Noise IK message 1 carries no
+    /// freshness. A message 1 this process already answered is dropped
+    /// unread; a newer one that authenticates replaces an unconfirmed
+    /// session; an unconfirmed session whose lifecycle closes is
+    /// discarded. So no replayed, spoofed or abandoned message 1 can lock
+    /// out the next client. A wire-out host accepts only its peer.
     ///
-    /// `idle` runs off the lock once per wait pass (every ~2 ms): the
-    /// host's between-session service work.
+    /// `idle` runs off the lock once per wait pass (~2 ms).
     func awaitClient(
         hostStatic: NoiseKeyPair,
         timeoutSeconds: Double?,
@@ -813,10 +700,8 @@ final class SessionWire {
                     self?.awaitDatagram(datagram, from: tuple, hostStatic: hostStatic)
                 }
                 if let session, session.phase == .established {
-                    // The answered session's own timers (ARQ retransmit
-                    // of its declaration, beacons, liveness) run here
-                    // until it is confirmed; the sender thread takes
-                    // over after.
+                    // The answered session's timers run here until it is
+                    // confirmed; the sender thread takes over after.
                     for event in session.advance(
                         now: SystemMonotonicClock.nowNanoseconds,
                         hostMicroseconds: SystemMonotonicClock.nowMicroseconds
@@ -831,12 +716,8 @@ final class SessionWire {
                         discardUnconfirmedSession()
                     }
                 }
-                // A pre-establishment pump is what lets HS-21's 0x13
-                // RetryChallenge (enqueued into the pacer by
-                // Session.receive under flood) actually leave the box —
-                // a challenge answers a flood that never establishes —
-                // and it carries message 2 and the session's opening
-                // words until the client confirms.
+                // Pre-establishment pump: carries 0x13 RetryChallenges
+                // under flood, message 2 and the opening words.
                 if let session {
                     pumpForSocketState(session)
                 }
@@ -850,8 +731,6 @@ final class SessionWire {
             lock.unlock()
             flushLogLines()
             if done {
-                // The sender thread owns the confirmed session's pacing
-                // from here.
                 signalDrain()
                 return .established
             }
@@ -874,10 +753,8 @@ final class SessionWire {
     ) {
         let message1 = Session.handshakeMessage1(in: datagram)
         guard message1 != nil || session?.phase == .established else {
-            // Nothing is answered yet, so only an initiation is worth a
-            // session's attention: a relaunched host also hears the
-            // previous session's sealed feedback from the client's old
-            // port.
+            // Before an answer only an initiation matters: a relaunched
+            // host also hears the old session's feedback.
             traceAwaitDatagram(datagram, from: tuple, accepted: false)
             return
         }
@@ -944,9 +821,8 @@ final class SessionWire {
         ])
     }
 
-    /// Requires `lock`. Drops an answered-but-unconfirmed session and
-    /// everything it queued; the media sockets stay open and are
-    /// re-pointed when the next handshake completes.
+    /// Requires `lock`. Drops an unconfirmed session and its queue; the
+    /// media sockets stay open for the next handshake.
     private func discardUnconfirmedSession() {
         outbox.dropAll()
         blockedLane = nil
@@ -965,11 +841,9 @@ final class SessionWire {
             && tuple.remotePort == requiredPeer.port
     }
 
-    /// One receive batch from every socket that can hold inbound
-    /// datagrams. A session whose lifecycle has closed leaves the
-    /// listening socket alone: what arrives there now (a re-dialing
-    /// client's message 1) belongs to the next session, which reads it
-    /// from the kernel queue once this one is released.
+    /// One receive batch from every socket. A closed session leaves the
+    /// listening socket alone: what arrives there belongs to the next
+    /// session.
     private func receiveFromAll(
         _ handle: ([UInt8], FourTuple) -> Void
     ) throws {
@@ -990,24 +864,20 @@ final class SessionWire {
         ) {
             execute(event)
         }
-        // A recvmmsg burst can contain many feedback/control packets.
-        // Do not let parsing the whole burst consume an audio period.
+        // A long recvmmsg burst must not consume an audio period.
         drainAudioMailboxLocked()
     }
 
-    /// HS-20: arm the encoder-VBV policy once the encoder's opening
-    /// rate-control posture is known (main calls this right after the
-    /// session comes up; the policy's baseline mirrors the native
-    /// seat's opening posture).
+    /// Arms the encoder-VBV policy once the encoder's opening posture is
+    /// known.
     func armEncoderVbv(_ config: EncoderVbvConfig) {
         lock.lock()
         defer { lock.unlock() }
         vbvPolicy = EncoderVbvPolicy(config: config)
     }
 
-    /// Requires `lock`. The estimator's LIVE frameByteCeiling into the
-    /// VBV policy; a non-nil directive must reach the encoder before the
-    /// next frame is sent.
+    /// Requires `lock`. A non-nil directive must reach the encoder before
+    /// the next frame is sent.
     private func takeEncoderRateDirectiveLocked() -> EncoderRateDirective? {
         guard let vbvPolicy, let session, session.phase == .established
         else { return nil }
@@ -1021,25 +891,18 @@ final class SessionWire {
         return directive
     }
 
-    /// HS-11: the orderly close — SessionTeardown 0x0A on the reliable
-    /// stream, then a bounded linger so the segment can be delivered and
-    /// acknowledged before the process exits (the graceful-exit half of
-    /// the ECONNREFUSED fix: the client learns the session ended instead
-    /// of inferring it from silence).
+    /// The orderly close: SessionTeardown 0x0A on the reliable stream,
+    /// then a bounded linger so it can be acknowledged before exit.
     func shutdown(reason: SessionTeardownReason, lingerSeconds: Double = 0.5) {
-        // main stops the audio source before teardown; flush its final
-        // published quantum while the established session still exists.
+        // Flush audio's final quantum while the session still exists.
         lock.lock()
         drainAudioMailboxLocked()
         lock.unlock()
-        // The sender thread goes first: teardown owns the send path
-        // from here (and the thread holds `self` — this is also its
-        // lifetime end).
+        // Teardown owns the send path from here.
         stopDrain()
         runPendingPairingEvents()
         lock.lock()
-        // An unconfirmed session's peer may be a replay's phantom: it
-        // is owed no teardown.
+        // An unconfirmed peer may be a replay's phantom: no teardown.
         guard let session, session.isPeerConfirmed,
               session.lifecycleState != .closed, !peerGone else {
             lock.unlock()
@@ -1080,10 +943,9 @@ final class SessionWire {
                 """)
     }
 
-    /// One encoded Annex-B packet → sealed shards on the wire. Runs on
-    /// the capture thread: validation and RS-FEC happen off the session
-    /// lock, sealing and pacer insertion under it; the first quantum
-    /// leaves on this stack and the sender thread paces out the rest.
+    /// One encoded Annex-B packet → sealed shards, on the capture thread.
+    /// Validation and RS-FEC run off the session lock (they can starve
+    /// audio); sealing and pacer insertion run under it.
     func sendFrame(
         data: UnsafePointer<UInt8>, size: Int, isKeyframe: Bool,
         captureMicros: UInt64
@@ -1091,11 +953,6 @@ final class SessionWire {
         let frame = UnsafeBufferPointer(start: data, count: size)
         borrowedFrameBytesIngested &+= UInt64(size)
 
-        // Snapshot admission under the Session lock, then release it for
-        // Annex-B validation + RS-FEC. That pure work has produced
-        // 90–180 ms scheduling tails under 1080p60 motion; keeping the lock
-        // there prevented the sender from servicing 5 ms audio despite its
-        // dedicated wake and every-four-seal checkpoints.
         lock.lock()
         guard let session else {
             lock.unlock()
@@ -1126,8 +983,6 @@ final class SessionWire {
             prepared = nil
         }
 
-        // Ordered commit: seq allocation, Noise sealing, pacer mutation,
-        // and socket flush remain serialized with audio/control/feedback.
         let commitWaitStart = SystemMonotonicClock.nowNanoseconds
         lock.lock()
         videoCommitLockWaitMaxNS = max(
@@ -1157,10 +1012,7 @@ final class SessionWire {
             throw error
         }
         framesSent += 1
-        // First quantum leaves on this stack (the bucket is credited
-        // while idle, so this is one batch + one sendmmsg, tens of µs);
-        // the sender thread paces out the rest while the capture loop
-        // returns to the compositor.
+        // First quantum leaves on this stack (one batch, tens of µs).
         pumpForSocketState(session)
         do {
             try flushOutbox()
@@ -1186,9 +1038,8 @@ final class SessionWire {
         )
     }
 
-    /// The capture leg's pre-encode admission inputs (VideoAdmissionGate):
-    /// the queued video's wire time and the budget in force, from one
-    /// locked Session snapshot so a regime or rate move cannot mix eras.
+    /// VideoAdmissionGate's inputs — queued video wire time and the
+    /// budget in force — from one locked snapshot so they cannot mix eras.
     var videoAdmissionPosture: (backlogWireTimeNS: UInt64, budgetNS: UInt64) {
         lock.lock()
         defer { lock.unlock() }
@@ -1198,28 +1049,22 @@ final class SessionWire {
         return (pressure.totalVideoServiceDebtNS, pressure.admissionBudgetNS)
     }
 
-    /// HS-15: one encoded 5 ms Opus packet from the AUDIO capture
-    /// thread. Audio deliberately flows in IDLE and FROZEN (the 5 ms path
-    /// probe — Session's ruling; only `closed` suppresses).
+    /// One encoded 5 ms Opus packet from the audio thread. Audio flows in
+    /// idle and frozen too; only `closed` suppresses it.
     func sendAudioPacket(_ packet: [UInt8], captureMicros: UInt64) {
         publishAudio(.packet(
             bytes: packet, captureMicros: captureMicros,
             offeredAtNS: SystemMonotonicClock.nowNanoseconds))
     }
 
-    /// Tripwire: one 0x25 track-state announcement onto the reliable
-    /// stream (a no-op at the session layer unless key 15 was agreed).
-    /// It rides the audio mailbox, so it stays ordered with the packets
-    /// around it and the audio thread never waits for the session lock.
+    /// One 0x25 track-state announcement (a no-op unless key 15 was
+    /// agreed). It rides the audio mailbox, ordered with the packets.
     func sendAudioTrackState(_ state: AudioTrackState.State) {
         publishAudio(.trackState(state))
     }
 
-    /// The audio thread's only entry into the session. Publication takes
-    /// the narrow mailbox lock; it never waits behind video
-    /// packetize/FEC/seal or broad session service. The elevated sender
-    /// (or a cooperative video-ingest checkpoint) performs ordered
-    /// framing, Noise sealing, pacing, and send.
+    /// The audio thread's only entry into the session: it takes the
+    /// mailbox lock and never waits behind video or session service.
     private func publishAudio(_ entry: AudioMailboxEntry) {
         audioMailboxLock.lock()
         if case .trackState = entry {
@@ -1233,13 +1078,9 @@ final class SessionWire {
         }
         audioMailboxLock.unlock()
 
-        // The capture callback is already scheduled at the 5 ms cadence.
-        // Use that wake directly whenever the Session owner is between
-        // bounded critical sections; this avoids making audio depend solely
-        // on a default-CFS sender thread being scheduled after signal().
-        // try() never blocks the capture loop, and the lines this pass
-        // formats are printed later by the janitor or the drain thread —
-        // the audio thread never does console I/O.
+        // Use this wake directly when the lock is free, so audio does not
+        // depend solely on the sender being scheduled. try() never
+        // blocks, and the audio thread never does console I/O.
         if lock.try() {
             drainAudioMailboxLocked()
             if let session, session.phase == .established, !peerGone {
@@ -1256,9 +1097,7 @@ final class SessionWire {
         signalDrain()
     }
 
-    /// Requires the broad Session lock. The mailbox lock is held only
-    /// long enough to swap the FIFO; framing/sealing/syscalls happen
-    /// after audio capture is free to publish its next quantum.
+    /// Requires `lock`. The mailbox lock is held only to swap the FIFO.
     private func drainAudioMailboxLocked() {
         audioMailboxLock.lock()
         var pending: [AudioMailboxEntry] = []
@@ -1307,9 +1146,8 @@ final class SessionWire {
         }
     }
 
-    /// The between-frames service hook (idle-floor tick cadence):
-    /// inbound datagrams, session timers (beacons), pacer leftovers,
-    /// and the HS-18 routing work that must run OFF the lock.
+    /// The janitor's pass: inbound datagrams, session timers, pacer
+    /// leftovers, then the shell work that must run off the lock.
     func service() {
         lock.lock()
         guard session != nil else {
@@ -1317,9 +1155,7 @@ final class SessionWire {
             return
         }
         serviceAndFlushLocked()
-        // Anything this pass enqueued but could not emit inside one
-        // quantum (repair retransmits from a NACK, a burst of ARQ
-        // segments) belongs to the sender thread, not the next tick.
+        // What this pass could not emit belongs to the sender thread.
         let leftovers = !(session?.isIdle ?? true) || !outbox.isEmpty
         let requests = pendingAudioRouting
         pendingAudioRouting.removeAll()
@@ -1344,42 +1180,30 @@ final class SessionWire {
             onPairingEvent(event)
         }
 
-        // The starting-posture 0x19 (capabilities just agreed) and any
-        // client flips — both re-take the lock per send, neither holds
-        // it across the PipeWire work.
+        // Each of these re-takes the lock per send and never holds it
+        // across PipeWire, D-Bus or disk work (the clipboard leaf
+        // re-enters through noteHostClipboardChanged).
         if announce {
             noteAudioRoutingApplied(standing)
         }
-        // E3: the agreed-time re-offer — the client wears the eye's
-        // standing shape from its first frame (re-takes the lock, the
-        // noteAudioRoutingApplied discipline).
         if cursorOwed, let shape = standingCursor {
             noteCursorShape(shape)
         }
         for mode in requests {
             applyAudioRouting(mode)
         }
-        // HS-19: apply client sets to the OS clipboard and give the
-        // leaf its signal/fd pass — both off the lock (D-Bus
-        // round-trips; the leaf's onLocalChange re-enters through
-        // noteHostClipboardChanged, which takes the lock itself).
         for text in applies {
             clipboardApplyHandler?(text)
         }
-        // P-1: sha-verified client images the same way.
         for data in imageApplies {
             clipboardImageApplyHandler?(data)
         }
         shellServiceHook?()
-        // F-3: drive the file-drop shell (disk writes, fsync, the
-        // verify hash) off the lock; its replies re-take it per send.
         driveBulkShell(bulk)
     }
 
-    /// F-3: buffered chan-8 messages through the BulkReceiveShell —
-    /// every disk action answered synchronously — then the shell's
-    /// replies (accept/ack/complete/abort) back onto chan 8's ordered
-    /// stream under the lock.
+    /// Buffered chan-8 messages through the BulkReceiveShell, then its
+    /// replies back onto chan 8's ordered stream under the lock.
     private func driveBulkShell(_ messages: [BulkMessage]) {
         guard let shell = bulkShell, !messages.isEmpty else { return }
         var replies: [BulkMessage] = []
@@ -1437,20 +1261,17 @@ final class SessionWire {
         flushLogLines()
     }
 
-    /// E3: the eye's report that the hardware cursor plane changed —
-    /// a content-cropped shape or the hidden state. Remembered as the
-    /// standing shape (re-offered when capabilities agree), then the
-    /// 0x24 (or the suppression verdict) happens inside the core; a
-    /// no-key-13 session stays silent (the rule-3 gate).
+    /// The hardware cursor plane changed (a cropped shape or hidden).
+    /// Remembered as the standing shape; the core decides the 0x24 and
+    /// a session without key 13 stays silent.
     func noteCursorShape(_ shape: CursorShape) {
         withEstablishedSession(before: { standingCursorShape = shape }) {
             $0.noteCursorShapeChanged(shape, now: $1, hostMicroseconds: $2)
         }
     }
 
-    /// E3: the last absolute pointer position injected (monitor
-    /// device pixels) and when — the cursor watcher derives the
-    /// hotspot from it once the plane settles under the pointer.
+    /// The last absolute pointer injected and when, for the cursor
+    /// watcher's hotspot derivation.
     func lastAbsolutePointerInjection(
     ) -> (x: Double, y: Double, atMicros: UInt64)? {
         lock.lock()
@@ -1459,27 +1280,22 @@ final class SessionWire {
         return (p.x, p.y, lastPointerMotionInjectedAt)
     }
 
-    /// HS-19: the leaf's report that the OS clipboard changed —
-    /// genuine host copies AND the echoes of our own applies; the
-    /// session's sync book tells them apart. The 0x1B (or the
-    /// suppression verdict) happens inside the core; a no-key-10
-    /// session stays silent (the rule-3 gate).
+    /// The OS clipboard changed — host copies and echoes of our own
+    /// applies alike; the core's sync book tells them apart and a
+    /// session without key 10 stays silent.
     func noteHostClipboardChanged(_ text: String) {
         withEstablishedSession {
             $0.noteHostClipboardChanged(text, now: $1, hostMicroseconds: $2)
         }
     }
 
-    /// The leaf's report that the OS clipboard now holds an image
-    /// (whole PNG bytes) — genuine host copies AND the echoes of our
-    /// own applies; the session's shared book tells them apart. Cargo
-    /// (or the suppression verdict) happens inside the core; an
-    /// ungated session stays silent (the keys-10∧12 gate).
+    /// The OS clipboard now holds an image (whole PNG bytes); same
+    /// echo handling, gated on keys 10 and 12.
     ///
     /// Three phases: the digest-free gates under the lock, the digest
-    /// outside it (tens of MiB must not stall the receive and pacing
-    /// paths), then the full judgment under the lock again. A refused
-    /// image is never hashed.
+    /// outside it (tens of MiB must not stall receive and pacing), then
+    /// the judgment under the lock again. A refused image is never
+    /// hashed.
     func noteHostClipboardImageChanged(_ data: [UInt8]) {
         var needsDigest = false
         withEstablishedSession { session, now, _ in
@@ -1499,7 +1315,7 @@ final class SessionWire {
         }
     }
 
-    /// HS-18: main's seed — what posture the audio leaf came up in.
+    /// The posture the audio leaf came up in.
     func setInitialAudioRouting(_ mode: HostAudioRoutingMode) {
         lock.lock()
         defer { lock.unlock() }
@@ -1516,9 +1332,8 @@ final class SessionWire {
         for event in events { onPairingEvent(event) }
     }
 
-    /// One 0x18 answered: flip the leaf via the shell's handler, then
-    /// report the posture that actually stands (the client's control
-    /// strip renders truth — a failed flip reports the OLD posture).
+    /// One 0x18 answered: flip the leaf, then report the posture that
+    /// actually stands (a failed flip reports the old one).
     private func applyAudioRouting(_ mode: HostAudioRoutingMode) {
         lock.lock()
         let standing = currentAudioRouting
@@ -1550,23 +1365,21 @@ final class SessionWire {
         }
     }
 
-    /// The applied-posture 0x19 onto the reliable stream (a no-op at
-    /// the session layer unless hostAudioRouting was negotiated).
+    /// The applied-posture 0x19 (a no-op unless hostAudioRouting was
+    /// agreed).
     func noteAudioRoutingApplied(_ mode: HostAudioRoutingMode) {
         withEstablishedSession {
             $0.noteAudioRoutingApplied(mode, now: $1, hostMicroseconds: $2)
         }
     }
 
-    /// Tripwire: whether THIS session agreed key 15 (audioQuietPosture).
-    /// The audio thread asks per packet before ever gating — a legacy
-    /// client keeps the always-on contract, silence included.
+    /// Whether this session agreed key 15; without it audio is always
+    /// on, silence included.
     func audioQuietPostureAgreed() -> Bool {
         withConfigLock { _agreedPosture.audioQuiet }
     }
 
-    /// Video posture: one 0x26 announcement onto the reliable stream
-    /// (a no-op at the session layer unless key 16 was agreed).
+    /// One 0x26 announcement (a no-op unless key 16 was agreed).
     func sendVideoPostureState(quiet: Bool, keepaliveSeconds: UInt8) {
         let state = VideoPostureState(
             posture: quiet ? .quiet : .active,
@@ -1576,20 +1389,17 @@ final class SessionWire {
         }
     }
 
-    /// The wake-on-input half of the video posture: the drain thread
-    /// stamps every injected input event; the video leg reads the
-    /// stamp each poll (LegSnapshot) — an input packet IS the wake, zero
-    /// added latency. Monotonic ns under configLock.
+    /// The video posture's wake: stamped per injected input event and
+    /// read by the video leg each poll. Monotonic ns under configLock.
     private var _lastInputActivityNS: UInt64 = 0
     private var lastInputActivityNS: UInt64 {
         get { withConfigLock { _lastInputActivityNS } }
         set { withConfigLock { _lastInputActivityNS = newValue } }
     }
 
-    /// One session note from a shell thread, under `lock`: skipped
-    /// unless the session is established; its events execute, then one
-    /// service pass and flush so the note's sends leave now rather than
-    /// on the next tick. `before` runs under the lock either way.
+    /// One session note from a shell thread, under `lock`, skipped
+    /// unless established; a service pass and flush follow so its sends
+    /// leave now. `before` runs under the lock either way.
     private func withEstablishedSession(
         before: () -> Void = {},
         _ note: (Session, _ now: UInt64, _ hostMicroseconds: UInt64)
@@ -1628,14 +1438,8 @@ final class SessionWire {
         }
     }
 
-    /// Pumps the pacer at its own wake instants until empty, servicing
-    /// inbound + timers at each pass and flushing each pump's datagrams
-    /// as sendmmsg batches. The sleep is capped: while the pacer holds
-    /// bytes its wake is ≤ one quantum away, and the session's other
-    /// timers (a beacon up to 1 s out) must never stall the encoder.
-    /// ECONNREFUSED evidence, once: the client's socket is closed. The
-    /// peer that would read a teardown is gone, so nothing is sent
-    /// (W4b's liveness rule); the loop just ends cleanly.
+    /// ECONNREFUSED, once: the client's socket is closed, so no teardown
+    /// is sent; the session just ends cleanly.
     private func notePeerGone() {
         guard !peerGone else { return }
         peerGone = true
@@ -1645,16 +1449,13 @@ final class SessionWire {
             """)
     }
 
-    /// Wakes the sender thread: bytes were enqueued (or leftovers were
-    /// observed) and the pacer needs pumping at its own wake instants.
     private func signalDrain() {
         guard wakeFd >= 0 else { return } // released
         lyte_netio_wake_signal(wakeFd)
     }
 
-    /// Stops the sender thread and waits for it to exit (it holds
-    /// `self` and shares the send scratch, so teardown must not race
-    /// it). Idempotent; the thread exits within its current pass.
+    /// Stops the sender thread and waits for it to exit (it shares the
+    /// send scratch, so teardown must not race it). Idempotent.
     private func stopDrain() {
         drainCondition.lock()
         drainStop = true
@@ -1674,12 +1475,10 @@ final class SessionWire {
         var sockets: [(fd: Int32, pollIn: Bool, pollOut: Bool)] = []
     }
 
-    /// The sender thread's whole life: one service pass (receive, timers,
-    /// pacer, flush), then wait — on its wake eventfd, the sockets'
-    /// readability (an inbound datagram, e.g. input, is read at once),
-    /// POLLOUT on a full socket, or the session's next timer — and again.
-    /// A send failure is recorded and ends the session (the capture loop
-    /// reads it); the thread itself stays stoppable.
+    /// The sender thread: a service pass, then a wait on its wake
+    /// eventfd, socket readability, POLLOUT on a full socket, or the
+    /// session's next timer. A send failure ends the session; the thread
+    /// stays stoppable.
     private func drainLoop() {
         while true {
             drainCondition.lock()
@@ -1710,10 +1509,8 @@ final class SessionWire {
         }
     }
 
-    /// Callers must NOT hold `lock`: the pass takes it for the service
-    /// work and the wait happens outside it, so the audio thread's 5 ms
-    /// sends interleave with a long video drain (the structural half of
-    /// the 5 ms ± 2 ms bound; the pacer's class order is the other half).
+    /// Callers must not hold `lock`: the wait happens outside it, so
+    /// audio's 5 ms sends interleave with a long video drain.
     private func drainPass() throws -> DrainWait {
         lock.lock()
         guard let session, session.isPeerConfirmed, !peerGone else {
@@ -1731,8 +1528,8 @@ final class SessionWire {
         }
         let now = SystemMonotonicClock.nowNanoseconds
         let blocked = outbox.isEmpty ? nil : blockedLane
-        // The same test pumpForSocketState applies: when it releases
-        // only latency classes, due video must not set the wait.
+        // As in pumpForSocketState: while only latency classes are
+        // released, due video must not set the wait.
         let hold: SenderWait.Hold =
             !outbox.isEmpty && noBufferBackoff ? .noBuffer
             : blocked != nil ? .socketFull
@@ -1743,11 +1540,10 @@ final class SessionWire {
             latencyWakeNS: session.nextWake(now: now, upThrough: .audio),
             allWakeNS: session.nextWake(now: now),
             hold: hold)
-        // A lane with no connected socket yet writes through the
-        // listening socket (writeBatch), so that is the one to poll for
-        // POLLOUT. A closed session no longer reads the listening
-        // socket (receiveFromAll), so its readability must not end the
-        // wait either — that would spin on the next client's message 1.
+        // A lane with no connected socket writes through the listening
+        // socket, so poll that for POLLOUT. A closed session does not
+        // read the listening socket, so its readability must not end the
+        // wait (that would spin on the next client's message 1).
         var sockets: [(fd: Int32, pollIn: Bool, pollOut: Bool)] = [(
             lyte_netio_fd(listenNetio),
             session.lifecycleState != .closed,
@@ -1787,8 +1583,7 @@ final class SessionWire {
                 serviceOnceMaxNS, SystemMonotonicClock.nowNanoseconds - serviceStart
             )
         }
-        // Always service the scheduling island before lower-frequency
-        // receive/timer/stat work under this lock.
+        // Audio first, before receive and timer work.
         drainAudioMailboxLocked()
         try receiveFromAll { [weak self] datagram, tuple in
             self?.receiveEstablished(datagram, from: tuple)
@@ -1798,11 +1593,9 @@ final class SessionWire {
         ) {
             execute(event)
         }
-        // A nonempty outbox means the previous socket write hit EAGAIN.
-        // Releasing another VIDEO quantum before retrying would turn kernel
-        // backpressure into an unbounded userspace queue. The helper admits
-        // only latency classes while blocked so audio can cross channels
-        // ahead of the sealed video without adding more video pressure.
+        // A nonempty outbox means the last write hit EAGAIN; pumping more
+        // video would turn kernel backpressure into an unbounded queue,
+        // so only latency classes are released until it drains.
         pumpForSocketState(session)
     }
 
@@ -1817,8 +1610,7 @@ final class SessionWire {
             )
         }
         // One recvmmsg batch per call: a continuously full socket must not
-        // turn a receive into an unbounded hold of the session lock; the
-        // sender takes another pass after releasing it.
+        // hold the session lock unboundedly.
         let got = recvSlots.withUnsafeMutableBufferPointer { slots in
             lyte_netio_recv_batch(socket, slots.baseAddress,
                                   Int32(slots.count),
@@ -1855,21 +1647,14 @@ final class SessionWire {
         }
     }
 
-    /// Lines the event log formats UNDER `lock`, printed only after it
-    /// releases. stdout is line-buffered to a pipe/tty: a stalled
-    /// reader (a stopped terminal, a wedged ssh) would otherwise block
-    /// the write INSIDE the lock and freeze audio, pacing, and capture
-    /// behind console I/O — priority inversion through the one lock
-    /// everything shares. Guarded by `lock`; drained by
-    /// `flushLogLines()` at the seams that release it (the service
-    /// tick and the drain loop — rare out-of-band events ride until
-    /// the next tick, order preserved).
+    /// Lines formatted under `lock`, printed only after it releases: a
+    /// stalled stdout reader must never block a write inside the lock
+    /// and freeze audio, pacing and capture. Guarded by `lock`.
     private var pendingLogLines: [String] = []
 
     private func emit(_ line: String) { pendingLogLines.append(line) }
 
-    /// Print whatever the locked sections accumulated. Callers must
-    /// NOT hold `lock`.
+    /// Callers must not hold `lock`.
     private func flushLogLines() {
         lock.lock()
         let lines = pendingLogLines
@@ -1878,9 +1663,8 @@ final class SessionWire {
         for line in lines { print(line) }
     }
 
-    /// Executes one session event: prints go through `emit`, side
-    /// effects (input injection, path rebinds, pairing, outbox purges,
-    /// buffered shell work) run here under `lock`.
+    /// Executes one session event under `lock`; prints go through `emit`
+    /// and slow shell work is only buffered.
     private func execute(_ event: SessionEvent) {
         switch event {
         case .handshakeCompleted(let remote):
@@ -1888,9 +1672,8 @@ final class SessionWire {
                 noise: handshake complete — client static \
                 \(Hex.string(remote))
                 """)
-            // The authenticated client's path: the media sockets connect
-            // there before message 2 is flushed. Should that fail, sends
-            // still leave through the listening socket, addressed.
+            // The media sockets connect before message 2 is flushed; on
+            // failure sends leave addressed through the listening socket.
             let client = session.validator.primary.tuple
             do {
                 try connectMedia(host: client.remoteAddress, port: client.remotePort)
@@ -1904,9 +1687,8 @@ final class SessionWire {
                     listening socket
                     """)
             }
-            // HS-9: the pairing run binds to THIS session's transcript
-            // and statics; a re-handshake rebinds (and keeps the guess
-            // budget — reconnecting never refills it).
+            // Pairing binds to this session's transcript and statics; a
+            // re-handshake rebinds but never refills the guess budget.
             if let pairing, let hash = session.handshakeHash {
                 pairing.sessionEstablished(
                     clientStaticPublicKey: remote,
@@ -1920,9 +1702,8 @@ final class SessionWire {
                 emit("beacon: echo \(seq) offset \(offset) µs rtt \(rtt) µs")
             }
         case .reliableCtrl(let group, let message):
-            // The pairing service claims its four CTRL types; nil means
-            // the message is some other consumer's (none exist yet —
-            // capabilities land with W7).
+            // The pairing service claims its four CTRL types; anything
+            // else is logged.
             if let pairing,
                let output = pairing.handleReliableCtrl(
                    message, now: SystemMonotonicClock.nowNanoseconds
@@ -1937,9 +1718,7 @@ final class SessionWire {
                         emit("pairing: reply send failed: \(error)")
                     }
                 }
-                // The keystore write and its prints run off the lock
-                // (service() drains these), never on the drain thread
-                // under it.
+                // The keystore write runs off the lock in service().
                 pendingPairingEvents.append(contentsOf: output.events)
                 return
             }
@@ -1961,7 +1740,6 @@ final class SessionWire {
         case .path(let pathEvent):
             emit("path: \(pathEvent)")
             if case .promoted(let primary, _) = pathEvent {
-                // Execute the rebind: media now targets the new tuple.
                 do {
                     try connectMedia(
                         host: primary.tuple.remoteAddress,
@@ -1971,8 +1749,6 @@ final class SessionWire {
                 }
             }
         case .handshakeCookieModeChanged(let requireCookie):
-            // HS-21: the observable dial. Loud on purpose — this is the
-            // live evidence the flip happened and cleared.
             emit(requireCookie
                 ? """
                     handshake: FLOOD — require-cookie mode ENGAGED \
@@ -1983,16 +1759,14 @@ final class SessionWire {
                     handshake: pressure cleared — require-cookie mode \
                     DISENGAGED (back to the token-bucket posture)
                     """)
+        // A flood would print per datagram; the final stats line carries
+        // these counts instead.
         case .handshakeChallenged:
-            // A flood would print per datagram; the final stats line
-            // carries the handshakeChallengesMinted count instead.
             break
         case .dropped(.handshakeThrottled):
-            // A flood would print per datagram; the final stats line
-            // carries the handshakesThrottled count instead.
             break
         case .dropped(.handshakeCookieInvalid):
-            break // counted; the final stats line carries the tally
+            break
         case .dropped(let reason):
             emit("drop: \(reason)")
         case .sendFailed(let what):
@@ -2011,14 +1785,10 @@ final class SessionWire {
                     videoQuiet: agreed.videoQuietPosture,
                     chromaModes: agreed.chromaModes)
             }
-            // HS-18: both ends declared key 9 — the client is owed one
-            // starting-posture 0x19 (its control strip renders it).
-            // Buffered; the next service pass sends it off this stack.
+            // Owed announcements are sent by the next service pass.
             if agreed.hostAudioRouting {
                 routingAnnounceOwed = true
             }
-            // E3: both ends declared key 13 — the client is owed the
-            // eye's standing cursor shape (the same buffered pattern).
             if agreed.cursorShape {
                 cursorAnnounceOwed = true
             }
@@ -2068,10 +1838,8 @@ final class SessionWire {
                 dropped, fresh IDR armed
                 """)
         case .rateChanged(let bps, let reason):
-            // HS-16: downshifts and pacing policies always print (the
-            // live gate's evidence); the ≤10%/s evidence climb prints
-            // only on ≥5% moves so a clean recovery reads as a handful
-            // of lines, not a 25 Hz stream.
+            // Downshifts and pacing moves always print; the evidence
+            // climb prints only on ≥5% moves, not as a 25 Hz stream.
             let significant = lastPrintedRate.map {
                 Double(abs(bps - $0)) / Double($0) >= 0.05
             } ?? true
@@ -2082,9 +1850,7 @@ final class SessionWire {
                 emit("rate: ↑ \(bps / 1_000) kbps (evidence climb)")
             case .overuse:
                 lastPrintedRate = bps
-                // The ramp hunt's forensics: the evidence at fall time,
-                // so a post-mortem can say why neither the
-                // self-reference gate nor the stall gate held it.
+                // The evidence at fall time, for post-mortems.
                 var forensics = ""
                 if let f = session?.lastOveruseFallForensics {
                     func text<T>(_ value: T?) -> String {
@@ -2145,8 +1911,7 @@ final class SessionWire {
                 (§5.2 \(regime == .lossy ? "lossy" : "clean") column)
                 """)
         case .audioRoutingRequested(let mode):
-            // Delivered under the lock mid-iteration: buffer only. The
-            // flip (a PipeWire connect) runs off-lock in service().
+            // Buffer only: the flip runs off-lock in service().
             emit("audio-routing: client requested \(mode) (0x18)")
             pendingAudioRouting.append(mode)
         case .audioRoutingStatusSent(let mode):
@@ -2159,11 +1924,8 @@ final class SessionWire {
                 keepalive \(state.keepaliveSeconds)s announced (0x26)
                 """)
         case .clipboardSetReceived(let text):
-            // CL-15/HS-19: the session's gate + book already ran (the
-            // book is pre-armed against this apply's echo). Delivered
-            // under the lock mid-iteration: buffer only — the apply
-            // (a blocking D-Bus SetSelection) runs off-lock in
-            // service(). Never logs the payload.
+            // The core's gate and echo book already ran. Buffer only: the
+            // apply runs off-lock in service(). Never logs the payload.
             if clipboardApplyHandler != nil {
                 emit("""
                     clipboard: 0x1A set received \
@@ -2172,8 +1934,7 @@ final class SessionWire {
                     """)
                 pendingClipboardApplies.append(text)
             } else {
-                // Defensive: a leafless shell never declares key 10,
-                // so the core's rule-3 gate makes this unreachable.
+                // Defensive: a leafless shell never declares key 10.
                 emit("""
                     clipboard: 0x1A set received \
                     (\(text.utf8.count) B) — no clipboard leaf, \
@@ -2190,20 +1951,18 @@ final class SessionWire {
                 \(hidden ? "hidden" : "\(pixelByteCount) B"))
                 """)
         case .cursorShapeSuppressed(let reason):
-            // Duplicates are the watcher's steady state between real
-            // changes — only budget suppressions are worth a line;
-            // both land in the counters either way.
+            // Duplicates are the steady state; only budget suppressions
+            // print (both are counted).
             if reason == .overBudget {
                 emit("cursor: shape suppressed (\(reason))")
             }
         case .bulkMessageReceived(let message):
-            // Buffered for the off-lock shell pass (disk IO must not
-            // ride the session lock). Chunks arrive by the hundred —
-            // silent here; the shell's events narrate the transfer.
+            // Buffered for the off-lock shell pass; silent, since chunks
+            // arrive by the hundred.
             pendingBulkMessages.append(message)
         case .clipboardImageReceived(let data, let mime):
-            // P-1: sha-verified — buffer for the off-lock leaf apply
-            // (a blocking D-Bus SetSelection). Never logs the payload.
+            // Sha-verified; buffered for the off-lock apply. Never logs
+            // the payload.
             if clipboardImageApplyHandler != nil {
                 emit("""
                     clipboard: image received (\(data.count) B, \
@@ -2211,8 +1970,7 @@ final class SessionWire {
                     """)
                 pendingClipboardImageApplies.append(data)
             } else {
-                // Defensive: an imageless shell never declares key
-                // 12, so the core's gate makes this unreachable.
+                // Defensive: an imageless shell never declares key 12.
                 emit("""
                     clipboard: image received (\(data.count) B) — \
                     no image leaf, ignored
@@ -2250,15 +2008,12 @@ final class SessionWire {
         }
     }
 
-    /// One delivered input event → the injector → the session's echo
-    /// buffer (flushed as 0x17 on the next service pass). Failures are
-    /// counted and loud, never fatal — a stuck injector must not kill
-    /// the stream carrying the user's screen.
+    /// One input event → the injector → the session's 0x17 echo buffer.
+    /// Failures are counted and loud, never fatal.
     private func injectInput(
         _ event: InputEvent, receivedAtMicroseconds rxMicros: UInt64
     ) {
-        // The video posture's wake signal — stamped whether or not an
-        // injector is live (the user acted either way).
+        // Stamped whether or not an injector is live.
         lastInputActivityNS = SystemMonotonicClock.nowNanoseconds
         guard let injector = inputInjector else {
             if !inputNoInjectorWarned {
@@ -2349,7 +2104,6 @@ final class SessionWire {
         }
     }
 
-    /// The connected media socket for a lane, once the client is known.
     private func socket(for lane: SocketLane) -> OpaquePointer? {
         lane == .latency ? latencyNetio : videoNetio
     }
@@ -2365,9 +2119,8 @@ final class SessionWire {
         }
     }
 
-    /// One datagram addressed explicitly, from the listening socket: path
-    /// challenges to unvalidated tuples, and anything sent before the
-    /// media sockets connect.
+    /// One datagram addressed explicitly from the listening socket (path
+    /// challenges, anything before the media sockets connect).
     private func sendOffPrimary(
         _ datagram: VideoChannelDatagram, to destination: FourTuple
     ) -> SocketWriteResult {
@@ -2383,14 +2136,12 @@ final class SessionWire {
         return writeResult(rc)
     }
 
-    /// One lane's batch staged into `scratch` (stable pointers for the
-    /// sendmmsg call), each datagram with its class's TOS.
+    /// One lane's batch staged into `scratch`, each datagram with its
+    /// class's TOS.
     private func writeBatch(
         _ batch: ArraySlice<VideoChannelDatagram>, lane: SocketLane
     ) -> SocketWriteResult {
         guard let socket = socket(for: lane) else {
-            // No connected media socket yet: address the head datagram to
-            // the primary tuple from the listening socket.
             return sendOffPrimary(
                 batch[batch.startIndex], to: session.validator.primary.tuple)
         }
