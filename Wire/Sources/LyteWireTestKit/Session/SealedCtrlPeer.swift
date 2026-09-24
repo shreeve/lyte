@@ -145,12 +145,13 @@ public struct SealedCtrlPeer<ClockDomain>: Sendable {
 
     /// One datagram on `channel` with this peer's next seq for it:
     /// sealed under the transport (header as AAD) unless `sealed` is
-    /// false.
+    /// false. `extensions` follow the conn-id TLV, if any.
     public mutating func datagram(
         channel: ChannelId = .ctrl,
         body: [UInt8],
         sealed: Bool = true,
-        timestamp: UInt64
+        timestamp: UInt64,
+        extensions: [WireExtension] = []
     ) throws -> [UInt8] {
         let seq = seqs[channel] ?? 0
         seqs[channel] = seq &+ 1
@@ -160,7 +161,8 @@ public struct SealedCtrlPeer<ClockDomain>: Sendable {
             frame: FrameNumber(rawValue: 0),
             timestamp: timestamp,
             fec: 0,
-            extensions: connectionId.map { [$0.wireExtension] } ?? []
+            extensions: (connectionId.map { [$0.wireExtension] } ?? [])
+                + extensions
         )
         guard sealed else { return try envelope.encode(payload: body) }
         guard transport != nil else { throw PeerError.noTransport }
