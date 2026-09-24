@@ -798,29 +798,17 @@ public final class VideoChannel {
                     if activeFrameTelemetry[frame]?.firstTransmitAtNS == nil {
                         activeFrameTelemetry[frame]?.firstTransmitAtNS = now
                     }
-                    if let freshLeft = queuedFreshShardsByFrame[frame] {
-                        if freshLeft <= 1 {
-                            queuedFreshShardsByFrame.removeValue(forKey: frame)
-                            if var telemetry =
-                                activeFrameTelemetry.removeValue(forKey: frame) {
-                                telemetry.lastTransmitAtNS = now
-                                appendCompletedTelemetry(telemetry)
-                            }
-                        } else {
-                            queuedFreshShardsByFrame[frame] = freshLeft - 1
-                        }
+                    if Self.countDown(&queuedFreshShardsByFrame, frame),
+                       var telemetry =
+                        activeFrameTelemetry.removeValue(forKey: frame) {
+                        telemetry.lastTransmitAtNS = now
+                        appendCompletedTelemetry(telemetry)
                     }
                 }
                 if datagram.pacerClass == .freshVideo
                     || datagram.pacerClass == .videoTail {
-                    let frame = datagram.frameNumber.rawValue
-                    if let left = queuedShardsByFrame[frame] {
-                        if left <= 1 {
-                            queuedShardsByFrame.removeValue(forKey: frame)
-                        } else {
-                            queuedShardsByFrame[frame] = left - 1
-                        }
-                    }
+                    Self.countDown(
+                        &queuedShardsByFrame, datagram.frameNumber.rawValue)
                 }
                 counters.datagramsSent += 1
                 counters.bytesSent += datagram.bytes.count
@@ -909,17 +897,24 @@ public final class VideoChannel {
                 continue
             }
             frames.insert(datagram.frameNumber.rawValue)
-            let frame = datagram.frameNumber.rawValue
-            if let left = queuedShardsByFrame[frame] {
-                if left <= 1 {
-                    queuedShardsByFrame.removeValue(forKey: frame)
-                } else {
-                    queuedShardsByFrame[frame] = left - 1
-                }
-            }
+            Self.countDown(&queuedShardsByFrame, datagram.frameNumber.rawValue)
             counters.repairShardsExpiredQueued += 1
         }
         for frame in frames { invalidateStoredFrame(frame) }
+    }
+
+    /// Counts one queued shard of `frame` down; true when it was the last.
+    @discardableResult
+    private static func countDown(
+        _ counts: inout [UInt32: Int], _ frame: UInt32
+    ) -> Bool {
+        guard let left = counts[frame] else { return false }
+        if left > 1 {
+            counts[frame] = left - 1
+            return false
+        }
+        counts.removeValue(forKey: frame)
+        return true
     }
 
     private func invalidateStoredFrame(_ frame: UInt32) {
