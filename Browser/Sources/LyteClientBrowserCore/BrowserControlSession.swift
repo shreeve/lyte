@@ -85,6 +85,9 @@ public final class BrowserControlSession {
     private var sequencer = ClientEnvelopeSequencer()
     private var connectionIds = ClientConnectionIdBook()
     private var echoBook = ClientBeaconEchoBook()
+    /// The host clock fit from the beacon book's closed samples; video
+    /// capture times map through it.
+    private var hostClock = ClientHostClock()
     private var arq = ArqEndpoint<ClientClock>(
         channel: .ctrl,
         config: {
@@ -475,7 +478,8 @@ public final class BrowserControlSession {
             let ingested = video.ingestShard(
                 envelope: envelope,
                 payload: plaintext[...],
-                arrivalMicroseconds: nowMicros
+                arrivalMicroseconds: nowMicros,
+                hostClock: hostClock.estimate()
             )
             for line in ingested.events { note(line) }
             return step(outbound: [], scheduled: ingested.scheduled)
@@ -517,8 +521,9 @@ public final class BrowserControlSession {
         let now = ClientTimestamp(microseconds: nowMicros)
         switch ClientExemptControl(payload: payload) {
         case .clockBeacon(let beacon):
-            let (echo, _) = echoBook.answer(
+            let (echo, sample) = echoBook.answer(
                 beacon, receivedAt: now, sendingAt: now)
+            if let sample { hostClock.ingest(sample) }
             return [try sealCtrl(plaintext: echo.encode(), nowMicros: nowMicros)]
         case .pathChallenge(let response):
             counters.pathChallengesAnswered += 1

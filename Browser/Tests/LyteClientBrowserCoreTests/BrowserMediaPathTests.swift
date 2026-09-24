@@ -58,4 +58,24 @@ final class BrowserMediaPathTests: XCTestCase {
         }, "video restarts from an IDR on the new path")
         XCTAssertEqual(client.counters.pathChallengesAnswered, 1)
     }
+
+    /// Capture times map through the beacon-fit host clock, so a client
+    /// clock running 500 ppm fast (30 ms a minute) does not read as path
+    /// delay: a first-frame anchor would.
+    func testCaptureMappingTracksClockSkew() throws {
+        let host = BrowserHostPeer(clientSkewPartsPerMillion: 500)
+        let (client, readyNotes) = try host.readyClient()
+        var notes = readyNotes
+        let corpus = try VideoCorpus.frames()
+
+        let first = try host.sendFrame(corpus[0], keyframe: true, to: client)
+        XCTAssertEqual(first.count, 1)
+        host.run(client, notes: &notes, beats: 3_000, beat: 20_000) { _ in false }
+        let later = try host.sendFrame(corpus[1], keyframe: false, to: client)
+
+        let frame = try XCTUnwrap(later.first)
+        XCTAssertLessThan(
+            frame.pathDelayMicroseconds, 5_000,
+            "a minute of skew leaked into the path delay")
+    }
 }

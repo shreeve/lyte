@@ -1,4 +1,3 @@
-import Foundation
 import HostWire
 import LyteClientBrowserCore
 import LyteWire
@@ -249,17 +248,7 @@ final class BrowserPlayoutTests: XCTestCase {
     // MARK: Helpers
 
     private static func corpus() throws -> [[UInt8]] {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .appendingPathComponent("../../../Wire/Vectors/video-corpus-v1")
-            .standardized
-        let names = try FileManager.default.contentsOfDirectory(atPath: root.path)
-            .filter { $0.hasPrefix("frame-00") && $0.hasSuffix(".annexb") }
-            .sorted()
-        XCTAssertGreaterThanOrEqual(names.count, 2)
-        return try names.map {
-            [UInt8](try Data(contentsOf: root.appendingPathComponent($0)))
-        }
+        try VideoCorpus.frames()
     }
 
     /// Host ingests one frame; every shard crosses; returns what the

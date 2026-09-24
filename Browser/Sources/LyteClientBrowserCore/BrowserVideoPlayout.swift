@@ -57,11 +57,9 @@ public struct BrowserVideoPlayout {
         config: .init(capacity: 12, deadlineMicroseconds: UInt64.max / 4)
     )
 
-    /// Relative score map: the first assembled frame anchors host capture to
-    /// client arrival, so Conductor path delay is meaningful without a full
-    /// host clock model.
-    private var scoreZero: UInt64?
-    private var clientZero: UInt64?
+    /// Until the host clock has its first sample, the first assembled
+    /// frame anchors host capture to client arrival.
+    private var anchor: (capture: UInt64, arrival: UInt64)?
 
     private var annexBByFrame: [UInt32: [UInt8]] = [:]
     /// Frame numbers in decode order; entries already taken are skipped
@@ -87,10 +85,12 @@ public struct BrowserVideoPlayout {
     public var recoveryOutstanding: Bool { recovery.isOutstanding }
 
     /// Unsealed video shard → assembler → Conductor schedule → handoff.
+    /// Capture times map to the client clock through `hostClock`.
     public mutating func ingestShard(
         envelope: Envelope,
         payload: ArraySlice<UInt8>,
-        arrivalMicroseconds: UInt64
+        arrivalMicroseconds: UInt64,
+        hostClock: ClientHostClock.Estimate? = nil
     ) -> (events: [String], scheduled: [ScheduledFrame]) {
         var notes: [String] = []
         var newly: [ScheduledFrame] = []
@@ -103,7 +103,8 @@ public struct BrowserVideoPlayout {
             switch event {
             case .decoded(let unit):
                 counters.framesAssembled &+= 1
-                newly.append(schedule(unit, arrival: arrivalMicroseconds))
+                newly.append(schedule(
+                    unit, arrival: arrivalMicroseconds, hostClock: hostClock))
             case .framesSkipped(let from, let through, let reason):
                 notes.append(
                     "video: skipped frames \(from.rawValue)…\(through.rawValue) (\(reason))"
@@ -259,14 +260,18 @@ public struct BrowserVideoPlayout {
     }
 
     private mutating func schedule(
-        _ unit: DecodeUnit, arrival: UInt64
+        _ unit: DecodeUnit, arrival: UInt64,
+        hostClock: ClientHostClock.Estimate?
     ) -> ScheduledFrame {
         let capture = unit.timestamp.microseconds
-        if scoreZero == nil {
-            scoreZero = capture
-            clientZero = arrival
+        let mapped: UInt64
+        if let hostClock {
+            mapped = hostClock.map(unit.timestamp).microseconds
+        } else {
+            let anchor = self.anchor ?? (capture, arrival)
+            self.anchor = anchor
+            mapped = anchor.arrival &+ (capture &- anchor.capture)
         }
-        let mapped = clientZero! &+ (capture &- scoreZero!)
         let decision = conductor.schedule(
             mappedCaptureMicroseconds: mapped,
             arrivalMicroseconds: arrival,

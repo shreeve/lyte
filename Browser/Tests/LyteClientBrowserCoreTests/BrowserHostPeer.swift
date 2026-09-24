@@ -4,6 +4,7 @@ import HostWireTestKit
 import LyteClientBrowserCore
 import LyteCore
 import LyteWire
+import Foundation
 import XCTest
 
 /// The engine lyte-control-peer serves to Chrome — HostWireTestKit's
@@ -190,5 +191,46 @@ final class BrowserHostPeer {
             "notes: \(notes.joined(separator: " | "))", file: file, line: line
         )
         return (client, notes)
+    }
+
+    // MARK: Media
+
+    /// The host ingests one frame captured now on its clock; every shard
+    /// crosses in 1 ms beats until the client's Conductor schedules it.
+    func sendFrame(
+        _ annexB: [UInt8], keyframe: Bool, to client: BrowserControlSession
+    ) throws -> [BrowserVideoPlayout.ScheduledFrame] {
+        try session.ingestVideoFrame(
+            annexB, captureTimestampMicroseconds: hostMicros,
+            isKeyframe: keyframe, now: hostMicros * 1_000
+        )
+        var scheduled: [BrowserVideoPlayout.ScheduledFrame] = []
+        var notes: [String] = []
+        for _ in 0..<200 where scheduled.isEmpty {
+            advance(microseconds: 1_000)
+            for datagram in drain() {
+                let step = client.ingest(datagram: datagram, nowMicros: nowMicros)
+                scheduled += step.scheduled
+                deliver(step, notes: &notes)
+            }
+        }
+        return scheduled
+    }
+}
+
+/// `Wire/Vectors/video-corpus-v1`: frame 000 is an IDR, the rest its chain.
+enum VideoCorpus {
+    static func frames() throws -> [[UInt8]] {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("../../../Wire/Vectors/video-corpus-v1")
+            .standardized
+        let names = try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .filter { $0.hasPrefix("frame-00") && $0.hasSuffix(".annexb") }
+            .sorted()
+        XCTAssertGreaterThanOrEqual(names.count, 2)
+        return try names.map {
+            [UInt8](try Data(contentsOf: root.appendingPathComponent($0)))
+        }
     }
 }
