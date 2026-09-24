@@ -670,9 +670,11 @@ static func run(arguments: [String]) throws {
         }
         let awaitOutcome: SessionWire.ClientAwaitOutcome
         do {
+            // A listening service waits for its client as long as it
+            // takes; a wire-out run gives its peer two minutes.
             awaitOutcome = try w.awaitClient(
                 hostStatic: hostStatic,
-                timeoutSeconds: 120,
+                timeoutSeconds: opts.wireListen != nil ? nil : 120,
                 stopRequested: { lyteTerminationRequested != 0 })
         } catch {
             w.shutdown(reason: .shuttingDown, lingerSeconds: 0)
