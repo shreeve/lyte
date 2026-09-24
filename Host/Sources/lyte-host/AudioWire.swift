@@ -19,8 +19,8 @@
 // Threading: CPipeWireAudio owns its own pw_main_loop, run here on a
 // dedicated Thread — the 5 ms cadence cannot ride the video loop's
 // ~16.7 ms tick. All slicing/encoding state below is confined to that
-// audio loop thread; the only cross-thread touch is sendAudioPacket
-// (locked inside SessionWire) and the stop flag. The slicing and
+// audio loop thread; the only cross-thread touches are the SessionWire
+// audio mailbox (packets and track states) and the stop flag. The slicing and
 // graph-clock timestamp bookkeeping have one sans-IO HostCore owner shared
 // with lyte-audio-check: a packet is stamped by the buffer its FIRST sample
 // arrived in, advanced by the sample offset within it — pure graph clock,
@@ -288,8 +288,8 @@ final class AudioWire: @unchecked Sendable {
         let encoded = Array(packet.prefix(n))
 
         // Capture never stops — the gate is transmission-side, and it
-        // exists at all only under the key-15 agreement (per-packet
-        // check: cheap locked read, and a fresh session re-decides).
+        // exists at all only under the key-15 agreement (a snapshot read
+        // under the narrow config lock, never the session lock).
         guard wire.audioQuietPostureAgreed() else {
             wire.sendAudioPacket(encoded, captureMicros: timestamp)
             return

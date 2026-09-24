@@ -271,16 +271,17 @@ final class SessionWire {
     /// Most recent successfully admitted frame, for the synchronous
     /// encoder callback to attach QP/IDR-cause fields to its flight.
     private var lastFrameForTelemetry: FrameNumber?
-    private struct PendingAudioPacket {
-        var bytes: [UInt8]
-        var captureMicros: UInt64
-        var offeredAtNS: UInt64
+    /// What the audio capture thread publishes, in capture order: 5 ms
+    /// packets and the tripwire's track-state announcements.
+    private enum AudioMailboxEntry {
+        case packet(bytes: [UInt8], captureMicros: UInt64, offeredAtNS: UInt64)
+        case trackState(AudioTrackState.State)
     }
     /// The audio capture thread owns only this narrow publication lock.
     /// The Session owner swaps the whole FIFO out before doing any
     /// framing/sealing work, so capture never waits for video.
     private let audioMailboxLock = NSLock()
-    private var audioMailbox: [PendingAudioPacket] = []
+    private var audioMailbox: [AudioMailboxEntry] = []
     private static let audioMailboxCapacity = 64
     private(set) var audioMailboxMaxDepth = 0
     private(set) var audioMailboxOverflows = 0
@@ -314,6 +315,17 @@ final class SessionWire {
     private var kernelPressureDecision: KernelPressureDecision?
     private(set) var lastSendError: String?
     private(set) var sendErrors = 0
+    /// The agreed capability flags the capture and audio threads poll,
+    /// published once at agreement (the agreement never changes after
+    /// it lands). Read and written under `configLock`, never the session
+    /// lock, so the 5 ms audio path and the 1 ms capture poll never wait
+    /// behind a video commit.
+    private struct AgreedMediaPosture {
+        var audioQuiet = false
+        var videoQuiet = false
+        var chromaModes: [UInt64]?
+    }
+    private var _agreedPosture = AgreedMediaPosture()
     /// HS-16 log throttle: the last rate a `rate:` line reported.
     private var lastPrintedRate: Int?
     /// HS-20: the encoder-VBV policy (armed by main once the encoder's
@@ -385,9 +397,7 @@ final class SessionWire {
     /// lands — or forever, for a grandfathered pre-W7 peer). The Sink
     /// branches the encoder posture on it at open.
     var agreedChromaModes: [UInt64]? {
-        lock.lock()
-        defer { lock.unlock() }
-        return session?.agreedCapabilities?.chromaModes
+        withConfigLock { _agreedPosture.chromaModes }
     }
     /// HS-21: whether the flood dial currently demands a retry cookie.
     var handshakeCookieMode: Bool { session?.handshakeCookieMode ?? false }
@@ -1000,20 +1010,34 @@ final class SessionWire {
     }
 
     /// HS-15: one encoded 5 ms Opus packet from the AUDIO capture
-    /// thread. Publication uses only the narrow mailbox lock; it never
-    /// waits behind video packetize/FEC/seal or broad session service.
-    /// The elevated sender (or a cooperative video-ingest checkpoint)
-    /// performs ordered framing, Noise sealing, pacing, and send.
-    /// Audio deliberately flows in IDLE and FROZEN (the 5 ms path
+    /// thread. Audio deliberately flows in IDLE and FROZEN (the 5 ms path
     /// probe — Session's ruling; only `closed` suppresses).
     func sendAudioPacket(_ packet: [UInt8], captureMicros: UInt64) {
-        let pending = PendingAudioPacket(
+        publishAudio(.packet(
             bytes: packet, captureMicros: captureMicros,
-            offeredAtNS: SystemMonotonicClock.nowNanoseconds
-        )
+            offeredAtNS: SystemMonotonicClock.nowNanoseconds))
+    }
+
+    /// Tripwire: one 0x25 track-state announcement onto the reliable
+    /// stream (a no-op at the session layer unless key 15 was agreed).
+    /// It rides the audio mailbox, so it stays ordered with the packets
+    /// around it and the audio thread never waits for the session lock.
+    func sendAudioTrackState(_ state: AudioTrackState.State) {
+        publishAudio(.trackState(state))
+    }
+
+    /// The audio thread's only entry into the session. Publication takes
+    /// the narrow mailbox lock; it never waits behind video
+    /// packetize/FEC/seal or broad session service. The elevated sender
+    /// (or a cooperative video-ingest checkpoint) performs ordered
+    /// framing, Noise sealing, pacing, and send.
+    private func publishAudio(_ entry: AudioMailboxEntry) {
         audioMailboxLock.lock()
-        if audioMailbox.count < Self.audioMailboxCapacity {
-            audioMailbox.append(pending)
+        if case .trackState = entry {
+            // Rare and stateful: an announcement is never dropped.
+            audioMailbox.append(entry)
+        } else if audioMailbox.count < Self.audioMailboxCapacity {
+            audioMailbox.append(entry)
             audioMailboxMaxDepth = max(audioMailboxMaxDepth, audioMailbox.count)
         } else {
             audioMailboxOverflows += 1
@@ -1024,8 +1048,9 @@ final class SessionWire {
         // Use that wake directly whenever the Session owner is between
         // bounded critical sections; this avoids making audio depend solely
         // on a default-CFS sender thread being scheduled after signal().
-        // try() never blocks the capture loop. Sequence allocation, Noise
-        // sealing, pacer insertion, and send still happen under `lock`.
+        // try() never blocks the capture loop, and the lines this pass
+        // formats are printed later by the janitor or the drain thread —
+        // the audio thread never does console I/O.
         if lock.try() {
             drainAudioMailboxLocked()
             if let session, session.phase == .established, !peerGone {
@@ -1038,7 +1063,6 @@ final class SessionWire {
                 }
             }
             lock.unlock()
-            flushLogLines()
         }
         signalDrain()
     }
@@ -1048,32 +1072,48 @@ final class SessionWire {
     /// after audio capture is free to publish its next quantum.
     private func drainAudioMailboxLocked() {
         audioMailboxLock.lock()
-        var pending: [PendingAudioPacket] = []
+        var pending: [AudioMailboxEntry] = []
         swap(&pending, &audioMailbox)
         audioMailboxLock.unlock()
         guard !pending.isEmpty else { return }
 
-        for packet in pending {
+        for entry in pending {
             guard let session, session.phase == .established, !peerGone else {
-                audioPacketsDroppedPreSession += 1
+                if case .packet = entry { audioPacketsDroppedPreSession += 1 }
                 continue
             }
             let now = SystemMonotonicClock.nowNanoseconds
-            let dwell = now &- packet.offeredAtNS
-            audioMailboxMaxDwellNS = max(audioMailboxMaxDwellNS, dwell)
-            audioMailboxDwell.record(dwell)
-            do {
-                _ = try session.ingestAudioPacket(
-                    packet.bytes,
-                    captureTimestampMicroseconds: packet.captureMicros,
-                    now: now
-                )
+            switch entry {
+            case .packet(let bytes, let captureMicros, let offeredAtNS):
+                let dwell = now &- offeredAtNS
+                audioMailboxMaxDwellNS = max(audioMailboxMaxDwellNS, dwell)
+                audioMailboxDwell.record(dwell)
+                do {
+                    _ = try session.ingestAudioPacket(
+                        bytes,
+                        captureTimestampMicroseconds: captureMicros,
+                        now: now
+                    )
+                    pumpForSocketState(session)
+                    try flushOutbox()
+                    audioPacketsSent += 1
+                } catch {
+                    audioSendFailures += 1
+                    noteSendError(error)
+                }
+            case .trackState(let state):
+                for event in session.noteAudioTrackState(
+                    state, now: now,
+                    hostMicroseconds: SystemMonotonicClock.nowMicroseconds
+                ) {
+                    execute(event)
+                }
                 pumpForSocketState(session)
-                try flushOutbox()
-                audioPacketsSent += 1
-            } catch {
-                audioSendFailures += 1
-                noteSendError(error)
+                do {
+                    try flushOutbox()
+                } catch {
+                    noteSendError(error)
+                }
             }
         }
     }
@@ -1286,19 +1326,13 @@ final class SessionWire {
     /// The audio thread asks per packet before ever gating — a legacy
     /// client keeps the always-on contract, silence included.
     func audioQuietPostureAgreed() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return false }
-        return session.agreedAudioQuietPosture
+        withConfigLock { _agreedPosture.audioQuiet }
     }
 
     /// Video posture: whether THIS session agreed key 16. The video
     /// leg asks per poll before ever backing off its keepalive.
     func videoQuietPostureAgreed() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return false }
-        return session.agreedVideoQuietPosture
+        withConfigLock { _agreedPosture.videoQuiet }
     }
 
     /// Video posture: one 0x26 announcement onto the reliable stream
@@ -1321,14 +1355,6 @@ final class SessionWire {
     var lastInputActivityNS: UInt64 {
         get { withConfigLock { _lastInputActivityNS } }
         set { withConfigLock { _lastInputActivityNS = newValue } }
-    }
-
-    /// Tripwire: one 0x25 track-state announcement onto the reliable
-    /// stream (a no-op at the session layer unless key 15 was agreed).
-    func sendAudioTrackState(_ state: AudioTrackState.State) {
-        withEstablishedSession {
-            $0.noteAudioTrackState(state, now: $1, hostMicroseconds: $2)
-        }
     }
 
     /// One session note from a shell thread, under `lock`: skipped
@@ -1703,6 +1729,12 @@ final class SessionWire {
                 + "idle-silence \(agreed.idleSilence), "
                 + "host-audio-routing \(agreed.hostAudioRouting), "
                 + "max datagram \(agreed.maxDatagramBytes) B")
+            withConfigLock {
+                _agreedPosture = AgreedMediaPosture(
+                    audioQuiet: agreed.audioQuietPosture,
+                    videoQuiet: agreed.videoQuietPosture,
+                    chromaModes: agreed.chromaModes)
+            }
             // HS-18: both ends declared key 9 — the client is owed one
             // starting-posture 0x19 (its control strip renders it).
             // Buffered; the next service pass sends it off this stack.
