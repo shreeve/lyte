@@ -64,7 +64,8 @@ What it does, idempotently:
   legal payload in `~/.local/share/lyte/doc/`.
 - Seeds `~/.config/lyte/host.conf` **once** (after that the conf is yours and
   reinstalls preserve its bytes and mode). Its one knob is `LYTE_HOST_ARGS`
-  (listen port, advertised NIC, session flags).
+  (listen port, advertised NIC, session flags). The seed turns on no
+  clipboard sync or file drops; both are consent you add there.
 - Renders `/etc/systemd/system/lyte-host.service` with your user, uid and
   real home path baked in (`User=`, `EnvironmentFile=`, `ExecStart`, the
   session bus, `XDG_RUNTIME_DIR`), plus `AmbientCapabilities=CAP_SYS_ADMIN`
