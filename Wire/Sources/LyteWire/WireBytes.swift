@@ -44,13 +44,6 @@ func wireReadLE<T: FixedWidthInteger & UnsignedInteger>(
     return value
 }
 
-@inline(__always)
-func wireReadLE24(_ bytes: ArraySlice<UInt8>, at index: Int) -> UInt32 {
-    UInt32(bytes[index])
-        | UInt32(bytes[index + 1]) << 8
-        | UInt32(bytes[index + 2]) << 16
-}
-
 /// A forward cursor over received bytes in which every read is bounds-
 /// checked: it returns the field or throws the codec's own truncation
 /// error, so a decoder built on it cannot index past its input.
@@ -75,6 +68,12 @@ struct WireReader {
     mutating func u16() throws -> UInt16 { try littleEndian() }
     mutating func u32() throws -> UInt32 { try littleEndian() }
     mutating func u64() throws -> UInt64 { try littleEndian() }
+
+    /// A little-endian u24 (the fec field's groupByteCount convention).
+    mutating func u24() throws -> UInt32 {
+        let b = try bytes(3), i = b.startIndex
+        return UInt32(b[i]) | UInt32(b[i + 1]) << 8 | UInt32(b[i + 2]) << 16
+    }
 
     /// The next `count` bytes, as a slice of the input.
     mutating func bytes(_ count: Int) throws -> ArraySlice<UInt8> {
