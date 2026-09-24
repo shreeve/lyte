@@ -339,8 +339,8 @@ final class ClipboardImageClientGateTests: XCTestCase {
         init(
             host: ImageHostStandIn,
             coreConfig: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig(),
-            sha256: @escaping @Sendable ([UInt8]) -> [UInt8] = {
-                Sha256.digest($0)
+            imageHasher: @escaping @Sendable () -> any ClipboardImageHasher = {
+                Sha256()
             }
         ) throws {
             self.host = host
@@ -363,7 +363,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
                 sender: sender,
                 config: coreConfig,
                 now: { ClientTimestamp(microseconds: clock.value) },
-                sha256: sha256,
+                imageHasher: imageHasher,
                 videoSink: HeadlessVideoSink(),
                 onEvent: { [weak self] event in
                     self?.events.append(event)
@@ -678,19 +678,25 @@ final class ClipboardImageClientGateTests: XCTestCase {
 
     // MARK: Leg 4b — hashing cost stays off refused images and the lock
 
-    /// Records every digest the core asks for and, while hashing, probes
-    /// whether another thread can take the core lock.
+    /// Records every digest the core finishes and the size of every
+    /// slice it hashes; while finishing a whole-blob digest (a local
+    /// copy), probes whether another thread can take the core lock.
     private final class HashProbe: @unchecked Sendable {
         private let lock = NSLock()
         private var calls = 0
         private var probesThatWaited = 0
+        private var sizes: [Int] = []
         weak var core: LyteUdpSessionCore?
 
         var callCount: Int { lock.withLock { calls } }
         var lockedDuringHash: Int { lock.withLock { probesThatWaited } }
+        var absorbedSizes: [Int] { lock.withLock { sizes } }
 
-        func digest(_ data: [UInt8]) -> [UInt8] {
+        func absorbed(_ count: Int) { lock.withLock { sizes.append(count) } }
+
+        func finished(wholeBlob: Bool) {
             lock.withLock { calls += 1 }
+            guard wholeBlob else { return }
             let done = DispatchSemaphore(value: 0)
             let core = self.core
             DispatchQueue.global().async {
@@ -700,7 +706,23 @@ final class ClipboardImageClientGateTests: XCTestCase {
             if done.wait(timeout: .now() + 2) == .timedOut {
                 lock.withLock { probesThatWaited += 1 }
             }
-            return Sha256.digest(data)
+        }
+
+        func makeHasher() -> any ClipboardImageHasher { Hasher(probe: self) }
+
+        private struct Hasher: ClipboardImageHasher {
+            let probe: HashProbe
+            var sha = Sha256()
+            var absorbCalls = 0
+            mutating func absorb(_ bytes: ArraySlice<UInt8>) {
+                absorbCalls += 1
+                probe.absorbed(bytes.count)
+                sha.update(bytes)
+            }
+            mutating func finish() -> [UInt8] {
+                probe.finished(wholeBlob: absorbCalls == 1)
+                return sha.finalized()
+            }
         }
     }
 
@@ -714,7 +736,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
         let probe = HashProbe()
         let harness = try Harness(
             host: host, coreConfig: config,
-            sha256: { probe.digest($0) })
+            imageHasher: { probe.makeHasher() })
         probe.core = harness.core
         var t: UInt64 = 1_000
         harness.clock.value = t
@@ -754,6 +776,30 @@ final class ClipboardImageClientGateTests: XCTestCase {
         XCTAssertEqual(probe.callCount, 1)
         try harness.settle(t: &t)
         XCTAssertEqual(host.applied.count, 1)
+    }
+
+    /// An incoming image is hashed one chunk per delivered message, so
+    /// the receive thread never hashes a whole blob under the core lock.
+    func testIncomingImageIsHashedOneChunkAtATime() throws {
+        let host = ImageHostStandIn(localCapabilities: imagesTier)
+        var config = LyteUdpSessionCoreConfig()
+        config.shareClipboard = true
+        config.shareClipboardImages = true
+        let probe = HashProbe()
+        let harness = try Harness(
+            host: host, coreConfig: config,
+            imageHasher: { probe.makeHasher() })
+        var t: UInt64 = 1_000
+        harness.clock.value = t
+        try harness.core.open(now: ClientTimestamp(microseconds: t))
+        try harness.settle(t: &t)
+
+        let hostImage = makePayload(count: 150_000, seed: 0xCAFE)
+        try host.shareImage(hostImage, nowMicros: t)
+        try harness.settle(t: &t)
+        XCTAssertEqual(harness.imageApplies.first?.data, hostImage)
+        XCTAssertEqual(probe.absorbedSizes, [65_536, 65_536, 18_928])
+        XCTAssertEqual(probe.callCount, 1)
     }
 
     // MARK: Leg 5 — the per-host images-rung default's plumbing

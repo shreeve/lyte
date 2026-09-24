@@ -36,8 +36,10 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public let config: LyteUdpSessionCoreConfig
 
     private let now: @Sendable () -> ClientTimestamp
-    /// The clipboard-image digest (LyteCore's SHA-256 unless injected).
-    private let sha256: @Sendable ([UInt8]) -> [UInt8]
+    /// Makes the clipboard-image hasher (LyteCore's SHA-256 unless
+    /// injected): a local copy is hashed whole, outside the lock; an
+    /// incoming image one chunk per message.
+    private let imageHasher: @Sendable () -> any ClipboardImageHasher
     private let onEvent: @Sendable (LyteUdpSessionEvent) -> Void
     private let onVideoRecoveryDemand:
         @Sendable (VideoRecoveryCause, FrameNumber) -> Void
@@ -120,8 +122,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             ClientTimestamp(
                 microseconds: SystemMonotonicClock.nowMicroseconds)
         },
-        sha256: @escaping @Sendable ([UInt8]) -> [UInt8] = {
-            Sha256.digest($0)
+        imageHasher: @escaping @Sendable () -> any ClipboardImageHasher = {
+            Sha256()
         },
         onVideoRecoveryDemand: @escaping @Sendable (
             VideoRecoveryCause, FrameNumber
@@ -136,7 +138,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         self.config = config
         self.clockModel = clockModel
         self.now = now
-        self.sha256 = sha256
+        self.imageHasher = imageHasher
         self.onEvent = onEvent
         self.onVideoRecoveryDemand = onVideoRecoveryDemand
         self.onVideoRecoveryTrace = onVideoRecoveryTrace
@@ -592,8 +594,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     }
 
     /// The pasteboard watcher's image funnel: one local image copy
-    /// (PNG bytes in v2), judged (negotiated → tier → the shared sync
-    /// book → the lane → the 32 MiB ceiling) and shared as 0x22 cargo
+    /// (PNG bytes in v2), judged (negotiated → tier → lane busy → the
+    /// 32 MiB ceiling → the shared sync book) and shared as 0x22 cargo
     /// on chan 8 when it survives. Never throws — the poller has
     /// nobody to catch for it.
     ///
@@ -612,10 +614,12 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         if let refusal {
             return executeClipboardDecision(refusal, now: now)
         }
-        let digest = sha256(data)
+        var hasher = imageHasher()
+        hasher.absorb(data[...])
+        let digest = hasher.finish()
         lock.lock()
         let decision = controlSession.shareLocalClipboardImage(
-            data, sha256: digest, rng: &imageRng
+            data, sha256: { digest }, rng: &imageRng
         )
         lock.unlock()
         return executeClipboardDecision(decision, now: now)
@@ -1160,7 +1164,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         lock.lock()
         if controlSession.clipboardClaimsBulk(message) {
             let decision = controlSession.receiveClipboardBulk(
-                message, sha256: sha256)
+                message, hasher: imageHasher)
             lock.unlock()
             executeClipboardDecision(decision, now: now)
             return
