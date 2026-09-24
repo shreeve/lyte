@@ -5,7 +5,8 @@
 #
 # Usage: Scripts/build-cli.sh [debug|release]   (default: debug)
 set -e
-cd "$(dirname "$0")/.."
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 CONFIG="${1:-debug}"
 swift build \
@@ -14,6 +15,6 @@ swift build \
   -c "$CONFIG" \
   -Xswiftc -warnings-as-errors \
   --product lyte-cli
-"$(dirname "$0")/normalize-macos-rpaths.sh" ".build/$CONFIG/lyte-cli"
-"$(dirname "$0")/sign-dev.sh" ".build/$CONFIG/lyte-cli"
+"$ROOT/Scripts/normalize-macos-rpaths.sh" ".build/$CONFIG/lyte-cli"
+"$ROOT/Scripts/sign-dev.sh" ".build/$CONFIG/lyte-cli"
 echo "built + signed .build/$CONFIG/lyte-cli"

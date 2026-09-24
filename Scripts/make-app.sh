@@ -196,7 +196,7 @@ EOF
 # the stable identity is unavailable; the previously published app is left
 # byte-for-byte untouched on any failure before publication.
 plutil -lint "$STAGED_APP/Contents/Info.plist" >/dev/null
-"$(dirname "$0")/sign-dev.sh" \
+"$ROOT/Scripts/sign-dev.sh" \
   "$STAGED_APP/Contents/MacOS/lyte-helperd" "$STAGED_APP"
 
 # Validate the exact staged artifact before the rename-swap can replace the
