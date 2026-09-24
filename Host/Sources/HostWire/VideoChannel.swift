@@ -1,65 +1,37 @@
-// VideoChannel: the host's video-channel wiring (HS-5), now the session's
-// paced send channel (HS-7). One encoded Annex-B frame in — from the NVENC
-// packet callback on Linux, from the corpus in the macOS gate test —
-// Lyte-UDP datagram byte-blobs out, in pacer order, each tagged with its
-// PacerClass so the send loop can map classes to per-packet TOS (video
-// 0xA0 CS5, control 0xC0 CS6). Sans-IO in the HostCore style: no sockets,
-// no threads, no clock — `now` is injected monotonic nanoseconds
-// everywhere and the caller owns scheduling and syscalls.
+// VideoChannel: the session's one paced sender. One encoded Annex-B frame
+// in, Lyte-UDP datagrams out in pacer order, each tagged with its
+// PacerClass so the send loop can map classes to per-packet TOS. Sans-IO:
+// `now` is injected monotonic nanoseconds; the caller owns scheduling and
+// syscalls.
 //
-// Crypto seam (§4.1), filled at HS-7: `seal` is injected — the Session's
-// NoiseTransport turns each plaintext
-// shard into the wire payload with the exact header bytes (fixed envelope
-// + TLV block) as AAD, the same discipline the client's TransportSender
-// pins. Nil (the pre-session HS-5 shape) keeps bare-plaintext framing.
+// `seal` turns each plaintext shard into the wire payload with the exact
+// header bytes (fixed envelope + TLV block) as AAD. Nil (test-only) keeps
+// bare-plaintext framing.
 //
-// Shard budget, the HS-7 accounting fix: the frozen Wire geometry table
-// fills shards to 1112 B, which is exact only for a bare envelope —
-// 24 + 1112 + 16 (tag) = 1152. With the HS-12 conn-id TLV block (11 B)
-// on every datagram, a full shard would burst the budget
-// (24 + 11 + 1112 + 16 = 1163), so the geometry here derives from the
-// same parity ladder but with the real headroom: shard ≤ 1128 − tag −
-// TLV block (1101 B with the conn-id, 1112 B without). The tag is
-// reserved for test-only bare framing too, so FEC geometry never depends
-// on the crypto seam (the §4.2 rule). This is why packetization moved
-// in-house from LyteWire.VideoPacketizer: the table cannot be told about
-// TLV headroom and Wire/ is not this slice's territory. Everything else
-// (balanced split, FecField interior, contiguous ascending seq per
-// frame) is byte-identical to the W2 packetizer — the HS-5 gate test
-// still proves it against the frozen corpus.
+// Shard budget: shard ≤ 1128 − AEAD tag − TLV block (1101 B with the
+// conn-id TLV, 1112 B without), so every datagram fits 1152 B. The tag is
+// reserved even for bare framing, so FEC geometry never depends on the
+// crypto seam.
 //
-// Pacer-class ruling: EVERY shard of every fresh frame — data and parity
-// alike — is `.freshVideo`; shards of a keyframe (IDR/parameter sets)
-// additionally enqueue `urgent`, which jumps only their own class's FIFO
-// (the Pacer's IDR-on-demand semantics) and never starves audio or
-// control. Control datagrams (beacons, path challenges, handshake) enter
-// through `enqueueControl` and outrank video structurally — HS-6's strict
-// priority, all traffic classes through one schedule. The NACK era
-// arrived at HS-17: repair retransmits ride `.videoTail` (the overview's
-// unified order, conflict 13 — "video tail + NACK retransmits"), below
-// fresh video and structurally below audio, so a repair storm can never
-// bend the 5 ms cadence.
+// Every shard of a fresh frame (data and parity) is `.freshVideo`;
+// keyframe shards enqueue `urgent`, which jumps only their own class's
+// FIFO. Control outranks video; repair retransmits ride `.videoTail`,
+// below fresh video and audio, so a repair storm cannot bend the 5 ms
+// audio cadence.
 //
-// Repair store (HS-17): every packetized shard — plaintext + its fec
-// field — is retained per frame so the session's NACK responder can
-// retransmit exactly what the client names. Retention is the build
-// plan's "≥4 s rings" (HS-17 row; the overview's send-timestamp ring
-// ruling, applied to the bytes themselves), additionally byte-capped so
-// a rate spike cannot balloon memory: oldest frames evict first either
-// way. A retransmit is a FRESH datagram — fresh seq, fresh nonce, fresh
-// seal (the W3/W9 rule: the replay window admits no stale-seq resend) —
-// carrying the ORIGINAL frame number, fec field, capture timestamp, and
-// per-frame TLV stamps, composed through the same frozen codecs as the
-// first flight; zero new wire bytes.
+// Repair store: every shard (plaintext + fec field) is retained per frame
+// for `repairRetentionNS`, byte-capped, oldest frames evicted first. A
+// retransmit is a fresh datagram (fresh seq, nonce and seal — the replay
+// window admits no stale seq) carrying the original frame number, fec
+// field, capture timestamp and TLV stamps.
 
 import HostCore
 import HostSession
 import LyteCore
 import LyteWire
 
-/// One ready-to-send datagram: encoded envelope + payload bytes plus the
-/// routing metadata the send loop needs (class → TOS mapping lives in the
-/// caller, matching lyte-pace-check's precedent).
+/// One ready-to-send datagram plus the routing metadata the send loop
+/// needs (the caller maps class → TOS).
 public struct VideoChannelDatagram: Hashable, Sendable {
     /// The full wire image (24 B envelope [+ TLV block] + wire payload),
     /// ≤ 1152 B by construction — `Envelope.encode` enforced it.
@@ -69,15 +41,13 @@ public struct VideoChannelDatagram: Hashable, Sendable {
     public let seq: ChannelSeq
     /// True for shards of an IDR/parameter-set frame (enqueued urgent).
     public let isKeyframe: Bool
-    /// Where this datagram must go: nil is the session's primary path
-    /// (the connected peer); set only for path-validation challenges,
-    /// which must travel on the exact unvalidated tuple (HS-12).
+    /// Nil is the session's primary path; set only for path-validation
+    /// challenges, which must travel on the exact unvalidated tuple.
     public let destination: FourTuple?
 }
 
-/// The HS-7 crypto seam: exact header bytes as AAD, envelope for nonce
-/// material, plaintext in, wire payload (ciphertext ‖ tag, or the shard
-/// unchanged in test-only gates) out. Mirrors the client seam's shape.
+/// The crypto seam: exact header bytes as AAD, envelope for nonce
+/// material, plaintext in, wire payload (ciphertext ‖ tag) out.
 public typealias VideoChannelSealer = (
     _ plaintext: ArraySlice<UInt8>,
     _ aad: ArraySlice<UInt8>,
@@ -87,30 +57,19 @@ public typealias VideoChannelSealer = (
 public struct VideoChannelConfig: Sendable {
     public var channel: ChannelId
     public var firstSeq: ChannelSeq
-    /// The STARTING FEC regime column. Live regime policy arrived at
-    /// HS-17: the estimator's rung-3 step verdicts move the channel's
-    /// regime via `setRegime`, per-frame, from the next ingest.
+    /// The starting FEC regime; `setRegime` moves it per frame.
     public var regime: FecRegime
-    /// Pacer rate. Until HS-16 negotiates, the caller's configured
-    /// session ceiling is the honest default (Pacer's own rule).
     public var rateBitsPerSecond: Int
     public var pacerQuantumNS: UInt64
-    /// HS-12: when set, EVERY outgoing datagram carries the connection-ID
-    /// TLV (type 0x01) so the client can attribute datagrams to the
-    /// session regardless of source 4-tuple — QUIC's every-packet rule,
-    /// chosen over first-packet-only because datagrams are independently
-    /// lossy. Cost: 11 B/datagram (count + TLV header + 8 B value) plus
-    /// a shard budget of 1101 B instead of 1112 B (see the header
-    /// comment); the worst case 24 + 11 + 1101 + 16 = 1152 B lands
-    /// exactly on the budget, and `Envelope.encode` keeps enforcing it.
-    /// Nil (default) sends the bare envelope with full-size shards.
+    /// When set, EVERY datagram carries the connection-ID TLV (0x01) so
+    /// the client can attribute it regardless of source 4-tuple —
+    /// datagrams are independently lossy. Costs 11 B/datagram and shrinks
+    /// the shard budget to 1101 B (24 + 11 + 1101 + 16 = 1152 B exactly).
     public var connectionId: ConnectionId?
-    /// HS-17: how long sent shards stay repairable. The build plan's
-    /// "≥4 s rings"; frames older than this evict from the store.
+    /// How long sent shards stay repairable.
     public var repairRetentionNS: UInt64
-    /// HS-17: the store's byte ceiling (plaintext shard bytes). At the
-    /// 20 Mbps reference rate 4 s is ~10 MB; the cap holds a rate
-    /// spike honest. Oldest frames evict first.
+    /// The store's byte ceiling (plaintext shard bytes); oldest frames
+    /// evict first.
     public var repairStoreByteCap: Int
     /// Repairs queued longer than this are no longer useful to the
     /// client's bounded assembler. They are dropped before transmit
@@ -145,9 +104,8 @@ public struct VideoChannelConfig: Sendable {
         tlvBlockByteCount(extraTlvByteCount: 0)
     }
 
-    /// The TLV block under this config plus `extraTlvByteCount` bytes of
-    /// per-frame TLVs (HS-13's lastInputSeq stamp): the count byte is
-    /// paid once, by whichever TLV arrives first.
+    /// The TLV block plus `extraTlvByteCount` bytes of per-frame TLVs;
+    /// the count byte is paid once.
     func tlvBlockByteCount(extraTlvByteCount: Int) -> Int {
         let connIdBytes =
             connectionId == nil ? 0 : 2 + ConnectionId.byteCount
@@ -157,7 +115,7 @@ public struct VideoChannelConfig: Sendable {
 
     /// The plaintext shard budget under this config's real per-datagram
     /// overhead. The AEAD tag is reserved unconditionally so geometry is
-    /// identical with and without crypto (§4.2).
+    /// identical with and without crypto.
     public var shardBudgetByteCount: Int {
         shardBudgetByteCount(extraTlvByteCount: 0)
     }
@@ -202,13 +160,11 @@ public struct VideoChannelCounters: Sendable {
     public var shardsEnqueued = 0
     public var datagramsSent = 0
     public var bytesSent = 0
-    /// HS-17: repair retransmits enqueued (fresh datagrams, videoTail).
     public var repairShardsEnqueued = 0
-    /// HS-17: requested shards the store no longer held (evicted, or a
-    /// shard index the frame never had).
+    /// Requested shards the store no longer held (evicted, or an index
+    /// the frame never had).
     public var repairShardsUnavailable = 0
-    /// HS-17: repair requests refused because the shard already rode a
-    /// retransmit (one attempt — no retransmission of retransmissions).
+    /// Repair requests refused because the shard already rode one.
     public var repairShardsAlreadySent = 0
     /// Repair datagrams dropped from videoTail after their usefulness
     /// deadline elapsed while fresher/higher-priority work was ahead.
@@ -253,13 +209,8 @@ public final class VideoChannel {
     public let config: VideoChannelConfig
     public private(set) var counters = VideoChannelCounters()
 
-    /// The pacer is owned here: this channel is the session's ONE paced
-    /// sender — one schedule, strict priority, every class the session
-    /// emits. Control rides it via `enqueueControl` (HS-7) and audio
-    /// joined via `enqueueAudio` (HS-15) — the "until audio joins the
-    /// send loop" moment arrived, and the unification is one shared
-    /// schedule rather than an extracted Pacer object, so the HS-5/HS-7
-    /// gate behavior is untouched by construction.
+    /// The session's one schedule: strict priority over every class the
+    /// session emits.
     private let pacer: Pacer
     private let send: (VideoChannelDatagram) -> Void
     private let seal: VideoChannelSealer?
@@ -271,49 +222,41 @@ public final class VideoChannel {
     /// retransmitted shard is a fresh datagram in every seq-visible way.
     public private(set) var nextSeq: ChannelSeq
 
-    /// The §5.2 ladder column in force — HS-16's deferred "per-frame
-    /// regime switch", moved by `setRegime` (the estimator's step
-    /// verdicts via the session). Applies from the next `ingest`.
+    /// The FEC regime in force; applies from the next `ingest`.
     public private(set) var regime: FecRegime
 
-    /// The frame number of the last keyframe packetized — the
-    /// staleness gate's "newer than the last IDR" anchor (§1.1 rule 3).
+    /// The last keyframe packetized — the staleness gate's "newer than
+    /// the last IDR" anchor.
     public private(set) var lastKeyframeNumber: FrameNumber?
 
     /// Datagrams waiting in the pacer, keyed by their token tag.
     private var pending: [UInt64: VideoChannelDatagram] = [:]
     private var nextTag: UInt64 = 0
-    /// Video-class shards still queued, per frame number (HS-28): the
-    /// estimator recuses NACKs against frames we have not finished
-    /// sending — the client's completion presumption expired mid-drain,
-    /// which measures our pacer, not the path.
+    /// Video-class shards still queued, per frame number: NACKs against
+    /// frames still draining measure our pacer, not the path.
     private var queuedShardsByFrame: [UInt32: Int] = [:]
     private var queuedFreshShardsByFrame: [UInt32: Int] = [:]
     private var activeFrameTelemetry: [UInt32: VideoFrameTransmitTelemetry] = [:]
     private var completedFrameTelemetry = Deque<VideoFrameTransmitTelemetry>()
     private static let frameTelemetryCapacity = 256
 
-    // MARK: Repair store (HS-17)
+    // MARK: Repair store
 
     private struct StoredShard {
         /// The encoded fec field (shard index + geometry) — replayed
         /// verbatim on the repair envelope.
         var fec: UInt64
         var payload: [UInt8]
-        /// One attempt per shard (§1.1 rule 3): set when a repair rode.
+        /// One attempt per shard: set when a repair rode.
         var repaired = false
     }
 
     private struct StoredFrame {
-        /// Pacer-domain instant the frame was packetized (retention's
-        /// clock).
+        /// When the frame was packetized (retention's clock).
         var ingestedAtNS: UInt64
-        /// The frame's LAST shard release instant so far — the
-        /// staleness gate's freeze-budget anchor: the client's freeze
-        /// starts when the flight completes (it cannot judge the frame
-        /// FEC-impossible before the wire has spoken), so pacer queue
-        /// time must not be charged against the repair budget. Updated
-        /// at pump time as the frame drains.
+        /// The frame's last shard release so far — the freeze-budget
+        /// anchor: the client's freeze starts when the flight completes,
+        /// so pacer queue time is not charged against the repair budget.
         var lastSentAtNS: UInt64
         var captureMicros: UInt64
         var lastInputSeq: UInt32?
@@ -351,25 +294,19 @@ public final class VideoChannel {
         self.send = send
     }
 
-    /// The HS-17 regime switch: the §5.2 column the NEXT frame's
-    /// geometry draws from. Frames already packetized are untouched —
-    /// the fec field each shard carries is the wire truth per frame.
+    /// Sets the regime the NEXT frame's geometry draws from; frames
+    /// already packetized keep theirs (each shard's fec field says).
     public func setRegime(_ regime: FecRegime) {
         self.regime = regime
     }
 
-    // MARK: Protectable-frame ceiling (HS-25)
+    // MARK: Protectable-frame ceiling
 
-    /// The largest encoded frame the CURRENT regime and TLV posture can
-    /// ship as ONE protected FEC group — the GF(2⁸) block holds at most
-    /// 255 total shards, so the §5.2 ladder protects at most
-    /// `maxDataShards(regime)` data shards (231 clean / 204 lossy), each
-    /// filled to this config's real shard budget. The wire cannot say
-    /// more: the fec field binds one group per frame number and carries
-    /// no group index, so a frame above this ceiling is unshippable, not
-    /// merely unprotected. The session's ingest guard reads this before
-    /// every packetize (frameByteCeiling's resiliency-§2.4 promise,
-    /// enforced at the seam that owns geometry).
+    /// The largest encoded frame the current regime and TLV posture can
+    /// ship as ONE FEC group: at most `maxDataShards(regime)` data shards
+    /// (GF(2⁸) caps a block at 255 shards), each at the real shard budget.
+    /// The fec field carries no group index, so a larger frame is
+    /// unshippable, not merely unprotected.
     public func maxProtectableFrameByteCount(hasLastInputSeq: Bool) -> Int {
         FecGeometryTable.maxDataShards(regime)
             * config.shardBudgetByteCount(
@@ -420,10 +357,9 @@ public final class VideoChannel {
         )
     }
 
-    /// The ceiling's session-static worst case — the lossy column with
-    /// the lastInputSeq stamp riding — for postures that must hold no
-    /// matter how the regime or the input stream moves mid-session (the
-    /// shell's opening encoder VBV cap derives from this).
+    /// The ceiling's session-static worst case (lossy regime with the
+    /// lastInputSeq stamp), for postures that must hold whatever the
+    /// regime or input stream does mid-session.
     public var worstCaseProtectableFrameByteCount: Int {
         FecGeometryTable.maxDataShards(.lossy)
             * config.shardBudgetByteCount(
@@ -431,17 +367,12 @@ public final class VideoChannel {
             )
     }
 
-    /// Packetizes one encoded frame and enqueues every shard. Throws what
-    /// the packetization/envelope/seal steps throw (non-frame-shaped
-    /// bytes, a lying keyframe flag, an unprotectable frame size, a
-    /// budget breach, a seal refusal) — loud, per the W2 rule. Returns
-    /// the number of shards enqueued. `captureTimestampMicroseconds` is
-    /// the PipeWire graph-clock capture stamp; it rides the envelope
-    /// timestamp field verbatim. `lastInputSeq` (HS-13), when set, rides
-    /// every shard of THIS frame as the host-pinned TLV 0x03 — per-shard
-    /// like the conn-id, because shards are independently lossy — and
-    /// the frame's geometry derives from the correspondingly smaller
-    /// shard budget.
+    /// Packetizes one encoded frame and enqueues every shard; returns the
+    /// shard count. Throws on non-frame-shaped bytes, a lying keyframe
+    /// flag, an unprotectable size, a budget breach or a seal refusal.
+    /// `captureTimestampMicroseconds` rides the envelope timestamp
+    /// verbatim. `lastInputSeq`, when set, rides every shard of this frame
+    /// as TLV 0x03 and shrinks the frame's shard budget accordingly.
     @discardableResult
     public func ingest(
         frame annexB: [UInt8],
@@ -626,18 +557,16 @@ public final class VideoChannel {
         return shards.count
     }
 
-    // MARK: Repair (HS-17)
+    // MARK: Repair
 
-    /// The freeze-budget anchor for `frame`: its last shard release
-    /// instant (see StoredFrame.lastSentAtNS); nil once the store let
-    /// it go.
+    /// The freeze-budget anchor for `frame` (its last shard release); nil
+    /// once the store let it go.
     public func repairAnchor(for frame: FrameNumber) -> UInt64? {
         store[frame.rawValue]?.lastSentAtNS
     }
 
-    /// The wire bytes a repair of `shardIndices` would occupy — the
-    /// gate's retxSerialization numerator. Unknown/already-repaired
-    /// shards contribute nothing.
+    /// The bytes a repair of `shardIndices` would occupy. Unknown or
+    /// already-repaired shards contribute nothing.
     public func repairByteCount(
         frame: FrameNumber, shardIndices: [UInt8]
     ) -> Int {
@@ -650,14 +579,9 @@ public final class VideoChannel {
         return bytes
     }
 
-    /// Retransmits the named shards of a stored frame: each one a FRESH
-    /// datagram (fresh seq, fresh seal) carrying the original frame
-    /// number, fec field, capture timestamp, and TLV stamps, enqueued
-    /// at `.videoTail` — below fresh video, structurally below audio.
-    /// One attempt per shard, ever: a shard that already rode a repair
-    /// is refused (counted), per §1.1 rule 3. Returns the count
-    /// actually enqueued (0 = nothing repairable; the caller judges
-    /// what that means). Throws only what the seal path throws.
+    /// Retransmits the named shards of a stored frame as fresh datagrams
+    /// at `.videoTail`. One attempt per shard, ever: a shard that already
+    /// rode a repair is refused (counted). Returns the count enqueued.
     @discardableResult
     public func enqueueRepair(
         frame: FrameNumber, shardIndices: [UInt8], now: UInt64
@@ -795,12 +719,10 @@ public final class VideoChannel {
         }
     }
 
-    /// HS-7: one already-encoded control datagram (beacon, handshake
-    /// message, path challenge) through the same pacer, class `.control`
-    /// — strict priority puts it ahead of every queued video shard
-    /// without starving in-flight batches. The bytes are the full wire
-    /// image; sealing (or not — handshake messages travel bare) already
-    /// happened at the session layer, which owns the CTRL seq space.
+    /// One already-encoded control datagram at class `.control`, ahead
+    /// of every queued video shard. The bytes are the full wire image;
+    /// the session sealed them (handshake messages travel bare) and owns
+    /// the CTRL seq space.
     public func enqueueControl(
         _ bytes: [UInt8],
         seq: ChannelSeq,
@@ -818,14 +740,9 @@ public final class VideoChannel {
         enqueue(datagram, urgent: false, frameID: nil, now: now)
     }
 
-    /// HS-15: one already-sealed audio datagram (an Opus data shard or
-    /// its group's parity) through the same pacer, class `.audio` —
-    /// strictly above every video class and below control, which is
-    /// what makes the 5 ms ± 2 ms inter-send bound structural (HS-6:
-    /// audio waits behind at most one ≤1 ms batch). The bytes are the
-    /// full wire image; the AudioFramer owns the audio seq space and
-    /// the session sealed the payload, exactly the `enqueueControl`
-    /// division of labor.
+    /// One already-sealed audio datagram at class `.audio`: above every
+    /// video class and below control, so audio waits behind at most one
+    /// ≤1 ms batch. The AudioFramer owns the audio seq space.
     public func enqueueAudio(
         _ bytes: [UInt8],
         seq: ChannelSeq,
@@ -843,14 +760,9 @@ public final class VideoChannel {
         enqueue(datagram, urgent: false, frameID: nil, now: now)
     }
 
-    /// F-3: one already-sealed chan-8 bulk datagram (the bulk channel's
-    /// ARQ frames — accept/ack/complete/abort from the receiving host,
-    /// plus the ACKs that pace the sender's chunks) through the same
-    /// pacer, class `.bulk` — the ladder's tail, strictly below
-    /// telemetry, so a file transfer can never delay a feedback report
-    /// by even one batch (design record 20260728-053300 §1). Same
-    /// division of labor as `enqueueControl`: the session owns the
-    /// chan-8 seq space and sealed the payload.
+    /// One already-sealed chan-8 bulk datagram at class `.bulk`, the
+    /// ladder's tail, so a file transfer never delays a feedback report.
+    /// The session owns the chan-8 seq space.
     public func enqueueBulk(
         _ bytes: [UInt8],
         seq: ChannelSeq,
@@ -867,8 +779,7 @@ public final class VideoChannel {
         enqueue(datagram, urgent: false, frameID: nil, now: now)
     }
 
-    /// Datagrams of `pacerClass` still waiting in the shared schedule —
-    /// the audio thread's "did my packet actually leave" check (HS-15).
+    /// Datagrams of `pacerClass` still waiting in the shared schedule.
     public func queuedCount(_ pacerClass: PacerClass) -> Int {
         pacer.queuedCount(pacerClass)
     }
@@ -966,7 +877,6 @@ public final class VideoChannel {
 
     /// The earliest instant `pump` (or, bounded to `.audio`,
     /// `pumpLatency`) can emit; nil when nothing it releases is queued.
-    /// The caller's loop sleeps until this (Pacer semantics verbatim).
     public func nextWake(
         now: UInt64, upThrough highestClass: PacerClass = .bulk
     ) -> UInt64? {
@@ -977,13 +887,10 @@ public final class VideoChannel {
         pacer.isEmpty
     }
 
-    /// The HS-16 seam, passed through.
     public func setRate(bitsPerSecond: Int, now: UInt64) {
         pacer.setRate(bitsPerSecond: bitsPerSecond, now: now)
     }
 
-    /// The rate the shared pacer is running at right now (HS-16's
-    /// evidence surface for tests and logs).
     public var rateBitsPerSecond: Int {
         pacer.rateBitsPerSecond
     }
@@ -992,29 +899,22 @@ public final class VideoChannel {
         pacer.telemetry
     }
 
-    /// Live queued bytes for one pacer class — the estimator's
-    /// self-reference gate reads the video backlog through this
-    /// (HS-22c): trains measured while we hold standing backlog are
-    /// measurements of our own pacing, not the path.
+    /// Live queued bytes for one pacer class. Trains measured while we
+    /// hold standing video backlog measure our own pacing, not the path.
     public func queuedBytes(_ priorityClass: PacerClass) -> Int {
         pacer.queuedBytes(priorityClass)
     }
 
-    /// Frame numbers with video-class shards still waiting in the
-    /// pacer (HS-28): a NACK against one of these is the client
-    /// presuming completion of a flight we have not finished — the
-    /// estimator recuses it from the post-FEC path evidence.
+    /// Frame numbers with video-class shards still in the pacer; a NACK
+    /// against one is not path evidence.
     public func framesWithQueuedShards() -> Set<UInt32> {
         Set(queuedShardsByFrame.keys)
     }
 
     /// The fall-repricing purge: bytes admitted at the pre-fall rate
-    /// would serialize at the crashed rate as stale glass (80–895 ms
-    /// measured). Drops every queued video-class datagram (freshVideo
-    /// + videoTail) from the shared schedule and settles the per-frame
-    /// census; control, audio, and bulk keep their place. The caller
-    /// owes the client a fresh IDR — frames dropped mid-flight can
-    /// never complete, and whatever referenced them must re-anchor.
+    /// would serialize at the crashed rate as stale glass. Drops every
+    /// queued freshVideo/videoTail datagram; control, audio and bulk keep
+    /// their place. The caller owes the client a fresh IDR.
     public func purgeQueuedVideo() -> (datagrams: Int, bytes: Int) {
         var datagrams = 0
         var bytes = 0
@@ -1090,7 +990,7 @@ public final class VideoChannel {
     }
 
     /// Header bytes double as AAD — exactly what the receiver slices off
-    /// ahead of the payload (the TransportSender rule, mirrored).
+    /// ahead of the payload.
     private func encodeSealed(
         envelope: Envelope, plaintext: [UInt8]
     ) throws -> [UInt8] {

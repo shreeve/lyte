@@ -13,7 +13,7 @@ public struct SessionClockStats: Equatable, Sendable {
     public init() {}
 }
 
-/// The sans-IO owner of the Host session's W4a beacon clock.
+/// The sans-IO owner of the Host session's beacon clock.
 ///
 /// `Session` adapts these values to sealed CTRL sends and estimator events;
 /// this value owns cadence, successful-send sequence advancement, echo
@@ -67,7 +67,7 @@ public struct SessionBeaconClock: Equatable, Sendable {
         return nextSequence
     }
 
-    /// Records one echo, updates the minimum-RTT books, and retains the W4a
+    /// Records one echo, updates the minimum-RTT books, and retains the
     /// mirror fields for the next beacon.
     public mutating func accept(
         echo: BeaconEcho,
