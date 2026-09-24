@@ -359,10 +359,15 @@ static void on_stream_process(void *data)
     struct spa_data *d = &buf->datas[0];
 
     if (a->have_format && d->data != NULL && d->chunk != NULL &&
-        d->chunk->size > 0) {
+        d->chunk->size > 0 && a->format.channels > 0) {
         uint32_t channels = a->format.channels;
         uint32_t rate = a->format.rate;
-        uint32_t n_frames = d->chunk->size / (sizeof(float) * channels);
+        /* The chunk describes a region of the mapped buffer; never read
+           past maxsize, whatever the producer claims (SPA's own
+           SPA_MIN clamping idiom). */
+        uint32_t offset = SPA_MIN(d->chunk->offset, d->maxsize);
+        uint32_t size = SPA_MIN(d->chunk->size, d->maxsize - offset);
+        uint32_t n_frames = size / (sizeof(float) * channels);
 
         /* Graph-clock stamp. pw_time.ticks is the graph position after the
            delivered data (units of pw_time.rate, i.e. samples for audio);
@@ -380,9 +385,10 @@ static void on_stream_process(void *data)
         }
         a->total_frames += n_frames;
 
-        a->cb(a->user,
-              (const float *)((const uint8_t *)d->data + d->chunk->offset),
-              n_frames, channels, rate, graph_us);
+        if (n_frames > 0)
+            a->cb(a->user,
+                  (const float *)((const uint8_t *)d->data + offset),
+                  n_frames, channels, rate, graph_us);
     }
 
     pw_stream_queue_buffer(a->stream, b);
