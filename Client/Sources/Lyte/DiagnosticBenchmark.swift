@@ -124,7 +124,7 @@ private struct DiagnosticBenchmarkEnd: Codable {
 @MainActor
 enum DiagnosticBenchmark {
     static func run(model: ConnectionModel) async {
-        let environment = ProcessInfo.processInfo.environment
+        let environment = DiagnosticEnvironment.current
         let workload = environment["LYTE_BENCHMARK_WORKLOAD"] ?? "unknown"
         guard let runID = environment["LYTE_BENCHMARK_RUN_ID"],
               let outputPath = environment["LYTE_BENCHMARK_JSONL"],

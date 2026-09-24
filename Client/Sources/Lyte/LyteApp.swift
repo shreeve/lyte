@@ -8,6 +8,14 @@ struct LyteApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
+        if !DiagnosticEnvironment.isEnabled,
+           ProcessInfo.processInfo.environment.keys.contains(where: {
+               $0 == "LYTE_AUTOCONNECT" || $0.hasPrefix("LYTE_BENCHMARK_")
+           })
+        {
+            NSLog("lyte: diagnostic environment ignored — this bundle was "
+                + "built without LYTE_APP_DIAGNOSTICS=1")
+        }
         do {
             _ = try DiagnosticRunIdentity.publishIfRequested()
         } catch {
@@ -21,8 +29,7 @@ struct LyteApp: App {
     var body: some Scene {
         WindowGroup(id: "connection") {
             ConnectionWindow(
-                autoconnect:
-                    ProcessInfo.processInfo.environment["LYTE_AUTOCONNECT"])
+                autoconnect: DiagnosticEnvironment.current["LYTE_AUTOCONNECT"])
         }
         .defaultSize(width: 1024, height: 640)
         .commands {

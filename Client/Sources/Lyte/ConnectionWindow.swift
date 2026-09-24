@@ -29,7 +29,7 @@ struct ConnectionWindow: View {
         .focusedSceneValue(\.connection, model)
         .frame(minWidth: 480, minHeight: 320)
         .overlay(alignment: .topLeading) {
-            if let badge = ProcessInfo.processInfo.environment[
+            if let badge = DiagnosticEnvironment.current[
                 "LYTE_DIAGNOSTIC_BUILD_BADGE"
             ] {
                 Text(badge)

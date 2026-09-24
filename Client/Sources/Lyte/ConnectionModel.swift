@@ -162,8 +162,7 @@ final class ConnectionModel {
     /// ordinal high-water mark makes overlapping scans idempotent, and a
     /// recorder reset (ordinals restart) clears it implicitly.
     private let linkHealthMeter = LinkHealthMeter(
-        trace: ProcessInfo.processInfo
-            .environment["LYTE_LINK_HEALTH_DEBUG"] == "1"
+        trace: DiagnosticEnvironment.current["LYTE_LINK_HEALTH_DEBUG"] == "1"
             ? { line in print(line); fflush(stdout) } : nil)
     /// nil until streaming produces a verdict; .good renders nothing.
     private(set) var linkHealth: LinkHealthAssessment?
@@ -232,7 +231,7 @@ final class ConnectionModel {
             "port": String(host.port),
         ])
 
-        let environment = ProcessInfo.processInfo.environment
+        let environment = DiagnosticEnvironment.current
         let benchmarking = environment["LYTE_BENCHMARK_RUN_ID"] != nil
         // A benchmark autoconnect has no human interaction surface. Never
         // let Security.framework wait on hidden authorization UI before the
