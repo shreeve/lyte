@@ -177,6 +177,9 @@ targets += [
             "HostCore",
         ]
     ),
+    // Pure HostEye bookkeeping (GEM-handle and cursor-plane transitions)
+    // — unit tests that never open a device.
+    .testTarget(name: "HostEyeTests", dependencies: ["HostEye"]),
     // E0: the standalone eye — doorbell mode (milestone 1, unprivileged)
     // and capture mode (milestone 2: full loop → Annex-B file).
     .executableTarget(
