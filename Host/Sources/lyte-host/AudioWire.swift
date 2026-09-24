@@ -30,6 +30,7 @@ import CPipeWireAudio
 import Foundation
 import HostAudio
 import HostCore
+import HostIO
 import HostWire
 import LyteWire
 
@@ -39,10 +40,11 @@ import LyteWire
 /// `stop()` joins.
 final class AudioWire: @unchecked Sendable {
     /// Where a dirty previous run's original default sink waits for
-    /// the sweep. Beside the sacred three, never one of them.
-    static let routingStatePath = FileManager.default
-        .homeDirectoryForCurrentUser
-        .appendingPathComponent(".config/lyte-host/audio_default_sink.prev")
+    /// the sweep: host state, never beside the identity files.
+    static let routingStateName = "audio_default_sink.prev"
+    static func routingStatePath() throws -> String {
+        try HostPaths.current().state(routingStateName)
+    }
     /// The state-file sentinel for "the key was unset before us".
     private static let unsetSentinel = "<unset>"
 
@@ -115,7 +117,9 @@ final class AudioWire: @unchecked Sendable {
             let rc = lyte_pw_audio_saved_default(cap, &saved, saved.count)
             let record = rc == 1 ? errString(saved) : Self.unsetSentinel
             do {
-                try Data(record.utf8).write(to: Self.routingStatePath)
+                let paths = try HostPaths.current()
+                try SecretFile.write(
+                    Array(record.utf8), to: paths.state(Self.routingStateName))
             } catch {
                 // Refuse the posture rather than run un-restorable: a
                 // crash would strand the user's default sink silently.
@@ -163,7 +167,7 @@ final class AudioWire: @unchecked Sendable {
         routingRestored = true
         var err = [CChar](repeating: 0, count: 256)
         if lyte_pw_audio_restore(capture, &err, err.count) == 0 {
-            try? FileManager.default.removeItem(at: Self.routingStatePath)
+            if let path = try? Self.routingStatePath() { unlink(path) }
             print("audio: routing restored — original default sink back")
         } else {
             // The state file deliberately stays: the sweep finishes
@@ -181,18 +185,31 @@ final class AudioWire: @unchecked Sendable {
     /// dead run's sink never survives (connection-owned), so this is
     /// purely the metadata restore. Call once at session start, any
     /// routing mode.
+    /// A ledger a pre-XDG host left in ~/.config/lyte-host is honored
+    /// and consumed the same way.
     static func sweepLeftoverRouting() {
-        guard let data = try? Data(contentsOf: routingStatePath) else {
+        guard let paths = try? HostPaths.current() else { return }
+        var ledger: (path: String, bytes: [UInt8])?
+        for path in [
+            paths.state(routingStateName),
+            paths.legacyConfig(routingStateName),
+        ] {
+            if let bytes = try? SecretFile.read(path) {
+                ledger = (path, bytes)
+                break
+            }
+        }
+        guard let ledger else {
             return // clean previous shutdown — nothing recorded
         }
-        let record = String(decoding: data, as: UTF8.self)
+        let record = String(decoding: ledger.bytes, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         var err = [CChar](repeating: 0, count: 256)
         let rc = record == unsetSentinel
             ? lyte_pw_audio_restore_default(nil, &err, err.count)
             : lyte_pw_audio_restore_default(record, &err, err.count)
         if rc == 0 {
-            try? FileManager.default.removeItem(at: routingStatePath)
+            unlink(ledger.path)
             print("""
                 audio: swept a dirty previous run — default sink \
                 restored to \

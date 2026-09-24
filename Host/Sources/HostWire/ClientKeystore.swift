@@ -1,7 +1,7 @@
 // ClientKeystore (HS-9): the paired-clients trust store as a value —
 // the text format, parsing, and membership logic, kept sans-IO so the
 // format is pinned by cross-platform tests. The file itself lives at
-// ~/.config/lyte-host/paired_clients (0600, beside the host static —
+// ~/.config/lyte/paired_clients (0600, beside the host static —
 // which this store NEVER replaces: pairing pins CLIENT keys; the host's
 // own noise_static.key is untouchable).
 //
