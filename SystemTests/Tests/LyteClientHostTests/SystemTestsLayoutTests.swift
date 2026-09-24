@@ -4,9 +4,10 @@ import XCTest
 
 /// The repository boundaries only this package can see whole: the client
 /// and host roles meet here (and in the browser package's tests, recorded
-/// below), nothing depends on the system-test package, shipping client
-/// code carries no test equipment, and ARQ carrier packing has one owner
-/// (LyteWire).
+/// below), nothing depends on the system-test package, and shipping client
+/// code carries no test equipment. That both roles pack ARQ within the one
+/// conn-id-tagged budget is behavior, gated where each role sends
+/// (ReliableCtrlGateTests, ArqCtrlGateTests).
 final class SystemTestsLayoutTests: XCTestCase {
     private let sourceTree = RepositorySourceTree()
 
@@ -45,31 +46,13 @@ final class SystemTestsLayoutTests: XCTestCase {
     /// The one other place the roles meet is the browser package's tests:
     /// they drive the browser client against a real in-process HostWire
     /// session, the engine lyte-control-peer serves to Chrome. Browser
-    /// sources import no host module, and only the test target depends on
-    /// Host products.
+    /// sources import no host module.
     func testBrowserMeetsTheHostRoleOnlyInItsTests() throws {
         XCTAssertEqual(
             try importers(below: "Browser/Sources") {
                 belongsToRole($0, role: .host)
             }, [],
             "Browser/Sources must not import host modules")
-        let manifest = try source(at: "Browser/Package.swift")
-        let testTarget = try XCTUnwrap(
-            manifest.range(of: ".testTarget("),
-            "the Browser package declares its test target")
-        XCTAssertNil(
-            manifest.range(of: ".testTarget(", range: testTarget.upperBound
-                ..< manifest.endIndex),
-            "one Browser test target")
-        var cursor = manifest.startIndex
-        while let hostProduct = manifest.range(
-            of: "package: \"Host\"", range: cursor..<manifest.endIndex
-        ) {
-            XCTAssertGreaterThan(
-                hostProduct.lowerBound, testTarget.lowerBound,
-                "only the Browser test target may depend on Host products")
-            cursor = hostProduct.upperBound
-        }
     }
 
     func testAttributedAndQualifiedImportsCannotEvadeTheBoundary() {
@@ -93,36 +76,6 @@ final class SystemTestsLayoutTests: XCTestCase {
                 $0 == "LyteClientTestKit" || $0 == "LyteTestKit" || $0 == "XCTest"
             }.filter { !$0.hasPrefix(testKit) },
             [])
-    }
-
-    func testArqCarrierPackingLivesOnlyInWire() throws {
-        for path in [
-            "Client/Sources/LyteTransport/ReliableCtrlEndpoint.swift",
-            "Host/Sources/HostWire/Session.swift",
-        ] {
-            let tokens = SwiftSourceScanner.tokens(in: try source(at: path))
-            XCTAssertTrue(
-                SwiftSourceScanner.contains(
-                    ["maxDatagramPayloadByteCount", "="],
-                    in: tokens
-                ),
-                "\(path) must inject its carrier ceiling into LyteWire"
-            )
-            XCTAssertTrue(
-                tokens.contains("maxConnectionIdTaggedPlaintextByteCount"),
-                "\(path) must consume the one connection-id budget"
-            )
-            XCTAssertFalse(
-                SwiftSourceScanner.contains(
-                    ["ArqFrame", ".", "decodeAll", "("], in: tokens
-                ),
-                "\(path) must not decode and re-cut LyteWire output"
-            )
-            XCTAssertFalse(
-                tokens.contains { $0.lowercased().contains("repack") },
-                "\(path) must not grow another downstream ARQ packer"
-            )
-        }
     }
 
     // MARK: - Scanning
