@@ -130,9 +130,7 @@ echo "==> WebAssembly legs"
     fi
     lyte_wasm_select_host_sdk "macOS gate"
     Browser/Scripts/build.sh
-    if command -v wasmtime >/dev/null 2>&1 \
-        || [ -x "$HOME/.wasmtime/bin/wasmtime" ]
-    then
+    if lyte_wasmtime >/dev/null; then
         Wire/Scripts/wasm-test.sh
     else
         echo "    SKIPPED Wire/Scripts/wasm-test.sh: wasmtime not installed"

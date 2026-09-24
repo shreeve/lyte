@@ -152,7 +152,6 @@ def audio_interval_analysis(samples, warmup_seconds=3.0):
         "recenterEvents",
         "packetsDroppedInRecenter",
         "underrunFrames",
-        "declickProtectedUnderrunFrames",
         "decodeFailures",
         "routeChangeFailures",
     )
@@ -166,15 +165,10 @@ def audio_interval_analysis(samples, warmup_seconds=3.0):
         audio = sample_record["audio"]
         end = float(sample_record["elapsedSeconds"])
         phase = "warmup" if end <= warmup_seconds else "steadyState"
-        current = {
-            key: audio.get(
-                key,
-                audio.get("underrunFrames", 0)
-                if key == "declickProtectedUnderrunFrames"
-                else 0,
-            )
-            for key in keys
-        }
+        # Older runs also carry declickProtectedUnderrunFrames; it always
+        # equalled underrunFrames (every underrun passes the ring's
+        # declick path) and is ignored.
+        current = {key: audio.get(key, 0) for key in keys}
         delta = {
             key: max(0, current[key] - previous[key]) for key in keys
         }
@@ -207,8 +201,7 @@ def audio_interval_analysis(samples, warmup_seconds=3.0):
     ]
     def announced_quiet_stillness(interval):
         # The host declared quiet (0x25): silence is intentional.
-        # Underruns must all ride the declick path; PLC stays bounded
-        # to the one-time ring drain at the gate boundary (≤ 200 ms of
+        # PLC stays bounded to the one-time ring drain at the gate boundary (≤ 200 ms of
         # 5 ms packets); and a few boundary stragglers — near-silent
         # tail packets arriving after the ring re-based — may drop
         # late (≤ 40 ms). Sustained late drops still fail.
@@ -216,8 +209,6 @@ def audio_interval_analysis(samples, warmup_seconds=3.0):
             interval["hostAnnouncedQuiet"]
             and interval["latePacketsDropped"] <= 8
             and interval["plcInvocations"] <= 40
-            and interval["declickProtectedUnderrunFrames"]
-                == interval["underrunFrames"]
         )
 
     steady_state_mitigated = all(
@@ -234,8 +225,6 @@ def audio_interval_analysis(samples, warmup_seconds=3.0):
             )
             and interval["plcInvocations"] <= 20
             and interval["underrunFrames"] <= 4_800
-            and interval["declickProtectedUnderrunFrames"]
-                == interval["underrunFrames"]
         )
         for interval in steady_events
     )
@@ -508,13 +497,11 @@ def analyze(path):
     warmup_mitigated = (
         warmup_audio["plcInvocations"] <= 40
         and warmup_audio["underrunFrames"] <= 9_600
-        and warmup_audio["declickProtectedUnderrunFrames"]
-        == warmup_audio["underrunFrames"]
     )
     if audio["packetsUnrecoverable"]:
         hard_failures.append("audio_wire_loss")
     if not warmup_mitigated:
-        hard_failures.append("audio_warmup_not_bounded_or_declicked")
+        hard_failures.append("audio_warmup_not_bounded")
     steady_has_continuity_event = (
         steady_audio["plcInvocations"]
         or steady_audio["latePacketsDropped"]
