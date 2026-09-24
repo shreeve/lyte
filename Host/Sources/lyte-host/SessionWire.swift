@@ -66,7 +66,7 @@ final class HostListener {
     init(port: UInt16) throws {
         var err = [CChar](repeating: 0, count: 256)
         guard let n = lyte_netio_new("0.0.0.0", port, &err, err.count) else {
-            throw HostError("session socket open failed: \(errString(err))")
+            throw HostError("session socket open failed: \(String(cBuffer: err))")
         }
         guard lyte_netio_set_priority(n, 6) == 0 else {
             lyte_netio_free(n)
@@ -534,7 +534,7 @@ final class SessionWire {
             guard let socket = lyte_netio_new(
                 "0.0.0.0", lyte_netio_local_port(listenNetio), &err, err.count
             ) else {
-                throw HostError("\(what) socket open failed: \(errString(err))")
+                throw HostError("\(what) socket open failed: \(String(cBuffer: err))")
             }
             guard lyte_netio_set_priority(socket, priority) == 0 else {
                 lyte_netio_free(socket)
@@ -558,7 +558,7 @@ final class SessionWire {
             guard lyte_netio_set_peer(socket, host, port, &err, err.count) == 0
             else {
                 throw HostError(
-                    "\(what) connect to \(host):\(port) failed: \(errString(err))")
+                    "\(what) connect to \(host):\(port) failed: \(String(cBuffer: err))")
             }
         }
     }
@@ -1598,7 +1598,7 @@ final class SessionWire {
             return
         }
         if got < 0 {
-            throw HostError("recv failed: \(errString(recvError))")
+            throw HostError("recv failed: \(String(cBuffer: recvError))")
         }
         let localPort = lyte_netio_local_port(socket)
         for i in 0..<Int(got) {
@@ -2072,7 +2072,7 @@ final class SessionWire {
         case LYTE_NETIO_PEER_GONE: .peerGone
         case LYTE_NETIO_TRANSIENT: .transient
         case let accepted where accepted > 0: .accepted(Int(accepted))
-        default: .failed(errString(sendError))
+        default: .failed(String(cBuffer: sendError))
         }
     }
 

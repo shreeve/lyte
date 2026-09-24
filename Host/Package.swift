@@ -150,7 +150,10 @@ targets += [
     ),
     .testTarget(
         name: "CPipeWireAudioTests",
-        dependencies: ["CPipeWireAudio"],
+        dependencies: [
+            "CPipeWireAudio",
+            .product(name: "LyteIO", package: "Common"),
+        ],
         linkerSettings: [.linkedLibrary("pipewire-0.3")]
     ),
     // The direct eye (docs/history/20260801-105800-direct-eye-plan.md, E0): libdrm

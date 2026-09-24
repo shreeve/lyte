@@ -11,6 +11,7 @@ import HostIO
 import HostSession
 import HostWire
 import LyteCore
+import LyteIO
 import LyteWire
 
 @main
@@ -354,12 +355,6 @@ func handlePairingEvent(_ event: PairingResponderService.Event) {
     case .malformed:
         print("pairing: malformed pairing bytes dropped")
     }
-}
-
-/// Decodes a NUL-terminated C error buffer.
-func errString(_ buf: [CChar]) -> String {
-    let bytes = buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
-    return String(decoding: bytes, as: UTF8.self)
 }
 
 // MARK: - Main

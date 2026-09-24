@@ -311,9 +311,7 @@ final class AvahiAdvertiser {
     static func machineName() -> String {
         var buf = [CChar](repeating: 0, count: 256)
         gethostname(&buf, buf.count - 1)
-        let full = String(
-            decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
-            as: UTF8.self)
+        let full = String(cBuffer: buf)
         let short = full.split(separator: ".").first.map(String.init) ?? full
         return short.isEmpty ? "lyte-host" : short
     }

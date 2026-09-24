@@ -10,6 +10,7 @@ import CEGL
 import CGBM
 import Foundation
 import Glibc
+import LyteIO
 
 private typealias ImageTargetTexture2D =
     @convention(c) (GLenum, UnsafeMutableRawPointer?) -> Void
@@ -242,9 +243,7 @@ public final class EyeGL {
         guard ok == GL_TRUE else {
             var log = [GLchar](repeating: 0, count: 1024)
             glGetShaderInfoLog(shader, 1024, nil, &log)
-            let text = String(decoding: log.prefix { $0 != 0 }.map {
-                UInt8(bitPattern: $0)
-            }, as: UTF8.self)
+            let text = String(cBuffer: log)
             throw EyeGLError("shader compile: \(text)")
         }
         return shader
@@ -262,9 +261,7 @@ public final class EyeGL {
         guard ok == GL_TRUE else {
             var log = [GLchar](repeating: 0, count: 1024)
             glGetProgramInfoLog(prog, 1024, nil, &log)
-            let text = String(decoding: log.prefix { $0 != 0 }.map {
-                UInt8(bitPattern: $0)
-            }, as: UTF8.self)
+            let text = String(cBuffer: log)
             throw EyeGLError("program link: \(text)")
         }
         glDeleteShader(vs)

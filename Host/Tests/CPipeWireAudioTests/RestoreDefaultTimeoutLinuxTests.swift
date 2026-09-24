@@ -1,6 +1,7 @@
 import CPipeWireAudio
 import Foundation
 import Glibc
+import LyteIO
 import XCTest
 
 /// The next-start sweep against a PipeWire server that accepts the
@@ -44,8 +45,7 @@ final class RestoreDefaultTimeoutLinuxTests: XCTestCase {
         Thread.detachNewThread {
             var err = [CChar](repeating: 0, count: 256)
             let rc = lyte_pw_audio_restore_default(nil, &err, err.count)
-            let bytes = err.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
-            result.set(rc: rc, message: String(decoding: bytes, as: UTF8.self))
+            result.set(rc: rc, message: String(cBuffer: err))
             finished.signal()
         }
         guard finished.wait(timeout: .now() + 15) == .success else {

@@ -23,6 +23,7 @@ import HostAudio
 import HostCore
 import HostIO
 import HostWire
+import LyteIO
 import LyteWire
 
 /// @unchecked Sendable: the run thread's closure crosses a @Sendable
@@ -90,7 +91,7 @@ final class AudioWire: @unchecked Sendable {
         guard let cap = lyte_pw_audio_new(audioWireTrampoline, user,
                                           mode == .hostMuted ? 1 : 0,
                                           &err, err.count) else {
-            throw HostError("pipewire audio setup: \(errString(err))")
+            throw HostError("pipewire audio setup: \(String(cBuffer: err))")
         }
         capture = cap
         // The crash ledger: the original default is on disk BEFORE any
@@ -98,7 +99,7 @@ final class AudioWire: @unchecked Sendable {
         if mode == .hostMuted {
             var saved = [CChar](repeating: 0, count: 512)
             let rc = lyte_pw_audio_saved_default(cap, &saved, saved.count)
-            let record = rc == 1 ? errString(saved) : Self.unsetSentinel
+            let record = rc == 1 ? String(cBuffer: saved) : Self.unsetSentinel
             do {
                 let paths = try HostPaths.current()
                 try SecretFile.write(
@@ -114,7 +115,7 @@ final class AudioWire: @unchecked Sendable {
             print("""
                 audio: routing hostMuted — \"Lyte Audio\" sink is the \
                 default; original \
-                \(rc == 1 ? errString(saved) : "(unset)")\
+                \(rc == 1 ? String(cBuffer: saved) : "(unset)")\
                  recorded for restore
                 """)
         }
@@ -146,7 +147,7 @@ final class AudioWire: @unchecked Sendable {
         } else {
             // The state file stays for the next-start sweep.
             print("""
-                audio: routing restore FAILED (\(errString(err))) — \
+                audio: routing restore FAILED (\(String(cBuffer: err))) — \
                 state file kept for the next-start sweep
                 """)
         }
@@ -185,7 +186,7 @@ final class AudioWire: @unchecked Sendable {
                 """)
         } else {
             print("""
-                audio: leftover-routing sweep FAILED (\(errString(err))) — \
+                audio: leftover-routing sweep FAILED (\(String(cBuffer: err))) — \
                 state file kept; restore by hand with wpctl set-default
                 """)
         }
@@ -201,7 +202,7 @@ final class AudioWire: @unchecked Sendable {
             var err = [CChar](repeating: 0, count: 256)
             let rc = lyte_pw_audio_run(self.capture, seconds,
                                        &err, err.count)
-            if rc < 0 { self.runError = errString(err) }
+            if rc < 0 { self.runError = String(cBuffer: err) }
             self.finished.signal()
         }
         thread.name = "lyte-audio"

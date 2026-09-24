@@ -64,9 +64,7 @@ defer { _ = cuCtxDestroy_v2(cudaContext) }
 var maxVersion: UInt32 = 0
 check(NvEncodeAPIGetMaxSupportedVersion(&maxVersion),
       "NvEncodeAPIGetMaxSupportedVersion")
-let deviceName = String(
-    decoding: nameBytes.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
-    as: UTF8.self)
+let deviceName = String(cBuffer: nameBytes)
 print("""
     nvenc-probe: \(deviceName) — driver CUDA \
     \(driverVersion / 1000).\(driverVersion % 1000 / 10), NVENC API \
