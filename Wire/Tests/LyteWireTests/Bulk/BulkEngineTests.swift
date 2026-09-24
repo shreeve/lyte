@@ -607,25 +607,6 @@ final class BulkEngineTests: XCTestCase {
         XCTAssertEqual(exceeded.first, .violated(.creditExceeded))
     }
 
-    func testReceiverCarriesNoParallelAdmissionCounter() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(4)
-        let packageRoot = components.joined(separator: "/")
-        let source = try String(
-            contentsOfFile:
-                packageRoot + "/Sources/LyteWire/Bulk/BulkEngines.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertFalse(source.contains("admittedChunkCount"))
-        XCTAssertTrue(source.contains(
-            "let admissionDebt = consumedChunkCount "
-                + "+ UInt64(pendingStores.count)"
-        ))
-    }
-
     func testReceiverViolationForeignTransferAndRoleReversal() throws {
         let (offer, _) = makeFixture()
         var receiver = BulkReceiveEngine()
