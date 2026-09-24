@@ -77,10 +77,10 @@ PEER_BIN="${REPO_ROOT}/Host/.build/release/lyte-control-peer"
 
 rm -f "$PEER_META" "$META_OUT"
 CORPUS_DIR="${SERVE_DIR}/corpus"
-echo "browser-serve: starting lyte-control-peer on UDP ${PEER_PORT} (emit corpus)…"
+echo "browser-serve: starting lyte-control-peer on UDP ${PEER_PORT} (emit corpus, sessions until stopped)…"
 "$PEER_BIN" --listen "$PEER_PORT" --bind 127.0.0.1 --meta-out "$PEER_META" \
     --emit-corpus "$CORPUS_DIR" \
-    --seconds 600 >"${PEER_LOG}" 2>&1 &
+    --seconds 600 --sessions 0 >"${PEER_LOG}" 2>&1 &
 PEER_PID=$!
 
 i=0
