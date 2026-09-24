@@ -1,9 +1,8 @@
 import XCTest
 @testable import LyteCore
 
-// The Conductor's remaining shared primitive: the proof counter must be
-// exactly the law all three call sites already lived. Histogram retention
-// and rank doctrine are pinned in LyteCoreTests.
+// The Conductor's shared primitives: the proof counter is the
+// proof-before-shed law, and the conductor plays to the score's beat.
 
 final class ConductorPrimitivesTests: XCTestCase {
 
@@ -19,5 +18,11 @@ final class ConductorPrimitivesTests: XCTestCase {
                        "contrary evidence starts the proof over")
         proof.advance()
         XCTAssertTrue(proof.reached(1))
+    }
+
+    func testConductorPlaysToTheScoreBeat() {
+        XCTAssertEqual(
+            VideoBeatConductor.Config().beatPeriodMicroseconds,
+            ScoreBeat.periodMicroseconds)
     }
 }

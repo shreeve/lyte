@@ -29,11 +29,18 @@
 //     is OFF unless `cookieSecret` is set — a nil secret keeps the exact
 //     H1 posture, so every pre-HS-21 caller and test is unchanged.
 //
+// A verified cookie proves an address, not good intent: one real client
+// can replay the same RetryHandshake1 at line rate for the cookie's whole
+// lifetime, and every admission costs the Noise DH. Cookie admissions
+// therefore spend from their own (larger) bucket, and an exact replay of
+// a cookie already admitted is dropped before it spends anything.
+//
 // Sans-IO: `now` is injected monotonic ns; the cookie secret is injected
 // bytes; the client tuple is opaque bytes the caller serializes (only the
 // crypto binds them). RetryCookie's window handles a harvested cookie's
 // lifetime.
 
+import LyteCore
 import LyteWire
 
 public struct HandshakeGate: Sendable {
@@ -60,6 +67,12 @@ public struct HandshakeGate: Sendable {
         /// How long a minted cookie verifies (RetryCookie's own default
         /// is generous against Wi-Fi power-save latencies).
         public var cookieLifetimeNS: UInt64
+        /// Sustained verified-cookie admissions per second. Each honest
+        /// client needs one; the budget caps the Noise work a cookie
+        /// holder can buy.
+        public var cookieAdmissionsPerSecond: Int
+        /// Verified-cookie admissions allowed back to back.
+        public var cookieAdmissionBurst: Int
 
         public init(
             ratePerSecond: Int = 10,
@@ -68,7 +81,9 @@ public struct HandshakeGate: Sendable {
             cookieEnterThreshold: Int = 20,
             cookieExitThreshold: Int = 5,
             floodWindowNS: UInt64 = 1_000_000_000,
-            cookieLifetimeNS: UInt64 = RetryCookie.defaultLifetimeNanoseconds
+            cookieLifetimeNS: UInt64 = RetryCookie.defaultLifetimeNanoseconds,
+            cookieAdmissionsPerSecond: Int = 50,
+            cookieAdmissionBurst: Int = 50
         ) {
             self.ratePerSecond = ratePerSecond
             self.burst = burst
@@ -79,6 +94,8 @@ public struct HandshakeGate: Sendable {
             )
             self.floodWindowNS = floodWindowNS
             self.cookieLifetimeNS = cookieLifetimeNS
+            self.cookieAdmissionsPerSecond = cookieAdmissionsPerSecond
+            self.cookieAdmissionBurst = cookieAdmissionBurst
         }
     }
 
@@ -94,7 +111,8 @@ public struct HandshakeGate: Sendable {
         case drop(Reason)
 
         public enum Reason: Equatable, Sendable {
-            /// Bucket empty and cookie mode off (the H1 posture).
+            /// Bucket empty and cookie mode off (the H1 posture), or a
+            /// verified cookie that is a replay or over the cookie budget.
             case throttled
             /// A cookie was presented but did not verify (wrong tuple,
             /// wrong msg1, expired, or forged) — dropped quietly.
@@ -107,16 +125,46 @@ public struct HandshakeGate: Sendable {
         public var cookieModeChangedTo: Bool?
     }
 
+    /// A nanosecond-credit token bucket: refill accrues 1 ns of credit per
+    /// elapsed ns, one admission costs `costNS`, credit caps at the burst.
+    private struct TokenBucket: Sendable {
+        let costNS: UInt64
+        let capNS: UInt64
+        var creditNS: UInt64
+        var lastRefillNS: UInt64?
+
+        init(ratePerSecond: Int, burst: Int) {
+            costNS = 1_000_000_000 / UInt64(max(ratePerSecond, 1))
+            capNS = UInt64(max(burst, 0)) * costNS
+            // Start full: the first `burst` attempts are free.
+            creditNS = capNS
+        }
+
+        mutating func refill(now: UInt64) {
+            if let last = lastRefillNS, now > last {
+                creditNS = min(capNS, creditNS &+ (now - last))
+            }
+            lastRefillNS = now
+        }
+
+        mutating func spend() -> Bool {
+            guard creditNS >= costNS else { return false }
+            creditNS -= costNS
+            return true
+        }
+    }
+
     private let config: Config
-    /// Nanosecond credit: refill accrues 1 ns per elapsed ns, one
-    /// admission costs `costNS`.
-    private var creditNS: UInt64
-    private var lastRefillNS: UInt64?
-    /// Recent message-1 arrival instants inside `floodWindowNS` — the
-    /// flood detector's evidence. Capped so a pathological flood cannot
-    /// grow it without bound (the exact count past the threshold is
-    /// irrelevant to the dial).
-    private var recentArrivals: [UInt64] = []
+    private var bucket: TokenBucket
+    private var cookieBucket: TokenBucket
+    /// Recent message-1 arrival instants inside `floodWindowNS`, oldest
+    /// first — the flood detector's evidence. Capped so a pathological
+    /// flood cannot grow it without bound (the exact count past the
+    /// threshold is irrelevant to the dial).
+    private var recentArrivals = Deque<UInt64>()
+    /// Cookies already admitted. A cookie binds (tuple, msg1), so an exact
+    /// repeat is a replay of a handshake the host already answered.
+    private var admittedCookies = BoundedRing<[UInt8]>(capacity: 256)
 
     public private(set) var admitted = 0
     public private(set) var refused = 0
@@ -124,30 +172,21 @@ public struct HandshakeGate: Sendable {
     public private(set) var challengesMinted = 0
     /// Cookies presented that verified — the extra-round-trip admits.
     public private(set) var cookiesVerified = 0
-    /// Cookies presented that did not verify — spoof/replay evidence.
+    /// Cookies presented that did not verify — spoof evidence.
     public private(set) var cookiesRejected = 0
+    /// Verified cookies dropped as exact replays or over the cookie budget.
+    public private(set) var cookiesThrottled = 0
     /// Whether the gate is currently demanding a cookie (the observable
     /// dial; the caller surfaces its transitions).
     public private(set) var cookieMode = false
 
     public init(config: Config = Config()) {
         self.config = config
-        // Start full: the first `burst` attempts are free.
-        self.creditNS = UInt64(config.burst) * Self.costNS(config)
-    }
-
-    /// ns of credit one admission costs (refill accrues 1 ns of credit
-    /// per elapsed ns, scaled by the rate).
-    private static func costNS(_ config: Config) -> UInt64 {
-        1_000_000_000 / UInt64(max(config.ratePerSecond, 1))
-    }
-
-    /// Legacy HS-9 entry point: a bare token-bucket verdict with no
-    /// cookie machinery. True = process this message 1; false = drop it
-    /// unread. Kept for callers that never opt into cookie mode.
-    public mutating func admit(now: UInt64) -> Bool {
-        refill(now: now)
-        return spendToken()
+        bucket = TokenBucket(
+            ratePerSecond: config.ratePerSecond, burst: config.burst)
+        cookieBucket = TokenBucket(
+            ratePerSecond: config.cookieAdmissionsPerSecond,
+            burst: config.cookieAdmissionBurst)
     }
 
     /// The HS-21 entry point: the full flood decision for one message 1.
@@ -162,7 +201,8 @@ public struct HandshakeGate: Sendable {
         now: UInt64
     ) -> Decision {
         let previousCookieMode = cookieMode
-        refill(now: now)
+        bucket.refill(now: now)
+        cookieBucket.refill(now: now)
         noteArrival(now: now)
         updateCookieMode()
         let cookieModeChangedTo = cookieMode == previousCookieMode ? nil : cookieMode
@@ -172,10 +212,11 @@ public struct HandshakeGate: Sendable {
 
         // A presented cookie is judged first, in EITHER posture: a
         // client that already holds a verifying cookie has proven its
-        // address and is admitted without spending a token (it is not a
-        // flood). Cookie mode being off does not make a valid cookie
-        // suspect — but with no secret we cannot verify one, so it is
-        // refused as unverifiable.
+        // address and does not spend the msg1 bucket. It spends the
+        // cookie bucket instead, once: an exact replay is dropped. Cookie
+        // mode being off does not make a valid cookie suspect — but with
+        // no secret we cannot verify one, so it is refused as
+        // unverifiable.
         if let presentedCookie {
             guard let secret = config.cookieSecret,
                   RetryCookie.verify(
@@ -192,6 +233,14 @@ public struct HandshakeGate: Sendable {
                 return decided(.drop(.cookieInvalid))
             }
             cookiesVerified += 1
+            let cookie = Array(presentedCookie)
+            guard !admittedCookies.contains(cookie), cookieBucket.spend()
+            else {
+                cookiesThrottled += 1
+                refused += 1
+                return decided(.drop(.throttled))
+            }
+            admittedCookies.append(cookie)
             admitted += 1
             return decided(.admit)
         }
@@ -217,29 +266,21 @@ public struct HandshakeGate: Sendable {
 
     // MARK: - Internals
 
-    private mutating func refill(now: UInt64) {
-        let cost = Self.costNS(config)
-        let cap = UInt64(config.burst) * cost
-        if let last = lastRefillNS, now > last {
-            creditNS = min(cap, creditNS &+ (now - last))
-        }
-        lastRefillNS = now
-    }
-
     private mutating func spendToken() -> Bool {
-        let cost = Self.costNS(config)
-        guard creditNS >= cost else {
+        guard bucket.spend() else {
             refused += 1
             return false
         }
-        creditNS -= cost
         admitted += 1
         return true
     }
 
     private mutating func noteArrival(now: UInt64) {
         recentArrivals.append(now)
-        recentArrivals.removeAll { now &- $0 > config.floodWindowNS }
+        while let oldest = recentArrivals.first,
+              now &- oldest > config.floodWindowNS {
+            recentArrivals.removeFirst()
+        }
         // The dial only compares against thresholds, so a few extra
         // entries past the cap can be dropped without changing any
         // verdict — keep the newest.

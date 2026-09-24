@@ -14,7 +14,9 @@ public struct RendererFrameDescriptor: Sendable, Equatable {
 
 /// Bounded queue policy behind a renderer handoff. Inter frames are never
 /// discarded individually: pressure or failure discards the whole dependency
-/// episode, enters await-random-access, and asks for one recovery.
+/// episode, enters await-random-access, and asks for one recovery. The IRAP
+/// that ends the wait heads a new episode; its inter frames queue behind it
+/// even before the shell has handed it to the renderer.
 public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
     public struct Config: Sendable, Equatable {
         public var capacity: Int
@@ -55,13 +57,8 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
         frame: RendererFrameDescriptor
     ) -> Outcome {
         let incoming = Entry(element: element, frame: frame)
-        if awaitingRandomAccess {
-            guard !randomAccessPending else {
-                return Outcome(
-                    accepted: false,
-                    recoveryRequested: false,
-                    discarded: [incoming])
-            }
+        if awaitingRandomAccess, !randomAccessPending {
+            // Nothing decodable until an IRAP opens the next episode.
             guard frame.isRandomAccess else {
                 return Outcome(
                     accepted: false,
@@ -74,6 +71,8 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
                 accepted: true, recoveryRequested: false, discarded: [])
         }
 
+        // An accepted IRAP awaiting enqueue heads the queue; its inter
+        // frames queue behind it under the same capacity and deadline.
         let expired = entries.first.map {
             frame.submittedMicroseconds &- $0.frame.submittedMicroseconds
                 >= config.deadlineMicroseconds
@@ -82,14 +81,24 @@ public struct BoundedRendererHandoff<Element: Sendable>: Sendable {
             var discarded = entries
             entries.removeAll(keepingCapacity: true)
             if frame.isRandomAccess {
+                // The incoming IRAP restarts the chain by itself: no
+                // recovery IRAP is needed, and none of the discarded
+                // entries ever reached the renderer.
                 entries.append(incoming)
-            } else {
-                discarded.append(incoming)
-                awaitingRandomAccess = true
+                return Outcome(
+                    accepted: true,
+                    recoveryRequested: false,
+                    discarded: discarded)
             }
+            discarded.append(incoming)
+            // One recovery per episode: an overflow of a pending IRAP's
+            // chain belongs to the episode already asking for one.
+            let startsRecovery = !awaitingRandomAccess
+            awaitingRandomAccess = true
+            randomAccessPending = false
             return Outcome(
-                accepted: frame.isRandomAccess,
-                recoveryRequested: true,
+                accepted: false,
+                recoveryRequested: startsRecovery,
                 discarded: discarded)
         }
 

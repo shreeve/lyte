@@ -1,3 +1,5 @@
+import LyteCore
+
 /// Sans-IO cadence behind the direct eye's scanout observer.
 ///
 /// Sampling is phase-stable and never catches up in a burst: when the shell
@@ -12,7 +14,7 @@ public struct ScreenSamplingCadence: Sendable, Equatable {
     public let periodMicroseconds: UInt64
     private var nextBeatMicroseconds: UInt64?
 
-    public init(periodMicroseconds: UInt64 = 16_667) {
+    public init(periodMicroseconds: UInt64 = ScoreBeat.periodMicroseconds) {
         precondition(periodMicroseconds > 0)
         self.periodMicroseconds = periodMicroseconds
     }

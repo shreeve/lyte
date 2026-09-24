@@ -136,6 +136,14 @@ final class AnnexBTests: XCTestCase {
                 ),
                 "trial \(trial)"
             )
+            // A collection without contiguous storage takes the copying
+            // path and must classify identically.
+            let lazyBytes = (0..<count).lazy.map { slice[slice.startIndex + $0] }
+            XCTAssertEqual(
+                AnnexBCheck.classifyFrame(lazyBytes),
+                AnnexBCheck.classifyFrame(slice),
+                "trial \(trial)"
+            )
         }
     }
 

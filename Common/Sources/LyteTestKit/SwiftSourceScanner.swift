@@ -96,8 +96,11 @@ public enum SwiftSourceScanner {
                 identifier.append(character)
             } else {
                 flush()
-                if [".", "(", ")", "=", "{", "}"].contains(character) {
+                switch character {
+                case ".", "(", ")", "=", "{", "}":
                     tokens.append(String(character))
+                default:
+                    break
                 }
             }
             index += 1
@@ -110,12 +113,15 @@ public enum SwiftSourceScanner {
         _ needle: [String],
         in tokens: [String]
     ) -> Bool {
-        guard !needle.isEmpty, tokens.count >= needle.count else {
+        guard let first = needle.first, tokens.count >= needle.count else {
             return false
         }
-        return (0...(tokens.count - needle.count)).contains { start in
-            Array(tokens[start..<(start + needle.count)]) == needle
+        for start in 0...(tokens.count - needle.count)
+        where tokens[start] == first
+            && tokens[start..<(start + needle.count)].elementsEqual(needle) {
+            return true
         }
+        return false
     }
 
     public static func importedModules(in source: String) -> [String] {

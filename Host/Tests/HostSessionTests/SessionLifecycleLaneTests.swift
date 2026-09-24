@@ -4,70 +4,22 @@ import Foundation
 import LyteWire
 
 final class SessionLifecycleLaneTests: XCTestCase {
-    func testMachineStateAloneOwnsVideoFreezeProjection() throws {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let source = try String(contentsOfFile:
-            packageRoot + "/Sources/HostSession/SessionLifecycleLane.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertFalse(source.contains("private(set) var videoIsFrozen"))
-        XCTAssertTrue(source.contains(
-            "machine == nil || machine?.state == .frozen || " +
-            "machine?.state == .closed"
-        ))
-        XCTAssertFalse(source.contains("videoIsFrozen ="))
-        XCTAssertTrue(source.contains(
-            "case .freezeDatagramSends, .resumeDatagramSends:"
-        ))
-    }
-
-    func testSessionDelegatesLifecycleStateDeadlineAndFreezeProjection()
-        throws
-    {
-        var components = #filePath.split(
-            separator: "/", omittingEmptySubsequences: false
-        )
-        components.removeLast(3)
-        let packageRoot = components.joined(separator: "/")
-        let session = try String(contentsOfFile:
-            packageRoot + "/Sources/HostWire/Session.swift",
-            encoding: .utf8
-        )
-
-        XCTAssertTrue(session.contains(
-            "private var lifecycleLane: SessionLifecycleLane"
-        ))
-        XCTAssertTrue(session.contains("public var phase: Phase {"))
-        XCTAssertTrue(session.contains(
-            "lifecycleLane.isEstablished ? .established : .awaitingHandshake"
-        ))
-        for retired in [
-            "SessionStateMachine<HostClock>",
-            "private var machineDeadlineNS",
-            "private var videoFrozen",
-            "SessionStateMachine(",
-            "public private(set) var phase",
-            "self.phase =",
-            "phase = .established",
-            "phase = .awaitingHandshake",
-        ] {
+    /// Single owner: the wire shell never builds or holds its own lifecycle
+    /// machine; the lane owns it.
+    func testOnlyTheLaneOwnsTheLifecycleMachine() throws {
+        let hostRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // HostSessionTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // Host
+        let session = try String(
+            contentsOf: hostRoot.appendingPathComponent(
+                "Sources/HostWire/Session.swift"),
+            encoding: .utf8)
+        for retired in ["SessionStateMachine<HostClock>", "SessionStateMachine("] {
             XCTAssertFalse(
                 session.contains(retired),
-                "lifecycle ownership returned to Session: \(retired)"
-            )
+                "lifecycle ownership returned to Session: \(retired)")
         }
-        XCTAssertTrue(session.contains("lifecycleLane.videoSendsSuppressed"))
-        XCTAssertTrue(session.contains("lifecycleLane.audioSendsSuppressed"))
-        XCTAssertTrue(session.contains(
-            "lifecycleLane.nextDeadlineNanoseconds"
-        ))
-        XCTAssertTrue(session.contains("lifecycleLane.isRecovering"))
-        XCTAssertTrue(session.contains("lifecycleLane.shouldService(at: now)"))
     }
 
     func testDormantLaneBeginsAtEstablishmentAndProjectsExactDeadline() {
