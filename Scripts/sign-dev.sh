@@ -10,6 +10,18 @@
 # a dedicated ~/Library/Keychains/lyte-signing keychain). Identity-bearing
 # binaries fail closed when it is absent: an ad-hoc fallback silently destroys
 # the Keychain ACL invariant and guarantees another authorization prompt.
+#
+# Every target is signed with the hardened runtime and no entitlements. The
+# helper admits any peer that satisfies the app's designated requirement, and
+# lyte-cli holds the Keychain pairing key; without the runtime a same-user
+# process could inject into either (DYLD_* variables, task-port attach) and
+# inherit that trust. No exception is needed: the binaries link only system
+# libraries (test-hermetic-linkage.sh), use no JIT or unsigned executable
+# memory, and only play audio (no microphone or camera entitlement). The
+# consequences are deliberate: DYLD_* variables are ignored, and lldb,
+# Instruments and other tools cannot attach (there is no get-task-allow). To
+# debug, run the unsigned SwiftPM binary or re-sign a scratch copy with
+# `codesign --force --sign - <copy>`.
 set -e
 
 if [ "$#" -eq 0 ]; then
@@ -104,7 +116,8 @@ for target in "$@"; do
         *.app) ident="dev.shreeve.lyte" ;;
         *)     ident="dev.shreeve.$(basename "$target")" ;;
     esac
-    codesign --force --sign "$IDENT_HASH" --identifier "$ident" --timestamp=none "$target"
+    codesign --force --sign "$IDENT_HASH" --identifier "$ident" \
+        --options runtime --timestamp=none "$target"
     codesign --verify --strict "$target"
     signature_details="$(codesign -d --verbose=4 "$target" 2>&1)"
     actual_ident="$(printf '%s\n' "$signature_details" \
@@ -132,6 +145,12 @@ for target in "$@"; do
         "certificate root = H\"$(printf '%s' "$IDENT_HASH" | tr '[:upper:]' '[:lower:]')\""
     then
         stable_requirement=true
+    fi
+    if ! printf '%s\n' "$signature_details" \
+        | grep -Eq '^CodeDirectory .*flags=0x[[:xdigit:]]+\([^)]*runtime'
+    then
+        echo "error: $target is not signed with the hardened runtime" >&2
+        exit 1
     fi
     if [ "$actual_ident" != "$ident" ] \
         || [ "$stable_requirement" != true ]; then

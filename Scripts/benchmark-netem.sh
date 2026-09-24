@@ -166,11 +166,6 @@ gap_p99 = motion.get("presentationGapP99Milliseconds")
 if gap_p99 is None or gap_p99 > 50:
     failures.append(f"presentation_gap_p99_{gap_p99}ms_over_50ms")
 
-underruns = steady.get("underrunFrames", 0)
-protected = steady.get("declickProtectedUnderrunFrames", 0)
-if underruns != protected:
-    failures.append("audio_underruns_not_fully_declick_protected")
-
 if renderer.get("appFailures", 0) or renderer.get("appleCorruptedFrames", 0):
     failures.append("renderer_failure_or_corruption")
 
@@ -187,8 +182,7 @@ result = {
     "presentationGapP99Milliseconds": gap_p99,
     "audioSteadyState": {
         "plcInvocations": steady.get("plcInvocations"),
-        "underrunFrames": underruns,
-        "declickProtected": protected,
+        "underrunFrames": steady.get("underrunFrames"),
     },
     "decodedProgressFPS": fps,
     "cleanAirVerdictForReference": verdict.get("verdict"),

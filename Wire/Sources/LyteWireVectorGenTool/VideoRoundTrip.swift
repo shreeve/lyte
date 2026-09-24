@@ -49,8 +49,8 @@ func runVideoRoundTrip(inputPath: String, outputPath: String) throws {
         )
         let lossBudget = index % 3 == 0
             ? geometry.parityShards
-            : Int.random(in: 0...geometry.parityShards, using: &rng)
-        shards.shuffle(using: &rng)
+            : rng.int(in: 0...geometry.parityShards)
+        rng.shuffle(&shards)
         shards.removeLast(lossBudget)
         lostCount += lossBudget
 

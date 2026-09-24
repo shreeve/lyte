@@ -69,7 +69,8 @@ final class BrowserHostPeer {
                     lifecycle: lifecycle
                 ),
                 clientTuple: Self.tuple,
-                now: nowNS
+                now: nowNS,
+                rng: SystemRandomNumberGenerator()
             ) { [unowned self] datagram in
                 outbox.append(datagram.bytes)
             }

@@ -44,11 +44,13 @@ case "$1" in
     --force)
         hash=""
         identifier=""
+        options=""
         target=""
         while [ "$#" -gt 0 ]; do
             case "$1" in
                 --sign) hash="$2"; shift 2 ;;
                 --identifier) identifier="$2"; shift 2 ;;
+                --options) options="$2"; shift 2 ;;
                 --timestamp=none|--force) shift ;;
                 *) target="$1"; shift ;;
             esac
@@ -70,14 +72,15 @@ case "$1" in
                 echo "unexpected signing hash: $hash" >&2
                 exit 91 ;;
         esac
-        printf '%s\t%s\t%s\t%s\n' "$hash" "$identity" "$identifier" "$team" \
+        printf '%s\t%s\t%s\t%s\t%s\n' \
+            "$hash" "$identity" "$identifier" "$options" "$team" \
             > "$FAKE_CODESIGN_STATE"
         ;;
     --verify)
         [ "${FAKE_VERIFY_MODE:-pass}" != fail ]
         ;;
     -d)
-        IFS="	" read -r hash identity identifier team \
+        IFS="	" read -r hash identity identifier options team \
             < "$FAKE_CODESIGN_STATE"
         case "$2" in
             --verbose=4)
@@ -85,6 +88,12 @@ case "$1" in
                     echo "Identifier=dev.shreeve.wrong" >&2
                 else
                     echo "Identifier=$identifier" >&2
+                fi
+                if [ "$options" = runtime ] \
+                    && [ "${FAKE_RUNTIME_MODE:-present}" = present ]; then
+                    echo "CodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1+7 location=embedded" >&2
+                else
+                    echo "CodeDirectory v=20400 size=1 flags=0x0(none) hashes=1+7 location=embedded" >&2
                 fi
                 if [ -n "$team" ] && [ "${FAKE_TEAM_MODE:-correct}" != missing ]; then
                     if [ "${FAKE_TEAM_MODE:-correct}" = mismatch ] \
@@ -175,6 +184,7 @@ run_signer() {
     FAKE_IDENTIFIER_MODE="${FAKE_IDENTIFIER_MODE:-correct}" \
     FAKE_TEAM_MODE="${FAKE_TEAM_MODE:-correct}" \
     FAKE_VERIFY_MODE="${FAKE_VERIFY_MODE:-pass}" \
+    FAKE_RUNTIME_MODE="${FAKE_RUNTIME_MODE:-present}" \
     LYTE_SIGNING_IDENTITY="${LYTE_SIGNING_IDENTITY:-}" \
     "$sign_dev" "$@"
 }
@@ -196,9 +206,9 @@ write_one_apple
 write_fallback
 reset_logs
 run_signer "$fixture_root/Lyte.app" "$fixture_root/lyte-cli"
-grep -Fq -- "--force --sign AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --identifier dev.shreeve.lyte --timestamp=none $fixture_root/Lyte.app" "$codesign_log"
+grep -Fq -- "--force --sign AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --identifier dev.shreeve.lyte --options runtime --timestamp=none $fixture_root/Lyte.app" "$codesign_log"
 grep -Fq -- "--verify --strict $fixture_root/Lyte.app" "$codesign_log"
-grep -Fq -- "--force --sign AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --identifier dev.shreeve.lyte-cli --timestamp=none $fixture_root/lyte-cli" "$codesign_log"
+grep -Fq -- "--force --sign AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --identifier dev.shreeve.lyte-cli --options runtime --timestamp=none $fixture_root/lyte-cli" "$codesign_log"
 [[ "$(<"$security_log")" == 'find-identity -v -p codesigning' ]]
 
 write_two_apples
@@ -291,6 +301,11 @@ reset_logs
 FAKE_TEAM_MODE=mismatch \
     expect_failure "unstable code requirement" run_signer \
         "$fixture_root/Lyte.app" "$fixture_root/lyte-cli"
+
+reset_logs
+FAKE_RUNTIME_MODE=missing \
+    expect_failure "not signed with the hardened runtime" run_signer \
+        "$fixture_root/Lyte.app"
 
 reset_logs
 FAKE_VERIFY_MODE=fail expect_failure "" run_signer "$fixture_root/Lyte.app"
