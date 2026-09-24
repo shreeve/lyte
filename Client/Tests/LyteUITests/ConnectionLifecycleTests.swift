@@ -139,6 +139,26 @@ final class ConnectionLifecycleTests: XCTestCase {
 
     // MARK: - Host goodbyes
 
+    func testHostShutdownGoodbyeRoamsInsteadOfEndingTheWindow() async throws {
+        let harness = LifecycleHarness()
+        harness.startPlan = [.succeed, .hold]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+        let first = try XCTUnwrap(model.lyteSession)
+
+        model.handleLyteEvent(.closed(.peerTeardown(.shuttingDown)))
+
+        guard case .streaming = model.phase else {
+            return XCTFail("a host restart ended the window: \(model.phase)")
+        }
+        XCTAssertNil(model.lyteSession)
+        XCTAssertEqual(harness.endings(of: first), [.silent],
+                       "a closed session has nobody to say goodbye to")
+        try await harness.waitForStarts(2)
+        XCTAssertNotEqual(model.roamingStatus, .attached)
+        XCTAssertEqual(harness.streamsEnded, 0)
+    }
+
     func testHostTakeoverGoodbyeEndsTheWindow() async throws {
         let harness = LifecycleHarness()
         harness.startPlan = [.succeed]
@@ -153,6 +173,16 @@ final class ConnectionLifecycleTests: XCTestCase {
         XCTAssertNil(model.lyteSession)
         XCTAssertEqual(harness.streamsEnded, 1)
         XCTAssertFalse(model.canReconnect)
+    }
+
+    func testSessionCloseVerdicts() {
+        XCTAssertEqual(ConnectionModel.closeVerdict(.localTeardown(.shuttingDown)),
+                       .ignore)
+        XCTAssertEqual(ConnectionModel.closeVerdict(.livenessTimeout), .roam)
+        XCTAssertEqual(ConnectionModel.closeVerdict(.peerTeardown(.shuttingDown)),
+                       .roam)
+        XCTAssertEqual(ConnectionModel.closeVerdict(.peerTeardown(.takenOver)),
+                       .end("session taken over by another client"))
     }
 }
 

@@ -587,7 +587,7 @@ final class ConnectionModel {
             case .end(let message):
                 endLyteSession(reason: message)
             case .roam:
-                beginRoamingAfterLoss()
+                beginRoamingAfterLoss(reason)
             }
         }
     }
@@ -602,15 +602,16 @@ final class ConnectionModel {
         case end(String?)
     }
 
+    /// A host restart says goodbye with `.shuttingDown` and comes back
+    /// seconds later, so it roams like a lost peer; only a takeover is
+    /// a decision the window must honor by ending.
     static func closeVerdict(_ reason: SessionCloseReason) -> CloseVerdict {
         switch reason {
         case .localTeardown:
             return .ignore
         case .peerTeardown(.takenOver):
             return .end("session taken over by another client")
-        case .peerTeardown(.shuttingDown):
-            return .end(nil)
-        case .livenessTimeout:
+        case .peerTeardown(.shuttingDown), .livenessTimeout:
             return .roam
         }
     }
@@ -808,15 +809,16 @@ final class ConnectionModel {
         stopPathWatch = nil
     }
 
-    /// The 30 s liveness verdict: the peer is gone. Keep the window
-    /// (the last frame + the roaming banner), keep everything
-    /// per-host (coordinator, posture, consent), drop the wire
-    /// session, hunt the identity.
-    private func beginRoamingAfterLoss() {
+    /// The peer is gone (liveness) or restarting (its goodbye): keep
+    /// the window (the last frame + the roaming banner), keep everything
+    /// per-host (coordinator, posture, consent), drop the wire session,
+    /// hunt the identity.
+    private func beginRoamingAfterLoss(_ reason: SessionCloseReason) {
         guard roaming != nil else {
-            // No identity to hunt (shouldn't happen — the policy is
-            // born with the session): the pre-F-5 posture.
-            endLyteSession(reason: "host unreachable for 30 s")
+            // No identity to hunt: the policy is born with a pinned
+            // session, so only an unpinned window lands here.
+            endLyteSession(reason: reason == .livenessTimeout
+                ? "host unreachable for 30 s" : nil)
             return
         }
         detachWireSession(goodbye: false)
