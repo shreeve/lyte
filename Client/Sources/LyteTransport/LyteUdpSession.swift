@@ -702,6 +702,16 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         try sendInput(body, now: now())
     }
 
+    /// The queued-capture form: the event and its latency books carry
+    /// `captured`, while the reliable stream is driven at the session's
+    /// own `now()` so queue wait never inflates ARQ RTT samples.
+    @discardableResult
+    public func sendInput(
+        _ body: InputEvent.Body, captured: ClientTimestamp
+    ) throws -> UInt32 {
+        try input.send(body, captured: captured, now: now())
+    }
+
     /// App renderer failure/backpressure joins the established IDR recovery
     /// policy instead of inventing an uncoalesced control path.
     public func requestVideoRecovery(
@@ -1659,11 +1669,12 @@ public final class LyteUdpSession: @unchecked Sendable {
     /// loop). One serial queue keeps start/stop ordered.
     private let audioQueue = DispatchQueue(
         label: "lyte.audio.engine", qos: .userInitiated)
-    private lazy var orderedInput = OrderedInputSender { [weak self] body, now in
+    private lazy var orderedInput = OrderedInputSender {
+        [weak self] body, captured in
         guard let self, let core = self.core else {
             throw TransportEndpointError.notStarted
         }
-        _ = try core.sendInput(body, now: now)
+        _ = try core.sendInput(body, captured: captured)
     }
 
     public init(
