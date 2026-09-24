@@ -29,7 +29,7 @@ struct ConnectionWindow: View {
         .focusedSceneValue(\.connection, model)
         .frame(minWidth: 480, minHeight: 320)
         .overlay(alignment: .topLeading) {
-            if let badge = ProcessInfo.processInfo.environment[
+            if let badge = DiagnosticEnvironment.current[
                 "LYTE_DIAGNOSTIC_BUILD_BADGE"
             ] {
                 Text(badge)
@@ -94,6 +94,7 @@ struct ConnectionWindow: View {
                 wireVersion: nil,
                 publicKeyHash: publicKeyHash))
         }
+        .onAppear { OpenConnections.shared.insert(model) }
         .onDisappear {
             // One window = one connection, so the window going away IS
             // the disconnect — including mid-connect, where it must

@@ -60,7 +60,7 @@ final class BeaconPropertyTests: XCTestCase {
     func testDecodersNeverTrapOnArbitraryBytes() {
         var rng = SplitMix64(seed: 0x57_4A_B0_04)
         for _ in 0..<20_000 {
-            let length = Int.random(in: 0...1300, using: &rng)
+            let length = rng.int(in: 0...1300)
             var bytes = rng.bytes(length)
             // Bias toward the parsers' own edges: plausible type bytes,
             // section counts near the bounds, TLV flags.
@@ -84,7 +84,7 @@ final class BeaconPropertyTests: XCTestCase {
         var rng = SplitMix64(seed: 0x57_4A_B0_05)
         for _ in 0..<2_000 {
             let bytes = try randomReport(using: &rng).encode()
-            let cut = Int.random(in: 0..<bytes.count, using: &rng)
+            let cut = rng.int(in: 0..<bytes.count)
             _ = try? FeedbackReport.decode(Array(bytes.prefix(cut)))
         }
     }
@@ -114,7 +114,7 @@ final class BeaconPropertyTests: XCTestCase {
     private func randomReport(
         using rng: inout SplitMix64
     ) throws -> FeedbackReport {
-        let channels = (0..<Int.random(in: 0...8, using: &rng)).map { _ in
+        let channels = (0..<rng.int(in: 0...8)).map { _ in
             FeedbackReport.ChannelStats(
                 channel: ChannelId(rawValue: UInt8.random(in: 0...255, using: &rng)),
                 highestSeq: ChannelSeq(rawValue: UInt16.random(in: .min ... .max, using: &rng)),
@@ -123,7 +123,7 @@ final class BeaconPropertyTests: XCTestCase {
                 duplicates: UInt32.random(in: .min ... .max, using: &rng)
             )
         }
-        let sampleCount = Int.random(in: 0...112, using: &rng)
+        let sampleCount = rng.int(in: 0...112)
         let dispersion: FeedbackReport.Dispersion? = sampleCount == 0
             ? nil
             : FeedbackReport.Dispersion(
@@ -139,18 +139,18 @@ final class BeaconPropertyTests: XCTestCase {
                     )
                 }
             )
-        let nacks = try (0..<Int.random(in: 0...6, using: &rng)).map { _ in
+        let nacks = try (0..<rng.int(in: 0...6)).map { _ in
             try FeedbackReport.NackEntry(
                 frame: FrameNumber(rawValue: UInt32.random(in: .min ... .max, using: &rng)),
-                missingShards: (0..<Int.random(in: 1...12, using: &rng)).map { _ in
+                missingShards: (0..<rng.int(in: 1...12)).map { _ in
                     UInt8.random(in: 0...254, using: &rng)
                 }
             )
         }
-        let extensions = try (0..<Int.random(in: 0...3, using: &rng)).map { _ in
+        let extensions = try (0..<rng.int(in: 0...3)).map { _ in
             try WireExtension(
                 type: UInt8.random(in: 1...255, using: &rng),
-                value: rng.bytes(Int.random(in: 0...16, using: &rng))
+                value: rng.bytes(rng.int(in: 0...16))
             )
         }
         return FeedbackReport(

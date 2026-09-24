@@ -11,6 +11,11 @@ public protocol FrozenVectorFile: Codable, Sendable {
     static var expectedFormat: String { get }
     /// The file's name under `Wire/Vectors/`.
     static var fileName: String { get }
+    /// The `formatVersion` and `wireVersion` the file pins. A committed
+    /// file pins its wire major forever: raising `WireVersion.major`
+    /// means new files, never a rewrite of these.
+    static var expectedFormatVersion: Int { get }
+    static var expectedWireVersion: Int { get }
     var format: String { get }
     var formatVersion: Int { get }
     var wireVersion: Int { get }
@@ -35,6 +40,10 @@ public enum WireVectors {
 }
 
 extension FrozenVectorFile {
+    /// Every file committed so far is format version 1 of wire v1.
+    public static var expectedFormatVersion: Int { 1 }
+    public static var expectedWireVersion: Int { 1 }
+
     public static func load(from path: String) throws -> Self {
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         return try JSONDecoder().decode(Self.self, from: data)
@@ -45,18 +54,18 @@ extension FrozenVectorFile {
         try load(from: WireVectors.path(fileName))
     }
 
-    /// Everything wrong with the file's identity; empty when it is the
-    /// frozen v1 contract for this wire major.
+    /// Everything wrong with the file's identity; empty when it carries
+    /// the format, format version and wire version its type pins.
     public var identityProblems: [String] {
         var problems: [String] = []
         if format != Self.expectedFormat {
             problems.append("format \(format), expected \(Self.expectedFormat)")
         }
-        if formatVersion != 1 {
-            problems.append("formatVersion \(formatVersion), expected 1")
+        if formatVersion != Self.expectedFormatVersion {
+            problems.append("formatVersion \(formatVersion), expected \(Self.expectedFormatVersion)")
         }
-        if wireVersion != Int(WireVersion.major) {
-            problems.append("wireVersion \(wireVersion), expected \(WireVersion.major)")
+        if wireVersion != Self.expectedWireVersion {
+            problems.append("wireVersion \(wireVersion), expected \(Self.expectedWireVersion)")
         }
         for (index, group) in vectorNameGroups.enumerated() where group.isEmpty {
             problems.append("vector group \(index) is empty")

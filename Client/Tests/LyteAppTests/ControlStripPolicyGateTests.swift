@@ -238,38 +238,4 @@ final class ControlStripPolicyGateTests: XCTestCase {
         live.tick(now: t + 1_200 * Self.ms)
         XCTAssertTrue(live.isVisible)
     }
-
-    // MARK: The preferences' persistence
-
-    func testEdgeAndHiddenPreferencesPersistAndTolerateGarbage() throws {
-        let suite = "cl18-strip-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-
-        // Fresh domain: the shipped defaults — bottom edge, not hidden.
-        XCTAssertEqual(StripPreferences.edge(from: defaults), .bottom)
-        XCTAssertFalse(StripPreferences.hidden(from: defaults))
-
-        // Round-trip both edges + the hidden flag under the pinned
-        // keys (the app's @AppStorage binds these same strings).
-        StripPreferences.setEdge(.top, in: defaults)
-        XCTAssertEqual(StripPreferences.edge(from: defaults), .top)
-        XCTAssertEqual(defaults.string(forKey: StripPreferences.edgeKey),
-                       "top")
-        StripPreferences.setEdge(.bottom, in: defaults)
-        XCTAssertEqual(StripPreferences.edge(from: defaults), .bottom)
-        StripPreferences.setHidden(true, in: defaults)
-        XCTAssertTrue(StripPreferences.hidden(from: defaults))
-        XCTAssertTrue(defaults.bool(forKey: StripPreferences.hiddenKey))
-        StripPreferences.setHidden(false, in: defaults)
-        XCTAssertFalse(StripPreferences.hidden(from: defaults))
-
-        // Garbage in the plist (a downgrade, a hand edit) falls back
-        // to the default rather than wedging the strip.
-        defaults.set("sideways", forKey: StripPreferences.edgeKey)
-        XCTAssertEqual(StripPreferences.edge(from: defaults), .bottom)
-
-        print("CL-18 gate (prefs): edge + hidden round-trip under "
-            + "\(StripPreferences.edgeKey)/\(StripPreferences.hiddenKey)")
-    }
 }

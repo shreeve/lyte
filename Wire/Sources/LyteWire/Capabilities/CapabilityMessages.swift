@@ -21,7 +21,7 @@
 // "capabilities" through the reassembler.
 
 /// The capability-declaration CTRL message (type 0x0F).
-public struct CapabilityDeclaration: Hashable, Sendable {
+public struct CapabilityDeclaration: Hashable, Sendable, SliceDecodable {
     public var capabilities: Capabilities
 
     /// Ceiling for any encoded capability message, type byte included.
@@ -58,12 +58,6 @@ public struct CapabilityDeclaration: Hashable, Sendable {
         } catch let error as CapabilityError {
             throw CapabilityMessageError.malformedBody(error)
         }
-    }
-
-    public static func decode(
-        _ payload: [UInt8]
-    ) throws -> CapabilityDeclaration {
-        try decode(payload[...])
     }
 }
 
@@ -126,7 +120,7 @@ public enum CapabilityUpdateStatus: UInt8, Hashable, CaseIterable, Sendable {
 }
 
 /// The update answer (type 0x12), echoing the proposal it answers.
-public struct CapabilityUpdateAck: Hashable, Sendable {
+public struct CapabilityUpdateAck: Hashable, Sendable, SliceDecodable {
     public var status: CapabilityUpdateStatus
     /// The answered proposal's parameters, echoed verbatim.
     public var parameters: [CapabilityParameter]
@@ -177,12 +171,6 @@ public struct CapabilityUpdateAck: Hashable, Sendable {
             throw CapabilityMessageError.emptyUpdate
         }
         return CapabilityUpdateAck(status: status, parameters: parameters)
-    }
-
-    public static func decode(
-        _ payload: [UInt8]
-    ) throws -> CapabilityUpdateAck {
-        try decode(payload[...])
     }
 }
 

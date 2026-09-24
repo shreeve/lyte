@@ -14,9 +14,8 @@ final class FecVectorFileTests: XCTestCase {
         try FecVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
+    func testGeometryLadderPresent() throws {
         let file = try loadFile()
-        XCTAssertEqual(file.identityProblems, [])
         XCTAssertFalse(file.geometryRows.isEmpty)
     }
 

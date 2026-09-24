@@ -56,6 +56,14 @@ struct DecodeProbe: AsyncParsableCommand {
     var windowScale: Double = 1.0
 
     func validate() throws {
+        guard snapshotDelay.isFinite, snapshotDelay >= 0 else {
+            throw ValidationError(
+                "--snapshot-delay wants seconds ≥ 0, got \(snapshotDelay)")
+        }
+        guard windowScale.isFinite, windowScale > 0 else {
+            throw ValidationError(
+                "--window-scale wants a fraction > 0, got \(windowScale)")
+        }
         guard ["native", "bgra", "quality-bgra"].contains(pixelFormat) else {
             throw ValidationError(
                 "--pixel-format wants native|bgra|quality-bgra, got '\(pixelFormat)'")

@@ -5,8 +5,8 @@ import PackageDescription
 // vocabulary types that consume bytes and emit bytes. No Foundation, no
 // sockets, no threads — Common's SansIOArchitectureTests enforces the import
 // allowlist and the IO-free vocabulary. LyteWireTestKit (which may use
-// Foundation for file IO) ships the vector loaders so host and client test
-// suites verify against the same Vectors/ artifacts.
+// Foundation for file IO) ships the vector-file models, their loaders and
+// the reusable wire test equipment any package's test suite may use.
 
 let package = Package(
     name: "LyteWire",
@@ -22,7 +22,7 @@ let package = Package(
     dependencies: [
         // Shared sans-IO utilities live beside the frozen wire contract.
         .package(path: "../Common"),
-        // The ONE sanctioned external dependency (core plan §1): swift-crypto's
+        // The ONE sanctioned external dependency: swift-crypto's
         // `Crypto` module is the crypto provider on ALL platforms — a thin
         // CryptoKit shim on Apple, vendored BoringSSL on Linux — so the
         // same Noise code compiles everywhere. Never import CryptoKit
@@ -31,7 +31,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.8.0"),
     ],
     targets: [
-        // The vendored nanors RS-FEC leaf (W1). Confinement: only
+        // The vendored nanors RS-FEC leaf. Confinement: only
         // Fec/NanorsBackend.swift imports it.
         .target(name: "CNanorsWire", publicHeadersPath: "include"),
         .target(
@@ -49,10 +49,9 @@ let package = Package(
                 .product(name: "LyteCore", package: "Common"),
             ]
         ),
-        // The builders that author every Vectors/ file. The test suite
-        // rebuilds each committed file from them, so they cannot drift
-        // from the frozen bytes. See Vectors/README.md for the freeze
-        // policy.
+        // The builders that author every Vectors/ file, in one registry.
+        // The suite fails unless each committed file is byte-for-byte its
+        // builder's output. See Vectors/README.md for the freeze policy.
         .target(
             name: "LyteWireVectorGen",
             dependencies: [

@@ -140,8 +140,9 @@ public struct FeedbackReport: Hashable, Sendable, SliceDecodable {
     /// One FEC-impossible frame and its missing shard indices.
     public struct NackEntry: Hashable, Sendable {
         public var frame: FrameNumber
-        /// Sorted, unique, non-empty; values are FEC shard indices
-        /// (0…254, the GF(2⁸) block).
+        /// Sorted, unique, non-empty; values are FEC shard indices,
+        /// 0…255 on the wire. Consumers bound them by the frame's
+        /// geometry (a GF(2⁸) block holds at most 255 shards).
         public private(set) var missingShards: [UInt8]
 
         /// Canonicalizes (sorts, dedupes) and refuses an empty list — a

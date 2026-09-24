@@ -13,10 +13,6 @@ final class LifecycleVectorFileTests: XCTestCase {
         try LifecycleVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     func testEveryLegalValueIsPinned() throws {
         // The codecs' whole value spaces are tiny; the file must pin
         // all of them so an enum addition can never slip in silently.

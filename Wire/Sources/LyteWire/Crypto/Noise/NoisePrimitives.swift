@@ -58,7 +58,13 @@ enum NoisePrimitives {
         else {
             throw NoiseError.invalidPublicKey
         }
-        return shared.withUnsafeBytes { Array($0) }
+        let bytes = shared.withUnsafeBytes { Array($0) }
+        // Checked here, not left to the backend: an all-zero secret means
+        // a low-order peer point contributed nothing.
+        guard bytes.reduce(0, |) != 0 else {
+            throw NoiseError.invalidPublicKey
+        }
+        return bytes
     }
 
     /// A ChaCha20-Poly1305 key: the raw bytes (REKEY derives from them)

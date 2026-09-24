@@ -52,6 +52,14 @@ public struct SplitMix64: RandomNumberGenerator, Sendable {
         return int(in: range.lowerBound...(range.upperBound - 1))
     }
 
+    /// A shuffled copy (see `shuffle(_:)`); the same order as
+    /// `sequence.shuffled(using: &self)` on 64-bit hosts.
+    public mutating func shuffled<S: Sequence>(_ sequence: S) -> [S.Element] {
+        var copy = Array(sequence)
+        shuffle(&copy)
+        return copy
+    }
+
     /// Fisher-Yates in place, drawn at 64-bit width; the same
     /// permutation as `collection.shuffle(using: &self)` on 64-bit hosts.
     public mutating func shuffle<C: MutableCollection & RandomAccessCollection>(

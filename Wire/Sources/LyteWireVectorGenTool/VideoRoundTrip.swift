@@ -11,7 +11,7 @@ import LyteWireTestKit
 
 func runVideoRoundTrip(inputPath: String, outputPath: String) throws {
     let input = [UInt8](try Data(contentsOf: URL(fileURLWithPath: inputPath)))
-    let ranges = AnnexBStream.accessUnitRanges(in: input)
+    let ranges = AnnexBAccessUnits.ranges(in: input)
     guard !ranges.isEmpty else { die("\(inputPath): no access units found") }
 
     var rng = SplitMix64(seed: 0x57_1D_0F_F0)

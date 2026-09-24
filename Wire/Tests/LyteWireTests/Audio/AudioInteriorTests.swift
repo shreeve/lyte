@@ -235,13 +235,13 @@ final class AudioInteriorTests: XCTestCase {
         XCTAssertEqual(framer.counters.groupsAbandoned, 2)
     }
 
-    // MARK: Leg 4 — the retention horizon is local policy (T2-10)
+    // MARK: The retention horizon is local policy
 
-    /// A shard's DECLARED geometry must not move the horizon: before the
-    /// pin, one legal k=1 shard shrank retention to 8 packets (flushing
-    /// groups still awaiting parity) and a k=254 shard widened admission
-    /// to ~2000 packets. Both now bounce off the pinned 32-packet
-    /// (160 ms) policy while honest 4+2 traffic is untouched.
+    /// A shard's DECLARED geometry must not move the horizon: a legal k=1
+    /// shard must not shrink retention to 8 packets (flushing groups
+    /// still awaiting parity), nor a k=254 shard widen admission to ~2000
+    /// packets. Both bounce off the pinned 32-packet (160 ms) policy
+    /// while honest 4+2 traffic is untouched.
     func testDeclaredGeometryCannotMoveTheRetentionHorizon() throws {
         // Group 0 via the real framer: 3 of 4 data shards arrive, so the
         // group waits on parity for its recovery.
@@ -319,5 +319,97 @@ final class AudioInteriorTests: XCTestCase {
         ).isEmpty)
         XCTAssertEqual(depacketizer.stats.staleShards, 1,
                        "a declared k=254 must not widen admission")
+    }
+
+    // MARK: Retention is bounded against hostile group ids
+
+    private func audioShard(
+        group: UInt32, index: Int, of geometry: FecGeometry
+    ) throws -> Envelope {
+        let field = try FecField.reedSolomonShard(index, of: geometry)
+        return Envelope(
+            channel: .audio, seq: ChannelSeq(rawValue: 0),
+            frame: FrameNumber(rawValue: group),
+            timestamp: UInt64(group) * 5_000, fec: field.encoded
+        )
+    }
+
+    /// An id exactly 2³¹ from the newest is neither behind nor ahead in
+    /// serial arithmetic. It must be stale: admitted, it could never be
+    /// evicted, and one such ghost per step would grow retention without
+    /// bound.
+    func testAntipodalGroupIdIsStaleAndNeverRetained() throws {
+        let nominal = try FecGeometry(
+            dataShards: 4, parityShards: 2, groupByteCount: 320
+        )
+        var depacketizer = AudioDepacketizer()
+        for step in 0..<1_000 {
+            let real = UInt32(step * 4)
+            _ = depacketizer.ingest(
+                envelope: try audioShard(group: real, index: 1, of: nominal),
+                payload: opusPacket(step)
+            )
+            XCTAssertTrue(depacketizer.ingest(
+                envelope: try audioShard(
+                    group: real &+ 0x8000_0000, index: 1, of: nominal
+                ),
+                payload: opusPacket(step)
+            ).isEmpty, "the antipode yields no packet")
+        }
+        XCTAssertEqual(depacketizer.stats.staleShards, 1_000)
+        XCTAssertLessThanOrEqual(
+            depacketizer.trackedGroupCount, depacketizer.horizonGroups + 1
+        )
+    }
+
+    /// A peer declaring small groups at every packet number inside the
+    /// horizon cannot hold more than the group cap; the oldest makes
+    /// room, and its missing data counts as honest loss.
+    func testGroupCountIsCappedAgainstDenseSmallGroups() throws {
+        let tiny = try FecGeometry(
+            dataShards: 2, parityShards: 1, groupByteCount: 160
+        )
+        var depacketizer = AudioDepacketizer()
+        // Parity only: one shard of k = 2 recovers nothing, so every
+        // group stays missing both data packets.
+        for id in UInt32(0)...32 {
+            _ = depacketizer.ingest(
+                envelope: try audioShard(group: id, index: 2, of: tiny),
+                payload: opusPacket(Int(id))
+            )
+        }
+        XCTAssertEqual(
+            depacketizer.trackedGroupCount, 2 * depacketizer.horizonGroups
+        )
+        XCTAssertEqual(
+            depacketizer.stats.groupsUnrecoverable,
+            UInt64(33 - 2 * depacketizer.horizonGroups)
+        )
+        XCTAssertEqual(
+            depacketizer.stats.packetsUnrecoverable,
+            2 * depacketizer.stats.groupsUnrecoverable
+        )
+        // The newest group survived the squeeze: its data shard is
+        // delivered and completes a recovery.
+        let healed = depacketizer.ingest(
+            envelope: try audioShard(group: 32, index: 0, of: tiny),
+            payload: opusPacket(32)
+        )
+        XCTAssertEqual(healed.map(\.number), [32, 33])
+    }
+
+    /// The framer refuses what cannot be one 5 ms shard: nothing, or
+    /// more than a plaintext shard holds.
+    func testFramerRefusesEmptyAndOverBudgetPackets() {
+        var framer = AudioFramer(config: AudioFramerConfig())
+        XCTAssertThrowsError(
+            try framer.ingest(packet: [], captureTimestampMicroseconds: 0)
+        ) { XCTAssertEqual($0 as? AudioFramerError, .emptyPacket) }
+        let over = AudioFramerConfig().packetBudgetByteCount + 1
+        XCTAssertThrowsError(try framer.ingest(
+            packet: [UInt8](repeating: 1, count: over),
+            captureTimestampMicroseconds: 0
+        )) { XCTAssertEqual($0 as? AudioFramerError, .packetOverBudget(over)) }
+        XCTAssertEqual(framer.counters.groupsCompleted, 0)
     }
 }

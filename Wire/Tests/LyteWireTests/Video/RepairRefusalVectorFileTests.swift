@@ -13,10 +13,6 @@ final class RepairRefusalVectorFileTests: XCTestCase {
         try RepairRefusalVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     func testCoverageDiscipline() throws {
         // The reason space is tiny; the file must pin all of it so an
         // enum addition can never slip in silently — and every

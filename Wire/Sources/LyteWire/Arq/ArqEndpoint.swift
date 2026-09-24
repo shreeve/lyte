@@ -1,11 +1,13 @@
 // ArqEndpoint: the sans-IO reliable ordered-retransmit sublayer. One
 // endpoint owns one reliable channel in both directions: it segments
 // outbound messages, retransmits until acknowledged, deduplicates and
-// reorders inbound segments, and delivers each message exactly once, in
-// order, per group. Group 0 is the ordered stream (CTRL, feature
-// channels); each non-zero one-shot group (ascending ids) carries one
-// message and retransmits independently, so a lost one-shot never delays
-// the next.
+// reorders inbound segments, and delivers each message at most once, in
+// order, per group — exactly once on the ordered stream. Group 0 is the
+// ordered stream (CTRL, feature channels); each non-zero one-shot group
+// (ascending ids) carries one message and retransmits independently, so
+// a lost one-shot never delays the next. Past the tombstone horizon a
+// one-shot id at or behind the eviction watermark reads as closed and is
+// acknowledged without delivery (`maxClosedGroupTombstones`).
 //
 // Time is the injected `now`; `poll` returns datagram payloads for the
 // shell to wrap in envelopes (a fresh channel seq each — see
@@ -65,7 +67,8 @@ public struct ArqConfig: Hashable, Sendable {
     /// endpoint then segments and packs once, at the owning boundary.
     public var maxDatagramPayloadByteCount: Int
     /// Reassembled message ceiling — receiver protection against a
-    /// hostile endless message.
+    /// hostile endless message. Not negotiated: both ends must share it,
+    /// and wire v1 fixes 262,144.
     public var maxMessageByteCount: Int
     /// Simultaneously open receive groups — protection against hostile
     /// group spray.
@@ -79,6 +82,13 @@ public struct ArqConfig: Hashable, Sendable {
     /// Absolute lifetime for incomplete one-shot receive groups. This keeps
     /// a retransmitting abandoned sender from pinning the admission table.
     public var receiveGroupLifetimeMicroseconds: Int64
+    /// Bytes held across all incomplete one-shot receive groups: buffered
+    /// out-of-order segments plus partial messages. A one-shot segment
+    /// that would cross it is refused unacknowledged — unless it
+    /// completes its group's message, which releases bytes — so the
+    /// sender retries once groups complete or expire. The ordered stream
+    /// is never counted: its window and message ceiling bound it.
+    public var maxOneShotReceiveByteCount: Int
     /// First segment seq of every group. Wire v1 pins 0; the knob
     /// exists so u16 wrap crossings are simulatable (both ends must
     /// agree, like every config here).
@@ -101,6 +111,7 @@ public struct ArqConfig: Hashable, Sendable {
         maxActiveReceiveGroups: Int = 64,
         maxClosedGroupTombstones: Int = 256,
         receiveGroupLifetimeMicroseconds: Int64 = 30_000_000,
+        maxOneShotReceiveByteCount: Int = 1_048_576,
         initialSegmentSeq: UInt16 = 0
     ) {
         self.initialRttMicroseconds = initialRttMicroseconds
@@ -125,6 +136,7 @@ public struct ArqConfig: Hashable, Sendable {
         self.receiveGroupLifetimeMicroseconds = max(
             receiveGroupLifetimeMicroseconds, 1
         )
+        self.maxOneShotReceiveByteCount = maxOneShotReceiveByteCount
         self.initialSegmentSeq = initialSegmentSeq
         normalizeDatagramBudget()
     }
@@ -175,13 +187,24 @@ public enum ArqIgnoreReason: Hashable, Sendable {
     case beyondReceiveWindow(ArqGroupId, ArqSegmentSeq)
     /// A new group beyond maxActiveReceiveGroups — group spray.
     case tooManyReceiveGroups(ArqGroupId)
-    /// A message grew past maxMessageByteCount; the group is poisoned
-    /// (no delivery, no ACK) — hostile-peer territory.
+    /// A one-shot segment past maxOneShotReceiveByteCount; refused
+    /// unacknowledged.
+    case oneShotReceiveBudgetExhausted(ArqGroupId)
+    /// A message grew past maxMessageByteCount and poisoned its group —
+    /// hostile-peer or config-skew territory. The crossing segment is
+    /// acknowledged (it arrived); nothing more of the group is delivered
+    /// or acknowledged. A one-shot group is then reclaimed.
     case messageOverBudget(ArqGroupId)
+    /// A segment on the poisoned ordered stream. The stream lost a
+    /// message and can never deliver in order again, so this repeats for
+    /// the endpoint's life; the shell should end the session
+    /// (`isOrderedStreamPoisoned`).
+    case orderedStreamPoisoned
 }
 
 public enum ArqEvent: Hashable, Sendable {
-    /// A whole message, exactly once, in order within its group.
+    /// A whole message, at most once (exactly once on the ordered
+    /// stream), in order within its group.
     case message(group: ArqGroupId, bytes: [UInt8])
     /// Sender side: a one-shot group is fully acknowledged.
     case oneShotAcknowledged(ArqGroupId)
@@ -378,8 +401,12 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         var buffered: [UInt16: (endOfMessage: Bool, body: [UInt8])] = [:]
         /// In-order bytes of the message being reassembled.
         var assembling: [UInt8] = []
+        /// Body bytes in `buffered`.
+        var bufferedByteCount = 0
         var poisoned = false
         var openedAt: Instant
+
+        var heldByteCount: Int { bufferedByteCount + assembling.count }
 
         /// The canonical ACK bitmap: bit n set when `cumulative + 1 + n`
         /// is buffered, sized by the highest set bit. Walks offsets in
@@ -419,6 +446,8 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
     private var evictedThrough: UInt16?
     /// Groups owed an ACK at the next poll.
     private var ackNeeded: Set<UInt16> = []
+    /// Sum of `heldByteCount` over open one-shot receive groups.
+    private var oneShotHeldByteCount = 0
 
     public init(channel: ChannelId, config: ArqConfig = ArqConfig()) {
         self.channel = channel
@@ -431,6 +460,13 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
     /// A quiescent endpoint polls to ([], nil) until new work arrives.
     public var isQuiescent: Bool {
         ackNeeded.isEmpty && sendGroups.values.allSatisfy(\.isDrained)
+    }
+
+    /// True once the ordered stream (group 0) has been poisoned by a
+    /// message over `maxMessageByteCount`. Permanent: the stream can
+    /// never again deliver in order, so the session should end.
+    public var isOrderedStreamPoisoned: Bool {
+        recvGroups[ArqGroupId.orderedStream.rawValue]?.poisoned ?? false
     }
 
     /// Sent-but-unacknowledged plus queued segment count, all groups.
@@ -570,11 +606,21 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
             return
         }
 
+        let isOneShot = segment.group.isOneShot
+        if isOneShot, oneShotHeldByteCount + segment.body.count
+            > config.maxOneShotReceiveByteCount,
+           !(recvGroups[gid].map { Self.completesMessage(segment, in: $0) }
+               ?? false) {
+            events.append(.ignored(
+                .oneShotReceiveBudgetExhausted(segment.group)
+            ))
+            return
+        }
         if recvGroups[gid] == nil {
             // The ordered stream (group 0) is permanent and always
             // admitted; the cap bounds one-shot group spray only — a
             // hostile peer must never starve CTRL itself.
-            if segment.group.isOneShot,
+            if isOneShot,
                recvGroups.count >= config.maxActiveReceiveGroups {
                 events.append(.ignored(.tooManyReceiveGroups(segment.group)))
                 return
@@ -584,12 +630,17 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
             )
         }
 
+        let heldBefore = recvGroups[gid]!.heldByteCount
         let verdict = Self.accept(
             segment, into: &recvGroups[gid]!, config: config, events: &events
         )
+        if isOneShot {
+            oneShotHeldByteCount += recvGroups[gid]!.heldByteCount - heldBefore
+        }
         switch verdict {
         case .poisoned:
-            events.append(.ignored(.messageOverBudget(segment.group)))
+            events.append(.ignored(isOneShot
+                ? .messageOverBudget(segment.group) : .orderedStreamPoisoned))
         case .beyondWindow:
             events.append(.ignored(
                 .beyondReceiveWindow(segment.group, segment.seq)
@@ -602,8 +653,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         case .accepted(let closed):
             ackNeeded.insert(gid)
             if closed {
-                let cumulative = recvGroups.removeValue(forKey: gid)!
-                    .cumulative
+                let cumulative = removeRecvGroup(gid).cumulative
                 rememberClosed(gid, cumulative: cumulative)
             }
         }
@@ -629,6 +679,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
             next = (segment.endOfMessage, segment.body)
         } else {
             state.buffered[seq] = (segment.endOfMessage, segment.body)
+            state.bufferedByteCount += segment.body.count
         }
 
         while let entry = next {
@@ -639,6 +690,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
                 state.poisoned = true
                 state.assembling = []
                 state.buffered = [:]
+                state.bufferedByteCount = 0
                 events.append(.ignored(.messageOverBudget(segment.group)))
                 return .accepted(closed: false)
             }
@@ -653,8 +705,38 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
                 }
             }
             next = state.buffered.removeValue(forKey: state.cumulative &+ 1)
+            state.bufferedByteCount -= next?.body.count ?? 0
         }
         return .accepted(closed: false)
+    }
+
+    /// True when `segment` is the group's next in-order segment and it,
+    /// or the buffered run behind it, ends the message: accepting it
+    /// releases the group's bytes instead of pinning more, so the budget
+    /// never starves a group that is one segment from done.
+    private static func completesMessage(
+        _ segment: ArqSegment, in state: RecvGroup
+    ) -> Bool {
+        guard !state.poisoned,
+              segment.seq.rawValue == state.cumulative &+ 1 else { return false }
+        var seq = segment.seq.rawValue
+        var endOfMessage = segment.endOfMessage
+        while !endOfMessage {
+            seq &+= 1
+            guard let entry = state.buffered[seq] else { return false }
+            endOfMessage = entry.endOfMessage
+        }
+        return true
+    }
+
+    /// Removes an open receive group, releasing its one-shot bytes.
+    @discardableResult
+    private mutating func removeRecvGroup(_ gid: UInt16) -> RecvGroup {
+        let state = recvGroups.removeValue(forKey: gid)!
+        if gid != ArqGroupId.orderedStream.rawValue {
+            oneShotHeldByteCount -= state.heldByteCount
+        }
+        return state
     }
 
     private mutating func rememberClosed(_ gid: UInt16, cumulative: UInt16) {
@@ -965,7 +1047,7 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
                 ? gid : nil
         }
         for gid in abandoned {
-            recvGroups.removeValue(forKey: gid)
+            removeRecvGroup(gid)
             ackNeeded.remove(gid)
         }
     }

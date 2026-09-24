@@ -1,14 +1,28 @@
 // MacEvdevKeyMap: macOS virtual key code (Carbon kVK_*) → Linux evdev
 // keycode (input-event-codes.h). The wire carries evdev position codes:
 // the host session's XKB map owns layout, and the client never guesses
-// keysyms. ANSI layout; unmapped keys (media keys, Fn, JIS/ISO extras)
-// are dropped. Pure data, no AppKit.
+// keysyms. ANSI, ISO and JIS positions map to the codes the browser
+// client sends for the same keys; media keys and Fn are dropped. Pure
+// data, no AppKit.
 
 public enum MacEvdevKeyMap {
+    /// kVK_CapsLock. macOS reports it only as a lock-state flip
+    /// (flagsChanged), never as a held key.
+    public static let capsLockKeyCode: UInt16 = 0x39
+
     /// evdev keycode for one macOS virtual key code; nil = deliberately
-    /// unmapped (never forwarded).
-    public static func evdevKeycode(forMacKeyCode keyCode: UInt16) -> UInt32? {
-        table[keyCode]
+    /// unmapped (never forwarded). Apple ISO keyboards report the key left
+    /// of 1 as kVK_ISO_Section and the key beside left Shift as
+    /// kVK_ANSI_Grave; `isoKeyboard` swaps them back to their positions.
+    public static func evdevKeycode(
+        forMacKeyCode keyCode: UInt16, isoKeyboard: Bool = false
+    ) -> UInt32? {
+        guard isoKeyboard else { return table[keyCode] }
+        switch keyCode {
+        case 0x0A: return table[0x32]
+        case 0x32: return table[0x0A]
+        default: return table[keyCode]
+        }
     }
 
     /// evdev codes for left/right modifier keys plus the NX device
@@ -88,6 +102,14 @@ public enum MacEvdevKeyMap {
         0x2F: 52,  // .      → KEY_DOT
         0x2C: 53,  // /      → KEY_SLASH
         0x32: 41,  // `      → KEY_GRAVE
+        // ISO and JIS extras
+        0x0A: 86,   // ISO Section     → KEY_102ND
+        0x5D: 124,  // JIS Yen         → KEY_YEN
+        0x5E: 89,   // JIS Underscore  → KEY_RO
+        0x5F: 121,  // JIS KeypadComma → KEY_KPCOMMA
+        0x66: 94,   // JIS Eisu        → KEY_MUHENKAN
+        0x68: 92,   // JIS Kana        → KEY_HENKAN
+        0x6E: 127,  // Context menu    → KEY_COMPOSE
         // Whitespace / editing
         0x24: 28,   // Return         → KEY_ENTER
         0x30: 15,   // Tab            → KEY_TAB
@@ -100,7 +122,7 @@ public enum MacEvdevKeyMap {
         // keyDown on one still maps)
         0x38: 42, 0x3C: 54, 0x3B: 29, 0x3E: 97,
         0x3A: 56, 0x3D: 100, 0x37: 125, 0x36: 126,
-        0x39: 58,   // Caps Lock → KEY_CAPSLOCK
+        0x39: 58,   // Caps Lock → KEY_CAPSLOCK (a flip, see capsLockKeyCode)
         // Navigation
         0x73: 102,  // Home      → KEY_HOME
         0x77: 107,  // End       → KEY_END
