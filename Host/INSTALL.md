@@ -32,8 +32,9 @@ Scripts/Tests/test-host-package-image.sh /tmp/lyte-host-image
 
 The image holds `bin/lyte-host`, the `etc/host.conf` seed, the
 `systemd/lyte-host.service` template, Lyte's license, every applicable
-third-party notice, and `doc/MANIFEST.sha256`, which authenticates every other
-file in the image. Staging is rootless and inert: it does not install files,
+third-party notice, and `doc/MANIFEST.sha256`, which lists the SHA-256 of every
+other file in the image: an integrity check against a damaged or altered copy,
+not a signature. Staging is rootless and inert: it does not install files,
 change capabilities, contact systemd, or touch host identity.
 
 ## 1. Machine prerequisites
@@ -124,7 +125,7 @@ sudo systemctl stop lyte-host
 bin="$(readlink -f ~/.local/bin/lyte-host)"
 sudo setcap cap_sys_admin+ep "$bin"             # hand-run only
 "$bin" --wire-listen 41151 --pair               # prints the PIN
-# … client connects, enters the PIN; ctrl-C the host …
+# … client connects and enters the PIN; the host exits when it leaves …
 sudo setcap -r "$bin"
 sudo systemctl start lyte-host
 ```
