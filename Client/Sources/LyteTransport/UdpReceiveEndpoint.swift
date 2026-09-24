@@ -3,7 +3,8 @@
 //
 // Socket posture: a 2 MiB SO_RCVBUF so kernel drops never masquerade as
 // network loss; SO_NET_SERVICE_TYPE VI to discourage Wi-Fi RX power-save;
-// SO_TIMESTAMP kernel arrival stamps so gap measurements blame the radio
+// SO_TIMESTAMP_MONOTONIC kernel arrival stamps (mach ticks, converted to
+// the SystemMonotonicClock domain) so gap measurements blame the radio
 // rather than thread stalls; a 100 ms SO_RCVTIMEO so stop() unblocks the
 // loop; ECONNREFUSED tolerance; and the protected CS6 lane (0xC0), since
 // everything the client originates is control, input or feedback.
@@ -40,12 +41,11 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
     private let requestedPort: UInt16
     private let bindAddress: String
     private let crypto: TransportCrypto
-    /// Per-datagram hook, with the same arrival stamp the demux got
-    /// (kernel SCM_TIMESTAMP wall-clock µs when available, monotonic µs
-    /// otherwise) — a MIXED clock domain, never safe in monotonic math
-    /// like RTT (A-25). Consumers needing a monotonic instant (the
-    /// beacon echo's t2) take their own stamp — the hook runs inline on
-    /// the receive thread, so it is within microseconds of true arrival.
+    /// Per-datagram hook, with the same arrival stamp the demux got: µs
+    /// in the SystemMonotonicClock domain — the kernel's monotonic stamp
+    /// when the cmsg is present, the receive thread's own reading
+    /// otherwise. One domain either way, so arrival spacing never mixes
+    /// clocks and an NTP step cannot reach it.
     private let onDatagram: (@Sendable (IngestOutcome, _ arrivalMicroseconds: UInt64) -> Void)?
 
     /// Atomic because timer threads (ARQ PTO, feedback) read it in
@@ -64,6 +64,9 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
     // The last datagram's source address — the peer replies go to.
     private let peerLock = NSLock()
     private var peerAddress: sockaddr_in?
+
+    /// Arrivals stamped by the kernel rather than the fallback reading.
+    let kernelStampedArrivals = Atomic<UInt64>(0)
 
     /// The actual bound port — differs from the request when it was 0.
     public private(set) var boundPort: UInt16 = 0
@@ -142,9 +145,10 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
         _ = setsockopt(fd, SOL_SOCKET, SO_NET_SERVICE_TYPE,
                        &serviceType, socklen_t(MemoryLayout<Int32>.size))
 
-        // Kernel arrival timestamps (SCM_TIMESTAMP cmsg on recvmsg).
+        // Kernel monotonic arrival stamps (SCM_TIMESTAMP_MONOTONIC cmsg).
         var tsOn: Int32 = 1
-        _ = setsockopt(fd, SOL_SOCKET, SO_TIMESTAMP, &tsOn, socklen_t(MemoryLayout<Int32>.size))
+        _ = setsockopt(fd, SOL_SOCKET, SO_TIMESTAMP_MONOTONIC, &tsOn,
+                       socklen_t(MemoryLayout<Int32>.size))
 
         // 100 ms receive timeout so stop() can interrupt the loop.
         var tv = timeval(tv_sec: 0, tv_usec: 100_000)
@@ -279,16 +283,11 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
                                srcPtr.pointee.sin_family == sa_family_t(AF_INET) {
                                 sourceCaptured = true
                             }
-                            // Single SCM_TIMESTAMP cmsg: timeval at data offset
-                            // 12 (4-byte len + 4-byte level + 4-byte type).
-                            if r > 0, msg.msg_controllen >= 12 + 16,
-                               let base = ctrl.baseAddress {
-                                let level = base.withMemoryRebound(to: Int32.self, capacity: 3) { ($0[1], $0[2]) }
-                                if level.0 == SOL_SOCKET, level.1 == SCM_TIMESTAMP {
-                                    var tv = timeval()
-                                    memcpy(&tv, base + 12, MemoryLayout<timeval>.size)
-                                    kernelUs = UInt64(tv.tv_sec) * 1_000_000 + UInt64(tv.tv_usec)
-                                }
+                            if r > 0, let base = ctrl.baseAddress {
+                                kernelUs = Self.monotonicArrivalMicroseconds(
+                                    control: UnsafeRawBufferPointer(
+                                        start: base,
+                                        count: Int(msg.msg_controllen)))
                             }
                             return r
                         }
@@ -303,7 +302,10 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
                 return   // socket closed by stop()
             }
 
-            let arrivalUs = kernelUs ?? (SystemMonotonicClock.nowMicroseconds)
+            if kernelUs != nil {
+                kernelStampedArrivals.add(1, ordering: .relaxed)
+            }
+            let arrivalUs = kernelUs ?? SystemMonotonicClock.nowMicroseconds
             let receivedAtNS = SystemMonotonicClock.nowNanoseconds
             let witnessEnvelope = PipelineWitness.isEnabled
                 ? (try? Envelope.decode(buffer[0..<n]).0) : nil
@@ -358,6 +360,38 @@ public final class UdpReceiveEndpoint: @unchecked Sendable {
             onDatagram?(outcome, arrivalUs)
         }
     }
+
+    /// The arrival stamp from a single SCM_TIMESTAMP_MONOTONIC cmsg, as
+    /// SystemMonotonicClock µs; nil when absent. The payload is a uint64
+    /// of mach absolute-time ticks at data offset 12 (4-byte len, level,
+    /// type; Darwin aligns cmsg data to 4 bytes, so the read is unaligned).
+    static func monotonicArrivalMicroseconds(
+        control: UnsafeRawBufferPointer
+    ) -> UInt64? {
+        guard control.count >= 12 + 8,
+              control.loadUnaligned(fromByteOffset: 4, as: Int32.self)
+                == SOL_SOCKET,
+              control.loadUnaligned(fromByteOffset: 8, as: Int32.self)
+                == SCM_TIMESTAMP_MONOTONIC
+        else { return nil }
+        let ticks = control.loadUnaligned(fromByteOffset: 12, as: UInt64.self)
+        return machTicksToNanoseconds(ticks) / 1_000
+    }
+
+    /// Mach absolute-time ticks → the nanoseconds DispatchTime's uptime
+    /// (and so SystemMonotonicClock) reports.
+    static func machTicksToNanoseconds(_ ticks: UInt64) -> UInt64 {
+        let (numer, denom) = machTimebase
+        guard numer != denom else { return ticks }
+        let product = ticks.multipliedFullWidth(by: UInt64(numer))
+        return UInt64(denom).dividingFullWidth(product).quotient
+    }
+
+    private static let machTimebase: (UInt32, UInt32) = {
+        var info = mach_timebase_info_data_t()
+        mach_timebase_info(&info)
+        return (info.numer, info.denom)
+    }()
 
     // MARK: - Send path (CL-3)
 

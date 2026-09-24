@@ -65,9 +65,9 @@ public struct DemuxTotals: Sendable {
 public struct ArrivalSample: Sendable {
     public var channel: UInt8
     public var seq: UInt16
-    /// The endpoint's arrival stamp: kernel SCM_TIMESTAMP (wall clock)
-    /// when present, else monotonic. Meaningful only as spacing between
-    /// samples of one drain.
+    /// The endpoint's arrival stamp, SystemMonotonicClock µs (kernel
+    /// monotonic stamp when present). Meaningful as spacing between
+    /// samples; the host reads only its gradient.
     public var arrivalMicroseconds: UInt64
 }
 
@@ -88,9 +88,9 @@ public final class ReceiveDemux: @unchecked Sendable {
     }
 
     /// Feeds one raw datagram. `arrivalMicroseconds` is the endpoint's
-    /// arrival stamp (see `UdpReceiveEndpoint`: kernel wall-clock when the
-    /// cmsg is present, monotonic otherwise); it only feeds arrival
-    /// spacing, never an absolute clock.
+    /// arrival stamp (SystemMonotonicClock µs; see `UdpReceiveEndpoint`).
+    /// It feeds arrival spacing and the host's delay gradient, never an
+    /// absolute clock.
     ///
     /// Decode and unseal run outside the lock, so snapshot readers never
     /// wait behind an AEAD open; the lock covers only the books.

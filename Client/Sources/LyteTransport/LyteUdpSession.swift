@@ -1054,12 +1054,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// clocks (every authenticated arrival — the file comment's
     /// receiver-side evidence rule).
     ///
-    /// The arrival stamp is DELIBERATELY discarded (A-25): it may be
-    /// kernel wall-clock (SCM_TIMESTAMP) while every clock in here —
-    /// the echo responder's t2 included — lives on the session's
-    /// injected monotonic `now()`. Wiring it into t2 would mix clock
-    /// domains and corrupt every RTT sample; the discard binding makes
-    /// the compiler hold that line.
+    /// The arrival stamp is deliberately discarded: it is in the
+    /// SystemMonotonicClock domain, while every clock in here — the echo
+    /// responder's t2 included — lives on the session's injected `now()`,
+    /// which tests drive virtually. Feeding it into t2 would mix clock
+    /// domains whenever `now` is not the system clock.
     public func handleDatagram(
         _ outcome: IngestOutcome, arrivalMicroseconds _: UInt64
     ) {

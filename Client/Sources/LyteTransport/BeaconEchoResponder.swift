@@ -88,10 +88,10 @@ public final class BeaconEchoResponder: @unchecked Sendable {
     /// Feeds one CTRL payload. Non-beacon types pass through untouched
     /// (false); malformed beacons count and drop — hostile bytes never
     /// stop the echo path. `arrivalMicroseconds` becomes t2 and MUST be
-    /// in the same client-monotonic domain as `now` (t3 = now() at emit;
-    /// t3 − t2 is the turnaround the host subtracts) — NOT the kernel
-    /// SCM_TIMESTAMP wall-clock stamp. Take a monotonic stamp on the
-    /// receive thread; it is within microseconds of true arrival.
+    /// in the same domain as the injected `now` (t3 = now() at emit;
+    /// t3 − t2 is the turnaround the host subtracts). The session passes
+    /// its own `now()` read on the receive thread, within microseconds of
+    /// true arrival.
     @discardableResult
     public func handleCtrlPayload(
         _ payload: [UInt8],
