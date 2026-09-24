@@ -1,23 +1,21 @@
 // The host clipboard seam (CL-15, design doc
 // docs/20260722-231500-lyte-clipboard.md §7): the Swift-side boundary
-// the future Wayland/portal C leaf drives. The session core is already
-// complete against this seam — a `.clipboardSetReceived` event is the
+// the host clipboard leaf drives. The session core is complete against
+// this seam — a `.clipboardSetReceived` event is the
 // shell's cue to call `apply(text:)`, and every leaf-reported change
 // (genuine host copies AND the echoes of our own applies — the
 // session's sync book tells them apart) flows back through
 // `Session.noteHostClipboardChanged`.
 //
-// The real leaf EXISTS as of HS-19 (`MutterClipboardLeaf` in
-// lyte-host, Linux-only): the RemoteDesktop-session clipboard API of
-// host build plan §6 — selection-change signals + fd-based transfer
-// both directions — driven on a Mutter-internal RemoteDesktop session
-// (org.gnome.Mutter.RemoteDesktop). Portal RD Start still auto-denies
-// headless on GNOME; a Wayland-helper / data-control leaf is blocked
-// there — docs/20260807-015743-wayland-clipboard-gnome-blocker.md.
-// The gate tests still run a scripted implementation of this protocol
-// everywhere; lyte-host wires the real one behind `--clipboard` and
-// declares capability key 10 only when the leaf came up (the
-// key-9/--no-audio precedent — declaration follows the leaf).
+// The Linux leaf is `MutterClipboardLeaf` in lyte-host: selection-change
+// signals and fd-based transfer both directions over a Mutter-internal
+// RemoteDesktop session (org.gnome.Mutter.RemoteDesktop). The portal and
+// Wayland data-control routes are unavailable headless on GNOME
+// (docs/20260807-015743-wayland-clipboard-gnome-blocker.md). The gate
+// tests run a scripted implementation of this protocol everywhere;
+// lyte-host wires the real one behind `--clipboard` and declares
+// capability key 10 only when the leaf came up — declaration follows
+// the leaf.
 
 import LyteWire
 
@@ -118,7 +116,7 @@ public protocol HostClipboardLeaf: AnyObject {
     /// sha-verified client image landing).
     func apply(imageData: [UInt8])
 
-    /// Begin observing (the portal selection-change subscription).
+    /// Begin observing the OS selection changes.
     func start() throws
 
     /// Stop observing and release the OS resources.

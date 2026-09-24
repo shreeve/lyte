@@ -43,6 +43,7 @@ var targets: [Target] = [
         dependencies: [
             "HostSession",
             .product(name: "LyteWire", package: "Wire"),
+            .product(name: "LyteWireTestKit", package: "Wire"),
         ]
     ),
     // Host audio codec policy in Swift over the one pinned COpus mechanism.

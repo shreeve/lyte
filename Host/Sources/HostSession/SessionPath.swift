@@ -16,7 +16,7 @@
 //
 // The state machine, per candidate 4-tuple relative to one session:
 //
-//   unknown ──datagram bearing the session's conn-id──▶ PROBING
+//   unknown ──authenticated datagram bearing the conn-id──▶ PROBING
 //       (challenge with a fresh random token sent on the new tuple,
 //        subject to the anti-amplification budget)
 //   PROBING ──PathResponse from that tuple, token matches──▶ PRIMARY
@@ -36,10 +36,8 @@
 // a tuple is validated, bytes sent to it are capped at
 // `amplificationFactor ×` bytes received from it (factor 3, QUIC's
 // number). The validator does its own accounting for the challenges it
-// emits. Media never targets an unvalidated tuple at all: it flows to the
-// primary until promotion, which is the stronger rule. `sendAllowance` /
-// `recordSend` expose the same budget for any other send to a candidate
-// tuple; today no production send consults them.
+// emits, and they are the only datagrams a candidate tuple ever receives:
+// media flows to the primary until promotion, which is the stronger rule.
 
 import LyteWire
 
@@ -163,9 +161,11 @@ public struct PathValidator {
 
     // MARK: Inputs
 
-    /// The demux trigger: any received datagram, after envelope decode,
-    /// reports its source tuple, the connection ID its TLV carried (nil
-    /// when absent), and its wire size. Returns the actions to take.
+    /// The demux trigger: every authenticated datagram (unsealed under
+    /// the session keys) reports its source tuple, the connection ID its
+    /// TLV carried (nil when absent), and its wire size. Unauthenticated
+    /// arrivals must not reach here: the TLV is plaintext, and a forged
+    /// one would hold the single probe slot. Returns the actions to take.
     public mutating func datagramReceived(
         from tuple: FourTuple,
         connectionId claimed: ConnectionId?,
@@ -269,33 +269,6 @@ public struct PathValidator {
             deadline = min(deadline ?? fallbackDeadline, fallbackDeadline)
         }
         return deadline
-    }
-
-    // MARK: The send loop's queries
-
-    /// How many more bytes may be sent to `tuple` right now. Validated
-    /// tuples (primary, retained fallback) are uncapped (nil); the tuple
-    /// under probe gets what remains of the amplification budget; every
-    /// other tuple gets zero.
-    public func sendAllowance(to tuple: FourTuple) -> Int? {
-        if tuple == primary.tuple || tuple == fallback?.tuple {
-            return nil
-        }
-        guard let probe, probe.tuple == tuple else { return 0 }
-        return max(
-            0,
-            probe.bytesReceived * config.amplificationFactor
-                - probe.bytesSent
-        )
-    }
-
-    /// Accounts caller-originated bytes (retransmitted challenges, future
-    /// probe padding) against an unvalidated tuple's budget. The
-    /// validator already accounted the challenges it emitted itself.
-    public mutating func recordSend(to tuple: FourTuple, byteCount: Int) {
-        guard var active = probe, active.tuple == tuple else { return }
-        active.bytesSent += byteCount
-        probe = active
     }
 
     /// The fresh-IDR seam: true exactly once after each promotion. The

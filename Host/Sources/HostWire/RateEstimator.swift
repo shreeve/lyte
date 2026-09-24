@@ -220,6 +220,7 @@
 //     (gain 1/8): the retransmit gate's SRTT term (resiliency §1.1
 //     rule 3). min-RTT stays alongside for telemetry.
 
+import LyteCore
 import LyteWire
 
 public struct RateEstimatorConfig: Sendable {
@@ -691,7 +692,7 @@ public final class RateEstimator {
     /// `lastDeliveryRate` records, kept over a short window instead of
     /// one-deep. Since HS-28 this median is REPORTING-grade and gate
     /// input only — the fall anchor answers to the capacity belief.
-    private var recentRawDeliveries: [Double] = []
+    private var recentRawDeliveries: BoundedRing<Double>
 
     // MARK: HS-28 — the capacity belief
 
@@ -713,7 +714,7 @@ public final class RateEstimator {
     /// that may pull a fall anchor below the belief (invariant 1).
     /// FIFO of `overuseAnchorSampleCount`, additionally expired past
     /// `honestVoteWindowNS`.
-    private var recentHonestDeliveries: [(at: UInt64, rate: Double)] = []
+    private var recentHonestDeliveries = Deque<(at: UInt64, rate: Double)>()
     /// When the CURRENT overuse-pressure streak opened — invariant 2's
     /// persistence clock. Resets with the streak.
     private var inflatedStreakSinceNS: UInt64?
@@ -790,6 +791,9 @@ public final class RateEstimator {
 
     public init(config: RateEstimatorConfig, now: UInt64) {
         self.config = config
+        self.recentRawDeliveries = BoundedRing(
+            capacity: config.overuseAnchorSampleCount
+        )
         let initial = min(
             max(config.initialRateBitsPerSecond ?? config.ceilingBitsPerSecond,
                 config.floorBitsPerSecond),
@@ -1261,9 +1265,6 @@ public final class RateEstimator {
             // where a fall lands.
             if train.count >= config.minTrainPackets {
                 recentRawDeliveries.append(rate)
-                if recentRawDeliveries.count > config.overuseAnchorSampleCount {
-                    recentRawDeliveries.removeFirst()
-                }
                 // The stall gate's drain evidence (HS-23): the
                 // freshest full-train reading, not a window max — a
                 // squeeze that begins right after a genuine drain

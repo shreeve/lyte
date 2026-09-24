@@ -538,6 +538,11 @@ public struct SessionCounters: Equatable, Sendable {
     public var datagramsReceived = 0
     public var dropped = 0
     public var unsealFailures = 0
+    /// Reliable sends refused with `ArqSendError.queueFull` on the CTRL
+    /// and bulk endpoints: the peer stopped acknowledging long enough to
+    /// fill a group's segment bound. Never fatal; see `enqueueReliable`.
+    public var ctrlQueueFullRefusals = 0
+    public var bulkQueueFullRefusals = 0
     public var beaconsSent = 0
     public var beaconEchoes = 0
     public var idrRequests = 0
@@ -605,7 +610,10 @@ public struct SessionCounters: Equatable, Sendable {
     /// parity (6 per completed 4+2 group).
     public var audioDatagramsEnqueued = 0
     /// Completed 4+2 audio FEC groups.
-    public var audioGroupsCompleted = 0
+    public var audioGroupsCompleted: UInt64 = 0
+    /// Audio FEC groups closed without parity because the Opus packet
+    /// size changed mid-group (a bitrate step under hard CBR).
+    public var audioGroupsAbandoned: UInt64 = 0
     /// Audio datagrams assembled by extending their pre-sized AAD header
     /// in place after sealing, avoiding a third header+payload array.
     public var audioSealedDatagramsAssembledInPlace = 0
@@ -961,32 +969,41 @@ public final class Session {
         hostMicroseconds: UInt64
     ) -> [SessionEvent] {
         counters.datagramsReceived += 1
+        if phase == .awaitingHandshake {
+            return receiveBeforeHandshake(
+                datagram, from: tuple,
+                now: now, hostMicroseconds: hostMicroseconds
+            )
+        }
 
+        // Established: open against the exact received header bytes.
+        // Channel and conn-id refusals happen before the AEAD is paid.
+        var claimed: ConnectionId?
         let envelope: Envelope
-        let payload: ArraySlice<UInt8>
+        let plaintext: [UInt8]
         do {
-            (envelope, payload) = try Envelope.decode(datagram)
+            (envelope, plaintext) = try Envelope.openDatagram(datagram) {
+                envelope, wirePayload, aad in
+                claimed = try admitHeader(envelope)
+                do {
+                    return try unsealPayload(
+                        wirePayload, aad: aad, envelope: envelope
+                    )
+                } catch {
+                    throw InboundRefusal(
+                        .unsealFailed(envelope.channel.rawValue)
+                    )
+                }
+            }
         } catch {
-            counters.dropped += 1
-            return [.dropped(.malformedEnvelope)]
-        }
-        guard !envelope.channel.isReserved else {
-            counters.dropped += 1
-            return [.dropped(.reservedChannel(envelope.channel.rawValue))]
+            return [refuse(error)]
         }
 
-        let claimed: ConnectionId?
-        do {
-            claimed = try ConnectionId.decode(extensions: envelope.extensions)
-        } catch {
-            counters.dropped += 1
-            return [.dropped(.duplicateConnectionIdTlv)]
-        }
-
-        // The HS-12 demux trigger fires on the raw arrival, before any
-        // unseal — path probing must work exactly when decryption of a
-        // migrated datagram would (the challenge, not the AEAD, proves
-        // the address).
+        // The HS-12 demux trigger: only an authenticated arrival may
+        // probe a new tuple. The conn-id TLV is readable by anyone who
+        // saw one datagram, and the validator has one probe slot; the
+        // AEAD, which does not depend on the source address, is what
+        // proves the sender holds the session keys.
         var events = process(
             validator.datagramReceived(
                 from: tuple,
@@ -997,97 +1014,6 @@ public final class Session {
             now: now,
             hostMicroseconds: hostMicroseconds
         )
-
-        if phase == .awaitingHandshake {
-            guard case .noise(let hostStatic) = config.crypto else {
-                counters.dropped += 1 // unreachable: insecure never waits
-                events.append(.dropped(.notEstablished(envelope.channel.rawValue)))
-                return events
-            }
-            // Two admissible first words: a bare Noise message 1 (0x05)
-            // or a RetryHandshake1 (0x14) echoing a cookie the host
-            // minted under flood (HS-21/W8). Anything else is
-            // pre-establishment noise.
-            let presentedCookie: ArraySlice<UInt8>?
-            let message1: ArraySlice<UInt8>
-            switch payload.first {
-            case CtrlMessageType.noiseHandshake1:
-                presentedCookie = nil
-                message1 = payload.dropFirst()
-            case CtrlMessageType.retryHandshake1:
-                guard let resubmission = try? RetryHandshake1.decode(payload)
-                else {
-                    counters.dropped += 1
-                    events.append(.dropped(.malformedCtrl))
-                    return events
-                }
-                presentedCookie = resubmission.cookie[...]
-                message1 = resubmission.message1[...]
-            default:
-                counters.dropped += 1
-                events.append(.dropped(.notEstablished(envelope.channel.rawValue)))
-                return events
-            }
-
-            let decision = handshakeGate.admitMessage1(
-                presentedCookie: presentedCookie,
-                clientTuple: Self.cookieTuple(tuple),
-                message1: message1,
-                now: now
-            )
-            if let requireCookie = decision.cookieModeChangedTo {
-                events.append(.handshakeCookieModeChanged(requireCookie: requireCookie))
-            }
-            switch decision.admission {
-            case .admit:
-                events += completeHandshake(
-                    message1: message1,
-                    from: tuple,
-                    hostStatic: hostStatic,
-                    now: now,
-                    hostMicroseconds: hostMicroseconds
-                )
-            case .challenge(let cookie):
-                counters.dropped += 1
-                counters.handshakeChallengesMinted += 1
-                // A stateless RetryChallenge (0x13) on the exact tuple the
-                // message 1 arrived from — no Noise, no session state.
-                do {
-                    try sendCtrl(
-                        body: try RetryChallenge(cookie: cookie).encode(),
-                        sealed: false,
-                        destination: tuple,
-                        now: now, hostMicroseconds: hostMicroseconds
-                    )
-                    events.append(.handshakeChallenged)
-                } catch {
-                    events.append(.sendFailed(String(describing: error)))
-                }
-            case .drop(.throttled):
-                counters.dropped += 1
-                counters.handshakesThrottled += 1
-                events.append(.dropped(.handshakeThrottled))
-            case .drop(.cookieInvalid):
-                counters.dropped += 1
-                counters.handshakeCookiesRejected += 1
-                events.append(.dropped(.handshakeCookieInvalid))
-            }
-            if presentedCookie != nil, case .admit = decision.admission {
-                counters.handshakeCookiesVerified += 1
-            }
-            return events
-        }
-
-        // Established: exact received header bytes as AAD, then unseal.
-        let aad = datagram[datagram.startIndex..<payload.startIndex]
-        let plaintext: [UInt8]
-        do {
-            plaintext = try unsealPayload(payload, aad: aad, envelope: envelope)
-        } catch {
-            counters.unsealFailures += 1
-            events.append(.dropped(.unsealFailed(envelope.channel.rawValue)))
-            return events
-        }
 
         switch envelope.channel {
         case .ctrl:
@@ -1153,6 +1079,138 @@ public final class Session {
     ) -> [SessionEvent] {
         receive(datagram[...], from: tuple,
                 now: now, hostMicroseconds: hostMicroseconds)
+    }
+
+    /// Why the header or the AEAD refused a datagram; `refuse` counts it.
+    private struct InboundRefusal: Error {
+        let reason: SessionDropReason
+        init(_ reason: SessionDropReason) { self.reason = reason }
+    }
+
+    /// The header checks every phase applies before reading a payload:
+    /// reserved channels never carry traffic, and at most one conn-id
+    /// TLV may appear. Returns the claimed conn-id (nil when absent).
+    private func admitHeader(_ envelope: Envelope) throws -> ConnectionId? {
+        guard !envelope.channel.isReserved else {
+            throw InboundRefusal(.reservedChannel(envelope.channel.rawValue))
+        }
+        do {
+            return try ConnectionId.decode(extensions: envelope.extensions)
+        } catch {
+            throw InboundRefusal(.duplicateConnectionIdTlv)
+        }
+    }
+
+    /// Counts a refused datagram and names why. An unseal failure has its
+    /// own counter; everything else, including an undecodable envelope,
+    /// is a drop.
+    private func refuse(_ error: any Error) -> SessionEvent {
+        guard let refusal = error as? InboundRefusal else {
+            counters.dropped += 1
+            return .dropped(.malformedEnvelope)
+        }
+        if case .unsealFailed = refusal.reason {
+            counters.unsealFailures += 1
+        } else {
+            counters.dropped += 1
+        }
+        return .dropped(refusal.reason)
+    }
+
+    /// Pre-establishment demux: only a Noise message 1 (bare or
+    /// cookie-bearing) is admissible; it is never sealed.
+    private func receiveBeforeHandshake(
+        _ datagram: ArraySlice<UInt8>,
+        from tuple: FourTuple,
+        now: UInt64,
+        hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        let envelope: Envelope
+        let payload: ArraySlice<UInt8>
+        do {
+            (envelope, payload) = try Envelope.decode(datagram)
+            _ = try admitHeader(envelope)
+        } catch {
+            return [refuse(error)]
+        }
+        var events: [SessionEvent] = []
+        guard case .noise(let hostStatic) = config.crypto else {
+            counters.dropped += 1 // unreachable: insecure never waits
+            events.append(.dropped(.notEstablished(envelope.channel.rawValue)))
+            return events
+        }
+        // Two admissible first words: a bare Noise message 1 (0x05)
+        // or a RetryHandshake1 (0x14) echoing a cookie the host
+        // minted under flood (HS-21/W8). Anything else is
+        // pre-establishment noise.
+        let presentedCookie: ArraySlice<UInt8>?
+        let message1: ArraySlice<UInt8>
+        switch payload.first {
+        case CtrlMessageType.noiseHandshake1:
+            presentedCookie = nil
+            message1 = payload.dropFirst()
+        case CtrlMessageType.retryHandshake1:
+            guard let resubmission = try? RetryHandshake1.decode(payload)
+            else {
+                counters.dropped += 1
+                events.append(.dropped(.malformedCtrl))
+                return events
+            }
+            presentedCookie = resubmission.cookie[...]
+            message1 = resubmission.message1[...]
+        default:
+            counters.dropped += 1
+            events.append(.dropped(.notEstablished(envelope.channel.rawValue)))
+            return events
+        }
+
+        let decision = handshakeGate.admitMessage1(
+            presentedCookie: presentedCookie,
+            clientTuple: Self.cookieTuple(tuple),
+            message1: message1,
+            now: now
+        )
+        if let requireCookie = decision.cookieModeChangedTo {
+            events.append(.handshakeCookieModeChanged(requireCookie: requireCookie))
+        }
+        switch decision.admission {
+        case .admit:
+            events += completeHandshake(
+                message1: message1,
+                from: tuple,
+                hostStatic: hostStatic,
+                now: now,
+                hostMicroseconds: hostMicroseconds
+            )
+        case .challenge(let cookie):
+            counters.dropped += 1
+            counters.handshakeChallengesMinted += 1
+            // A stateless RetryChallenge (0x13) on the exact tuple the
+            // message 1 arrived from — no Noise, no session state.
+            do {
+                try sendCtrl(
+                    body: try RetryChallenge(cookie: cookie).encode(),
+                    sealed: false,
+                    destination: tuple,
+                    now: now, hostMicroseconds: hostMicroseconds
+                )
+                events.append(.handshakeChallenged)
+            } catch {
+                events.append(.sendFailed(String(describing: error)))
+            }
+        case .drop(.throttled):
+            counters.dropped += 1
+            counters.handshakesThrottled += 1
+            events.append(.dropped(.handshakeThrottled))
+        case .drop(.cookieInvalid):
+            counters.dropped += 1
+            counters.handshakeCookiesRejected += 1
+            events.append(.dropped(.handshakeCookieInvalid))
+        }
+        if presentedCookie != nil, case .admit = decision.admission {
+            counters.handshakeCookiesVerified += 1
+        }
+        return events
     }
 
     // MARK: Video
@@ -1364,6 +1422,7 @@ public final class Session {
         counters.audioPacketsIngested += 1
         counters.audioDatagramsEnqueued += datagrams.count
         counters.audioGroupsCompleted = audio.counters.groupsCompleted
+        counters.audioGroupsAbandoned = audio.counters.groupsAbandoned
         return datagrams.count
     }
 
@@ -1594,9 +1653,9 @@ public final class Session {
     /// a content-cropped BGRA shape or the hidden state. Judges the
     /// agreement, the dedupe slot, and the wire contract before a
     /// 0x24 leaves. Silently a no-op unless the agreed set carries
-    /// cursorShape (the noteAudioRoutingApplied rule: a legacy or
-    /// portal-era peer neither asked for the key nor knows the
-    /// byte). Pixels never appear in events or logs — counts only.
+    /// cursorShape (the noteAudioRoutingApplied rule: a peer that did
+    /// not declare the key does not know the byte). Pixels never appear
+    /// in events or logs — counts only.
     public func noteCursorShapeChanged(
         _ shape: CursorShape, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -1676,36 +1735,41 @@ public final class Session {
     /// own CTRL type byte (the registry rule). Throws
     /// `SessionError.notEstablished` before the transport exists —
     /// reliable CTRL is sealed traffic — and `ArqSendError` for an
-    /// empty or over-budget message.
+    /// empty, over-budget, or backpressured (`queueFull`) message.
     public func sendReliable(
         _ message: [UInt8], now: UInt64, hostMicroseconds: UInt64
     ) throws {
         guard phase == .established else {
             throw SessionError.notEstablished
         }
-        try ctrlArqLane.send(message, now: now)
+        try enqueueReliable(on: .ctrl) {
+            try ctrlArqLane.send(message, now: now)
+        }
         _ = serviceArqLane(
             .control, now: now, hostMicroseconds: hostMicroseconds
         )
     }
 
-    /// Queues one one-shot group's single message (non-zero, serially
-    /// ascending group ids — caller-allocated). The group retransmits
+    /// Queues one one-shot group's single message under the CTRL
+    /// endpoint's next group id, which it returns. The group retransmits
     /// independently of the ordered stream and of every other one-shot;
     /// full acknowledgment surfaces as `.reliableOneShotAcknowledged`.
+    @discardableResult
     public func sendReliableOneShot(
         _ message: [UInt8],
-        group: ArqGroupId,
         now: UInt64,
         hostMicroseconds: UInt64
-    ) throws {
+    ) throws -> ArqGroupId {
         guard phase == .established else {
             throw SessionError.notEstablished
         }
-        try ctrlArqLane.sendOneShot(message, group: group, now: now)
+        let group = try enqueueReliable(on: .ctrl) {
+            try ctrlArqLane.sendOneShot(message, now: now)
+        }
         _ = serviceArqLane(
             .control, now: now, hostMicroseconds: hostMicroseconds
         )
+        return group
     }
 
     /// True when the reliable sublayers (CTRL and, when it exists, the
@@ -1737,10 +1801,36 @@ public final class Session {
         guard agreedBulkTransfer, bulkArqLane != nil else {
             throw SessionError.bulkNotNegotiated
         }
-        try bulkArqLane!.send(message, now: now)
+        try enqueueReliable(on: .bulkTransfer) {
+            try bulkArqLane!.send(message, now: now)
+        }
         _ = serviceArqLane(
             .bulk, now: now, hostMicroseconds: hostMicroseconds
         )
+    }
+
+    /// Queues on the CTRL or bulk ARQ endpoint. `ArqSendError.queueFull`
+    /// is backpressure from a peer that stopped acknowledging: the
+    /// message is not queued, the refusal is counted, and it propagates
+    /// to the call site, which is never fatal. Sites that keep state
+    /// retry on their next call (the input-echo book keeps its tuples,
+    /// the cursor dedupe slot and the clipboard book only advance on
+    /// success); one-off announcements (mode, posture, track state,
+    /// routing, bulk replies) surface as `.sendFailed` and are lost. A
+    /// peer that stays silent is ended by the liveness timeout, not here.
+    private func enqueueReliable<T>(
+        on channel: ChannelId, _ enqueue: () throws -> T
+    ) throws -> T {
+        do {
+            return try enqueue()
+        } catch ArqSendError.queueFull {
+            if channel == .bulkTransfer {
+                counters.bulkQueueFullRefusals += 1
+            } else {
+                counters.ctrlQueueFullRefusals += 1
+            }
+            throw ArqSendError.queueFull
+        }
     }
 
     /// Chan-8 ingest events → session events: delivered messages
@@ -1825,7 +1915,9 @@ public final class Session {
             switch event {
             case .send(let bytes):
                 do {
-                    try bulkArqLane?.send(bytes, now: now)
+                    try enqueueReliable(on: .bulkTransfer) {
+                        try bulkArqLane?.send(bytes, now: now)
+                    }
                 } catch {
                     events.append(
                         .sendFailed("clipboard image: \(error)")

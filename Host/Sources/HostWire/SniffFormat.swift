@@ -42,7 +42,7 @@ public enum SniffFormat {
         envelope: Envelope, payloadByteCount: Int, datagramByteCount: Int
     ) -> String {
         var fields = [
-            "chan=\(envelope.channel.rawValue)(\(channelName(envelope.channel)))",
+            "chan=\(envelope.channel.rawValue)(\(envelope.channel))",
             "seq=\(zeroPadded(envelope.seq.rawValue, width: 5))",
             "frame=\(envelope.frame.rawValue)",
             "ts=\(envelope.timestamp)us",
@@ -60,20 +60,6 @@ public enum SniffFormat {
     }
 
     // MARK: - Interior
-
-    static func channelName(_ channel: ChannelId) -> String {
-        switch channel {
-        case .ctrl: return "ctrl"
-        case .audio: return "audio"
-        case .videoActive: return "video-active"
-        case .feedback: return "feedback"
-        case .videoIdle: return "video-idle"
-        default:
-            if channel.isReserved { return "reserved" }
-            if channel.isFeature { return "feature" }
-            return "unknown"
-        }
-    }
 
     static func fecDescription(_ raw: UInt64) -> String {
         let field: FecField

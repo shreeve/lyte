@@ -211,36 +211,46 @@ final class AudioGateTests: XCTestCase {
 
     // MARK: Leg 3 — contract enforcement
 
-    func testHardCbrContractViolationThrowsLoud() throws {
+    func testSizeChangeMidGroupAbandonsTheGroupAndReopensAtTheNewSize() throws {
         let framer = AudioFramer(config: AudioFramerConfig())
         _ = try framer.ingest(
             packet: opusPacket(0, byteCount: 80),
             captureTimestampMicroseconds: 0
         )
-        XCTAssertThrowsError(try framer.ingest(
+        // An Opus bitrate step mid-group: the open group closes without
+        // parity and the packet opens a fresh group as its shard 0, at
+        // the geometry of its own size.
+        let stepped = try framer.ingest(
             packet: opusPacket(1, byteCount: 81),
             captureTimestampMicroseconds: 5_000
-        )) {
-            XCTAssertEqual(
-                $0 as? AudioFramerError,
-                .packetSizeChangedMidGroup(expected: 80, actual: 81)
-            )
-        }
-        // A completed group resets the contract: the NEXT group may
-        // open at a new constant size (a bitrate change at a group
-        // boundary is legal; mid-group is not).
-        for n in 1..<4 {
-            _ = try framer.ingest(
-                packet: opusPacket(n, byteCount: 80),
+        )
+        XCTAssertEqual(stepped.count, 1)
+        XCTAssertEqual(stepped[0].envelope.frame, FrameNumber(rawValue: 1),
+                       "the fresh group's id is its first packet number")
+        let field = try FecField.reedSolomonShard(
+            0, of: FecGeometry(dataShards: 4, parityShards: 2,
+                               groupByteCount: 4 * 81)
+        )
+        XCTAssertEqual(stepped[0].envelope.fec, field.encoded)
+        XCTAssertEqual(framer.counters.groupsAbandoned, 1)
+        // The new group completes at the new size with its parity.
+        var last: [(envelope: Envelope, payload: [UInt8])] = []
+        for n in 2..<5 {
+            last = try framer.ingest(
+                packet: opusPacket(n, byteCount: 81),
                 captureTimestampMicroseconds: UInt64(n) * 5_000
             )
         }
+        XCTAssertEqual(last.count, 3, "the fourth data shard plus 2 parity")
+        XCTAssertEqual(framer.counters.groupsCompleted, 1)
+        // A change at a group boundary abandons nothing.
         XCTAssertEqual(
             try framer.ingest(
-                packet: opusPacket(4, byteCount: 96),
-                captureTimestampMicroseconds: 20_000
+                packet: opusPacket(5, byteCount: 96),
+                captureTimestampMicroseconds: 25_000
             ).count, 1
         )
+        XCTAssertEqual(framer.counters.groupsAbandoned, 1)
     }
 
     func testEmptyAndOversizedPacketsRefused() {
@@ -424,11 +434,7 @@ final class AudioGateTests: XCTestCase {
                 fec: 0
             )
             guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
+            return try transport!.sealDatagram(envelope, plaintext: body)
         }
 
         mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
@@ -439,12 +445,9 @@ final class AudioGateTests: XCTestCase {
                 transport = try noise.makeTransport()
                 return
             }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
             let plaintext: [UInt8]
             do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
+                plaintext = try transport!.openDatagram(bytes).plaintext
             } catch NoiseError.replayedSequence, NoiseError.staleSequence {
                 return
             }
@@ -657,13 +660,7 @@ final class AudioGateTests: XCTestCase {
         let sample = box.datagrams.last { $0.pacerClass == .audio }!
         var tampered = sample.bytes
         tampered[8] ^= 0x01 // one timestamp bit
-        XCTAssertThrowsError(try {
-            let (envelope, payload) = try Envelope.decode(tampered)
-            let aad = tampered[tampered.startIndex..<payload.startIndex]
-            _ = try client.transport!.unseal(
-                wirePayload: payload, aad: aad, envelope: envelope
-            )
-        }())
+        XCTAssertThrowsError(try client.transport!.openDatagram(tampered))
     }
 
     // MARK: Leg 6 — lifecycle: the probe never stops (except closed)
@@ -736,6 +733,27 @@ final class AudioGateTests: XCTestCase {
         session.pump(now: t * 1_000)
         XCTAssertTrue(sent.contains { $0.pacerClass == .audio })
         XCTAssertEqual(session.counters.audioPacketsSuppressed, 0)
+    }
+
+    func testSessionCountsAGroupAbandonedByAPacketSizeStep() throws {
+        let session = Session(
+            config: SessionConfig(
+                crypto: .testPassthrough, rateBitsPerSecond: Self.rateBPS
+            ),
+            clientTuple: Self.tupleA,
+            now: 0,
+            rng: SplitMix64(seed: 0xAB)
+        ) { _ in }
+        for (n, byteCount) in [(0, 80), (1, 80), (2, 96)] {
+            XCTAssertEqual(try session.ingestAudioPacket(
+                opusPacket(n, byteCount: byteCount),
+                captureTimestampMicroseconds: UInt64(n) * 5_000,
+                now: UInt64(n) * 5_000_000
+            ), 1, "packet \(n) still leaves as its own data shard")
+        }
+        XCTAssertEqual(session.counters.audioPacketsIngested, 3)
+        XCTAssertEqual(session.counters.audioGroupsAbandoned, 1)
+        XCTAssertEqual(session.counters.audioGroupsCompleted, 0)
     }
 
     func testAudioBeforeEstablishmentThrows() throws {

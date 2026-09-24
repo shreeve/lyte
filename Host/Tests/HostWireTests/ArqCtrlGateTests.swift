@@ -1,7 +1,7 @@
 import XCTest
 import HostCore
 import HostSession
-import HostWire
+@_spi(Testing) import HostWire
 import LyteWire
 import LyteWireTestKit
 
@@ -79,11 +79,7 @@ final class ArqCtrlGateTests: XCTestCase {
             )
             ctrlSeq &+= 1
             guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
+            return try transport!.sealDatagram(envelope, plaintext: body)
         }
 
         /// One host datagram: unseal (bare message 2 completes the
@@ -102,12 +98,9 @@ final class ArqCtrlGateTests: XCTestCase {
                 transport = try noise.makeTransport()
                 return
             }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
             let plaintext: [UInt8]
             do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
+                plaintext = try transport!.openDatagram(bytes).plaintext
             } catch NoiseError.replayedSequence, NoiseError.staleSequence {
                 replayDrops += 1
                 return
@@ -324,10 +317,11 @@ final class ArqCtrlGateTests: XCTestCase {
             if !oneShotsSent, t >= 1_200_000 {
                 oneShotsSent = true
                 for (group, message) in hostOneShots.sorted(by: { $0.key < $1.key }) {
-                    try session.sendReliableOneShot(
-                        message, group: ArqGroupId(rawValue: group),
-                        now: t * 1_000, hostMicroseconds: t
+                    let allocated = try session.sendReliableOneShot(
+                        message, now: t * 1_000, hostMicroseconds: t
                     )
+                    XCTAssertEqual(allocated, ArqGroupId(rawValue: group),
+                                   "the endpoint allocates 1, 2, … in order")
                 }
                 for (group, message) in clientOneShots.sorted(by: { $0.key < $1.key }) {
                     try client.arq.sendOneShot(
@@ -737,22 +731,52 @@ final class ArqCtrlGateTests: XCTestCase {
             XCTAssertEqual($0 as? ArqSendError, .emptyMessage)
         }
         XCTAssertThrowsError(try live.sendReliableOneShot(
-            [0x10], group: .orderedStream, now: 1_000, hostMicroseconds: 1
+            [], now: 1_000, hostMicroseconds: 1
         )) {
-            XCTAssertEqual($0 as? ArqSendError, .orderedStreamGroupId)
+            XCTAssertEqual($0 as? ArqSendError, .emptyMessage)
         }
-        try live.sendReliableOneShot(
-            [0x10], group: ArqGroupId(rawValue: 5),
-            now: 1_000, hostMicroseconds: 1
+        // The endpoint allocates one-shot groups, so a caller can no
+        // longer present an ordered-stream or non-ascending id.
+        XCTAssertEqual(
+            try live.sendReliableOneShot([0x10], now: 1_000, hostMicroseconds: 1),
+            ArqGroupId(rawValue: 1)
         )
-        XCTAssertThrowsError(try live.sendReliableOneShot(
-            [0x10], group: ArqGroupId(rawValue: 5),
-            now: 1_000, hostMicroseconds: 1
-        )) {
-            XCTAssertEqual(
-                $0 as? ArqSendError,
-                .oneShotGroupNotAscending(ArqGroupId(rawValue: 5))
-            )
+        XCTAssertEqual(
+            try live.sendReliableOneShot([0x10], now: 1_000, hostMicroseconds: 1),
+            ArqGroupId(rawValue: 2)
+        )
+    }
+
+    /// A peer that never acknowledges fills a group's segment bound: the
+    /// next send is refused as backpressure, counted, and the session
+    /// stays serviceable.
+    func testQueueFullIsCountedBackpressure() throws {
+        let session = Session(
+            config: SessionConfig(
+                crypto: .testPassthrough, rateBitsPerSecond: Self.rateBPS
+            ),
+            clientTuple: Self.tupleA,
+            now: 0,
+            rng: SplitMix64(seed: 0x51)
+        ) { _ in }
+        let message = [UInt8](repeating: 0x10, count: 262_144)
+        var refusal: (any Error)?
+        var queued = 0
+        for _ in 0..<1_000 {
+            do {
+                try session.sendReliable(message, now: 0, hostMicroseconds: 0)
+                queued += 1
+            } catch {
+                refusal = error
+                break
+            }
         }
+        XCTAssertEqual(refusal as? ArqSendError, .queueFull)
+        XCTAssertGreaterThan(queued, 100, "the bound is ~32k segments")
+        XCTAssertEqual(session.counters.ctrlQueueFullRefusals, 1)
+        XCTAssertEqual(session.counters.bulkQueueFullRefusals, 0)
+        XCTAssertNoThrow(try session.sendReliable(
+            [0x10], now: 0, hostMicroseconds: 0
+        ), "a message that fits the remaining bound still queues")
     }
 }

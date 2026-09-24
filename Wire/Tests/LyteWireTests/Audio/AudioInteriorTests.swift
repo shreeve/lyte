@@ -149,22 +149,7 @@ final class AudioInteriorTests: XCTestCase {
 
     // MARK: Leg 3 — the CBR contract and hostile-shard discipline
 
-    func testCbrViolationThrowsLoudAndHostileShardsCountNeverTrap() throws {
-        // Mid-group size change shears shard boundaries: loud.
-        let framer = AudioFramer(config: AudioFramerConfig())
-        _ = try framer.ingest(
-            packet: opusPacket(0), captureTimestampMicroseconds: 0
-        )
-        XCTAssertThrowsError(try framer.ingest(
-            packet: opusPacket(1, byteCount: 79),
-            captureTimestampMicroseconds: 5_000
-        )) {
-            XCTAssertEqual(
-                $0 as? AudioFramerError,
-                .packetSizeChangedMidGroup(expected: 80, actual: 79)
-            )
-        }
-
+    func testHostileShardsCountNeverTrap() throws {
         // The depacketizer counts hostility, never traps, never emits.
         let depacketizer = AudioDepacketizer()
         let geometry = try FecGeometry(
@@ -210,10 +195,10 @@ final class AudioInteriorTests: XCTestCase {
         XCTAssertEqual(depacketizer.stats.malformedDatagrams, 3)
     }
 
-    /// A mid-group size change must not wedge the framer: abandoning
-    /// the open group lets the new size start a fresh group, and the
-    /// receiver still gets every packet, the new groups FEC-protected.
-    func testSizeChangeRecoversByAbandoningTheOpenGroup() throws {
+    /// A mid-group size change closes the open group without parity and
+    /// the new size starts a fresh group: the receiver still gets every
+    /// packet, the new groups FEC-protected.
+    func testSizeChangeAbandonsTheOpenGroup() throws {
         let framer = AudioFramer(config: AudioFramerConfig())
         let depacketizer = AudioDepacketizer()
         var delivered: [UInt32] = []
@@ -230,18 +215,24 @@ final class AudioInteriorTests: XCTestCase {
             }
         }
         for n in 0..<6 { try feed(n, byteCount: 80) }
-        XCTAssertThrowsError(try feed(6, byteCount: 96))
-        XCTAssertThrowsError(try feed(6, byteCount: 96), "still wedged")
-        XCTAssertTrue(framer.abandonOpenGroup())
-        XCTAssertFalse(framer.abandonOpenGroup())
+        XCTAssertEqual(framer.counters.groupsAbandoned, 0)
+        // Packet 6 changes size with packets 4 and 5 in the open group.
+        try feed(6, byteCount: 96)
         XCTAssertEqual(framer.counters.groupsAbandoned, 1)
+        XCTAssertEqual(framer.counters.groupsCompleted, 1)
         // Packet 7's own data shard is lost; parity of the new group
         // rebuilds it.
-        for n in 6..<14 {
+        for n in 7..<14 {
             try feed(n, byteCount: 96, dropping: n == 7 ? [0] : [])
         }
         XCTAssertEqual(delivered.sorted(), (0..<14).map { UInt32($0) })
         XCTAssertEqual(depacketizer.stats.packetsRebuilt, 1)
+        XCTAssertEqual(framer.counters.groupsCompleted, 3)
+        // Nothing is open right after a completed group.
+        XCTAssertFalse(framer.abandonOpenGroup())
+        try feed(14, byteCount: 96)
+        XCTAssertTrue(framer.abandonOpenGroup())
+        XCTAssertEqual(framer.counters.groupsAbandoned, 2)
     }
 
     // MARK: Leg 4 — the retention horizon is local policy (T2-10)

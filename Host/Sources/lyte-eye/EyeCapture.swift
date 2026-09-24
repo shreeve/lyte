@@ -3,8 +3,8 @@
 // into an exported VAAPI surface, the native VAAPI pens emit Annex-B, and the
 // bytes hit the file. An idle desktop is observed but not encoded; motion is
 // encoded at panel cadence. Framebuffer identity only invalidates the cached
-// dmabuf import. The libav seat was demolished after first-light; native is
-// the only encoder (--native is accepted as a no-op).
+// dmabuf import. The native VAAPI encoder is the only encoder (--native is
+// accepted as a no-op).
 
 #if os(Linux)
 

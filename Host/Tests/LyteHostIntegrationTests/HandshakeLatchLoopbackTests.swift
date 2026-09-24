@@ -37,7 +37,8 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
     func testAHandshakeAfterASpoofedFirstArrivalStillEstablishes() throws {
         let hostStatic = NoiseKeyPair.generate()
         let wire = try SessionWire(
-            listenPort: 0, peer: nil, rateBitsPerSecond: 1_000_000)
+            listener: HostListener(port: 0), peer: nil,
+            rateBitsPerSecond: 1_000_000)
         defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
 
         let spoofer = try socket(to: wire.localPort)

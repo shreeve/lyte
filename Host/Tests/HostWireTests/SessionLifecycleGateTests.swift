@@ -88,11 +88,7 @@ final class SessionLifecycleGateTests: XCTestCase {
                 fec: 0
             )
             guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
+            return try transport!.sealDatagram(envelope, plaintext: body)
         }
 
         /// The 25–50 ms chan-3 report the client emits continuously —
@@ -126,12 +122,9 @@ final class SessionLifecycleGateTests: XCTestCase {
                 transport = try noise.makeTransport()
                 return
             }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
             let plaintext: [UInt8]
             do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
+                plaintext = try transport!.openDatagram(bytes).plaintext
             } catch NoiseError.replayedSequence, NoiseError.staleSequence {
                 return // network duplicate; routine
             }

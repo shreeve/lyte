@@ -21,9 +21,10 @@
 //     four packets of a group are the same size, so the W1 balanced
 //     split's shards ARE the packets: shardByteCount = group/4 =
 //     packetBytes exactly, and the trailing-shard remainder case never
-//     arises. The framer ENFORCES the CBR contract — a mid-group size
-//     change throws loud, because it would silently shear shard
-//     boundaries off packet boundaries.
+//     arises. A mid-group size change (an Opus bitrate step) would
+//     shear shard boundaries off packet boundaries, so the framer
+//     closes the open group without parity and the new size opens a
+//     fresh group; only that group's loss protection is forfeit.
 //   • FEC group: 4 consecutive packets + 2 parity shards
 //     (resiliency §1.2: keep 4+2 unchanged; the future knob is the
 //     ratio, e.g. 4+4, which is why the counts live in config). The
@@ -117,21 +118,17 @@ public struct AudioFramerConfig: Sendable {
 public enum AudioFramerError: Error, Equatable, Sendable {
     case emptyPacket
     case packetOverBudget(Int)
-    /// The hard-CBR contract broke: a packet's size differs from the
-    /// size the open group was promised at its first packet. Loud,
-    /// because the already-emitted geometry advertised shard
-    /// boundaries that would no longer align to packet boundaries.
-    /// The open group stays open; the caller recovers with
-    /// `AudioFramer.abandonOpenGroup()` and re-ingests the packet.
-    case packetSizeChangedMidGroup(expected: Int, actual: Int)
 }
 
+/// Lifetime totals, `UInt64` like `AudioDepacketizerStats` so a 32-bit
+/// (wasm32) `Int` cannot overflow on a long-running stream.
 public struct AudioFramerCounters: Equatable, Sendable {
-    public var packetsIngested = 0
-    public var groupsCompleted = 0
-    /// Groups closed early by `abandonOpenGroup()` (no parity sent).
-    public var groupsAbandoned = 0
-    public var datagramsFramed = 0
+    public var packetsIngested: UInt64 = 0
+    public var groupsCompleted: UInt64 = 0
+    /// Groups closed early without parity: by a packet size change
+    /// mid-group, or by `abandonOpenGroup()`.
+    public var groupsAbandoned: UInt64 = 0
+    public var datagramsFramed: UInt64 = 0
 
     public init() {}
 }
@@ -161,9 +158,10 @@ public final class AudioFramer {
 
     /// Frames one encoded Opus packet. Returns the datagrams to emit
     /// NOW, in send order: always the packet's own data shard, plus
-    /// the group's parity shards when this packet completes it. Throws
-    /// on an empty/over-budget packet and on a CBR-contract violation —
-    /// loud, per the W2 rule. `captureTimestampMicroseconds` is the
+    /// the group's parity shards when this packet completes it. A packet
+    /// whose size differs from the open group's closes that group
+    /// without parity and opens a fresh one. Throws on an empty or
+    /// over-budget packet. `captureTimestampMicroseconds` is the
     /// packet's first sample's PipeWire graph-clock stamp; it rides the
     /// envelope timestamp verbatim.
     public func ingest(
@@ -177,9 +175,7 @@ public final class AudioFramer {
             throw AudioFramerError.packetOverBudget(packet.count)
         }
         if let first = groupPackets.first, first.count != packet.count {
-            throw AudioFramerError.packetSizeChangedMidGroup(
-                expected: first.count, actual: packet.count
-            )
+            abandonOpenGroup()
         }
 
         // The geometry the whole group advertises, promised at its
@@ -212,16 +208,17 @@ public final class AudioFramer {
         if groupPackets.count == config.dataShardsPerGroup {
             out += try completeGroup(geometry: geometry)
         }
-        counters.datagramsFramed += out.count
+        counters.datagramsFramed += UInt64(out.count)
         return out
     }
 
-    /// Closes the open group without parity — the recovery for a packet
-    /// size change (an Opus bitrate step). Its data shards already left
-    /// and each is a whole packet, so only that group's loss protection
-    /// is forfeit; the next packet opens a fresh group at the next
-    /// packet number (receivers key groups by the frame field and never
-    /// assume group alignment). Returns false when no group was open.
+    /// Closes the open group without parity; `ingest` does this itself
+    /// when the packet size changes mid-group. Its data shards already
+    /// left and each is a whole packet, so only that group's loss
+    /// protection is forfeit; the next packet opens a fresh group at the
+    /// next packet number (receivers key groups by the frame field and
+    /// never assume group alignment). Returns false when no group was
+    /// open.
     @discardableResult
     public func abandonOpenGroup() -> Bool {
         guard !groupPackets.isEmpty else { return false }

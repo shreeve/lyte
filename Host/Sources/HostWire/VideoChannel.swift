@@ -186,12 +186,7 @@ public struct VideoFramePreparationConfig: Sendable {
 /// RS-FEC output with no sequence numbers, Noise nonces, or pacer state.
 /// Preparing it is safe off the Session lock; committing it remains ordered.
 public struct PreparedVideoFrame: Sendable {
-    fileprivate struct Shard: Sendable {
-        let fec: UInt64
-        let payload: [UInt8]
-    }
-
-    fileprivate let shards: [Shard]
+    fileprivate let shards: [VideoShardPayload]
     fileprivate let encodedByteCount: Int
     fileprivate let regime: FecRegime
     let isKeyframe: Bool
@@ -295,7 +290,7 @@ public final class VideoChannel {
     private var queuedShardsByFrame: [UInt32: Int] = [:]
     private var queuedFreshShardsByFrame: [UInt32: Int] = [:]
     private var activeFrameTelemetry: [UInt32: VideoFrameTransmitTelemetry] = [:]
-    private var completedFrameTelemetry: [VideoFrameTransmitTelemetry] = []
+    private var completedFrameTelemetry = Deque<VideoFrameTransmitTelemetry>()
     private static let frameTelemetryCapacity = 256
 
     // MARK: Repair store (HS-17)
@@ -330,10 +325,12 @@ public final class VideoChannel {
     private var store: [UInt32: StoredFrame] = [:]
     /// Insertion order = frame order (the session numbers frames
     /// serially ascending), so evictions pop from the front.
-    private var storeOrder: [UInt32] = []
+    private var storeOrder = Deque<UInt32>()
     private var storeBytes = 0
     private var purgedFrames: Set<UInt32> = []
-    private var purgedFrameOrder: [UInt32] = []
+    private var purgedFrameOrder = BoundedRing<UInt32>(
+        capacity: VideoChannel.purgedFrameCapacity
+    )
     private static let purgedFrameCapacity = 1_024
 
     public init(
@@ -396,43 +393,28 @@ public final class VideoChannel {
         )
     }
 
-    /// Expensive pure half: validate Annex-B shape and build all RS shards.
-    /// This method neither reads nor mutates channel state.
+    /// Expensive pure half: validate Annex-B shape and build all RS shards
+    /// through Wire's packetizer at this channel's shard budget. This
+    /// method neither reads nor mutates channel state. A borrowed buffer
+    /// is copied once into an array; arrays and slices are not.
     public static func prepareFrame<C>(
         _ annexB: C,
         isKeyframe: Bool,
         config: VideoFramePreparationConfig
     ) throws -> PreparedVideoFrame
     where C: RandomAccessCollection, C.Element == UInt8, C.Index == Int {
-        let classification = AnnexBCheck.classifyFrame(annexB)
-        guard classification.isFrameShaped else {
-            throw VideoError.frameNotFrameShaped
-        }
-        let derivedIdr = classification.containsIrap
-        guard isKeyframe == derivedIdr else {
-            throw VideoError.idrFlagMismatch(
-                claimed: isKeyframe, derived: derivedIdr
-            )
-        }
-
-        let budget = config.shardBudgetByteCount
-        let k = (annexB.count + budget - 1) / budget
-        let m = try FecGeometryTable.parityShards(
-            forDataShards: k, regime: config.regime
-        )
-        let geometry = try FecGeometry(
-            dataShards: k, parityShards: m, groupByteCount: annexB.count
-        )
-        let payloads = try FecEncoder.encode(group: annexB, geometry: geometry)
-        var shards: [PreparedVideoFrame.Shard] = []
-        shards.reserveCapacity(payloads.count)
-        for (index, payload) in payloads.enumerated() {
-            let field = try FecField.reedSolomonShard(index, of: geometry)
-            shards.append(.init(fec: field.encoded, payload: payload))
-        }
+        let frame: ArraySlice<UInt8> =
+            (annexB as? ArraySlice<UInt8>)
+            ?? (annexB as? [UInt8])?[...]
+            ?? Array(annexB)[...]
         return PreparedVideoFrame(
-            shards: shards,
-            encodedByteCount: annexB.count,
+            shards: try VideoPacketizer.shardPayloads(
+                frame: frame,
+                isIDR: isKeyframe,
+                regime: config.regime,
+                shardBudgetByteCount: config.shardBudgetByteCount
+            ),
+            encodedByteCount: frame.count,
             regime: config.regime,
             isKeyframe: isKeyframe
         )
@@ -745,7 +727,7 @@ public final class VideoChannel {
     /// Drains completed/purged frame-flight records in bounded batches.
     public func takeFrameTransmitTelemetry() -> [VideoFrameTransmitTelemetry] {
         defer { completedFrameTelemetry.removeAll(keepingCapacity: true) }
-        return completedFrameTelemetry
+        return Array(completedFrameTelemetry)
     }
 
     /// Joins encoder-side fields onto the frame-flight record without a
@@ -1090,9 +1072,8 @@ public final class VideoChannel {
 
     private func rememberPurgedFrame(_ frame: UInt32) {
         guard purgedFrames.insert(frame).inserted else { return }
-        purgedFrameOrder.append(frame)
-        if purgedFrameOrder.count > Self.purgedFrameCapacity {
-            purgedFrames.remove(purgedFrameOrder.removeFirst())
+        if let forgotten = purgedFrameOrder.append(frame) {
+            purgedFrames.remove(forgotten)
         }
     }
 
