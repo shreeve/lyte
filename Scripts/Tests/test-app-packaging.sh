@@ -1,7 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
+# usage: test-app-packaging.sh [--plain|--diagnostics] [APP] [ACTIVE_STAGE]
+# A plain app (the default) must carry no diagnostic entry points: the gate's
+# app and the everyday app never obey the diagnostic environment.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+diagnostic_build=0
+case "${1:-}" in
+    --plain) shift ;;
+    --diagnostics) diagnostic_build=1; shift ;;
+esac
 app="${1:-$repo_root/.build/Lyte.app}"
 active_stage="${2:-}"
 plist="$app/Contents/Info.plist"
@@ -10,6 +18,16 @@ source "$repo_root/Scripts/lib/assert.sh"
 [[ -x "$app/Contents/MacOS/Lyte" ]] || fail "no app executable in $app"
 [[ -x "$app/Contents/MacOS/lyte-helperd" ]] || fail "no helper executable in $app"
 plutil -lint "$plist" >/dev/null
+if entry_points="$(plutil -extract LyteDiagnosticEntryPoints raw \
+    -o - "$plist" 2>/dev/null)"; then
+    if (( ! diagnostic_build )); then
+        fail "a plain app carries LyteDiagnosticEntryPoints ($entry_points)"
+    fi
+    [[ "$entry_points" == true ]] \
+        || fail "LyteDiagnosticEntryPoints is $entry_points; want true"
+elif (( diagnostic_build )); then
+    fail "a diagnostic app lacks LyteDiagnosticEntryPoints"
+fi
 
 assert_hash() {
     local resource="$1"

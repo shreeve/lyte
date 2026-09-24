@@ -8,17 +8,33 @@ ROOT="$PWD"
 . "$ROOT/Scripts/AppArtifact/app-artifact.sh"
 . "$ROOT/Scripts/lib/source-fingerprint.sh"
 
-CONFIG="${1:-release}"
+# usage: Scripts/make-app.sh [--diagnostics] [debug|release]
 # The app's diagnostic entry points (autoconnect, the benchmark driver) obey
 # the environment only in a bundle whose signed Info.plist enables them.
-case "${LYTE_APP_DIAGNOSTICS:-0}" in
-  1) DIAGNOSTIC_ENTRY_POINTS='<key>LyteDiagnosticEntryPoints</key> <true/>' ;;
-  0) DIAGNOSTIC_ENTRY_POINTS='' ;;
-  *)
-    echo "error: LYTE_APP_DIAGNOSTICS must be 0 or 1" >&2
-    exit 1
-    ;;
-esac
+# Only the explicit flag builds one — never an inherited environment — and
+# never at the everyday .build/Lyte.app.
+DIAGNOSTICS=0
+CONFIG=release
+for argument in "$@"; do
+  case "$argument" in
+    --diagnostics) DIAGNOSTICS=1 ;;
+    -*)
+      echo "usage: Scripts/make-app.sh [--diagnostics] [debug|release]" >&2
+      exit 2
+      ;;
+    *) CONFIG="$argument" ;;
+  esac
+done
+if [ -n "${LYTE_APP_DIAGNOSTICS:-}" ]; then
+  echo "note: make-app.sh ignores LYTE_APP_DIAGNOSTICS; pass --diagnostics" >&2
+fi
+if [ "$DIAGNOSTICS" -eq 1 ]; then
+  DIAGNOSTIC_ENTRY_POINTS='<key>LyteDiagnosticEntryPoints</key> <true/>'
+  PACKAGING_MODE=--diagnostics
+else
+  DIAGNOSTIC_ENTRY_POINTS=''
+  PACKAGING_MODE=--plain
+fi
 LIVE_APP="$ROOT/.build/Lyte.app"
 APP="${LYTE_APP_DESTINATION:-$LIVE_APP}"
 case "$APP" in
@@ -55,6 +71,11 @@ case "$APP" in
     ;;
   *) PUBLISHING_LIVE=0 ;;
 esac
+if [ "$DIAGNOSTICS" -eq 1 ] && [ "$PUBLISHING_LIVE" -eq 1 ]; then
+  echo "error: a diagnostic bundle is never published at $LIVE_APP" >&2
+  echo "       set LYTE_APP_DESTINATION (benchmark-app.sh uses .build/Lyte-diagnostic.app)" >&2
+  exit 1
+fi
 
 [ "$PUBLISHING_LIVE" -eq 0 ] \
   || lyte_require_app_quiescent "live app publication"
@@ -200,7 +221,7 @@ plutil -lint "$STAGED_APP/Contents/Info.plist" >/dev/null
 
 # Validate the exact staged artifact before the rename-swap can replace the
 # last known-good app. The CI gate repeats these checks after publication.
-Scripts/Tests/test-app-packaging.sh "$STAGED_APP" "$STAGE_ROOT"
+Scripts/Tests/test-app-packaging.sh "$PACKAGING_MODE" "$STAGED_APP" "$STAGE_ROOT"
 Scripts/Tests/test-hermetic-linkage.sh \
   "$STAGED_APP/Contents/MacOS/Lyte" \
   "$STAGED_APP/Contents/MacOS/lyte-helperd"

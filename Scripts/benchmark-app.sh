@@ -8,7 +8,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="$ROOT/.build/Lyte.app"
+# The benchmark's own diagnostic bundle. The owner's everyday
+# .build/Lyte.app is never rebuilt or launched here, so it never obeys the
+# diagnostic environment; both share the bundle identity, so the benchmark
+# still refuses to run while any Lyte process is up.
+APP="$ROOT/.build/Lyte-diagnostic.app"
+REBUILD="LYTE_APP_DESTINATION=.build/Lyte-diagnostic.app Scripts/make-app.sh --diagnostics release"
 APP_EXECUTABLE="$APP/Contents/MacOS/Lyte"
 ANALYZER="$ROOT/Scripts/analyze-app-benchmark.py"
 source "$ROOT/Scripts/lib/benchmark-process.sh"
@@ -98,10 +103,11 @@ refuse_if_lyte_is_running
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
 if (( ! NO_BUILD )); then
-  LYTE_APP_DIAGNOSTICS=1 "$ROOT/Scripts/make-app.sh" release
+  mkdir -p "$ROOT/.build"
+  LYTE_APP_DESTINATION="$APP" "$ROOT/Scripts/make-app.sh" --diagnostics release
 fi
 [[ -x "$APP/Contents/MacOS/Lyte" ]] || {
-  echo "missing signed app: run LYTE_APP_DIAGNOSTICS=1 Scripts/make-app.sh release" >&2
+  echo "missing signed diagnostic app $APP: run $REBUILD" >&2
   exit 1
 }
 # The app obeys the benchmark environment only when its signed Info.plist
@@ -110,7 +116,7 @@ diagnostic_entry_points="$(plutil -extract LyteDiagnosticEntryPoints raw \
   -o - "$APP/Contents/Info.plist" 2>/dev/null || true)"
 [[ "$diagnostic_entry_points" == true ]] || {
   echo "benchmark refused: $APP is not a diagnostic build" >&2
-  echo "rebuild it with LYTE_APP_DIAGNOSTICS=1 Scripts/make-app.sh release" >&2
+  echo "rebuild it with $REBUILD" >&2
   exit 1
 }
 # Hold the app-artifact lock for the whole leg so no assembly swaps the
@@ -125,18 +131,18 @@ codesign --verify --strict "$APP"
 CLIENT_SOURCE_SHA256="$(lyte_source_fingerprint "$ROOT" $LYTE_CLIENT_SOURCE_PATHS)"
 recorded_client_source="$APP/Contents/Resources/client-source.sha256"
 [[ -s "$recorded_client_source" ]] || {
-  echo "benchmark refused: Lyte.app has no signed source provenance" >&2
-  echo "rebuild it with LYTE_APP_DIAGNOSTICS=1 Scripts/make-app.sh release" >&2
+  echo "benchmark refused: $APP has no signed source provenance" >&2
+  echo "rebuild it with $REBUILD" >&2
   exit 1
 }
 read -r bundled_client_source < "$recorded_client_source"
 [[ "$CLIENT_SOURCE_SHA256" == "$bundled_client_source" ]] || {
-  echo "benchmark refused: Lyte.app was built from different client source" >&2
-  echo "rebuild it with LYTE_APP_DIAGNOSTICS=1 Scripts/make-app.sh release" >&2
+  echo "benchmark refused: $APP was built from different client source" >&2
+  echo "rebuild it with $REBUILD" >&2
   exit 1
 }
 read -r APP_BUILD_UTC < "$APP/Contents/Resources/build-utc.txt" || {
-  echo "benchmark refused: Lyte.app has no signed build timestamp" >&2
+  echo "benchmark refused: $APP has no signed build timestamp" >&2
   exit 1
 }
 
@@ -151,7 +157,7 @@ if (( NO_BUILD )); then
         done
   )"
   [[ -z "$stale_client_source" ]] || {
-    echo "--no-build refused: client source is newer than Lyte.app:" >&2
+    echo "--no-build refused: client source is newer than $APP:" >&2
     printf '%s\n' "$stale_client_source" >&2
     exit 1
   }

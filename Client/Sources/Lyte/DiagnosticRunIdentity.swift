@@ -3,7 +3,7 @@ import Foundation
 /// What the app's diagnostic entry points (autoconnect, the benchmark
 /// driver and its overrides, the build badge, the link-health trace) may
 /// read. A bundle obeys the environment only when its signed Info.plist
-/// says `LyteDiagnosticEntryPoints` (make-app.sh writes it on request);
+/// says `LyteDiagnosticEntryPoints` (make-app.sh --diagnostics writes it);
 /// every other bundle reads an empty environment, so no same-user process
 /// can drive it into a Keychain-authenticated connect or a frame readback
 /// with `open --env` or `launchctl setenv`.

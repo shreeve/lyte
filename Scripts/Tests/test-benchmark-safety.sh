@@ -6,6 +6,8 @@ netem="$repo_root/Scripts/netem/port-netem.sh"
 benchmark_netem="$repo_root/Scripts/benchmark-netem.sh"
 fake_tc="$repo_root/Scripts/Tests/Fixtures/fake-tc.sh"
 test_root="$(mktemp -d)"
+# Physical, as make-app.sh canonicalizes its destination with pwd -P.
+test_root="$(cd "$test_root" && pwd -P)"
 ordinary_pid=""
 claimed_pid=""
 cleanup() {
@@ -18,19 +20,25 @@ trap cleanup EXIT
 source "$repo_root/Scripts/lib/assert.sh"
 source "$repo_root/Scripts/lib/benchmark-process.sh"
 
-# benchmark-app.sh runs hermetically from a private repository root (its
-# Scripts/ is this checkout's, its .build/Lyte.app is a fixture): codesign,
-# ssh and rsync are fakes that stop the run and the pup destination cannot
-# resolve, so a reordered preflight can never reach pup, the owner's app or
-# the owner's artifact lock.
+# benchmark-app.sh and make-app.sh run hermetically from a private
+# repository root (its Scripts/ is this checkout's, its .build bundles are
+# fixtures, its Git history one empty commit): codesign, ssh, rsync and
+# swift are fakes that stop the run and the pup destination cannot resolve,
+# so a reordered preflight can never reach pup, a compiler, the owner's app
+# or the owner's artifact lock.
 fake_root="$test_root/repo"
-mkdir -p "$fake_root" "$test_root/bin"
+mkdir -p "$fake_root/.build" "$test_root/bin"
 ln -s "$repo_root/Scripts" "$fake_root/Scripts"
-for tool in codesign ssh rsync; do
-    printf '#!/bin/sh\necho "fake %s reached" >&2\nexit 73\n' "$tool" \
+git -C "$fake_root" init -q
+git -C "$fake_root" -c user.name=fixture -c user.email=fixture@invalid \
+    -c commit.gpgsign=false commit -q --allow-empty -m fixture
+for tool in codesign ssh rsync swift; do
+    printf '#!/bin/sh\necho "fake %s reached: $*" >&2\nexit 73\n' "$tool" \
         > "$test_root/bin/$tool"
     chmod +x "$test_root/bin/$tool"
 done
+everyday_app="$fake_root/.build/Lyte.app"
+diagnostic_app="$fake_root/.build/Lyte-diagnostic.app"
 fake_pgrep="$test_root/fake-pgrep"
 cat > "$fake_pgrep" <<'EOF'
 #!/bin/sh
@@ -54,19 +62,23 @@ run_benchmark() {
         --out "$test_root/$name-output" "$@" \
         >"$test_root/$name.stdout" 2>"$test_root/$name.stderr"
 }
-# fixture_app DIAGNOSTICS: a bundle at the private root's .build/Lyte.app
-# whose Info.plist enables the diagnostic entry points when DIAGNOSTICS=1.
+# fixture_app DIAGNOSTICS [APP]: a bundle (default: the benchmark's
+# diagnostic path) whose Info.plist enables the diagnostic entry points when
+# DIAGNOSTICS=1.
 fixture_app() {
-    local app="$fake_root/.build/Lyte.app" key=""
+    local app="${2:-$diagnostic_app}" key=""
     rm -rf "$app"
     mkdir -p "$app/Contents/MacOS"
     printf '#!/bin/sh\n' > "$app/Contents/MacOS/Lyte"
-    chmod +x "$app/Contents/MacOS/Lyte"
+    printf '#!/bin/sh\n' > "$app/Contents/MacOS/lyte-helperd"
+    chmod +x "$app/Contents/MacOS/Lyte" "$app/Contents/MacOS/lyte-helperd"
     if [[ "$1" == 1 ]]; then
         key='<key>LyteDiagnosticEntryPoints</key><true/>'
     fi
     printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
-        '<plist version="1.0"><dict>' "$key" '</dict></plist>' \
+        '<plist version="1.0"><dict>' \
+        '<key>CFBundleVersion</key><string>1</string>' "$key" \
+        '</dict></plist>' \
         > "$app/Contents/Info.plist"
 }
 
@@ -92,7 +104,7 @@ if LYTE_FAKE_PGREP_RESULT=empty run_benchmark missing handshake-only; then
 fi
 [[ -d "$test_root/missing-output" ]] \
     || fail "an admitted benchmark created no output"
-grep -Fq 'missing signed app' "$test_root/missing.stderr"
+grep -Fq 'missing signed diagnostic app' "$test_root/missing.stderr"
 
 # A bundle without the diagnostic entry points would ignore the benchmark
 # environment: refused before signing checks, the lock or pup.
@@ -109,6 +121,97 @@ if LYTE_FAKE_PGREP_RESULT=empty run_benchmark diagnostic handshake-only; then
     fail "benchmark passed a fake-signed app"
 fi
 grep -Fq 'fake codesign reached' "$test_root/diagnostic.stderr"
+
+# The everyday bundle is never the benchmark's, even when it is a
+# diagnostic build: without the benchmark's own bundle the run stops.
+rm -rf "$diagnostic_app"
+fixture_app 1 "$everyday_app"
+if LYTE_FAKE_PGREP_RESULT=empty run_benchmark everyday handshake-only; then
+    fail "benchmark ran the everyday app"
+fi
+grep -Fq 'missing signed diagnostic app' "$test_root/everyday.stderr"
+refute grep -Fq 'fake codesign reached' "$test_root/everyday.stderr"
+
+# make_app NAME [VAR=VALUE...] -- ARG...: one make-app.sh run in the
+# private root; the fake swift ends it at the first compile.
+make_app() {
+    local name="$1"
+    shift
+    local assignments=()
+    while [[ "$1" != -- ]]; do assignments+=("$1"); shift; done
+    shift
+    env -u LYTE_APP_DESTINATION -u LYTE_APP_DIAGNOSTICS \
+        PATH="$test_root/bin:$PATH" LYTE_PGREP="$fake_pgrep" \
+        LYTE_FAKE_PGREP_RESULT=empty ${assignments[@]+"${assignments[@]}"} \
+        "$fake_root/Scripts/make-app.sh" "$@" \
+        >"$test_root/$name.stdout" 2>"$test_root/$name.stderr"
+}
+fixture_app 0 "$everyday_app"
+everyday_plist="$(shasum -a 256 "$everyday_app/Contents/Info.plist")"
+
+# A diagnostic build aimed at the everyday bundle is refused before any
+# compile, and the everyday bundle is untouched.
+if make_app diagnostic-live -- --diagnostics release; then
+    fail "make-app built a diagnostic bundle at .build/Lyte.app"
+fi
+grep -Fq 'a diagnostic bundle is never published at' \
+    "$test_root/diagnostic-live.stderr"
+refute grep -Fq 'fake swift reached' "$test_root/diagnostic-live.stderr"
+
+# An exported LYTE_APP_DIAGNOSTICS=1 (the owner's shell, the macOS gate)
+# selects nothing: the everyday build proceeds as a plain build.
+if make_app inherited LYTE_APP_DIAGNOSTICS=1 -- release; then
+    fail "make-app finished without a compiler"
+fi
+refute grep -Fq 'never published at' "$test_root/inherited.stderr"
+grep -Fq 'ignores LYTE_APP_DIAGNOSTICS' "$test_root/inherited.stderr"
+grep -Fq 'fake swift reached' "$test_root/inherited.stderr"
+
+if make_app bad-flag -- --diagnostic release; then
+    fail "make-app accepted an unknown flag"
+fi
+grep -Fq 'usage: Scripts/make-app.sh' "$test_root/bad-flag.stderr"
+
+# The benchmark builds its own bundle: make-app accepts its destination
+# (it would refuse the everyday one) and reaches the compiler.
+rm -rf "$diagnostic_app"
+if env -u PUP -u LYTE_BENCHMARK_PUP -u LYTE_APP_DESTINATION \
+    PATH="$test_root/bin:$PATH" LYTE_PUP_HOST=fake-pup.invalid \
+    LYTE_PGREP="$fake_pgrep" LYTE_FAKE_PGREP_RESULT=empty \
+    "$fake_root/Scripts/benchmark-app.sh" --out "$test_root/build-output" \
+    handshake-only >"$test_root/build.stdout" 2>"$test_root/build.stderr"
+then
+    fail "benchmark finished without a compiler"
+fi
+refute grep -Fq 'never published at' "$test_root/build.stderr"
+grep -Fq 'fake swift reached' "$test_root/build.stderr"
+[[ "$(shasum -a 256 "$everyday_app/Contents/Info.plist")" == "$everyday_plist" ]] \
+    || fail "a diagnostic build rewrote the everyday bundle"
+
+# The packaging gate knows which kind of app it checks: the gate's plain
+# app with diagnostic entry points fails, and so does a diagnostic app
+# without them. A matching fixture passes that check and stops later, at
+# its missing license resources.
+packaging="$repo_root/Scripts/Tests/test-app-packaging.sh"
+fixture_app 1 "$test_root/plain-with-key.app"
+if "$packaging" "$test_root/plain-with-key.app" \
+    >/dev/null 2>"$test_root/packaging-key.stderr"; then
+    fail "the packaging gate passed a plain app with diagnostic entry points"
+fi
+grep -Fq 'a plain app carries LyteDiagnosticEntryPoints' \
+    "$test_root/packaging-key.stderr"
+fixture_app 0 "$test_root/diagnostic-without-key.app"
+if "$packaging" --diagnostics "$test_root/diagnostic-without-key.app" \
+    >/dev/null 2>"$test_root/packaging-nokey.stderr"; then
+    fail "the packaging gate passed a diagnostic app without its entry points"
+fi
+grep -Fq 'a diagnostic app lacks LyteDiagnosticEntryPoints' \
+    "$test_root/packaging-nokey.stderr"
+if "$packaging" --plain "$test_root/diagnostic-without-key.app" \
+    >/dev/null 2>"$test_root/packaging-plain.stderr"; then
+    fail "the packaging gate passed an unpackaged fixture"
+fi
+grep -Fq 'missing Opus-COPYING.txt' "$test_root/packaging-plain.stderr"
 
 export LYTE_TC="$fake_tc"
 export LYTE_FAKE_TC_LOG="$test_root/tc.log"
