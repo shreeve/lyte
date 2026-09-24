@@ -2,7 +2,7 @@
 # Serve Browser/.serve/ with lyte-control-peer + lyte-wt-sidecar for the
 # Chrome session proof. Requires a prior Browser/Scripts/build.sh. Binds
 # 127.0.0.1 only and never touches the standing host UDP 41151. The peer
-# serves one session; restart this script for another run.
+# serves session after session until this script stops (--sessions 0).
 #
 # Environment: LYTE_BROWSER_PORT (8765), LYTE_CONTROL_PEER_PORT (41234),
 # LYTE_WT_RUNTIME (node|bun).
