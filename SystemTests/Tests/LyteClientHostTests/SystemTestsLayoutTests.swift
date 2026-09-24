@@ -156,9 +156,7 @@ final class SystemTestsLayoutTests: XCTestCase {
     private func belongsToRole(_ module: String, role: ProductRole) -> Bool {
         switch role {
         case .host:
-            return ["HostAudio", "HostCore", "HostEye", "HostSession", "HostWire"]
-                .contains(module)
-                || module.hasPrefix("LyteHost")
+            return module.hasPrefix("Host") || module.hasPrefix("LyteHost")
         case .client:
             return ["Lyte", "LyteCorpus", "LyteHelperProtocol", "LyteHelperSecurity",
                     "LyteTransport", "LyteUI"]
