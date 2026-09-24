@@ -102,7 +102,9 @@ nothing: they find the release on their next daily check.
 ## The cask
 
 `Casks/lyte.rb` in `shreeve/homebrew-tap` (no Homebrew cask is named
-`lyte`). Each release changes only `version` and `sha256`; the app is
+`lyte`). Each release changes only `version` and `sha256`. `livecheck`
+takes the feed's display version, since the feed also carries the build
+number Sparkle orders by (`brew audit` fails otherwise). The app is
 arm64-only and needs macOS 15. Test it the way that repository's other casks
 are tested (`brew style`, `brew audit --cask --online`, `brew livecheck`,
 an install into a scratch `--appdir`) before its pull request lands.
@@ -119,7 +121,7 @@ cask "lyte" do
 
   livecheck do
     url "https://github.com/shreeve/lyte/releases/latest/download/appcast.xml"
-    strategy :sparkle
+    strategy :sparkle, &:short_version
   end
 
   auto_updates true

@@ -4,10 +4,10 @@
 
 ## Tip
 
-- `main` @ **#250**: the second revamp pass (#248), the app icon (#249),
+- `main` @ **#251**: the second revamp pass (#248), the app icon (#249),
   Homebrew + Sparkle releases (#250, [docs/RELEASING.md](docs/RELEASING.md)).
-  0.6.0 is dated in `CHANGELOG.md` and dry-run clean (notarized, feed
-  signed) but **not released**.
+  **0.6.0 is released** (`v0.6.0`, notarized, signed feed); the `lyte` cask
+  is shreeve/homebrew-tap#5.
 - Gates (`-warnings-as-errors`): Wire 573 (572 wasm32), Common 116, Host 435,
   Client 525, SystemTests 15, Browser 36 (+7 page); pup Host 495, Client 154.
 
@@ -28,9 +28,8 @@
 
 ## Next
 
-1. Release: `Scripts/release.sh 0.6.0` from a clean `main`, then the `lyte`
-   cask in `shreeve/homebrew-tap` (template in
-   [docs/RELEASING.md](docs/RELEASING.md#the-cask)) as a pull request.
+1. Merge shreeve/homebrew-tap#5; then `brew install --cask shreeve/tap/lyte`
+   works. Later releases: [docs/RELEASING.md](docs/RELEASING.md).
 2. Owner: install that release (one physical Lyte: remove `.build/Lyte.app`
    or never run it alongside), grant Local Network once, then check ⌘
    shortcuts, held keys across a Wi-Fi hitch, clipboard both ways, roam on
