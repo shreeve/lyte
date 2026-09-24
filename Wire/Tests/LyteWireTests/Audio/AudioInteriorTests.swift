@@ -396,4 +396,19 @@ final class AudioInteriorTests: XCTestCase {
         )
         XCTAssertEqual(healed.map(\.number), [32, 33])
     }
+
+    /// The framer refuses what cannot be one 5 ms shard: nothing, or
+    /// more than a plaintext shard holds.
+    func testFramerRefusesEmptyAndOverBudgetPackets() {
+        var framer = AudioFramer(config: AudioFramerConfig())
+        XCTAssertThrowsError(
+            try framer.ingest(packet: [], captureTimestampMicroseconds: 0)
+        ) { XCTAssertEqual($0 as? AudioFramerError, .emptyPacket) }
+        let over = AudioFramerConfig().packetBudgetByteCount + 1
+        XCTAssertThrowsError(try framer.ingest(
+            packet: [UInt8](repeating: 1, count: over),
+            captureTimestampMicroseconds: 0
+        )) { XCTAssertEqual($0 as? AudioFramerError, .packetOverBudget(over)) }
+        XCTAssertEqual(framer.counters.groupsCompleted, 0)
+    }
 }

@@ -125,6 +125,20 @@ final class EnvelopeTests: XCTestCase {
             XCTAssertEqual(error as? WireError, .extensionValueTooLong)
         }
     }
+
+    /// The TLV count prefix is one byte: 256 extensions cannot encode,
+    /// and the refusal names that, not the resulting size.
+    func testMoreThan255ExtensionsRejectedAtEncode() throws {
+        let tlv = try WireExtension(type: 0x7E, value: [])
+        var envelope = Envelope(
+            channel: .ctrl, seq: ChannelSeq(rawValue: 0),
+            frame: FrameNumber(rawValue: 0), timestamp: 0, fec: 0
+        )
+        envelope.extensions = Array(repeating: tlv, count: 256)
+        XCTAssertThrowsError(try envelope.encode()) {
+            XCTAssertEqual($0 as? WireError, .tooManyExtensions)
+        }
+    }
 }
 
 final class BudgetTests: XCTestCase {
