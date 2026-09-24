@@ -256,18 +256,6 @@ final class UdpSocket: @unchecked Sendable {
     }
 }
 
-func looksLikeHandshakeInitiation(_ datagram: [UInt8]) -> Bool {
-    guard let (envelope, payload) = try? Envelope.decode(datagram),
-          envelope.channel == .ctrl
-    else { return false }
-    return payload.first == CtrlMessageType.noiseHandshake1
-        || payload.first == CtrlMessageType.retryHandshake1
-}
-
-func mintPin() -> String {
-    String(format: "%06d", Int.random(in: 0...999_999))
-}
-
 func loadHostStatic(hex: String?) throws -> NoiseKeyPair {
     if let hex {
         guard let bytes = Hex.bytes(hex), bytes.count == 32 else {
@@ -318,7 +306,8 @@ final class ControlPeer {
             throw PeerError.message("refusing standing host UDP 41151")
         }
         hostStatic = try loadHostStatic(hex: opts.hostStaticHex)
-        pin = opts.pin ?? mintPin()
+        var rng = SystemRandomNumberGenerator()
+        pin = opts.pin ?? PairingResponderService.mintPin(using: &rng)
         pairing = PairingResponderService(
             pin: Array(pin.utf8),
             hostStaticPublicKey: hostStatic.publicKey
@@ -589,7 +578,7 @@ final class ControlPeer {
             let now = SystemMonotonicClock.nowNanoseconds
             if let packet = sock.recv() {
                 if session == nil {
-                    guard looksLikeHandshakeInitiation(packet.bytes) else { continue }
+                    guard Session.looksLikeHandshakeInitiation(packet.bytes) else { continue }
                     peerHost = packet.host
                     peerPort = packet.port
                     let tuple = FourTuple(

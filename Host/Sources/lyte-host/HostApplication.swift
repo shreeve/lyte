@@ -368,15 +368,6 @@ struct Options {
 
 // MARK: - Pairing surface (HS-9)
 
-/// The H1-era PIN surface is this console line: 6 CSPRNG digits,
-/// zero-padded (10⁶ space; with the service's 3-guess budget an online
-/// attacker has 3-in-a-million odds per displayed PIN, and CPace makes
-/// the PIN untestable offline).
-func mintPairingPin() -> String {
-    var rng = SystemRandomNumberGenerator()
-    return String(format: "%06d", rng.next(upperBound: UInt32(1_000_000)))
-}
-
 /// The pairing service's events, executed: `.paired` is the keystore
 /// write; everything else is the gate's loud console evidence.
 func handlePairingEvent(_ event: PairingResponderService.Event) {
@@ -504,7 +495,8 @@ static func run(arguments: [String]) throws {
                 + "client static(s) from \(PairedClients.path.path)")
         }
         if opts.pair {
-            let pin = mintPairingPin()
+            var rng = SystemRandomNumberGenerator()
+            let pin = PairingResponderService.mintPin(using: &rng)
             pairingService = PairingResponderService(
                 pin: Array(pin.utf8),
                 hostStaticPublicKey: keys.publicKey

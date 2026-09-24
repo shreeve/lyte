@@ -1063,6 +1063,7 @@ public final class Session {
             case .admit:
                 events += completeHandshake(
                     message1: message1,
+                    from: tuple,
                     hostStatic: hostStatic,
                     now: now,
                     hostMicroseconds: hostMicroseconds
@@ -2911,12 +2912,26 @@ public final class Session {
     /// opaque to the cookie crypto), and it stays inside RetryCookie's
     /// 1…255-byte tuple bound — an "255.255.255.255:65535" is 21 bytes,
     /// an IPv6 literal with a port comfortably under the ceiling.
+    /// True when `datagram` is shaped like a client handshake initiation:
+    /// a bare CTRL carriage whose payload is typed 0x05 (Noise message 1)
+    /// or 0x14 (the W8 cookie resubmission). A shape check for choosing
+    /// what a listening shell feeds a session — admission, cookies, and
+    /// Noise still judge the bytes.
+    public static func looksLikeHandshakeInitiation(_ datagram: [UInt8]) -> Bool {
+        guard let (envelope, payload) = try? Envelope.decode(datagram),
+              envelope.channel == .ctrl
+        else { return false }
+        return payload.first == CtrlMessageType.noiseHandshake1
+            || payload.first == CtrlMessageType.retryHandshake1
+    }
+
     static func cookieTuple(_ tuple: FourTuple) -> [UInt8] {
         Array("\(tuple.remoteAddress):\(tuple.remotePort)".utf8)
     }
 
     private func completeHandshake(
         message1: ArraySlice<UInt8>,
+        from tuple: FourTuple,
         hostStatic: NoiseKeyPair,
         now: UInt64,
         hostMicroseconds: UInt64
@@ -2937,6 +2952,19 @@ public final class Session {
            !allowed.contains(remote) {
             counters.dropped += 1
             return [.dropped(.handshakeFailed("client static not in the paired set"))]
+        }
+        // Until a handshake completes the session is bound to no client:
+        // the first message 1 to authenticate names the client's path,
+        // whichever tuple the shell first saw. A spoofed or unpaired
+        // arrival therefore cannot pin the session to its source.
+        if tuple != validator.primary.tuple {
+            validator = PathValidator(
+                connectionId: connectionId,
+                initialPath: tuple,
+                now: now,
+                config: config.path,
+                rng: imageRng
+            )
         }
         do {
             let message2 = try responder.writeMessage2()
