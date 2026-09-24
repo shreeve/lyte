@@ -47,6 +47,19 @@ final class ScreenSourceRatchetTests: XCTestCase {
                 + violations.joined(separator: "\n"))
     }
 
+    /// The fingerprint, blit and encode are one pipeline: the GL context
+    /// and the VAAPI encoder are built only inside EyePipeline, so the
+    /// production leg and lyte-eye cannot grow a second scanout path.
+    func testEyePipelineAloneBuildsTheGLContextAndEncoder() throws {
+        let violations = try sourceTree.violations(
+            containing: ["EyeGL(", "EyeVaapiEncoder("],
+            excludingRelativePaths: ["Host/Sources/HostEye/EyePipeline.swift"])
+        XCTAssertTrue(
+            violations.isEmpty,
+            "a second eye pipeline was built:\n"
+                + violations.joined(separator: "\n"))
+    }
+
     private func source(_ path: String) throws -> String {
         try sourceTree.source(
             of: sourceTree.repositoryRoot.appendingPathComponent(path))
