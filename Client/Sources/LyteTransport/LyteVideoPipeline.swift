@@ -1,7 +1,7 @@
 // LyteVideoPipeline: video datagrams → VideoAssembler → VideoRenderFactory
 // → CMSampleBuffer → one VideoSink. Presentation timing is the sink
 // owner's; frame order is the assembler's guarantee. Damage leaves through
-// `onFecImpossible` and `onRepairSignal`.
+// `onFecImpossible`, `onRepairSignal` and `onSampleFailure`.
 //
 // Assembly and the books are confined by `lock`. Sample construction runs
 // on the serial `sampleQueue`, which alone touches the factory. Callbacks
@@ -104,6 +104,9 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     private let onFecImpossible: (@Sendable (FrameNumber, _ presumedLostDataShards: Int, _ bestCaseParityShards: Int) -> Void)?
     /// The NackPolicy's feed.
     private let onRepairSignal: (@Sendable (VideoRepairSignal, ClientTimestamp) -> Void)?
+    /// A decoded frame that CoreMedia refused to wrap: the reference chain
+    /// is broken although the repair policy heard it decoded.
+    private let onSampleFailure: (@Sendable (FrameNumber) -> Void)?
 
     private var evictionTimer: DispatchSourceTimer?
 
@@ -113,6 +116,8 @@ public final class LyteVideoPipeline: @unchecked Sendable {
     ///   - onFecImpossible: fired once per frame the assembler writes off
     ///     as unrecoverable from plausible arrivals.
     ///   - onRepairSignal: the NackPolicy's event feed.
+    ///   - onSampleFailure: fired once per decoded frame whose sample (or
+    ///     format description) failed to build, on the sample worker.
     ///   - nowNanoseconds: the shell's monotonic clock. All convenience
     ///     timestamps and lock/build telemetry derive from this one source.
     public init(
@@ -122,7 +127,8 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         nowNanoseconds: @escaping @Sendable () -> UInt64,
         sink: any VideoSink,
         onFecImpossible: (@Sendable (FrameNumber, _ presumedLostDataShards: Int, _ bestCaseParityShards: Int) -> Void)? = nil,
-        onRepairSignal: (@Sendable (VideoRepairSignal, ClientTimestamp) -> Void)? = nil
+        onRepairSignal: (@Sendable (VideoRepairSignal, ClientTimestamp) -> Void)? = nil,
+        onSampleFailure: (@Sendable (FrameNumber) -> Void)? = nil
     ) {
         self.channel = channel
         self.assembler = VideoAssembler(channel: channel, config: config)
@@ -131,6 +137,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
         self.sink = sink
         self.onFecImpossible = onFecImpossible
         self.onRepairSignal = onRepairSignal
+        self.onSampleFailure = onSampleFailure
     }
 
     /// Starts the stale-group eviction timer. Idempotent.
@@ -366,6 +373,7 @@ public final class LyteVideoPipeline: @unchecked Sendable {
             stats.sampleBuildMicroseconds.record(elapsed)
             stats.sampleFailures += 1
             lock.unlock()
+            onSampleFailure?(unit.frameNumber)
             return
         }
         let elapsed = (nowNanoseconds() &- started) / 1_000

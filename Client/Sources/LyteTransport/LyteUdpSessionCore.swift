@@ -142,6 +142,12 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                         frame: from, now: now)
                 }
                 self.nackPolicy.handle(signal, now: now)
+            },
+            onSampleFailure: { [weak self] frame in
+                // The frame never reaches the renderer, so the chain after
+                // it cannot decode: the same coalesced IDR recovery.
+                self?.requestVideoRecovery(
+                    after: frame, cause: .rendererFailure)
             })
         self.reliable = ReliableCtrlEndpoint(
             sender: sender,
