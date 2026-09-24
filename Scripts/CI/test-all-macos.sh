@@ -25,7 +25,12 @@ run_package_tests() {
     local build_graph_hash installed_hash=""
     echo "==> $package tests"
 
-    build_graph_hash="$(lyte_build_graph_hash "$repo_root" "$package")"
+    build_graph_hash="$(lyte_build_graph_hash "$repo_root" "$package")" \
+        || build_graph_hash=""
+    if [[ -z "$build_graph_hash" ]]; then
+        echo "macOS gate FAILED: no build-graph identity for $package" >&2
+        exit 1
+    fi
     if [[ -f "$marker" ]]; then
         installed_hash="$(<"$marker")"
     fi

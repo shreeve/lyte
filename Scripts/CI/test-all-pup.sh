@@ -175,7 +175,10 @@ run_package_tests() {
     shift
     local marker="$path/.build/.lyte-build-graph-sha256"
     local build_graph_hash installed_hash=""
-    build_graph_hash="$(lyte_build_graph_hash "$gate_root" "$package")"
+    build_graph_hash="$(lyte_build_graph_hash "$gate_root" "$package")" \
+        || build_graph_hash=""
+    [[ -n "$build_graph_hash" ]] \
+        || fail "no build-graph identity for $package"
 
     if [[ "${1:-}" == --build-only ]]; then
         shift
