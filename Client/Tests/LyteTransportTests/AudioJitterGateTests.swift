@@ -351,9 +351,9 @@ final class AudioJitterGateTests: XCTestCase {
             while pulling,
                   ringFrames < receiver.targetDepthPackets * Self.packetFrames {
                 let urgent = ringFrames < Self.packetFrames
-                switch receiver.pull(
+                switch receiver.pullDecision(
                     now: ClientTimestamp(microseconds: t), urgent: urgent
-                ) {
+                ).verdict {
                 case .packet(let packet):
                     played.append(packet)
                     ringFrames += Self.packetFrames

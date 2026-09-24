@@ -150,20 +150,6 @@ public final class AudioReceiver: @unchecked Sendable {
         return AudioPullDecision(verdict: verdict, accelerate: accelerating)
     }
 
-    /// The CL-11 surface, kept verbatim for callers that only want the
-    /// verdict (the accelerate judgment still runs — one decision
-    /// path, two views of it).
-    public func pull(
-        now: ClientTimestamp,
-        urgent: Bool = false,
-        renderPipelineMicroseconds: UInt64 = 0
-    ) -> AudioPullVerdict {
-        pullDecision(
-            now: now, urgent: urgent,
-            renderPipelineMicroseconds: renderPipelineMicroseconds
-        ).verdict
-    }
-
     /// The adaptive delay target, in packets — what the pump sizes the
     /// PCM ring against.
     public var targetDepthPackets: Int {
