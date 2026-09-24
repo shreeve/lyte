@@ -12,9 +12,7 @@ import { join, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 
-const require = createRequire(import.meta.url);
 const browserRoot = fileURLToPath(new URL("..", import.meta.url));
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const serveDir = join(browserRoot, ".serve");
@@ -41,20 +39,6 @@ const mime = {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-async function ensureWs() {
-  try {
-    return require("ws");
-  } catch {
-    const prefix = await mkdtemp(join(tmpdir(), "lyte-b5-npm-"));
-    execFileSync(
-      "npm",
-      ["install", "--silent", "--no-fund", "--no-audit", "--prefix", prefix, "ws@8"],
-      { stdio: "inherit" }
-    );
-    return require(join(prefix, "node_modules", "ws"));
-  }
 }
 
 function buildControlPeer() {
@@ -198,16 +182,18 @@ async function startStaticServer() {
   return { server, port };
 }
 
-async function cdp(wsUrl, WebSocket) {
+// Node 24+ ships the browser WebSocket; the DevTools protocol needs no
+// package.
+async function cdp(wsUrl) {
   const ws = new WebSocket(wsUrl);
   await new Promise((resolve, reject) => {
-    ws.once("open", resolve);
-    ws.once("error", reject);
+    ws.addEventListener("open", resolve, { once: true });
+    ws.addEventListener("error", reject, { once: true });
   });
   let nextId = 0;
   const pending = new Map();
-  ws.on("message", (raw) => {
-    const msg = JSON.parse(String(raw));
+  ws.addEventListener("message", (event) => {
+    const msg = JSON.parse(String(event.data));
     if (msg.id && pending.has(msg.id)) {
       const { resolve, reject } = pending.get(msg.id);
       pending.delete(msg.id);
@@ -246,7 +232,6 @@ if (!existsSync(join(serveDir, "LyteClientBrowser.wasm"))) {
   throw new Error("missing .serve/ — run Browser/Scripts/smoke-chrome.sh (it builds first)");
 }
 
-const WebSocket = await ensureWs();
 console.log("browser-smoke: building lyte-control-peer…");
 const peerBin = buildControlPeer();
 const { proc: peerProc, meta: peerMeta } = await startControlPeer(peerBin);
@@ -303,7 +288,7 @@ try {
     `http://127.0.0.1:${debugPort}/json/new?${encodeURIComponent(pageUrl)}`,
     { method: "PUT" }
   ).then((r) => r.json());
-  const { send, ws } = await cdp(created.webSocketDebuggerUrl, WebSocket);
+  const { send, ws } = await cdp(created.webSocketDebuggerUrl);
   await send("Runtime.enable");
   await send("Page.enable");
 
