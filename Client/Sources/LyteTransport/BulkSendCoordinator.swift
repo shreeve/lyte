@@ -6,7 +6,7 @@
 // offer, file URL — and re-offers the SAME id into the next session,
 // which is exactly what makes the receiver's persisted possession map
 // resume the transfer from the gap (design record
-// docs/20260728-053300-lyte-bulk-channel.md §5).
+// docs/decisions/20260728-053300-lyte-bulk-channel.md §5).
 //
 // QUEUE POLICY (the F-4 ruling, documented here): multi-file drops
 // QUEUE and send SERIALLY, one transfer at a time — v1's engines are

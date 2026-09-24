@@ -1,5 +1,5 @@
 // CorpusGates (H4 V-3): the §7 acceptance math with the pillar's
-// thresholds PINNED IN CODE (docs/20260720-191701-lyte-protocol-
+// thresholds PINNED IN CODE (docs/history/20260720-191701-lyte-protocol-
 // image-quality.md §7) — "gate thresholds pinned in code, not prose"
 // is the V-3 gate. Every metric compares in RGB space after full
 // decode (YUV-domain PSNR hides exactly the chroma and range bugs the

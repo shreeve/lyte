@@ -1,12 +1,14 @@
 # Lyte video supremacy — the ranked battle plan (2026-07-28)
 
+> **Status:** Historical — current truth: [ARCHITECTURE.md](../ARCHITECTURE.md).
+
 *Commissioned by the owner: "Analyze the best strategies to make the video
 as clean and beautiful as possible. We CANNOT LOSE to Sunshine and
 Moonlight — we are DESIGNED SPECIFICALLY TO BEAT THEM at high resolution
 and motion as well as low motion." An analysis-only doc: evidence from
-today's quality probe (`docs/20260728-164746-lyte-video-quality-probe.md`),
+today's quality probe (`docs/history/20260728-164746-lyte-video-quality-probe.md`),
 the HS-22a/b wave ledger (HANDOFF.md), the image-quality pillar
-(`docs/20260720-191701-...`), the Sunshine source analysis
+(`docs/history/20260720-191701-...`), the Sunshine source analysis
 (`docs/sunshine-v2026.715.205118.md`), the host encoder sources, and
 2026 web evidence on what Sunshine/Moonlight actually ship. No live runs;
 no package sources touched.*

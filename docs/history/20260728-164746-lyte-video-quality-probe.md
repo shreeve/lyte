@@ -1,5 +1,7 @@
 # Lyte video-quality probe — PSNR, drops, cadence at the post-HS-22b build
 
+> **Status:** Historical — current truth: [TESTING.md](../TESTING.md).
+
 *2026-07-28, ~10:20–10:50 MDT (16:20–16:50 UTC). A measurement-only probe:
 no package sources touched, no repo builds in the working tree. The owner
 remembers "choppiness and blurriness" from the trip era and wanted numbers.

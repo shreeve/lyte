@@ -2,7 +2,7 @@
 
 *Living direction for the peer **browser client platform**. Commissioning
 start and frozen naming/carrier/ladder:
-[`20260807-021425-browser-client-platform-slice.md`](20260807-021425-browser-client-platform-slice.md).
+[`20260807-021425-browser-client-platform-slice.md`](decisions/20260807-021425-browser-client-platform-slice.md).
 Not a protocol amendment.*
 
 Lyte should make a host reachable from an ordinary browser without forking
@@ -285,8 +285,8 @@ clipboard) remains deferred — see `TODO.md`.
 
 ## Historical detail
 
-The dated [browser bridge consult](20260720-184200-browser-client-caddy-bridge.md)
-and [browser viewer scoping](20260728-054139-lyte-browser-viewer-scoping.md)
+The dated [browser bridge consult](history/20260720-184200-browser-client-caddy-bridge.md)
+and [browser viewer scoping](history/20260728-054139-lyte-browser-viewer-scoping.md)
 preserve the original research, measurements, rejected alternatives, and
 earlier slice estimates. They are frozen records. This page owns the current
 direction when those records describe superseded repository structure or

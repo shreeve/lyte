@@ -1,5 +1,5 @@
 // VideoPostureState (0x26), host→client — the postures design's video
-// quiet/wake axis (docs/20260802-013946-postures-design.md). After
+// quiet/wake axis (docs/decisions/20260802-013946-postures-design.md). After
 // ~30 s without damage the host's 1 s retained keepalive backs off
 // exponentially (2 → 4 → 8 → 16 → 30 s); EVERY step rides a fresh
 // announcement carrying the interval now in force, so the client's

@@ -16,7 +16,7 @@
 // deliberately untouched — it was always an independent session on
 // its own bus connection. The Wayland-helper replacement stays
 // filed and is blocked on GNOME today; see
-// docs/20260807-015743-wayland-clipboard-gnome-blocker.md.
+// docs/decisions/20260807-015743-wayland-clipboard-gnome-blocker.md.
 //
 // The sanctioned xdg-desktop-portal RemoteDesktop path was never
 // here: its combined Start auto-denies headless on this GNOME

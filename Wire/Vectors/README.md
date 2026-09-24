@@ -97,7 +97,7 @@ file; never rewrite a committed replay.
   precedent), with the layout pinned as hand-built bytes in
   `AudioInteriorTests`.
 - `clipboard-v1.json` — the CL-15 clipboard-text sync (the first H3
-  feature; design record `docs/20260722-231500-lyte-clipboard.md`):
+  feature; design record `docs/decisions/20260722-231500-lyte-clipboard.md`):
   ClipboardSet 0x1A (client→host) and ClipboardAnnounce 0x1B
   (host→client), both `type ‖ UTF-8 text` with the text the sole
   trailing field, plus capability key 10 (`clipboardText`) on the W7
@@ -118,7 +118,7 @@ file; never rewrite a committed replay.
   asserts the coverage discipline (every error case name present, the
   ceiling pinned legal, the spine pinned both ways).
 - `bulk-v1.json` — the W10/F-2 bulk-transfer channel (design record
-  `docs/20260728-053300-lyte-bulk-channel.md`): the message sextet
+  `docs/decisions/20260728-053300-lyte-bulk-channel.md`): the message sextet
   0x1C–0x21 (offer/accept/chunk/ack/complete/abort, all
   fixed-layout LE with the chunk-map credit spine shared by
   accept/ack), capability key 11 (`bulkTransfer`) on the W7

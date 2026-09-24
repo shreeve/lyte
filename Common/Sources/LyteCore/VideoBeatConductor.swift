@@ -1,5 +1,5 @@
 // VideoBeatConductor — video's part under THE CONDUCTOR
-// (docs/20260803-050422-metronome-playout-design.md), sans-IO.
+// (docs/decisions/20260803-050422-metronome-playout-design.md), sans-IO.
 //
 // The laws, as this instrument plays them:
 //

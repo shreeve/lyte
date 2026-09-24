@@ -1,5 +1,7 @@
 # Audio Continuity: Consult Verdict, H2 Sender Amendments, M7 Receiver Spec (2026-07-20)
 
+> **Status:** Binding decision — the audio render-thread rule and pacing doctrine. §5.1–5.2 have landed (the lock-free PCM ring in `LyteAudioPlayer`, `AudioAccelerator`), so the render-callback lock this record describes no longer exists. Current code map: [ARCHITECTURE.md](../ARCHITECTURE.md).
+
 ## TL;DR
 
 A long architectural essay (the "audio continuity engine" consult, 2026-07-20)

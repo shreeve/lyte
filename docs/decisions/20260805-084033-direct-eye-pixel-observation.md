@@ -1,5 +1,7 @@
 # Direct eye pixel observation — framebuffer identity is not damage
 
+> **Status:** Binding decision — the GPU pixel fingerprint, not framebuffer identity, owns damage truth.
+
 **Status:** settled and commissioned 2026-08-05. This record corrects the
 damage-detection premise in the frozen direct-eye plan; it does not change the
 Lyte-UDP wire protocol or the Conductor's client-side presentation law.

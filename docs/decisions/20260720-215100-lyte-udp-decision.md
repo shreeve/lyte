@@ -1,5 +1,7 @@
 # Lyte-UDP: The Only Protocol (decision record, 2026-07-20)
 
+> **Status:** Binding decision — one protocol, Lyte-UDP, over plain UDP; no GameStream or QUIC path. Current wire contract: [PROTOCOL.md](../PROTOCOL.md).
+
 ## TL;DR
 
 **lyte-host will never speak the GameStream dialect. Lyte-UDP — our own

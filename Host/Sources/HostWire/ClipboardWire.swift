@@ -1,5 +1,5 @@
 // The host clipboard seam (CL-15, design doc
-// docs/20260722-231500-lyte-clipboard.md §7): the Swift-side boundary
+// docs/decisions/20260722-231500-lyte-clipboard.md §7): the Swift-side boundary
 // the host clipboard leaf drives. The session core is complete against
 // this seam — a `.clipboardSetReceived` event is the
 // shell's cue to call `apply(text:)`, and every leaf-reported change
@@ -11,7 +11,7 @@
 // signals and fd-based transfer both directions over a Mutter-internal
 // RemoteDesktop session (org.gnome.Mutter.RemoteDesktop). The portal and
 // Wayland data-control routes are unavailable headless on GNOME
-// (docs/20260807-015743-wayland-clipboard-gnome-blocker.md). The gate
+// (docs/decisions/20260807-015743-wayland-clipboard-gnome-blocker.md). The gate
 // tests run a scripted implementation of this protocol everywhere;
 // lyte-host wires the real one behind `--clipboard` and declares
 // capability key 10 only when the leaf came up — declaration follows

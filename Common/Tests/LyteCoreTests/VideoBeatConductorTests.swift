@@ -2,7 +2,7 @@ import XCTest
 @testable import LyteCore
 
 // The Conductor's video instrument, law by law
-// (docs/20260803-050422-metronome-playout-design.md): cue, beat,
+// (docs/decisions/20260803-050422-metronome-playout-design.md): cue, beat,
 // late, hole, slip, chain. The debt/flush recovery pins carried over
 // from the retired adaptive playout.
 

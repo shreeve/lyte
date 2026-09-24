@@ -1,5 +1,5 @@
 // Clipboard text sync (CL-15, the first H3 feature —
-// docs/20260722-231500-lyte-clipboard.md): the wire shapes of "copy on
+// docs/decisions/20260722-231500-lyte-clipboard.md): the wire shapes of "copy on
 // one machine, paste on the other", v1 scoped to UTF-8 text both ways.
 // Both messages ride the ARQ ordered CTRL stream (group 0) — reliable,
 // exactly-once, in-order, the input/audio-routing carriage argument

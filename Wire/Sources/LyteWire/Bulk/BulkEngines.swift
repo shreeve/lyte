@@ -1,5 +1,5 @@
 // The bulk-transfer engines (W10 / F-2 — design record
-// docs/20260728-053300-lyte-bulk-channel.md §7): sans-IO state
+// docs/decisions/20260728-053300-lyte-bulk-channel.md §7): sans-IO state
 // machines for both roles. One engine instance = one transfer (v1
 // runs one at a time per direction; the ends' dispatcher answers a
 // second concurrent offer with abort(busy) and queues locally —

@@ -1,11 +1,13 @@
 # Lyte Bulk-Transfer Channel — W10 / F-2 design record (2026-07-28)
 
+> **Status:** Binding decision — the chan-8 bulk-transfer channel. Current wire contract: [PROTOCOL.md](../PROTOCOL.md); the sender's read-ahead cap (128 chunks) and the receive-window clamp (256) postdate this record.
+
 *The F-2 slice ruling of record: the chunked, resumable, backpressured
 bulk-transfer channel in LyteWire — the H3 wave's long pole
 (`docs/20260723-051223-lyte-h3-plan.md` §3), designed so both end slices
 (F-3 host, F-4 client) code against the frozen `bulk-v1.json` vectors and
 never against each other (master plan ruling 12). Authorities: the
-transport pillar (`docs/20260720-191704`) for channel/priority semantics,
+transport pillar (`docs/history/20260720-191704`) for channel/priority semantics,
 the resiliency pillar §1 for the ARQ-vs-FEC fork, H3 §0 owner decision 1
 (client→host only in v1, standing per-host consent toggle), and the J-G3
 bar (a ≥100 MB file lands sha-identical through loss and a mid-transfer

@@ -85,7 +85,7 @@ slice (B-0 landed): wire contracts pass 511 tests under WebAssembly, and
 WebTransport, browser runtime integration, WebCodecs/WebGPU rendering, and
 AudioWorklet playout follow the B-1…B-6 ladder. See [BROWSER.md](BROWSER.md)
 and
-[20260807-021425-browser-client-platform-slice.md](20260807-021425-browser-client-platform-slice.md).
+[20260807-021425-browser-client-platform-slice.md](decisions/20260807-021425-browser-client-platform-slice.md).
 
 Keep this page short and honest. Product direction belongs in `README.md` and
 `DESIGN.md`; protocol law belongs in the frozen specification; detailed gate
