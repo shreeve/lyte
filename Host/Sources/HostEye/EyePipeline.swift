@@ -43,6 +43,8 @@ public final class EyePipeline {
     private var ayuvTargets: [VASurfaceID: AyuvTarget] = [:]
     private var scanout: ImportedTexture?
     private var scanoutIdentity: UInt32?
+    /// The imported buffer's `ScanoutTicket.bufferIdentity`.
+    private var scanoutBuffer: UInt64?
     private var freshEncodes = 0
 
     public init(
@@ -70,18 +72,23 @@ public final class EyePipeline {
         releaseGPUState()
     }
 
-    /// Imports the observation's scanout when its framebuffer identity
-    /// differs from the cached import.
+    /// Imports the observation's scanout unless the cached import is the
+    /// same buffer. The kernel reuses framebuffer ids lowest-first, so a
+    /// new buffer can arrive under the cached id within one beat; the id
+    /// alone would leave the fingerprint watching the old buffer, a
+    /// frozen screen. The buffer's dma-buf identity decides.
     public func refreshScanout(
         _ observation: ScreenSourceObservation, from screen: some ScreenSource
     ) throws -> ScanoutUpdate {
-        if scanout != nil, scanoutIdentity == observation.framebufferIdentity {
-            return .current
-        }
         guard let ticket = screen.capture(observation) else {
             return .missedGrab
         }
         defer { ticket.release() }
+        let buffer = ticket.bufferIdentity
+        if scanout != nil, buffer != nil, buffer == scanoutBuffer,
+           scanoutIdentity == observation.framebufferIdentity {
+            return .current
+        }
         guard Int32(ticket.width) == width, Int32(ticket.height) == height else {
             return .geometryChanged(width: ticket.width, height: ticket.height)
         }
@@ -94,6 +101,7 @@ public final class EyePipeline {
         if var old = scanout { gl.destroy(&old) }
         scanout = imported
         scanoutIdentity = observation.framebufferIdentity
+        scanoutBuffer = buffer
         gl.resetFingerprint()
         return .imported
     }
@@ -218,6 +226,7 @@ public final class EyePipeline {
         if var source = scanout { gl.destroy(&source) }
         scanout = nil
         scanoutIdentity = nil
+        scanoutBuffer = nil
         gl.resetFingerprint()
     }
 }

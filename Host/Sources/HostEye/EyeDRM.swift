@@ -104,6 +104,17 @@ public struct ScanoutTicket {
     public var modifier: UInt64
     public var planes: [(fd: Int32, offset: UInt32, pitch: UInt32)]
 
+    /// The first plane's buffer as the kernel knows it: the dma-buf's
+    /// inode. Every export of one buffer object shares one dma-buf, so it
+    /// names the buffer whatever fd or framebuffer id carries it. Nil
+    /// when it cannot be read.
+    public var bufferIdentity: UInt64? {
+        guard let first = planes.first else { return nil }
+        var status = stat()
+        guard fstat(first.fd, &status) == 0 else { return nil }
+        return UInt64(status.st_ino)
+    }
+
     public func release() {
         for p in planes { close(p.fd) }
     }

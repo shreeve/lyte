@@ -459,6 +459,14 @@ final class DirectEyeLeg {
                 }
             }
             guard let observation = screen.observe() else {
+                if screen.primaryPlaneMoved {
+                    print("""
+                        direct: the output moved to another primary plane \
+                        — ending session; the re-dial reads it fresh
+                        """)
+                    modeChangeEnded = true
+                    return
+                }
                 if idle(snapshot) { continue } else { return }
             }
             if observation.identityChanged { framebufferTransitions += 1 }
