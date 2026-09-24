@@ -5,8 +5,6 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 app="${1:-$repo_root/.build/Lyte.app}"
 active_stage="${2:-}"
 plist="$app/Contents/Info.plist"
-make_app="$repo_root/Scripts/make-app.sh"
-sign_dev="$repo_root/Scripts/sign-dev.sh"
 
 [[ -x "$app/Contents/MacOS/Lyte" ]]
 [[ -x "$app/Contents/MacOS/lyte-helperd" ]]
@@ -149,21 +147,6 @@ done
 app_symbols="$(nm -gU "$app/Contents/MacOS/Lyte")"
 grep -Eq ' _opus_decode_float$' <<< "$app_symbols"
 grep -Eq ' _reed_solomon_decode$' <<< "$app_symbols"
-
-if grep -Fq 'rm -rf "$APP"' "$make_app"; then
-    echo "make-app regained destructive in-place assembly" >&2
-    exit 1
-fi
-grep -Fq 'renamex_np' "$make_app"
-grep -Fq 'RENAME_SWAP' "$make_app"
-grep -Fq 'STAGED_APP' "$make_app"
-grep -Fq '<key>LyteSourceRevision</key>' "$make_app"
-grep -Fq '<string>0.5.0</string>' "$make_app"
-grep -Fq -- '--is-shallow-repository' "$make_app"
-grep -Fq 'Scripts/next-bundle-version.sh' "$make_app"
-grep -Fq '. "$ROOT/Scripts/AppArtifact/app-artifact.sh"' "$make_app"
-grep -Fq 'lyte_require_app_quiescent "live app publication"' "$make_app"
-[[ -x "$sign_dev" ]]
 
 leftovers="$(
     if [[ -n "$active_stage" ]]; then

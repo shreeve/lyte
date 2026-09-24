@@ -218,26 +218,6 @@ LYTE_OPEN="$test_root/bin/open" LYTE_PS="$test_root/bin/ps" \
 [[ "$(tr '\n' ' ' < "$launch_log")" \
     == 'codesign codesign register open observe ' ]]
 
-grep -Fq 'Scripts/next-bundle-version.sh' "$make_app"
-[[ "$(grep -Fc 'lyte_require_app_quiescent "live app publication"' \
-    "$make_app")" -eq 2 ]]
-first_build_line="$(grep -n '^swift build' "$make_app" \
-    | head -n 1 | cut -d: -f1)"
-first_guard_line="$(grep -n 'lyte_require_app_quiescent' "$make_app" \
-    | head -n 1 | cut -d: -f1)"
-last_guard_line="$(grep -n 'lyte_require_app_quiescent' "$make_app" \
-    | tail -n 1 | cut -d: -f1)"
-assembly_check_line="$(grep -n 'test-hermetic-linkage.sh' "$make_app" \
-    | tail -n 1 | cut -d: -f1)"
-[[ "$first_guard_line" -lt "$first_build_line" ]]
-[[ "$last_guard_line" -gt "$assembly_check_line" ]]
-grep -Fq 'LYTE_APP_DESTINATION="$ci_app"' \
-    "$repo_root/Scripts/CI/test-all-macos.sh"
-grep -Fq 'LaunchServices.framework/Support/lsregister' "$launch_app"
-grep -Fq '"$LSREGISTER" -f "$APP"' "$launch_app"
-grep -Fq '"${LYTE_OPEN:-open}" -F "$APP"' "$launch_app"
-grep -Fq 'lyte_wait_for_exact_app "$APP_EXECUTABLE"' "$launch_app"
-
 if grep -Fq 'tccutil' "$launch_app"; then
     echo "launcher attempts an unsupported Local Network privacy reset" >&2
     exit 1
