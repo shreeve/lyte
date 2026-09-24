@@ -119,12 +119,6 @@ public struct SimNet: Sendable {
         phases = []
     }
 
-    /// Installs absolute-time phases. The base `config` applies before the
-    /// first phase. Existing in-flight datagrams keep their scheduled times.
-    public mutating func setSchedule(_ schedule: [SimNetPhase]) {
-        phases = Self.sortedPhases(schedule)
-    }
-
     /// Schedules one datagram from `source` at virtual instant `now`.
     public mutating func send(
         from source: Int, bytes: [UInt8], now: UInt64

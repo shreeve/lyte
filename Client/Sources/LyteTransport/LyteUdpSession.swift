@@ -168,10 +168,6 @@ public final class LyteUdpSession: @unchecked Sendable {
         orderedInput.enqueue(body)
     }
 
-    public var inputSendTimingSnapshot: InputSendTiming.Snapshot {
-        orderedInput.snapshot
-    }
-
     /// Hard stop, no wire goodbye (after a peer teardown or liveness close).
     public func stop() {
         guard !closing.exchange(true, ordering: .relaxed) else { return }
