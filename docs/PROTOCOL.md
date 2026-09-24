@@ -94,7 +94,8 @@ client                                   host
                               ◄──        0x13 retry challenge (cookie mode only)
 0x14 ‖ cookie ‖ msg1          ──►
                               ◄──        0x06 ‖ Noise IK msg2
-sealed traffic, both ways; each side's first ARQ message is 0x0F
+sealed traffic, both ways; in a streaming session each side's first ARQ
+message is 0x0F (a pairing-only run opens with share A, 0x0B)
 ```
 
 - Suite `Noise_IK_25519_ChaChaPoly_SHA256`. The client knows the host's
@@ -157,9 +158,9 @@ the message codecs).
 
 ## Capabilities
 
-Each side's first ARQ message is a capability declaration (0x0F): a
-deterministic-CBOR map. The agreed set is the intersection, computed the
-same way on both ends; there is no accept round. Unknown keys are ignored
+In a streaming session each side's first ARQ message is a capability
+declaration (0x0F): a deterministic-CBOR map. The agreed set is the
+intersection, computed the same way on both ends; there is no accept round. Unknown keys are ignored
 and preserved, and survive intersection only when both sides declare
 byte-equal values.
 
