@@ -848,15 +848,32 @@ final class BulkEngineTests: XCTestCase {
     }
 
     /// A peer chunk size past Int32 is refused by value, never by a
-    /// narrowing trap (wasm32 runs this codec).
-    func testChunkSizePastInt32IsRefused() {
-        XCTAssertThrowsError(try BulkOffer(
-            transferId: 1, totalByteCount: 10, chunkByteCount: 0x8000_0000,
+    /// narrowing trap, and the refused value is reported exactly —
+    /// on wasm32 too, where Int is 32 bits. Both the constructor and
+    /// the wire decoder take this path.
+    func testChunkSizePastInt32IsRefused() throws {
+        let valid = try BulkOffer(
+            transferId: 1, totalByteCount: 10,
             sha256: [UInt8](repeating: 0, count: 32), name: "x"
-        )) {
-            XCTAssertEqual(
-                $0 as? BulkMessageError, .chunkSizeOutOfBounds(0x8000_0000)
-            )
+        ).encode()
+        for size: UInt32 in [0x8000_0000, 0xFFFF_FFFF] {
+            XCTAssertThrowsError(try BulkOffer(
+                transferId: 1, totalByteCount: 10, chunkByteCount: size,
+                sha256: [UInt8](repeating: 0, count: 32), name: "x"
+            )) {
+                XCTAssertEqual(
+                    $0 as? BulkMessageError, .chunkSizeOutOfBounds(size)
+                )
+            }
+            var wire = valid
+            withUnsafeBytes(of: size.littleEndian) {
+                wire.replaceSubrange(17..<21, with: $0)
+            }
+            XCTAssertThrowsError(try BulkOffer.decode(wire)) {
+                XCTAssertEqual(
+                    $0 as? BulkMessageError, .chunkSizeOutOfBounds(size)
+                )
+            }
         }
     }
 }
