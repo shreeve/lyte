@@ -24,7 +24,8 @@ import LyteWire
 
 final class DirectEyeLeg {
     struct Config {
-        var device = "/dev/dri/card1"
+        static let defaultDevice = "/dev/dri/card1"
+        var device = Config.defaultDevice
         var renderNode = "/dev/dri/renderD128"
         var seconds: Double
         var qp: Int32 = 24
@@ -37,6 +38,7 @@ final class DirectEyeLeg {
     }
 
     private let config: Config
+    private let screen: DirectScreenSource
     private let wire: SessionWire?
     private let file: UnsafeMutablePointer<FILE>?
     private(set) var frames = 0
@@ -141,40 +143,38 @@ final class DirectEyeLeg {
     private let serviceDone = DispatchSemaphore(value: 0)
     var lastError: String?
 
-    init(config: Config, wire: SessionWire?,
+    init(config: Config, screen: DirectScreenSource, wire: SessionWire?,
          file: UnsafeMutablePointer<FILE>?) {
         self.config = config
+        self.screen = screen
         self.wire = wire
         self.file = file
     }
 
-    /// Blocking loop, portal-run-shaped: returns when the clock (or a
-    /// session end / failure) says so.
-    func run() {
-        let screen: DirectScreenSource
+    /// Opens the scanout the leg will watch. The composition root opens it
+    /// before the session exists, so its geometry reaches the input
+    /// injector before the first client event can.
+    static func openScreen(device: String) throws -> DirectScreenSource {
         do {
-            screen = try DirectScreenSource(device: config.device)
+            return try DirectScreenSource(device: device)
         } catch DirectScreenSourceError.openDevice(let path, let code) {
-            lastError = "direct: open(\(path)) errno \(code)"
-            return
-        } catch DirectScreenSourceError.noActivePrimaryPlane(_) {
-            lastError = "direct: no active primary plane"
-            return
-        } catch DirectScreenSourceError.initialTicketDenied(_) {
-            lastError = "direct: GETFB2 refused — the direct backend "
-                + "needs CAP_SYS_ADMIN (run under sudo or the E4 unit)"
-            return
+            throw HostError("direct: open(\(path)) errno \(code)")
+        } catch DirectScreenSourceError.noActivePrimaryPlane {
+            throw HostError("direct: no active primary plane")
+        } catch DirectScreenSourceError.initialTicketDenied {
+            throw HostError("direct: GETFB2 refused — the direct backend "
+                + "needs CAP_SYS_ADMIN (run under sudo or the E4 unit)")
         } catch {
-            lastError = "direct: screen source failed: \(error)"
-            return
+            throw HostError("direct: screen source failed: \(error)")
         }
+    }
+
+    /// Blocking loop: returns when the clock (or a session end, a
+    /// termination signal, or a failure) says so.
+    func run() {
         let fd = screen.fileDescriptor
         let width = screen.width
         let height = screen.height
-        // HS-13: the uinput tablet maps absolute pointer coordinates
-        // against the monitor extent — tell the wire what we captured.
-        wire?.noteMonitorExtent(
-            width: UInt32(width), height: UInt32(height))
 
         // The encoder seat: the native VAAPI pens — zero libavcodec, rate
         // directives apply live (the RC misc buffer rides the next frame).

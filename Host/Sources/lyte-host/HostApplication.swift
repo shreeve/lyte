@@ -461,6 +461,11 @@ static func run(arguments: [String]) throws {
             + "quality refinement is the filed follow-up)")
     }
 
+    // The scanout opens first: its geometry scales the input injector's
+    // absolute moves, which must work from the first client event.
+    let screen = try DirectEyeLeg.openScreen(
+        device: DirectEyeLeg.Config.defaultDevice)
+
     // The session comes up BEFORE capture: in Noise mode the host blocks
     // here for the client's handshake (printing the static public key the
     // client must hold), so no frames are encoded for nobody and the
@@ -661,6 +666,16 @@ static func run(arguments: [String]) throws {
                     + "manual host:port still works")
             }
         }
+        // E2: kernel-uinput injection is ready before any client can
+        // connect — no compositor session, no D-Bus, one settle at device
+        // create — and already knows the monitor it scales against.
+        if let injector = makeInputInjector(opts.input) {
+            w.inputInjector = injector
+            w.noteMonitorExtent(
+                width: UInt32(screen.width), height: UInt32(screen.height))
+            print("input: injection via \(injector.name) "
+                + "(echo tuples + lastInputSeq stamping active)")
+        }
         let awaitOutcome: SessionWire.ClientAwaitOutcome
         do {
             awaitOutcome = try w.awaitClient(
@@ -675,6 +690,7 @@ static func run(arguments: [String]) throws {
             print("session: termination requested before handshake — "
                 + "clean stop")
             w.shutdown(reason: .shuttingDown, lingerSeconds: 0)
+            w.inputInjector?.stop()
             clipboardLeaf?.stop()
             bulkShell?.teardown()
             withExtendedLifetime(advertiser) {}
@@ -715,14 +731,6 @@ static func run(arguments: [String]) throws {
         } else {
             print("encoder-vbv: DISABLED (--no-vbv-reconfigure) — the "
                 + "opening posture rides the whole run")
-        }
-
-        // E2: kernel-uinput injection comes up with the session — no
-        // compositor session, no D-Bus, one settle at device create.
-        if let injector = makeInputInjector(opts.input) {
-            w.inputInjector = injector
-            print("input: injection via \(injector.name) "
-                + "(echo tuples + lastInputSeq stamping active)")
         }
 
         // HS-19: the clipboard loop — client 0x1A sets apply through
@@ -844,7 +852,7 @@ static func run(arguments: [String]) throws {
             bitrateBitsPerSecond: wire != nil
                 ? Int64(opts.wireRateMbps * 1_000_000) : 0,
             vbvBits: openingVbvBits),
-        wire: wire, file: file)
+        screen: screen, wire: wire, file: file)
     leg.run()
 
     if let file { fclose(file) }
