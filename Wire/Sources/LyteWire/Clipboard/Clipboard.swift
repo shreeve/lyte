@@ -44,34 +44,15 @@ public enum ClipboardWire {
 // MARK: - The capability spine helpers
 
 extension Capabilities {
-    /// The key-10 entry as it rides the wire: CBOR bool under unsigned
-    /// key 10 (`0A F5` inside the map) — one canonical byte image is
-    /// what makes the intersection's byte-equal rule an exact AND.
-    private static var clipboardTextEntry: CborMapEntry {
-        CborMapEntry(
-            key: .unsigned(CapabilityKey.clipboardText),
-            value: .bool(true)
-        )
-    }
-
-    /// True when this set (a declaration or an agreed intersection)
-    /// carries `clipboardText: true`. On a v1 build the key lives in
-    /// `unknownEntries` — which is exactly what makes it survive
-    /// intersection only on mutual declaration. A `false` or
-    /// wrongly-typed value reads as absent: absence and refusal are
-    /// the same posture ("not supported"), per the spine's rule 3.
+    /// True when this set carries `clipboardText: true` (key 10) — see
+    /// `declaresFlag(_:)`.
     public var clipboardText: Bool {
-        unknownEntries.contains(Self.clipboardTextEntry)
+        declaresFlag(CapabilityKey.clipboardText)
     }
 
-    /// A copy of this set declaring clipboard-text support.
-    /// Idempotent; the CBOR encoder owns canonical key order, so the
-    /// entry may append here regardless of surrounding keys.
+    /// A copy of this set declaring `clipboardText`.
     public func declaringClipboardText() -> Capabilities {
-        guard !clipboardText else { return self }
-        var declared = self
-        declared.unknownEntries.append(Self.clipboardTextEntry)
-        return declared
+        declaringFlag(CapabilityKey.clipboardText)
     }
 }
 

@@ -82,35 +82,15 @@ public enum ClipboardImageWire {
 // MARK: - The capability spine helpers (key 12)
 
 extension Capabilities {
-    /// The key-12 entry as it rides the wire: CBOR bool under
-    /// unsigned key 12 (`0C F5` inside the map) — one canonical byte
-    /// image is what makes the intersection's byte-equal rule an
-    /// exact AND.
-    private static var clipboardImagesEntry: CborMapEntry {
-        CborMapEntry(
-            key: .unsigned(CapabilityKey.clipboardImages),
-            value: .bool(true)
-        )
-    }
-
-    /// True when this set (a declaration or an agreed intersection)
-    /// carries `clipboardImages: true`. On a v1 build the key lives
-    /// in `unknownEntries` — which is exactly what makes it survive
-    /// intersection only on mutual declaration. A `false` or
-    /// wrongly-typed value reads as absent: absence and refusal are
-    /// the same posture ("not supported"), per the spine's rule 3.
+    /// True when this set carries `clipboardImages: true` (key 12) — see
+    /// `declaresFlag(_:)`.
     public var clipboardImages: Bool {
-        unknownEntries.contains(Self.clipboardImagesEntry)
+        declaresFlag(CapabilityKey.clipboardImages)
     }
 
-    /// A copy of this set declaring clipboard-image support.
-    /// Idempotent; the CBOR encoder owns canonical key order, so the
-    /// entry may append here regardless of surrounding keys.
+    /// A copy of this set declaring `clipboardImages`.
     public func declaringClipboardImages() -> Capabilities {
-        guard !clipboardImages else { return self }
-        var declared = self
-        declared.unknownEntries.append(Self.clipboardImagesEntry)
-        return declared
+        declaringFlag(CapabilityKey.clipboardImages)
     }
 
     /// The full image gate: feature (10) ∧ dialect (12) — images
