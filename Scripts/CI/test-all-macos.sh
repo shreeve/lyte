@@ -12,14 +12,19 @@ if [[ ! -d "$DEVELOPER_DIR" ]]; then
     exit 1
 fi
 
-run_package_tests() {
-    local label="$1"
-    local package_path="$2"
-    local scratch_path="$3"
-    local marker="$scratch_path/.lyte-build-graph-sha256"
-    local installed_hash=""
-    echo "==> $label tests"
+source "$repo_root/Scripts/lib/build-graph.sh"
 
+# run_package_tests PACKAGE: resolve and test PACKAGE in its own scratch
+# directory, cleaning it first when its build graph changed.
+run_package_tests() {
+    local package="$1"
+    local package_path="$repo_root/$package"
+    local scratch_path="$package_path/.build"
+    local marker="$scratch_path/.lyte-build-graph-sha256"
+    local build_graph_hash installed_hash=""
+    echo "==> $package tests"
+
+    build_graph_hash="$(lyte_build_graph_hash "$repo_root" "$package")"
     if [[ -f "$marker" ]]; then
         installed_hash="$(<"$marker")"
     fi
@@ -75,44 +80,17 @@ verify_frozen_vectors() {
 
 verify_frozen_vectors
 
-build_graph_hash="$({
-    for manifest in \
-        Client/Package.swift Client/Package.resolved \
-        Common/Package.swift Common/Package.resolved \
-        Wire/Package.swift Wire/Package.resolved \
-        Host/Package.swift Host/Package.resolved \
-        SystemTests/Package.swift SystemTests/Package.resolved \
-        Browser/Package.swift Browser/Package.resolved
-    do
-        if [[ -f "$manifest" ]]; then
-            shasum -a 256 "$manifest"
-        fi
-    done
-
-    # SwiftPM can retain absolute dependency paths after a file-only layout
-    # move; make the source graph part of cache identity.
-    for package_root in Client Common Wire Host SystemTests Browser; do
-        for tree in Sources Tests Plugins; do
-            source_root="$package_root/$tree"
-            if [[ -d "$source_root" ]]; then
-                find "$source_root" -type f -print
-            fi
-        done
-    done | LC_ALL=C sort
-} | shasum -a 256 | awk '{print $1}')"
-
-run_package_tests "Common" "$repo_root/Common" "$repo_root/Common/.build"
-run_package_tests "Wire" "$repo_root/Wire" "$repo_root/Wire/.build"
-run_package_tests "Host" "$repo_root/Host" "$repo_root/Host/.build"
+run_package_tests Common
+run_package_tests Wire
+run_package_tests Host
 # `.build/Lyte.app` is the published app and may be running; SwiftPM
-# `clean` removes the whole scratch root, so Client verification uses a
-# package-local scratch directory.
-run_package_tests "client" "$repo_root/Client" "$repo_root/Client/.build"
-run_package_tests \
-    "SystemTests" "$repo_root/SystemTests" "$repo_root/SystemTests/.build"
+# `clean` removes the whole scratch root, so every package, Client
+# included, uses its package-local scratch directory.
+run_package_tests Client
+run_package_tests SystemTests
 # The browser's sans-IO core, natively (its tests drive a real HostWire
 # session in process).
-run_package_tests "Browser" "$repo_root/Browser" "$repo_root/Browser/.build"
+run_package_tests Browser
 
 # The WebAssembly and page legs need toolchains Xcode does not ship
 # (docs/TESTING.md#requirements). A missing one fails the gate: "LyteWire
@@ -157,8 +135,9 @@ optional_leg "Wire suite on WebAssembly" wasm_suite_runnable \
 optional_leg "browser page tests" node_installed \
     node --test Browser/Tests/Page/page.test.mjs
 
-echo "==> shell script lint"
+echo "==> shell script lint and gate helpers"
 Scripts/Tests/test-shell-assertions.sh
+Scripts/Tests/test-build-graph.sh
 
 echo "==> benchmark safety tests"
 Scripts/Tests/test-benchmark-safety.sh

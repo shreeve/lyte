@@ -31,7 +31,10 @@ run by hand.
 
 Run from the repository root. These are the gate's exact commands; the gate
 also runs `swift package resolve` first and `swift package clean` when the
-build graph changed.
+package's build graph changed: its manifest, pins or file list, or the
+manifest, pins or `Sources` file list of a package it depends on by path
+(`Scripts/lib/build-graph.sh`). Adding a file cleans only that package and
+its dependents.
 
 ```sh
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -120,7 +123,7 @@ In order:
 5. **Script tests:** `test-shell-assertions.sh` (every tracked `*.sh`
    parses, and none states a check as a bare `[[ … ]]`, `(( … ))` or
    `! cmd`, which macOS bash 3.2 never fails under `set -e`; tests use
-   `Scripts/lib/assert.sh`), `test-benchmark-safety.sh`,
+   `Scripts/lib/assert.sh`), `test-build-graph.sh`, `test-benchmark-safety.sh`,
    `test-host-release-posture.sh`, `test-host-package-image.sh --self-test`,
    `test-host-installer.sh --self-test` (which also runs
    `test-host-deploy.sh`), `test-sign-dev.sh`.
