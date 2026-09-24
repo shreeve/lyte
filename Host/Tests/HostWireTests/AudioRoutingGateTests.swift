@@ -190,11 +190,7 @@ final class AudioRoutingGateTests: XCTestCase {
             )
             ctrlSeq &+= 1
             guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
+            return try transport!.sealDatagram(envelope, plaintext: body)
         }
 
         mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
@@ -207,12 +203,9 @@ final class AudioRoutingGateTests: XCTestCase {
                 return
             }
             guard envelope.channel == .ctrl else { return }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
             let plaintext: [UInt8]
             do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
+                plaintext = try transport!.openDatagram(bytes).plaintext
             } catch NoiseError.replayedSequence, NoiseError.staleSequence {
                 return // network duplicate; routine
             }

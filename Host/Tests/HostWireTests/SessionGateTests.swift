@@ -136,11 +136,7 @@ final class SessionGateTests: XCTestCase {
             )
             ctrlSeq &+= 1
             guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
+            return try transport!.sealDatagram(envelope, plaintext: body)
         }
 
         /// Decodes one host datagram, completing the handshake on a bare
@@ -164,10 +160,7 @@ final class SessionGateTests: XCTestCase {
                 transport = try noise.makeTransport()
                 return (envelope, Array(payload))
             }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
-            let plaintext = try transport!.unseal(
-                wirePayload: payload, aad: aad, envelope: envelope
-            )
+            let plaintext = try transport!.openDatagram(bytes).plaintext
             return (envelope, plaintext)
         }
     }

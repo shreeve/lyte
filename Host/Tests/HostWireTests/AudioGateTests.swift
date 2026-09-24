@@ -434,11 +434,7 @@ final class AudioGateTests: XCTestCase {
                 fec: 0
             )
             guard sealed else { return try envelope.encode(payload: body) }
-            let header = try envelope.encode(payload: [])
-            let payload = try transport!.seal(
-                plaintext: body[...], aad: header[...], envelope: envelope
-            )
-            return try envelope.encode(payload: payload)
+            return try transport!.sealDatagram(envelope, plaintext: body)
         }
 
         mutating func absorb(_ bytes: [UInt8], nowMicros: UInt64) throws {
@@ -449,12 +445,9 @@ final class AudioGateTests: XCTestCase {
                 transport = try noise.makeTransport()
                 return
             }
-            let aad = bytes[bytes.startIndex..<payload.startIndex]
             let plaintext: [UInt8]
             do {
-                plaintext = try transport!.unseal(
-                    wirePayload: payload, aad: aad, envelope: envelope
-                )
+                plaintext = try transport!.openDatagram(bytes).plaintext
             } catch NoiseError.replayedSequence, NoiseError.staleSequence {
                 return
             }
@@ -667,13 +660,7 @@ final class AudioGateTests: XCTestCase {
         let sample = box.datagrams.last { $0.pacerClass == .audio }!
         var tampered = sample.bytes
         tampered[8] ^= 0x01 // one timestamp bit
-        XCTAssertThrowsError(try {
-            let (envelope, payload) = try Envelope.decode(tampered)
-            let aad = tampered[tampered.startIndex..<payload.startIndex]
-            _ = try client.transport!.unseal(
-                wirePayload: payload, aad: aad, envelope: envelope
-            )
-        }())
+        XCTAssertThrowsError(try client.transport!.openDatagram(tampered))
     }
 
     // MARK: Leg 6 — lifecycle: the probe never stops (except closed)
