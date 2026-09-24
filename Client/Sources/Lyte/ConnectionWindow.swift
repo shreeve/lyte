@@ -94,6 +94,7 @@ struct ConnectionWindow: View {
                 wireVersion: nil,
                 publicKeyHash: publicKeyHash))
         }
+        .onAppear { OpenConnections.shared.insert(model) }
         .onDisappear {
             // One window = one connection, so the window going away IS
             // the disconnect — including mid-connect, where it must
