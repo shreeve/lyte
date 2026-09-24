@@ -1,48 +1,33 @@
-// The client's reliable CTRL sublayer (CL-7's ARQ leg) — the exact
-// mirror of the host's HS-8 seam, so reliable CTRL messages flow both
-// directions between HostWire.Session and this endpoint through the
-// same W3 frame codecs the frozen arq-v1 vectors pin:
+// The client's reliable sublayer over one channel, the mirror of the
+// host's, speaking the frame codecs the frozen arq-v1 vectors pin:
 //
-//   • one ArqEndpoint<ClientClock> owns the reliable CTRL channel in
+//   • one ArqEndpoint<ClientClock> owns the channel's reliable traffic in
 //     both directions: `send` queues on the ordered stream (group 0),
 //     `sendOneShot` on a fresh serially-ascending group; inbound sealed
-//     CTRL payloads whose first byte is 0x07/0x08 route WHOLLY here
-//     (the one-byte peek — such a payload is a sequence of
-//     self-delimiting ARQ frames, never a single typed message).
-//   • every ARQ datagram is sealed CTRL like everything else the client
-//     sends — TransportSender's envelope-header-as-AAD discipline, a
-//     fresh channel seq per datagram (a retransmitted SEGMENT rides a
-//     fresh datagram and a fresh nonce; ArqFrames.swift on why) — and
-//     is tagged with the session's connection ID once the host's
-//     datagrams have taught it (the HS-12 every-packet rule; the client
-//     learns the id from the TLV the host mints, it never invents one).
-//   • the ARQ endpoint packs once at the carrier's REAL plaintext
-//     ceiling — 1101 B with the conn-id TLV (11 B) and the AEAD tag
-//     (16 B) both on the datagram (24 + 11 + 1101 + 16 = 1152 exactly).
-//     The ceiling is configured before the first datagram, before the
-//     conn-id is even learned, so geometry never depends on runtime
-//     state and the transport shell never decodes/re-cuts ARQ output.
-//   • the PTO deadline rides the client's tick machinery: every
-//     send/ingest pass re-arms a timer at the endpoint's reported
-//     deadline (the client-side analogue of the host folding the ARQ
-//     wake into nextWake and servicing it from the idle-floor tick).
-//     Tests never start the timer and drive `tick(now:)` with a virtual
-//     clock — the FeedbackSender pattern.
+//     payloads whose first byte is 0x07/0x08 route wholly here (the
+//     one-byte peek — such a payload is a sequence of self-delimiting ARQ
+//     frames, never a single typed message).
+//   • every ARQ datagram is sealed like everything else the client sends
+//     (header-as-AAD, a fresh channel seq and nonce per datagram, so a
+//     retransmitted segment rides a fresh datagram) and is tagged with the
+//     session's connection ID once the host's datagrams have taught it;
+//     the client learns the id, it never invents one.
+//   • the ARQ endpoint packs once at the carrier's real plaintext ceiling
+//     — 1101 B with the conn-id TLV (11 B) and the AEAD tag (16 B) both
+//     on the datagram (24 + 11 + 1101 + 16 = 1152 exactly) — configured
+//     before the first datagram, so geometry never depends on runtime
+//     state and the shell never re-cuts ARQ output.
+//   • the PTO deadline rides a timer re-armed after every send/ingest
+//     pass. Tests never start it and drive `tick(now:)` with a virtual
+//     clock.
 //
-// The ARQ-exempt registry traffic stays exempt by construction: beacons,
-// echoes, path messages, handshake carriage, and IDR requests never pass
-// through here (their type bytes are not 0x07/0x08, and their senders —
-// BeaconEchoResponder, IdrRequester — keep their own fire-and-forget
-// paths).
+// ARQ-exempt traffic stays exempt by construction: beacons, echoes, path
+// messages, handshake carriage and IDR requests have other type bytes and
+// their own fire-and-forget senders.
 //
-// F-4: the endpoint is channel-generic now (the ArqEndpoint beneath it
-// always was — W10 named this exact day). The default stays `.ctrl`;
-// the bulk-transfer channel (chan 8, `ChannelId.bulkTransfer`) runs a
-// SECOND instance of this same class so a file transfer and a keystroke
-// never share a stream — the transport pillar's independent-lanes rule,
-// now real. The budget arithmetic is channel-independent (same envelope
-// geometry on every channel); a chan-8 instance never sees non-ARQ
-// payloads (the whole channel is ARQ carriage by design).
+// The session runs two instances: `.ctrl`, and the bulk-transfer channel
+// (chan 8), so a file transfer and a keystroke never share a stream. A
+// chan-8 instance never sees non-ARQ payloads.
 
 import LyteIO
 import Dispatch
@@ -75,18 +60,26 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// session's control stream, `.bulkTransfer` for chan 8).
     public let channel: ChannelId
     private let now: @Sendable () -> ClientTimestamp
-    /// Every ARQ event, in ingest order, fired outside the lock —
-    /// delivered messages, one-shot acknowledgments, ignore verdicts.
+    /// Every ARQ event, in ingest order, fired outside the lock on the
+    /// thread that called `handleCtrlDatagram` (the receive thread in
+    /// production) — delivered messages, one-shot acknowledgments,
+    /// ignore verdicts.
     private let onEvent: (@Sendable (ArqEvent) -> Void)?
 
     private let lock = NSLock()
+    /// Orders transmissions: taken while `lock` is still held, so polled
+    /// batches reach the sender in poll order. Never held while taking
+    /// `lock`.
+    private let transmitLock = NSLock()
     private var arq: ArqEndpoint<ClientClock>
     /// Learned from the first host datagram carrying the TLV; tags every
     /// ARQ datagram from then on. Nil only in the pre-first-beacon
     /// window (the host's session-start beacon teaches it immediately).
     private var connectionId: ConnectionId?
     /// One-shot group ids are endpoint-allocated, serially ascending
-    /// from 1 (the ArqEndpoint reuse rule).
+    /// from 1 and never 0 (the ordered stream's id): the successor of
+    /// 0xFFFF is 1, which ArqEndpoint's serial comparison still reads
+    /// as ascending.
     private var nextOneShotGroup: UInt16 = 1
     private var stats = Stats()
     /// The production PTO wake; nil until `start()`. Re-scheduled to the
@@ -151,8 +144,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
             throw error
         }
         stats.messagesSent += 1
-        serviceLocked(now: now)
-        lock.unlock()
+        serviceAndUnlock(now: now)
     }
 
     /// Queues one one-shot message on a fresh group (allocated here,
@@ -176,10 +168,9 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
             lock.unlock()
             throw error
         }
-        nextOneShotGroup &+= 1
+        nextOneShotGroup = nextOneShotGroup == .max ? 1 : nextOneShotGroup + 1
         stats.messagesSent += 1
-        serviceLocked(now: now)
-        lock.unlock()
+        serviceAndUnlock(now: now)
         return group
     }
 
@@ -221,8 +212,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
             case .ignored: stats.ingestIgnored += 1
             }
         }
-        serviceLocked(now: now)
-        lock.unlock()
+        serviceAndUnlock(now: now)
         for event in events {
             onEvent?(event)
         }
@@ -235,8 +225,10 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// owns the clock and drives `tick(now:)` (tests, always).
     public func start() {
         lock.lock()
-        defer { lock.unlock() }
-        guard timer == nil else { return }
+        guard timer == nil else {
+            lock.unlock()
+            return
+        }
         let source = DispatchSource.makeTimerSource(
             queue: .global(qos: .userInitiated))
         source.setEventHandler { [weak self] in
@@ -247,7 +239,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         timer = source
         // Work may already be pending from a pre-start send: service it
         // (a bare re-arm could see a due timer and push it a full PTO).
-        serviceLocked(now: self.now())
+        serviceAndUnlock(now: self.now())
     }
 
     public func stop() {
@@ -264,8 +256,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// or an unchanged deadline would skip the re-arm and sleep forever.
     private func timerFired() {
         lock.lock()
-        wakeFromTimerLocked(now: now())
-        lock.unlock()
+        wakeFromTimerAndUnlock(now: now())
     }
 
     /// Virtual-time wake — same clear-then-service order as production
@@ -273,7 +264,13 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     /// DispatchSource, so the skip bookkeeping is unused.
     func testingWakeFromTimer(now: ClientTimestamp) {
         lock.lock()
-        wakeFromTimerLocked(now: now)
+        wakeFromTimerAndUnlock(now: now)
+    }
+
+    /// Seeds the one-shot allocator — the wrap pin's probe.
+    func testingSeedNextOneShotGroup(_ group: UInt16) {
+        lock.lock()
+        nextOneShotGroup = group
         lock.unlock()
     }
 
@@ -285,17 +282,16 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         return armedDeadlineMicros
     }
 
-    private func wakeFromTimerLocked(now: ClientTimestamp) {
+    private func wakeFromTimerAndUnlock(now: ClientTimestamp) {
         armedDeadlineMicros = nil
-        serviceLocked(now: now)
+        serviceAndUnlock(now: now)
     }
 
     /// One timer beat: fires due PTO retransmits and re-arms. The wake
     /// timer calls this; tests call it directly with their clock.
     public func tick(now: ClientTimestamp) {
         lock.lock()
-        serviceLocked(now: now)
-        lock.unlock()
+        serviceAndUnlock(now: now)
     }
 
     /// True when the sublayer has nothing left to send, retransmit, or
@@ -344,35 +340,56 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
 
     // MARK: Interior
 
-    /// Polls the endpoint and puts its already carrier-sized output on
-    /// the wire. Each datagram seals through the TransportSender like
-    /// every other CTRL send (fresh channel seq, header-as-AAD, conn-id
-    /// TLV once learned). Re-arms the PTO wake. Runs under the lock.
-    private func serviceLocked(now: ClientTimestamp) {
-        let (payloads, deadline) = arq.poll(now: now)
-        if !payloads.isEmpty {
-            let extensions = connectionId.map { [$0.wireExtension] } ?? []
-            do {
-                for payload in payloads {
-                    let sent = try sender.send(
-                        channel: channel,
-                        timestamp: now,
-                        plaintext: payload,
-                        extensions: extensions
-                    )
-                    if sent {
-                        stats.datagramsSent += 1
-                    } else {
-                        // No peer yet / kernel refused: the segments the
-                        // poll marked sent stay armed on their PTO
-                        // timers — a refused send heals like loss.
-                        stats.sendFailures += 1
-                    }
-                }
-            } catch {
-                stats.sendFailures += 1
-            }
+    /// Polls the endpoint, re-arms the PTO wake, and puts the poll's
+    /// already carrier-sized output on the wire. Entered with `lock` held;
+    /// returns with it released. Each datagram seals through the
+    /// TransportSender like every other send (fresh channel seq,
+    /// header-as-AAD, conn-id TLV once learned).
+    ///
+    /// The seal and `sendto` run outside `lock`, so ingest, stats and
+    /// quiescence readers never wait on a syscall. `transmitLock` is taken
+    /// before `lock` is released, so batches leave in poll order.
+    private func serviceAndUnlock(now: ClientTimestamp) {
+        let payloads = serviceLocked(now: now)
+        guard !payloads.isEmpty else {
+            lock.unlock()
+            return
         }
+        let extensions = connectionId.map { [$0.wireExtension] } ?? []
+        transmitLock.lock()
+        lock.unlock()
+        var sent: UInt64 = 0
+        var failed: UInt64 = 0
+        do {
+            for payload in payloads {
+                if try sender.send(
+                    channel: channel,
+                    timestamp: now,
+                    plaintext: payload,
+                    extensions: extensions
+                ) {
+                    sent += 1
+                } else {
+                    // No peer yet / kernel refused: the segments the
+                    // poll marked sent stay armed on their PTO timers —
+                    // a refused send heals like loss.
+                    failed += 1
+                }
+            }
+        } catch {
+            failed += 1
+        }
+        transmitLock.unlock()
+        lock.lock()
+        stats.datagramsSent += sent
+        stats.sendFailures += failed
+        lock.unlock()
+    }
+
+    /// Polls the endpoint and re-arms the production wake. Runs under
+    /// `lock`; returns the payloads to transmit.
+    private func serviceLocked(now: ClientTimestamp) -> [[UInt8]] {
+        let (payloads, deadline) = arq.poll(now: now)
         // Re-schedule the production wake to the endpoint's reported
         // deadline (poll already accounts for what this pass sent) —
         // unless the armed deadline already sits within 1 ms of it
@@ -401,6 +418,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
                 armedDeadlineMicros = nil
             }
         }
+        return payloads
     }
 
 }

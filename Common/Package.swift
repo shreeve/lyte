@@ -46,8 +46,8 @@ let package = Package(
                 .linkedLibrary("m", .when(platforms: [.linux])),
             ]
         ),
-        // Shared policy stays sans-IO and WASM-buildable. The lint moves
-        // here with the first extracted policy utility.
+        // Shared policy stays sans-IO and WASM-buildable, enforced by
+        // LyteTestKitTests/SansIOArchitectureTests.
         .target(name: "LyteCore"),
         // Shared OS adapters only: both ends consume every admitted organ.
         .target(

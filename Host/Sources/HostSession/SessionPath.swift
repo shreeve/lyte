@@ -11,9 +11,8 @@
 // every entry point takes `now` (monotonic ns), randomness is an injected
 // generator, and outputs are value-typed events the send loop executes
 // (send this challenge datagram on that tuple; switch the peer address;
-// force a keyframe). The Linux send loop that actually rebinds the socket
-// is deliberately thin and lands when the host box returns; everything decidable
-// is decided here, on the Mac, under test.
+// force a keyframe). The wire shell that rebinds the socket is deliberately
+// thin; everything decidable is decided here, under test on every platform.
 //
 // The state machine, per candidate 4-tuple relative to one session:
 //
@@ -37,9 +36,10 @@
 // a tuple is validated, bytes sent to it are capped at
 // `amplificationFactor ×` bytes received from it (factor 3, QUIC's
 // number). The validator does its own accounting for the challenges it
-// emits; media never targets an unvalidated tuple at all (media flows to
-// the primary until promotion — the stronger rule, and the budget is the
-// backstop enforcing it).
+// emits. Media never targets an unvalidated tuple at all: it flows to the
+// primary until promotion, which is the stronger rule. `sendAllowance` /
+// `recordSend` expose the same budget for any other send to a candidate
+// tuple; today no production send consults them.
 
 import LyteWire
 

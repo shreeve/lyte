@@ -136,4 +136,79 @@ final class RendererHandoffPolicyTests: XCTestCase {
             handoff.failEpisode().recoveryRequested,
             "one pressure episode must not mint repeated recoveries")
     }
+
+    /// Inter frames that follow an accepted IRAP belong to ITS chain. The
+    /// shell drains asynchronously, so they can arrive before the IRAP is
+    /// enqueued; they must queue behind it, or the next accepted P frame
+    /// would reference a frame the decoder never saw.
+    func testInterFramesQueueBehindAPendingIrap() {
+        var handoff = BoundedRendererHandoff<Int>(
+            config: .init(capacity: 4, deadlineMicroseconds: 50_000))
+        _ = handoff.failEpisode()
+        let idr = handoff.offer(
+            0, frame: frame(randomAccess: true, submittedMicroseconds: 0))
+        XCTAssertTrue(idr.accepted)
+        XCTAssertTrue(handoff.randomAccessPending)
+        for number in 1...2 {
+            let follower = handoff.offer(
+                number,
+                frame: frame(
+                    randomAccess: false,
+                    submittedMicroseconds: UInt64(number) * 16_000))
+            XCTAssertTrue(follower.accepted)
+            XCTAssertFalse(follower.recoveryRequested)
+            XCTAssertTrue(follower.discarded.isEmpty)
+        }
+        XCTAssertEqual(handoff.popReady()?.element, 0)
+        handoff.noteRandomAccessEnqueued()
+        XCTAssertFalse(handoff.awaitingRandomAccess)
+        XCTAssertEqual(
+            [handoff.popReady()?.element, handoff.popReady()?.element],
+            [1, 2])
+    }
+
+    /// The pending chain is still bounded: overflow discards the IRAP
+    /// with its followers and awaits the next IRAP, without minting a
+    /// second recovery for the episode already open.
+    func testPendingIrapChainStillOverflowsAsOneEpisode() {
+        var handoff = BoundedRendererHandoff<Int>(
+            config: .init(capacity: 3, deadlineMicroseconds: 50_000))
+        _ = handoff.failEpisode()
+        for number in 0..<3 {
+            _ = handoff.offer(
+                number,
+                frame: frame(
+                    randomAccess: number == 0,
+                    submittedMicroseconds: UInt64(number) * 1_000))
+        }
+        let overflow = handoff.offer(
+            3, frame: frame(randomAccess: false, submittedMicroseconds: 3_000))
+        XCTAssertFalse(overflow.accepted)
+        XCTAssertFalse(overflow.recoveryRequested)
+        XCTAssertEqual(overflow.discarded.map(\.element), [0, 1, 2, 3])
+        XCTAssertTrue(handoff.awaitingRandomAccess)
+        XCTAssertFalse(handoff.randomAccessPending)
+        XCTAssertEqual(handoff.count, 0)
+    }
+
+    /// An IRAP that overflows the queue restarts the chain by itself:
+    /// the stale episode is discarded, but no recovery IRAP is asked for.
+    func testOverflowingIrapRestartsTheChainWithoutRecovery() {
+        var handoff = BoundedRendererHandoff<Int>(
+            config: .init(capacity: 3, deadlineMicroseconds: 50_000))
+        for number in 0..<3 {
+            _ = handoff.offer(
+                number,
+                frame: frame(
+                    randomAccess: number == 0,
+                    submittedMicroseconds: UInt64(number) * 1_000))
+        }
+        let idr = handoff.offer(
+            3, frame: frame(randomAccess: true, submittedMicroseconds: 3_000))
+        XCTAssertTrue(idr.accepted)
+        XCTAssertFalse(idr.recoveryRequested)
+        XCTAssertEqual(idr.discarded.map(\.element), [0, 1, 2])
+        XCTAssertFalse(handoff.awaitingRandomAccess)
+        XCTAssertEqual(handoff.popReady()?.element, 3)
+    }
 }

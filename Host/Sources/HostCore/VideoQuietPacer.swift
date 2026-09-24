@@ -57,11 +57,12 @@ public struct VideoQuietPacer: Sendable {
     /// The ladder, as a pure function of stillness.
     public func interval(idleSeconds: Double) -> UInt8 {
         guard idleSeconds >= config.quietAfterSeconds else { return 1 }
-        let rungs = Int((idleSeconds - config.quietAfterSeconds)
-            / config.rungSeconds)
-        // Rung 0 = 2 s, doubling each rung, capped at the ceiling
-        // (the exponent clamp keeps the shift safe for any idle).
-        let unclamped = 1 << min(rungs + 1, 7)
+        // Rung 0 = 2 s, doubling each rung, capped at the ceiling. The
+        // rung count is clamped while still a Double, so any idle
+        // (including +infinity) converts safely; NaN never passes the guard.
+        let rungs = Int(min(
+            (idleSeconds - config.quietAfterSeconds) / config.rungSeconds, 6))
+        let unclamped = 1 << (rungs + 1)
         return UInt8(min(unclamped, Int(config.maxIntervalSeconds)))
     }
 

@@ -57,6 +57,9 @@ public struct ClientClipboardSession: Sendable {
     private var imageSharingOn: Bool
     private var book = ClipboardSyncBook()
     private var imageChannel: ClipboardImageChannel
+    /// Shares refused by `prejudgeLocalImage` before the channel saw
+    /// them; folded into `imageCounters.sharesSuppressed`.
+    private var prejudgedSuppressions = 0
 
     public init(
         textSharingAtStart: Bool,
@@ -74,7 +77,9 @@ public struct ClientClipboardSession: Sendable {
         textSharingOn && imageSharingOn
     }
     public var imageCounters: ClipboardImageChannelCounters {
-        imageChannel.counters
+        var counters = imageChannel.counters
+        counters.sharesSuppressed += prejudgedSuppressions
+        return counters
     }
 
     public mutating func setTextSharing(_ enabled: Bool) {
@@ -152,6 +157,35 @@ public struct ClientClipboardSession: Sendable {
         }
     }
 
+    /// The local-image gates that need no digest: negotiation, consent,
+    /// and the byte ceiling. Returns the refusal when one applies, or nil
+    /// when the image must be hashed and passed to `shareLocalImage`.
+    /// Shells call this first so a refused image is never hashed.
+    ///
+    /// An image over the ceiling can match neither the echo ring nor the
+    /// dedupe slot (both hold only text keys or digests of images within
+    /// the ceiling), so the channel's verdict for it is always busy or
+    /// over budget — decided here without the digest, in the same order.
+    public mutating func prejudgeLocalImage(
+        byteCount: Int,
+        agreed: Capabilities?
+    ) -> ClientClipboardSessionDecision? {
+        guard agreed?.clipboardImagesAgreed == true else {
+            return ClientClipboardSessionDecision(
+                shareOutcome: .notNegotiated)
+        }
+        guard textSharingOn, imageSharingOn else {
+            return ClientClipboardSessionDecision(
+                shareOutcome: .sharingDisabled)
+        }
+        guard byteCount > imageChannel.imageByteCeiling else { return nil }
+        prejudgedSuppressions += 1
+        let reason: ClipboardImageSuppressReason = imageChannel.isSendActive
+            ? .sendBusy
+            : .overBudget(byteCount)
+        return interpretImageEvents([.suppressed(reason)])
+    }
+
     /// Judges one local PNG copy and advances the bounded image lane. The
     /// caller supplies the digest and transfer-id randomness.
     public mutating func shareLocalImage(
@@ -160,13 +194,10 @@ public struct ClientClipboardSession: Sendable {
         rng: inout some RandomNumberGenerator,
         agreed: Capabilities?
     ) -> ClientClipboardSessionDecision {
-        guard agreed?.clipboardImagesAgreed == true else {
-            return ClientClipboardSessionDecision(
-                shareOutcome: .notNegotiated)
-        }
-        guard textSharingOn, imageSharingOn else {
-            return ClientClipboardSessionDecision(
-                shareOutcome: .sharingDisabled)
+        if let refusal = prejudgeLocalImage(
+            byteCount: data.count, agreed: agreed
+        ) {
+            return refusal
         }
         return interpretImageEvents(imageChannel.shareLocalImage(
             data, sha256: sha256, book: &book, rng: &rng

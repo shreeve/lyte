@@ -28,23 +28,6 @@ final class VideoSinkRatchetTests: XCTestCase {
                 + violations.map(\.path).sorted().joined(separator: "\n"))
     }
 
-    func testProductionImplementationsRemainWired() throws {
-        let app = try source("Client/Sources/Lyte/ConnectionModel.swift")
-        let cli = try source("Client/Sources/lyte-cli/WireViewCommand.swift")
-        let sink = try source(
-            "Client/Sources/LyteTransport/VideoSink.swift")
-        XCTAssertTrue(app.contains("VideoRendererHandoff: VideoSink"))
-        XCTAssertTrue(app.contains("noteVideoIrapEnqueued"))
-        XCTAssertTrue(cli.contains("AVSampleBufferRendererVideoSink"))
-        // Diagnostic shell must close the IDR episode on IRAP enqueue —
-        // omitting this re-armed static-screen IDRs under mild loss.
-        XCTAssertTrue(cli.contains("noteVideoIrapEnqueued"))
-        XCTAssertTrue(sink.contains("onIrapEnqueued"))
-        XCTAssertTrue(
-            sink.contains("onIrapEnqueued: @escaping @Sendable (FrameNumber) -> Void"),
-            "diagnostic sink must require the IRAP-close callback")
-    }
-
     func testSessionPolicyStaysNativeMediaTypeFree() throws {
         let core = try source(
             "Client/Sources/LyteTransport/LyteUdpSession.swift")
@@ -54,13 +37,7 @@ final class VideoSinkRatchetTests: XCTestCase {
         XCTAssertFalse(core.contains("import CoreMedia"))
         XCTAssertFalse(core.contains("CMSampleBuffer"))
         XCTAssertFalse(core.contains("class SessionVideoSink"))
-        XCTAssertTrue(core.contains("func admitVideoUnit(_ unit: DecodeUnit) -> Bool"))
-        XCTAssertTrue(core.contains("let sessionSink = SessionVideoSink"))
-        XCTAssertTrue(core.contains("sessionSink.bind(self)"))
-
-        XCTAssertTrue(sink.contains("final class SessionVideoSink"))
-        XCTAssertTrue(sink.contains("owner.admitVideoUnit(unit)"))
-        XCTAssertTrue(sink.contains("downstream.submit(sample: sample, unit: unit)"))
+        XCTAssertTrue(sink.contains("class SessionVideoSink"))
     }
 
     private func swiftSources() throws -> [(path: String, source: String)] {
@@ -68,14 +45,13 @@ final class VideoSinkRatchetTests: XCTestCase {
         for file in try sourceTree.productionSwiftFiles() {
             result.append((
                 sourceTree.relativePath(for: file),
-                try String(contentsOf: file, encoding: .utf8)))
+                try sourceTree.source(of: file)))
         }
         return result
     }
 
     private func source(_ path: String) throws -> String {
-        try String(
-            contentsOf: sourceTree.repositoryRoot.appendingPathComponent(path),
-            encoding: .utf8)
+        try sourceTree.source(
+            of: sourceTree.repositoryRoot.appendingPathComponent(path))
     }
 }

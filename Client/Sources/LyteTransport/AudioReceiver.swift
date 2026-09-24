@@ -1,19 +1,17 @@
-// AudioReceiver (CL-11): the sans-IO audio-path core the session owns —
-// depacketizer (HS-15's byte mirror + FEC recovery) feeding the
-// adaptive jitter buffer, one lock over both, plus the latency books.
-// The production shell's LyteAudioPlayer pulls verdicts from here;
-// tests drive the identical object in virtual time.
+// AudioReceiver: the session's audio-path policy — the depacketizer (the
+// host's byte layout plus FEC recovery) feeding the adaptive jitter
+// buffer, plus the latency books — behind one lock, since the receive
+// thread feeds it and LyteAudioPlayer's pump pulls from it. Tests drive
+// the identical object in virtual time.
 //
-// Clock domains, stated once: `now` is the session's client-monotonic
-// µs, used for the buffer's clocks and adaptation. Capture stamps are
-// the host's PipeWire GRAPH clock (samples since graph start — never
-// wall clock, audio-continuity §4.3), an epoch the client cannot map
-// absolutely; the latency books therefore measure ABOVE THE SESSION
-// FLOOR (min capture→feed delta), which cancels both unknown epochs —
-// see AudioReceiverStats.captureToFeed. The kernel arrival stamp the
-// endpoint collects stays with the feedback dispersion path; at 5 ms
-// granularity the receive thread's wakeup jitter is noise the
-// adaptation window absorbs.
+// Clock domains: `now` is the session's client-monotonic µs, used for the
+// buffer's clocks and adaptation. Capture stamps are the host's PipeWire
+// graph clock (samples since graph start, never wall clock), an epoch the
+// client cannot map absolutely; the latency books therefore measure above
+// the session floor (min capture→feed delta), which cancels both unknown
+// epochs — see AudioReceiverStats.captureToFeed. The kernel arrival stamp
+// stays with the feedback dispersion path; at 5 ms granularity the
+// receive thread's wakeup jitter is noise the adaptation window absorbs.
 
 import Foundation
 import LyteCore
@@ -148,20 +146,6 @@ public final class AudioReceiver: @unchecked Sendable {
             }
         }
         return AudioPullDecision(verdict: verdict, accelerate: accelerating)
-    }
-
-    /// The CL-11 surface, kept verbatim for callers that only want the
-    /// verdict (the accelerate judgment still runs — one decision
-    /// path, two views of it).
-    public func pull(
-        now: ClientTimestamp,
-        urgent: Bool = false,
-        renderPipelineMicroseconds: UInt64 = 0
-    ) -> AudioPullVerdict {
-        pullDecision(
-            now: now, urgent: urgent,
-            renderPipelineMicroseconds: renderPipelineMicroseconds
-        ).verdict
     }
 
     /// The adaptive delay target, in packets — what the pump sizes the

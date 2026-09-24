@@ -1,3 +1,4 @@
+import LyteCore
 import XCTest
 @testable import HostCore
 
@@ -34,5 +35,15 @@ final class ScreenSamplingCadenceTests: XCTestCase {
                        .sample(skippedBeats: 0))
         XCTAssertEqual(cadence.poll(nowMicroseconds: 104),
                        .wait(untilMicroseconds: 113))
+    }
+
+    /// The host samples on the same beat the client conductor steps by.
+    func testHostSamplesOnTheScoreBeat() {
+        XCTAssertEqual(
+            ScreenSamplingCadence().periodMicroseconds,
+            ScoreBeat.periodMicroseconds)
+        XCTAssertEqual(
+            VideoBeatConductor.Config().beatPeriodMicroseconds,
+            ScreenSamplingCadence().periodMicroseconds)
     }
 }
