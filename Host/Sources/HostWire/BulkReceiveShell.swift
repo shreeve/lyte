@@ -408,27 +408,26 @@ public enum BulkFileNaming {
     /// Path separators dropped (only the final component survives),
     /// control and format characters removed (C0, DEL, C1, the bidi
     /// overrides and isolates that let "invoice\u{202E}fdp.exe" display
-    /// as "invoiceexe.pdf", line and paragraph separators), leading dots
-    /// stripped (no dotfiles —
-    /// nothing lands invisible or overrides shell config), trailing
-    /// dots/spaces trimmed, empty → the fallback, overlong truncated
-    /// on a character boundary with the extension preserved.
+    /// as "invoiceexe.pdf", line and paragraph separators), leading dots,
+    /// spaces and combining marks stripped (no dotfiles — nothing lands
+    /// invisible or overrides shell config), trailing dots/spaces
+    /// trimmed, empty → the fallback, overlong truncated on a character
+    /// boundary with the extension preserved.
+    ///
+    /// Every test is per Unicode scalar, never per Character: "/" or "."
+    /// followed by a combining mark is one Character that compares unequal
+    /// to "/" or ".", yet its UTF-8 still carries the 0x2F or 0x2E byte
+    /// the filesystem acts on.
     public static func sanitized(_ offered: String) -> String {
-        var name = offered
+        var scalars = Array(offered.unicodeScalars)
         // Only the final path component: "../../etc/passwd" → "passwd",
         // and a trailing "…/.ssh" meets the dot-stripping below.
-        if let separator = name.lastIndex(where: { $0 == "/" || $0 == "\\" }) {
-            name = String(name[name.index(after: separator)...])
+        if let separator = scalars.lastIndex(where: isPathSeparator) {
+            scalars.removeSubrange(...separator)
         }
-        name = String(String.UnicodeScalarView(
-            name.unicodeScalars.filter { !isHiddenControl($0) }
-        ))
-        while let first = name.first, first == "." || first == " " {
-            name.removeFirst()
-        }
-        while let last = name.last, last == "." || last == " " {
-            name.removeLast()
-        }
+        scalars.removeAll(where: isHiddenControl)
+        scalars.removeFirst(scalars.prefix(while: isLeadingJunk).count)
+        var name = trimmingTrailingDotsAndSpaces(scalars)
         if name.isEmpty { return fallbackName }
         if name.utf8.count > maxNameByteCount {
             let (stem, ext) = splitExtension(name)
@@ -442,13 +441,35 @@ public enum BulkFileNaming {
                 }
                 truncated.removeLast()
             }
-            name = truncated + kept
-            while let last = name.last, last == "." || last == " " {
-                name.removeLast()
-            }
+            name = trimmingTrailingDotsAndSpaces(
+                Array((truncated + kept).unicodeScalars))
             if name.isEmpty { return fallbackName }
         }
         return name
+    }
+
+    private static func isPathSeparator(_ scalar: Unicode.Scalar) -> Bool {
+        scalar == "/" || scalar == "\\"
+    }
+
+    /// A dot, a space, or a mark left with nothing to combine with once
+    /// the dots before it are gone.
+    private static func isLeadingJunk(_ scalar: Unicode.Scalar) -> Bool {
+        if scalar == "." || scalar == " " { return true }
+        switch scalar.properties.generalCategory {
+        case .nonspacingMark, .spacingMark, .enclosingMark: return true
+        default: return false
+        }
+    }
+
+    private static func trimmingTrailingDotsAndSpaces(
+        _ scalars: [Unicode.Scalar]
+    ) -> String {
+        var scalars = scalars
+        while let last = scalars.last, last == "." || last == " " {
+            scalars.removeLast()
+        }
+        return String(String.UnicodeScalarView(scalars))
     }
 
     /// Scalars that have no place in a displayed file name: controls

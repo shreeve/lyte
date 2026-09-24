@@ -284,6 +284,12 @@ final class BulkReceiveGateTests: XCTestCase {
             (".bashrc", "bashrc"),
             ("...sneaky", "sneaky"),
             ("../.ssh", "ssh"),
+            // A separator or dot carrying a combining mark is one
+            // Character but still a 0x2F / 0x5C / 0x2E byte on disk.
+            ("Documents/\u{301}evil.sh", "evil.sh"),
+            ("Documents\\\u{301}evil.sh", "evil.sh"),
+            (".\u{301}bashrc", "bashrc"),
+            ("..\u{301}/\u{301}.\u{20DD}profile", "profile"),
             // Control bytes vanish; interior spaces survive.
             ("evil\u{0000}name.txt", "evilname.txt"),
             ("bell\u{07}~\u{7F}.png", "bell~.png"),
@@ -305,8 +311,13 @@ final class BulkReceiveGateTests: XCTestCase {
             ("фото с дачи.jpeg", "фото с дачи.jpeg"),
         ]
         for (offered, expected) in table {
-            XCTAssertEqual(BulkFileNaming.sanitized(offered), expected,
+            let name = BulkFileNaming.sanitized(offered)
+            XCTAssertEqual(name, expected,
                            "sanitized(\(offered.debugDescription))")
+            let bytes = Array(name.utf8)
+            XCTAssertNotEqual(bytes.first, 0x2E, offered.debugDescription)
+            XCTAssertFalse(bytes.contains { $0 == 0x2F || $0 == 0x5C || $0 == 0x00 },
+                           offered.debugDescription)
         }
 
         // Overlong truncates on the byte budget, keeping the extension.

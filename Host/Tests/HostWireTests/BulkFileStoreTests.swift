@@ -69,6 +69,36 @@ final class BulkFileStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.stagingPath(7)))
     }
 
+    /// The filesystem seam judges a final name by its bytes: a "/" or "."
+    /// hidden inside a combining-mark Character, a backslash or a NUL is
+    /// refused before anything is linked, so no file lands in a
+    /// subdirectory or as a dotfile and the staging bytes stay.
+    func testPromotionRefusesSeparatorAndDotBytesWhateverTheirCharacter() throws {
+        let store = try BulkFileStore(directoryPath: directory)
+        try FileManager.default.createDirectory(
+            atPath: directory + "/Documents", withIntermediateDirectories: false)
+        let hostile = [
+            "Documents/\u{301}evil.sh", "Documents\\evil.sh",
+            "evil\u{0}.sh", ".\u{301}bashrc", ".profile", "",
+        ]
+        for name in hostile {
+            try store.openStaging(transferId: 11)
+            try store.writeChunkDurably([4, 5, 6], atByteOffset: 0)
+            XCTAssertThrowsError(try store.promoteStaging(toName: name),
+                                 name.debugDescription)
+            store.closeStaging()
+        }
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(
+                atPath: directory + "/Documents"), [])
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: directory)
+                .filter { !$0.hasPrefix(".lyte-bulk-") }, ["Documents"])
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: store.stagingPath(11))),
+            Data([4, 5, 6]))
+    }
+
     /// The wire allows offsets up to UInt64.max; one past off_t is a
     /// refused write, not a trap.
     func testChunkOffsetPastTheFileOffsetRangeIsRefused() throws {
