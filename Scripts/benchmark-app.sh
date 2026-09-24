@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Repeatable real Lyte.app glass-path benchmark against the standing pup host.
+#
+# Environment: LYTE_PUP_HOST (default pup), LYTE_BENCHMARK_HOST (address the
+# app dials), LYTE_BENCHMARK_PORT (UDP port lyte-host.service must own;
+# default 41151), LYTE_BENCHMARK_{SECONDS,OUT_DIR,QUALITY_PROBE,
+# FREEZE_FRAME_ID,CHROMA_TIER}, LYTE_ENABLE_PIPELINE_WITNESS.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -7,11 +12,15 @@ APP="$ROOT/.build/Lyte.app"
 APP_EXECUTABLE="$APP/Contents/MacOS/Lyte"
 ANALYZER="$ROOT/Scripts/analyze-app-benchmark.py"
 source "$ROOT/Scripts/lib/benchmark-process.sh"
-PUP="${PUP:-pup}"
+source "$ROOT/Scripts/lib/pup.sh"
+source "$ROOT/Scripts/AppArtifact/app-artifact.sh"
+LSREGISTER="${LYTE_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
+PUP="$(lyte_pup_host)"
 # The standing host advertises on the ethernet leg (enxf8e43b7ede7c =
 # 10.0.0.232); the wifi address answers ICMP but replies can source
 # from the wrong interface and the handshake dies silently.
 HOST="${LYTE_BENCHMARK_HOST:-10.0.0.232}"
+BENCH_PORT="${LYTE_BENCHMARK_PORT:-41151}"
 BENCH_SECONDS="${LYTE_BENCHMARK_SECONDS:-30}"
 OUT_DIR="${LYTE_BENCHMARK_OUT_DIR:-$ROOT/.build/benchmarks}"
 QUALITY_PROBE="${LYTE_BENCHMARK_QUALITY_PROBE:-1}"
@@ -63,6 +72,8 @@ minimum_seconds=5
   || { echo "quality probe must be 0 or 1" >&2; exit 2; }
 [[ "$FREEZE_FRAME_ID" =~ ^[0-9]+$ ]] \
   || { echo "freeze frame must be a non-negative integer" >&2; exit 2; }
+[[ "$BENCH_PORT" =~ ^[0-9]+$ ]] && (( BENCH_PORT >= 1 && BENCH_PORT <= 65535 )) \
+  || { echo "LYTE_BENCHMARK_PORT must be a UDP port" >&2; exit 2; }
 
 refuse_if_lyte_is_running() {
   local pids status
@@ -93,6 +104,12 @@ fi
   echo "missing signed app: run Scripts/make-app.sh release" >&2
   exit 1
 }
+# Hold the app-artifact lock for the whole leg so no assembly swaps the
+# bundle under a running benchmark. `all` re-execs one process per leg, and
+# each child takes the lock itself.
+if [[ "$MODE" != all ]]; then
+  lyte_acquire_app_artifact_lock
+fi
 codesign --verify --strict "$APP"
 
 source_fingerprint() {
@@ -152,32 +169,26 @@ fi
 # A benchmark is evidence only when the source under review is exactly what
 # pup built. Dry-run checksums catch the otherwise-silent "edit B, run A"
 # failure even when mtimes happen to agree.
-deployed_delta="$(
-  rsync -ani --checksum --no-times --omit-dir-times --delete \
-    "$ROOT/Host/Package.swift" \
-    "$PUP:src/lyte-host/Package.swift"
-  rsync -ani --checksum --no-times --omit-dir-times --delete \
-    "$ROOT/Host/Package.resolved" \
-    "$PUP:src/lyte-host/Package.resolved"
-  rsync -ani --checksum --no-times --omit-dir-times --delete \
-    --exclude .build "$ROOT/Host/Sources/" \
-    "$PUP:src/lyte-host/Sources/"
-  rsync -ani --checksum --no-times --omit-dir-times --delete \
-    "$ROOT/Wire/Package.swift" \
-    "$PUP:src/Wire/Package.swift"
-  rsync -ani --checksum --no-times --omit-dir-times --delete \
-    "$ROOT/Wire/Package.resolved" \
-    "$PUP:src/Wire/Package.resolved"
-  rsync -ani --checksum --no-times --omit-dir-times --delete \
-    --exclude .build "$ROOT/Wire/Sources/" \
-    "$PUP:src/Wire/Sources/"
-  rsync -ani --checksum --no-times --omit-dir-times --delete \
-    "$ROOT/Common/Package.swift" \
-    "$PUP:src/Common/Package.swift"
-  rsync -ani --checksum --no-times --omit-dir-times --delete \
-    "$ROOT/Common/Sources/" \
-    "$PUP:src/Common/Sources/"
-)"
+# Each pair is checked on its own: inside one $(...) only the last rsync's
+# status counted, so a failed ssh produced an empty delta that passed.
+deployed_delta=""
+for pair in \
+    "Host/Package.swift:src/lyte-host/Package.swift" \
+    "Host/Package.resolved:src/lyte-host/Package.resolved" \
+    "Host/Sources/:src/lyte-host/Sources/" \
+    "Wire/Package.swift:src/Wire/Package.swift" \
+    "Wire/Package.resolved:src/Wire/Package.resolved" \
+    "Wire/Sources/:src/Wire/Sources/" \
+    "Common/Package.swift:src/Common/Package.swift" \
+    "Common/Sources/:src/Common/Sources/"
+do
+  delta="$(rsync -ani --checksum --no-times --omit-dir-times --delete \
+    --exclude .build "$ROOT/${pair%%:*}" "$PUP:${pair#*:}")" || {
+    echo "benchmark refused: cannot compare ${pair%%:*} with pup" >&2
+    exit 1
+  }
+  deployed_delta+="$delta"
+done
 [[ -z "$deployed_delta" ]] || {
   echo "benchmark refused: local Host/Wire/Common source differs from pup:" >&2
   printf '%s\n' "$deployed_delta" >&2
@@ -185,7 +196,7 @@ deployed_delta="$(
 }
 
 stale_host_source="$(
-  ssh -o ConnectTimeout=10 "$PUP" \
+  pup_ssh \
     "python3 -c 'import os
 b = os.path.expanduser(\"~/src/lyte-host/.build/release/lyte-host\")
 bm = os.path.getmtime(b)
@@ -212,25 +223,16 @@ for root, label, source_dirs in roots:
   exit 1
 }
 
-HOST_PID="$(
-  ssh -o ConnectTimeout=10 "$PUP" \
-    "systemctl is-active --quiet lyte-host \
-&& systemctl show lyte-host --property MainPID --value || true"
-)"
-[[ "$HOST_PID" =~ ^[0-9]+$ && "$HOST_PID" -gt 0 ]] || {
-  echo "benchmark refused: no active standing pup Host service" >&2
+pup_service_owns_port "$BENCH_PORT" || {
+  echo "benchmark refused: lyte-host.service is not active or does not own UDP $BENCH_PORT" >&2
   exit 1
 }
-ssh -o ConnectTimeout=10 "$PUP" \
-  "sudo -n ss -H -lunp 'sport = :41151' | grep -q 'pid=$HOST_PID,'" || {
-  echo "benchmark refused: lyte-host.service MainPID does not own UDP 41151" >&2
-  exit 1
-}
+HOST_PID="$(pup_ssh "systemctl show lyte-host --property MainPID --value")"
 # A capability-tagged host (the direct eye's cap_sys_admin) is
 # ptrace-guarded: /proc/PID/exe refuses same-uid readers no matter the
 # dumpable flag. sudo -n keeps the witness identical, just readable.
 host_hashes="$(
-  ssh -o ConnectTimeout=10 "$PUP" \
+  pup_ssh \
     "{ sha256sum /proc/$HOST_PID/exe 2>/dev/null \
        || sudo -n sha256sum /proc/$HOST_PID/exe; } \
        | head -1; \
@@ -250,10 +252,7 @@ HOST_SOURCE_SHA256="$(source_fingerprint \
   Host Common/Package.swift Common/Sources \
   Wire/Package.swift Wire/Package.resolved Wire/Sources)"
 
-FFPLAY_PID=""
-REMOTE_QUALITY_IMAGE=""
-REMOTE_QUALITY_PRESENTER=""
-REMOTE_QUALITY_WORK=""
+PRESENTER_PID=""
 APP_PID=""
 APP_RUN_ID=""
 APP_PIDFILE=""
@@ -262,23 +261,21 @@ CLEANUP_STARTED=0
 HANDSHAKE_RUN_ID=""
 HANDSHAKE_LOCAL_TCPDUMP_PID=""
 HANDSHAKE_REMOTE_TCPDUMP_PID=""
-HANDSHAKE_REMOTE_WITNESS=""
 
 start_handshake_evidence() {
   local run_id="$1"
   HANDSHAKE_RUN_ID="$run_id"
-  HANDSHAKE_REMOTE_WITNESS="/tmp/$run_id-host-handshake.jsonl"
   route -n get "$HOST" > "$OUT_DIR/$run_id-client-route.txt"
   netstat -s -p udp > "$OUT_DIR/$run_id-client-udp-before.txt"
   sudo -n tcpdump -i en0 -nn -U \
-    -w "$OUT_DIR/$run_id-client.pcap" "udp port 41151" \
+    -w "$OUT_DIR/$run_id-client.pcap" "udp port $BENCH_PORT" \
     >"$OUT_DIR/$run_id-client-tcpdump.stderr" 2>&1 &
   HANDSHAKE_LOCAL_TCPDUMP_PID=$!
-  HANDSHAKE_REMOTE_TCPDUMP_PID="$(ssh "$PUP" \
-    "rm -f '/tmp/$run_id-host.pcap' '$HANDSHAKE_REMOTE_WITNESS'; \
+  HANDSHAKE_REMOTE_TCPDUMP_PID="$(pup_ssh \
+    "sudo -n rm -f '/tmp/$run_id-host.pcap'; \
 sudo -n nohup tcpdump -i any -nn -U -w '/tmp/$run_id-host.pcap' \
-'udp port 41151' >'/tmp/$run_id-host-tcpdump.stderr' 2>&1 & echo \$!")"
-  ssh "$PUP" "date -u +%FT%TZ; \
+'udp port $BENCH_PORT' >'/tmp/$run_id-host-tcpdump.stderr' 2>&1 & echo \$!")"
+  pup_ssh "date -u +%FT%TZ; \
 p=\$(systemctl show lyte-host --property MainPID --value); \
 ps -o pid,lstart,args -p \"\$p\"; \
 { sha256sum /proc/\$p/exe 2>/dev/null || sudo -n sha256sum /proc/\$p/exe; }; \
@@ -293,23 +290,24 @@ collect_handshake_evidence() {
   [[ -z "$HANDSHAKE_LOCAL_TCPDUMP_PID" ]] \
     || kill "$HANDSHAKE_LOCAL_TCPDUMP_PID" 2>/dev/null || true
   [[ -z "$HANDSHAKE_REMOTE_TCPDUMP_PID" ]] \
-    || ssh "$PUP" \
+    || pup_ssh \
       "kill '$HANDSHAKE_REMOTE_TCPDUMP_PID' 2>/dev/null || true" || true
   sleep 1
   netstat -s -p udp > "$OUT_DIR/$run_id-client-udp-after.txt"
   sudo -n tcpdump -nn -tttt -vv \
-    -r "$OUT_DIR/$run_id-client.pcap" "udp port 41151" \
+    -r "$OUT_DIR/$run_id-client.pcap" "udp port $BENCH_PORT" \
     > "$OUT_DIR/$run_id-client-packets.txt" 2>/dev/null || true
   rsync -a "$PUP:/tmp/$run_id-host.pcap" \
     "$OUT_DIR/$run_id-host.pcap" 2>/dev/null || true
-  rsync -a "$PUP:$HANDSHAKE_REMOTE_WITNESS" \
-    "$OUT_DIR/$run_id-host-handshake.jsonl" 2>/dev/null || true
   rsync -a "$PUP:/tmp/$run_id-host-tcpdump.stderr" \
     "$OUT_DIR/$run_id-host-tcpdump.stderr" 2>/dev/null || true
   tcpdump -nn -tttt -vv -r "$OUT_DIR/$run_id-host.pcap" \
-    "udp port 41151" > "$OUT_DIR/$run_id-host-packets.txt" \
+    "udp port $BENCH_PORT" > "$OUT_DIR/$run_id-host-packets.txt" \
     2>/dev/null || true
-  ssh "$PUP" "date -u +%FT%TZ; \
+  # tcpdump ran as root on pup; its capture is root-owned.
+  pup_ssh "sudo -n rm -f '/tmp/$run_id-host.pcap' \
+'/tmp/$run_id-host-tcpdump.stderr'" || true
+  pup_ssh "date -u +%FT%TZ; \
 p=\$(systemctl show lyte-host --property MainPID --value || true); \
 if test -n \"\$p\"; then ps -o pid,lstart,args -p \"\$p\"; \
 { sha256sum /proc/\$p/exe 2>/dev/null || sudo -n sha256sum /proc/\$p/exe; }; fi; \
@@ -320,8 +318,7 @@ ss -u -a -n -p; ip -s link show" \
   HANDSHAKE_RUN_ID=""
   HANDSHAKE_LOCAL_TCPDUMP_PID=""
   HANDSHAKE_REMOTE_TCPDUMP_PID=""
-  HANDSHAKE_REMOTE_WITNESS=""
-}
+  }
 
 cleanup() {
   (( CLEANUP_STARTED == 0 )) || return 0
@@ -353,22 +350,16 @@ cleanup() {
     kill "$OPEN_PID" 2>/dev/null || true
   fi
   collect_handshake_evidence
-  if [[ -n "$FFPLAY_PID" ]]; then
-    ssh -o ConnectTimeout=10 "$PUP" "kill $FFPLAY_PID 2>/dev/null" || true
-  fi
-  if [[ -n "$REMOTE_QUALITY_IMAGE" ]]; then
-    ssh -o ConnectTimeout=10 "$PUP" \
-      "rm -f '$REMOTE_QUALITY_IMAGE' '$REMOTE_QUALITY_PRESENTER' \
-'$REMOTE_QUALITY_PRESENTER.log' '$REMOTE_QUALITY_WORK.raw' \
-'$REMOTE_QUALITY_WORK.hevc' '$REMOTE_QUALITY_WORK.log'" || true
+  if [[ -n "$PRESENTER_PID" ]]; then
+    pup_ssh "kill $PRESENTER_PID 2>/dev/null" || true
   fi
   if [[ -n "$REMOTE_MOTION_PRESENTER" ]]; then
-    ssh -o ConnectTimeout=10 "$PUP" \
+    pup_ssh \
       "rm -f '$REMOTE_MOTION_PRESENTER' '$REMOTE_MOTION_DEFINITION' \
 '$REMOTE_MOTION_LOG' '$REMOTE_MOTION_LOG.stderr'" || true
   fi
   if (( FRESH_HOST_RECOVERY_NEEDED )); then
-    ssh -o ConnectTimeout=10 "$PUP" \
+    pup_ssh \
       "sudo -n systemctl start lyte-host; \
 systemctl is-active --quiet lyte-host" || {
       echo "WARNING: failed to restore lyte-host.service" >&2
@@ -396,7 +387,7 @@ start_motion() {
   local presenter="$ROOT/Scripts/motion-presenter.py"
   local definition="$ROOT/Scripts/motion-definition.json"
   refuse_if_lyte_is_running
-  monitor_state="$(ssh -o ConnectTimeout=10 "$PUP" \
+  monitor_state="$(pup_ssh \
     'XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 \
 gdbus call --session --dest org.gnome.Mutter.DisplayConfig \
 --object-path /org/gnome/Mutter/DisplayConfig \
@@ -418,7 +409,7 @@ if not mode or not logical:
 print(mode.group(1), mode.group(2), mode.group(3), logical.group(3))
 ')"
   read -r QUALITY_WIDTH QUALITY_HEIGHT refresh scale <<< "$discovered"
-  ssh -o ConnectTimeout=10 "$PUP" \
+  pup_ssh \
     'python3 -c '"'"'import gi, numpy
 gi.require_version("Gdk", "4.0")
 gi.require_version("Graphene", "1.0")
@@ -432,7 +423,7 @@ gi.require_version("Gtk", "4.0")
   MOTION_SOURCE_LOG="$OUT_DIR/$run_id-motion-source.jsonl"
   rsync -a "$presenter" "$PUP:$REMOTE_MOTION_PRESENTER"
   rsync -a "$definition" "$PUP:$REMOTE_MOTION_DEFINITION"
-  remote_hashes="$(ssh -o ConnectTimeout=10 "$PUP" \
+  remote_hashes="$(pup_ssh \
     "sha256sum '$REMOTE_MOTION_PRESENTER' '$REMOTE_MOTION_DEFINITION' \
 | awk '{print \$1}'")"
   [[ "$(printf '%s\n' "$remote_hashes" | awk 'NR == 1 {print}')" \
@@ -442,7 +433,7 @@ gi.require_version("Gtk", "4.0")
     echo "motion presenter provenance mismatch after upload" >&2
     exit 1
   }
-  FFPLAY_PID="$(ssh -o ConnectTimeout=10 "$PUP" \
+  PRESENTER_PID="$(pup_ssh \
     "XDG_RUNTIME_DIR=/run/user/1000 \
 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
 WAYLAND_DISPLAY=wayland-0 nohup python3 '$REMOTE_MOTION_PRESENTER' \
@@ -450,12 +441,12 @@ WAYLAND_DISPLAY=wayland-0 nohup python3 '$REMOTE_MOTION_PRESENTER' \
 --width '$QUALITY_WIDTH' --height '$QUALITY_HEIGHT' --refresh '$refresh' \
 ${freeze:+--freeze $freeze} \
 --log '$REMOTE_MOTION_LOG' >'$REMOTE_MOTION_LOG.stderr' 2>&1 & echo \$!")"
-  [[ "$FFPLAY_PID" =~ ^[0-9]+$ ]] || {
-    echo "failed to obtain pup ffplay PID" >&2
+  [[ "$PRESENTER_PID" =~ ^[0-9]+$ ]] || {
+    echo "failed to obtain the pup motion presenter PID" >&2
     exit 1
   }
   sleep 5
-  ssh "$PUP" "kill -0 $FFPLAY_PID" || {
+  pup_ssh "kill -0 $PRESENTER_PID" || {
     echo "pup motion workload failed to stay alive" >&2
     exit 1
   }
@@ -470,15 +461,23 @@ from pathlib import Path
 source, destination, width, height, scale, freeze = sys.argv[1:]
 events = [json.loads(line) for line in Path(source).read_text().splitlines()]
 
+def fail(reason):
+    # Always leave a summary: the provenance step and the caller's message
+    # both read it.
+    result = {"pass": False, "error": reason}
+    Path(destination).write_text(json.dumps(result, separators=(",", ":")) + "\n")
+    print(json.dumps(result, sort_keys=True))
+    raise SystemExit(1)
+
 if freeze:
     # Frozen presenter: the preflight proves the single authored frame
     # reached the glass at exact dimensions; cadence has no meaning.
     frozen_id = int(freeze)
     rows = [row for row in events if row.get("event") == "sourceTick"]
     if not rows:
-        raise SystemExit("frozen source never ticked")
+        fail("frozen source never ticked")
     if any(row["frameID"] != frozen_id for row in rows):
-        raise SystemExit("frozen source presented a foreign frame")
+        fail("frozen source presented a foreign frame")
     presented = [
         row for row in events
         if row.get("event") == "presentation"
@@ -518,7 +517,7 @@ if freeze:
 
 rows = [row for row in events if row.get("event") == "sourceTick"][-180:]
 if len(rows) < 120:
-    raise SystemExit("motion source produced fewer than 120 warm samples")
+    fail("motion source produced fewer than 120 warm samples")
 actual_by_frame = {}
 for row in events:
     if row.get("event") == "presentation" \
@@ -586,7 +585,7 @@ PY
   python3 - "$OUT_DIR/$run_id.provenance.json" "$summary" \
       "$MOTION_PRESENTER_SHA256" "$MOTION_DEFINITION_SHA256" \
       "$motion_source_sha" <<'PY'
-import json, sys
+import json, os, sys
 provenance_path, summary_path, presenter, definition, source_log = sys.argv[1:]
 record = json.load(open(provenance_path))
 record.update({
@@ -595,7 +594,9 @@ record.update({
     "motionDefinition": "Scripts/motion-definition.json",
     "motionDefinitionSHA256": definition,
     "motionSourceLogSHA256": source_log,
-    "motionSourcePreflight": json.load(open(summary_path)),
+    "motionSourcePreflight": (
+        json.load(open(summary_path)) if os.path.exists(summary_path)
+        else {"pass": False, "error": "preflight wrote no summary"}),
     "presentation": "gtk4-wayland-frame-clock-fractional-scale-aware",
 })
 open(provenance_path, "w").write(json.dumps(record, separators=(",", ":")) + "\n")
@@ -607,9 +608,9 @@ PY
 }
 
 stop_motion() {
-  [[ -z "$FFPLAY_PID" ]] || \
-    ssh -o ConnectTimeout=10 "$PUP" "kill $FFPLAY_PID 2>/dev/null" || true
-  FFPLAY_PID=""
+  [[ -z "$PRESENTER_PID" ]] || \
+    pup_ssh "kill $PRESENTER_PID 2>/dev/null" || true
+  PRESENTER_PID=""
 }
 
 # handshake-only measures connect latency against a fresh process on the
@@ -618,7 +619,7 @@ stop_motion() {
 # CAP_SYS_ADMIN instead of inventing a parallel launch path. Protected host
 # identity and configuration must remain byte-identical across the restart.
 protected_host_fingerprint() {
-  ssh -o ConnectTimeout=10 "$PUP" \
+  pup_ssh \
     "{ sha256sum ~/.config/lyte-host/portal_token \
 ~/.config/lyte-host/noise_static.key \
 ~/.config/lyte-host/paired_clients; \
@@ -638,7 +639,7 @@ start_fresh_host() {
 
   refuse_if_lyte_is_running
 
-  ssh -o ConnectTimeout=10 "$PUP" \
+  pup_ssh \
     "systemctl is-active --quiet lyte-host" || {
     echo "handshake-only requires active lyte-host.service" >&2
     exit 1
@@ -647,7 +648,7 @@ start_fresh_host() {
   FRESH_HOST_PROTECTED_STATE="$(protected_host_fingerprint)"
   FRESH_HOST_JOURNAL_SINCE="$(date -u +%FT%TZ)"
   FRESH_HOST_RECOVERY_NEEDED=1
-  restart_result="$(ssh -o ConnectTimeout=10 "$PUP" '
+  restart_result="$(pup_ssh "port=$BENCH_PORT"'
 set -eu
 before=$(systemctl show lyte-host --property MainPID --value)
 sudo -n systemctl restart lyte-host
@@ -656,7 +657,7 @@ while [ "$i" -lt 100 ]; do
   after=$(systemctl show lyte-host --property MainPID --value)
   if systemctl is-active --quiet lyte-host \
       && [ "$after" -gt 0 ] && [ "$after" != "$before" ] \
-      && sudo -n ss -H -lunp "sport = :41151" \
+      && sudo -n ss -H -lunp "sport = :$port" \
           | grep -q "pid=$after,"; then
     set -- $(sudo -n sha256sum "/proc/$after/exe")
     running=$1
@@ -694,10 +695,10 @@ exit 1
 finish_fresh_host() {
   local run_id="$1"
   local host_log="$OUT_DIR/$run_id-host.log"
-  ssh -o ConnectTimeout=10 "$PUP" \
+  pup_ssh \
     "sudo -n journalctl -u lyte-host \
 --since '$FRESH_HOST_JOURNAL_SINCE' --no-pager" > "$host_log"
-  ssh -o ConnectTimeout=10 "$PUP" \
+  pup_ssh \
     "systemctl is-active --quiet lyte-host" || {
     echo "lyte-host.service is not active after handshake-only" >&2
     exit 1
@@ -714,7 +715,7 @@ run_leg() {
   local workload="$1"
   local stamp nonce run_id jsonl pidfile stderr_file provenance_file readback_file
   local quality_reference_sha readback_sha build_badge benchmark_chroma
-  local benchmark_reference_name motion_leg synthetic_motion
+  local benchmark_reference_name synthetic_motion
   local client_pipeline_witness
   refuse_if_lyte_is_running
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -734,14 +735,12 @@ run_leg() {
 {"runID":"$run_id","buildUTC":"$APP_BUILD_UTC","clientExecutableSHA256":"$APP_SHA256","clientSourceSHA256":"$CLIENT_SOURCE_SHA256","hostExecutableSHA256":"$HOST_SHA256","hostSourceSHA256":"$HOST_SOURCE_SHA256"}
 EOF
 
-  QUALITY_REFERENCE_RAW=""
   # V-4: pin the leg's chroma tier from the caller's environment
   # (good|best — ChromaTier rawValues). Empty = the app's own seeding
   # (the pinned host's persisted tier) — fine for smoke, ambiguous
   # for an A/B.
   benchmark_chroma="${LYTE_BENCHMARK_CHROMA_TIER:-}"
   benchmark_reference_name=""
-  motion_leg=""
   synthetic_motion=""
   client_pipeline_witness=""
   if [[ "${LYTE_ENABLE_PIPELINE_WITNESS:-0}" == 1 ]]; then
@@ -784,6 +783,9 @@ PY
   refuse_if_lyte_is_running
   APP_RUN_ID="$run_id"
   APP_PIDFILE="$pidfile"
+  # Register this exact bundle first so Local Network privacy evaluates this
+  # build's identity (same rule as launch-app.sh).
+  "$LSREGISTER" -f "$APP"
   open -n -F -W \
     --env "LYTE_AUTOCONNECT=$HOST" \
     --env "LYTE_BENCHMARK_JSONL=$jsonl" \
@@ -791,13 +793,11 @@ PY
     --env "LYTE_BENCHMARK_RUN_ID=$run_id" \
     --env "LYTE_BENCHMARK_WORKLOAD=$workload" \
     --env "LYTE_BENCHMARK_SECONDS=$BENCH_SECONDS" \
-    --env "LYTE_BENCHMARK_REFERENCE_RAW=$QUALITY_REFERENCE_RAW" \
     --env "LYTE_BENCHMARK_REFERENCE_NAME=$benchmark_reference_name" \
     --env "LYTE_BENCHMARK_REFERENCE_WIDTH=$QUALITY_WIDTH" \
     --env "LYTE_BENCHMARK_REFERENCE_HEIGHT=$QUALITY_HEIGHT" \
     --env "LYTE_BENCHMARK_READBACK_RAW=$readback_file" \
     --env "LYTE_BENCHMARK_MOTION_SOURCE_SUMMARY=$OUT_DIR/$run_id-motion-source-preflight.json" \
-    --env "LYTE_BENCHMARK_MOTION_LEG=$motion_leg" \
     --env "LYTE_BENCHMARK_SYNTHETIC_MOTION=$synthetic_motion" \
     --env "LYTE_BENCHMARK_QUALITY_PROBE=$QUALITY_PROBE" \
     --env "LYTE_HANDSHAKE_WITNESS_JSONL=$OUT_DIR/$run_id-client-handshake.jsonl" \
@@ -873,10 +873,14 @@ case "$MODE" in
   quality-static) run_leg quality-static ;;
   handshake-only) run_leg handshake-only ;;
   all)
+    # One process per leg: `run_leg x || rc=1` would disable set -e inside
+    # the whole leg, so provenance and pup failures would be ignored.
     rc=0
-    run_leg static || rc=1
-    run_leg motion || rc=1
-    run_leg quality-static || rc=1
+    for leg in static motion quality-static; do
+      LYTE_PUP_HOST="$PUP" "$BASH" "$ROOT/Scripts/benchmark-app.sh" \
+        --no-build --seconds "$BENCH_SECONDS" --out "$OUT_DIR" "$leg" \
+        || rc=1
+    done
     exit "$rc"
     ;;
 esac
