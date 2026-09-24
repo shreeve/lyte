@@ -80,6 +80,7 @@ let package = Package(
             dependencies: [
                 "LyteUI",
                 "LyteHelperProtocol",
+                "LyteClientSession",
                 "LyteTransport",
                 "LyteCorpus",
                 .product(name: "LyteCore", package: "Common"),
@@ -92,7 +93,7 @@ let package = Package(
             name: "Lyte",
             dependencies: [
                 "LyteClientCore", "LyteUI", "LyteHelperProtocol",
-                "LyteTransport",
+                "LyteClientSession", "LyteTransport",
                 // The env-gated diagnostic benchmark's quality scorer and
                 // synthetic motion reference — an explicit dependency; the
                 // streaming stack itself carries no corpus code.
@@ -131,6 +132,7 @@ let package = Package(
             name: "LyteTransportTests",
             dependencies: [
                 "LyteClientCore",
+                "LyteClientSession",
                 "LyteTransport",
                 "LyteCorpus",
                 "LyteClientTestKit",

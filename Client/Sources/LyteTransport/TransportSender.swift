@@ -5,9 +5,8 @@
 //   plaintext → Envelope.sealedDatagram (header as AAD, TransportCrypto
 //   seal) → transmit
 //
-// Per-channel u16 seqs are allocated here, one counter per channel, so
-// every outbound channel gets the serial stream the far side's gap
-// tracking expects.
+// Per-channel u16 seqs come from LyteClientSession's
+// ClientEnvelopeSequencer, one serial stream per channel.
 //
 // `transmit` is injected: the CLI hands it UdpReceiveEndpoint.sendToPeer,
 // tests hand it a capture closure. Transmission failures are counted, not
@@ -15,6 +14,7 @@
 // loss the next cadence tick supersedes (build plan §4.11).
 
 import Foundation
+import LyteClientSession
 import LyteWire
 
 /// Outbound counters, snapshotted for the CLI's stats lines.
@@ -28,7 +28,7 @@ public final class TransportSender: @unchecked Sendable {
     private let crypto: TransportCrypto
     private let transmit: @Sendable ([UInt8]) -> Bool
     private let lock = NSLock()
-    private var seqByChannel: [UInt8: ChannelSeq] = [:]
+    private var sequencer = ClientEnvelopeSequencer()
     private var stats = TransportSenderStats()
 
     /// - Parameter transmit: hands one encoded datagram to the socket;
@@ -69,15 +69,10 @@ public final class TransportSender: @unchecked Sendable {
         // transmit (the syscall) stays outside. Lock order is
         // sender→crypto everywhere, so this cannot deadlock.
         lock.lock()
-        let seq = seqByChannel[channel.rawValue] ?? ChannelSeq(rawValue: 0)
-        seqByChannel[channel.rawValue] = seq.next
-
-        let envelope = Envelope(
+        let envelope = sequencer.envelope(
             channel: channel,
-            seq: seq,
             frame: frame,
             timestamp: timestamp.microseconds,
-            fec: 0,
             extensions: extensions
         )
         let datagram: [UInt8]

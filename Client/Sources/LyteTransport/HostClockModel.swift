@@ -23,6 +23,7 @@
 // (frame 1 after idle must be mappable without a warm-up wait).
 
 import Foundation
+import LyteClientSession
 import LyteWire
 
 public final class HostClockModel: @unchecked Sendable {

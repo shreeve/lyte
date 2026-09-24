@@ -2,6 +2,7 @@ import LyteCore
 import LyteClientTestKit
 import XCTest
 import Foundation
+import LyteClientSession
 import LyteTransport
 import LyteWire
 import LyteWireTestKit

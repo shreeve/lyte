@@ -4,6 +4,7 @@ import ArgumentParser
 import Foundation
 import LyteCore
 import LyteIO
+import LyteClientSession
 import LyteTransport
 import LyteUI
 import LyteWire

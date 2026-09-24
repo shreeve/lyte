@@ -982,23 +982,18 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         now: ClientTimestamp
     ) {
         testingBeforeLifecycleExecution?()
-        for action in decision.actions {
-            switch action {
-            case .sendTeardownMessage(let reason):
+        for effect in decision.effects {
+            switch effect {
+            case .sendTeardown(let reason, let message):
                 do {
-                    try reliable.send(
-                        SessionTeardown(reason: reason).encode(), now: now)
+                    try reliable.send(message, now: now)
                     onEvent(.teardownSent(reason))
                 } catch {
                     onEvent(.protocolNote(
                         "teardown send refused: \(error)"))
                 }
-            case .sessionClosed(let reason):
+            case .closed(let reason):
                 onEvent(.closed(reason))
-            case .sendModeMessage, .sendFinalFrameReliably,
-                 .armNextDamageAsIdr, .forceIdr,
-                 .freezeDatagramSends, .resumeDatagramSends:
-                break   // sender-role actions; a receiver never emits them
             }
         }
         guard decision.wireModeChange != nil || decision.stateChange != nil

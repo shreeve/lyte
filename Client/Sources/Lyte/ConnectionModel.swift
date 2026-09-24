@@ -3,6 +3,7 @@ import LyteCore
 import LyteClientCore
 import SwiftUI
 @preconcurrency import AVFoundation
+import LyteClientSession
 import LyteTransport
 import LyteUI
 import LyteWire

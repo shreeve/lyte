@@ -32,6 +32,7 @@
 import LyteIO
 import Dispatch
 import Foundation
+import LyteClientSession
 import LyteWire
 
 public final class ReliableCtrlEndpoint: @unchecked Sendable {
@@ -73,9 +74,9 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     private let transmitLock = NSLock()
     private var arq: ArqEndpoint<ClientClock>
     /// Learned from the first host datagram carrying the TLV; tags every
-    /// ARQ datagram from then on. Nil only in the pre-first-beacon
+    /// ARQ datagram from then on. Empty only in the pre-first-beacon
     /// window (the host's session-start beacon teaches it immediately).
-    private var connectionId: ConnectionId?
+    private var connectionId = ClientConnectionIdBook()
     private var stats = Stats()
     /// The production PTO wake; nil until `start()`. Re-scheduled to the
     /// endpoint's reported deadline after every service pass.
@@ -195,10 +196,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
         envelope: Envelope, payload: [UInt8], now: ClientTimestamp
     ) -> Bool {
         lock.lock()
-        if connectionId == nil,
-           let claimed = try? ConnectionId.decode(extensions: envelope.extensions) {
-            connectionId = claimed
-        }
+        connectionId.learn(from: envelope)
         guard let type = payload.first,
               type == CtrlMessageType.arqSegment || type == CtrlMessageType.arqAck
         else {
@@ -312,7 +310,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     public var learnedConnectionId: ConnectionId? {
         lock.lock()
         defer { lock.unlock() }
-        return connectionId
+        return connectionId.learned
     }
 
     /// Adopts a connection ID learned elsewhere (F-4: the chan-8
@@ -322,7 +320,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
     public func adoptConnectionId(_ id: ConnectionId?) {
         guard let id else { return }
         lock.lock()
-        if connectionId == nil { connectionId = id }
+        connectionId.adopt(id)
         lock.unlock()
     }
 
@@ -349,7 +347,7 @@ public final class ReliableCtrlEndpoint: @unchecked Sendable {
             lock.unlock()
             return
         }
-        let extensions = connectionId.map { [$0.wireExtension] } ?? []
+        let extensions = connectionId.extensions
         transmitLock.lock()
         lock.unlock()
         var sent: UInt64 = 0

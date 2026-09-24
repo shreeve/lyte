@@ -1,3 +1,4 @@
+import LyteClientSession
 import LyteCore
 import LyteWire
 
@@ -42,8 +43,6 @@ public struct BrowserVideoPlayout {
 
     /// Undrained decode input is bounded: about two seconds at 60 fps.
     public static let decodeBacklogCapacity = 120
-    /// Retry interval for an unanswered IDR request (native requester's).
-    public static let idrRetryIntervalMicroseconds: UInt64 = 500_000
 
     private var assembler = VideoAssembler(
         channel: .videoActive,
@@ -75,13 +74,8 @@ public struct BrowserVideoPlayout {
     private var pendingEarly: ScheduledFrame?
     public private(set) var counters = Counters()
 
-    private struct IdrEpisode {
-        var newestDamagedFrame: UInt32
-        var damageCount: UInt64
-        var lastSentMicros: UInt64?
-    }
-    private var idrEpisode: IdrEpisode?
-    private var nextIdrRequestSeq: UInt32 = 0
+    /// The IDR-request episode, the native requester's policy.
+    private var recovery = ClientIdrRecovery()
 
     public init() {}
 
@@ -93,7 +87,7 @@ public struct BrowserVideoPlayout {
     public var presentationBacklogCount: Int {
         scheduledByFrame.count
     }
-    public var recoveryOutstanding: Bool { idrEpisode != nil }
+    public var recoveryOutstanding: Bool { recovery.isOutstanding }
 
     /// Unsealed video shard → assembler → Conductor schedule → handoff.
     public mutating func ingestShard(
@@ -209,24 +203,10 @@ public struct BrowserVideoPlayout {
         }
     }
 
-    /// The IDR request due now, if a recovery episode is open and its last
-    /// request is older than the retry interval.
+    /// The IDR request due now: an open episode's first, or its retry once
+    /// the interval since the last has passed.
     public mutating func idrRequestDue(nowMicros: UInt64) -> IdrRequest? {
-        guard var episode = idrEpisode else { return nil }
-        if let last = episode.lastSentMicros,
-           nowMicros &- last < Self.idrRetryIntervalMicroseconds
-        {
-            return nil
-        }
-        episode.lastSentMicros = nowMicros
-        idrEpisode = episode
-        let request = IdrRequest(
-            requestSeq: nextIdrRequestSeq,
-            frame: FrameNumber(rawValue: episode.newestDamagedFrame),
-            coalescedCount: UInt8(min(episode.damageCount, 255))
-        )
-        nextIdrRequestSeq &+= 1
-        return request
+        recovery.requestDue(now: ClientTimestamp(microseconds: nowMicros))
     }
 
     // MARK: Interior
@@ -237,15 +217,7 @@ public struct BrowserVideoPlayout {
     }
 
     private mutating func demandRecovery(frame: UInt32) {
-        if var episode = idrEpisode {
-            episode.newestDamagedFrame = frame
-            episode.damageCount &+= 1
-            idrEpisode = episode
-        } else {
-            idrEpisode = IdrEpisode(
-                newestDamagedFrame: frame, damageCount: 1, lastSentMicros: nil
-            )
-        }
+        recovery.recordDemand(frame: FrameNumber(rawValue: frame))
     }
 
     private mutating func absorb(_ outcome: BoundedRendererHandoff<UInt32>.Outcome) {
@@ -325,7 +297,7 @@ public struct BrowserVideoPlayout {
         )
         if unit.isIDR {
             // A usable IRAP answers any open recovery episode.
-            idrEpisode = nil
+            recovery.noteUsableIrapAccepted()
         }
         storeForDecode(frame.frameNumber, unit.annexB)
 

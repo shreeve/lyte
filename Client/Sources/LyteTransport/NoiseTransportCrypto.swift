@@ -5,13 +5,10 @@
 //   • config carries the host's pinned static public key (from pairing or
 //     an operator-supplied key) and the host's address, because the
 //     initiator speaks first.
-//   • the handshake rides the CTRL carriage: message 1 leaves as one CTRL
-//     datagram whose payload is 0x05 ‖ raw IK message 1, unsealed
-//     (self-protecting; version byte inside); message 2 comes back as
-//     0x06 ‖ raw message 2. The client owns the retry timer and resends
-//     the same message 1 verbatim from one session, so a late host answer
-//     to any copy still completes this transcript. A 0x13 retry challenge
-//     is answered with that same message 1 plus the echoed cookie (0x14).
+//   • the handshake is LyteClientSession's ClientHandshakeInitiator (bare
+//     CTRL carriage, verbatim message-1 retransmit, retry-challenge
+//     answers) driven here over blocking datagram IO and the monotonic
+//     clock — the same machine the browser drives.
 //   • after Split, every payload both ways seals under the transport with
 //     the exact envelope header bytes as AAD and the (chan, seq)
 //     extended-counter discipline — all inside LyteWire.NoiseTransport;
@@ -25,6 +22,7 @@
 import LyteIO
 import Foundation
 import LyteCore
+import LyteClientSession
 import LyteWire
 
 /// Blocking datagram IO for the pre-thread handshake window. The endpoint
@@ -281,86 +279,55 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
         }
 
         let started = SystemMonotonicClock.nowNanoseconds
+        var initiator = try ClientHandshakeInitiator(
+            hostStaticPublicKey: hostStaticPublicKey,
+            clientStatic: staticKeys,
+            retry: .init(
+                attempts: attempts,
+                intervalMicroseconds: UInt64(max(1, attemptTimeoutMilliseconds))
+                    * 1_000))
         var lastFailure = "no response from \(hostAddress):\(hostPort) "
             + "after \(attempts) attempts"
-        var sendsAccepted = 0
         var datagramsReceived = 0
-        var retryChallengesReceived = 0
-        var nonMessage2Datagrams = 0
-        var rejectedMessage2Datagrams = 0
-        // ONE session, ONE message 1, retransmitted verbatim across the
-        // retry window (classic handshake-retransmit semantics). The
-        // first live run proved why: a Wi-Fi host waking from power save
-        // can deliver message 1 seconds late — the host completes and
-        // starts streaming against THAT message, and a client that
-        // already rolled to a fresh ephemeral can never read the answer
-        // (the host, established, drops all later message 1s). Resending
-        // the same bytes keeps every host answer valid for this
-        // transcript, however late it lands.
-        var session = try NoiseSession(
-            role: .initiator,
-            staticKeys: staticKeys,
-            remoteStaticPublicKey: hostStaticPublicKey
-        )
-        let message1 = try session.writeMessage1()
-        for _ in 0..<attempts {
-            try io.sendToHost(encodeCarriage(
-                type: CtrlMessageType.noiseHandshake1, message: message1))
-            sendsAccepted += 1
-
-            let deadline = SystemMonotonicClock.nowNanoseconds
-                + UInt64(attemptTimeoutMilliseconds) * 1_000_000
-            while true {
-                let nowNanoseconds = SystemMonotonicClock.nowNanoseconds
-                guard nowNanoseconds < deadline else { break }
-                let remaining = Int(
-                    (deadline - nowNanoseconds) / 1_000_000)
-                guard let datagram = try io.receiveDatagram(
-                    timeoutMilliseconds: max(1, min(remaining, 100))
-                ) else { continue }
-                datagramsReceived += 1
-                // W8, the client leg: a flooded host answers message 1
-                // with a stateless RetryChallenge (0x13) instead of
-                // spending crypto. The answer is the SAME message 1,
-                // byte-verbatim, wrapped with the cookie echoed in a
-                // RetryHandshake1 (0x14) — the retransmit rule (0443beb)
-                // makes the verbatim echo free, and the cookie's MAC
-                // over exactly those bytes makes it mandatory. Answering
-                // does not consume an attempt: the challenge IS the
-                // host's liveness, and the resubmission stays inside
-                // this attempt's window.
-                if let challenge = decodeRetryChallenge(datagram) {
-                    retryChallengesReceived += 1
-                    let resubmission: [UInt8]
-                    do {
-                        resubmission = try RetryHandshake1(
-                            echoing: challenge, message1: message1
-                        ).encode()
-                    } catch {
-                        lastFailure = "retry challenge unanswerable: \(error)"
-                        continue
-                    }
-                    try io.sendToHost(encodeCarriage(payload: resubmission))
-                    stateLock.lock()
-                    retryChallengesAnswered += 1
-                    stateLock.unlock()
-                    continue
-                }
-                guard let message2 = decodeCarriage(datagram) else {
-                    nonMessage2Datagrams += 1
-                    // Not message 2 (a reordered sealed datagram, noise
-                    // on the port) — FEC absorbs early shard loss;
-                    // message 2 precedes them in the host's control FIFO.
-                    continue
-                }
-                do {
-                    _ = try session.readMessage2(message2[...])
-                } catch {
-                    rejectedMessage2Datagrams += 1
-                    lastFailure = "message 2 rejected: \(error)"
-                    continue
-                }
-                let made = try session.makeTransport()
+        try io.sendToHost(initiator.begin(
+            nowMicros: SystemMonotonicClock.nowMicroseconds))
+        while true {
+            let now = SystemMonotonicClock.nowMicroseconds
+            switch initiator.tick(nowMicros: now) {
+            case .wait:
+                break
+            case .retransmit(let carriage):
+                try io.sendToHost(carriage)
+                continue
+            case .exhausted:
+                let counters = initiator.counters
+                throw TransportCryptoError.handshakeFailed(
+                    lastFailure + " [kernel accepted "
+                        + "\(counters.message1Transmissions + counters.retryChallengesAnswered) sends; "
+                        + "received \(datagramsReceived) datagrams: "
+                        + "\(counters.retryChallengesAnswered) retry challenges answered, "
+                        + "\(counters.otherDatagrams + counters.undecodableDatagrams) non-message-2, "
+                        + "\(counters.rejectedMessage2) rejected message-2]")
+            }
+            let remainingMs = Int(
+                (initiator.attemptDeadlineMicros &- now) / 1_000)
+            guard let datagram = try io.receiveDatagram(
+                timeoutMilliseconds: max(1, min(remainingMs, 100))
+            ) else { continue }
+            datagramsReceived += 1
+            switch initiator.ingest(
+                datagram[...], nowMicros: SystemMonotonicClock.nowMicroseconds
+            ) {
+            case .ignored:
+                continue
+            case .reply(let carriage):
+                try io.sendToHost(carriage)
+                stateLock.lock()
+                retryChallengesAnswered += 1
+                stateLock.unlock()
+            case .rejectedMessage2(let error):
+                lastFailure = "message 2 rejected: \(error)"
+            case .established(let made):
                 // Lock order is state → send → receive everywhere a
                 // transition touches more than one domain. The state lock
                 // publishes both directional copies and the handshake hash
@@ -379,53 +346,6 @@ public final class NoiseTransportCrypto: HandshakingTransportCrypto, @unchecked 
                 return
             }
         }
-        throw TransportCryptoError.handshakeFailed(
-            lastFailure + " [kernel accepted \(sendsAccepted) sends; "
-                + "received \(datagramsReceived) datagrams: "
-                + "\(retryChallengesReceived) retry challenges, "
-                + "\(nonMessage2Datagrams) non-message-2, "
-                + "\(rejectedMessage2Datagrams) rejected message-2]")
-    }
-
-    /// One CTRL carriage datagram: bare envelope (chan 0, seq 0, client
-    /// monotonic µs), payload = type byte ‖ raw Noise message, unsealed.
-    private func encodeCarriage(type: UInt8, message: [UInt8]) -> [UInt8] {
-        encodeCarriage(payload: [type] + message)
-    }
-
-    /// The same bare pre-transport carriage for an already-typed payload
-    /// (the 0x14 retry resubmission carries its own type byte).
-    private func encodeCarriage(payload: [UInt8]) -> [UInt8] {
-        let envelope = Envelope(
-            channel: .ctrl,
-            seq: ChannelSeq(rawValue: 0),
-            frame: FrameNumber(rawValue: 0),
-            timestamp: SystemMonotonicClock.nowMicroseconds,
-            fec: 0
-        )
-        // Handshake payloads (≤ 26 + 122 B with the cookie) cannot
-        // breach any budget under a bare envelope.
-        return try! envelope.encode(payload: payload)
-    }
-
-    /// The raw Noise message 2 when `datagram` is its carriage, else nil.
-    private func decodeCarriage(_ datagram: [UInt8]) -> [UInt8]? {
-        guard let (envelope, payload) = try? Envelope.decode(datagram[...]),
-              envelope.channel == .ctrl,
-              payload.first == CtrlMessageType.noiseHandshake2
-        else { return nil }
-        return Array(payload.dropFirst())
-    }
-
-    /// The typed RetryChallenge when `datagram` carries one (bare CTRL,
-    /// 0x13), else nil. Malformed challenges are ignored, not fatal —
-    /// the attempt window's retransmit draws a fresh one.
-    private func decodeRetryChallenge(_ datagram: [UInt8]) -> RetryChallenge? {
-        guard let (envelope, payload) = try? Envelope.decode(datagram[...]),
-              envelope.channel == .ctrl,
-              payload.first == CtrlMessageType.retryChallenge
-        else { return nil }
-        return try? RetryChallenge.decode(payload)
     }
 
     // MARK: The transport seam
