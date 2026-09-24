@@ -1629,47 +1629,42 @@ final class SessionWire {
                 receiveAllMaxNS, SystemMonotonicClock.nowNanoseconds - receiveStart
             )
         }
-        while true {
-            let got = recvSlots.withUnsafeMutableBufferPointer { slots in
-                lyte_netio_recv_batch(socket, slots.baseAddress,
-                                      Int32(slots.count),
-                                      &recvError, recvError.count)
-            }
-            if got == LYTE_NETIO_PEER_GONE {
-                notePeerGone()
-                return
-            }
-            if got == LYTE_NETIO_TRANSIENT {
-                // A consumed ICMP soft error: loss, not session death.
-                receiveTransientErrors += 1
-                return
-            }
-            if got < 0 {
-                throw HostError("recv failed: \(errString(recvError))")
-            }
-            if got == 0 { return }
-            let localPort = lyte_netio_local_port(socket)
-            for i in 0..<Int(got) {
-                let slot = recvSlots[i]
-                let datagram = Array(UnsafeBufferPointer(
-                    start: recvScratch.advanced(by: i * Self.recvSlotCapacity),
-                    count: slot.len
-                ))
-                var ip = slot.src_ip
-                let source = withUnsafeBytes(of: &ip) { raw -> String in
-                    String(decoding: raw.prefix(while: { $0 != 0 }),
-                           as: UTF8.self)
-                }
-                handle(datagram, FourTuple(
-                    localAddress: "0.0.0.0", localPort: localPort,
-                    remoteAddress: source, remotePort: slot.src_port
-                ))
-            }
-            // One recvmmsg batch per critical section. A continuously full
-            // feedback socket must not turn `receiveAll` into an unbounded
-            // broad-lock owner; the sender loop immediately takes another
-            // pass, with an unlock/service opportunity between batches.
+        // One recvmmsg batch per call: a continuously full socket must not
+        // turn a receive into an unbounded hold of the session lock; the
+        // sender takes another pass after releasing it.
+        let got = recvSlots.withUnsafeMutableBufferPointer { slots in
+            lyte_netio_recv_batch(socket, slots.baseAddress,
+                                  Int32(slots.count),
+                                  &recvError, recvError.count)
+        }
+        if got == LYTE_NETIO_PEER_GONE {
+            notePeerGone()
             return
+        }
+        if got == LYTE_NETIO_TRANSIENT {
+            // A consumed ICMP soft error: loss, not session death.
+            receiveTransientErrors += 1
+            return
+        }
+        if got < 0 {
+            throw HostError("recv failed: \(errString(recvError))")
+        }
+        let localPort = lyte_netio_local_port(socket)
+        for i in 0..<Int(got) {
+            let slot = recvSlots[i]
+            let datagram = Array(UnsafeBufferPointer(
+                start: recvScratch.advanced(by: i * Self.recvSlotCapacity),
+                count: slot.len
+            ))
+            var ip = slot.src_ip
+            let source = withUnsafeBytes(of: &ip) { raw -> String in
+                String(decoding: raw.prefix(while: { $0 != 0 }),
+                       as: UTF8.self)
+            }
+            handle(datagram, FourTuple(
+                localAddress: "0.0.0.0", localPort: localPort,
+                remoteAddress: source, remotePort: slot.src_port
+            ))
         }
     }
 
