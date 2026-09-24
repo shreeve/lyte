@@ -16,9 +16,11 @@
 #                                        (Host/Scripts/deploy-host.sh)
 #   @STATE_HOME@/lyte/host.log           the host's own output, 0600
 #
-# The log is bounded at start: a host.log over 64 MiB becomes host.log.1
-# (replacing the previous one) before the host execs, so the files hold
-# at most two generations. The journal keeps the unit lifecycle.
+# The log is bounded: a host.log over 64 MiB becomes host.log.1 (replacing
+# the previous one) before the host execs, and the running host does the
+# same to its own output at every session boundary and once a minute
+# during a session (HostLog), so the files hold at most two generations
+# however long the service runs. The journal keeps the unit lifecycle.
 #
 # The seat user's session environment (XDG_RUNTIME_DIR + the session
 # bus) rides along for the clipboard leaf (Mutter RemoteDesktop over

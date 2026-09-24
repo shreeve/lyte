@@ -116,6 +116,8 @@ final class DirectEyeLeg {
     static let fps = 60
     /// The cursor plane's poll period: one 60 Hz beat.
     static let cursorPollMicroseconds: UInt64 = 16_667
+    /// How often a running session's janitor bounds host.log.
+    static let logCheckIntervalMicros: UInt64 = 60_000_000
     private var lastDeliveryWallSeconds = 0.0
     private(set) var keepalivesSent = 0
     /// The video quiet ladder (postures design): engaged only under
@@ -249,12 +251,18 @@ final class DirectEyeLeg {
             nonisolated(unsafe) let leg = self
             nonisolated(unsafe) let wire = wire
             let janitor = Thread {
+                var nextLogCheckMicros = SystemMonotonicClock.nowMicroseconds
+                    + Self.logCheckIntervalMicros
                 while true {
                     leg.serviceLock.lock()
                     let stop = leg.serviceStopRequested
                     leg.serviceLock.unlock()
                     if stop { break }
                     let start = SystemMonotonicClock.nowMicroseconds
+                    if start >= nextLogCheckMicros {
+                        HostLogBound.check()
+                        nextLogCheckMicros = start + Self.logCheckIntervalMicros
+                    }
                     wire.service()
                     let took = SystemMonotonicClock.nowMicroseconds - start
                     leg.serviceLock.lock()

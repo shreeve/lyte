@@ -834,6 +834,7 @@ static func run(arguments: [String]) throws {
                 service: session \(loop.sessionsServed) closed \
                 (\(served.end)) — awaiting the next client
                 """)
+            HostLogBound.check()
         case .exit(failure: nil):
             return
         case .exit(failure: let failure?):
