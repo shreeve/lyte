@@ -1960,6 +1960,39 @@ final class RateEstimatorGateTests: XCTestCase {
         XCTAssertEqual(estimator.fecRegime, .clean)
     }
 
+    /// A client may send reports at any rate. A storm of them — each with
+    /// a train of dispersion, every tenth with six full NACK entries on
+    /// fresh frames — must leave the estimator's memory bounded, not
+    /// grown per report.
+    func testReportStormKeepsEvidenceBounded() throws {
+        let estimator = makeEstimator()
+        var seq = 0
+        var received: UInt32 = 0
+        for n in 0..<2_100 {
+            let now = Self.ms + UInt64(n) * 10_000
+            let samples = train(
+                estimator, seqStart: seq, count: 4, sendStartNS: now,
+                sendSpacingNS: 1_000, bottleneckBitsPerSecond: 20_000_000)
+            seq += 4
+            received += 4
+            let nacks = try (0..<(n % 10 == 0 ? 6 : 0)).map { entry in
+                try FeedbackReport.NackEntry(
+                    frame: FrameNumber(rawValue: UInt32(n * 6 + entry)),
+                    missingShards: Array(0...254))
+            }
+            _ = estimator.ingest(
+                report(samples: samples, clientMicros: now / 1_000,
+                       channels: lossLedger(received: received, missing: 0),
+                       nacks: nacks),
+                now: now, inRecovery: false)
+        }
+        XCTAssertLessThanOrEqual(
+            estimator.retainedEvidenceCount,
+            2 * 256 + 2_048 + 4_096 + 1_024)
+        XCTAssertGreaterThanOrEqual(
+            estimator.rateBitsPerSecond, estimator.config.floorBitsPerSecond)
+    }
+
     func testRecusedNackShardsAreNotPathEvidence() throws {
         let estimator = makeEstimator()
         let driver = EstimatorDriver(self, estimator)

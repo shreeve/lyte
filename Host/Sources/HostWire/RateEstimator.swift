@@ -628,6 +628,7 @@ public final class RateEstimator {
         let matched = matchDispersion(report)
         absorbDeliveryTrains(matched, now: now)
         let inflated = absorbDelay(matched, now: now)
+        enforceEvidenceCaps()
 
         let lossFraction = currentLossFraction()
         let postFecLossFraction = currentPostFecLossFraction()
@@ -672,6 +673,54 @@ public final class RateEstimator {
             recoveryWindowSawOveruse = false
         }
         return verdict
+    }
+
+    // MARK: - Evidence bounds
+
+    /// Every window is keyed by report arrival and a client may send
+    /// reports at any rate, so each is capped far above what the wire's
+    /// 25–50 ms cadence fills (40 reports per 1 s loss window, 400 per 10 s
+    /// delay window, a few trains per report). Past a cap the oldest
+    /// evidence goes first; memory and per-report work stay bounded under
+    /// a report storm.
+    static let lossSampleCap = 256
+    static let delaySampleCapPerChannel = 1_024
+    static let deliverySampleCap = 2_048
+    static let nackShardMemoryCap = 4_096
+
+    /// Evidence entries retained across every window (test seam).
+    @_spi(Testing) public var retainedEvidenceCount: Int {
+        lossWindow.count + postFecWindow.count + deliveryWindow.count
+            + recentNackShards.count
+            + delayBaselineWindows.values.reduce(0) { $0 + $1.count }
+    }
+
+    private func enforceEvidenceCaps() {
+        if lossWindow.count > Self.lossSampleCap {
+            lossWindow.removeFirst(lossWindow.count - Self.lossSampleCap)
+        }
+        if postFecWindow.count > Self.lossSampleCap {
+            postFecWindow.removeFirst(postFecWindow.count - Self.lossSampleCap)
+        }
+        if deliveryWindow.count > Self.deliverySampleCap {
+            deliveryWindow.removeFirst(
+                deliveryWindow.count - Self.deliverySampleCap)
+            deliveryWindowMax = deliveryWindow.map(\.rate).max()
+        }
+        var index = delayBaselineWindows.values.startIndex
+        while index != delayBaselineWindows.values.endIndex {
+            let excess = delayBaselineWindows.values[index].count
+                - Self.delaySampleCapPerChannel
+            if excess > 0 {
+                delayBaselineWindows.values[index].removeFirst(excess)
+            }
+            index = delayBaselineWindows.values.index(after: index)
+        }
+        // Dedupe memory only: forgetting it can double-count a re-NACK,
+        // never miss a fresh one.
+        if recentNackShards.count > Self.nackShardMemoryCap {
+            recentNackShards.removeAll(keepingCapacity: true)
+        }
     }
 
     // MARK: - The machine's numbers
@@ -820,10 +869,14 @@ public final class RateEstimator {
             }
             deliveryWindowMax = maximum
         }
-        for channel in delayBaselineWindows.keys {
-            delayBaselineWindows[channel]!.removeAll {
+        // Mutated through `values` in place: iterating `keys` while
+        // writing would copy the dictionary and every array.
+        var index = delayBaselineWindows.values.startIndex
+        while index != delayBaselineWindows.values.endIndex {
+            delayBaselineWindows.values[index].removeAll {
                 now &- $0.at > config.sampleWindowNS
             }
+            index = delayBaselineWindows.values.index(after: index)
         }
         lossWindow.removeAll {
             now &- $0.at > config.lossWindowNS
