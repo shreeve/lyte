@@ -4,7 +4,7 @@ import Darwin
 import Glibc
 #endif
 import Foundation
-import HostIO
+@_spi(Testing) import HostIO
 import XCTest
 
 /// The XDG layout and the one-way adoption of pre-XDG identity files.
@@ -131,6 +131,47 @@ final class HostPathsTests: XCTestCase {
         XCTAssertEqual(
             try FileManager.default.contentsOfDirectory(atPath: paths.configDirectory),
             ["noise_static.key"], "no temporary is left behind")
+    }
+
+    /// A copy that reads back wrong is never trusted: this call removes
+    /// the file it made (and only that one), throws, and the next start
+    /// copies again. The legacy file is never touched.
+    func testACopyThatReadsBackWrongIsRemovedAndCopiedAgainNextStart() throws {
+        let paths = HostPaths(home: home)
+        let legacy = paths.legacyConfig("noise_static.key")
+        try write([1, 2, 3], to: legacy, mode: 0o600)
+        let legacyBefore = try snapshot(legacy)
+        let target = paths.config("noise_static.key")
+
+        XCTAssertThrowsError(try paths.adoptConfigFile(
+            "noise_static.key", readBack: { _ in [0xEE] })) {
+            XCTAssertEqual($0 as? HostPathError, .adoptionMismatch(target))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target),
+                       "the mismatched copy is not left for the next start")
+        XCTAssertEqual(try snapshot(legacy), legacyBefore)
+
+        let (path, note) = try paths.adoptConfigFile("noise_static.key")
+        XCTAssertEqual(path, target)
+        XCTAssertNotNil(note, "the next start copies again")
+        XCTAssertEqual(try SecretFile.read(target), [1, 2, 3])
+    }
+
+    /// A file another writer put at the new location after the copy was
+    /// linked is theirs: a failed verification never removes it.
+    func testAMismatchNeverRemovesAFileAnotherWriterPutThere() throws {
+        let paths = HostPaths(home: home)
+        try write([1, 2, 3], to: paths.legacyConfig("noise_static.key"), mode: 0o600)
+        let target = paths.config("noise_static.key")
+
+        let (path, note) = try paths.adoptConfigFile(
+            "noise_static.key", readBack: { path in
+                try SecretFile.write([9, 9], to: path) // a --pair run wins
+                return try SecretFile.read(path)
+            })
+        XCTAssertEqual(path, target)
+        XCTAssertNil(note)
+        XCTAssertEqual(try SecretFile.read(target), [9, 9])
     }
 
     func testNeitherPresentCreatesNothing() throws {

@@ -11,7 +11,9 @@
 // new location first; when only the legacy file exists it COPIES it into
 // place (0600, atomic, create-if-absent, verified byte-for-byte) and never
 // deletes, moves, or writes the legacy file. Adoption never replaces or
-// removes anything at the new location: whatever lands there first wins.
+// removes anything at the new location it did not itself just create:
+// whatever lands there first wins, and the only file it ever removes is
+// its own copy that failed verification.
 
 #if canImport(Darwin)
 import Darwin
@@ -77,20 +79,34 @@ public struct HostPaths: Equatable, Sendable {
     /// When only `~/.config/lyte-host/<name>` exists it is copied there
     /// first and `note` says so; the legacy file is left exactly as found.
     /// A new-location entry that appears meanwhile (another host process,
-    /// a `--pair` run) wins; a copy that reads back wrong throws and is
-    /// left in place for the operator.
+    /// a `--pair` run) wins. A copy this call made that reads back wrong
+    /// is removed — only that file, never an entry someone else put there
+    /// — and the call throws, so no later start trusts it unverified; the
+    /// next start copies again.
     public func adoptConfigFile(_ name: String) throws -> (path: String, note: String?) {
+        try adoptConfigFile(name, readBack: SecretFile.read)
+    }
+
+    /// `adoptConfigFile` with the verifying read injected.
+    @_spi(Testing)
+    public func adoptConfigFile(
+        _ name: String, readBack: (String) throws -> [UInt8]?
+    ) throws -> (path: String, note: String?) {
         let target = config(name)
         if SecretFile.exists(target) {
             return (target, nil)
         }
         let legacy = legacyConfig(name)
         guard let bytes = try SecretFile.read(legacy),
-              try SecretFile.create(bytes, at: target)
+              let created = try SecretFile.createOwned(bytes, at: target)
         else {
             return (target, nil)
         }
-        guard try SecretFile.read(target) == bytes else {
+        guard try readBack(target) == bytes else {
+            guard SecretFile.identity(of: target) == created else {
+                return (target, nil) // replaced meanwhile: the winner's
+            }
+            SecretFile.remove(target)
             throw HostPathError.adoptionMismatch(target)
         }
         return (target, "identity: copied \(legacy) → \(target) (legacy file left in place)")
@@ -129,14 +145,48 @@ public enum SecretFile {
     /// neither overwrites the other. Returns false (writing nothing) when
     /// the file already exists — the caller reads the winner's.
     public static func create(_ bytes: [UInt8], at path: String) throws -> Bool {
+        try createOwned(bytes, at: path) != nil
+    }
+
+    /// Which file a path names: device and inode.
+    struct FileIdentity: Equatable {
+        let device: UInt64
+        let inode: UInt64
+    }
+
+    /// `create`, returning the created file's identity (nil when the path
+    /// already existed), so a caller can later tell its own file from one
+    /// that replaced it.
+    static func createOwned(
+        _ bytes: [UInt8], at path: String
+    ) throws -> FileIdentity? {
         let temporary = try writeTemporary(bytes, for: path)
         defer { unlink(temporary) }
+        guard let created = identity(of: temporary) else {
+            throw HostPathError.write("cannot stat \(temporary): \(Posix.errnoText())")
+        }
         guard link(temporary, path) == 0 else {
-            if errno == EEXIST { return false }
+            if errno == EEXIST { return nil }
             throw HostPathError.write("cannot create \(path): \(Posix.errnoText())")
         }
         syncDirectory(of: path)
-        return true
+        return created
+    }
+
+    /// The identity of the entry at `path` itself (a symlink is not
+    /// followed); nil when there is none.
+    static func identity(of path: String) -> FileIdentity? {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return nil }
+        return FileIdentity(
+            device: UInt64(truncatingIfNeeded: info.st_dev),
+            inode: UInt64(truncatingIfNeeded: info.st_ino))
+    }
+
+    /// Unlinks `path` and makes the removal durable.
+    static func remove(_ path: String) {
+        guard unlink(path) == 0 else { return }
+        syncDirectory(of: path)
     }
 
     /// The bytes, fsync'ed, in a fresh `.<name>.tmp.XXXXXX` beside `path`.
