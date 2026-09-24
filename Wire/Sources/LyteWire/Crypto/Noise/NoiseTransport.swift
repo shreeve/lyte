@@ -143,7 +143,10 @@ struct TransportDirection: Sendable {
     /// Previous epoch's cipher, kept for the receive-side grace window.
     var previousCipher: NoiseCipherState?
     var epoch: UInt32 = 0
-    var trackers: [UInt8: ExtendedCounterTracker] = [:]
+    /// Indexed by channel number.
+    var trackers = [ExtendedCounterTracker](
+        repeating: ExtendedCounterTracker(), count: 256
+    )
     /// Datagrams processed since the last rekey — the trigger input.
     var datagramsSinceRekey: UInt64 = 0
 
@@ -223,7 +226,7 @@ public struct NoiseTransport: Sendable {
         guard plaintext.count <= WireBudget.maxPlaintextShardByteCount else {
             throw NoiseError.plaintextOverBudget(plaintext.count)
         }
-        var tracker = send.trackers[channel.rawValue] ?? ExtendedCounterTracker()
+        var tracker = send.trackers[Int(channel.rawValue)]
         guard let extended = tracker.extendedCounter(for: seq),
               tracker.verdict(for: extended) == .fresh else {
             throw NoiseError.sendSequenceNotMonotonic
@@ -236,7 +239,7 @@ public struct NoiseTransport: Sendable {
             plaintext: plaintext
         )
         tracker.accept(extended)
-        send.trackers[channel.rawValue] = tracker
+        send.trackers[Int(channel.rawValue)] = tracker
         send.datagramsSinceRekey &+= 1
         return sealed
     }
@@ -271,8 +274,7 @@ public struct NoiseTransport: Sendable {
               wirePayload.count <= WireBudget.maxWirePayloadByteCount else {
             throw NoiseError.wirePayloadOutOfBounds(wirePayload.count)
         }
-        var tracker = receive.trackers[channel.rawValue]
-            ?? ExtendedCounterTracker()
+        var tracker = receive.trackers[Int(channel.rawValue)]
         let plaintext: [UInt8]
         let extended: UInt64
         do {
@@ -299,13 +301,13 @@ public struct NoiseTransport: Sendable {
                   )
             else {
                 tracker.noteFailure()
-                receive.trackers[channel.rawValue] = tracker
+                receive.trackers[Int(channel.rawValue)] = tracker
                 throw error
             }
             (plaintext, extended) = resynced
         }
         tracker.accept(extended)
-        receive.trackers[channel.rawValue] = tracker
+        receive.trackers[Int(channel.rawValue)] = tracker
         receive.datagramsSinceRekey &+= 1
         return plaintext
     }

@@ -64,26 +64,39 @@ enum NoisePrimitives {
         return shared.withUnsafeBytes { Array($0) }
     }
 
+    /// A ChaCha20-Poly1305 key: the raw bytes (REKEY derives from them)
+    /// plus the provider's key object, built once per key rather than
+    /// once per datagram.
+    struct AeadKey: Sendable {
+        let bytes: [UInt8]
+        fileprivate let symmetric: SymmetricKey
+
+        /// Keys come only from the Noise HKDF and REKEY, both of which
+        /// produce exactly 32 bytes.
+        init(_ bytes: [UInt8]) {
+            precondition(bytes.count == keyByteCount)
+            self.bytes = bytes
+            symmetric = SymmetricKey(data: bytes)
+        }
+    }
+
     /// ChaCha20-Poly1305 seal: returns ciphertext ‖ 16-byte tag.
     static func aeadSeal(
-        key: [UInt8],
+        key: AeadKey,
         nonce: [UInt8],
         aad: ArraySlice<UInt8>,
         plaintext: ArraySlice<UInt8>
     ) throws -> [UInt8] {
-        guard key.count == keyByteCount else {
-            throw NoiseError.invalidKeyLength(key.count)
-        }
         guard nonce.count == nonceByteCount else {
             throw NoiseError.invalidKeyLength(nonce.count)
         }
         // The seal path throws only on structural misuse (bad lengths),
         // which the guards above exclude — a throw here is a logic bug.
         let box = try ChaChaPoly.seal(
-            Array(plaintext),
-            using: SymmetricKey(data: key),
+            plaintext,
+            using: key.symmetric,
             nonce: ChaChaPoly.Nonce(data: nonce),
-            authenticating: Array(aad)
+            authenticating: aad
         )
         var out = [UInt8]()
         out.reserveCapacity(plaintext.count + tagByteCount)
@@ -95,33 +108,23 @@ enum NoisePrimitives {
     /// ChaCha20-Poly1305 open of ciphertext ‖ tag. Throws
     /// `authenticationFailure` — and deliberately nothing more specific.
     static func aeadOpen(
-        key: [UInt8],
+        key: AeadKey,
         nonce: [UInt8],
         aad: ArraySlice<UInt8>,
         ciphertextAndTag: ArraySlice<UInt8>
     ) throws -> [UInt8] {
-        guard key.count == keyByteCount else {
-            throw NoiseError.invalidKeyLength(key.count)
-        }
         guard nonce.count == nonceByteCount else {
             throw NoiseError.invalidKeyLength(nonce.count)
         }
         guard ciphertextAndTag.count >= tagByteCount else {
             throw NoiseError.authenticationFailure
         }
-        let split = ciphertextAndTag.index(
-            ciphertextAndTag.endIndex, offsetBy: -tagByteCount
-        )
         guard
             let box = try? ChaChaPoly.SealedBox(
-                nonce: ChaChaPoly.Nonce(data: nonce),
-                ciphertext: Array(ciphertextAndTag[..<split]),
-                tag: Array(ciphertextAndTag[split...])
+                combined: nonce + ciphertextAndTag
             ),
             let plaintext = try? ChaChaPoly.open(
-                box,
-                using: SymmetricKey(data: key),
-                authenticating: Array(aad)
+                box, using: key.symmetric, authenticating: aad
             )
         else {
             throw NoiseError.authenticationFailure
