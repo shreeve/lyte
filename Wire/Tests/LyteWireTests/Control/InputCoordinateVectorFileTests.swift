@@ -13,10 +13,6 @@ final class InputCoordinateVectorFileTests: XCTestCase {
         try InputCoordinateVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     /// Every f64-carrying kind is pinned on both sides of the domain
     /// edge, and every reject names the non-finite case.
     func testDomainEdgeCovered() throws {

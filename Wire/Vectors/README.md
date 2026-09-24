@@ -22,19 +22,23 @@ file here is modified, deleted, renamed or retyped; new files and edits to
 this README pass.
 
 **Authoring.** Every file is built by a builder in the `LyteWireVectorGen`
-library, and `VectorRegenerationTests` rebuilds each committed file inside
-the suite, so a builder can never drift from the bytes. The
-`lyte-wire-vectorgen` CLI writes one file:
+library, listed once in its `vectorFileBuilders` registry.
+`VectorRegenerationTests` requires the registry to name every committed
+`*.json` here exactly once, and each committed file to be byte-for-byte
+what its builder writes today. The one exemption is `cursor-v1.json`,
+committed with a single `/` the encoder writes as `\/`; its comparison
+un-escapes that and forgives nothing else. A builder that drifts from its
+frozen file therefore fails the suite. The `lyte-wire-vectorgen` CLI
+writes one NEW file and refuses to replace an existing path unless given
+`--force` (for scratch copies only):
 
 ```sh
 swift run --package-path Wire lyte-wire-vectorgen <kind> <output-path>
-# kind: envelope fec video beacon noise session arq lifecycle pairing
-#       capabilities retry control clipboard bulk clipboard-images cursor
-#       repair-refusal postures
+# kind: a registry entry's kind; the usage line lists them all
 swift run --package-path Wire lyte-wire-vectorgen video-roundtrip <in.hevc> <out.hevc>
 ```
 
-`video` reads the corpus from `<output-dir>/video-corpus-v1/`.
+`video` always reads the committed corpus, `video-corpus-v1/`.
 `video-roundtrip` is not an authoring tool: it packetizes an Annex-B file,
 shuffles and drops shards up to the parity limit, reassembles, verifies
 byte-exactness, and writes the stream for an external `ffmpeg -f null -`
@@ -239,7 +243,7 @@ file; never rewrite a committed replay.
   shape (`codec = inputEvent`). `InputCoordinateVectorFileTests`
   asserts both sides of the edge are pinned for every f64 kind.
 
-Every file above is rebuilt from its builder by `VectorRegenerationTests`
+Every file above must be byte-for-byte its builder's output
 (see Authoring above).
 
 ## The 24-byte envelope (wire v1)

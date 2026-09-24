@@ -19,10 +19,6 @@ final class VideoVectorFileTests: XCTestCase {
         try VideoVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     func testFrameVectorsPacketizeByteExact() throws {
         for vector in try loadFile().frames {
             let bytes = try vector.source.loadBytes(

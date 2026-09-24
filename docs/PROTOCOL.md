@@ -315,8 +315,9 @@ window is clamped to 256 chunks.
   fails if a committed vector file is modified, deleted, renamed or
   retyped; new files and README prose may be added. Changed semantics need
   a new versioned file and a wire-version decision.
-- `VectorRegenerationTests` rebuilds every committed file from its builder
-  in `LyteWireVectorGen`, so builders cannot drift from the bytes.
+- `VectorRegenerationTests` fails unless every committed file is
+  byte-for-byte its builder's output in `LyteWireVectorGen` (one named
+  escaping exemption, `cursor-v1.json`).
 - The same vectors verify byte-for-byte on macOS, Linux (pup) and
   wasm32-wasip1 (`Wire/Scripts/wasm-test.sh`).
 - A banked set of wire-v2 changes is recorded in the

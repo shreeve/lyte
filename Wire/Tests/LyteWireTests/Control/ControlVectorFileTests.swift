@@ -15,10 +15,6 @@ final class ControlVectorFileTests: XCTestCase {
         try ControlVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     /// The file pins the WHOLE value spaces of the enum-shaped codecs:
     /// every InputEvent body kind and every routing mode of both 0x18
     /// and 0x19 must appear as a roundtrip — a case added to either

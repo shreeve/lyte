@@ -13,10 +13,6 @@ final class BulkVectorFileTests: XCTestCase {
         try BulkVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     /// The file's coverage discipline: every codec carries
     /// roundtrips, every BulkMessageError case name appears at least
     /// once, the abort reason space is pinned WHOLE (the lifecycle

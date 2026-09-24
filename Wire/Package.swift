@@ -49,10 +49,9 @@ let package = Package(
                 .product(name: "LyteCore", package: "Common"),
             ]
         ),
-        // The builders that author every Vectors/ file. The test suite
-        // rebuilds each committed file from them, so they cannot drift
-        // from the frozen bytes. See Vectors/README.md for the freeze
-        // policy.
+        // The builders that author every Vectors/ file, in one registry.
+        // The suite fails unless each committed file is byte-for-byte its
+        // builder's output. See Vectors/README.md for the freeze policy.
         .target(
             name: "LyteWireVectorGen",
             dependencies: [

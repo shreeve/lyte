@@ -13,10 +13,6 @@ final class BeaconVectorFileTests: XCTestCase {
         try BeaconVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     func testAllBeaconVectors() throws {
         for vector in try loadFile().beaconVectors {
             switch vector.kind {

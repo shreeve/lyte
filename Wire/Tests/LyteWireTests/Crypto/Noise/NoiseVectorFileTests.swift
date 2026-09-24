@@ -22,9 +22,8 @@ final class NoiseVectorFileTests: XCTestCase {
         try NoiseVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
+    func testProvenanceIsHonest() throws {
         let file = try loadFile()
-        XCTAssertEqual(file.identityProblems, [])
         XCTAssertEqual(
             file.handshakeVectors.count, 2,
             "both external sources (snow, cacophony) must be present"

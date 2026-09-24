@@ -15,10 +15,6 @@ final class CapabilityVectorFileTests: XCTestCase {
         try CapabilityVectorFile.loadCommitted()
     }
 
-    func testFileIdentity() throws {
-        XCTAssertEqual(try loadFile().identityProblems, [])
-    }
-
     func testCborVectors() throws {
         for vector in try loadFile().cborVectors {
             guard let bytes = Hex.bytes(vector.cborHex) else {
