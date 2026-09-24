@@ -190,3 +190,43 @@ final class ListeningSocketLinuxTests: XCTestCase {
         XCTAssertTrue(refused, "the kernel answered B with port-unreachable")
     }
 }
+
+final class SenderWaitLinuxTests: XCTestCase {
+    func testTheWakeFdAndAReadableSocketEndTheWaitAndTimeoutsElapse() throws {
+        var error = [CChar](repeating: 0, count: 256)
+        let wake = lyte_netio_wake_new()
+        XCTAssertGreaterThanOrEqual(wake, 0)
+        defer { close(wake) }
+        let socket = try XCTUnwrap(lyte_netio_new(
+            "127.0.0.1", 0, &error, error.count))
+        defer { lyte_netio_free(socket) }
+        let fds = [wake, lyte_netio_fd(socket)]
+        let events = [Int16(POLLIN), Int16(POLLIN)]
+        var revents = [Int16](repeating: 0, count: 2)
+
+        XCTAssertEqual(lyte_netio_wait(fds, events, &revents, 2, 1_000_000), 0,
+            "nothing ready: the timeout elapses")
+
+        lyte_netio_wake_signal(wake)
+        XCTAssertEqual(lyte_netio_wait(fds, events, &revents, 2, -1), 1)
+        XCTAssertNotEqual(revents[0], 0)
+        lyte_netio_wake_drain(wake)
+        XCTAssertEqual(lyte_netio_wait(fds, events, &revents, 2, 0), 0,
+            "draining resets the wake")
+
+        let sender = try XCTUnwrap(lyte_netio_new(
+            "127.0.0.1", 0, &error, error.count))
+        defer { lyte_netio_free(sender) }
+        XCTAssertEqual(lyte_netio_set_peer(
+            sender, "127.0.0.1", lyte_netio_local_port(socket),
+            &error, error.count), 0)
+        var byte: UInt8 = 7
+        withUnsafeMutablePointer(to: &byte) { pointer in
+            var packet = lyte_netio_pkt(data: pointer, len: 1, tos: 0)
+            XCTAssertEqual(lyte_netio_send_batch(
+                sender, &packet, 1, nil, &error, error.count), 1)
+        }
+        XCTAssertEqual(lyte_netio_wait(fds, events, &revents, 2, 1_000_000_000), 1)
+        XCTAssertNotEqual(revents[1], 0, "an inbound datagram wakes the sender")
+    }
+}

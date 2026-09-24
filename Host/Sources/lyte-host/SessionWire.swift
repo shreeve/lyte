@@ -374,14 +374,19 @@ final class SessionWire {
     /// is closed — session-ending, not an I/O failure (HS-11).
     private(set) var peerGone = false
 
-    /// The sender thread (the fps-ceiling fix): parks on `drainCondition`
-    /// while the pacer is idle; `signalDrain()` wakes it whenever bytes
-    /// were enqueued. It runs the exact drainToIdle loop the capture
-    /// thread used to run inline.
+    /// The sender thread's wake (an eventfd): capture, audio, and the
+    /// janitor signal it when bytes were enqueued; it also wakes on socket
+    /// readability and at the session's next timer (drainLoop).
+    private let wakeFd: Int32
+    /// Guards the sender thread's lifecycle flags below. Lock order:
+    /// `lock` → `drainCondition` (takeLegSnapshot), never the reverse.
     private let drainCondition = NSCondition()
-    private var drainWork = false
     private var drainStop = false
     private var drainExited = false
+    /// The last flush ended on a full socket buffer (the lane to wait on
+    /// for POLLOUT) or on ENOBUFS (a short back-off). Under `lock`.
+    private var blockedLane: SocketLane?
+    private var noBufferBackoff = false
     /// A drain-thread send failure (not peer-gone — that has its own
     /// flag): recorded loud and session-ending, mirroring what a thrown
     /// sendFrame used to do to the capture loop.
@@ -525,6 +530,11 @@ final class SessionWire {
             lyte_netio_free(n)
             throw HostError("listening socket SO_PRIORITY failed")
         }
+        wakeFd = lyte_netio_wake_new()
+        guard wakeFd >= 0 else {
+            lyte_netio_free(n)
+            throw HostError("sender wake eventfd failed (errno \(errno))")
+        }
         scratch = UnsafeMutablePointer<UInt8>.allocate(
             capacity: Self.scratchCapacity)
         sendPackets.reserveCapacity(Int(LYTE_NETIO_MAX_BATCH))
@@ -575,6 +585,7 @@ final class SessionWire {
             lyte_netio_free(videoNetio)
         }
         lyte_netio_free(listenNetio)
+        close(wakeFd)
     }
 
     private func traceHandshake(
@@ -798,7 +809,9 @@ final class SessionWire {
             lock.unlock()
             flushLogLines()
             if done {
-                try drainToIdle()
+                // The sender thread owns the established session's pacing
+                // from here.
+                signalDrain()
                 return .established
             }
             usleep(2_000)
@@ -1455,46 +1468,51 @@ final class SessionWire {
 
     /// Wakes the sender thread: bytes were enqueued (or leftovers were
     /// observed) and the pacer needs pumping at its own wake instants.
-    /// Never call while holding `lock` — the lock order is
-    /// `lock` → `drainCondition` (takeLegSnapshot) and must stay acyclic.
     private func signalDrain() {
-        drainCondition.lock()
-        drainWork = true
-        drainCondition.signal()
-        drainCondition.unlock()
+        lyte_netio_wake_signal(wakeFd)
     }
 
     /// Stops the sender thread and waits for it to exit (it holds
     /// `self` and shares the send scratch, so teardown must not race
-    /// it). Idempotent; a parked thread exits within one signal, a
-    /// draining thread within its current drain.
+    /// it). Idempotent; the thread exits within its current pass.
     private func stopDrain() {
         drainCondition.lock()
         drainStop = true
-        drainCondition.signal()
+        drainCondition.unlock()
+        signalDrain()
+        drainCondition.lock()
         while !drainExited { drainCondition.wait() }
         drainCondition.unlock()
     }
 
-    /// The sender thread's whole life: park until signaled, drain the
-    /// pacer to idle at its own wake instants, park again. A send
-    /// failure is recorded and ends the session (mirroring what a
-    /// thrown sendFrame used to do to the capture loop) — the thread
-    /// itself parks and stays stoppable.
+    /// What the sender thread waits for between passes.
+    private struct DrainWait {
+        /// Nil = until signaled (no established session, or it ended).
+        var timeoutNS: Int64?
+        /// Sockets whose readability ends the wait, with POLLOUT on the
+        /// one whose buffer was full.
+        var sockets: [(fd: Int32, pollOut: Bool)] = []
+    }
+
+    /// The sender thread's whole life: one service pass (receive, timers,
+    /// pacer, flush), then wait — on its wake eventfd, the sockets'
+    /// readability (an inbound datagram, e.g. input, is read at once),
+    /// POLLOUT on a full socket, or the session's next timer — and again.
+    /// A send failure is recorded and ends the session (the capture loop
+    /// reads it); the thread itself stays stoppable.
     private func drainLoop() {
         while true {
             drainCondition.lock()
-            while !drainWork && !drainStop { drainCondition.wait() }
-            if drainStop {
+            let stop = drainStop
+            if stop {
                 drainExited = true
                 drainCondition.broadcast()
-                drainCondition.unlock()
-                return
             }
-            drainWork = false
             drainCondition.unlock()
+            if stop { return }
+            let wait: DrainWait
             do {
-                try drainToIdle()
+                wait = try drainPass()
             } catch {
                 lock.lock()
                 lastSendError = String(describing: error)
@@ -1507,44 +1525,65 @@ final class SessionWire {
                     print("session: wire drain failed (\(error)) — "
                         + "closing")
                 }
+                wait = DrainWait()
             }
+            block(until: wait)
         }
     }
 
-    /// Callers must NOT hold `lock`: each pass takes it for the service
-    /// work and releases it across the sleep, so the audio thread's
-    /// 5 ms sends interleave with a long video drain (the structural
-    /// half of the 5 ms ± 2 ms bound; the pacer's class order is the
-    /// other half).
-    private func drainToIdle() throws {
-        while true {
-            lock.lock()
-            guard session != nil else {
-                lock.unlock()
-                return
-            }
-            do {
-                try serviceOnce()
-                try flushOutbox()
-            } catch {
-                lock.unlock()
-                flushLogLines()
-                throw error
-            }
-            let done = peerGone || (session.isIdle && outbox.isEmpty)
-            let now = SystemMonotonicClock.nowNanoseconds
-            let wake = session.nextWake(now: now)
-            let socketRetry = !outbox.isEmpty
+    /// Callers must NOT hold `lock`: the pass takes it for the service
+    /// work and the wait happens outside it, so the audio thread's 5 ms
+    /// sends interleave with a long video drain (the structural half of
+    /// the 5 ms ± 2 ms bound; the pacer's class order is the other half).
+    private func drainPass() throws -> DrainWait {
+        lock.lock()
+        guard let session, session.phase == .established, !peerGone else {
             lock.unlock()
             flushLogLines()
-            if done { return }
-            if socketRetry {
-                // Nonblocking UDP backpressure: retry outside the Session
-                // lock so 5 ms audio can still enter and preempt video.
-                usleep(200)
-            } else if let wake, wake > now {
-                usleep(UInt32(min((wake - now) / 1_000 + 1, 2_000)))
-            }
+            return DrainWait()
+        }
+        do {
+            try serviceOnce()
+            try flushOutbox()
+        } catch {
+            lock.unlock()
+            flushLogLines()
+            throw error
+        }
+        let now = SystemMonotonicClock.nowNanoseconds
+        let wake = session.nextWake(now: now)
+        let blocked = outbox.isEmpty ? nil : blockedLane
+        let backoff = !outbox.isEmpty && noBufferBackoff
+        var sockets: [(fd: Int32, pollOut: Bool)] = [
+            (lyte_netio_fd(listenNetio), false)
+        ]
+        if let videoNetio {
+            sockets.append((lyte_netio_fd(videoNetio), blocked == .video))
+        }
+        if let latencyNetio {
+            sockets.append((lyte_netio_fd(latencyNetio), blocked == .latency))
+        }
+        lock.unlock()
+        flushLogLines()
+
+        return DrainWait(
+            timeoutNS: SenderWait.timeoutNS(
+                nowNS: now, nextWakeNS: wake, noBufferBackoff: backoff),
+            sockets: sockets)
+    }
+
+    private func block(until wait: DrainWait) {
+        var fds: [Int32] = [wakeFd]
+        var events: [Int16] = [Int16(POLLIN)]
+        for socket in wait.sockets {
+            fds.append(socket.fd)
+            events.append(Int16(socket.pollOut ? POLLIN | POLLOUT : POLLIN))
+        }
+        var revents = [Int16](repeating: 0, count: fds.count)
+        _ = lyte_netio_wait(
+            fds, events, &revents, Int32(fds.count), wait.timeoutNS ?? -1)
+        if revents[0] != 0 {
+            lyte_netio_wake_drain(wakeFd)
         }
     }
 
@@ -2024,6 +2063,8 @@ final class SessionWire {
     }
 
     private func flushOutbox() throws {
+        blockedLane = nil
+        noBufferBackoff = false
         guard !outbox.isEmpty else { return }
         if peerGone {
             outbox.dropAll()
@@ -2042,6 +2083,7 @@ final class SessionWire {
         case .drained:
             break
         case .wouldBlock(let lane):
+            blockedLane = lane
             let blockedOutq = max(
                 Int(lyte_netio_outq_bytes(socket(for: lane) ?? listenNetio)), 0)
             if lane == .latency {
@@ -2050,6 +2092,7 @@ final class SessionWire {
                 socketOutqMaxBytes = max(socketOutqMaxBytes, blockedOutq)
             }
         case .noBuffer:
+            noBufferBackoff = true
             let now = SystemMonotonicClock.nowNanoseconds
             _ = observeKernelPressure(session, now: now)
             outbox.shedOldestStaleFreshVideo(

@@ -9,8 +9,11 @@
 #include <linux/net_tstamp.h>
 #include <linux/sockios.h>
 #include <netinet/in.h>
+#include <poll.h>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <time.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -390,6 +393,59 @@ int lyte_netio_poll_txstamps(lyte_netio *n, lyte_netio_txstamp *out, int max,
         drained++;
     }
     return drained;
+}
+
+int lyte_netio_fd(const lyte_netio *n)
+{
+    return n->fd;
+}
+
+int lyte_netio_wake_new(void)
+{
+    return eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+}
+
+void lyte_netio_wake_signal(int wake_fd)
+{
+    uint64_t one = 1;
+    /* A full counter (never in practice) still leaves the fd readable. */
+    ssize_t ignored = write(wake_fd, &one, sizeof(one));
+    (void)ignored;
+}
+
+void lyte_netio_wake_drain(int wake_fd)
+{
+    uint64_t count;
+    ssize_t ignored = read(wake_fd, &count, sizeof(count));
+    (void)ignored;
+}
+
+int lyte_netio_wait(const int *fds, const short *events, short *revents,
+                    int count, int64_t timeout_ns)
+{
+    struct pollfd pfds[8];
+    if (count < 0 || count > 8) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (int i = 0; i < count; i++) {
+        pfds[i].fd = fds[i];
+        pfds[i].events = events[i];
+        pfds[i].revents = 0;
+    }
+    struct timespec ts;
+    struct timespec *timeout = NULL;
+    if (timeout_ns >= 0) {
+        ts.tv_sec = (time_t)(timeout_ns / 1000000000);
+        ts.tv_nsec = (long)(timeout_ns % 1000000000);
+        timeout = &ts;
+    }
+    int ready = ppoll(pfds, (nfds_t)count, timeout, NULL);
+    if (ready < 0 && errno == EINTR)
+        ready = 0;
+    for (int i = 0; i < count; i++)
+        revents[i] = ready > 0 ? pfds[i].revents : 0;
+    return ready;
 }
 
 void lyte_netio_free(lyte_netio *n)

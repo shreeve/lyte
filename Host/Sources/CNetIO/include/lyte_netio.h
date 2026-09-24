@@ -140,6 +140,23 @@ int lyte_netio_poll_txstamps(lyte_netio *n, lyte_netio_txstamp *out, int max,
 
 void lyte_netio_free(lyte_netio *n);
 
+/* The socket's file descriptor, for readiness waits only (the caller
+   never reads, writes, or closes it). */
+int lyte_netio_fd(const lyte_netio *n);
+
+/* A nonblocking eventfd the sender thread waits on beside its sockets:
+   _signal makes it readable, _drain resets it. -1 on failure. */
+int lyte_netio_wake_new(void);
+void lyte_netio_wake_signal(int wake_fd);
+void lyte_netio_wake_drain(int wake_fd);
+
+/* Waits (ppoll) until one of up to 8 `fds` is ready for its `events`
+   (POLLIN/POLLOUT bits) or `timeout_ns` elapses (negative = forever).
+   Fills `revents`. Returns the number ready, 0 on timeout or a signal,
+   -1 on error. */
+int lyte_netio_wait(const int *fds, const short *events, short *revents,
+                    int count, int64_t timeout_ns);
+
 /* Re-arm dumpability after file-capability startup (prctl is variadic
  * and unreachable from Swift). A cap-tagged binary starts non-dumpable,
  * which kills coredumps; note /proc/self/exe stays ptrace-guarded
