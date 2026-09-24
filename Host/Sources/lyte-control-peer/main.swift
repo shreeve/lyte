@@ -158,7 +158,7 @@ func loadCorpusFrames(from directory: String) throws -> [[UInt8]] {
 
 func logPeer(_ message: String) {
     print(message)
-    fflush(stdout)
+    fflush(nil)
 }
 
 final class UdpSocket: @unchecked Sendable {
@@ -167,7 +167,12 @@ final class UdpSocket: @unchecked Sendable {
     let localPort: UInt16
 
     init(host: String, port: UInt16) throws {
-        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        #if canImport(Darwin)
+        let datagram = SOCK_DGRAM
+        #else
+        let datagram = Int32(SOCK_DGRAM.rawValue)
+        #endif
+        let fd = socket(AF_INET, datagram, 0)
         guard fd >= 0 else { throw PeerError.message("socket() failed") }
         var yes: Int32 = 1
         _ = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout.size(ofValue: yes)))
@@ -716,6 +721,6 @@ do {
     try peer.run()
     exit(0)
 } catch {
-    fputs("lyte-control-peer: \(error)\n", stderr)
+    FileHandle.standardError.write(Data("lyte-control-peer: \(error)\n".utf8))
     exit(1)
 }
