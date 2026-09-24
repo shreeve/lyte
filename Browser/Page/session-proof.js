@@ -3,15 +3,26 @@
 // through the Conductor to WebCodecs + WebGPU, then input, clipboard and
 // Opus audio, then an orderly teardown.
 //
-// This is a proof harness, not the product loop: it ingests the whole
-// corpus before decoding (phase 1), then decodes and presents (phase 2), so
-// every frame is already due when it is presented. The schedule assertion
-// checks Conductor PTS arithmetic, not paced presentation.
+// Video runs the product's loop shape: each turn ingests, decodes, and
+// presents whatever the Conductor says is due, so presentation is paced by
+// the Conductor's clock. The video proofs assert that: presented PTS sit on
+// the beat grid, no frame is shown before its PTS, and frames that decoded
+// ahead of their beat were held until it (not merely decoded).
 
 import { runInteractionProofs } from "./interaction.js";
-import { nowMicros, sleep } from "./lyte-io.js";
+import { nowMicros } from "./lyte-io.js";
 import { SessionPump } from "./session-pump.js";
 import { VideoSink } from "./video-sink.js";
+
+// The corpus is over after this long without a newly assembled frame.
+const QUIET_MICROSECONDS = 250_000;
+// Stop waiting for more than a partial corpus after this long.
+const GIVE_UP_MICROSECONDS = 2_500_000;
+// Every scheduled beat has passed this long ago: stop waiting on the decoder.
+const DRAIN_LIMIT_MICROSECONDS = 1_000_000;
+
+const ms = (micros) => `${micros >= 0 ? "+" : ""}${(micros / 1000).toFixed(1)}`;
+const pacingEntry = (p) => `${p.frameNumber}:${ms(p.decodedAt - p.pts)}/${ms(p.presentedAt - p.pts)}`;
 
 export async function runSessionProof({
   sidecar,
@@ -21,6 +32,9 @@ export async function runSessionProof({
   offlineAudio = false,
   timeoutMs = 90_000,
   minPresent = 5,
+  // Frames that must show decode-ahead-then-wait; a slow decoder may make
+  // the rest late, which the Conductor still shows, never early.
+  minHeld = 3,
   minAssemble = 8,
   onOpen = () => {},
 }) {
@@ -32,6 +46,8 @@ export async function runSessionProof({
   let classified = false;
   let interaction = { passed: false, lines: [] };
   let teardownOk = false;
+  let lastScheduledPts = 0;
+  const beat = bridge.conductorBeatMicroseconds;
 
   try {
     sink = await VideoSink.open(bridge, canvas);
@@ -43,35 +59,33 @@ export async function runSessionProof({
       }
     };
     pump = await SessionPump.open(bridge, sidecar, { hostStaticPublicKeyHex, pin });
-    pump.onScheduled = (scheduled) => sink.enqueue(scheduled);
+    pump.onScheduled = (scheduled) => {
+      for (const meta of scheduled) {
+        lastScheduledPts = Math.max(lastScheduledPts, meta.presentationMicroseconds);
+      }
+      sink.enqueue(scheduled);
+    };
     onOpen(pump, sink);
     await pump.begin();
     const deadline = Date.now() + timeoutMs;
 
-    // Phase 1: ingest the corpus until it has assembled and gone quiet.
+    // One loop, as a product client runs it: ingest, decode, and present
+    // each frame when its Conductor beat comes due.
     let lastAssembled = 0;
-    let quietTurns = 0;
+    let lastProgressAt = nowMicros();
     while (Date.now() < deadline && !pump.failed) {
-      const ingested = await pump.turn(2);
+      await pump.turn(2);
+      const now = nowMicros();
       const assembled = bridge.mediaStats().assembled;
       if (assembled > lastAssembled) {
         lastAssembled = assembled;
-        quietTurns = 0;
-      } else if (pump.ready && !ingested) {
-        quietTurns += 1;
+        lastProgressAt = now;
       }
-      if (assembled >= minAssemble && quietTurns >= 40) break;
-      if (pump.ready && assembled > 0 && quietTurns >= 500) break;
-    }
-
-    // Phase 2: decode in order, present what the Conductor says is due.
-    for (let i = 0; i < 500 && !pump.failed && sink.stats.presented < minPresent; i++) {
-      await pump.turn(0);
       sink.pumpDecode();
       if (sink.firstDecodedPts != null && !lines.some((l) => l.includes("frame-present/webcodecs"))) {
         push(`PASS  frame-present/webcodecs — ${sink.codecDetail} ts=${sink.firstDecodedPts}µs (Conductor PTS)`);
       }
-      if (sink.pumpPresent(nowMicros()) && sink.stats.presented === 1) {
+      if (sink.pumpPresent(now) && sink.stats.presented === 1) {
         push(
           `PASS  frame-present/webgpu — importExternalTexture → canvas ` +
             `${sink.lastPresent.presentWidth}x${sink.lastPresent.presentHeight} (${sink.presenter.format})`
@@ -81,7 +95,16 @@ export async function runSessionProof({
         push(`FAIL  conductor-video/webcodecs — ${sink.error?.message || sink.error}`);
         break;
       }
-      await sleep(2);
+      // The corpus is over once it has assembled and gone quiet; the loop
+      // then runs until every scheduled beat has passed and the sink has
+      // nothing outstanding, bounded in case the decoder withholds output.
+      const quietFor = now - lastProgressAt;
+      const streamDone =
+        pump.ready &&
+        ((assembled >= minAssemble && quietFor >= QUIET_MICROSECONDS) ||
+          (assembled > 0 && quietFor >= GIVE_UP_MICROSECONDS));
+      if (streamDone && now > lastScheduledPts + beat && !sink.busy) break;
+      if (streamDone && now > lastScheduledPts + DRAIN_LIMIT_MICROSECONDS) break;
     }
 
     if (pump.ready) {
@@ -105,14 +128,19 @@ export async function runSessionProof({
 
   const facts = bridge.controlFacts();
   const stats = bridge.mediaStats();
-  const presentedPts = (sink?.presentations || []).map((p) => p.pts);
-  const beat = bridge.conductorBeatMicroseconds;
+  const shown = sink?.presentations || [];
+  const presentedPts = shown.map((p) => p.pts);
   // Successive presented PTS differ by whole Conductor beats (±1 µs bump).
   let beatOk = presentedPts.length >= 2;
   for (let i = 1; i < presentedPts.length; i++) {
     const rem = (presentedPts[i] - presentedPts[i - 1]) % beat;
     if (!(rem === 0 || rem === 1 || rem === beat - 1)) beatOk = false;
   }
+  const early = shown.filter((p) => p.presentedAt < p.pts).length;
+  // Paced: decoded before its beat, then held and shown once it came.
+  const held = shown.filter((p) => p.decodedAt < p.pts && p.presentedAt >= p.pts).length;
+  const lateMs = shown.map((p) => (p.presentedAt - p.pts) / 1000);
+  const maxLateMs = lateMs.length ? Math.max(...lateMs) : 0;
   const readyOk = facts.handshakeCompleted && facts.paired && facts.capabilitiesAgreed;
 
   push(
@@ -136,14 +164,16 @@ export async function runSessionProof({
       : `FAIL  conductor-video/assemble — assembled=${stats.assembled} want≥${minAssemble}`
   );
   push(
-    beatOk
-      ? `PASS  conductor-video/schedule — Conductor PTS beat-grid (${presentedPts.length} presented)`
-      : `FAIL  conductor-video/schedule — PTS not on beat-grid (n=${presentedPts.length})`
+    beatOk && early === 0
+      ? `PASS  conductor-video/schedule — ${shown.length} presented on the Conductor beat grid, none before its PTS`
+      : `FAIL  conductor-video/schedule — beatGrid=${beatOk} early=${early} (n=${shown.length})`
   );
   push(
-    presentedPts.length >= minPresent
-      ? `PASS  conductor-video/present — ${presentedPts.length} frames WebGPU on Conductor PTS`
-      : `FAIL  conductor-video/present — presented=${presentedPts.length} want≥${minPresent}`
+    shown.length >= minPresent && held >= minHeld
+      ? `PASS  conductor-video/present — ${shown.length} frames WebGPU at their Conductor PTS ` +
+          `(${held} decoded early and held for their beat; latest ${maxLateMs.toFixed(1)} ms past PTS)`
+      : `FAIL  conductor-video/present — presented=${shown.length} want≥${minPresent}, ` +
+          `heldForBeat=${held} want≥${minHeld}`
   );
   if (!classified) push("FAIL  frame-present/classify — no IRAP classified from wire");
   for (const line of interaction.lines) push(line);
@@ -164,7 +194,9 @@ export async function runSessionProof({
     `inputsSent=${ix.inputsSent} inputEchoes=${ix.inputEchoes} ` +
     `clipboardSent=${ix.clipboardSent} audioAssembled=${ix.audioAssembled} ` +
     `audioDroppedStale=${ix.audioDroppedStale}\n` +
-    `codec=${sink?.codec || "?"} adapter=${sink?.presenter.adapter || "?"}`;
+    `codec=${sink?.codec || "?"} adapter=${sink?.presenter.adapter || "?"}\n` +
+    `sink=${JSON.stringify(sink?.stats || {})}\n` +
+    `pacing frame:decoded/presented ms vs PTS=${shown.map(pacingEntry).join(" ")}`;
 
   return {
     passed,
