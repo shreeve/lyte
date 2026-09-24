@@ -101,7 +101,10 @@ public struct HostServiceLoop: Sendable {
         }
         switch posture {
         case .singleSession(let seconds):
-            guard leg.frames > 0 else {
+            // Zero frames is a host fault only when the leg ran its
+            // course; a client that leaves first (a pairing client always
+            // does) owed the eye nothing.
+            guard leg.frames > 0 || end == .sessionEnded else {
                 return .exit(
                     failure: "direct eye produced no frames in \(Int(seconds))s")
             }
