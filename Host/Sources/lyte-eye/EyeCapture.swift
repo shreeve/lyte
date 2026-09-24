@@ -59,11 +59,10 @@ func runCapture(_ rawArgs: [String]) -> Never {
 
 // MARK: - E6b: the native leg — same eye, libva spoken directly
 
-/// The capture loop with EyeVaapiEncoder in the encoder seat: zero
-/// libavcodec. Everything else — screen beat, GETFB2, EGL import, the
-/// NV12 blit into exported surfaces — is E1's machinery verbatim.
-/// Gates: the file decode-probes on the Mac; the books print the
-/// same shape as the libav leg for A/B reading.
+/// The capture witness: the production EyePipeline (GETFB2 import,
+/// fingerprint, blit, native VAAPI encode) on the 60 Hz screen beat,
+/// writing every changed frame to an Annex-B file. The file
+/// decode-probes on the Mac.
 func runNativeCapture(
     device: String, render: String, seconds: Double,
     output: String, qp: Int32, bitrateBitsPerSecond: Int64 = 0,
@@ -95,13 +94,10 @@ func runNativeCapture(
         + "(qp \(qp), \(Int(seconds))s) [NATIVE — no libavcodec]"
         + (chroma444 ? " [Rext 4:4:4]" : ""))
 
-    let gl: EyeGL
-    let encoder: EyeVaapiEncoder
+    let pipeline: EyePipeline
     do {
-        gl = try EyeGL(renderNode: render)
-        encoder = try EyeVaapiEncoder(
-            width: width, height: height, fps: 60, qp: qp,
-            renderNode: render,
+        pipeline = try EyePipeline(
+            width: width, height: height, renderNode: render, qp: qp,
             bitrateBitsPerSecond: bitrateBitsPerSecond,
             chroma444: chroma444)
     } catch {
@@ -116,10 +112,6 @@ func runNativeCapture(
         exit(1)
     }
 
-    var targets: [UInt32: NV12Target] = [:]
-    var targets444: [UInt32: AyuvTarget] = [:]
-    var scanoutSource: ImportedTexture?
-    var scanoutIdentity: UInt32?
     var samplingCadence = ScreenSamplingCadence()
     var observations: UInt64 = 0
     var framebufferTransitions: UInt64 = 0
@@ -147,7 +139,7 @@ func runNativeCapture(
         if bitrateBitsPerSecond > 0, !rateMoved,
            t - t0 > seconds / 2 {
             rateMoved = true
-            encoder.setRateBitsPerSecond(bitrateBitsPerSecond / 2)
+            pipeline.setRateBitsPerSecond(bitrateBitsPerSecond / 2)
             print("  live-rate: \(bitrateBitsPerSecond / 1_000_000) → "
                 + "\(bitrateBitsPerSecond / 2_000_000) Mbps at midpoint "
                 + "(no reset, no IDR expected)")
@@ -172,103 +164,37 @@ func runNativeCapture(
         }
         if observation.identityChanged { framebufferTransitions += 1 }
 
-        if scanoutSource == nil
-            || scanoutIdentity != observation.framebufferIdentity {
-            guard let ticket = screen.capture(observation) else {
+        do {
+            switch try pipeline.refreshScanout(observation, from: screen) {
+            case .current, .imported:
+                break
+            case .missedGrab:
                 missedGrabs += 1
                 continue
-            }
-            guard Int32(ticket.width) == width,
-                  Int32(ticket.height) == height else {
+            case .geometryChanged:
                 FileHandle.standardError.write(Data(
                     "display geometry changed during capture\n".utf8))
-                ticket.release()
                 exit(1)
             }
-            do {
-                let imported = try gl.importTexture(
-                    width: Int32(ticket.width),
-                    height: Int32(ticket.height),
-                    fourcc: ticket.fourcc,
-                    modifier: ticket.modifier,
-                    planes: ticket.planes)
-                ticket.release()
-                if var old = scanoutSource { gl.destroy(&old) }
-                scanoutSource = imported
-                scanoutIdentity = observation.framebufferIdentity
-                gl.resetFingerprint()
-            } catch {
-                ticket.release()
-                FileHandle.standardError.write(
-                    Data("scanout import: \(error)\n".utf8))
-                exit(1)
-            }
+        } catch {
+            FileHandle.standardError.write(
+                Data("scanout import: \(error)\n".utf8))
+            exit(1)
         }
-        guard let source = scanoutSource else { continue }
         do {
             let tFingerprint = SystemMonotonicClock.nowSeconds
-            let changed = try gl.scanoutChanged(
-                source: source, width: width, height: height)
+            let changed = try pipeline.pixelsChanged()
             fingerprintMs +=
                 (SystemMonotonicClock.nowSeconds - tFingerprint) * 1e3
             guard changed else { continue }
             changedObservations += 1
-            let tBlit = SystemMonotonicClock.nowSeconds
-            let surface = encoder.inputSurfaces[
-                frames % encoder.inputSurfaces.count]
-            if chroma444 {
-                if targets444[surface] == nil {
-                    let plane = try encoder.exportSurfacePacked(surface)
-                    let target = try gl.makeAyuvTarget(
-                        width: width, height: height,
-                        modifier: plane.modifier,
-                        plane: (plane.fd, plane.offset, plane.pitch))
-                    close(plane.fd)
-                    targets444[surface] = target
-                }
-                gl.blit444(
-                    source: source,
-                    srcWidth: width,
-                    srcHeight: height,
-                    into: targets444[surface]!)
-            } else {
-                if targets[surface] == nil {
-                    let exported = try encoder.exportSurface(surface)
-                    let target = try gl.makeNV12Target(
-                        width: width, height: height,
-                        yFourcc: exported.y.fourcc,
-                        yModifier: exported.y.modifier,
-                        yPlane: (exported.y.fd, exported.y.offset,
-                                 exported.y.pitch),
-                        uvFourcc: exported.uv.fourcc,
-                        uvModifier: exported.uv.modifier,
-                        uvPlane: (exported.uv.fd, exported.uv.offset,
-                                  exported.uv.pitch))
-                    close(exported.y.fd)
-                    if exported.uv.fd != exported.y.fd {
-                        close(exported.uv.fd)
-                    }
-                    targets[surface] = target
-                }
-                gl.blit(
-                    source: source,
-                    srcWidth: width,
-                    srcHeight: height,
-                    into: targets[surface]!)
-            }
-            blitMs += (SystemMonotonicClock.nowSeconds - tBlit) * 1e3
-
-            let tEnc = SystemMonotonicClock.nowSeconds
-            var tWrite = 0.0
-            let (count, keyframe) = try encoder.encode(
-                surface: surface, forceIDR: false) { bytes, keyframe in
-                let start = SystemMonotonicClock.nowSeconds
+            let (count, keyframe) = try pipeline.encodeFresh(
+                forceIDR: false) { bytes, keyframe in
                 file.write(Data(bytes))
-                tWrite = SystemMonotonicClock.nowSeconds - start
                 return (bytes.count, keyframe)
             }
-            encodeMs +=
-                (SystemMonotonicClock.nowSeconds - tEnc - tWrite) * 1e3
+            blitMs += Double(pipeline.lastBlitMicroseconds) / 1e3
+            encodeMs += Double(pipeline.lastEncodeMicroseconds) / 1e3
             bytes += count
             if keyframe { keyframes += 1 }
             frames += 1
@@ -287,7 +213,6 @@ func runNativeCapture(
         }
     }
     try? file.close()
-    if var source = scanoutSource { gl.destroy(&source) }
 
     let duration = SystemMonotonicClock.nowSeconds - t0
     print(String(

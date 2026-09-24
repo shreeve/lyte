@@ -175,6 +175,7 @@ targets += [
             // HevcSliceHeader) straight to the driver via libva.
             "CDRM", "CGBM", "CEGL", "CVA",
             "HostCore",
+            .product(name: "LyteIO", package: "Common"),
         ]
     ),
     // Pure HostEye bookkeeping (GEM-handle and cursor-plane transitions)
