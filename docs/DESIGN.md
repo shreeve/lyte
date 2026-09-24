@@ -80,13 +80,9 @@ warning when its own repair and Conductor successfully absorbed the event.
 
 - All Lyte-authored code is MIT-licensed. Third-party leaves retain their
   upstream licenses and notices.
-- `LyteWire` owns sans-IO protocol contracts; `LyteCore` owns shared sans-IO
-  policy; `LyteIO` owns shared OS adapters.
-- `LyteClientCore` and `LyteClientSession` own pure client policy; every
-  client shell, native or browser, shares the `LyteClientSession`
-  initiator. `HostCore`, `HostSession`, and `HostAudio` own pure host
-  policy, and the sans-IO `HostWire` executes it. `LyteTransport` and
-  `lyte-host` own the platform IO.
+- Protocol, policy and IO live in separate targets, and every client
+  shell shares one sans-IO initiator; who owns what:
+  [ARCHITECTURE.md](ARCHITECTURE.md#targets).
 - The product speaks only Lyte-UDP. No GameStream, Sunshine, or Moonlight
   source remains in the shipping system.
 - The macOS shell uses SwiftUI/AppKit, VideoToolbox through
