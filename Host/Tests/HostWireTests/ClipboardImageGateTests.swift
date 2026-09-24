@@ -119,7 +119,7 @@ final class ClipboardImageGateTests: XCTestCase {
             _ data: [UInt8], nowMicros: UInt64
         ) throws {
             let events = channel.shareLocalImage(
-                data, sha256: Sha256.digest(data),
+                data, sha256: { Sha256.digest(data) },
                 book: &book, rng: &imageRng
             )
             try absorbChannelEvents(events, nowMicros: nowMicros)
