@@ -37,18 +37,32 @@
 // shell territory. Randomness is the CPace scalar — injected for tests
 // and vectorgen, platform CSPRNG otherwise (the NoiseSession
 // fixedEphemeral pattern). The PIN is consumed at init to derive the
-// generator and never retained.
+// generator; neither is stored, and the scalar is dropped as soon as the
+// peer share is consumed, so no PIN-testing material outlives the
+// exchange (the ISK lives on only in a verified `result`).
 
 /// The pairing outcome both roles expose on success: the ISK (already
 /// authenticated by confirmation; hash it through a KDF if a key for a
 /// higher protocol is ever needed) and the statics the shell should
 /// now pin.
+import LyteCore
+
 public struct PairingResult: Hashable, Sendable {
     /// CPace's intermediate session key, 64 bytes.
     public var intermediateSessionKey: [UInt8]
     /// The peer static Noise public key to pin: for the client role the
     /// host's static, for the host role the client's.
     public var peerStaticPublicKeyToPin: [UInt8]
+}
+
+/// Printing a result never prints the session key.
+extension PairingResult: CustomStringConvertible, CustomDebugStringConvertible {
+    public var description: String {
+        "PairingResult(intermediateSessionKey: <redacted>, "
+            + "peerStaticPublicKeyToPin: \(Hex.string(peerStaticPublicKeyToPin)))"
+    }
+
+    public var debugDescription: String { description }
 }
 
 /// Everything the pairing machine can refuse. `confirmationFailed` is
@@ -80,7 +94,9 @@ public struct PairingPakeInitiator: Sendable {
 
     private var state: State
     private let sid: [UInt8]
-    private let scalar: [UInt8]
+    /// The CPace secret; dropped once the peer share is consumed, so a
+    /// finished or failed run holds nothing that could test PINs.
+    private var scalar: [UInt8]
     private let shareA: [UInt8]
     private let hostStaticPublicKey: [UInt8]
     /// Set once the responder's confirmation tag verifies.
@@ -144,6 +160,7 @@ public struct PairingPakeInitiator: Sendable {
         // The G.I check compares SECRET key material against a public
         // constant — constant-time, so timing never narrows K.
         let k = CPace.scalarMultVfy(scalar: scalar, element: message.share)
+        scalar = []
         guard !CPace.constantTimeEquals(k, CPace.neutralElement) else {
             state = .failed
             throw PairingPakeError.invalidPeerShare
@@ -191,9 +208,9 @@ public struct PairingPakeResponder: Sendable {
 
     private var state: State
     private let sid: [UInt8]
-    private let scalar: [UInt8]
+    /// The CPace secret; dropped once share A is consumed.
+    private var scalar: [UInt8]
     private let shareB: [UInt8]
-    private let generator: [UInt8]
     private let clientStaticPublicKey: [UInt8]
     private var expectedTa: [UInt8] = []
     private var pendingResult: PairingResult?
@@ -210,7 +227,7 @@ public struct PairingPakeResponder: Sendable {
         noiseHandshakeHash: [UInt8],
         fixedScalar: [UInt8]? = nil
     ) throws {
-        generator = try PairingPake.deriveGenerator(
+        let generator = try PairingPake.deriveGenerator(
             pin: pin,
             clientStaticPublicKey: clientStaticPublicKey,
             hostStaticPublicKey: hostStaticPublicKey,
@@ -241,6 +258,7 @@ public struct PairingPakeResponder: Sendable {
         }
         // Constant-time G.I check, as on the initiator side.
         let k = CPace.scalarMultVfy(scalar: scalar, element: message.share)
+        scalar = []
         guard !CPace.constantTimeEquals(k, CPace.neutralElement) else {
             state = .failed
             throw PairingPakeError.invalidPeerShare
