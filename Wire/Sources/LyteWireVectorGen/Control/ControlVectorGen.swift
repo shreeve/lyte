@@ -86,7 +86,7 @@ public func makeControlVectorFile() throws -> ControlVectorFile {
         vectors.append(ControlVector(
             name: name, description: description,
             kind: .roundtrip, codec: .inputEvent,
-            messageHex: Hex.string(event.encode()),
+            messageHex: Hex.string(try event.encode()),
             seq: event.seq,
             clientMicrosHex: Hex.uint64String(event.clientMicroseconds),
             bodyKind: fields.kind,
@@ -99,7 +99,7 @@ public func makeControlVectorFile() throws -> ControlVectorFile {
         ))
     }
 
-    let keyAnchor = InputEvent(
+    let keyAnchor = try InputEvent(
         seq: 7, clientMicroseconds: 0x11_2233_4455,
         body: .keyKeycode(keycode: 30, pressed: true)
     ).encode()
@@ -138,7 +138,7 @@ public func makeControlVectorFile() throws -> ControlVectorFile {
         messageHex: Hex.string(badFlag),
         error: "malformedFlag"
     ))
-    var reservedAxis = InputEvent(
+    var reservedAxis = try InputEvent(
         seq: 1, clientMicroseconds: 2,
         body: .pointerAxis(dx: 1, dy: 2, finish: false)
     ).encode()

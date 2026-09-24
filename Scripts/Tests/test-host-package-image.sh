@@ -48,11 +48,28 @@ self_test() {
         return 1
     fi
 
-    printf 'corruption\n' >> "$image/etc/host.conf"
-    if verify_image "$image" >/dev/null 2>&1; then
-        echo "host package image FAILED: manifest corruption was accepted" >&2
-        return 1
-    fi
+    # Each mutation of a copy of the good image must fail verification.
+    local case_image mutation
+    for mutation in \
+        'chmod 0700 bin/lyte-host' \
+        'chmod 0664 etc/host.conf' \
+        'chmod 0600 doc/LICENSE' \
+        'tail -n 1 doc/MANIFEST.sha256 >> doc/MANIFEST.sha256' \
+        'sed "s| \./etc/host\.conf$| etc/host.conf|" doc/MANIFEST.sha256 > m && mv m doc/MANIFEST.sha256 && chmod 0644 doc/MANIFEST.sha256' \
+        'printf "extra\n" > etc/extra.conf' \
+        'rm doc/THIRD-PARTY.md' \
+        'printf "corruption\n" >> etc/host.conf'
+    do
+        case_image="$scratch/case"
+        cp -Rp "$image" "$case_image"
+        (cd "$case_image" && eval "$mutation") \
+            || { echo "host package image FAILED: cannot apply: $mutation" >&2; return 1; }
+        if verify_image "$case_image" >/dev/null 2>&1; then
+            echo "host package image FAILED: accepted an image after: $mutation" >&2
+            return 1
+        fi
+        find "$case_image" -xdev -depth -delete
+    done
     cleanup_self_test
     trap - EXIT
     echo "host package image self-test PASSED"

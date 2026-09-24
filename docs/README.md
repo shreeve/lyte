@@ -17,7 +17,7 @@ specification.
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Packages, targets, dependency graph, data flow, threads |
 | [PROTOCOL.md](PROTOCOL.md) | The current Lyte-UDP contract, section by section, with its vector files |
 | [TESTING.md](TESTING.md) | Every gate and the exact commands |
-| [OPERATIONS.md](OPERATIONS.md) | The pup rig, host layout, deploy and rollback, safety runbook |
+| [OPERATIONS.md](OPERATIONS.md) | The pup rig, an installed host's layout, deploy and rollback, pairing, uninstall, safety runbook |
 | [BROWSER.md](BROWSER.md) | The browser client: what the proof covers, how to run it |
 | [DESIGN.md](DESIGN.md) | Product and interaction decisions, shipping vs directional |
 | [COMPARISON.md](COMPARISON.md) | Lyte against other remote-display products |
@@ -25,7 +25,7 @@ specification.
 | [THIRD-PARTY.md](THIRD-PARTY.md) | Dependency licenses and notices |
 | [GLOSSARY.md](GLOSSARY.md) | Slice ids, Conductor terms, Direct Eye, postures |
 | [Wire/Vectors/README.md](../Wire/Vectors/README.md) | Normative byte layouts and the vector inventory |
-| [Host/README.md](../Host/README.md) | Host package targets and tests |
+| [Host/README.md](../Host/README.md) | Host package: testing it and running `lyte-host` by hand |
 | [Host/INSTALL.md](../Host/INSTALL.md) | Installing the host on a fresh machine |
 | [Scripts/netem/README.md](../Scripts/netem/README.md) | The netem helper and the impairment gate |
 

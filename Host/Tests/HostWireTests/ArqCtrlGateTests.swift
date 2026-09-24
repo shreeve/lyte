@@ -754,4 +754,34 @@ final class ArqCtrlGateTests: XCTestCase {
             .sessionClosed(.localTeardown(.shuttingDown))))
         XCTAssertEqual(host.session.lifecycleState, .closed)
     }
+
+    /// A message one byte past the ceiling crosses it on its final
+    /// segment, and nothing more need follow on the stream: that one
+    /// segment alone ends the session.
+    func testTheCrossingSegmentAloneEndsThePoisonedCtrlStream() throws {
+        let host = HostSessionHarness(
+            config: SessionConfig(
+                crypto: .noise(hostStatic: NoiseKeyPair.generate()),
+                rateBitsPerSecond: Self.rateBPS,
+                beaconIntervalNS: 1 << 62,
+                arq: ArqConfig(maxMessageByteCount: 2_048)
+            ),
+            tuple: Self.tupleA,
+            rng: SplitMix64(seed: 0x9016)
+        )
+        var client = try host.connectClient(
+            declaring: nil, arqConfig: ArqConfig(maxMessageByteCount: 16_384))
+        try client.send(
+            [0x7F] + [UInt8](repeating: 0x55, count: 2_048), nowMicros: 1_000)
+        var events: [SessionEvent] = []
+        for pass in 1...200 {
+            events += try host.exchange(&client, at: UInt64(pass) * 10_000)
+        }
+        XCTAssertEqual(
+            events.filter { $0 == .arqIgnored(.orderedStreamPoisoned) }.count,
+            1)
+        XCTAssertEqual(events.filter { $0 == .teardownSent(.shuttingDown) }.count,
+                       1)
+        XCTAssertEqual(host.session.lifecycleState, .closed)
+    }
 }

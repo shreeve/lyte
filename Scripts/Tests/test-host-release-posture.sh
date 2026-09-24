@@ -1,8 +1,9 @@
 #!/bin/bash
-# Forbidden-token scans for the host's release posture: owner-facing recipes
-# never drift back to SwiftPM's unoptimized debug artifact (debug remains
-# correct for tests and development harnesses), the installed service never
-# names a checkout path, and the retired portal token stays gone.
+# Forbidden-token scans for the host's release posture and the owner's rig:
+# owner-facing recipes never drift back to SwiftPM's unoptimized debug
+# artifact (debug remains correct for tests and development harnesses), the
+# installed service never names a checkout path, the retired portal token
+# stays gone, and the scripts that touch the rig keep their safety rules.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -30,5 +31,23 @@ forbid "installed service regained a checkout path" \
     Host/Systemd Host/Scripts/install-host.sh
 forbid "the retired portal token returned" \
     'portal_token' Host/Sources Host/Scripts Host/Systemd Scripts
+
+# Owner-rig safety: app publication never deletes the destination bundle in
+# place (it swaps a staged one in), benchmarks never freeze, force-kill or
+# guess at a process they did not start, netem never impairs a whole
+# interface, and the pup gate deletes only through its mount-safe find.
+forbid "make-app deletes the app bundle in place" \
+    'rm -rf "\$APP"' Scripts/make-app.sh
+forbid "a benchmark signals a process it does not own" \
+    'kill -(STOP|CONT)|kill -9.*standing' \
+    Scripts/benchmark-app.sh Scripts/benchmark-netem.sh Scripts/lib Scripts/netem
+forbid "a benchmark guesses the app process" \
+    'FALLBACK_APP_PID|pgrep -n' \
+    Scripts/benchmark-app.sh Scripts/benchmark-netem.sh Scripts/lib
+forbid "netem impairs a whole interface" \
+    'qdisc (add|replace).* root netem' \
+    Scripts/benchmark-netem.sh Scripts/netem
+forbid "the pup gate deletes its mirror with rm -rf" \
+    'rm -rf.*gate_root' Scripts/CI/test-all-pup.sh
 
 echo "host release posture tests PASSED"

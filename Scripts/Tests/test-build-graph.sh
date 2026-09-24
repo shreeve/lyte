@@ -76,4 +76,37 @@ expect_moved "Other's manifest" Other
 echo 'let x = 1' >> "$fixture/Leaf/Sources/Leaf/Leaf.swift"
 expect_moved "a Leaf source edit"
 
+# Path dependencies are found whatever their other arguments and however the
+# call is split across lines; commented-out and URL dependencies are not.
+mkdir -p "$fixture/Styles"
+sed 's/^|//' > "$fixture/Styles/Package.swift" <<'EOF'
+|// swift-tools-version:6.0
+|let package = Package(dependencies: [
+|    .package(url: "https://example.invalid/a.git", from: "1.0.0"),
+|    .package(name: "Leaf", path: "../Leaf"),
+|    .package(
+|        path: "../Middle"
+|    ),
+|    .package(path:"../Other", traits: []),
+|    // .package(path: "../Commented"),
+|    .package(
+|        url: "https://example.invalid/b.git",
+|        from: "2.0.0"
+|    ),
+|])
+EOF
+dependencies="$(lyte_path_dependencies "$fixture" Styles | tr '\n' ' ')"
+[[ "$dependencies" == "Leaf Middle Other " ]] \
+    || fail "Styles reaches '$dependencies'; want Leaf, Middle and Other"
+
+# A missing manifest is an error, never an empty graph, for the package
+# itself or for anything it reaches.
+refute lyte_path_dependencies "$fixture" Missing
+refute lyte_package_identity "$fixture" Missing Sources
+refute lyte_build_graph_hash "$fixture" Missing
+mkdir -p "$fixture/Broken"
+echo '.package(path: "../Missing")' > "$fixture/Broken/Package.swift"
+refute lyte_path_dependencies "$fixture" Broken
+refute lyte_build_graph_hash "$fixture" Broken
+
 echo "build graph tests PASSED"

@@ -17,7 +17,7 @@ Source capture: `/tmp/lyte-plain.hevc` on pup (2026-07-20, 1547155 bytes,
 sha256 `c50da8279b45d76645a88dcb883514d0a91cf510178faaf4b24f5375c1ebdc53`,
 301 access units, 1080p60 hevc_nvenc, frame 0 forced IDR, the rest
 P-frames). Frames were split on access-unit boundaries by NAL walking
-(`AnnexBStream.accessUnitRanges`): a new access unit starts at the first
+(`AnnexBAccessUnits.ranges`): a new access unit starts at the first
 leading NAL (VPS/SPS/PPS/AUD/prefix-SEI or VCL) after the previous unit's
 VCL NAL. Splits land on start-code boundaries, so concatenating a
 contiguous run of frames reproduces the capture's bytes exactly.

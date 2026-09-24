@@ -5,9 +5,11 @@ dated records.
 
 ## Slice and gate identifiers
 
-Commit subjects and code comments cite the slice that introduced a
-behavior. The identifier names a planning unit, not a current contract;
-the code and [PROTOCOL.md](PROTOCOL.md) are the contract.
+Commit messages, dated records and some test comments cite the slice that
+introduced a behavior; production code comments do not
+([AGENTS.md](../AGENTS.md#change-discipline)). The identifier names a
+planning unit, not a current contract; the code and
+[PROTOCOL.md](PROTOCOL.md) are the contract.
 
 | Prefix | Meaning | Examples |
 |---|---|---|
@@ -20,7 +22,7 @@ the code and [PROTOCOL.md](PROTOCOL.md) are the contract.
 | `V-<n>` | Video-quality slice (H4) | V-3 corpus harness |
 | `P-1` | Clipboard images (clipboard v2) | |
 | `Q-1` | The video quality probe | |
-| `E<n>` | Direct Eye phase | E0 probe … E5 portal removal (`self-hosted` tag), E6a NVENC probe (banked) |
+| `E<n>` | Direct Eye phase | E0 probe … E5 portal removal (`self-hosted` tag) |
 | `B-<n>` | Browser commissioning ladder | B-0 decision … B-6 interaction shell; see [BROWSER.md](BROWSER.md) |
 | `CP-<n>` | Clipboard platform probe | CP-5 GNOME portal probe |
 | `#<n>` | Pull request number on `main` | |

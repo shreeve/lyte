@@ -128,4 +128,39 @@ printf 'hand-placed\n' > "$link"
 refuses "$deploy" "$a"
 [[ "$(cat "$link")" == hand-placed ]] || fail "hand-placed binary replaced"
 
+# A concurrent deploy of the same binary that lands its version between this
+# deploy's staging and its rename fails this one: the other version is left
+# as it is, no staging directory survives and no link is written. The fake
+# chmod creates that version when the deploy marks its staging directory.
+real_chmod="$(command -v chmod)"
+mkdir -p "$scratch/race-bin"
+race_home="$scratch/home-race"
+race_version="$race_home/.local/share/lyte/versions/$id_a"
+cat > "$scratch/race-bin/chmod" <<EOF
+#!/bin/sh
+case "\$2" in
+    */.staging.*)
+        mkdir -p "$race_version"
+        echo racer > "$race_version/lyte-host"
+        ;;
+esac
+exec "$real_chmod" "\$@"
+EOF
+"$real_chmod" 0755 "$scratch/race-bin/chmod"
+mkdir -p "$race_home"
+if HOME="$race_home" PATH="$scratch/race-bin:$PATH" "$deploy" "$a" \
+    > "$scratch/race.out" 2>&1
+then
+    fail "a deploy overwrote a version that appeared during it"
+fi
+grep -Fq "version $id_a appeared during this deploy" "$scratch/race.out" \
+    || fail "the racing deploy failed for another reason: $(cat "$scratch/race.out")"
+[[ "$(ls -A "$race_version")" == lyte-host \
+    && "$(cat "$race_version/lyte-host")" == racer ]] \
+    || fail "the racing deploy changed the version that won"
+leftover="$(find "$race_home/.local/share/lyte/versions" -name '.staging.*')"
+[[ -z "$leftover" ]] || fail "the racing deploy left staging behind: $leftover"
+[[ ! -e "$race_home/.local/bin/lyte-host" && ! -L "$race_home/.local/bin/lyte-host" ]] \
+    || fail "the racing deploy wrote a link"
+
 echo "host deploy tests PASSED"
