@@ -139,17 +139,25 @@ In order:
 
 ## The pup gate — `Scripts/CI/test-all-pup.sh`
 
-Mirrors Browser, Client, Common, Wire, Host and SystemTests to
-`~/src/lyte-gates/deterministic/` on `LYTE_PUP_HOST` (default `pup`) under a
-lock, then:
+One ssh session to `LYTE_PUP_HOST` (default `pup`) takes an `flock` on
+`~/src/lyte-gates/.deterministic.flock`, which then names the holder; a
+second gate fails at once with that name. The lock lives as long as the
+session's processes, and the session terminates its whole process tree
+when the local gate goes away, so an interrupted gate leaves nothing
+running. Under the lock the local side mirrors Client, Common, Wire, Host
+and `Scripts/` to `~/src/lyte-gates/deterministic/`, then the session:
 
 1. Fingerprints protected state: `~/.config/lyte/{noise_static.key,
-   paired_clients,host.conf}` (required), the pre-XDG copies when present,
+   paired_clients,host.conf}` (required: a missing one fails the gate
+   before any build), the pre-XDG copies when present,
    `/etc/systemd/system/lyte-host.service`, and the `~/.local/bin/lyte-host`
    link target.
 2. Package tests (`swift test -Xswiftc -warnings-as-errors`) for Common,
    Wire and Host; `swift build --target LyteClientCore` and
-   `--target LyteClientSession` for Client.
+   `--target LyteClientSession` for Client (its manifest declares the macOS
+   targets on every platform, so its suites cannot build on Linux yet).
+   Each package is cleaned by the same per-package build-graph rule as on
+   the Mac.
 3. Plain and release Host builds with `-warnings-as-errors`.
 4. Stages a host image and runs `test-host-package-image.sh`,
    `test-host-installer.sh IMAGE` and `--self-test`, and
@@ -160,8 +168,8 @@ lock, then:
 7. Verifies the protected-state fingerprint is unchanged.
 
 The pup gate never deploys or restarts the standing service. Browser is
-mirrored and hashed but not built on pup: its JavaScriptKit dependency
-needs Swift 6.2 or later.
+not mirrored or built on pup: its JavaScriptKit dependency needs Swift 6.2
+or later. SystemTests composes the macOS client and is not mirrored either.
 
 ## WebAssembly
 
