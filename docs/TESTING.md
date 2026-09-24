@@ -153,7 +153,9 @@ second gate fails at once with that name. The lock lives as long as the
 session's processes, and the session terminates its whole process tree
 when the local gate goes away, so an interrupted gate leaves nothing
 running. Under the lock the local side mirrors Client, Common, Wire, Host
-and `Scripts/` to `~/src/lyte-gates/deterministic/`, then the session:
+and `Scripts/` to `~/src/lyte-gates/deterministic/`, plus only the manifest
+and `Sources/` of Browser and SystemTests (Common's lints scan them), then
+the session:
 
 1. Fingerprints protected state: `~/.config/lyte/{noise_static.key,
    paired_clients,host.conf}` (required: a missing one fails the gate
@@ -175,8 +177,8 @@ and `Scripts/` to `~/src/lyte-gates/deterministic/`, then the session:
 7. Verifies the protected-state fingerprint is unchanged.
 
 The pup gate never deploys or restarts the standing service. Browser is
-not mirrored or built on pup: its JavaScriptKit dependency needs Swift 6.2
-or later. SystemTests composes the macOS client and is not mirrored either.
+not built on pup: its JavaScriptKit dependency needs Swift 6.2 or later.
+SystemTests composes the macOS client and is not built either.
 
 ## WebAssembly
 

@@ -16,8 +16,11 @@ cd "$repo_root"
 pup="${LYTE_PUP_HOST:-pup}"
 pup_gate_root="src/lyte-gates/deterministic"
 # The packages pup builds. Browser needs Swift 6.2 (JavaScriptKit) and
-# SystemTests needs the macOS client, so neither is mirrored.
+# SystemTests needs the macOS client, so neither is built; Common's
+# repository lints still scan every manifest and Browser's sources, so those
+# two are mirrored as manifest and Sources only.
 packages="Client Common Wire Host"
+scanned_packages="Browser SystemTests"
 local_state="$(mktemp -d)"
 trap 'rm -rf -- "$local_state"' EXIT
 lock_token="lyte-pup-gate-locked-$$-$RANDOM$RANDOM"
@@ -43,7 +46,7 @@ exec 3> "$local_state/control"
 {
     printf 'lock_token=%q\n' "$lock_token"
     printf 'gate_owner=%q\n' "$(hostname -s):$repo_root (pid $$)"
-    printf 'packages=%q\n' "$packages"
+    printf 'mirrored=%q\n' "$packages $scanned_packages"
     cat <<'REMOTE'
 set -euo pipefail
 shopt -s inherit_errexit
@@ -224,7 +227,7 @@ main() {
     fi
     holds_legacy_lock=1
     real_directory "$gate_root"
-    for package in $packages Scripts docs; do
+    for package in $mirrored Scripts docs; do
         real_directory "$gate_root/$package"
     done
 
@@ -247,8 +250,7 @@ main() {
 
     run_package_tests Common
     run_package_tests Wire
-    # Client's manifest declares its macOS targets on every platform, so
-    # only the IO-free policy targets build here.
+    # Off macOS the Client manifest keeps only its IO-free policy targets.
     run_package_tests Client
     run_package_tests Host
 
@@ -315,9 +317,16 @@ if [[ ! -e "$local_state/locked" ]]; then
     exit 1
 fi
 
-echo "==> sync $packages and Scripts to $pup:$pup_gate_root"
+echo "==> sync $packages, $scanned_packages and Scripts to $pup:$pup_gate_root"
 for package in $packages; do
     rsync -a --delete --exclude .build \
+        "$package/" "$pup:$pup_gate_root/$package/"
+done
+# Everything else under a scanned package is deleted from the mirror, so the
+# lints never read a stale file.
+for package in $scanned_packages; do
+    rsync -a --delete --delete-excluded --include=/Package.swift \
+        --include=/Sources/ --include='/Sources/**' --exclude='*' \
         "$package/" "$pup:$pup_gate_root/$package/"
 done
 rsync -a --delete Scripts/ "$pup:$pup_gate_root/Scripts/"
