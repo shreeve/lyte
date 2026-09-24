@@ -11,6 +11,8 @@ const MAX_QUEUED_DECODES = 2;
 // Decoded-but-unpresented frames held at once, counting frames still inside
 // the decoder; the decoder's output pool stalls if the page keeps more.
 const MAX_HELD_FRAMES = 8;
+// Presentation records kept for the log; the verdicts are counters.
+const RECENT_PRESENTATIONS = 64;
 
 const WGSL = `
 struct VSOut {
@@ -56,10 +58,12 @@ async function createPresenter(canvas) {
     adapter: adapter.info?.description || adapter.info?.vendor || "webgpu",
     format,
     // Synchronous submit: awaiting the GPU would stall the datagram pump.
+    // The canvas backs its CSS box at device pixels, never above the stream.
     present(frame) {
       const width = Math.max(1, frame.displayWidth || frame.codedWidth);
       const height = Math.max(1, frame.displayHeight || frame.codedHeight);
-      const presentW = Math.min(960, width);
+      const cssWidth = Math.round(canvas.clientWidth * (globalThis.devicePixelRatio || 1));
+      const presentW = Math.min(cssWidth || width, width);
       const presentH = Math.round((presentW * height) / width);
       if (!configured || canvas.width !== presentW || canvas.height !== presentH) {
         canvas.width = presentW;
@@ -133,10 +137,17 @@ export class VideoSink {
       undecodable: 0,
       closedUnshown: 0,
       dueNeverDecoded: 0,
+      // Presentation verdicts against the Conductor's PTS (client µs):
+      // shown before it, decoded early and held for it, off the beat grid.
+      early: 0,
+      heldForBeat: 0,
+      offGrid: 0,
+      maxLateMicros: 0,
     };
-    // One record per presented frame: when it decoded and when it showed,
-    // against the PTS the Conductor gave it (all client-clock µs).
-    this.presentations = [];
+    // The newest presentation records: when each decoded and showed.
+    this.recent = [];
+    this.lastPresentedPts = null;
+    this.animation = null;
     this.firstDecodedPts = null;
     this.onFirstKeyFrame = null;
     this.decoder = new VideoDecoder({
@@ -195,11 +206,13 @@ export class VideoSink {
       }
       try {
         this.inDecoder.set(meta.presentationMicroseconds, meta);
+        // The bytes are this frame's own buffer: hand it over, uncopied.
         this.decoder.decode(
           new EncodedVideoChunk({
             type: meta.isRandomAccess ? "key" : "delta",
             timestamp: meta.presentationMicroseconds,
             data: bytes,
+            transfer: [bytes.buffer],
           })
         );
         if (this.firstDecodedPts == null) this.firstDecodedPts = meta.presentationMicroseconds;
@@ -238,20 +251,40 @@ export class VideoSink {
       this.decoded.delete(pts);
       try {
         const shown = this.presenter.present(held.frame);
-        this.bridge.mediaNotePresented(due.frameNumber);
-        this.stats.presented += 1;
-        this.presentations.push({
-          frameNumber: due.frameNumber,
-          pts,
-          decodedAt: held.decodedAt,
-          presentedAt: now,
-        });
+        this.bridge.mediaNotePresented();
+        this.record({ frameNumber: due.frameNumber, pts, decodedAt: held.decodedAt, presentedAt: now });
         this.lastPresent = shown;
       } finally {
         held.frame.close();
       }
       return true;
     }
+  }
+
+  /** Presents on the display's frame clock until close(). */
+  startPresenting() {
+    const onFrame = () => {
+      this.pumpPresent(nowMicros());
+      this.animation = requestAnimationFrame(onFrame);
+    };
+    this.animation = requestAnimationFrame(onFrame);
+  }
+
+  record(shown) {
+    const { stats } = this;
+    const beat = this.bridge.conductorBeatMicroseconds;
+    stats.presented += 1;
+    if (shown.presentedAt < shown.pts) stats.early += 1;
+    if (shown.decodedAt < shown.pts && shown.presentedAt >= shown.pts) stats.heldForBeat += 1;
+    stats.maxLateMicros = Math.max(stats.maxLateMicros, shown.presentedAt - shown.pts);
+    // Successive presented PTS differ by whole beats (±1 µs bump).
+    if (this.lastPresentedPts != null) {
+      const rem = (shown.pts - this.lastPresentedPts) % beat;
+      if (!(rem === 0 || rem === 1 || rem === beat - 1)) stats.offGrid += 1;
+    }
+    this.lastPresentedPts = shown.pts;
+    this.recent.push(shown);
+    if (this.recent.length > RECENT_PRESENTATIONS) this.recent.shift();
   }
 
   /** WASM will never present this frame: close it now or when it decodes. */
@@ -270,6 +303,7 @@ export class VideoSink {
   }
 
   close() {
+    if (this.animation != null) cancelAnimationFrame(this.animation);
     try {
       if (this.decoder.state !== "closed") this.decoder.close();
     } catch {

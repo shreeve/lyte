@@ -143,8 +143,8 @@ test("the session proof stops as soon as the host closes the session", async (t)
     async close() {},
   };
   const sink = {
-    stats: {}, presentations: [], busy: false, presenter: {},
-    enqueue() {}, pumpDecode() {}, pumpPresent: () => false, close() {},
+    stats: {}, recent: [], busy: false, presenter: {},
+    enqueue() {}, pumpDecode() {}, startPresenting() {}, close() {},
   };
   const open = [SessionPump.open, VideoSink.open];
   SessionPump.open = async () => pump;
