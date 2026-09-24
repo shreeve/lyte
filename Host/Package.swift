@@ -81,10 +81,22 @@ var targets: [Target] = [
             .product(name: "LyteWire", package: "Wire"),
         ]
     ),
+    // Test-only: a shipping Session on an outbox and virtual time, plus
+    // the settle loop every HostWire gate drives its fake client through.
+    .target(
+        name: "HostWireTestKit",
+        dependencies: [
+            "HostWire",
+            "HostSession",
+            .product(name: "LyteWire", package: "Wire"),
+            .product(name: "LyteWireTestKit", package: "Wire"),
+        ]
+    ),
     .testTarget(
         name: "HostWireTests",
         dependencies: [
             "HostWire",
+            "HostWireTestKit",
             "HostIO",
             "HostSession",
             "HostCore",
