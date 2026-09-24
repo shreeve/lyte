@@ -57,7 +57,7 @@ public struct VideoBeatConductor: Sendable {
         public var freshDebtRearmStableFrames: Int
 
         public init(
-            beatPeriodMicroseconds: UInt64 = 16_667,
+            beatPeriodMicroseconds: UInt64 = ScoreBeat.periodMicroseconds,
             cushionBeats: Int = 1,
             maximumCushionBeats: Int = 4,
             maximumCueMicroseconds: UInt64 = 150_000,
