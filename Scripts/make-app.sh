@@ -1,8 +1,7 @@
 #!/bin/sh
-# Assemble Lyte.app from the SwiftPM build (dev bundling until a notarized
-# release exists). A stable Apple Development signature preserves both
-# Local Network privacy identity and Keychain authorization; Lyte Dev is the
-# contributor fallback when an Apple-issued identity is unavailable.
+# Assemble Lyte.app from the SwiftPM build. A stable Apple Development
+# signature preserves Local Network privacy identity and Keychain
+# authorization; Lyte Dev is the contributor fallback.
 set -e
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
@@ -23,9 +22,8 @@ case "$APP" in
     ;;
 esac
 
-# Serialize before inspecting or changing any destination state. Requiring an
-# existing parent lets us canonicalize through symlinks and `..` without first
-# creating attacker- or caller-selected directories.
+# Serialize before touching any destination state. Requiring an existing
+# parent lets us canonicalize without creating caller-selected directories.
 lyte_acquire_app_artifact_lock
 if [ ! -d "$(dirname "$APP")" ]; then
   echo "error: app destination parent must already exist" >&2
@@ -183,9 +181,8 @@ cat > "$STAGED_APP/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-# Validate and sign the complete staged bundle. sign-dev.sh fails closed when
-# the stable identity is unavailable; the previously published app is left
-# byte-for-byte untouched on any failure before publication.
+# Validate and sign the staged bundle; sign-dev.sh fails closed without the
+# stable identity, leaving the published app untouched.
 plutil -lint "$STAGED_APP/Contents/Info.plist" >/dev/null
 "$ROOT/Scripts/sign-dev.sh" \
   "$STAGED_APP/Contents/MacOS/lyte-helperd" "$STAGED_APP"
@@ -202,10 +199,9 @@ Scripts/Tests/test-hermetic-linkage.sh \
 [ "$PUBLISHING_LIVE" -eq 0 ] \
   || lyte_require_app_quiescent "live app publication"
 
-# macOS rename-swap publishes the complete signed directory in one filesystem
-# operation. The old app moves into the private stage and the EXIT trap removes
-# it. A first build has no destination yet, so ordinary rename is already
-# atomic.
+# macOS rename-swap publishes the signed directory in one filesystem
+# operation (the EXIT trap removes the old app); a first build's plain
+# rename is already atomic.
 python3 - "$STAGED_APP" "$APP" <<'PY'
 import ctypes
 import os

@@ -4,12 +4,9 @@
 # Source it, then call lyte_wasm_require. Nothing is auto-installed: a
 # missing piece fails with the exact install commands.
 #
-# Optional: binaryen's wasm-opt. PackageToJS (Browser/Scripts/build.sh) runs
-# it on release builds when it is on PATH; without it PackageToJS prints a
-# warning and stages the module unoptimized, which is why
-# LyteClientBrowser.wasm is ~77 MB. The unoptimized module behaves the same
-# and no gate needs wasm-opt; install it (`brew install binaryen`) where the
-# download size matters.
+# Optional: binaryen's wasm-opt. PackageToJS runs it on release builds when
+# it is on PATH; without it the module stages unoptimized (~77 MB) but
+# behaves the same.
 
 LYTE_WASM_TOOLCHAIN_VERSION="6.3.3"
 LYTE_WASM_SDK="swift-${LYTE_WASM_TOOLCHAIN_VERSION}-RELEASE_wasm"

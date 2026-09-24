@@ -1,26 +1,20 @@
 #!/usr/bin/env bash
-# The impairment SLO gate. Shapes one host UDP flow to this client with tc
+# The impairment SLO gate: shapes one host UDP flow to this client with tc
 # netem on pup around one real motion benchmark leg, then judges the result
-# against the IMPAIRMENT SLOs rather than the clean-air gates (under
-# deliberate 20 ms jitter the clean transport rung fails by design; the
-# contract under impairment is bounded presentation cadence and fully
-# concealed audio).
+# against the impairment SLOs (clean-air rungs fail by design under jitter).
 #
 # Profiles:
 #   moderate — delay 20ms jitter 10ms, loss 1%  →  presentation-gap
 #              p99 ≤ 50 ms, audio concealment intact, renderer clean,
 #              decoded ≥ 30 fps.
 #
-# The impaired port and the benchmarked port are one value:
-# LYTE_BENCHMARK_PORT is passed to benchmark-app.sh, and both refuse to run
-# unless lyte-host.service owns that port. Today the app dials its pinned
-# host on the standing port, so the only measurable flow is 41151, which
-# additionally needs LYTE_BENCHMARK_ALLOW_STANDING_PORT=1.
+# LYTE_BENCHMARK_PORT is both the impaired and the benchmarked port; both
+# scripts refuse unless lyte-host.service owns it, and the standing 41151
+# also needs LYTE_BENCHMARK_ALLOW_STANDING_PORT=1.
 #
-# Safety: the cleanup trap is armed before the remote apply, so an ssh drop
-# or signal after a successful apply still removes the qdisc (removing when
-# nothing is installed is a no-op). The run refuses to start when this
-# helper's qdisc is already on the interface. A signal exits 128+signal.
+# The cleanup trap is armed before the remote apply, so an ssh drop or
+# signal still removes the qdisc. The run refuses to start when this
+# helper's qdisc is already installed. A signal exits 128+signal.
 #
 # Environment: LYTE_PUP_HOST (default pup), LYTE_BENCHMARK_HOST (host
 # address the client dials), LYTE_BENCHMARK_PORT, LYTE_BENCHMARK_ALLOW_STANDING_PORT,
@@ -122,8 +116,8 @@ pup_ssh "sudo -n sh '$REMOTE_HELPER' status '$IFACE'" \
 
 VERDICT_JSON="$RUN_DIR/analyzer-verdict.json"
 LOG="$RUN_DIR/benchmark.log"
-# The clean-air gates are allowed to fail under deliberate impairment —
-# the SLO judgment below is ours — but the leg must actually RUN.
+# The clean-air gates may fail under deliberate impairment (the SLO
+# judgment below is ours), but the leg must actually run.
 LYTE_BENCHMARK_HOST="$HOST" LYTE_BENCHMARK_PORT="$HOST_PORT" \
   LYTE_PUP_HOST="$PUP" "$ROOT/Scripts/benchmark-app.sh" \
   --no-build --out "$RUN_DIR" motion >"$LOG" 2>&1 || true

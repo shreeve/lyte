@@ -17,9 +17,8 @@ source "$ROOT/Scripts/AppArtifact/app-artifact.sh"
 source "$ROOT/Scripts/lib/source-fingerprint.sh"
 LSREGISTER="${LYTE_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
 PUP="$(lyte_pup_host)"
-# The standing host advertises on the ethernet leg (enxf8e43b7ede7c =
-# 10.0.0.232); the wifi address answers ICMP but replies can source
-# from the wrong interface and the handshake dies silently.
+# The standing host advertises on the ethernet leg (10.0.0.232); over wifi
+# replies can source from the wrong interface and the handshake dies.
 HOST="${LYTE_BENCHMARK_HOST:-10.0.0.232}"
 BENCH_PORT="${LYTE_BENCHMARK_PORT:-41151}"
 BENCH_SECONDS="${LYTE_BENCHMARK_SECONDS:-30}"
@@ -93,9 +92,8 @@ refuse_if_lyte_is_running() {
   }
 }
 
-# This must precede directory creation, builds, remote inspection, capture,
-# workload setup, and service restart. A second check guards each leg against
-# an app launched while the deterministic preflight was running.
+# Precedes directory creation, builds, remote work, and service restart;
+# each leg re-checks for an app launched during preflight.
 refuse_if_lyte_is_running
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
@@ -150,11 +148,9 @@ if (( NO_BUILD )); then
   }
 fi
 
-# A benchmark is evidence only when the source under review is exactly what
-# pup built. Dry-run checksums catch the otherwise-silent "edit B, run A"
-# failure even when mtimes happen to agree.
-# Each pair is checked on its own: inside one $(...) only the last rsync's
-# status counted, so a failed ssh produced an empty delta that passed.
+# A benchmark is evidence only when pup built exactly the source under
+# review; dry-run checksums catch "edit B, run A" even when mtimes agree.
+# Each pair is checked on its own so a failed ssh cannot pass as no delta.
 deployed_delta=""
 for pair in \
     "Host/Package.swift:src/lyte-host/Package.swift" \
@@ -212,12 +208,9 @@ pup_service_owns_port "$BENCH_PORT" || {
   exit 1
 }
 HOST_PID="$(pup_ssh "systemctl show lyte-host --property MainPID --value")"
-# A capability-tagged host (the direct eye's cap_sys_admin) is
-# ptrace-guarded: /proc/PID/exe refuses same-uid readers no matter the
-# dumpable flag. sudo -n keeps the witness identical, just readable.
-# The service runs the deployed version (~/.local/bin/lyte-host, placed by
-# Host/Scripts/deploy-host.sh); it must be the binary built from the source
-# checked above.
+# A capability-tagged host is ptrace-guarded (/proc/PID/exe refuses
+# same-uid readers); sudo -n keeps the witness identical, just readable.
+# The deployed ~/.local/bin/lyte-host must be built from the checked source.
 host_hashes="$(
   pup_ssh \
     "{ sha256sum /proc/$HOST_PID/exe 2>/dev/null \
@@ -319,9 +312,8 @@ cleanup() {
   trap '' INT TERM
   local claimed_pid="" claimed_run_id="" extra="" candidate_pid=""
   if [[ -n "$APP_RUN_ID" && -n "$APP_PIDFILE" ]]; then
-    # An interrupt may arrive between `open` and the normal PID-file read.
-    # Initialization publishes immediately, so give that exact claim a short
-    # chance to appear; never guess a process by name or recency.
+    # An interrupt may land between `open` and the PID-file read; give that
+    # exact claim a short chance to appear, never guess a process by name.
     for _ in {1..40}; do
       [[ -s "$APP_PIDFILE" ]] && break
       sleep 0.05
@@ -480,11 +472,9 @@ stop_motion() {
   PRESENTER_PID=""
 }
 
-# handshake-only measures connect latency against a fresh process on the
-# standing port. The host is a systemd system service: restarting that real
-# unit preserves its operator-owned arguments, seat environment, and ambient
-# CAP_SYS_ADMIN instead of inventing a parallel launch path. Protected host
-# identity and configuration must remain byte-identical across the restart.
+# handshake-only restarts the real systemd unit (keeping its arguments,
+# seat environment and ambient CAP_SYS_ADMIN) to measure connect latency.
+# Protected host identity and configuration must stay byte-identical.
 protected_host_fingerprint() {
   pup_ssh \
     "set -e; cd ~/.config/lyte; \
@@ -605,10 +595,8 @@ run_leg() {
 {"runID":"$run_id","buildUTC":"$APP_BUILD_UTC","clientExecutableSHA256":"$APP_SHA256","clientSourceSHA256":"$CLIENT_SOURCE_SHA256","hostExecutableSHA256":"$HOST_SHA256","hostSourceSHA256":"$HOST_SOURCE_SHA256"}
 EOF
 
-  # V-4: pin the leg's chroma tier from the caller's environment
-  # (good|best — ChromaTier rawValues). Empty = the app's own seeding
-  # (the pinned host's persisted tier) — fine for smoke, ambiguous
-  # for an A/B.
+  # Pin the leg's chroma tier (good|best — ChromaTier rawValues). Empty
+  # keeps the app's persisted tier: fine for smoke, ambiguous for an A/B.
   benchmark_chroma="${LYTE_BENCHMARK_CHROMA_TIER:-}"
   benchmark_reference_name=""
   synthetic_motion=""

@@ -168,8 +168,7 @@ package_image_parent=""
 
 # Identity, the service's knobs, the deployed version and the installed unit
 # must be byte-identical after the gate. The XDG identity and host.conf are
-# required; the pre-XDG copies (kept read-only after migration) are covered
-# whenever they exist.
+# required; pre-XDG copies are covered whenever they exist.
 protected_state_fingerprint() {
     local config="$HOME/.config/lyte" file
     test -f "$config/noise_static.key"
@@ -251,10 +250,8 @@ build_graph_hash="$({
         fi
     done
 
-    # A source-only layout change leaves Package.swift untouched, but old
-    # SwiftPM workspaces can still name the removed dependency paths. Include
-    # the structural source graph so the shared Linux mirror invalidates that
-    # stale state before testing dependents.
+    # Include the source graph so a layout change invalidates stale SwiftPM
+    # workspaces that still name removed dependency paths.
     cd "$gate_root"
     for package_root in Client Common Wire Host SystemTests Browser; do
         for tree in Sources Tests Plugins; do
