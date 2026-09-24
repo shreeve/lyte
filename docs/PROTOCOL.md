@@ -49,8 +49,8 @@ domain.
 
 TLV types: `0x00` invalid, `0x01` connection id (migration), `0x02` wire
 major version (reserved, unused in v1: the major rides the first Noise
-handshake payload byte and must match exactly), `0x03` last input seq. Unknown TLV types are skipped by
-consumers and preserved by the codec.
+handshake payload byte and must match exactly), `0x03` last input seq.
+Unknown TLV types are skipped by consumers and preserved by the codec.
 
 Pinned by `envelope-v1.json`, `session-v1.json` (conn-id TLV),
 `control-v1.json` (lastInputSeq TLV).
@@ -70,8 +70,10 @@ Pinned by `envelope-v1.json`, `session-v1.json` (conn-id TLV),
 
 Priority order, highest first: control/input > audio > fresh video > video
 tail and retransmits > refinement > feature > telemetry > bulk
-(`LyteWire/ChannelId.swift`, `WirePriority`). Refinement has no channel of
-its own; the pacer demotes it by content.
+(`WirePriority` in `LyteWire/ChannelId.swift`). The host's pacer enforces
+it with its own classes (`PacerClass` in `HostCore/Pacer.swift`), which
+have no feature rung because no v1 message rides chans 9–255. Refinement
+has no channel of its own; the pacer demotes it by content.
 
 ## FEC
 
@@ -98,7 +100,7 @@ Pinned by `fec-v1.json` (field, geometry ladder, recovery matrices) and
 ```text
 client                                   host
 0x05 ‖ Noise IK msg1          ──►
-                              ◄──        0x13 retry challenge (cookie mode only)
+                              ◄──        0x13 retry challenge (under load)
 0x14 ‖ cookie ‖ msg1          ──►
                               ◄──        0x06 ‖ Noise IK msg2
 sealed traffic, both ways; in a streaming session each side's first ARQ
@@ -115,10 +117,14 @@ message is 0x0F (a pairing-only run opens with share A, 0x0B)
   (`.redial`) — so a late answer to any copy completes the transcript.
   Answering a retry challenge spends no attempt; the client answers at
   most one challenge per message-1 transmission.
-- The host rate-limits message 1 (`HostSession.HandshakeGate`). Under a
-  flood it switches to cookie mode: a stateless 24-byte HMAC cookie binds
-  the client tuple, a timestamp (30 s lifetime) and message 1 verbatim.
-  A verified cookie is admitted once; replays are dropped.
+- The host rate-limits message 1 with a token bucket
+  (`HostSession.HandshakeGate`). A message 1 the bucket cannot admit, and
+  every un-cookied message 1 while arrivals exceed the flood threshold
+  (cookie mode), draws a stateless RetryChallenge instead of a drop: a
+  24-byte HMAC cookie that binds the client tuple, a timestamp (30 s
+  lifetime) and message 1 verbatim. Verified cookies spend from their own
+  budget, each proven address from a small share of it; a replay of an
+  admitted cookie is dropped.
 - Message 1 carries no freshness, so a replayed one authenticates again.
   The host therefore commits to a client only when it proves key
   possession: its first authenticated transport datagram. Until then a
@@ -127,9 +133,10 @@ message is 0x0F (a pairing-only run opens with share A, 0x0B)
   replaces the unconfirmed handshake. An unconfirmed host sends nothing
   timer-driven: the session-start beacon and its capability declaration
   leave once with message 2, and the 1 Hz beacons and ARQ retransmits
-  start only after the client's first authenticated datagram. The listening host also drops any
-  message 1 it already answered earlier in the process, so a captured one
-  replays at most once per host run and cannot hold the host against a
+  start only after the client's first authenticated datagram. An answer
+  still unconfirmed after 6 s is discarded. The listening host also drops
+  any message 1 it already answered earlier in the process, so a captured
+  one replays at most once per host run and cannot hold the host against a
   real client's next dial.
 - Handshake carriage (0x05, 0x06, 0x13, 0x14) is bare: it is not sealed and
   not ARQ-carried. A bare 0x05/0x06 after the client is confirmed is
@@ -170,16 +177,16 @@ the message codecs).
 
 In a streaming session each side's first ARQ message is a capability
 declaration (0x0F): a deterministic-CBOR map. The agreed set is the
-intersection, computed the same way on both ends; there is no accept round. Unknown keys are ignored
-and preserved, and survive intersection only when both sides declare
-byte-equal values.
+intersection, computed the same way on both ends; there is no accept round.
+Unknown keys are ignored and preserved, and survive intersection only when
+both sides declare byte-equal values.
 
 | Key | Name | Type / intersect | Gates |
 |---|---|---|---|
 | 1 | wireMinor (required) | u16, min | — |
 | 2 | videoCodecs (required) | id list, ∩ (1 = HEVC) | — |
 | 3 | chromaModes (required) | id list, ∩ (1 = 4:2:0, 2 = 4:4:4) | chroma posture |
-| 4 | idleSilence | bool, AND | idle-mode video |
+| 4 | idleSilence | bool, AND | idle-mode video (dormant, see [lifecycle](#session-lifecycle)) |
 | 5 | featureChannels | id list, ∩ (1 clipboard, 2 files, 3 printing) | — |
 | 6 | audioExpress | bool, AND | — |
 | 7 | resume | bool, AND | — |
@@ -253,22 +260,24 @@ A reliable-channel payload that starts with 0x07 or 0x08 is a sequence of
 ARQ frames; an ACK can ride ahead of fresh segments in one datagram.
 Sequencing is per group: group 0 is the channel's ordered stream, non-zero
 groups are independent one-shot messages allocated by the endpoint
-(`ArqEndpoint.sendOneShot`). Segments are retransmitted byte-identical in
-fresh datagrams (fresh seq, fresh nonce). An ACK describes at most 256
-segments past its cumulative point, which is also the widest receive
-window; a sender never exceeds the peer's window. A sender bounds each
-group's queue locally (LyteWire: 32,512 segments, a memory bound, not wire
-contract); past it `send` throws `ArqSendError.queueFull`, which every
-shell treats as backpressure, not as a fatal error.
+(`ArqEndpoint.sendOneShot`); no v1 end sends one, and receivers accept
+them. Segments are retransmitted byte-identical in fresh datagrams (fresh
+seq, fresh nonce). An ACK describes at most 256 segments past its
+cumulative point, which is also the widest receive window; a sender never
+exceeds the peer's window. A sender bounds each group's queue locally
+(LyteWire: 32,512 segments, a memory bound, not wire contract); past it
+`send` throws `ArqSendError.queueFull`, which every shell treats as
+backpressure, not as a fatal error.
 
 A reassembled message is at most 262,144 bytes. The ceiling is not
 negotiated, so both ends share it. A message past it poisons its group:
 a one-shot group is dropped, and a poisoned ordered stream can never
 deliver in order again, so the endpoint reports it
-(`isOrderedStreamPoisoned`, `.orderedStreamPoisoned`) and the session
-should end; the host ends it with a `shuttingDown` teardown. Incomplete one-shot receive groups share a 1 MiB receive
-budget; a segment past it is refused unacknowledged unless it completes
-its message.
+(`isOrderedStreamPoisoned`, `.orderedStreamPoisoned`). Either end that
+sees its peer poison CTRL or chan 8 ends the session with a `shuttingDown`
+teardown; the macOS client then re-dials. Incomplete one-shot receive
+groups share a 1 MiB receive budget; a segment past it is refused
+unacknowledged unless it completes its message.
 
 Pinned by `arq-v1.json`.
 
@@ -293,11 +302,14 @@ Pinned by `lifecycle-v1.json` and `session-v1.json`.
 ## Clock and feedback
 
 The host sends a ClockBeacon every second; the client echoes it, and
-`HostClockModel` fits offset and skew from the four timestamps. The client
-sends a feedback report on chan 3 every 25–50 ms: per-channel counters,
-per-packet arrival dispersion (kernel monotonic stamps) and up to six NACK
-entries. The host's `RateEstimator` prices the path from these reports;
-there is no client-side rate control.
+`ClientHostClock` (`LyteClientSession`) fits offset and skew from the four
+timestamps; it drops implausible samples and clamps the fitted skew, so a
+frozen or lying host clock cannot derail the fit. The host measures
+round-trip time from its own record of each beacon's send time, never from
+the echoed copy. The client sends a feedback report on chan 3 every
+25–50 ms: per-channel counters, per-packet arrival dispersion (kernel
+monotonic stamps) and up to six NACK entries. The host's `RateEstimator`
+prices the path from these reports; there is no client-side rate control.
 
 Pinned by `beacon-v1.json`.
 
@@ -346,9 +358,9 @@ window is clamped to 256 chunks.
   fails if a committed vector file is modified, deleted, renamed or
   retyped; new files and README prose may be added. Changed semantics need
   a new versioned file and a wire-version decision.
-- `VectorRegenerationTests` fails unless every committed file is
-  byte-for-byte its builder's output in `LyteWireVectorGen` (one named
-  escaping exemption, `cursor-v1.json`).
+- Every committed file is byte-for-byte its builder's output in
+  `LyteWireVectorGen` (authoring rules:
+  [Wire/Vectors/README.md](../Wire/Vectors/README.md)).
 - The same vectors verify byte-for-byte on macOS, Linux (pup) and
   wasm32-wasip1 (`Wire/Scripts/wasm-test.sh`).
 - A banked set of wire-v2 changes is recorded in the
