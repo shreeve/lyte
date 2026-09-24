@@ -1,4 +1,4 @@
-// The NSPasteboard glue (CL-15, design doc
+// The NSPasteboard glue (design doc
 // docs/20260722-231500-lyte-clipboard.md §8) — deliberately thin:
 // NSPasteboard has no change notification, so a ~200 ms `changeCount`
 // poll watches for local copies while active, and `apply` writes host
@@ -9,19 +9,19 @@
 // app's ConnectionModel and wire-view's --clipboard leg. Payloads
 // never appear in logs here or anywhere.
 //
-// P-1 (clipboard v2): the poll now sees IMAGES too, when the images
-// rung is on. Text wins when a change carries both flavors (the host
-// leaf's read order, mirrored); an image-only change (a screenshot,
-// a "Copy Image") is read as PNG — transcoded from TIFF through
-// NSBitmapImageRep when the promising app never provided public.png —
-// and handed to the image callback. `apply(imageData:)` writes the
-// host's PNG plus a TIFF rendition (older AppKit paste targets ask
-// for TIFF first) and swallows the bump the same way text does.
+// Images, when the images rung is on: text wins when a change carries
+// both flavors (the host leaf's read order, mirrored); an image-only
+// change (a screenshot, a "Copy Image") is read as PNG — transcoded from
+// TIFF when the copying app never provided public.png, outside the lock
+// — and handed to the image callback. `apply(imageData:)` writes the
+// host's PNG and PROMISES a TIFF rendition (older AppKit paste targets
+// ask for TIFF first), rendered only if a paste target asks, so a large
+// host image never decodes on the caller's thread.
 
 import AppKit
 
 public final class PasteboardSync: @unchecked Sendable {
-    private let pasteboard = NSPasteboard.general
+    private let pasteboard: NSPasteboard
     private let intervalMilliseconds: Int
     private let onLocalChange: @Sendable (String) -> Void
     /// P-1: fired (on the poll queue) with PNG bytes when the user
@@ -39,18 +39,27 @@ public final class PasteboardSync: @unchecked Sendable {
     /// The last changeCount this class has accounted for — poll
     /// baseline AND the self-write swallow.
     private var lastChangeCount: Int
+    /// The TIFF promise behind the last applied image; held so the
+    /// promise outlives the pasteboard item's own bookkeeping.
+    private var tiffPromise: TiffRendition?
 
     /// - Parameter onLocalChange: fired (on the poll queue) with the
     ///   pasteboard's string whenever the user copies while the
     ///   watcher is active. The session core judges it; this class
     ///   never does.
     public init(
+        pasteboard: NSPasteboard = .general,
         intervalMilliseconds: Int = 200,
         onLocalChange: @escaping @Sendable (String) -> Void
     ) {
+        self.pasteboard = pasteboard
         self.intervalMilliseconds = intervalMilliseconds
         self.onLocalChange = onLocalChange
         self.lastChangeCount = pasteboard.changeCount
+    }
+
+    deinit {
+        timer?.cancel()
     }
 
     /// Begins polling. Consent-shaped: the baseline resets to NOW, so
@@ -103,20 +112,20 @@ public final class PasteboardSync: @unchecked Sendable {
         lastChangeCount = pasteboard.changeCount
     }
 
-    /// P-1: applies a host clipboard image (sha-verified PNG bytes)
-    /// and swallows its bump. A TIFF rendition rides along so paste
-    /// targets that never ask for public.png still see the image.
+    /// Applies a host clipboard image (sha-verified PNG bytes) and
+    /// swallows its bump. The TIFF rendition is promised, not rendered:
+    /// paste targets that never ask for public.png still get the image.
     public func apply(imageData: [UInt8]) {
         let png = Data(imageData)
-        let tiff = NSBitmapImageRep(data: png)?
-            .tiffRepresentation
+        let promise = TiffRendition(png: png)
+        let item = NSPasteboardItem()
+        item.setData(png, forType: .png)
+        item.setDataProvider(promise, forTypes: [.tiff])
         lock.lock()
         defer { lock.unlock() }
         pasteboard.clearContents()
-        pasteboard.setData(png, forType: .png)
-        if let tiff {
-            pasteboard.setData(tiff, forType: .tiff)
-        }
+        pasteboard.writeObjects([item])
+        tiffPromise = promise
         lastChangeCount = pasteboard.changeCount
     }
 
@@ -131,33 +140,59 @@ public final class PasteboardSync: @unchecked Sendable {
         // Read under the lock so an `apply` racing this poll cannot
         // interleave between the count check and the content read.
         let text = pasteboard.string(forType: .string)
-        var image: [UInt8]?
+        var image: ImageFlavor?
         if imagesOn, text?.isEmpty != false {
-            image = Self.readPngBytes(from: pasteboard)
+            if let png = pasteboard.data(forType: .png) {
+                image = .png(png)
+            } else if let tiff = pasteboard.data(forType: .tiff) {
+                image = .tiff(tiff)
+            }
         }
         lock.unlock()
         if let text, !text.isEmpty {
             onLocalChange(text)
-        } else if let image, !image.isEmpty {
-            onLocalImageChange?(image)
+        } else if let png = image?.pngBytes, !png.isEmpty {
+            onLocalImageChange?(png)
         }
     }
 
-    /// The pasteboard's image as PNG bytes: public.png verbatim when
-    /// the promising app provided it, else the TIFF flavor transcoded
-    /// (screenshots give PNG; app-internal copies often give TIFF
-    /// only). Nil when no image flavor is present at all.
-    private static func readPngBytes(
-        from pasteboard: NSPasteboard
-    ) -> [UInt8]? {
-        if let png = pasteboard.data(forType: .png) {
-            return Array(png)
+    /// The pasteboard's image as read: public.png verbatim when the
+    /// copying app provided it (screenshots do), else TIFF (app-internal
+    /// copies often give only that), transcoded after the lock is gone.
+    private enum ImageFlavor {
+        case png(Data)
+        case tiff(Data)
+
+        var pngBytes: [UInt8]? {
+            switch self {
+            case .png(let data):
+                return Array(data)
+            case .tiff(let data):
+                return NSBitmapImageRep(data: data)?
+                    .representation(using: .png, properties: [:])
+                    .map(Array.init)
+            }
         }
-        guard
-            let tiff = pasteboard.data(forType: .tiff),
-            let png = NSBitmapImageRep(data: tiff)?
-                .representation(using: .png, properties: [:])
-        else { return nil }
-        return Array(png)
+    }
+}
+
+/// Renders a PNG's TIFF flavor only when a paste target asks for it.
+private final class TiffRendition: NSObject, NSPasteboardItemDataProvider,
+    @unchecked Sendable
+{
+    private let png: Data
+
+    init(png: Data) {
+        self.png = png
+    }
+
+    func pasteboard(
+        _ pasteboard: NSPasteboard?, item: NSPasteboardItem,
+        provideDataForType type: NSPasteboard.PasteboardType
+    ) {
+        guard type == .tiff,
+              let tiff = NSBitmapImageRep(data: png)?.tiffRepresentation
+        else { return }
+        item.setData(tiff, forType: .tiff)
     }
 }
