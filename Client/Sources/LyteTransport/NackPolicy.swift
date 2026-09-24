@@ -1,134 +1,23 @@
-// NackPolicy: the client's half of targeted repair — turns VideoAssembler
-// presumption into NACK entries.
-//
-//   rule 1  NACK only past parity: below it, FEC owns the frame.
-//   rule 2  the verdict is geometry-immediate (packet-threshold 3), no timer.
-//   rule 3  ask iff frameAge + min-RTT < the assembler's stale horizon
-//           (RTT 0 before the first beacon echo; the host still gates).
-//   rule 4  an asked frame not complete within the repair deadline
-//           escalates to the existing coalesced IDR requester.
-//
-// Each (frame, shard) is asked at most once; a frame refused as stale is
-// refused forever and its fec-impossible verdict goes straight to IDR.
-// Time arrives as parameters; emit/escalate are the only exits. One lock.
-
-import Foundation
+import LyteClientSession
 import LyteWire
+import Synchronization
 
-/// The assembler events the video pipeline forwards to this policy.
-public enum VideoRepairSignal: Sendable {
-    case nackCandidates(
-        frame: FrameNumber,
-        missingShardIndices: [UInt8],
-        parityShards: Int,
-        frameAgeMicroseconds: Int64
-    )
-    /// A fresh-seq repair shard slotted into its group.
-    case repairShardAccepted(frame: FrameNumber, shardIndex: UInt8)
-    /// The frame decoded (by any mix of originals, FEC, repairs).
-    case frameDecoded(frame: FrameNumber)
-    /// Frames `from`…`through` will never complete (evicted or skipped)
-    /// — repairs can no longer help them.
-    case framesGone(from: FrameNumber, through: FrameNumber)
-    /// A shard dropped because its slot (or group) was already satisfied;
-    /// feeds the late/duplicate books only.
-    case satisfiedShardDropped(frame: FrameNumber, shardIndex: UInt8)
-    /// A shard dropped because its frame's turn passed; feeds the
-    /// late/superseded books only.
-    case staleShardDropped(frame: FrameNumber)
-}
+public typealias NackPolicyConfig = ClientNackPolicy.Config
 
-public struct NackPolicyConfig: Sendable {
-    /// Rule 3: ask iff frameAge + RTT < this budget (the assembler's
-    /// staleAfterMicroseconds).
-    public var staleBudgetMicroseconds: Int64
-    /// Rule 4: an asked frame not completed this long after its first
-    /// ask escalates to the coalesced IDR request.
-    public var repairDeadlineMicroseconds: Int64
-    /// Book ceiling against hostile frame-number spray; oldest evicted.
-    public var maxTrackedFrames: Int
-
-    public init(
-        staleBudgetMicroseconds: Int64 = 250_000,
-        repairDeadlineMicroseconds: Int64 = 250_000,
-        maxTrackedFrames: Int = 128
-    ) {
-        self.staleBudgetMicroseconds = staleBudgetMicroseconds
-        self.repairDeadlineMicroseconds = repairDeadlineMicroseconds
-        self.maxTrackedFrames = maxTrackedFrames
-    }
-}
-
-public final class NackPolicy: @unchecked Sendable {
-    public struct Stats: Sendable {
-        /// Frames whose presumption went past parity (FEC failure).
-        public var pastParityFrames: UInt64 = 0
-        /// NACK entries handed to the feedback path.
-        public var nackEntriesEmitted: UInt64 = 0
-        /// Distinct (frame, shard) asks — the dedupe's denominator.
-        public var shardsAsked: UInt64 = 0
-        /// Frames refused by the rule-3 staleness gate.
-        public var asksSuppressedStale: UInt64 = 0
-        /// Fresh-seq repair shards the assembler accepted.
-        public var repairShardsReceived: UInt64 = 0
-        /// Asked frames that completed with at least one repair shard.
-        public var framesCompletedByRepair: UInt64 = 0
-        /// Asked frames answered by the rule-4 IDR escalation instead
-        /// (deadline passed, or the group died first).
-        public var framesEscalatedToIdr: UInt64 = 0
-        /// fec-impossible verdicts deferred while a repair was pending.
-        public var fecImpossibleDeferred: UInt64 = 0
-        /// Answers that landed after their slot filled or the frame
-        /// decoded. A straggling original for an asked shard is
-        /// indistinguishable here and counts the same.
-        public var repairsLate: UInt64 = 0
-        /// Asked shards whose repair was already accepted once.
-        public var repairsDuplicate: UInt64 = 0
-        /// Explicit 0x23 refusals decoded off the wire.
-        public var refusalsReceived: UInt64 = 0
-        /// Refusals that ended a live ask's wait early.
-        public var refusalsActedOn: UInt64 = 0
-        /// Refusals with no live ask (unknown, or already settled).
-        public var refusalsIgnored: UInt64 = 0
-        /// Answers for frames already abandoned (skipped, evicted, or
-        /// escalated to IDR).
-        public var repairsSuperseded: UInt64 = 0
-        /// Gone-ranges escalated by the whole-loss rule (one per range).
-        public var whollyLostEscalations: UInt64 = 0
-    }
+/// The native shell over the IO-free ClientNackPolicy: one lock, the RTT
+/// read before it is taken, and the decision's exits run after it is
+/// released — `emit` sends entries down the feedback path promptly (the
+/// host's freeze budget is cadence-derived), `escalate` feeds the
+/// coalesced IDR recovery.
+public final class NackPolicy: Sendable {
+    public typealias Stats = ClientNackPolicy.Stats
 
     public let config: NackPolicyConfig
-
+    private let policy: Mutex<ClientNackPolicy>
     /// Newest min-RTT estimate in µs, nil before the first beacon echo.
     private let rtt: @Sendable () -> Int64?
-    /// Sends entries down the feedback path, promptly: the host's freeze
-    /// budget is cadence-derived.
     private let emit: @Sendable ([FeedbackReport.NackEntry]) -> Void
-    /// Rule 4's exit: the existing coalesced IDR requester.
     private let escalate: @Sendable (FrameNumber, ClientTimestamp) -> Void
-
-    private struct FrameBook {
-        /// Classifies later answers as late (decoded) or superseded (gone).
-        enum Fate {
-            case pending
-            case decoded
-            /// Skipped, evicted, or escalated to IDR.
-            case gone
-        }
-        var askedIndices: Set<UInt8> = []
-        /// Asked indices whose repair was accepted.
-        var acceptedRepairIndices: Set<UInt8> = []
-        var firstAskAt: ClientTimestamp?
-        var refusedStale = false
-        var sawRepair = false
-        var fate: Fate = .pending
-        var settled: Bool { fate != .pending }
-        var lastTouched: ClientTimestamp
-    }
-
-    private let lock = NSLock()
-    private var books: [UInt32: FrameBook] = [:]
-    private var stats = Stats()
 
     public init(
         config: NackPolicyConfig = NackPolicyConfig(),
@@ -137,246 +26,45 @@ public final class NackPolicy: @unchecked Sendable {
         escalate: @escaping @Sendable (FrameNumber, ClientTimestamp) -> Void
     ) {
         self.config = config
+        self.policy = Mutex(ClientNackPolicy(config: config))
         self.rtt = rtt
         self.emit = emit
         self.escalate = escalate
     }
 
     public func snapshotStats() -> Stats {
-        lock.lock()
-        defer { lock.unlock() }
-        return stats
+        policy.withLock { $0.stats }
     }
 
-    // MARK: Signals
-
-    /// One forwarded assembler signal. Emissions/escalations fire
-    /// outside the lock.
     public func handle(_ signal: VideoRepairSignal, now: ClientTimestamp) {
-        switch signal {
-        case .nackCandidates(let frame, let missing, let parity, let age):
-            handleCandidates(
-                frame: frame, missingIndices: missing,
-                parityShards: parity, frameAgeMicroseconds: age, now: now
-            )
-        case .repairShardAccepted(let frame, let index):
-            lock.lock()
-            stats.repairShardsReceived += 1
-            if var book = books[frame.rawValue] {
-                book.sawRepair = true
-                if book.askedIndices.contains(index) {
-                    book.acceptedRepairIndices.insert(index)
-                }
-                book.lastTouched = now
-                books[frame.rawValue] = book
-            }
-            lock.unlock()
-        case .frameDecoded(let frame):
-            lock.lock()
-            if var book = books[frame.rawValue], !book.settled {
-                if book.sawRepair, !book.askedIndices.isEmpty {
-                    stats.framesCompletedByRepair += 1
-                }
-                book.fate = .decoded
-                book.lastTouched = now
-                books[frame.rawValue] = book
-            }
-            lock.unlock()
-        case .framesGone(let from, let through):
-            var expired: [FrameNumber] = []
-            var brokeUnhealed = false
-            lock.lock()
-            var frame = from
-            while true {
-                if var book = books[frame.rawValue] {
-                    if !book.settled {
-                        if !book.askedIndices.isEmpty {
-                            // Asked, never completed: rule 4, now.
-                            stats.framesEscalatedToIdr += 1
-                            expired.append(frame)
-                        } else {
-                            brokeUnhealed = true
-                        }
-                        book.fate = .gone
-                        book.lastTouched = now
-                        books[frame.rawValue] = book
-                    }
-                    // Settled books never re-fire.
-                } else {
-                    // Nothing ever arrived for this frame.
-                    brokeUnhealed = true
-                }
-                if frame == through { break }
-                frame = frame.next
-            }
-            // Whole-loss rule: an unasked frame that died undecoded
-            // breaks the reference chain, and no other path reaches the
-            // IDR requester for it. One escalation heals the whole range
-            // (unless a rule-4 escalation above already did).
-            if brokeUnhealed, expired.isEmpty {
-                stats.whollyLostEscalations += 1
-                expired.append(from)
-            }
-            lock.unlock()
-            for frame in expired { escalate(frame, now) }
-        case .satisfiedShardDropped(let frame, let index):
-            // Only asked shards are repair accounting; an unasked
-            // duplicate is ordinary network duplication of an original.
-            lock.lock()
-            if var book = books[frame.rawValue],
-               book.askedIndices.contains(index) {
-                if book.acceptedRepairIndices.contains(index) {
-                    stats.repairsDuplicate += 1
-                } else {
-                    stats.repairsLate += 1
-                }
-                book.lastTouched = now
-                books[frame.rawValue] = book
-            }
-            lock.unlock()
-        case .staleShardDropped(let frame):
-            lock.lock()
-            if var book = books[frame.rawValue], !book.askedIndices.isEmpty {
-                // After decode an answer is late; otherwise superseded.
-                if book.fate == .decoded {
-                    stats.repairsLate += 1
-                } else {
-                    stats.repairsSuperseded += 1
-                }
-                book.lastTouched = now
-                books[frame.rawValue] = book
-            }
-            lock.unlock()
-        }
+        let rtt = rtt()
+        execute(policy.withLock {
+            $0.handle(signal, rttMicroseconds: rtt, now: now)
+        }, now: now)
     }
 
-    /// A decoded 0x23 refusal ends a live ask's repair wait now and
-    /// escalates to the coalesced IDR requester; the deadline remains the
-    /// fallback for lost refusals. Refusals with no live ask are counted
-    /// and ignored.
     public func handleRefusal(frame: FrameNumber, now: ClientTimestamp) {
-        var act = false
-        lock.lock()
-        stats.refusalsReceived += 1
-        if var book = books[frame.rawValue],
-           !book.settled, !book.askedIndices.isEmpty {
-            stats.refusalsActedOn += 1
-            // Any answer still in flight now lands as superseded.
-            book.fate = .gone
-            book.lastTouched = now
-            books[frame.rawValue] = book
-            act = true
-        } else {
-            stats.refusalsIgnored += 1
-        }
-        lock.unlock()
-        if act { escalate(frame, now) }
+        execute(policy.withLock {
+            $0.handleRefusal(frame: frame, now: now)
+        }, now: now)
     }
 
     /// True while a repair is pending within its deadline: hold the IDR.
     public func shouldDeferFecImpossible(
         frame: FrameNumber, now: ClientTimestamp
     ) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let book = books[frame.rawValue],
-              !book.settled, !book.refusedStale,
-              let asked = book.firstAskAt,
-              now.microseconds(since: asked) < config.repairDeadlineMicroseconds
-        else { return false }
-        stats.fecImpossibleDeferred += 1
-        return true
+        policy.withLock { $0.shouldDeferFecImpossible(frame: frame, now: now) }
     }
 
-    /// The cadence beat: rule-4 deadlines and book hygiene. Escalations
-    /// fire outside the lock.
+    /// The cadence beat: rule-4 deadlines and book hygiene.
     public func tick(now: ClientTimestamp) {
-        var expired: [FrameNumber] = []
-        lock.lock()
-        for (key, var book) in books {
-            if !book.settled, let asked = book.firstAskAt,
-               now.microseconds(since: asked)
-                   >= config.repairDeadlineMicroseconds {
-                stats.framesEscalatedToIdr += 1
-                // Any answer still in flight now lands as superseded.
-                book.fate = .gone
-                book.lastTouched = now
-                books[key] = book
-                expired.append(FrameNumber(rawValue: key))
-            }
-            // Settled books linger one deadline for late signals, then go.
-            if book.settled,
-               now.microseconds(since: book.lastTouched)
-                   >= config.repairDeadlineMicroseconds * 2 {
-                books.removeValue(forKey: key)
-            }
-        }
-        lock.unlock()
-        for frame in expired { escalate(frame, now) }
+        execute(policy.withLock { $0.tick(now: now) }, now: now)
     }
 
-    // MARK: Interior
-
-    private func handleCandidates(
-        frame: FrameNumber,
-        missingIndices: [UInt8],
-        parityShards: Int,
-        frameAgeMicroseconds: Int64,
-        now: ClientTimestamp
+    private func execute(
+        _ decision: ClientNackPolicy.Decision, now: ClientTimestamp
     ) {
-        // Read before the lock (the estimate takes its own), clamped: the
-        // RTT is host-influenced, and rule 3 needs only "within budget".
-        let rttMicroseconds = min(
-            max(rtt() ?? 0, 0), config.staleBudgetMicroseconds)
-        var entryToEmit: FeedbackReport.NackEntry?
-        lock.lock()
-        var book = books[frame.rawValue]
-            ?? makeBookLocked(now: now)
-        book.lastTouched = now
-        defer {
-            books[frame.rawValue] = book
-            lock.unlock()
-            if let entryToEmit { emit([entryToEmit]) }
-        }
-        guard !book.settled, !book.refusedStale else { return }
-
-        // Rule 1: FEC failure = past parity. Below it, FEC owns the frame.
-        guard missingIndices.count > parityShards else { return }
-        if book.askedIndices.isEmpty { stats.pastParityFrames += 1 }
-
-        // Rule 3: refuse forever (the frame only gets older).
-        let (horizon, overflow) = frameAgeMicroseconds
-            .addingReportingOverflow(rttMicroseconds)
-        guard !overflow, horizon < config.staleBudgetMicroseconds else {
-            if book.askedIndices.isEmpty {
-                book.refusedStale = true
-                stats.asksSuppressedStale += 1
-            }
-            return
-        }
-
-        // Dedupe: each (frame, shard) asked once, ever.
-        let fresh = missingIndices.filter { !book.askedIndices.contains($0) }
-        guard !fresh.isEmpty,
-              let entry = try? FeedbackReport.NackEntry(
-                  frame: frame, missingShards: fresh
-              )
-        else { return }
-        book.askedIndices.formUnion(fresh)
-        if book.firstAskAt == nil { book.firstAskAt = now }
-        stats.nackEntriesEmitted += 1
-        stats.shardsAsked += UInt64(fresh.count)
-        entryToEmit = entry
-    }
-
-    /// Evicts the oldest book at capacity (hostile frame spray).
-    private func makeBookLocked(now: ClientTimestamp) -> FrameBook {
-        if books.count >= config.maxTrackedFrames,
-           let oldest = books.min(by: {
-               $0.value.lastTouched < $1.value.lastTouched
-           }) {
-            books.removeValue(forKey: oldest.key)
-        }
-        return FrameBook(lastTouched: now)
+        if !decision.nacks.isEmpty { emit(decision.nacks) }
+        for frame in decision.escalations { escalate(frame, now) }
     }
 }

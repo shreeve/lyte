@@ -7,6 +7,7 @@
 // on the serial `sampleQueue`, which alone touches the factory. Callbacks
 // never run under `lock`.
 
+import LyteClientSession
 import LyteCore
 import CoreMedia
 import Dispatch
@@ -302,50 +303,24 @@ public final class LyteVideoPipeline: @unchecked Sendable {
                     assemblyLockHoldMicroseconds)
                 actions.append(.buildSample(
                     unit, now, assemblyLockHoldMicroseconds))
-                actions.append(.repairSignal(
-                    .frameDecoded(frame: unit.frameNumber), now))
             case .framesSkipped(let from, let through, _):
                 stats.framesSkipped += UInt64(through.rawValue &- from.rawValue) + 1
-                actions.append(.repairSignal(
-                    .framesGone(from: from, through: through), now))
             case .fecImpossible(let frame, let lost, let parity):
                 stats.fecImpossibleCount += 1
                 actions.append(.fecImpossible(
                     frame, presumedLostDataShards: lost, bestCaseParityShards: parity))
-            case .evicted(let frame, _):
+            case .evicted:
                 stats.evictions += 1
-                actions.append(.repairSignal(
-                    .framesGone(from: frame, through: frame), now))
-            case .shardDropped(let reason):
+            case .shardDropped:
                 stats.shardsDropped += 1
-                // Duplicate-slot and passed-turn drops feed the policy's
-                // repair books; the rest are counters only.
-                switch reason {
-                case .duplicateShard(let frame, let shardIndex):
-                    actions.append(.repairSignal(
-                        .satisfiedShardDropped(
-                            frame: frame, shardIndex: shardIndex),
-                        now))
-                case .staleFrame(let frame):
-                    actions.append(.repairSignal(
-                        .staleShardDropped(frame: frame), now))
-                default:
-                    break
-                }
-            case .nackCandidates(
-                let frame, _, let missingIndices, let parity, let age):
-                actions.append(.repairSignal(
-                    .nackCandidates(
-                        frame: frame,
-                        missingShardIndices: missingIndices,
-                        parityShards: parity,
-                        frameAgeMicroseconds: age),
-                    now))
-            case .repairShardAccepted(let frame, let index):
+            case .nackCandidates:
+                break
+            case .repairShardAccepted:
                 stats.repairShardsAccepted += 1
-                actions.append(.repairSignal(
-                    .repairShardAccepted(frame: frame, shardIndex: index),
-                    now))
+            }
+            // The policy's feed follows the event's own actions.
+            if let signal = VideoRepairSignal(event) {
+                actions.append(.repairSignal(signal, now))
             }
         }
         return actions
