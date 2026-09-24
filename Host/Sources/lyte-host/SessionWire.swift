@@ -960,11 +960,16 @@ final class SessionWire {
     }
 
     /// One receive batch from every socket that can hold inbound
-    /// datagrams.
+    /// datagrams. A session whose lifecycle has closed leaves the
+    /// listening socket alone: what arrives there now (a re-dialing
+    /// client's message 1) belongs to the next session, which reads it
+    /// from the kernel queue once this one is released.
     private func receiveFromAll(
         _ handle: ([UInt8], FourTuple) -> Void
     ) throws {
-        try receiveAll(from: listenNetio, handle)
+        if session?.lifecycleState != .closed {
+            try receiveAll(from: listenNetio, handle)
+        }
         if let videoNetio { try receiveAll(from: videoNetio, handle) }
         if let latencyNetio { try receiveAll(from: latencyNetio, handle) }
     }
@@ -1658,9 +1663,9 @@ final class SessionWire {
     private struct DrainWait {
         /// Nil = until signaled (no established session, or it ended).
         var timeoutNS: Int64?
-        /// Sockets whose readability ends the wait, with POLLOUT on the
-        /// one whose buffer was full.
-        var sockets: [(fd: Int32, pollOut: Bool)] = []
+        /// Sockets whose readability (`pollIn`) or, for the one whose
+        /// buffer was full, writability (`pollOut`) ends the wait.
+        var sockets: [(fd: Int32, pollIn: Bool, pollOut: Bool)] = []
     }
 
     /// The sender thread's whole life: one service pass (receive, timers,
@@ -1733,16 +1738,19 @@ final class SessionWire {
             allWakeNS: session.nextWake(now: now),
             hold: hold)
         // A lane with no connected socket yet writes through the
-        // listening socket (writeBatch), so that is the one to poll.
-        var sockets: [(fd: Int32, pollOut: Bool)] = [
-            (lyte_netio_fd(listenNetio),
-             blocked.map { socket(for: $0) == nil } ?? false)
-        ]
+        // listening socket (writeBatch), so that is the one to poll for
+        // POLLOUT. A closed session no longer reads the listening
+        // socket (receiveFromAll), so its readability must not end the
+        // wait either — that would spin on the next client's message 1.
+        var sockets: [(fd: Int32, pollIn: Bool, pollOut: Bool)] = [(
+            lyte_netio_fd(listenNetio),
+            session.lifecycleState != .closed,
+            blocked.map { socket(for: $0) == nil } ?? false)]
         if let videoNetio {
-            sockets.append((lyte_netio_fd(videoNetio), blocked == .video))
+            sockets.append((lyte_netio_fd(videoNetio), true, blocked == .video))
         }
         if let latencyNetio {
-            sockets.append((lyte_netio_fd(latencyNetio), blocked == .latency))
+            sockets.append((lyte_netio_fd(latencyNetio), true, blocked == .latency))
         }
         lock.unlock()
         flushLogLines()
@@ -1753,9 +1761,10 @@ final class SessionWire {
     private func block(until wait: DrainWait) {
         var fds: [Int32] = [wakeFd]
         var events: [Int16] = [Int16(POLLIN)]
-        for socket in wait.sockets {
+        for socket in wait.sockets where socket.pollIn || socket.pollOut {
             fds.append(socket.fd)
-            events.append(Int16(socket.pollOut ? POLLIN | POLLOUT : POLLIN))
+            events.append(Int16(
+                (socket.pollIn ? POLLIN : 0) | (socket.pollOut ? POLLOUT : 0)))
         }
         var revents = [Int16](repeating: 0, count: fds.count)
         _ = lyte_netio_wait(
