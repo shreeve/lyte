@@ -49,7 +49,10 @@ var targets: [Target] = [
     // This stays platform-neutral; PipeWire capture remains a Linux C leaf.
     .target(
         name: "HostAudio",
-        dependencies: [.product(name: "COpus", package: "Common")]
+        dependencies: [
+            .product(name: "COpus", package: "Common"),
+            .product(name: "LyteWire", package: "Wire"),
+        ]
     ),
     .testTarget(
         name: "HostAudioTests",

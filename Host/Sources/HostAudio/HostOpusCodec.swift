@@ -1,11 +1,15 @@
 import COpus
+import LyteWire
 
 /// Lyte's host-side Opus wire posture. The pinned C leaf supplies codec
-/// mechanism; this Swift role layer owns the session's audio policy.
+/// mechanism; this Swift role layer owns the session's audio policy. The
+/// packet geometry is the wire's (`AudioWire`), never a second copy.
 public enum HostOpus {
-    public static let sampleRate: Int = 48_000
-    public static let channels: Int = 2
-    public static let framesPerPacket: Int = 240
+    public static let sampleRate: Int = AudioWire.sampleRate
+    public static let channels: Int = AudioWire.channels
+    /// Frames (samples per channel) per packet — `AudioWire.samplesPerPacket`.
+    public static let framesPerPacket: Int = AudioWire.samplesPerPacket
+    /// Interleaved samples per packet: frames × channels.
     public static let samplesPerPacket = framesPerPacket * channels
     public static let maxPacketBytes: Int = 1_500
 }
