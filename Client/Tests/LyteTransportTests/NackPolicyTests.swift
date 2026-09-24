@@ -6,6 +6,24 @@ import XCTest
 final class NackPolicyTests: XCTestCase {
     // MARK: - Policy discipline (dedupe, deadline, permanence)
 
+    /// The RTT is host-influenced: an absurd one refuses the ask as
+    /// stale instead of overflowing rule 3's sum.
+    func testHostileRttRefusesTheAskWithoutTrapping() {
+        let emitted = LockedBytePile()
+        for rtt in [Int64.max, Int64.min] {
+            let policy = NackPolicy(
+                rtt: { rtt },
+                emit: { _ in emitted.append([1]) },
+                escalate: { _, _ in })
+            policy.handle(.nackCandidates(
+                frame: FrameNumber(rawValue: 3), missingShardIndices: [0, 1, 2],
+                parityShards: 1, frameAgeMicroseconds: Int64.max - 1),
+                now: ClientTimestamp(microseconds: 1))
+            XCTAssertEqual(policy.snapshotStats().asksSuppressedStale, 1)
+        }
+        XCTAssertEqual(emitted.count, 0)
+    }
+
     func testPolicyAsksOnceEverAndEscalatesOnDeadline() throws {
         let emitted = LockedBytePile()
         let escalated = LockedBytePile()

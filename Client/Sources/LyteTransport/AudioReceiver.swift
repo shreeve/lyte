@@ -114,10 +114,15 @@ public final class AudioReceiver: @unchecked Sendable {
                     now.microseconds &- packet.captureMicroseconds)
                 let floor = min(minFeedDelta ?? delta, delta)
                 minFeedDelta = floor
-                let aboveFloor = UInt64(delta - floor)
-                captureToFeed.record(aboveFloor)
-                captureToRender.record(
-                    aboveFloor &+ renderPipelineMicroseconds)
+                // Capture stamps are host-chosen: a span past Int64 is a
+                // lie, never a latency, and records nothing.
+                let (aboveFloor, overflow) =
+                    delta.subtractingReportingOverflow(floor)
+                if !overflow {
+                    captureToFeed.record(UInt64(aboveFloor))
+                    captureToRender.record(
+                        UInt64(aboveFloor) &+ renderPipelineMicroseconds)
+                }
             }
         }
         return AudioPullDecision(verdict: verdict, accelerate: accelerating)

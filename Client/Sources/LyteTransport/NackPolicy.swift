@@ -324,6 +324,10 @@ public final class NackPolicy: @unchecked Sendable {
         frameAgeMicroseconds: Int64,
         now: ClientTimestamp
     ) {
+        // Read before the lock (the estimate takes its own), clamped: the
+        // RTT is host-influenced, and rule 3 needs only "within budget".
+        let rttMicroseconds = min(
+            max(rtt() ?? 0, 0), config.staleBudgetMicroseconds)
         var entryToEmit: FeedbackReport.NackEntry?
         lock.lock()
         var book = books[frame.rawValue]
@@ -341,10 +345,9 @@ public final class NackPolicy: @unchecked Sendable {
         if book.askedIndices.isEmpty { stats.pastParityFrames += 1 }
 
         // Rule 3: refuse forever (the frame only gets older).
-        let rttMicroseconds = rtt() ?? 0
-        guard frameAgeMicroseconds + rttMicroseconds
-            < config.staleBudgetMicroseconds
-        else {
+        let (horizon, overflow) = frameAgeMicroseconds
+            .addingReportingOverflow(rttMicroseconds)
+        guard !overflow, horizon < config.staleBudgetMicroseconds else {
             if book.askedIndices.isEmpty {
                 book.refusedStale = true
                 stats.asksSuppressedStale += 1

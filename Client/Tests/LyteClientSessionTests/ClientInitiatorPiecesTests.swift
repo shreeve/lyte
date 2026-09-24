@@ -158,6 +158,38 @@ final class ClientInitiatorPiecesTests: XCTestCase {
         XCTAssertEqual(sample?.measuredAt.microseconds, 5_000)
     }
 
+    /// Every mirror timestamp but t3 is host-chosen; a mirror naming a t3
+    /// this book never sent, or closing an impossible RTT, is refused.
+    func testForgedMirrorsCloseNoSample() {
+        var book = ClientBeaconEchoBook()
+        func beacon(_ seq: UInt32, mirror: ClockBeacon.LastEcho? = nil)
+            -> ClockBeacon {
+            ClockBeacon(beaconSeq: seq,
+                        hostSend: HostTimestamp(microseconds: 1_000),
+                        lastEcho: mirror)
+        }
+        let t2 = ClientTimestamp(microseconds: 5_000)
+        let t3 = ClientTimestamp(microseconds: 5_010)
+        for seq in UInt32(1)...3 {
+            _ = book.answer(beacon(seq), receivedAt: t2, sendingAt: t3)
+        }
+        let forgedTurnaround = ClockBeacon.LastEcho(
+            beaconSeq: 1, clientSend: ClientTimestamp(microseconds: 0),
+            hostReceive: HostTimestamp(microseconds: 1_030))
+        let negativeRtt = ClockBeacon.LastEcho(
+            beaconSeq: 2, clientSend: t3,
+            hostReceive: HostTimestamp(microseconds: 1_000))
+        let hugeRtt = ClockBeacon.LastEcho(
+            beaconSeq: 3, clientSend: t3,
+            hostReceive: HostTimestamp(microseconds: UInt64(Int64.max)))
+        for mirror in [forgedTurnaround, negativeRtt, hugeRtt] {
+            let (_, sample) = book.answer(
+                beacon(9, mirror: mirror), receivedAt: t2, sendingAt: t3)
+            XCTAssertNil(sample)
+        }
+        XCTAssertEqual(book.mirrorsRefused, 3)
+    }
+
     // MARK: Carriage books
 
     func testConnectionIdIsLearnedOnceAndSequencesArePerChannel() throws {

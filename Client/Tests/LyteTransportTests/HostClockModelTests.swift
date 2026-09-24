@@ -383,4 +383,53 @@ final class HostClockModelTests: XCTestCase {
         XCTAssertNotEqual(second.offsetMicroseconds, first.offsetMicroseconds,
                           "a stale cached fit would still read 1000")
     }
+
+    // MARK: - Hostile host
+
+    /// A frozen host clock (t1 = t4 = constant, rtt 0) makes the offset
+    /// grow one-for-one with client time: a fitted slope of exactly 1,
+    /// which the unbounded mapping divided by zero on. The clamped fit
+    /// maps every host instant without trapping.
+    func testFrozenHostClockCannotTrapTheMapping() throws {
+        let model = HostClockModel()
+        for i in 0..<10 {
+            let at = UInt64(i) * 1_000_000 + 1_000_000
+            model.ingest(ClockSample(
+                beaconSeq: UInt32(i), offsetMicroseconds: Int64(at),
+                rttMicroseconds: 0,
+                measuredAt: ClientTimestamp(microseconds: at)))
+        }
+        let fit = try XCTUnwrap(model.estimate())
+        XCTAssertLessThanOrEqual(abs(fit.skewPartsPerMillion), 1_000)
+        for host in [UInt64(0), 1 << 40, UInt64(Int64.max), .max] {
+            _ = fit.map(HostTimestamp(microseconds: host))
+        }
+    }
+
+    /// An RTT outside [0, 5 s] is no sample at all: a lone huge one once
+    /// wrapped the min-RTT gate negative and emptied the fit's input.
+    func testImplausibleRttsNeverEnterTheWindow() {
+        let model = HostClockModel()
+        for rtt in [Int64.max, Int64.min, -1, 5_000_001] {
+            model.ingest(ClockSample(
+                beaconSeq: 0, offsetMicroseconds: 1, rttMicroseconds: rtt,
+                measuredAt: ClientTimestamp(microseconds: 1_000_000)))
+        }
+        XCTAssertNil(model.estimate())
+        XCTAssertTrue(model.recentSamples(10).isEmpty)
+    }
+
+    /// A beacon spray cannot grow the window past its count bound.
+    func testWindowIsBoundedByCount() throws {
+        let model = HostClockModel()
+        for i in 0..<1_000 {
+            model.ingest(sample(
+                seq: UInt32(i), atSeconds: 1 + Double(i) / 1_000,
+                offset: 7, rtt: 900))
+        }
+        let fit = try XCTUnwrap(model.estimate())
+        XCTAssertEqual(fit.windowSamples,
+                       HostClockModel.Config().maxWindowSamples)
+        XCTAssertEqual(model.recentSamples(10).last?.beaconSeq, 999)
+    }
 }

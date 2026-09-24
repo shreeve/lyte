@@ -8,6 +8,13 @@
 // estimates are an A/V sync error. No clock is read here: time advances
 // through the samples' own coordinates, and the model is usable from its
 // first sample.
+//
+// Every sample is host-influenced, so the model is bounded against a
+// hostile host: only plausible samples enter, the window holds at most
+// `maxWindowSamples`, the fitted skew is clamped to ±`maxSkewPartsPerMillion`
+// (a frozen host clock fits a slope of exactly 1), and every Double→Int64
+// conversion saturates. A lying host skews its own frame timing; it never
+// traps the client.
 
 import Foundation
 import LyteClientSession
@@ -21,15 +28,24 @@ public final class HostClockModel: @unchecked Sendable {
         public var rttGateMicroseconds: Int64
         /// Fewer accepted samples (or zero time spread) leaves skew at 0.
         public var minimumSamplesForSkew: Int
+        /// The window's count bound; the oldest sample leaves first.
+        public var maxWindowSamples: Int
+        /// |skew| bound. Consumer crystals sit near 50 ppm; a fit past
+        /// this is a lying clock, not a slow one.
+        public var maxSkewPartsPerMillion: Double
 
         public init(
             windowMicroseconds: Int64 = 30_000_000,
             rttGateMicroseconds: Int64 = 2_000,
-            minimumSamplesForSkew: Int = 3
+            minimumSamplesForSkew: Int = 3,
+            maxWindowSamples: Int = 128,
+            maxSkewPartsPerMillion: Double = 1_000
         ) {
             self.windowMicroseconds = windowMicroseconds
             self.rttGateMicroseconds = rttGateMicroseconds
             self.minimumSamplesForSkew = minimumSamplesForSkew
+            self.maxWindowSamples = max(1, maxWindowSamples)
+            self.maxSkewPartsPerMillion = max(0, maxSkewPartsPerMillion)
         }
     }
 
@@ -63,7 +79,7 @@ public final class HostClockModel: @unchecked Sendable {
                 approximate &- anchor.microseconds))
             let correction = (b * delta) / (1 - b)
             return ClientTimestamp(microseconds: approximate
-                &+ UInt64(bitPattern: Int64(correction.rounded())))
+                &+ UInt64(bitPattern: saturatingInt64(correction)))
         }
     }
 
@@ -78,13 +94,17 @@ public final class HostClockModel: @unchecked Sendable {
         self.config = config
     }
 
-    /// Feeds one raw sample. Eviction keys on the newest coordinate seen,
-    /// so mild reordering is harmless.
+    /// Feeds one raw sample; an implausible one is dropped. Eviction keys
+    /// on the newest coordinate seen, so mild reordering is harmless.
     public func ingest(_ sample: ClockSample) {
+        guard sample.isPlausible else { return }
         lock.lock()
         defer { lock.unlock() }
         cachedEstimate = nil
         window.append(sample)
+        if window.count > config.maxWindowSamples {
+            window.removeFirst(window.count - config.maxWindowSamples)
+        }
         if sample.measuredAt.microseconds > newestMicroseconds {
             newestMicroseconds = sample.measuredAt.microseconds
         }
@@ -95,6 +115,7 @@ public final class HostClockModel: @unchecked Sendable {
     }
 
     /// The newest `limit` samples still in the window, in arrival order.
+    /// Every RTT among them lies in [0, ClockSample.maxPlausibleRtt].
     public func recentSamples(_ limit: Int) -> [ClockSample] {
         lock.lock()
         defer { lock.unlock() }
@@ -115,15 +136,16 @@ public final class HostClockModel: @unchecked Sendable {
     private static func fit(
         _ samples: [ClockSample], config: Config
     ) -> Estimate? {
-        guard !samples.isEmpty else { return nil }
-
-        let minRtt = samples.lazy.map(\.rttMicroseconds).min()!
+        guard let minRtt = samples.lazy.map(\.rttMicroseconds).min()
+        else { return nil }
+        let (gate, overflow) = minRtt.addingReportingOverflow(
+            config.rttGateMicroseconds)
         let accepted = samples.filter {
-            $0.rttMicroseconds <= minRtt &+ config.rttGateMicroseconds
+            overflow || $0.rttMicroseconds <= gate
         }
-        let anchorSample = accepted.max {
+        guard let anchorSample = accepted.max(by: {
             $0.measuredAt.microseconds < $1.measuredAt.microseconds
-        }!
+        }) else { return nil }
         let anchor = anchorSample.measuredAt
 
         // Center x and y on the same anchor sample so rounding is
@@ -141,8 +163,10 @@ public final class HostClockModel: @unchecked Sendable {
             sxx += (x - xBar) * (x - xBar)
             sxy += (x - xBar) * (y - yBar)
         }
+        let bound = config.maxSkewPartsPerMillion / 1_000_000
         let slope: Double = (accepted.count >= config.minimumSamplesForSkew
-                             && sxx > 0) ? sxy / sxx : 0
+                             && sxx > 0)
+            ? min(max(sxy / sxx, -bound), bound) : 0
         let interceptCentered = yBar - slope * xBar   // offset − offset0 at x = 0
 
         var sumSquares = 0.0
@@ -154,7 +178,7 @@ public final class HostClockModel: @unchecked Sendable {
         }
 
         return Estimate(
-            offsetMicroseconds: offset0 &+ Int64(interceptCentered.rounded()),
+            offsetMicroseconds: offset0 &+ saturatingInt64(interceptCentered),
             anchor: anchor,
             skewPartsPerMillion: slope * 1_000_000,
             residualRmsMicroseconds: (sumSquares / n).squareRoot(),
@@ -169,4 +193,13 @@ public final class HostClockModel: @unchecked Sendable {
     public func map(_ host: HostTimestamp) -> ClientTimestamp? {
         estimate()?.map(host)
     }
+}
+
+/// `value` rounded to the nearest Int64, clamped at the type's bounds; NaN
+/// maps to 0.
+private func saturatingInt64(_ value: Double) -> Int64 {
+    let rounded = value.rounded()
+    if let exact = Int64(exactly: rounded) { return exact }
+    if rounded.isNaN { return 0 }
+    return rounded < 0 ? .min : .max
 }
