@@ -961,132 +961,46 @@ public final class Session {
         hostMicroseconds: UInt64
     ) -> [SessionEvent] {
         counters.datagramsReceived += 1
-
-        let envelope: Envelope
-        let payload: ArraySlice<UInt8>
-        do {
-            (envelope, payload) = try Envelope.decode(datagram)
-        } catch {
-            counters.dropped += 1
-            return [.dropped(.malformedEnvelope)]
-        }
-        guard !envelope.channel.isReserved else {
-            counters.dropped += 1
-            return [.dropped(.reservedChannel(envelope.channel.rawValue))]
-        }
-
-        let claimed: ConnectionId?
-        do {
-            claimed = try ConnectionId.decode(extensions: envelope.extensions)
-        } catch {
-            counters.dropped += 1
-            return [.dropped(.duplicateConnectionIdTlv)]
-        }
-
-        // The HS-12 demux trigger fires on the raw arrival, before any
-        // unseal — path probing must work exactly when decryption of a
-        // migrated datagram would (the challenge, not the AEAD, proves
-        // the address).
-        var events = process(
-            validator.datagramReceived(
-                from: tuple,
-                connectionId: claimed,
-                byteCount: datagram.count,
-                now: now
-            ),
-            now: now,
-            hostMicroseconds: hostMicroseconds
-        )
-
         if phase == .awaitingHandshake {
-            guard case .noise(let hostStatic) = config.crypto else {
-                counters.dropped += 1 // unreachable: insecure never waits
-                events.append(.dropped(.notEstablished(envelope.channel.rawValue)))
-                return events
-            }
-            // Two admissible first words: a bare Noise message 1 (0x05)
-            // or a RetryHandshake1 (0x14) echoing a cookie the host
-            // minted under flood (HS-21/W8). Anything else is
-            // pre-establishment noise.
-            let presentedCookie: ArraySlice<UInt8>?
-            let message1: ArraySlice<UInt8>
-            switch payload.first {
-            case CtrlMessageType.noiseHandshake1:
-                presentedCookie = nil
-                message1 = payload.dropFirst()
-            case CtrlMessageType.retryHandshake1:
-                guard let resubmission = try? RetryHandshake1.decode(payload)
-                else {
-                    counters.dropped += 1
-                    events.append(.dropped(.malformedCtrl))
-                    return events
-                }
-                presentedCookie = resubmission.cookie[...]
-                message1 = resubmission.message1[...]
-            default:
-                counters.dropped += 1
-                events.append(.dropped(.notEstablished(envelope.channel.rawValue)))
-                return events
-            }
-
-            let decision = handshakeGate.admitMessage1(
-                presentedCookie: presentedCookie,
-                clientTuple: Self.cookieTuple(tuple),
-                message1: message1,
-                now: now
+            return receiveBeforeHandshake(
+                datagram, from: tuple,
+                now: now, hostMicroseconds: hostMicroseconds
             )
-            if let requireCookie = decision.cookieModeChangedTo {
-                events.append(.handshakeCookieModeChanged(requireCookie: requireCookie))
-            }
-            switch decision.admission {
-            case .admit:
-                events += completeHandshake(
-                    message1: message1,
-                    from: tuple,
-                    hostStatic: hostStatic,
+        }
+
+        // Established: open against the exact received header bytes.
+        // Channel and conn-id refusals happen before the AEAD is paid.
+        var events: [SessionEvent] = []
+        let envelope: Envelope
+        let plaintext: [UInt8]
+        do {
+            (envelope, plaintext) = try Envelope.openDatagram(datagram) {
+                envelope, wirePayload, aad in
+                let claimed = try admitHeader(envelope)
+                // The HS-12 demux trigger fires on the raw arrival,
+                // before any unseal.
+                events = process(
+                    validator.datagramReceived(
+                        from: tuple,
+                        connectionId: claimed,
+                        byteCount: datagram.count,
+                        now: now
+                    ),
                     now: now,
                     hostMicroseconds: hostMicroseconds
                 )
-            case .challenge(let cookie):
-                counters.dropped += 1
-                counters.handshakeChallengesMinted += 1
-                // A stateless RetryChallenge (0x13) on the exact tuple the
-                // message 1 arrived from — no Noise, no session state.
                 do {
-                    try sendCtrl(
-                        body: try RetryChallenge(cookie: cookie).encode(),
-                        sealed: false,
-                        destination: tuple,
-                        now: now, hostMicroseconds: hostMicroseconds
+                    return try unsealPayload(
+                        wirePayload, aad: aad, envelope: envelope
                     )
-                    events.append(.handshakeChallenged)
                 } catch {
-                    events.append(.sendFailed(String(describing: error)))
+                    throw InboundRefusal(
+                        .unsealFailed(envelope.channel.rawValue)
+                    )
                 }
-            case .drop(.throttled):
-                counters.dropped += 1
-                counters.handshakesThrottled += 1
-                events.append(.dropped(.handshakeThrottled))
-            case .drop(.cookieInvalid):
-                counters.dropped += 1
-                counters.handshakeCookiesRejected += 1
-                events.append(.dropped(.handshakeCookieInvalid))
             }
-            if presentedCookie != nil, case .admit = decision.admission {
-                counters.handshakeCookiesVerified += 1
-            }
-            return events
-        }
-
-        // Established: exact received header bytes as AAD, then unseal.
-        let aad = datagram[datagram.startIndex..<payload.startIndex]
-        let plaintext: [UInt8]
-        do {
-            plaintext = try unsealPayload(payload, aad: aad, envelope: envelope)
         } catch {
-            counters.unsealFailures += 1
-            events.append(.dropped(.unsealFailed(envelope.channel.rawValue)))
-            return events
+            return events + [refuse(error)]
         }
 
         switch envelope.channel {
@@ -1153,6 +1067,138 @@ public final class Session {
     ) -> [SessionEvent] {
         receive(datagram[...], from: tuple,
                 now: now, hostMicroseconds: hostMicroseconds)
+    }
+
+    /// Why the header or the AEAD refused a datagram; `refuse` counts it.
+    private struct InboundRefusal: Error {
+        let reason: SessionDropReason
+        init(_ reason: SessionDropReason) { self.reason = reason }
+    }
+
+    /// The header checks every phase applies before reading a payload:
+    /// reserved channels never carry traffic, and at most one conn-id
+    /// TLV may appear. Returns the claimed conn-id (nil when absent).
+    private func admitHeader(_ envelope: Envelope) throws -> ConnectionId? {
+        guard !envelope.channel.isReserved else {
+            throw InboundRefusal(.reservedChannel(envelope.channel.rawValue))
+        }
+        do {
+            return try ConnectionId.decode(extensions: envelope.extensions)
+        } catch {
+            throw InboundRefusal(.duplicateConnectionIdTlv)
+        }
+    }
+
+    /// Counts a refused datagram and names why. An unseal failure has its
+    /// own counter; everything else, including an undecodable envelope,
+    /// is a drop.
+    private func refuse(_ error: any Error) -> SessionEvent {
+        guard let refusal = error as? InboundRefusal else {
+            counters.dropped += 1
+            return .dropped(.malformedEnvelope)
+        }
+        if case .unsealFailed = refusal.reason {
+            counters.unsealFailures += 1
+        } else {
+            counters.dropped += 1
+        }
+        return .dropped(refusal.reason)
+    }
+
+    /// Pre-establishment demux: only a Noise message 1 (bare or
+    /// cookie-bearing) is admissible; it is never sealed.
+    private func receiveBeforeHandshake(
+        _ datagram: ArraySlice<UInt8>,
+        from tuple: FourTuple,
+        now: UInt64,
+        hostMicroseconds: UInt64
+    ) -> [SessionEvent] {
+        let envelope: Envelope
+        let payload: ArraySlice<UInt8>
+        do {
+            (envelope, payload) = try Envelope.decode(datagram)
+            _ = try admitHeader(envelope)
+        } catch {
+            return [refuse(error)]
+        }
+        var events: [SessionEvent] = []
+        guard case .noise(let hostStatic) = config.crypto else {
+            counters.dropped += 1 // unreachable: insecure never waits
+            events.append(.dropped(.notEstablished(envelope.channel.rawValue)))
+            return events
+        }
+        // Two admissible first words: a bare Noise message 1 (0x05)
+        // or a RetryHandshake1 (0x14) echoing a cookie the host
+        // minted under flood (HS-21/W8). Anything else is
+        // pre-establishment noise.
+        let presentedCookie: ArraySlice<UInt8>?
+        let message1: ArraySlice<UInt8>
+        switch payload.first {
+        case CtrlMessageType.noiseHandshake1:
+            presentedCookie = nil
+            message1 = payload.dropFirst()
+        case CtrlMessageType.retryHandshake1:
+            guard let resubmission = try? RetryHandshake1.decode(payload)
+            else {
+                counters.dropped += 1
+                events.append(.dropped(.malformedCtrl))
+                return events
+            }
+            presentedCookie = resubmission.cookie[...]
+            message1 = resubmission.message1[...]
+        default:
+            counters.dropped += 1
+            events.append(.dropped(.notEstablished(envelope.channel.rawValue)))
+            return events
+        }
+
+        let decision = handshakeGate.admitMessage1(
+            presentedCookie: presentedCookie,
+            clientTuple: Self.cookieTuple(tuple),
+            message1: message1,
+            now: now
+        )
+        if let requireCookie = decision.cookieModeChangedTo {
+            events.append(.handshakeCookieModeChanged(requireCookie: requireCookie))
+        }
+        switch decision.admission {
+        case .admit:
+            events += completeHandshake(
+                message1: message1,
+                from: tuple,
+                hostStatic: hostStatic,
+                now: now,
+                hostMicroseconds: hostMicroseconds
+            )
+        case .challenge(let cookie):
+            counters.dropped += 1
+            counters.handshakeChallengesMinted += 1
+            // A stateless RetryChallenge (0x13) on the exact tuple the
+            // message 1 arrived from — no Noise, no session state.
+            do {
+                try sendCtrl(
+                    body: try RetryChallenge(cookie: cookie).encode(),
+                    sealed: false,
+                    destination: tuple,
+                    now: now, hostMicroseconds: hostMicroseconds
+                )
+                events.append(.handshakeChallenged)
+            } catch {
+                events.append(.sendFailed(String(describing: error)))
+            }
+        case .drop(.throttled):
+            counters.dropped += 1
+            counters.handshakesThrottled += 1
+            events.append(.dropped(.handshakeThrottled))
+        case .drop(.cookieInvalid):
+            counters.dropped += 1
+            counters.handshakeCookiesRejected += 1
+            events.append(.dropped(.handshakeCookieInvalid))
+        }
+        if presentedCookie != nil, case .admit = decision.admission {
+            counters.handshakeCookiesVerified += 1
+        }
+        return events
     }
 
     // MARK: Video
