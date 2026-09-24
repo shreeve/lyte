@@ -985,8 +985,7 @@ public final class Session {
             // loud. Message-level routing separates the two lanes.
             guard agreedBulkTransfer || agreedClipboardImages,
                   bulkArqLane != nil else {
-                counters.dropped += 1
-                events.append(.dropped(.bulkNotNegotiated))
+                events += drop(.bulkNotNegotiated)
                 return events
             }
             events += absorbBulkArq(
@@ -1000,8 +999,7 @@ public final class Session {
                 now: now, hostMicroseconds: hostMicroseconds
             )
         default:
-            counters.dropped += 1
-            events.append(.dropped(.unhandledChannel(envelope.channel.rawValue)))
+            events += drop(.unhandledChannel(envelope.channel.rawValue))
         }
         return events
     }
@@ -1054,6 +1052,13 @@ public final class Session {
         }
     }
 
+    /// Counts one refusal and names it: every `dropped` count has exactly
+    /// one `.dropped` event.
+    private func drop(_ reason: SessionDropReason) -> [SessionEvent] {
+        counters.dropped += 1
+        return [.dropped(reason)]
+    }
+
     /// Counts a refused datagram and names why. An unseal failure has its
     /// own counter; everything else, including an undecodable envelope,
     /// is a drop.
@@ -1087,8 +1092,7 @@ public final class Session {
             return [refuse(error)]
         }
         guard case .noise(let hostStatic) = config.crypto else {
-            counters.dropped += 1 // unreachable: passthrough never waits
-            return [.dropped(.notEstablished(envelope.channel.rawValue))]
+            return drop(.notEstablished(envelope.channel.rawValue)) // unreachable: passthrough never waits
         }
         // Two admissible first words: a bare Noise message 1 (0x05) or a
         // RetryHandshake1 (0x14) echoing a cookie the host minted under
@@ -1102,14 +1106,12 @@ public final class Session {
         case CtrlMessageType.retryHandshake1:
             guard let resubmission = try? RetryHandshake1.decode(payload)
             else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             presentedCookie = resubmission.cookie[...]
             message1 = resubmission.message1[...]
         default:
-            counters.dropped += 1
-            return [.dropped(.notEstablished(envelope.channel.rawValue))]
+            return drop(.notEstablished(envelope.channel.rawValue))
         }
 
         return admitInitiation(
@@ -1154,11 +1156,9 @@ public final class Session {
             case .success(let responder):
                 events += onAuthenticated(responder)
             case .failure(let refusal):
-                counters.dropped += 1
-                events.append(.dropped(refusal.reason))
+                events += drop(refusal.reason)
             }
         case .challenge(let cookie):
-            counters.dropped += 1
             counters.handshakeChallengesMinted += 1
             // A stateless RetryChallenge (0x13) on the exact tuple the
             // message 1 arrived from — no Noise, no session state.
@@ -1174,13 +1174,11 @@ public final class Session {
                 events.append(.sendFailed(String(describing: error)))
             }
         case .drop(.throttled):
-            counters.dropped += 1
             counters.handshakesThrottled += 1
-            events.append(.dropped(.handshakeThrottled))
+            events += drop(.handshakeThrottled)
         case .drop(.cookieInvalid):
-            counters.dropped += 1
             counters.handshakeCookiesRejected += 1
-            events.append(.dropped(.handshakeCookieInvalid))
+            events += drop(.handshakeCookieInvalid)
         }
         return events
     }
@@ -1224,8 +1222,7 @@ public final class Session {
         if let answered = answeredHandshake,
            initiation.message1.elementsEqual(answered.message1) {
             guard tuple == validator.primary.tuple else {
-                counters.dropped += 1
-                return [.dropped(.handshakeRepeatOffPath)]
+                return drop(.handshakeRepeatOffPath)
             }
             do {
                 try sendCtrl(
@@ -1931,21 +1928,18 @@ public final class Session {
         if bytes.first == CtrlMessageType.clipboardImageCargo {
             guard let cargo = try? ClipboardImageCargo.decode(bytes)
             else {
-                counters.dropped += 1
-                return [.dropped(.malformedBulk)]
+                return drop(.malformedBulk)
             }
             // Image cargo without keys 10 ∧ 12 agreed: dropped loud.
             guard agreedClipboardImages else {
-                counters.dropped += 1
-                return [.dropped(.clipboardImagesNotNegotiated)]
+                return drop(.clipboardImagesNotNegotiated)
             }
             return processImageEvents(
                 clipboardImageChannel.ingestCargo(cargo), now: now
             )
         }
         guard let message = try? BulkMessage.decode(bytes) else {
-            counters.dropped += 1
-            return [.dropped(.malformedBulk)]
+            return drop(.malformedBulk)
         }
         if clipboardImageChannel.claims(message) {
             return processImageEvents(
@@ -1961,8 +1955,7 @@ public final class Session {
         guard agreedBulkTransfer else {
             // Chan 8 was admitted for the image lane only — a file
             // message without key 11 is still ungated traffic.
-            counters.dropped += 1
-            return [.dropped(.bulkNotNegotiated)]
+            return drop(.bulkNotNegotiated)
         }
         counters.bulkMessagesReceived += 1
         return [.bulkMessageReceived(message)]
@@ -2094,8 +2087,7 @@ public final class Session {
         switch message.first {
         case CtrlMessageType.sessionTeardown:
             guard let teardown = try? SessionTeardown.decode(message) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             return runLifecycle(
                 .teardownMessage(teardown.reason),
@@ -2108,8 +2100,7 @@ public final class Session {
         case CtrlMessageType.capabilityUpdateAck:
             guard let ack = try? CapabilityUpdateAck.decode(message),
                   let event = try? negotiator.receive(ack) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             switch event {
             case .updateAccepted:
@@ -2117,13 +2108,11 @@ public final class Session {
             case .updateRejected:
                 return [.capabilityUpdateAcknowledged(accepted: false)]
             case .agreed, .answerUpdate:
-                counters.dropped += 1 // unreachable from receive(ack)
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl) // unreachable from receive(ack)
             }
         case CtrlMessageType.inputEvent:
             guard let event = try? InputEvent.decode(message) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             counters.inputEventsReceived += 1
             // Pre-arm before the shell injects: a keypress during a
@@ -2137,26 +2126,22 @@ public final class Session {
             return events
         case CtrlMessageType.audioRoutingRequest:
             guard let request = try? AudioRoutingRequest.decode(message) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             // A request without hostAudioRouting agreed by both ends uses
             // a capability never negotiated: dropped loud, never fatal.
             guard agreedHostAudioRouting else {
-                counters.dropped += 1
-                return [.dropped(.audioRoutingNotNegotiated)]
+                return drop(.audioRoutingNotNegotiated)
             }
             counters.audioRoutingRequestsReceived += 1
             return [.audioRoutingRequested(request.mode)]
         case CtrlMessageType.clipboardSet:
             guard let set = try? ClipboardSet.decode(message) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             // A set without clipboardText agreed: dropped loud, never fatal.
             guard agreedClipboardText else {
-                counters.dropped += 1
-                return [.dropped(.clipboardNotNegotiated)]
+                return drop(.clipboardNotNegotiated)
             }
             counters.clipboardSetsReceived += 1
             // Pre-arm the book before the shell applies: the leaf's change
@@ -2171,15 +2156,13 @@ public final class Session {
             // Receiver-role messages arriving at the mediaSender /
             // sole proposer / echo emitter / status emitter / announce
             // emitter / shape emitter: hostile or confused. Dropped loud.
-            counters.dropped += 1
-            return [.dropped(.unexpectedCtrlType(message.first!))]
+            return drop(.unexpectedCtrlType(message.first!))
         case CtrlMessageType.bulkOffer, CtrlMessageType.bulkAccept,
              CtrlMessageType.bulkChunk, CtrlMessageType.bulkAck,
              CtrlMessageType.bulkComplete, CtrlMessageType.bulkAbort:
             // The bulk sextet rides chan 8, never CTRL (a chunk here would
             // head-of-line-block input). Hostile or confused; dropped loud.
-            counters.dropped += 1
-            return [.dropped(.unexpectedCtrlType(message.first!))]
+            return drop(.unexpectedCtrlType(message.first!))
         default:
             return nil
         }
@@ -2195,14 +2178,12 @@ public final class Session {
         do {
             declaration = try CapabilityDeclaration.decode(message)
         } catch {
-            counters.dropped += 1
-            return [.dropped(.malformedCtrl)]
+            return drop(.malformedCtrl)
         }
         do {
             guard case .agreed(let agreed) = try negotiator.receive(declaration)
             else {
-                counters.dropped += 1 // unreachable from receive(declaration)
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl) // unreachable from receive(declaration)
             }
             return [.capabilitiesAgreed(agreed)]
         } catch let failure as CapabilityNegotiationError
@@ -2219,8 +2200,7 @@ public final class Session {
         } catch {
             // A duplicate declaration or other protocol violation:
             // dropped loud, never fatal.
-            counters.dropped += 1
-            return [.dropped(.malformedCtrl)]
+            return drop(.malformedCtrl)
         }
     }
 
@@ -2397,8 +2377,7 @@ public final class Session {
             report = try FeedbackReport.decode(plaintext)
         } catch {
             counters.feedbackReportsMalformed += 1
-            counters.dropped += 1
-            return [.dropped(.malformedFeedback)]
+            return drop(.malformedFeedback)
         }
         counters.feedbackReportsParsed += 1
         repairBudget.noteFeedback(report, now: now)
@@ -2994,8 +2973,7 @@ public final class Session {
         hostMicroseconds: UInt64
     ) -> [SessionEvent] {
         guard let type = payload.first else {
-            counters.dropped += 1
-            return [.dropped(.malformedCtrl)]
+            return drop(.malformedCtrl)
         }
         switch type {
         case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
@@ -3012,14 +2990,12 @@ public final class Session {
             return events
         case CtrlMessageType.beaconEcho:
             guard let echo = try? BeaconEcho.decode(payload) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             return accept(echo: echo, hostMicroseconds: hostMicroseconds)
         case CtrlMessageType.pathResponse:
             guard let response = try? PathResponse.decode(payload) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             return process(
                 validator.pathResponseReceived(
@@ -3029,8 +3005,7 @@ public final class Session {
             )
         case CtrlMessageType.idrRequest:
             guard let request = try? IdrRequest.decode(payload) else {
-                counters.dropped += 1
-                return [.dropped(.malformedCtrl)]
+                return drop(.malformedCtrl)
             }
             counters.idrRequests += 1
             // The requester retries every 500 ms until its renderer
@@ -3048,8 +3023,7 @@ public final class Session {
             }
             return [.idrRequested(request)]
         default:
-            counters.dropped += 1
-            return [.dropped(.unexpectedCtrlType(type))]
+            return drop(.unexpectedCtrlType(type))
         }
     }
 
@@ -3059,8 +3033,7 @@ public final class Session {
         guard let sample = beaconClock.accept(
             echo: echo, hostMicroseconds: hostMicroseconds
         ) else {
-            counters.dropped += 1
-            return [.dropped(.beaconEchoUnmatched)]
+            return drop(.beaconEchoUnmatched)
         }
         counters.beaconEchoes += 1
         // RTT evidence into the estimator (telemetry and the retransmit
