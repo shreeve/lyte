@@ -22,7 +22,7 @@
 // type byte rejects with what it found. Never traps on hostile bytes.
 
 /// The reliable idle-frame message (type 0x15).
-public struct IdleFrame: Hashable, Sendable {
+public struct IdleFrame: Hashable, Sendable, SliceDecodable {
     /// The frame number this frame last rode the datagram path with.
     public var frame: FrameNumber
     /// The retained frame's capture stamp (host graph-clock µs).
@@ -69,10 +69,6 @@ public struct IdleFrame: Hashable, Sendable {
             captureTimestampMicroseconds: wireReadLE(payload, at: base + 5),
             annexB: Array(payload[(base + headerByteCount)...])
         )
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> IdleFrame {
-        try decode(payload[...])
     }
 }
 

@@ -42,7 +42,7 @@
 // bytes reject. A different type byte rejects with the type it found, so
 // a CTRL dispatcher's misrouting is loud.
 
-public struct ClockBeacon: Hashable, Sendable {
+public struct ClockBeacon: Hashable, Sendable, SliceDecodable {
     /// The host's view of the last echo it received, mirrored back to the
     /// client for symmetric offset estimation.
     public struct LastEcho: Hashable, Sendable {
@@ -138,13 +138,9 @@ public struct ClockBeacon: Hashable, Sendable {
             lastEcho: lastEcho
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> ClockBeacon {
-        try decode(payload[...])
-    }
 }
 
-public struct BeaconEcho: Hashable, Sendable {
+public struct BeaconEcho: Hashable, Sendable, SliceDecodable {
     /// Copied from the beacon being echoed.
     public var beaconSeq: UInt32
     /// t1, copied verbatim from the beacon.
@@ -200,10 +196,6 @@ public struct BeaconEcho: Hashable, Sendable {
             clientReceive: ClientTimestamp(microseconds: wireReadLE(payload, at: base + 13)),
             clientSend: ClientTimestamp(microseconds: wireReadLE(payload, at: base + 21))
         )
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> BeaconEcho {
-        try decode(payload[...])
     }
 
     /// One raw clock sample from this echo plus the locally measured t4:

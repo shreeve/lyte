@@ -18,7 +18,7 @@
 // Exactly its fixed size: truncation and trailing bytes reject, a foreign
 // type byte rejects with what it found.
 
-public struct IdrRequest: Hashable, Sendable {
+public struct IdrRequest: Hashable, Sendable, SliceDecodable {
     public var requestSeq: UInt32
     /// The newest FEC-impossible frame at emit time.
     public var frame: FrameNumber
@@ -62,10 +62,6 @@ public struct IdrRequest: Hashable, Sendable {
             frame: FrameNumber(rawValue: wireReadLE(payload, at: base + 5)),
             coalescedCount: payload[base + 9]
         )
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> IdrRequest {
-        try decode(payload[...])
     }
 }
 

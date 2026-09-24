@@ -60,7 +60,7 @@ extension Capabilities {
 // MARK: - The CTRL codec
 
 /// The host's cursor-shape announcement (type 0x24).
-public struct CursorShape: Hashable, Sendable {
+public struct CursorShape: Hashable, Sendable, SliceDecodable {
     /// Pixels; 0 = hidden (then height, hotspots, and pixels are all
     /// zero/empty).
     public var width: UInt16
@@ -135,10 +135,6 @@ public struct CursorShape: Hashable, Sendable {
         )
         try shape.validate()
         return shape
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> CursorShape {
-        try decode(payload[...])
     }
 
     /// The shared encode/decode contract.

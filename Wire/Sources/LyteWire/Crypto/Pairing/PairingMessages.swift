@@ -47,7 +47,7 @@ public enum PairingRejectReason: UInt8, Hashable, CaseIterable, Sendable {
 }
 
 /// The client's CPace share (type 0x0B).
-public struct PairingShareA: Hashable, Sendable {
+public struct PairingShareA: Hashable, Sendable, SliceDecodable {
     public var share: [UInt8]
 
     public static let encodedByteCount = 1 + CPace.elementByteCount
@@ -76,14 +76,10 @@ public struct PairingShareA: Hashable, Sendable {
             share: Array(payload[(base + 1)..<(base + encodedByteCount)])
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> PairingShareA {
-        try decode(payload[...])
-    }
 }
 
 /// The host's CPace share plus its confirmation tag (type 0x0C).
-public struct PairingShareB: Hashable, Sendable {
+public struct PairingShareB: Hashable, Sendable, SliceDecodable {
     public var share: [UInt8]
     public var confirmationTag: [UInt8]
 
@@ -122,15 +118,11 @@ public struct PairingShareB: Hashable, Sendable {
             )
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> PairingShareB {
-        try decode(payload[...])
-    }
 }
 
 /// The client's confirmation tag (type 0x0D) — the message whose
 /// verification completes pairing on the host.
-public struct PairingConfirm: Hashable, Sendable {
+public struct PairingConfirm: Hashable, Sendable, SliceDecodable {
     public var confirmationTag: [UInt8]
 
     public static let encodedByteCount = 1 + CPace.tagByteCount
@@ -161,15 +153,11 @@ public struct PairingConfirm: Hashable, Sendable {
             )
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> PairingConfirm {
-        try decode(payload[...])
-    }
 }
 
 /// The typed pairing refusal (type 0x0E) — how "wrong PIN" gets loud
 /// without becoming an oracle.
-public struct PairingReject: Hashable, Sendable {
+public struct PairingReject: Hashable, Sendable, SliceDecodable {
     public var reason: PairingRejectReason
 
     public static let encodedByteCount = 2
@@ -197,10 +185,6 @@ public struct PairingReject: Hashable, Sendable {
             throw PairingMessageError.unknownReason(payload[base + 1])
         }
         return PairingReject(reason: reason)
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> PairingReject {
-        try decode(payload[...])
     }
 }
 

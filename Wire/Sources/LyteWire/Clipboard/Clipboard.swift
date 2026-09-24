@@ -43,7 +43,7 @@ extension Capabilities {
 // MARK: - The CTRL codecs
 
 /// The client's clipboard push (type 0x1A).
-public struct ClipboardSet: Hashable, Sendable {
+public struct ClipboardSet: Hashable, Sendable, SliceDecodable {
     public var text: String
 
     public init(text: String) {
@@ -68,14 +68,10 @@ public struct ClipboardSet: Hashable, Sendable {
             payload, type: CtrlMessageType.clipboardSet
         ))
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> ClipboardSet {
-        try decode(payload[...])
-    }
 }
 
 /// The host's clipboard-change report (type 0x1B).
-public struct ClipboardAnnounce: Hashable, Sendable {
+public struct ClipboardAnnounce: Hashable, Sendable, SliceDecodable {
     public var text: String
 
     public init(text: String) {
@@ -94,10 +90,6 @@ public struct ClipboardAnnounce: Hashable, Sendable {
         ClipboardAnnounce(text: try decodeClipboardBody(
             payload, type: CtrlMessageType.clipboardAnnounce
         ))
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> ClipboardAnnounce {
-        try decode(payload[...])
     }
 }
 

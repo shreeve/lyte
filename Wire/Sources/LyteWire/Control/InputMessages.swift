@@ -53,7 +53,7 @@
 // disagrees with count all reject. Never traps on hostile bytes.
 
 /// One client input event (type 0x16).
-public struct InputEvent: Hashable, Sendable {
+public struct InputEvent: Hashable, Sendable, SliceDecodable {
     public enum Body: Hashable, Sendable {
         case keyKeycode(keycode: UInt32, pressed: Bool)
         /// Pixels in the host's recorded-monitor coordinate space.
@@ -190,10 +190,6 @@ public struct InputEvent: Hashable, Sendable {
         )
     }
 
-    public static func decode(_ payload: [UInt8]) throws -> InputEvent {
-        try decode(payload[...])
-    }
-
     private static func flag(_ byte: UInt8) throws -> Bool {
         switch byte {
         case 0: return false
@@ -223,7 +219,7 @@ public struct InputEchoTuple: Hashable, Sendable {
 }
 
 /// The input echo message (type 0x17): 1–`maxTupleCount` tuples.
-public struct InputEcho: Hashable, Sendable {
+public struct InputEcho: Hashable, Sendable, SliceDecodable {
     public var tuples: [InputEchoTuple]
 
     /// Bounds one message well inside the session's 1093 B clamped ARQ
@@ -287,10 +283,6 @@ public struct InputEcho: Hashable, Sendable {
             cursor += tupleByteCount
         }
         return InputEcho(tuples: tuples)
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> InputEcho {
-        try decode(payload[...])
     }
 }
 

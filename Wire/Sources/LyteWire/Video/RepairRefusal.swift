@@ -38,7 +38,7 @@ public enum RepairRefusalReason: UInt8, Hashable, CaseIterable, Sendable {
 }
 
 /// The repair-refusal CTRL message (type 0x23, host→client).
-public struct RepairRefusal: Hashable, Sendable {
+public struct RepairRefusal: Hashable, Sendable, SliceDecodable {
     /// The NACKed frame whose ask is being refused.
     public var frame: FrameNumber
     public var reason: RepairRefusalReason
@@ -85,10 +85,6 @@ public struct RepairRefusal: Hashable, Sendable {
             frame: FrameNumber(rawValue: wireReadLE(payload, at: base + 1)),
             reason: reason
         )
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> RepairRefusal {
-        try decode(payload[...])
     }
 }
 

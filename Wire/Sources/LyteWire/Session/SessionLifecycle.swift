@@ -42,7 +42,7 @@ public enum SessionTeardownReason: UInt8, Hashable, CaseIterable, Sendable {
 }
 
 /// The ACTIVE⇄IDLE mode-transition CTRL message (type 0x09).
-public struct ModeTransition: Hashable, Sendable {
+public struct ModeTransition: Hashable, Sendable, SliceDecodable {
     public var mode: SessionWireMode
 
     public init(mode: SessionWireMode) {
@@ -77,14 +77,10 @@ public struct ModeTransition: Hashable, Sendable {
         }
         return ModeTransition(mode: mode)
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> ModeTransition {
-        try decode(payload[...])
-    }
 }
 
 /// The typed session-teardown CTRL message (type 0x0A).
-public struct SessionTeardown: Hashable, Sendable {
+public struct SessionTeardown: Hashable, Sendable, SliceDecodable {
     public var reason: SessionTeardownReason
 
     public init(reason: SessionTeardownReason) {
@@ -120,10 +116,6 @@ public struct SessionTeardown: Hashable, Sendable {
             throw LifecycleMessageError.unknownReason(payload[base + 1])
         }
         return SessionTeardown(reason: reason)
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> SessionTeardown {
-        try decode(payload[...])
     }
 }
 

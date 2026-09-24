@@ -39,7 +39,7 @@ extension Capabilities {
 // MARK: - The CTRL codec
 
 /// The host's audio track-state announcement (type 0x25).
-public struct AudioTrackState: Hashable, Sendable {
+public struct AudioTrackState: Hashable, Sendable, SliceDecodable {
     public enum State: UInt8, Hashable, CaseIterable, Sendable {
         /// The track is transmitting (the tripwire fired, or it never
         /// gated).
@@ -77,10 +77,6 @@ public struct AudioTrackState: Hashable, Sendable {
             throw AudioTrackStateError.unknownState(payload[base + 1])
         }
         return AudioTrackState(state: state)
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> AudioTrackState {
-        try decode(payload[...])
     }
 }
 

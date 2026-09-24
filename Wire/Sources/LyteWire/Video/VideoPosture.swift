@@ -37,7 +37,7 @@ extension Capabilities {
 // MARK: - The CTRL codec
 
 /// The host's video posture announcement (type 0x26).
-public struct VideoPostureState: Hashable, Sendable {
+public struct VideoPostureState: Hashable, Sendable, SliceDecodable {
     public enum Posture: UInt8, Hashable, CaseIterable, Sendable {
         /// Damage-driven frames with the 1 s retained keepalive.
         case active = 0x01
@@ -81,10 +81,6 @@ public struct VideoPostureState: Hashable, Sendable {
         }
         return VideoPostureState(
             posture: posture, keepaliveSeconds: payload[base + 2])
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> VideoPostureState {
-        try decode(payload[...])
     }
 }
 

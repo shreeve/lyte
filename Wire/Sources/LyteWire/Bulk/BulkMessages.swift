@@ -202,7 +202,7 @@ public struct BulkChunkMap: Hashable, Sendable {
 ///   …      1    mimeLen         0…255
 ///   …      …    mimeHint        UTF-8; exactly its layout, trailing
 ///                               bytes reject
-public struct BulkOffer: Hashable, Sendable {
+public struct BulkOffer: Hashable, Sendable, SliceDecodable {
     public var transferId: UInt64
     public var totalByteCount: UInt64
     public var chunkByteCount: UInt32
@@ -310,10 +310,6 @@ public struct BulkOffer: Hashable, Sendable {
             mimeHint: mimeHint
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> BulkOffer {
-        try decode(payload[...])
-    }
 }
 
 /// The receiver's consent answer (type 0x1D): existing possession
@@ -328,7 +324,7 @@ public struct BulkOffer: Hashable, Sendable {
 ///   17     8    contiguousCount  the chunk map
 ///   25     2    bitmapLen        0…1,024
 ///   27     …    bitmap
-public struct BulkAccept: Hashable, Sendable {
+public struct BulkAccept: Hashable, Sendable, SliceDecodable {
     public var transferId: UInt64
     public var creditTotal: UInt64
     public var possession: BulkChunkMap
@@ -365,10 +361,6 @@ public struct BulkAccept: Hashable, Sendable {
             transferId: id, creditTotal: credit, possession: map
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> BulkAccept {
-        try decode(payload[...])
-    }
 }
 
 /// One chunk (type 0x1E), data the sole trailing field (the ARQ
@@ -380,7 +372,7 @@ public struct BulkAccept: Hashable, Sendable {
 ///   1      8    transferId
 ///   9      8    chunkIndex  u64
 ///   17     …    data        1…131,072 bytes
-public struct BulkChunk: Hashable, Sendable {
+public struct BulkChunk: Hashable, Sendable, SliceDecodable {
     public var transferId: UInt64
     public var chunkIndex: UInt64
     public var data: [UInt8]
@@ -423,17 +415,13 @@ public struct BulkChunk: Hashable, Sendable {
             transferId: transferId, chunkIndex: chunkIndex, data: data
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> BulkChunk {
-        try decode(payload[...])
-    }
 }
 
 /// The receiver's possession + credit heartbeat (type 0x1F). Layout
 /// identical to accept. `creditTotal` is monotonic within a session;
 /// a stale (lower) value is ignored by the sender, never a violation
 /// — acks are cumulative state, not deltas.
-public struct BulkAck: Hashable, Sendable {
+public struct BulkAck: Hashable, Sendable, SliceDecodable {
     public var transferId: UInt64
     public var creditTotal: UInt64
     public var possession: BulkChunkMap
@@ -470,17 +458,13 @@ public struct BulkAck: Hashable, Sendable {
             transferId: id, creditTotal: credit, possession: map
         )
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> BulkAck {
-        try decode(payload[...])
-    }
 }
 
 /// The success verdict (type 0x20), sent only after the receiver's
 /// own digest of the assembled blob equals the offer's sha256.
 /// Exactly `type ‖ transferId`; failure is always an abort with a
 /// reason, never a complete-with-status.
-public struct BulkComplete: Hashable, Sendable {
+public struct BulkComplete: Hashable, Sendable, SliceDecodable {
     public var transferId: UInt64
 
     public init(transferId: UInt64) throws {
@@ -507,10 +491,6 @@ public struct BulkComplete: Hashable, Sendable {
         let transferId = try reader.u64()
         try requireEnd(reader)
         return try BulkComplete(transferId: transferId)
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> BulkComplete {
-        try decode(payload[...])
     }
 }
 
@@ -540,7 +520,7 @@ public enum BulkAbortReason: UInt8, CaseIterable, Hashable, Sendable {
 
 /// Typed transfer abort (type 0x21), either direction. Exactly
 /// `type ‖ transferId ‖ reason`.
-public struct BulkAbort: Hashable, Sendable {
+public struct BulkAbort: Hashable, Sendable, SliceDecodable {
     public var transferId: UInt64
     public var reason: BulkAbortReason
 
@@ -573,16 +553,12 @@ public struct BulkAbort: Hashable, Sendable {
         }
         return try BulkAbort(transferId: transferId, reason: reason)
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> BulkAbort {
-        try decode(payload[...])
-    }
 }
 
 /// One parsed bulk message — the dispatch the engines and the chan-8
 /// shell share. `decode` routes on the type byte and rejects
 /// everything outside the sextet.
-public enum BulkMessage: Hashable, Sendable {
+public enum BulkMessage: Hashable, Sendable, SliceDecodable {
     case offer(BulkOffer)
     case accept(BulkAccept)
     case chunk(BulkChunk)
@@ -634,10 +610,6 @@ public enum BulkMessage: Hashable, Sendable {
         default:
             throw BulkMessageError.unexpectedType(type)
         }
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> BulkMessage {
-        try decode(payload[...])
     }
 }
 

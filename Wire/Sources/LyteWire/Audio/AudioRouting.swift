@@ -64,7 +64,7 @@ extension Capabilities {
 // MARK: - The CTRL codecs
 
 /// The client's routing flip ask (type 0x18).
-public struct AudioRoutingRequest: Hashable, Sendable {
+public struct AudioRoutingRequest: Hashable, Sendable, SliceDecodable {
     public var mode: HostAudioRoutingMode
 
     public init(mode: HostAudioRoutingMode) {
@@ -85,14 +85,10 @@ public struct AudioRoutingRequest: Hashable, Sendable {
             payload, type: CtrlMessageType.audioRoutingRequest
         ))
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> AudioRoutingRequest {
-        try decode(payload[...])
-    }
 }
 
 /// The host's applied-posture report (type 0x19).
-public struct AudioRoutingStatus: Hashable, Sendable {
+public struct AudioRoutingStatus: Hashable, Sendable, SliceDecodable {
     public var mode: HostAudioRoutingMode
 
     public init(mode: HostAudioRoutingMode) {
@@ -109,10 +105,6 @@ public struct AudioRoutingStatus: Hashable, Sendable {
         AudioRoutingStatus(mode: try decodeRoutingBody(
             payload, type: CtrlMessageType.audioRoutingStatus
         ))
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> AudioRoutingStatus {
-        try decode(payload[...])
     }
 }
 

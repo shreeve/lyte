@@ -77,7 +77,7 @@ public enum FeedbackBounds {
         + maxNackEntries * (5 + maxNackBitmapByteCount)
 }
 
-public struct FeedbackReport: Hashable, Sendable {
+public struct FeedbackReport: Hashable, Sendable, SliceDecodable {
     /// One channel's cumulative receive ledger.
     public struct ChannelStats: Hashable, Sendable {
         public var channel: ChannelId
@@ -368,10 +368,6 @@ public struct FeedbackReport: Hashable, Sendable {
             nacks: nacks,
             extensions: extensions
         )
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> FeedbackReport {
-        try decode(payload[...])
     }
 }
 

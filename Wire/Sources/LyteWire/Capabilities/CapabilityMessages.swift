@@ -82,7 +82,7 @@ public struct CapabilityParameter: Hashable, Sendable {
 }
 
 /// The session-parameter update proposal (type 0x11).
-public struct CapabilityUpdate: Hashable, Sendable {
+public struct CapabilityUpdate: Hashable, Sendable, SliceDecodable {
     /// Key-ascending (the CBOR map's canonical order).
     public var parameters: [CapabilityParameter]
 
@@ -116,10 +116,6 @@ public struct CapabilityUpdate: Hashable, Sendable {
             throw CapabilityMessageError.emptyUpdate
         }
         return CapabilityUpdate(parameters: parameters)
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> CapabilityUpdate {
-        try decode(payload[...])
     }
 }
 

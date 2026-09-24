@@ -46,7 +46,7 @@ public enum RetryMessageError: Error, Hashable, Sendable {
 
 /// The host's stateless answer to a msg1 it will not yet pay for
 /// (type 0x13).
-public struct RetryChallenge: Hashable, Sendable {
+public struct RetryChallenge: Hashable, Sendable, SliceDecodable {
     public var cookie: [UInt8]
 
     public init(cookie: [UInt8]) {
@@ -74,14 +74,10 @@ public struct RetryChallenge: Hashable, Sendable {
         }
         return RetryChallenge(cookie: cookie)
     }
-
-    public static func decode(_ payload: [UInt8]) throws -> RetryChallenge {
-        try decode(payload[...])
-    }
 }
 
 /// The client's msg1 resubmission carrying its cookie (type 0x14).
-public struct RetryHandshake1: Hashable, Sendable {
+public struct RetryHandshake1: Hashable, Sendable, SliceDecodable {
     public var cookie: [UInt8]
     /// The raw Noise IK message 1, byte-identical to the one the
     /// challenge answered — the client's retransmit rule makes that
@@ -125,10 +121,6 @@ public struct RetryHandshake1: Hashable, Sendable {
         return RetryHandshake1(
             cookie: cookie, message1: Array(remainder)
         )
-    }
-
-    public static func decode(_ payload: [UInt8]) throws -> RetryHandshake1 {
-        try decode(payload[...])
     }
 }
 
