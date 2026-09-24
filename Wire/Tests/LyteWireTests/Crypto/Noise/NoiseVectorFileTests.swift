@@ -18,24 +18,17 @@ import LyteWireTestKit
 
 final class NoiseVectorFileTests: XCTestCase {
 
-    private static let vectorsPath = packageRoot + "/Vectors/noise-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> NoiseVectorFile {
-        try NoiseVectorFile.load(from: Self.vectorsPath)
+        try NoiseVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
         let file = try loadFile()
-        XCTAssertEqual(file.format, NoiseVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
+        XCTAssertEqual(file.identityProblems, [])
         XCTAssertEqual(
             file.handshakeVectors.count, 2,
             "both external sources (snow, cacophony) must be present"
         )
-        XCTAssertFalse(file.transportVectors.isEmpty)
         for vector in file.handshakeVectors {
             XCTAssertEqual(vector.protocolName, "Noise_IK_25519_ChaChaPoly_SHA256")
             XCTAssertTrue(

@@ -10,7 +10,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeFecVectorFile() throws -> FecVectorFile {
+public func makeFecVectorFile() throws -> FecVectorFile {
     var fieldVectors: [FecFieldVector] = []
 
     func roundtrip(name: String, description: String, field: FecField) {

@@ -11,12 +11,8 @@ import LyteWireTestKit
 
 final class PairingVectorFileTests: XCTestCase {
 
-    private static let vectorsPath = packageRoot + "/Vectors/pairing-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> PairingVectorFile {
-        try PairingVectorFile.load(from: Self.vectorsPath)
+        try PairingVectorFile.loadCommitted()
     }
 
     private func bytes(
@@ -27,19 +23,10 @@ final class PairingVectorFileTests: XCTestCase {
 
     func testFileIdentity() throws {
         let file = try loadFile()
-        XCTAssertEqual(file.format, PairingVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
-        XCTAssertFalse(file.exchangeVectors.isEmpty)
-        XCTAssertFalse(file.messageVectors.isEmpty)
+        XCTAssertEqual(file.identityProblems, [])
         XCTAssertFalse(file.draftVectors.lowOrder.cases.isEmpty)
         XCTAssertFalse(file.draftVectors.source.isEmpty)
         XCTAssertEqual(file.draftVectors.sourceSha256.count, 64)
-        let names = file.messageVectors.map(\.name)
-            + file.exchangeVectors.map(\.name)
-        XCTAssertEqual(
-            Set(names).count, names.count, "vector names must be unique"
-        )
     }
 
     // MARK: External draft vectors

@@ -10,7 +10,7 @@ import LyteWire
 /// One vector file: `Wire/Vectors/beacon-v1.json`. Both W4a codecs live
 /// in one file — they land together, and the clock worked example needs
 /// the echo vectors next to it.
-public struct BeaconVectorFile: Codable, Sendable {
+public struct BeaconVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
@@ -20,6 +20,11 @@ public struct BeaconVectorFile: Codable, Sendable {
     public var clockWorkedExample: ClockWorkedExample
 
     public static let expectedFormat = "lyte-wire-beacon-vectors"
+    public static let fileName = "beacon-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [beaconVectors.map(\.name), feedbackVectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -37,10 +42,6 @@ public struct BeaconVectorFile: Codable, Sendable {
         self.clockWorkedExample = clockWorkedExample
     }
 
-    public static func load(from path: String) throws -> BeaconVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(BeaconVectorFile.self, from: data)
-    }
 }
 
 /// One CTRL beacon-pair vector. `decoder` names the codec under test

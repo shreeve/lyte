@@ -27,7 +27,7 @@ import LyteCore
 import LyteWire
 import LyteWireTestKit
 
-func makeNoiseVectorFile() throws -> NoiseVectorFile {
+public func makeNoiseVectorFile() throws -> NoiseVectorFile {
     NoiseVectorFile(
         format: NoiseVectorFile.expectedFormat,
         formatVersion: 1,

@@ -8,13 +8,18 @@ import Foundation
 import LyteWire
 
 /// One vector file: `Wire/Vectors/arq-v1.json`.
-public struct ArqVectorFile: Codable, Sendable {
+public struct ArqVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
     public var vectors: [ArqVector]
 
     public static let expectedFormat = "lyte-wire-arq-vectors"
+    public static let fileName = "arq-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [vectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -28,10 +33,6 @@ public struct ArqVectorFile: Codable, Sendable {
         self.vectors = vectors
     }
 
-    public static func load(from path: String) throws -> ArqVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(ArqVectorFile.self, from: data)
-    }
 }
 
 /// One ARQ vector. `payloadHex` is a whole reliable-channel datagram

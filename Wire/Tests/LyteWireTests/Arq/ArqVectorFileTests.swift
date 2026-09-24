@@ -9,24 +9,12 @@ import LyteWireTestKit
 
 final class ArqVectorFileTests: XCTestCase {
 
-    private static let vectorsPath = packageRoot + "/Vectors/arq-v1.json"
-
-    private static let packageRoot = WireTestPaths.packageRoot
-
     private func loadFile() throws -> ArqVectorFile {
-        try ArqVectorFile.load(from: Self.vectorsPath)
+        try ArqVectorFile.loadCommitted()
     }
 
     func testFileIdentity() throws {
-        let file = try loadFile()
-        XCTAssertEqual(file.format, ArqVectorFile.expectedFormat)
-        XCTAssertEqual(file.formatVersion, 1)
-        XCTAssertEqual(file.wireVersion, Int(WireVersion.major))
-        XCTAssertFalse(file.vectors.isEmpty)
-        let names = file.vectors.map(\.name)
-        XCTAssertEqual(
-            Set(names).count, names.count, "vector names must be unique"
-        )
+        XCTAssertEqual(try loadFile().identityProblems, [])
     }
 
     func testAllArqVectors() throws {

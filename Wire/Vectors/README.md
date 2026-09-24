@@ -12,7 +12,7 @@ under wasmtime, attesting the same bytes on a third platform.
 vector ever disagree, that is a wire-contract break to investigate — never a
 prompt to regenerate. New cases append; changed semantics mean a new file
 version (`envelope-v2.json`) and a wire-version discussion first. The
-authoring tool (`swift run lyte-wire-vectorgen <envelope|fec|video> <path>`)
+authoring tool (`swift run lyte-wire-vectorgen <kind> <path>`)
 exists for adding files, and its output is anchored against hand-computed
 bytes in `EnvelopeTests`/`FecFieldTests` (and the k=1,m=1 parity-identity
 case in `FecCoderTests`, the hand-walked datagram in
@@ -188,6 +188,19 @@ file; never rewrite a committed replay.
   zero reason (the zero-fill rule), and an unknown reason.
   `RepairRefusalVectorFileTests` asserts the coverage discipline
   (every reason pinned, every decode-reachable error name present).
+- `cursor-v1.json` — the E3 cursor-shape CTRL message 0x24
+  (`type ‖ width u16 ‖ height u16 ‖ hotspotX u16 ‖ hotspotY u16 ‖
+  BGRA pixels`) and the key-13 capability spine. Roundtrips cover the
+  hidden state, a non-square image, the 256 side cap and the exact
+  65,536-byte image ceiling; rejects cover every CursorMessageError
+  case; the spine is pinned declared, absent, and composed with key 10.
+  `CursorVectorFileTests` asserts the coverage discipline and anchors
+  against `CursorCodecTests`.
+
+Every file above is rebuilt from its builder in `LyteWireVectorGen`
+by `VectorRegenerationTests`, so a builder can never drift from the
+committed bytes; `swift run lyte-wire-vectorgen <kind> <path>` writes
+one file.
 
 ## The 24-byte envelope (wire v1)
 

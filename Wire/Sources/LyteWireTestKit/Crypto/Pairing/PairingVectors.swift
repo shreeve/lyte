@@ -19,7 +19,7 @@
 import Foundation
 import LyteWire
 
-public struct PairingVectorFile: Codable, Sendable {
+public struct PairingVectorFile: FrozenVectorFile {
     public var format: String
     public var formatVersion: Int
     public var wireVersion: Int
@@ -28,6 +28,11 @@ public struct PairingVectorFile: Codable, Sendable {
     public var messageVectors: [PairingMessageVector]
 
     public static let expectedFormat = "lyte-wire-pairing-vectors"
+    public static let fileName = "pairing-v1.json"
+
+    public var vectorNameGroups: [[String]] {
+        [exchangeVectors.map(\.name), messageVectors.map(\.name)]
+    }
 
     public init(
         format: String,
@@ -45,10 +50,6 @@ public struct PairingVectorFile: Codable, Sendable {
         self.messageVectors = messageVectors
     }
 
-    public static func load(from path: String) throws -> PairingVectorFile {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        return try JSONDecoder().decode(PairingVectorFile.self, from: data)
-    }
 }
 
 /// The external draft vectors. `source`/`sourceSha256` record the exact

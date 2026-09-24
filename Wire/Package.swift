@@ -16,7 +16,7 @@ let package = Package(
         .library(name: "LyteWireTestKit", targets: ["LyteWireTestKit"]),
         .executable(
             name: "lyte-wire-vectorgen",
-            targets: ["LyteWireVectorGen"]
+            targets: ["LyteWireVectorGenTool"]
         ),
     ],
     dependencies: [
@@ -52,19 +52,29 @@ let package = Package(
                 .product(name: "LyteCore", package: "Common"),
             ]
         ),
-        // Authoring tool for Vectors/ — run once, commit, freeze. See
-        // Vectors/README.md for the regeneration policy.
-        .executableTarget(
+        // The builders that author every Vectors/ file. The test suite
+        // rebuilds each committed file from them, so they cannot drift
+        // from the frozen bytes. See Vectors/README.md for the freeze
+        // policy.
+        .target(
             name: "LyteWireVectorGen",
             dependencies: [
                 "LyteWire", "LyteWireTestKit",
                 .product(name: "LyteCore", package: "Common"),
             ]
         ),
+        // The `lyte-wire-vectorgen` CLI: writes one builder's file.
+        .executableTarget(
+            name: "LyteWireVectorGenTool",
+            dependencies: [
+                "LyteWire", "LyteWireTestKit", "LyteWireVectorGen",
+                .product(name: "LyteCore", package: "Common"),
+            ]
+        ),
         .testTarget(
             name: "LyteWireTests",
             dependencies: [
-                "LyteWire", "LyteWireTestKit",
+                "LyteWire", "LyteWireTestKit", "LyteWireVectorGen",
                 .product(name: "LyteCore", package: "Common"),
             ]
         ),
