@@ -25,7 +25,6 @@ struct Options {
     /// session; a --wire-listen run without it is the service.
     var seconds = 5.0
     var secondsGiven = false
-    var fps: Int32 = 60
     /// Run a session to this peer instead of writing the file.
     var wireOut: (host: String, port: UInt16)?
     /// Bind here and await a connecting client.
@@ -66,12 +65,13 @@ struct Options {
     /// directory defaults to ~/Downloads, created if missing.
     var acceptFiles = false
     var acceptFilesDirectory: String?
-    /// Arm the retry-cookie dial: a random cookie secret is minted and
-    /// require-cookie mode engages when the msg1 rate crosses the enter
-    /// threshold, clearing at the exit threshold. Off = token bucket only.
-    var requireCookie = false
+    /// The retry-cookie dial's thresholds (message 1s per second):
+    /// require-cookie mode engages at `cookieEnter` and clears at
+    /// `cookieExit`, which must be lower.
     var cookieEnter = 20
     var cookieExit = 5
+    /// The DRM card node whose primary plane is captured.
+    var drmDevice = DirectEyeLeg.Config.defaultDevice
     /// Debug only: false = never arm the EncoderVbvPolicy; the encoder
     /// keeps its opening posture for the whole run.
     var vbvReconfigure = true
@@ -87,7 +87,8 @@ struct Options {
                 opts.outputPath = args[i]
             case "--seconds":
                 i += 1
-                guard i < args.count, let v = Double(args[i]), v > 0 else {
+                guard i < args.count, let v = Double(args[i]), v > 0,
+                      v.isFinite else {
                     throw HostError("--seconds needs a positive number")
                 }
                 opts.seconds = v
@@ -105,7 +106,8 @@ struct Options {
                 opts.wireOut = (String(parts[0]), port)
             case "--wire-rate-mbps":
                 i += 1
-                guard i < args.count, let v = Double(args[i]), v > 0 else {
+                guard i < args.count, let v = Double(args[i]), v > 0,
+                      v.isFinite else {
                     throw HostError("--wire-rate-mbps needs a positive number")
                 }
                 opts.wireRateMbps = v
@@ -167,8 +169,6 @@ struct Options {
                     throw HostError("--accept-files= needs a directory")
                 }
                 opts.acceptFilesDirectory = dir
-            case "--require-cookie":
-                opts.requireCookie = true
             case "--cookie-enter":
                 i += 1
                 guard i < args.count, let v = Int(args[i]), v >= 1 else {
@@ -181,6 +181,12 @@ struct Options {
                     throw HostError("--cookie-exit needs a non-negative integer")
                 }
                 opts.cookieExit = v
+            case "--drm-device":
+                i += 1
+                guard i < args.count, args[i].hasPrefix("/") else {
+                    throw HostError("--drm-device needs an absolute card path")
+                }
+                opts.drmDevice = args[i]
             case "--no-vbv-reconfigure":
                 opts.vbvReconfigure = false
             case "--audio-bitrate-kbps":
@@ -234,6 +240,11 @@ struct Options {
                   --require-paired  only clients already in paired_clients
                                     may complete the Noise handshake
                                     (reconnects are plain 1-RTT IK)
+                  --cookie-enter N  message 1s per second at which the
+                                    handshake demands a stateless retry
+                                    cookie (default 20)
+                  --cookie-exit N   the rate at which that demand clears
+                                    (default 5, below --cookie-enter)
                   --input MODE      injection backend for client input
                                     events: auto/uinput (kernel
                                     uinput, compositor-agnostic;
@@ -276,6 +287,9 @@ struct Options {
                                     directory came up, so a plain run
                                     truthfully negotiates no file
                                     transfer
+                  --drm-device PATH the DRM card node to capture (default
+                                    /dev/dri/card1); the render node is
+                                    that GPU's own
                   --no-vbv-reconfigure
                                     debug: never reconfigure the
                                     encoder's rate control from the
@@ -300,7 +314,31 @@ struct Options {
             }
             i += 1
         }
+        guard opts.cookieExit < opts.cookieEnter else {
+            throw HostError("""
+                --cookie-exit (\(opts.cookieExit)) must be below \
+                --cookie-enter (\(opts.cookieEnter))
+                """)
+        }
         return opts
+    }
+
+    /// The handshake gate every run arms. The retry-cookie dial is always
+    /// armed: it costs nothing until a message-1 flood crosses the enter
+    /// threshold, and without it a spoofed flood starves every honest dial
+    /// from the shared token bucket. The secret is process-random: the
+    /// host both mints and verifies, and no cookie outlives the process.
+    func handshakeGateConfig(
+        using rng: inout some RandomNumberGenerator
+    ) -> HandshakeGate.Config {
+        var secret = [UInt8](repeating: 0, count: RetryCookie.secretByteCount)
+        for i in secret.indices {
+            secret[i] = UInt8.random(in: 0...255, using: &rng)
+        }
+        return HandshakeGate.Config(
+            cookieSecret: secret,
+            cookieEnterThreshold: cookieEnter,
+            cookieExitThreshold: cookieExit)
     }
 }
 
@@ -517,7 +555,7 @@ final class SessionHost {
         // Chroma is declared on proof: only a Main444 encode entrypoint
         // declares the Best tier. The client's singleton declaration
         // picks the session's posture.
-        if EyeVaapiEncoder.probesMain444() {
+        if EyeVaapiEncoder.probesMain444(renderNode: screen.renderNode) {
             declared.chromaModes = [
                 CapabilityChroma.yuv420, CapabilityChroma.yuv444,
             ]
@@ -530,23 +568,12 @@ final class SessionHost {
         }
         self.declared = declared
 
-        // A process-scoped random secret: the host both mints and
-        // verifies, and no cookie needs to survive a restart.
-        var gateConfig = HandshakeGate.Config()
-        if opts.requireCookie {
-            var secret = [UInt8](repeating: 0, count: RetryCookie.secretByteCount)
-            for i in secret.indices { secret[i] = UInt8.random(in: 0...255) }
-            gateConfig = HandshakeGate.Config(
-                cookieSecret: secret,
-                cookieEnterThreshold: opts.cookieEnter,
-                cookieExitThreshold: opts.cookieExit
-            )
-            print("""
-                handshake: retry-cookie dial ARMED (require-cookie engages \
-                at \(opts.cookieEnter) msg1/s, clears at \(opts.cookieExit)/s)
-                """)
-        }
-        self.gateConfig = gateConfig
+        var rng = SystemRandomNumberGenerator()
+        gateConfig = opts.handshakeGateConfig(using: &rng)
+        print("""
+            handshake: retry-cookie dial armed (require-cookie engages \
+            at \(opts.cookieEnter) msg1/s, clears at \(opts.cookieExit)/s)
+            """)
 
         // Binds once for the whole run, so the port stays bound between
         // sessions.
@@ -654,7 +681,7 @@ static func run(arguments: [String]) throws {
     // The scanout opens first: its geometry scales the injector's
     // absolute moves. It and the eye's GL context live for the run.
     let screen = try DirectEyeLeg.openScreen(
-        device: DirectEyeLeg.Config.defaultDevice)
+        device: opts.drmDevice)
     let eye = WarmEye(screen: screen)
     guard sessionMode else {
         try runFileLeg(opts, screen: screen, eye: eye)
@@ -774,7 +801,7 @@ static func serveSession(
         // moves without a reset. The loosening sustain stays slow on
         // purpose: an eager one chases every climb into a limit cycle.
         w.armEncoderVbv(EncoderVbvConfig(
-            fps: Int(opts.fps),
+            fps: DirectEyeLeg.fps,
             baselineAverageBitsPerSecond: nil,
             baselineMaxBitsPerSecond: rateBits,
             baselineVbvBits: guardBits,
@@ -831,42 +858,33 @@ static func serveSession(
             audio.start(seconds: audioSeconds)
             audioWire = audio
             w.setInitialAudioRouting(opts.hostAudio)
-            w.audioRoutingHandler = { mode in
+            w.audioRoutingHandler = { requested, standing in
                 // Runs on the janitor thread, off the session lock. The
                 // stream pauses across the rebuild so two leaves never
                 // overlap.
                 audioWire?.stop()
                 audioWire = nil
-                // Stream off: stopping is the whole apply; the host's
-                // speakers keep playing.
-                if mode == .streamOff {
+                let running = AudioRoutingFlip.apply(
+                    requested: requested, standing: standing
+                ) { mode in
+                    do {
+                        let leaf = try AudioWire(
+                            wire: w, bitrate: opts.audioBitrate, mode: mode)
+                        leaf.start(seconds: audioSeconds)
+                        audioWire = leaf
+                        return true
+                    } catch {
+                        print("audio-routing: rebuild in \(mode) failed (\(error))")
+                        return false
+                    }
+                }
+                if running == .streamOff {
                     print("""
                         audio-routing: stream OFF — the wire carries no audio \
                         track (host speakers unaffected)
                         """)
-                    return true
                 }
-                do {
-                    let flipped = try AudioWire(
-                        wire: w, bitrate: opts.audioBitrate, mode: mode
-                    )
-                    flipped.start(seconds: audioSeconds)
-                    audioWire = flipped
-                    return true
-                } catch {
-                    print("""
-                        audio-routing: rebuild in \(mode) failed (\(error)) — \
-                        trying to come back \(opts.hostAudio)
-                        """)
-                    if let back = try? AudioWire(
-                        wire: w, bitrate: opts.audioBitrate,
-                        mode: opts.hostAudio
-                    ) {
-                        back.start(seconds: audioSeconds)
-                        audioWire = back
-                    }
-                    return false
-                }
+                return running
             }
             let capture = opts.hostAudio == .hostMuted
                 ? "\"Lyte Audio\" virtual-sink capture (host MUTED)"
@@ -898,7 +916,9 @@ static func serveSession(
     w.shutdown(reason: .shuttingDown)
     // The devices and the leaf outlive the session: nothing its client
     // held may stay pressed, and the leaf stops reporting into it.
-    host.injector?.releaseHeld()
+    if let released = host.injector?.releaseHeld(), released > 0 {
+        print("input: released \(released) held key(s) at session end")
+    }
     host.clipboardLeaf?.detach()
     host.clipboardLeaf?.onLocalChange = nil
     host.clipboardLeaf?.onLocalImageChange = nil
@@ -906,6 +926,7 @@ static func serveSession(
     // resumes from the gap.
     bulkShell?.teardown()
 
+    w.endPairing()
     let evidence = printLegSummary(leg)
     printSessionBooks(
         wire: w, leg: leg, audio: finalAudio, host: host,
@@ -1018,7 +1039,8 @@ static func printSessionBooks(
     \(o.latencyWouldBlockCount), ENOBUFS video/latency \
     \(o.videoNoBufferCount)/\
     \(o.latencyNoBufferCount), transient send/receive errors \
-    \(o.transientErrors)/\(wire.receiveTransientErrors), stale fresh shed \
+    \(o.transientErrors)/\(wire.receiveTransientErrors), ICMP refusals \
+    ignored on a live path \(wire.refusalsWhileLive), stale fresh shed \
     \(o.freshVideoShedDatagrams) datagrams / \
     \(o.freshVideoShedBytes) B
     session: \(s.beaconsSent) beacons, \(s.beaconEchoes) echoes \
@@ -1069,7 +1091,9 @@ static func printSessionBooks(
     session-lock: video prepare max \(wire.videoPrepareMaxNS) ns off-lock, \
     commit wait/hold max \(wire.videoCommitLockWaitMaxNS)/\
     \(wire.videoCommitLockHoldMaxNS) ns, service/receive max \
-    \(wire.serviceOnceMaxNS)/\(wire.receiveAllMaxNS) ns
+    \(wire.serviceOnceMaxNS)/\(wire.receiveAllMaxNS) ns; \(wire.drainPasses) \
+    sender passes, \(wire.receiveCalls) recvmmsg calls, \(wire.outqQueries) \
+    SIOCOUTQ queries
     audio-routing: final \(wire.currentAudioRouting), \
     \(s.audioRoutingRequestsReceived) flip requests, \
     \(s.audioRoutingStatusesSent) statuses sent
@@ -1121,8 +1145,8 @@ static func printSessionBooks(
     \(wire.estimatorStats.upshiftsCadenceHeld) cadence-held), \
     \(s.rateChanges) pacer moves, \
     \(s.fallPurges) fall purges (\(s.fallPurgedVideoBytes) B dropped \
-    pre-stale); frameByteCeiling@\(opts.fps)fps \
-    \(wire.frameByteCeiling(fps: Int(opts.fps))) B; borrowed ingress \
+    pre-stale); frameByteCeiling@\(DirectEyeLeg.fps)fps \
+    \(wire.frameByteCeiling(fps: DirectEyeLeg.fps)) B; borrowed ingress \
     \(wire.borrowedFrameBytesIngested) B (entry-copy bytes avoided)
     encoder-vbv: \(wire.vbvDirectivesIssued) directives, \
     \(leg.directivesApplied) applied, \
@@ -1187,6 +1211,7 @@ extension HostApplication {
     }
 
     static func main(arguments: [String]) {
+        lyteIgnoreBrokenPipes()
         // Subcommands never return: `sniff` is the Lyte-UDP header
         // dissector; `advertise` is the standalone Avahi surface.
         if arguments.count > 1, arguments[1] == "sniff" {

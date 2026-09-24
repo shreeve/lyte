@@ -259,11 +259,12 @@ func run() throws {
     var idrSpacings: [Double] = []
     for b in batches {
         let stamp = stamps[b.firstPktID] ?? 0
+        // CLOCK_REALTIME stamps can step backwards: signed, never a trap.
         let spacing = (prevStamp != 0 && stamp != 0)
-            ? Double(stamp - prevStamp) : Double.nan
+            ? Double(Int64(bitPattern: stamp &- prevStamp)) : Double.nan
         let members = packets.filter { $0.batchIndex == b.index }
         let classes = members.map {
-            ($0.urgent ? "!" : "") + $0.cls.name
+            ($0.urgent ? "!" : "") + "\($0.cls)"
         }.joined(separator: ",")
         let isIdrBatch = members.contains { $0.urgent }
         if isIdrBatch, stamp != 0 {
@@ -289,13 +290,13 @@ func run() throws {
     // Gate numbers, measured at the kernel TX stamp point.
     if let first = idrBatchStamps.first, let last = idrBatchStamps.last,
        idrEnqueuedRealNS != 0 {
-        let drain = last - idrEnqueuedRealNS
-        let span = last - first
+        let drain = Double(Int64(bitPattern: last &- idrEnqueuedRealNS))
+        let span = Double(Int64(bitPattern: last &- first))
         print("""
             IDR drain (enqueue → last TX stamp): \(fmtMS(drain)) ms \
             (budget min(2×16.67, 25) = 25 ms); stamp span \(fmtMS(span)) ms
             """)
-        if drain > 25 * ms {
+        if drain > Double(25 * ms) {
             print("FAIL: IDR drain exceeded 25 ms")
             failures += 1
         }

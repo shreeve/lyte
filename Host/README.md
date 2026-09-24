@@ -25,14 +25,13 @@ touches hardware or the OS is Linux-only (`#if os(Linux)` in
 | `HostAudio` | all | 5 ms hard-CBR Opus over Common's pinned `COpus` |
 | `HostWireTestKit` | all | Test-only: `HostSessionHarness`, a shipping `Session` in virtual time |
 | `HostEye` | Linux | Direct Eye: GETFB2 scanout ticket, dmabuf import, 16×16-tile GPU pixel fingerprint, NV12/AYUV EGL blit (BT.709 limited range), VAAPI encoder seat, cursor plane |
-| `CDRM` `CGBM` `CEGL` `CVA` `CPipeWire` `CDBus` `CNvEnc` `CCuda` | Linux | System-library module maps |
+| `CDRM` `CGBM` `CEGL` `CVA` `CPipeWire` `CDBus` | Linux | System-library module maps |
 | `CPipeWireAudio` | Linux | Default-sink monitor capture at the 5 ms quantum |
 | `CNetIO` | Linux | UDP sockets: `sendmmsg`/`recvmmsg`, per-packet TOS, kernel timestamps |
 | `CInputUinput` | Linux | Virtual evdev devices, the only input backend |
 | `lyte-host` | Linux | The composition root (`HostApplication`): Direct Eye leg, session wiring, service loop, Avahi, pairing, audio, clipboard (Mutter RemoteDesktop session), files, input |
 | `lyte-control-peer` | all | DRM-free `HostWire.Session` over UDP for the browser proof |
 | `lyte-eye` | Linux | Standalone Direct Eye probe |
-| `lyte-nvenc` | Linux | Banked NVENC probe |
 | `lyte-netio-check`, `lyte-pace-check`, `lyte-audio-check`, `lyte-uinput-check` | Linux | On-host verification harnesses |
 
 C lives only at hardware and OS leaves, per the doctrine in
@@ -56,9 +55,9 @@ All gates: [docs/TESTING.md](../docs/TESTING.md).
 
 Hand-run binaries need the DRM capability (`sudo setcap cap_sys_admin+ep
 BINARY`, re-applied after every rebuild) and must live off `/tmp`. Never
-run one on the standing port 41151 or beside the standing service's
-Direct Eye; see the safety rules in
-[docs/OPERATIONS.md](../docs/OPERATIONS.md#safety).
+run one on the standing port 41151 (a listener on a port another socket
+holds refuses to start) or beside the standing service's Direct Eye; see
+the safety rules in [docs/OPERATIONS.md](../docs/OPERATIONS.md#safety).
 
 ```sh
 # File mode: capture the scanout to an Annex-B file.
@@ -80,23 +79,26 @@ ffmpeg -v error -i /tmp/lyte-eye.hevc -f null -   # decodes without errors
 
 Other flags: `--pair` (PIN pairing, one session), `--require-paired`
 (admit only paired clients), `--input auto|uinput|off`,
-`--clipboard=images`, `--advertise-interface IFACE`. `lyte-host --help`
-lists them all. The host self-checks that its first encoded packet starts
+`--clipboard=images`, `--advertise-interface IFACE`, `--drm-device PATH`
+(the card to capture, default `/dev/dri/card1`; the render node is that
+GPU's own). `lyte-host --help` lists them all. The host self-checks that its first encoded packet starts
 with VPS/SPS/PPS and an IDR.
 
 ## Capture
 
 Capture is change-driven by pixels. On a 60 Hz beat the Direct Eye
-fingerprints the current scanout on the GPU; framebuffer identity only
-decides when to re-import, because a compositor may redraw one buffer for
-minutes. Unchanged pixels encode nothing, so the frame rate runs from 0 fps
+fingerprints the current scanout on the GPU; the scanned-out buffer's
+identity only decides when to re-import, because a compositor may redraw
+one buffer for minutes. Unchanged pixels encode nothing, so the frame rate runs from 0 fps
 (blank) through about 1 fps (a blinking caret) to 60 fps (video). A still
 screen is kept warm by re-encoding the retained frame once a second, less
 often under an announced quiet video posture, and a demanded IDR on a still
 screen re-encodes that frame. A changed frame is skipped before encode
 while queued video already holds its latency budget, and the encoder's HRD
 buffer is bounded so a frame at the rate ceiling fits one FEC group. Rate
-changes apply on the next frame with no encoder reset and no IDR.
+changes apply on the next frame with no encoder reset and no IDR. Chroma
+is fixed when a session's encoder opens: a 4:4:4 agreement that arrives
+later takes effect at the next reconnect.
 
 ## Machine prerequisites
 
@@ -110,7 +112,8 @@ repair command; it never escalates itself. Run it as the seat user.
    Without it client input is off.
 3. **Optional realtime scheduling.** The pacing and audio threads ask for
    `SCHED_RR` and degrade gracefully (`sched:` log lines say which rung
-   they got). To grant it:
+   they got). The service's unit grants it; to grant it to hosts run by
+   hand:
 
    ```sh
    echo "$USER - rtprio 20" | sudo tee /etc/security/limits.d/90-lyte-rtprio.conf

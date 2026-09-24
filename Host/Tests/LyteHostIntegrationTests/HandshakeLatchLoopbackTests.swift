@@ -70,6 +70,26 @@ final class HandshakeLatchLoopbackTests: XCTestCase {
         XCTAssertEqual(wire.handshakesSuperseded, 1)
     }
 
+    /// An answer no client confirms within the client's whole retransmit
+    /// span is discarded then, not held until the 30 s liveness close.
+    func testAnAnswerNobodyConfirmsIsDiscardedAfterTheRetransmitSpan() throws {
+        let hostStatic = NoiseKeyPair.generate()
+        let wire = try SessionWire(
+            listener: HostListener(port: 0), peer: nil,
+            rateBitsPerSecond: 1_000_000)
+        defer { wire.shutdown(reason: .shuttingDown, lingerSeconds: 0) }
+        let replayer = try LoopbackDialer(
+            port: wire.localPort, hostStaticPublicKey: hostStatic.publicKey)
+        try replayer.dial()
+        let span = Double(SessionWire.unconfirmedLifetimeNS) / 1e9
+        XCTAssertThrowsError(try awaitClient(
+            wire, hostStatic: hostStatic, timeoutSeconds: span + 1
+        ) {
+            XCTAssertNotNil(replayer.awaitMessage2(), "answered, never confirmed")
+        })
+        XCTAssertEqual(wire.handshakesAbandoned, 1)
+    }
+
     /// A message 1 some session of this process already answered is
     /// dropped before any session reads it: the stale copy a client's
     /// retransmit timer left queued, or a replay of it.

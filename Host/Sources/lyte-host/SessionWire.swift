@@ -13,10 +13,12 @@
 // audio thread publishes into a narrow mailbox and only tries the session
 // lock; the janitor runs service() every 10 ms for shell work off the
 // lock; the SCHED_RR sender thread ppolls its wake eventfd, the sockets
-// and the session's next timer, then services and flushes. One NSLock
+// and the session's next timer, then services and flushes. One lock
 // guards the Session and the outbox, so seq allocation, sealing, pacer
-// insertion and flush keep one order; console lines are printed after it
-// is released. Agreed capability flags live under a separate config lock.
+// insertion and flush keep one order; it inherits priority, so a
+// preempted default-priority holder cannot stall the realtime sender.
+// Console lines are printed after it is released. Agreed capability flags
+// live under a separate config lock.
 
 import LyteIO
 import LyteCore
@@ -65,7 +67,9 @@ final class HostListener {
 
     init(port: UInt16) throws {
         var err = [CChar](repeating: 0, count: 256)
-        guard let n = lyte_netio_new("0.0.0.0", port, &err, err.count) else {
+        guard let n = lyte_netio_new_listener(
+            "0.0.0.0", port, &err, err.count
+        ) else {
             throw HostError("session socket open failed: \(String(cBuffer: err))")
         }
         guard lyte_netio_set_priority(n, 6) == 0 else {
@@ -107,10 +111,18 @@ final class SessionWire {
     private var awaitPrimaryDatagrams = 0
     /// Unconfirmed handshakes a newer authenticated message 1 replaced.
     private(set) var handshakesSuperseded = 0
+    /// Answered handshakes discarded unconfirmed.
+    private(set) var handshakesAbandoned = 0
+    /// When the unconfirmed session's message 1 was answered.
+    private var answeredAtNS: UInt64?
+    /// A client retransmits message 1 five times a second apart and
+    /// confirms within a round trip of message 2, so an answer still
+    /// unconfirmed after this has no client behind it.
+    static let unconfirmedLifetimeNS: UInt64 = 6_000_000_000
     private var session: Session!
     /// Guards the Session and the outbox (see the header). Held across
     /// service passes, released across sleeps.
-    private let lock = NSLock()
+    private let lock = PriorityInheritingLock()
     private let rateBitsPerSecond: Int
     /// What this host declares in the capability exchange.
     private let capabilities: Capabilities
@@ -155,11 +167,16 @@ final class SessionWire {
         set { withConfigLock { _inputInjector = newValue } }
     }
 
-    /// Restarts the audio leaf in the requested routing and returns
-    /// whether it stuck; nil = requests get the standing posture. Called
-    /// off the session lock: a flip is a PipeWire connect (milliseconds).
-    private var _audioRoutingHandler: ((HostAudioRoutingMode) -> Bool)?
-    var audioRoutingHandler: ((HostAudioRoutingMode) -> Bool)? {
+    /// Restarts the audio leaf for (requested, standing) and returns the
+    /// posture that actually runs afterwards (`AudioRoutingFlip`); nil =
+    /// requests get the standing posture. Called off the session lock: a
+    /// flip is a PipeWire connect (milliseconds).
+    private var _audioRoutingHandler: ((
+        _ requested: HostAudioRoutingMode, _ standing: HostAudioRoutingMode
+    ) -> HostAudioRoutingMode)?
+    var audioRoutingHandler: ((
+        _ requested: HostAudioRoutingMode, _ standing: HostAudioRoutingMode
+    ) -> HostAudioRoutingMode)? {
         get { withConfigLock { _audioRoutingHandler } }
         set { withConfigLock { _audioRoutingHandler = newValue } }
     }
@@ -219,7 +236,8 @@ final class SessionWire {
     private var lastPointerMotionInjectedAt: UInt64 = 0
     /// The last absolute pointer injected (monitor device pixels): the
     /// cursor watcher's hotspot anchor (hotspot = injected position −
-    /// cursor plane CRTC position; i915 exposes no HOTSPOT_X/Y).
+    /// cursor plane CRTC position; i915 exposes no HOTSPOT_X/Y). Only a
+    /// position the injector accepted lands here, so it is finite.
     private var lastAbsolutePointer: (x: Double, y: Double)?
     /// Re-offered at agreement so a mid-run client wears the current
     /// cursor, not a default.
@@ -254,6 +272,11 @@ final class SessionWire {
     private(set) var videoCommitLockHoldMaxNS: UInt64 = 0
     private(set) var serviceOnceMaxNS: UInt64 = 0
     private(set) var receiveAllMaxNS: UInt64 = 0
+    /// The sender thread's syscall economy: its passes, and the recvmmsg
+    /// calls and SIOCOUTQ queries every path made. Under `lock`.
+    private(set) var drainPasses = 0
+    private(set) var receiveCalls = 0
+    private(set) var outqQueries = 0
     /// Mutated under `lock` (the mailbox counters above use
     /// `audioMailboxLock`).
     private(set) var audioSendFailures = 0
@@ -266,8 +289,16 @@ final class SessionWire {
     private(set) var socketOutqMaxBytes = 0
     private(set) var socketOutqQueryFailures = 0
     private(set) var receiveTransientErrors = 0
+    /// ICMP refusals that arrived while the session was live, ignored.
+    private(set) var refusalsWhileLive = 0
     private var currentVideoSocketOutqBytes = 0
     private var currentLatencySocketOutqBytes = 0
+    /// When the send queues were last sampled. While the outbox is empty
+    /// and the governor is calm the kernel bytes move by at most one
+    /// quantum's worth between samples, so they are re-read once per
+    /// pacer quantum; any other state re-reads them every pump.
+    private var lastOutqSampleNS: UInt64?
+    private static let outqSampleIntervalNS: UInt64 = 1_000_000
     private var kernelPressureGovernor = KernelPressureGovernor()
     private var kernelPressureDecision: KernelPressureDecision?
     private(set) var sendErrors = 0
@@ -294,8 +325,9 @@ final class SessionWire {
         defer { lock.unlock() }
         return vbvPolicy?.rateMovesAbsorbed ?? 0
     }
-    /// ECONNREFUSED (LYTE_NETIO_PEER_GONE): the client's socket is
-    /// closed — session-ending, not an I/O failure.
+    /// The client's socket is closed: a refusal arrived while its path
+    /// was already silent (`refusalEndsSession`). Session-ending, not an
+    /// I/O failure.
     private(set) var peerGone = false
 
     /// The sender thread's wake eventfd, signaled when bytes are enqueued.
@@ -586,22 +618,12 @@ final class SessionWire {
     private func observeKernelPressure(
         _ session: Session, now: UInt64
     ) -> KernelPressureDecision {
-        let videoOutq = Int(lyte_netio_outq_bytes(videoNetio ?? listenNetio))
-        if videoOutq >= 0 {
-            currentVideoSocketOutqBytes = videoOutq
-            socketOutqMaxBytes = max(socketOutqMaxBytes, videoOutq)
-        } else {
-            socketOutqQueryFailures += 1
-        }
-        if let latencyNetio {
-            let latencyOutq = Int(lyte_netio_outq_bytes(latencyNetio))
-            if latencyOutq >= 0 {
-                currentLatencySocketOutqBytes = latencyOutq
-                latencySocketOutqMaxBytes = max(
-                    latencySocketOutqMaxBytes, latencyOutq)
-            } else {
-                socketOutqQueryFailures += 1
-            }
+        let calm = outbox.isEmpty
+            && (kernelPressureDecision?.state ?? .calm) == .calm
+        if !calm || lastOutqSampleNS.map({
+            now &- $0 >= Self.outqSampleIntervalNS
+        }) ?? true {
+            sampleSendQueues(now: now)
         }
         let decision = kernelPressureGovernor.observe(
             KernelPressureSample(
@@ -617,9 +639,34 @@ final class SessionWire {
                 latencyENOBUFSCount: outbox.counters.latencyNoBufferCount,
                 pacerRateBitsPerSecond: session.pacerRateBitsPerSecond,
                 videoQueueBudgetNS: session.videoQueueBudgetNS,
-                frameBudgetBytes: session.frameByteCeiling(fps: 60)))
+                frameBudgetBytes: session.frameByteCeiling(
+                    fps: DirectEyeLeg.fps)))
         kernelPressureDecision = decision
         return decision
+    }
+
+    /// Requires `lock`. SIOCOUTQ on both media sockets.
+    private func sampleSendQueues(now: UInt64) {
+        lastOutqSampleNS = now
+        outqQueries += 1
+        let videoOutq = Int(lyte_netio_outq_bytes(videoNetio ?? listenNetio))
+        if videoOutq >= 0 {
+            currentVideoSocketOutqBytes = videoOutq
+            socketOutqMaxBytes = max(socketOutqMaxBytes, videoOutq)
+        } else {
+            socketOutqQueryFailures += 1
+        }
+        if let latencyNetio {
+            outqQueries += 1
+            let latencyOutq = Int(lyte_netio_outq_bytes(latencyNetio))
+            if latencyOutq >= 0 {
+                currentLatencySocketOutqBytes = latencyOutq
+                latencySocketOutqMaxBytes = max(
+                    latencySocketOutqMaxBytes, latencyOutq)
+            } else {
+                socketOutqQueryFailures += 1
+            }
+        }
     }
 
     private func pumpForSocketState(_ session: Session) {
@@ -648,7 +695,9 @@ final class SessionWire {
     /// discarded. So no replayed, spoofed or abandoned message 1 can lock
     /// out the next client. A wire-out host accepts only its peer.
     ///
-    /// `idle` runs off the lock once per wait pass (~2 ms).
+    /// `idle` runs off the lock once per wait pass: every 10 ms while no
+    /// handshake is answered, every 2 ms while an answered one's timers
+    /// run, and at once when a datagram arrives.
     func awaitClient(
         hostStatic: NoiseKeyPair,
         timeoutSeconds: Double?,
@@ -687,11 +736,17 @@ final class SessionWire {
                     ) {
                         execute(event)
                     }
-                    if session.lifecycleState == .closed {
+                    let abandoned = answeredAtNS.map {
+                        SystemMonotonicClock.nowNanoseconds &- $0
+                            >= Self.unconfirmedLifetimeNS
+                    } ?? false
+                    if !session.isPeerConfirmed,
+                       abandoned || session.lifecycleState == .closed {
                         emit("""
                             noise: answered handshake never confirmed \
                             — discarded, awaiting a client
                             """)
+                        handshakesAbandoned += 1
                         discardUnconfirmedSession()
                     }
                 }
@@ -707,6 +762,7 @@ final class SessionWire {
                 throw error
             }
             let done = session?.isPeerConfirmed == true
+            let answered = session != nil
             lock.unlock()
             flushLogLines()
             if done {
@@ -714,7 +770,7 @@ final class SessionWire {
                 return .established
             }
             idle()
-            usleep(2_000)
+            awaitReadable(timeoutNS: answered ? 2_000_000 : 10_000_000)
         }
         if stopRequested() {
             return .terminationRequested
@@ -724,6 +780,18 @@ final class SessionWire {
             — is lyte-cli wire-view pointed at this host and holding \
             the printed static key?
             """)
+    }
+
+    /// Waits, off the lock, until a socket this wire reads is readable or
+    /// `timeoutNS` elapses (a signal also ends it).
+    private func awaitReadable(timeoutNS: Int64) {
+        var fds = [lyte_netio_fd(listenNetio)]
+        if let videoNetio { fds.append(lyte_netio_fd(videoNetio)) }
+        if let latencyNetio { fds.append(lyte_netio_fd(latencyNetio)) }
+        let events = [Int16](repeating: Int16(POLLIN), count: fds.count)
+        var revents = [Int16](repeating: 0, count: fds.count)
+        _ = lyte_netio_wait(
+            fds, events, &revents, Int32(fds.count), timeoutNS)
     }
 
     /// Requires `lock`. One datagram while awaiting a confirmed client.
@@ -778,6 +846,9 @@ final class SessionWire {
         }
         if let answered = session.answeredMessage1 {
             listener.answeredHandshakes.record(message1: answered)
+            if answeredAtNS == nil {
+                answeredAtNS = SystemMonotonicClock.nowNanoseconds
+            }
         }
         if !wasConfirmed, session.isPeerConfirmed {
             emit("noise: client confirmed — it holds the session keys")
@@ -808,6 +879,7 @@ final class SessionWire {
         noBufferBackoff = false
         peerGone = false
         session = nil
+        answeredAtNS = nil
     }
 
     /// The session port (the kernel's pick when bound to port 0).
@@ -820,17 +892,26 @@ final class SessionWire {
             && tuple.remotePort == requiredPeer.port
     }
 
-    /// One receive batch from every socket. A closed session leaves the
-    /// listening socket alone: what arrives there belongs to the next
-    /// session.
+    /// One receive batch from every socket, or only from the sockets in
+    /// `readable` (fds that polled readable; nil = all). A closed session
+    /// leaves the listening socket alone: what arrives there belongs to
+    /// the next session.
     private func receiveFromAll(
+        readable: Set<Int32>? = nil,
         _ handle: ([UInt8], FourTuple) -> Void
     ) throws {
-        if session?.lifecycleState != .closed {
+        func polled(_ socket: OpaquePointer) -> Bool {
+            readable.map { $0.contains(lyte_netio_fd(socket)) } ?? true
+        }
+        if session?.lifecycleState != .closed, polled(listenNetio) {
             try receiveAll(from: listenNetio, handle)
         }
-        if let videoNetio { try receiveAll(from: videoNetio, handle) }
-        if let latencyNetio { try receiveAll(from: latencyNetio, handle) }
+        if let videoNetio, polled(videoNetio) {
+            try receiveAll(from: videoNetio, handle)
+        }
+        if let latencyNetio, polled(latencyNetio) {
+            try receiveAll(from: latencyNetio, handle)
+        }
     }
 
     /// Requires `lock`. One datagram into an established session.
@@ -912,6 +993,10 @@ final class SessionWire {
             lock.unlock()
             usleep(2_000)
         }
+        lock.lock()
+        pendingLogLines += lineLimiter.due(
+            now: SystemMonotonicClock.nowNanoseconds, final: true)
+        lock.unlock()
         flushLogLines()
         runPendingPairingEvents()
         print(session.arqIsQuiescent
@@ -975,11 +1060,7 @@ final class SessionWire {
                     prepared,
                     context: context,
                     captureTimestampMicroseconds: captureMicros,
-                    interleave: { [unowned self] in
-                        self.drainAudioMailboxLocked()
-                    },
-                    now: SystemMonotonicClock.nowNanoseconds,
-                    isBorrowed: true
+                    now: SystemMonotonicClock.nowNanoseconds
                 )
                 lastFrameForTelemetry = shards > 0
                     ? session.lastAdmittedVideoFrameNumber : nil
@@ -1132,6 +1213,8 @@ final class SessionWire {
             return
         }
         serviceAndFlushLocked()
+        pendingLogLines += lineLimiter.due(
+            now: SystemMonotonicClock.nowNanoseconds)
         // What this pass could not emit belongs to the sender thread.
         let leftovers = !(session?.isIdle ?? true) || !outbox.isEmpty
         let requests = pendingAudioRouting
@@ -1308,8 +1391,19 @@ final class SessionWire {
         for event in events { onPairingEvent(event) }
     }
 
+    /// The session is over: a pairing run it carried can never confirm,
+    /// so the PIN burns now if that was its last guess. Call once, after
+    /// `shutdown`.
+    func endPairing() {
+        guard let pairing else { return }
+        lock.lock()
+        let events = pairing.sessionEnded().events
+        lock.unlock()
+        for event in events { onPairingEvent(event) }
+    }
+
     /// One 0x18 answered: flip the leaf, then report the posture that
-    /// actually stands (a failed flip reports the old one).
+    /// actually runs (a failed flip reports its fallback).
     private func applyAudioRouting(_ mode: HostAudioRoutingMode) {
         lock.lock()
         let standing = currentAudioRouting
@@ -1326,19 +1420,14 @@ final class SessionWire {
             noteAudioRoutingApplied(standing)
             return
         }
-        if handler(mode) {
-            lock.lock()
-            currentAudioRouting = mode
-            lock.unlock()
-            print("audio-routing: flipped to \(mode)")
-            noteAudioRoutingApplied(mode)
-        } else {
-            print("""
-                audio-routing: flip to \(mode) FAILED — posture \
-                stays \(standing)
-                """)
-            noteAudioRoutingApplied(standing)
-        }
+        let running = handler(mode, standing)
+        lock.lock()
+        currentAudioRouting = running
+        lock.unlock()
+        print(running == mode
+            ? "audio-routing: flipped to \(mode)"
+            : "audio-routing: flip to \(mode) FAILED — running \(running)")
+        noteAudioRoutingApplied(running)
     }
 
     /// The applied-posture 0x19 (a no-op unless hostAudioRouting was
@@ -1413,15 +1502,32 @@ final class SessionWire {
         }
     }
 
-    /// ECONNREFUSED, once: the client's socket is closed, so no teardown
-    /// is sent; the session just ends cleanly.
-    private func notePeerGone() {
-        guard !peerGone else { return }
+    /// An ECONNREFUSED is an ICMP port-unreachable,
+    /// which anyone who can guess the client's port can spoof. It ends
+    /// the session only when authenticated silence already says the
+    /// client is gone: FROZEN, 350 ms without the feedback a live client
+    /// sends every 40 ms. On a live session it is counted loss, and the
+    /// liveness clock and the client's typed 0x0A decide.
+    static func refusalEndsSession(lifecycle: SessionState?) -> Bool {
+        lifecycle == .frozen
+    }
+
+    /// Requires `lock`. One refusal: the session ends cleanly (no
+    /// teardown is sent) or it is counted as a transient loss. Returns
+    /// whether the session ended.
+    private func noteRefused() -> Bool {
+        guard !peerGone else { return true }
+        guard Self.refusalEndsSession(lifecycle: session?.lifecycleState)
+        else {
+            refusalsWhileLive += 1
+            return false
+        }
         peerGone = true
         emit("""
-            session: client unreachable (ICMP port closed — it exited) \
-            — closing cleanly
+            session: client unreachable (ICMP port closed after its path \
+            went silent — it exited) — closing cleanly
             """)
+        return true
     }
 
     private func signalDrain() {
@@ -1455,6 +1561,11 @@ final class SessionWire {
     /// session's next timer. A send failure ends the session; the thread
     /// stays stoppable.
     private func drainLoop() {
+        // The first pass reads every socket; later ones only those the
+        // last wait saw readable (a socket skipped while it holds data
+        // stays readable and ends the next wait at once). The janitor's
+        // service pass still reads every socket every 10 ms.
+        var readable: Set<Int32>?
         while true {
             drainCondition.lock()
             let stop = drainStop
@@ -1466,7 +1577,7 @@ final class SessionWire {
             if stop { return }
             let wait: DrainWait
             do {
-                wait = try drainPass()
+                wait = try drainPass(readable: readable)
             } catch {
                 drainCondition.lock()
                 let firstFailure = !drainFailed
@@ -1477,21 +1588,22 @@ final class SessionWire {
                 }
                 wait = DrainWait()
             }
-            block(until: wait)
+            readable = block(until: wait)
         }
     }
 
     /// Callers must not hold `lock`: the wait happens outside it, so
     /// audio's 5 ms sends interleave with a long video drain.
-    private func drainPass() throws -> DrainWait {
+    private func drainPass(readable: Set<Int32>?) throws -> DrainWait {
         lock.lock()
         guard let session, session.isPeerConfirmed, !peerGone else {
             lock.unlock()
             flushLogLines()
             return DrainWait()
         }
+        drainPasses += 1
         do {
-            try serviceOnce()
+            try serviceOnce(readable: readable)
             try flushOutbox()
         } catch {
             lock.unlock()
@@ -1532,7 +1644,9 @@ final class SessionWire {
         return DrainWait(timeoutNS: timeoutNS, sockets: sockets)
     }
 
-    private func block(until wait: DrainWait) {
+    /// Waits, then returns the sockets that polled readable (or in
+    /// error, which a receive reports); nil when the wait itself failed.
+    private func block(until wait: DrainWait) -> Set<Int32>? {
         var fds: [Int32] = [wakeFd]
         var events: [Int16] = [Int16(POLLIN)]
         for socket in wait.sockets where socket.pollIn || socket.pollOut {
@@ -1541,14 +1655,22 @@ final class SessionWire {
                 (socket.pollIn ? POLLIN : 0) | (socket.pollOut ? POLLOUT : 0)))
         }
         var revents = [Int16](repeating: 0, count: fds.count)
-        _ = lyte_netio_wait(
+        let ready = lyte_netio_wait(
             fds, events, &revents, Int32(fds.count), wait.timeoutNS ?? -1)
         if revents[0] != 0 {
             lyte_netio_wake_drain(wakeFd)
         }
+        guard ready >= 0 else { return nil }
+        let readableMask = Int16(POLLIN | POLLERR | POLLHUP)
+        var readable: Set<Int32> = []
+        for i in 1..<fds.count where revents[i] & readableMask != 0 {
+            readable.insert(fds[i])
+        }
+        return readable
     }
 
-    private func serviceOnce() throws {
+    /// `readable`: see `receiveFromAll`.
+    private func serviceOnce(readable: Set<Int32>? = nil) throws {
         let serviceStart = SystemMonotonicClock.nowNanoseconds
         defer {
             serviceOnceMaxNS = max(
@@ -1557,7 +1679,7 @@ final class SessionWire {
         }
         // Audio first, before receive and timer work.
         drainAudioMailboxLocked()
-        try receiveFromAll { [weak self] datagram, tuple in
+        try receiveFromAll(readable: readable) { [weak self] datagram, tuple in
             self?.receiveEstablished(datagram, from: tuple)
         }
         for event in session.advance(
@@ -1583,13 +1705,14 @@ final class SessionWire {
         }
         // One recvmmsg batch per call: a continuously full socket must not
         // hold the session lock unboundedly.
+        receiveCalls += 1
         let got = recvSlots.withUnsafeMutableBufferPointer { slots in
             lyte_netio_recv_batch(socket, slots.baseAddress,
                                   Int32(slots.count),
                                   &recvError, recvError.count)
         }
-        if got == LYTE_NETIO_PEER_GONE {
-            notePeerGone()
+        if got == LYTE_NETIO_REFUSED {
+            _ = noteRefused()
             return
         }
         if got == LYTE_NETIO_TRANSIENT {
@@ -1623,8 +1746,22 @@ final class SessionWire {
     /// stalled stdout reader must never block a write inside the lock
     /// and freeze audio, pacing and capture. Guarded by `lock`.
     private var pendingLogLines: [String] = []
+    /// Lines a peer can cause once per datagram (drops, unclaimed CTRL)
+    /// go through this limiter. Guarded by `lock`.
+    private var lineLimiter = LogLineLimiter()
 
     private func emit(_ line: String) { pendingLogLines.append(line) }
+
+    /// An enum value's case without its payload: a rate-limit key.
+    static func caseName(_ value: some Any) -> Substring {
+        String(describing: value).prefix { $0 != "(" }
+    }
+
+    /// Requires `lock`. One occurrence of a per-datagram line class.
+    private func emitLimited(_ key: String, _ line: @autoclosure () -> String) {
+        pendingLogLines += lineLimiter.admit(
+            key, now: SystemMonotonicClock.nowNanoseconds, line: line)
+    }
 
     /// Callers must not hold `lock`.
     private func flushLogLines() {
@@ -1661,10 +1798,10 @@ final class SessionWire {
             // Pairing binds to this session's transcript and statics; a
             // re-handshake rebinds but never refills the guess budget.
             if let pairing, let hash = session.handshakeHash {
-                pairing.sessionEstablished(
+                pendingPairingEvents += pairing.sessionEstablished(
                     clientStaticPublicKey: remote,
                     noiseHandshakeHash: hash
-                )
+                ).events
             }
         case .beaconSent:
             break // 1 Hz; the final stats line carries the count
@@ -1693,14 +1830,19 @@ final class SessionWire {
                 pendingPairingEvents.append(contentsOf: output.events)
                 return
             }
-            emit("""
+            emitLimited("ctrl-arq: unclaimed message", """
                 ctrl-arq: message group \(group.rawValue) (\(message.count) B, \
                 type \(Hex.string(message.first ?? 0, prefix: true)))
                 """)
         case .reliableOneShotAcknowledged(let group):
             emit("ctrl-arq: one-shot group \(group.rawValue) acknowledged")
         case .arqIgnored(let reason):
-            emit("ctrl-arq: ignored \(reason)")
+            // A poisoned ordered stream repeats its reason for every
+            // segment until the session ends; each reason is limited on
+            // its own so it cannot hide the others.
+            emitLimited(
+                "ctrl-arq: ignored \(Self.caseName(reason))",
+                "ctrl-arq: ignored \(reason)")
         case .idrRequested(let request):
             emit("""
                 ctrl: IDR request seq \(request.requestSeq) (frame \
@@ -1737,7 +1879,7 @@ final class SessionWire {
         case .dropped(.handshakeCookieInvalid):
             break
         case .dropped(let reason):
-            emit("drop: \(reason)")
+            emitLimited("drop: \(Self.caseName(reason))", "drop: \(reason)")
         case .sendFailed(let what):
             emit("send-failed: \(what)")
         case .capabilitiesAgreed(let agreed):
@@ -1785,6 +1927,7 @@ final class SessionWire {
                     lifecycle: FROZEN — 350 ms of media-path silence; \
                     datagram video suspended, CTRL stays alive
                     """)
+                releaseHeldInput("the client's path went dark")
             case .recovery:
                 emit("""
                     lifecycle: RECOVERY — evidence returned; fresh IDR \
@@ -1797,6 +1940,7 @@ final class SessionWire {
             }
         case .sessionClosed(let reason):
             emit("session: CLOSED (\(reason))")
+            releaseHeldInput("the session closed")
         case .inputReceived(let event, let rxMicros):
             injectInput(event, receivedAtMicroseconds: rxMicros)
         case .videoBacklogPurged(let datagrams, let bytes, let staleWireMs):
@@ -2013,10 +2157,15 @@ final class SessionWire {
         )
     }
 
-    /// Capture negotiation → the injector's absolute-coordinate scaling
-    /// (the uinput tablet needs the monitor size; Mutter ignores it).
-    func noteMonitorExtent(width: UInt32, height: UInt32) {
-        inputInjector?.noteMonitorExtent(width: width, height: height)
+    /// Requires `lock`. A client whose path is dark cannot send the
+    /// release of a key it holds, and the compositor autorepeats a held
+    /// key until it sees one, so nothing stays pressed past FROZEN or
+    /// the session's close. A key the user really is still holding is
+    /// released too, which is the safe direction.
+    private func releaseHeldInput(_ why: String) {
+        guard let released = inputInjector?.releaseHeld(), released > 0
+        else { return }
+        emit("input: released \(released) held key(s) — \(why)")
     }
 
     private func flushOutbox() throws {
@@ -2055,7 +2204,7 @@ final class SessionWire {
             outbox.shedOldestStaleFreshVideo(
                 ledger: session, now: now, budgetNS: session.videoQueueBudgetNS)
         case .peerGone:
-            notePeerGone()
+            break // writeResult already judged the refusal
         case .failed(let why):
             throw HostError("session send failed: \(why)")
         }
@@ -2069,7 +2218,7 @@ final class SessionWire {
         switch rc {
         case 0: .wouldBlock
         case LYTE_NETIO_NO_BUFFER: .noBuffer
-        case LYTE_NETIO_PEER_GONE: .peerGone
+        case LYTE_NETIO_REFUSED: noteRefused() ? .peerGone : .transient
         case LYTE_NETIO_TRANSIENT: .transient
         case let accepted where accepted > 0: .accepted(Int(accepted))
         default: .failed(String(cBuffer: sendError))

@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <linux/input.h>
 #include <linux/uinput.h>
+#include <math.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,7 +72,7 @@ static int batch_send(int fd, event_batch *b, char *err, size_t errlen) {
 static int create_device(const char *name, uint16_t product,
                          int (*setup)(int fd, char *err, size_t errlen),
                          char *err, size_t errlen) {
-    int fd = open("/dev/uinput", O_RDWR | O_NONBLOCK);
+    int fd = open("/dev/uinput", O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
         fill_err(err, errlen, "open /dev/uinput");
         return -1;
@@ -228,6 +229,12 @@ int lyte_uinput_move_abs(lyte_uinput *u, double x, double y,
         }
         return -1;
     }
+    /* NaN slips through both clamps below and makes the int cast
+       undefined; an infinity scales to one. Refuse both. */
+    if (!isfinite(x) || !isfinite(y)) {
+        if (err && errlen) snprintf(err, errlen, "non-finite absolute move");
+        return -1;
+    }
     double sx = x / (double)u->width * ABS_RANGE;
     double sy = y / (double)u->height * ABS_RANGE;
     if (sx < 0) sx = 0;
@@ -248,16 +255,17 @@ int lyte_uinput_move_rel(lyte_uinput *u, int32_t dx, int32_t dy,
     return batch_send(u->mouse, &b, err, errlen);
 }
 
+/* The remainder stays within ±119, so the 64-bit sum never overflows
+   and the whole-detent count always fits an int32. */
 static void scroll_axis(event_batch *b, int hires_code, int click_code,
                         int32_t v120, int32_t *rem) {
     if (!v120) return;
     batch_add(b, EV_REL, (uint16_t)hires_code, v120);
-    *rem += v120;
-    int32_t clicks = *rem / 120;
-    if (clicks) {
-        *rem -= clicks * 120;
-        batch_add(b, EV_REL, (uint16_t)click_code, clicks);
-    }
+    int64_t sum = (int64_t)*rem + v120;
+    int64_t clicks = sum / 120;
+    *rem = (int32_t)(sum - clicks * 120);
+    if (clicks)
+        batch_add(b, EV_REL, (uint16_t)click_code, (int32_t)clicks);
 }
 
 int lyte_uinput_scroll(lyte_uinput *u, int32_t v120_x, int32_t v120_y,

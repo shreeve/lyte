@@ -311,3 +311,23 @@ private func audioWireTrampoline(
     audio.onAudio(samples: samples, nFrames: nFrames, chans: chans,
                   rate: rate, graphUS: graphUS)
 }
+
+/// One client routing request (0x18) against the posture that runs. A
+/// failed flip falls back to the posture that was actually running, not
+/// the startup one, and the result is what runs afterwards, so the 0x19
+/// the client hears is always the truth.
+enum AudioRoutingFlip {
+    /// `start` brings a leaf up in one mode and says whether it came up;
+    /// `.streamOff` needs no leaf. The caller has already stopped the
+    /// running leaf.
+    static func apply(
+        requested: HostAudioRoutingMode, standing: HostAudioRoutingMode,
+        start: (HostAudioRoutingMode) -> Bool
+    ) -> HostAudioRoutingMode {
+        for mode in [requested, standing]
+        where mode == .streamOff || start(mode) {
+            return mode
+        }
+        return .streamOff
+    }
+}

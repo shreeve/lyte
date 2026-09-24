@@ -35,7 +35,7 @@ struct Watch {
 func runDoorbell(
     device: String, seconds: Double, intervalUs: UInt32
 ) -> Never {
-    let fd = open(device, O_RDWR)
+    let fd = openCardWithoutMaster(device)
     guard fd >= 0 else {
         perror(device)
         exit(1)

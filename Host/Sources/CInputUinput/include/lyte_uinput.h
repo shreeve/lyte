@@ -44,7 +44,8 @@ int lyte_uinput_set_extent(lyte_uinput *u, uint32_t width, uint32_t height,
 int lyte_uinput_key(lyte_uinput *u, uint32_t code, int pressed,
                     char *err, size_t errlen);
 
-/* Absolute pointer motion, pixels (scaled against the extent). */
+/* Absolute pointer motion, pixels (scaled against the extent and
+   clamped to it). A NaN or infinite coordinate fails with `err`. */
 int lyte_uinput_move_abs(lyte_uinput *u, double x, double y,
                          char *err, size_t errlen);
 

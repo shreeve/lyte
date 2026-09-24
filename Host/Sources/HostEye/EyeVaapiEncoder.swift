@@ -73,9 +73,9 @@ public final class EyeVaapiEncoder {
     /// declares 4:4:4 only on this proof. Uses a short-lived display of
     /// its own, closed before return.
     public static func probesMain444(
-        renderNode: String = "/dev/dri/renderD128"
+        renderNode: String
     ) -> Bool {
-        let fd = open(renderNode, O_RDWR)
+        let fd = open(renderNode, O_RDWR | O_CLOEXEC)
         guard fd >= 0 else { return false }
         defer { close(fd) }
         guard let display = vaGetDisplayDRM(fd) else { return false }
@@ -98,7 +98,7 @@ public final class EyeVaapiEncoder {
 
     public init(
         width: Int32, height: Int32, fps: Int32, qp: Int32,
-        renderNode: String = "/dev/dri/renderD128",
+        renderNode: String,
         bitrateBitsPerSecond: Int64 = 0,
         hrdBufferBits: Int64? = nil,
         inputSurfaceCount: Int = 8,
@@ -124,7 +124,7 @@ public final class EyeVaapiEncoder {
             chroma444: chroma444
         )
 
-        drmFd = open(renderNode, O_RDWR)
+        drmFd = open(renderNode, O_RDWR | O_CLOEXEC)
         guard drmFd >= 0 else {
             throw EyeVaapiError("open(\(renderNode)) errno \(errno)")
         }
@@ -211,7 +211,7 @@ public final class EyeVaapiEncoder {
             count: inputSurfaceCount)
         try check(vaCreateSurfaces(
             display, rtFormat,
-            UInt32(width), UInt32(height),
+            recipe.codedWidth, recipe.codedHeight,
             &inputSurfaces, UInt32(inputSurfaceCount),
             &pixelFormat, 1
         ), "vaCreateSurfaces(input)")
@@ -219,12 +219,13 @@ public final class EyeVaapiEncoder {
             repeating: VASurfaceID(VA_INVALID_ID), count: 2)
         try check(vaCreateSurfaces(
             display, rtFormat,
-            UInt32(width), UInt32(height),
+            recipe.codedWidth, recipe.codedHeight,
             &reconSurfaces, 2, &pixelFormat, 1
         ), "vaCreateSurfaces(recon)")
 
         try check(vaCreateContext(
-            display, configID, width, height,
+            display, configID,
+            Int32(recipe.codedWidth), Int32(recipe.codedHeight),
             Int32(VA_PROGRESSIVE),
             &inputSurfaces, Int32(inputSurfaces.count), &contextID
         ), "vaCreateContext")
@@ -320,10 +321,31 @@ public final class EyeVaapiEncoder {
             )
         }
         guard u32(80) >= 2 else {
+            closeExportedObjects(descriptor, keeping: [])
             throw EyeVaapiError(
                 "expected 2 exported layers, got \(u32(80))")
         }
-        return (layer(0), layer(1))
+        let planes = (layer(0), layer(1))
+        closeExportedObjects(descriptor, keeping: [planes.0.fd, planes.1.fd])
+        return planes
+    }
+
+    /// The export hands back one fd per object (up to 4); the caller owns
+    /// only the ones it returns, so every other one closes here, on the
+    /// success and the refusal path alike.
+    private func closeExportedObjects(
+        _ descriptor: UnsafeMutableRawPointer, keeping kept: Set<Int32>
+    ) {
+        let objects = min(
+            Int(descriptor.load(fromByteOffset: 12, as: UInt32.self)), 4)
+        var closed: Set<Int32> = []
+        for i in 0..<objects {
+            let fd = Int32(bitPattern: descriptor.load(
+                fromByteOffset: 16 + i * 16, as: UInt32.self))
+            guard fd >= 0, !kept.contains(fd), closed.insert(fd).inserted
+            else { continue }
+            close(fd)
+        }
     }
 
     /// The 4:4:4 variant: a packed AYUV surface exports as one layer.
@@ -350,17 +372,20 @@ public final class EyeVaapiEncoder {
             descriptor.load(fromByteOffset: offset, as: UInt64.self)
         }
         guard u32(80) >= 1 else {
+            closeExportedObjects(descriptor, keeping: [])
             throw EyeVaapiError(
                 "expected 1 exported layer, got \(u32(80))")
         }
         let objectIndex = Int(u32(84 + 8))
-        return ExportedPlane(
+        let plane = ExportedPlane(
             fourcc: u32(84),
             modifier: u64(16 + objectIndex * 16 + 8),
             fd: Int32(bitPattern: u32(16 + objectIndex * 16)),
             offset: u32(84 + 24),
             pitch: u32(84 + 40)
         )
+        closeExportedObjects(descriptor, keeping: [plane.fd])
+        return plane
     }
 
     // MARK: The per-frame drive
@@ -472,8 +497,10 @@ public final class EyeVaapiEncoder {
         seq.ip_period = 1
         seq.bits_per_second = bitrateBitsPerSecond > 0
             ? UInt32(bitrateBitsPerSecond) : 0
-        seq.pic_width_in_luma_samples = UInt16(width)
-        seq.pic_height_in_luma_samples = UInt16(height)
+        // The coded size the SPS pen writes; its conformance window
+        // crops back to the display.
+        seq.pic_width_in_luma_samples = UInt16(recipe.codedWidth)
+        seq.pic_height_in_luma_samples = UInt16(recipe.codedHeight)
         seq.seq_fields.bits.chroma_format_idc = chroma444 ? 3 : 1
         seq.seq_fields.bits.amp_enabled_flag = 1
         seq.seq_fields.bits.sample_adaptive_offset_enabled_flag = 1

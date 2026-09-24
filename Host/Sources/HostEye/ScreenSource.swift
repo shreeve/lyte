@@ -3,6 +3,7 @@
 import CDRM
 import Glibc
 import HostCore
+import LyteIO
 
 /// One observation of the currently scanned primary buffer. Identity is an
 /// import-cache key, never evidence that its pixels are unchanged: Mutter may
@@ -23,7 +24,29 @@ public protocol ScreenSource: AnyObject {
 
     func observe() -> ScreenSourceObservation?
     func capture(_ observation: ScreenSourceObservation) -> ScanoutTicket?
-    func resetIdentityObservation()
+}
+
+/// When a primary plane that stopped scanning out is worth finding
+/// again: DPMS-off and a moved output both read as "no framebuffer", and
+/// only a plane scan tells them apart. A scan per beat would enumerate
+/// every plane 60 times a second, so it runs once per `intervalNS` of
+/// unavailability.
+struct PlaneRecheckClock {
+    static let intervalNS: UInt64 = 3_000_000_000
+    private var dueNS: UInt64?
+
+    mutating func available() { dueNS = nil }
+
+    /// True when a scan is due now.
+    mutating func unavailable(now: UInt64) -> Bool {
+        guard let due = dueNS else {
+            dueNS = now + Self.intervalNS
+            return false
+        }
+        guard now >= due else { return false }
+        dueNS = now + Self.intervalNS
+        return true
+    }
 }
 
 public enum DirectScreenSourceError: Error, CustomStringConvertible {
@@ -49,12 +72,25 @@ public final class DirectScreenSource: ScreenSource {
     public let width: Int32
     public let height: Int32
     public let fileDescriptor: Int32
+    /// The card node this source observes.
+    public let device: String
+    /// The render node of the same GPU, which imports, blits and
+    /// encodes this card's scanout.
+    public let renderNode: String
 
     private let primaryPlaneId: UInt32
     private var identityTracker = FramebufferIdentityTracker()
+    private var planeRecheck = PlaneRecheckClock()
+    /// The output now scans out from another primary plane (a hotplug,
+    /// or the compositor re-assigning pipes): this source can observe
+    /// nothing more, and the caller ends the session as for a mode change.
+    public private(set) var primaryPlaneMoved = false
+
+    /// Where the render node comes from when the driver names none.
+    public static let fallbackRenderNode = "/dev/dri/renderD128"
 
     public init(device: String) throws {
-        let fd = open(device, O_RDWR)
+        let fd = openCardWithoutMaster(device)
         guard fd >= 0 else {
             throw DirectScreenSourceError.openDevice(
                 path: device, errno: errno)
@@ -75,6 +111,8 @@ public final class DirectScreenSource: ScreenSource {
         }
 
         fileDescriptor = fd
+        self.device = device
+        renderNode = HostEye.renderNode(forCard: fd) ?? Self.fallbackRenderNode
         primaryPlaneId = planes.primary.id
         width = Int32(probe.width)
         height = Int32(probe.height)
@@ -88,6 +126,7 @@ public final class DirectScreenSource: ScreenSource {
     public func observe() -> ScreenSourceObservation? {
         let framebuffer = currentFB(
             fd: fileDescriptor, planeId: primaryPlaneId)
+        if framebuffer != nil { planeRecheck.available() }
         switch identityTracker.observe(framebuffer) {
         case .changed(let framebufferId):
             return ScreenSourceObservation(
@@ -99,6 +138,14 @@ public final class DirectScreenSource: ScreenSource {
                 framebufferIdentity: framebuffer,
                 identityChanged: false)
         case .unavailable:
+            // DPMS-off also scans out nothing and must keep waiting; only
+            // a live primary plane elsewhere means the output moved.
+            if planeRecheck.unavailable(
+                   now: SystemMonotonicClock.nowNanoseconds),
+               let planes = findActivePlanes(fd: fileDescriptor),
+               planes.primary.id != primaryPlaneId {
+                primaryPlaneMoved = true
+            }
             return nil
         }
     }
@@ -108,10 +155,6 @@ public final class DirectScreenSource: ScreenSource {
     ) -> ScanoutTicket? {
         grabTicket(
             fd: fileDescriptor, fbId: observation.framebufferIdentity)
-    }
-
-    public func resetIdentityObservation() {
-        identityTracker.reset()
     }
 }
 

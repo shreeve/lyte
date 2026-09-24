@@ -83,8 +83,9 @@ func parseArgs(_ argv: [String]) throws -> Options {
             opts.pin = argv[i]
         case "--seconds":
             i += 1
-            guard i < argv.count, let s = Double(argv[i]) else {
-                throw PeerError.message("--seconds needs a number")
+            guard i < argv.count, let s = Double(argv[i]), s > 0,
+                  s.isFinite else {
+                throw PeerError.message("--seconds needs a positive number")
             }
             opts.seconds = s
         case "--sessions":
@@ -530,6 +531,28 @@ final class PeerSession {
         outbox.datagrams.removeAll(keepingCapacity: true)
     }
 
+    func logPairing(_ events: [PairingResponderService.Event]) {
+        for event in events {
+            switch event {
+            case .paired(let key):
+                paired = true
+                print("pairing: PAIRED — client static \(Hex.string(key))")
+            case .attemptOpened(let attempt, let of):
+                print("pairing: attempt \(attempt)/\(of) — share B sent")
+            case .rejected(let reason, let left):
+                print("pairing: REJECTED (\(reason)) — \(left) left")
+            case .clientAborted(let reason):
+                print("pairing: client aborted (\(reason))")
+            case .throttled:
+                print("pairing: throttled")
+            case .pinBurned:
+                print("pairing: PIN BURNED")
+            case .malformed:
+                print("pairing: malformed")
+            }
+        }
+    }
+
     func handleEvents(_ events: [SessionEvent], now: UInt64) {
         for event in events {
             switch event {
@@ -537,10 +560,10 @@ final class PeerSession {
                 established = true
                 print("noise: handshake completed — client static \(Hex.string(remote))")
                 if let hash = session.handshakeHash {
-                    pairing.sessionEstablished(
+                    logPairing(pairing.sessionEstablished(
                         clientStaticPublicKey: remote,
                         noiseHandshakeHash: hash
-                    )
+                    ).events)
                 }
             case .reliableCtrl(_, let message):
                 if let output = pairing.handleReliableCtrl(message, now: now) {
@@ -553,25 +576,7 @@ final class PeerSession {
                             print("pairing: reply send failed: \(error)")
                         }
                     }
-                    for pe in output.events {
-                        switch pe {
-                        case .paired(let key):
-                            paired = true
-                            print("pairing: PAIRED — client static \(Hex.string(key))")
-                        case .attemptOpened(let attempt, let of):
-                            print("pairing: attempt \(attempt)/\(of) — share B sent")
-                        case .rejected(let reason, let left):
-                            print("pairing: REJECTED (\(reason)) — \(left) left")
-                        case .clientAborted(let reason):
-                            print("pairing: client aborted (\(reason))")
-                        case .throttled:
-                            print("pairing: throttled")
-                        case .pinBurned:
-                            print("pairing: PIN BURNED")
-                        case .malformed:
-                            print("pairing: malformed")
-                        }
-                    }
+                    logPairing(output.events)
                 }
             case .capabilitiesAgreed(let caps):
                 capabilitiesAgreed = true
@@ -795,6 +800,8 @@ final class ControlPeer {
                     failed += 1
                     print("FAIL — session \(served): \(why)")
                 }
+                // A run the session carried can never confirm now.
+                peer.logPairing(peer.pairing.sessionEnded().events)
                 if peer.pairing.isBurned {
                     throw PeerError.message(
                         "PIN burned — restart the peer for a fresh PIN"
