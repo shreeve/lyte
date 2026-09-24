@@ -1,7 +1,6 @@
-// The ARQ frame codecs (W3): the wire format of the reliable
-// ordered-retransmit sublayer that CTRL, video-idle, and the feature
-// channels ride (decision record §8.1). Two frame types, registered in
-// the CTRL type space and used identically on every reliable channel:
+// The ARQ frame codecs: the wire format of the reliable sublayer that
+// CTRL, video-idle and the feature channels ride. Two frame types,
+// registered in the CTRL type space and used on every reliable channel:
 //
 //   0x07  data segment — one slice of one message in one group
 //   0x08  ACK — cumulative + bitmap receive state per (chan, group)
@@ -12,23 +11,15 @@
 // CTRL traffic (beacons, path messages, handshake, IDR requests) never
 // starts with these bytes, so the shell's one-byte peek routes cleanly.
 //
-// Sequencing is GROUP-SCOPED, not channel-scoped, and that is the load-
-// bearing decision: envelope seqs on a reliable channel are shared with
-// ARQ-exempt traffic, so a channel-scoped cumulative ACK could never be
-// honest. Each group numbers its own segments with a serial u16 from 0
-// (wire v1), which is also what makes groups independent — a fully-lost
-// group leaves no hole in any other group's sequence space.
+// Sequencing is GROUP-SCOPED: envelope seqs on a reliable channel are
+// shared with ARQ-exempt traffic, so a channel-scoped cumulative ACK
+// could never be honest. Each group numbers its segments with a serial
+// u16 from 0, so a fully-lost group leaves no hole in any other group.
 //
-// Retransmission discipline (refining core-plan pin §2.2): the
-// retransmission unit is the SEGMENT, re-sent byte-identical inside a
-// FRESH datagram (fresh envelope seq, fresh AEAD nonce). The pin's
-// guarantees survive intact — no plaintext is ever sealed twice under
-// one nonce, the receiver admits each segment exactly once (dedupe is
-// by group seq, not envelope seq), and ACK ambiguity cannot arise
-// because ACKs name group seqs. What the refinement buys is liveness:
-// a byte-identical DATAGRAM resend would re-enter the Noise replay
-// window under its old counter and be rejected as stale once the
-// channel had moved 64 datagrams on — a hazard, not a feature.
+// The retransmission unit is the SEGMENT, re-sent byte-identical inside
+// a FRESH datagram (fresh envelope seq, fresh AEAD nonce): no plaintext
+// is sealed twice under one nonce, dedupe is by group seq, and a resent
+// datagram can never fall behind the Noise replay window as stale.
 //
 // Segment frame, fixed 8-byte header then body, little-endian:
 //
@@ -67,7 +58,7 @@
 /// An ARQ group: 0 is the channel's long-lived ordered message stream;
 /// any other value is an independent one-shot group carrying exactly one
 /// message (a sparse idle frame, the final ratchet frame) — no group
-/// ever waits on another (decision record §8.1).
+/// ever waits on another.
 public struct ArqGroupId: RawRepresentable, Hashable, Sendable {
     public var rawValue: UInt16
 
@@ -407,9 +398,8 @@ public enum ArqFrame: Hashable, Sendable {
     }
 }
 
-/// Everything the ARQ frame codecs can refuse. Same doctrine as
-/// WireError: hostile bytes throw, never trap. (Hashable so the
-/// endpoint's ignore events can carry it.)
+/// Everything the ARQ frame codecs can refuse. Hostile bytes throw,
+/// never trap.
 public enum ArqFrameError: Error, Hashable, Sendable {
     /// A frame header or body runs past the payload's end.
     case truncatedFrame

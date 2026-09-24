@@ -1,12 +1,7 @@
-// The one file in LyteWire that imports the C leaf. FecEncoder/FecDecoder
-// speak only to this surface — two pure functions over byte arrays — so
-// a build can swap in a different RS backend without touching protocol
-// logic.
-//
-// nanors is the client's battle-tested RS-FEC math (M3: 1,087 packets
-// recovered over a 5% drop soak), vendored here as CNanorsWire. The call
-// shape mirrors the proven RtpVideoQueue usage: one contiguous zeroed
-// backing buffer, one pointer per shard row, marks[] flagging erasures.
+// The one file in LyteWire that imports the C leaf (nanors, vendored as
+// CNanorsWire). FecEncoder/FecDecoder speak only to these two pure
+// functions. Call shape: one contiguous zeroed backing buffer, one pointer
+// per shard row, marks[] flagging erasures.
 
 import CNanorsWire
 

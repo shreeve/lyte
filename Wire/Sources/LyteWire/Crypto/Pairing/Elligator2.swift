@@ -6,11 +6,9 @@
 // computed. Constants are Curve25519's: A = 486662, B = 1, and the
 // non-square Z = 2 (find_z_ell2's output for GF(2²⁵⁵ − 19)).
 //
-// Constant-time status (pre-H1 Crypto/ review): this function is
-// branch-free. The two exceptional cases the draft's §10.10 side-channel
-// note worried about are handled with constant-time mask selection —
-// and both are in fact UNREACHABLE over GF(2²⁵⁵ − 19), not merely
-// negligible; the arguments live at their sites below.
+// This function is branch-free. The two exceptional cases (draft §10.10)
+// use constant-time mask selection, and both are UNREACHABLE over
+// GF(2²⁵⁵ − 19); the arguments live at their sites below.
 
 package enum Elligator2 {
     /// Curve25519's Montgomery A.

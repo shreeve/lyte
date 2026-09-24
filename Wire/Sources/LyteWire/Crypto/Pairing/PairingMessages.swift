@@ -1,10 +1,8 @@
-// The W6 pairing wire messages: CPace's one round plus explicit key
-// confirmation, as CTRL types 0x0B–0x0E. They ride the sealed ARQ
-// ordered stream of an ESTABLISHED Noise session (the lifecycle
-// messages' carriage): pairing happens inside the trust-on-first-use
-// session it is about to authenticate — the CPace run is bound to that
-// session's handshake hash and statics (PairingPake owns the binding),
-// so a MITM'd session fails confirmation instead of getting pinned.
+// The pairing wire messages: CPace's one round plus explicit key
+// confirmation, as CTRL types 0x0B–0x0E, on the sealed ARQ ordered stream
+// of an established Noise session. The CPace run is bound to that
+// session's handshake hash and statics (PairingPake owns the binding), so
+// a MITM'd session fails confirmation instead of getting pinned.
 //
 // Pake share A (type 0x0B), client→host, fixed 33 bytes:
 //
@@ -33,8 +31,7 @@
 //   0      1    type   0x0E
 //   1      1    reason 0x01 confirmation-failed (wrong PIN or tampered
 //                      binding — deliberately indistinguishable),
-//                      0x02 invalid-share (G.I abort); 0x00 stays the
-//                      loud zero-fill bug
+//                      0x02 invalid-share (G.I abort); others reject
 //
 // All four are exactly their fixed layout: truncation and trailing
 // bytes reject, a foreign type byte rejects with what it found. The
@@ -171,7 +168,7 @@ public struct PairingConfirm: Hashable, Sendable {
 }
 
 /// The typed pairing refusal (type 0x0E) — how "wrong PIN" gets loud
-/// (the HS-9/CL-6 gate) without becoming an oracle.
+/// without becoming an oracle.
 public struct PairingReject: Hashable, Sendable {
     public var reason: PairingRejectReason
 

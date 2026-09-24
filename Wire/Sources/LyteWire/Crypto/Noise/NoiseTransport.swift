@@ -1,5 +1,5 @@
-// Transport-phase encryption (W5): the two post-Split cipher states with
-// the extended-counter nonce discipline the core plan pins (§2 decision 1):
+// Transport-phase encryption: the two post-Split cipher states with the
+// extended-counter nonce discipline:
 //
 //   nonce (12 B) = chan u8 ‖ epoch u24 LE ‖ extendedCounter u64 LE
 //
@@ -10,20 +10,15 @@
 // replaces the key via Noise REKEY) rides the next three bytes, so no
 // (key, nonce) pair ever repeats across channels, seq wraps, or rekeys.
 //
-// Replay policy (core plan §2 decision 2): a retransmit is a byte-identical
-// datagram resend, admitted once — the receiver keeps a 64-entry sliding
-// bitmap per channel: duplicates reject as `replayedSequence`, datagrams
-// older than the window reject as `staleSequence`, reorder inside the
-// window is admitted. The counter anchor moves only after the AEAD
-// opens, so forged headers cannot desync it (failures merely count toward
-// the forward resync described on ExtendedCounterTracker). The ARQ sublayer does NOT
-// rely on datagram-level resends surviving this window: its retransmit
-// unit is the segment, re-sealed inside a FRESH datagram (fresh seq,
-// fresh nonce) precisely so a busy channel's 64-deep window can never
-// starve a straggling retransmit — see ArqFrames.swift's retransmission
-// discipline, the W3-flagged interaction resolved.
+// Replay policy: each extended counter is admitted once. The receiver keeps
+// a 64-entry sliding bitmap per channel: duplicates reject as
+// `replayedSequence`, datagrams older than the window as `staleSequence`,
+// reorder inside the window is admitted. The counter anchor moves only
+// after the AEAD opens, so forged headers cannot desync it. ARQ retransmits
+// ride fresh datagrams (fresh seq, fresh nonce), so this window never
+// starves them.
 //
-// Rekey grace (core plan §2 decision 1): the receive side keeps the
+// Rekey grace: the receive side keeps the
 // previous epoch's key alive until the next rekey; unseal tries the
 // current epoch first, then the previous — the tag arbitrates — so
 // in-flight datagrams survive a rekey.
@@ -190,13 +185,12 @@ public struct NoiseTransport: Sendable {
     var send: TransportDirection
     var receive: TransportDirection
 
-    /// The completed handshake's transcript hash — the W6 PAKE binds to
-    /// this (Lyte-UDP decision §8.2) and resume tokens may reference it.
+    /// The completed handshake's transcript hash — the pairing PAKE binds
+    /// to it.
     public let handshakeHash: [UInt8]
 
-    /// Recommended rekey trigger (transport doc §5: every 2^24 datagrams
-    /// per direction or hourly, whichever first — the timer is shell
-    /// territory, the count is ours).
+    /// Recommended rekey trigger: every 2^24 datagrams per direction (the
+    /// hourly timer is the shell's).
     public static let rekeyDatagramThreshold: UInt64 = 1 << 24
 
     init(
@@ -216,7 +210,7 @@ public struct NoiseTransport: Sendable {
     /// nonce. Enforces plaintext ≤ 1112 B; output is ciphertext ‖ 16 B
     /// tag, ≤ 1128 B by construction. The (chan, seq) must advance past
     /// everything already sealed on that channel — a retransmit resends
-    /// the sealed bytes, it never re-seals (core plan §2 decision 2).
+    /// the sealed bytes, it never re-seals.
     public mutating func seal(
         plaintext: ArraySlice<UInt8>,
         aad: ArraySlice<UInt8>,

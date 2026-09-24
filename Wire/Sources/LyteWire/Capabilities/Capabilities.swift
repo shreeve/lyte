@@ -1,50 +1,40 @@
-// The typed capability set (W7) — the transport pillar §4's
-// "superpowers handshake" as data. Each end declares one of these right
-// after establishment (the first ARQ-carried messages both ways); the
-// session's effective capabilities are the INTERSECTION, computed
-// identically on both ends from the same two declarations.
+// The typed capability set. Each end declares one right after
+// establishment (the first ARQ-carried messages both ways); the session's
+// effective capabilities are the INTERSECTION, computed identically on
+// both ends from the same two declarations.
 //
 // Wire form: a deterministic CBOR map (Cbor.swift's profile) with
 // UNSIGNED INTEGER keys from the registry below. Forward compatibility
-// is the design's spine, in three rules:
+// rests on three rules:
 //
 //  1. Unknown KEYS are ignored (never a decode error) and preserved
-//     verbatim — a v1.0 end reads a v1.2 declaration fine.
-//  2. Unknown VALUES inside id lists (codecs, chroma, features) are
-//     carried, not rejected — a future codec id must not break v1
-//     ends; intersection with the local set drops it naturally.
+//     verbatim.
+//  2. Unknown VALUES inside id lists are carried, not rejected;
+//     intersection with the local set drops them.
 //  3. New semantics ship as new keys gated by intersection, so a
 //     capability is enabled only when BOTH ends declare it — absence
 //     is always "not supported", never an error.
 //
-// Intersection algebra (gate W-G8: commutative, idempotent):
+// Intersection (commutative, idempotent):
 //   wireMinor            min
 //   id lists             set intersection (canonical ascending order)
 //   booleans             logical AND
 //   maxDatagramBytes     min
 //   unknown entries      kept only when present in BOTH declarations
-//                        with byte-equal values, dropped otherwise —
-//                        the one rule that keeps the algebra idempotent
-//                        (intersect(a, a) == a) without pretending to
-//                        understand foreign semantics. In practice a
-//                        local declaration never carries entries
-//                        unknown to its own build, so foreign keys
-//                        simply vanish from the agreed set.
+//                        with byte-equal values — the rule that keeps
+//                        intersect(a, a) == a without understanding
+//                        foreign semantics.
 //
-// Capabilities are session-scoped and fixed after the exchange except
-// where the registry marks a key renegotiable (transport pillar §4;
-// overview §2's session-parameter-renegotiation row: chroma/codec are
-// connect-time only, geometry may move). v1 marks exactly one key
-// renegotiable: maxDatagramBytes — the DPLPMTUD seam, raised on direct
-// paths only, applied at an IDR boundary, never past either end's
-// declared ceiling.
+// Capabilities are fixed after the exchange except keys in
+// `renegotiableKeys`: only maxDatagramBytes, raised on direct paths at an
+// IDR boundary and never past either end's declared ceiling.
 
 /// The capability key registry (wire v1). Keys are CBOR unsigned map
 /// keys; the numbers are wire contract. New keys append; a key's type
 /// and meaning never change once assigned.
 public enum CapabilityKey {
     /// u16 — the wire MINOR version (the major rides in the Noise
-    /// handshake payload, W5). Agreed = min. Minors are always
+    /// handshake payload). Agreed = min. Minors are always
     /// compatible by the unknown-key rule; this is information, not a
     /// gate.
     public static let wireMinor: UInt64 = 1
@@ -56,12 +46,11 @@ public enum CapabilityKey {
     public static let chromaModes: UInt64 = 3
     /// bool — damage-driven idle silence (no idle-floor datagrams).
     public static let idleSilence: UInt64 = 4
-    /// Ascending id list — feature channels (CapabilityFeature):
-    /// clipboard (H3), files/printing (H5). Empty is fine.
+    /// Ascending id list — feature channels (CapabilityFeature).
+    /// Empty is fine.
     public static let featureChannels: UInt64 = 5
-    /// bool — the reserved audio-express escape hatch (transport §2):
-    /// a second DSCP-48 audio-only association. Declared, never yet
-    /// built.
+    /// bool — reserved: a second DSCP-48 audio-only association.
+    /// Declared, never built.
     public static let audioExpress: UInt64 = 6
     /// bool — session resume support (opaque resume tokens).
     public static let resume: UInt64 = 7
@@ -71,108 +60,62 @@ public enum CapabilityKey {
     /// agreed ceiling (the DPLPMTUD raise), at an IDR boundary only.
     public static let maxDatagramBytes: UInt64 = 8
     /// bool — the host can route desktop audio to a virtual sink and
-    /// mute its own speakers for the session, honoring 0x18 flips
-    /// (HS-18 → CL-13, promoted by the second codec-promotion slice).
-    /// DELIBERATELY not a typed field of `Capabilities` in wire v1:
-    /// key 9 rides the forward-compat spine through `unknownEntries`
-    /// exactly as it shipped (one canonical `09 F5` map entry appended
-    /// to the frozen v1 encoding — capabilities-v1.json never moves),
-    /// surviving intersection only on mutual byte-equal declaration.
-    /// Accessors in AudioRouting.swift; folding it into the typed
-    /// fields is a wire-version discussion (the TLV fold-into-v2
-    /// precedent), not a promotion.
+    /// mute its own speakers, honoring 0x18 flips.
+    ///
+    /// Keys 9 and up are NOT typed fields of `Capabilities`: each rides
+    /// `unknownEntries` as one canonical `key F5` map entry (see
+    /// `declaresFlag(_:)`), so the frozen v1 encoding and
+    /// capabilities-v1.json never move and the flag survives
+    /// intersection only on mutual declaration. Accessors live beside
+    /// each feature's codecs (here: AudioRouting.swift).
     public static let hostAudioRouting: UInt64 = 9
     /// bool — this end speaks the v1 clipboard-text sync (CTRL
-    /// 0x1A/0x1B on the ordered stream, CL-15 — the first H3
-    /// feature). Rides the forward-compat spine through
-    /// `unknownEntries` like key 9 (one canonical `0A F5` entry;
-    /// capabilities-v1.json never moves), surviving intersection only
-    /// on mutual byte-equal declaration. Deliberately NOT the
-    /// featureChannels list (key 5, id 1) — that id promises the
-    /// chan ≥ 8 feature-channel architecture, which v1 does not
-    /// build. Accessors in Clipboard.swift. Declaration is dialect,
-    /// not consent: sharing is gated locally on each end (design doc
-    /// §6).
+    /// 0x1A/0x1B on the ordered stream). Deliberately NOT
+    /// featureChannels id 1, which promises the chan ≥ 8 feature-channel
+    /// architecture. Declaration is dialect, not consent: sharing is
+    /// gated locally on each end. Accessors in Clipboard.swift.
     public static let clipboardText: UInt64 = 10
-    /// bool — this end speaks the v1 bulk-transfer channel (chan 8's
-    /// ARQ ordered stream carrying the 0x1C–0x21 sextet, W10 / F-2 —
-    /// the H3 file-transfer mechanism). Rides the forward-compat
-    /// spine through `unknownEntries` like keys 9 and 10 (one
-    /// canonical `0B F5` entry; capabilities-v1.json never moves),
-    /// surviving intersection only on mutual byte-equal declaration.
-    /// Deliberately NOT the featureChannels list (key 5, id 2): key
-    /// 5's ids are typed-set members whose fold-in belongs to the D-5
-    /// wire-version discussion, and this key gates the MECHANISM —
-    /// features riding it (file drop now, clipboard-v2 images later)
-    /// gate at the ends. Declaration is dialect, not consent: v1
-    /// direction (client→host only) and the standing per-host toggle
-    /// live in the end shells (design record 20260728-053300 §6).
-    /// Accessors in BulkMessages.swift.
+    /// bool — this end speaks the bulk-transfer channel (chan 8's ARQ
+    /// ordered stream carrying messages 0x1C–0x21). It gates the
+    /// MECHANISM; features riding it gate at the ends. Declaration is
+    /// dialect, not consent: direction and the per-host toggle live in
+    /// the end shells. Accessors in BulkMessages.swift.
     public static let bulkTransfer: UInt64 = 11
-    /// bool — this end speaks the v2 clipboard-image sync (P-1):
-    /// image blobs as bulk-channel cargo marked by the 0x22
-    /// ClipboardImageCargo message, PNG in v2. Rides the
-    /// forward-compat spine through `unknownEntries` like keys 9–11
-    /// (one canonical `0C F5` entry; capabilities-v1.json never
-    /// moves), surviving intersection only on mutual byte-equal
-    /// declaration. Images move only when keys 10 AND 12 both
-    /// survived — the feature (clipboard) and the dialect (image
-    /// cargo). Key 11 is deliberately NOT in the gate: its
-    /// declaration is the standing FILE-DROP consent (F-2 §6), and
-    /// the Off / Text only / Text + images tier (clipboard design §6) must
-    /// not couple image sync to file consent — an images-tier end
-    /// runs the chan-8 bulk vocabulary for clipboard cargo whenever
-    /// key 12 agreed. A text-only HOST truthfully never declares
-    /// this key. Accessors in ClipboardImages.swift.
+    /// bool — this end speaks clipboard-image sync: PNG blobs as
+    /// bulk-channel cargo marked by the 0x22 ClipboardImageCargo
+    /// message. Images move only when keys 10 AND 12 both agreed. Key
+    /// 11 is deliberately NOT in the gate: it is the file-drop consent,
+    /// which must not couple to image sync. Accessors in
+    /// ClipboardImages.swift.
     public static let clipboardImages: UInt64 = 12
-    /// bool — this end speaks the v1 cursor-shape sync (CTRL 0x24 on
-    /// the ordered stream, E3 — the direct eye's cursor-as-metadata
-    /// obligation). Rides the forward-compat spine through
-    /// `unknownEntries` like keys 9–12 (one canonical `0D F5` entry;
-    /// capabilities-v1.json never moves), surviving intersection only
-    /// on mutual byte-equal declaration. Declaration is dialect, not
-    /// posture: a host whose capture organ composites the cursor into
-    /// the video (the portal-era backends) truthfully never declares
-    /// it, and the client falls back to the in-video cursor.
+    /// bool — this end speaks cursor-shape sync (CTRL 0x24 on the
+    /// ordered stream). A host that composites the cursor into the video
+    /// never declares it, and the client uses the in-video cursor.
     /// Accessors in Cursor.swift.
     public static let cursorShape: UInt64 = 13
-    /// bool — this end speaks routing mode 0x04 (streamOff: the
-    /// postures-design mute-at-source — the host captures and sends
-    /// NO audio; its speakers keep playing). Rides the spine through
-    /// `unknownEntries` (one canonical `0E F5` entry), surviving
-    /// intersection only on mutual declaration; a client never sends
-    /// 0x04 against a set without it. Accessors in AudioRouting.swift.
+    /// bool — this end speaks routing mode 0x04 (streamOff: the host
+    /// captures and sends no audio). A client never sends 0x04 without
+    /// it. Accessors in AudioRouting.swift.
     public static let audioStreamOff: UInt64 = 14
-    /// bool — this end speaks the audio tripwire's track-state
-    /// announcement (CTRL 0x25: the host may GATE audio transmission
-    /// during announced silence — capture never stops — and ships a
-    /// pre-roll ring on wake). Rides the spine through
-    /// `unknownEntries` (one canonical `0F F5` entry), surviving
-    /// intersection only on mutual declaration; a host never gates
-    /// against a set without it — a legacy client keeps today's
-    /// always-on contract, silence included. Accessors in
-    /// AudioTrackState.swift.
+    /// bool — this end speaks the audio track-state announcement (CTRL
+    /// 0x25: the host may gate audio transmission during announced
+    /// silence and ships a pre-roll ring on wake). A host never gates
+    /// without it. Accessors in AudioTrackState.swift.
     public static let audioQuietPosture: UInt64 = 15
     /// bool — this end speaks the video posture announcement (CTRL
-    /// 0x26: after ~30 s without damage the host's retained keepalive
-    /// backs off exponentially toward 30 s, each step announced so
-    /// the client's freshness contracts follow; damage or client
-    /// input is the wake). Rides the spine through `unknownEntries`
-    /// (one canonical `10 F5` entry), surviving intersection only on
-    /// mutual declaration; a host never backs off against a set
-    /// without it. Accessors in VideoPosture.swift.
+    /// 0x26: after ~30 s without damage the host's keepalive backs off
+    /// toward 30 s, each step announced; damage or client input wakes
+    /// it). A host never backs off without it. Accessors in
+    /// VideoPosture.swift.
     public static let videoQuietPosture: UInt64 = 16
 
-    /// The renegotiable subset (transport pillar §4: "fixed after
-    /// exchange except where a capability itself declares
-    /// renegotiability"). Everything else is connect-time only and a
-    /// CapabilityUpdate naming it rejects.
+    /// The renegotiable subset. Everything else is connect-time only
+    /// and a CapabilityUpdate naming it rejects.
     public static let renegotiableKeys: Set<UInt64> = [maxDatagramBytes]
 }
 
 /// Video codec ids for the `videoCodecs` list. Only HEVC is assigned
-/// in wire v1 — AV1 lands as a new id when it lands, and the list
-/// carries unknown ids rather than rejecting them.
+/// in wire v1; the list carries unknown ids rather than rejecting them.
 public enum CapabilityCodec {
     public static let hevc: UInt64 = 1
 }
@@ -234,8 +177,8 @@ public struct Capabilities: Hashable, Sendable {
 
     /// What this build of LyteWire declares: wire minor 0, HEVC,
     /// 4:2:0, idle silence on, no feature channels yet, no
-    /// audio-express, no resume yet, the 1152 B bridge-safe ceiling.
-    /// Shells extend from here as slices land.
+    /// audio-express, no resume, the 1152 B bridge-safe ceiling.
+    /// Shells extend from here.
     public static let wireDefault = Capabilities(
         wireMinor: 0,
         videoCodecs: [CapabilityCodec.hevc],
@@ -400,7 +343,7 @@ public struct Capabilities: Hashable, Sendable {
 
     /// The agreed set: min/AND/set-∩ per field, unknown entries only
     /// on byte-equal agreement. Commutative and idempotent by
-    /// construction (the W-G8 algebra); whether the result can carry a
+    /// construction; whether the result can carry a
     /// session is `CapabilityNegotiator`'s call, not this function's.
     public func intersecting(_ other: Capabilities) -> Capabilities {
         Capabilities(

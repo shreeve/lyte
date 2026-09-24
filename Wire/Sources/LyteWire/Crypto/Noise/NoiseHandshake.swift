@@ -1,5 +1,4 @@
-// The IK handshake (Noise spec §7.5), the WireGuard-proven pattern the
-// core plan pins:
+// The IK handshake (Noise spec §7.5):
 //
 //   IK:
 //     <- s            (responder's static, learned at pairing — pre-message)
@@ -119,7 +118,7 @@ public struct NoiseHandshake: Sendable {
     public var isComplete: Bool { phase == .complete }
 
     /// The transcript hash `h`. After completion this is the handshake
-    /// hash the W6 PAKE binds to (channel binding per Noise spec §11.2).
+    /// hash the pairing PAKE binds to (channel binding, Noise spec §11.2).
     public var handshakeHash: [UInt8] { symmetric.handshakeHash }
 
     // MARK: Message 1  (-> e, es, s, ss)
@@ -163,12 +162,9 @@ public struct NoiseHandshake: Sendable {
     /// Responder reads message 1, returning its payload. On success
     /// `remoteStaticPublicKey` holds the authenticated initiator identity.
     ///
-    /// TRANSACTIONAL (pre-H1 Crypto/ review): a message that fails
-    /// mid-read — bad DH point, failed authentication — restores the
-    /// state exactly as it was, so half-mixed transcript state can never
-    /// poison a later attempt. Without this, one garbage datagram fed to
-    /// a handshake that a shell retries in place would make the GENUINE
-    /// message unverifiable forever after.
+    /// Transactional: a message that fails mid-read — bad DH point,
+    /// failed authentication — restores the state exactly, so one garbage
+    /// datagram can never make the genuine message unverifiable.
     public mutating func readMessage1(
         _ message: ArraySlice<UInt8>
     ) throws -> [UInt8] {
@@ -249,11 +245,9 @@ public struct NoiseHandshake: Sendable {
     }
 
     /// Initiator reads message 2, returning its payload; the handshake is
-    /// complete afterwards. Transactional like `readMessage1` — this is
-    /// the load-bearing case: the client retransmits ONE message 1
-    /// across the retry window (0443beb's rule) and must remain able to
-    /// read the REAL message 2 after hostile or mangled bytes on the
-    /// same port failed a read attempt.
+    /// complete afterwards. Transactional like `readMessage1`: the client
+    /// retransmits one message 1 across the retry window and must still
+    /// read the real message 2 after hostile bytes failed a read attempt.
     public mutating func readMessage2(
         _ message: ArraySlice<UInt8>
     ) throws -> [UInt8] {

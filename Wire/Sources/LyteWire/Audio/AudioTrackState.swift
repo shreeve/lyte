@@ -1,39 +1,25 @@
-// AudioTrackState (0x25), host→client — the postures design's audio
-// tripwire announcement (docs/decisions/20260802-013946-postures-design.md:
-// "silence with a signed IOU"). When the track goes auto-quiet the
-// host GATES transmission while capture continues; this message is
-// the contract that makes the resulting wire silence honest:
+// AudioTrackState (0x25, host→client): the audio quiet-posture
+// announcement (docs/decisions/20260802-013946-postures-design.md). When
+// the track goes quiet the host gates transmission while capture
+// continues; this message makes the wire silence honest:
 //
-//   quiet  — sent when the gate closes, then repeated as the ~5 s
-//            still-quiet check-in (the cadence bounds staleness, not
-//            wake latency — detection is continuous host-side). The
-//            client relaxes its audio-fed blackout detector back to
-//            the beacon-bounded threshold and lets the jitter buffer
-//            rest instead of concealing.
-//   active — sent the instant the tripwire fires, immediately before
-//            the pre-roll burst; the resumed 5 ms packets themselves
-//            are the liveness evidence (the client re-tightens on the
-//            first authenticated audio datagram).
+//   quiet  — sent when the gate closes, then repeated as a ~5 s check-in
+//            (bounding staleness, not wake latency). The client relaxes
+//            its audio-fed blackout detector to the beacon-bounded
+//            threshold and lets the jitter buffer rest.
+//   active — sent immediately before the pre-roll burst; the resumed
+//            packets are the liveness evidence.
 //
-// CAPABILITY CARRIAGE — key 15 (audioQuietPosture), the W7 spine used
-// exactly as keys 9–14 use it: one canonical `0F F5` map entry through
-// `unknownEntries`, byte-equal intersection, capabilities-v1.json
-// never regenerates. A host never gates against a set without the
-// key — a legacy client keeps today's always-on contract, silence
-// included on the wire.
-//
-// Layout (ARQ ordered stream — announcements are session control:
-// reliable, ordered, exactly-once; the 0x18/0x19 carriage argument
-// verbatim):
+// Gated by capability key 15 (audioQuietPosture) through `unknownEntries`;
+// a host never gates audio for a peer without the key. Rides the ARQ
+// ordered stream. Layout:
 //
 //   offset size field
 //   0      1    type   0x25
 //   1      1    state  0x01 active / 0x02 quiet
 //
-// Unknown states, trailing bytes, and truncation all reject — these
-// ride a reliable ordered stream between capability-negotiated peers,
-// so a foreign byte is a protocol break to surface (the InputEvent
-// rule). Never traps on hostile bytes.
+// Unknown states, trailing bytes and truncation all throw; never traps on
+// hostile bytes.
 
 // MARK: - The capability spine helpers
 

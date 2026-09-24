@@ -1,17 +1,10 @@
-// GF(2²⁵⁵ − 19) field arithmetic — the one crypto primitive W6 must
-// hand-write, because CPace's calculate_generator needs the Elligator 2
-// map onto Curve25519 and swift-crypto exposes no field ops (the risk
-// register's "scope is one map function" row; X25519 itself stays
-// swift-crypto's). Pure Swift, no imports, 5 × 51-bit limbs (the
-// curve25519-donna representation). Sized for a task that runs once per
-// pairing, not per datagram — clarity over throughput.
+// GF(2²⁵⁵ − 19) field arithmetic for the Elligator 2 map (swift-crypto
+// exposes no field ops). Pure Swift, 5 × 51-bit limbs (the curve25519-donna
+// representation); runs once per pairing, so clarity over throughput.
 //
 // Exponentiation is a fixed square-and-multiply over PUBLIC exponents
 // ((p−1)/2 and p−2), so the operation sequence never depends on the
-// PRS-derived base. The exceptional-case selections in Elligator2.swift
-// are constant-time (mask arithmetic, no data-dependent branch) as of
-// the pre-H1 Crypto/ review — and provably unreachable besides; the
-// argument lives at their sites.
+// PRS-derived base.
 //
 // Carry discipline (the invariant every operation preserves; each site
 // notes the numeric argument): "weakly reduced" means limb 1 ≤ 2⁵¹ and

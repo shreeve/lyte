@@ -1,41 +1,25 @@
-// Clipboard text sync (CL-15, the first H3 feature —
-// docs/decisions/20260722-231500-lyte-clipboard.md): the wire shapes of "copy on
-// one machine, paste on the other", v1 scoped to UTF-8 text both ways.
-// Both messages ride the ARQ ordered CTRL stream (group 0) — reliable,
-// exactly-once, in-order, the input/audio-routing carriage argument
-// verbatim; the ARQ sublayer segments and reassembles whole messages,
-// so no clipboard-layer chunking exists.
-//
-// CAPABILITY CARRIAGE — the W7 forward-compat spine, the key-9
-// precedent repeated: key 10 (CapabilityKey.clipboardText, bool) rides
-// the declaration through `Capabilities.unknownEntries` as one
-// canonical `0A F5` map entry and survives intersection only on mutual
-// byte-equal declaration. ZERO frozen bytes move. Deliberately NOT the
-// featureChannels list (key 5, id 1): that id promises the transport
-// pillar's chan ≥ 8 feature-channel architecture, which v1 does not
-// build — new semantics, new key (rule 3 as designed).
+// Clipboard text sync (docs/decisions/20260722-231500-lyte-clipboard.md):
+// UTF-8 text both ways on the ARQ ordered CTRL stream, which segments and
+// reassembles whole messages, so there is no clipboard-layer chunking.
+// Gated by capability key 10 (clipboardText) through `unknownEntries`.
 //
 // ClipboardSet (0x1A), client→host: "make this the host clipboard."
 // ClipboardAnnounce (0x1B), host→client: "the host clipboard changed;
-// this is its content." Same body, two types — direction-typed keeps
-// the role-confusion drop loud (the 0x18/0x19 precedent). Layout:
+// this is its content." Same body, two types, so a role-confused message
+// is dropped loudly. Layout:
 //
 //   offset size field
 //   0      1    type   0x1A / 0x1B
-//   1      …    text   UTF-8 bytes, the sole trailing field
-//                      (self-delimiting — the ARQ message boundary is
-//                      the length, the RetryHandshake1 precedent)
+//   1      …    text   UTF-8 bytes, the sole trailing field (the ARQ
+//                      message boundary is the length)
 //
-// Validation at encode AND decode: ≤ 65,536 UTF-8 bytes (the ARQ
-// receive window and the shared-with-input ordered stream size the
-// ceiling — design doc §3), valid UTF-8 (the CBOR text rule),
-// non-empty (v1 does not sync clearing; a bare type
-// byte is a zero-fill-adjacent bug to surface). Truncation and foreign
-// type bytes reject with what they found. Never traps on hostile bytes.
+// Encode and decode both enforce ≤ 65,536 UTF-8 bytes, valid UTF-8 and
+// non-empty (clearing is not synced). Truncation and foreign type bytes
+// throw with what they found. Never traps on hostile bytes.
 
 /// The clipboard sync layer's fixed numbers (wire v1).
 public enum ClipboardWire {
-    /// The v1 text ceiling, UTF-8 bytes. Over-ceiling LOCAL copies are
+    /// The text ceiling, UTF-8 bytes. Over-ceiling LOCAL copies are
     /// suppressed and counted, never sent (routine weather);
     /// over-ceiling WIRE bytes reject (the peer broke the contract).
     public static let maxTextByteCount = 65_536
@@ -124,7 +108,7 @@ public enum ClipboardMessageError: Error, Equatable, Sendable {
     case emptyText
     /// UTF-8 byte count past the 65,536 B ceiling.
     case textOverBudget(Int)
-    /// Bytes that are not valid UTF-8 (the CBOR text rule).
+    /// Bytes that are not valid UTF-8.
     case invalidUtf8
 }
 
@@ -166,7 +150,7 @@ private func decodeClipboardBody(
 
 // MARK: - Loop prevention: the sync book
 
-/// A local clipboard change's verdict (design doc §5).
+/// A local clipboard change's verdict.
 public enum ClipboardLocalChangeVerdict: Equatable, Sendable {
     /// A genuine local change — share it (and call `noteShared` once
     /// it actually left).
@@ -180,12 +164,10 @@ public enum ClipboardLocalChangeVerdict: Equatable, Sendable {
     case suppressDuplicate
 }
 
-/// The loop-prevention/dedupe books both ends run identically (the clipboard
-/// design's content-suppression discipline as one sans-IO value type): a
-/// remote set applied to the OS clipboard fires the OS's own change
-/// signal, and without these books each end would announce the peer's
-/// write back forever. The proof obligation — "a set must not
-/// boomerang" — is pinned by tests on all three levels.
+/// The loop-prevention/dedupe books both ends run identically: a remote
+/// set applied to the OS clipboard fires the OS's own change signal, and
+/// without these books each end would announce the peer's write back
+/// forever.
 public struct ClipboardSyncBook: Hashable, Sendable {
     /// Recently-applied remote texts whose OS change signal has not
     /// fired yet (UTF-8 bytes; newest last, oldest evicted).
@@ -225,15 +207,12 @@ public struct ClipboardSyncBook: Hashable, Sendable {
         noteShared(bytes: Array(text.utf8))
     }
 
-    // MARK: Byte-keyed entries (P-1, clipboard v2)
+    // MARK: Byte-keyed entries
 
-    // One book serves text AND images so cross-modal moves stay
-    // honest: a remote IMAGE apply clears the text dedupe slot too —
-    // the peer's clipboard has moved past whatever we last sent,
-    // whatever kind it was. Text keys are the UTF-8 bytes (unchanged,
-    // v1 behavior byte-identical); image keys come from
-    // `ClipboardImageWire.bookKey(sha256:)` — 0xFF ‖ digest, and 0xFF
-    // is never valid UTF-8, so the key spaces cannot collide.
+    // One book serves text AND images, so a remote image apply clears the
+    // text dedupe slot too. Text keys are the UTF-8 bytes; image keys are
+    // `ClipboardImageWire.bookKey(sha256:)` = 0xFF ‖ digest, and 0xFF is
+    // never valid UTF-8, so the key spaces cannot collide.
 
     /// The byte-keyed form of `noteRemoteApplied`.
     public mutating func noteRemoteApplied(bytes: [UInt8]) {

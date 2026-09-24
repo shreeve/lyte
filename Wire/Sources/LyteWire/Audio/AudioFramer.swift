@@ -1,78 +1,42 @@
-// AudioFramer (HS-15 → CL-11, promoted home by the second
-// codec-promotion slice — the bytes never changed): 5 ms Opus packets
-// from the host capture path → audio-channel datagrams under the
-// Lyte-UDP envelope, with the resiliency pillar's 4+2 Reed-Solomon
-// interleave expressed through the SAME frozen machinery video uses
-// (FecField, FecGeometry, FecEncoder — the nanors codebook). Sans-IO:
-// no sockets, no threads, no clock — capture timestamps are injected,
-// the caller owns pacing and syscalls. This file COMPOSES frozen wire
-// formats for the audio channel; it changes none of them (which is why
-// it carries no vector file of its own — the envelope/fec vectors own
-// the bytes beneath it, and the layout is pinned as hand-built bytes
-// in AudioInteriorTests and both ends' gates).
+// AudioFramer: 5 ms Opus packets → audio-channel datagrams under the
+// Lyte-UDP envelope, with a 4+2 Reed-Solomon interleave through the same
+// FEC machinery video uses (FecField, FecGeometry, FecEncoder). Sans-IO:
+// capture timestamps are injected; the caller owns pacing, sealing and
+// syscalls. It composes frozen formats and changes none of them; the
+// layout is pinned as hand-built bytes in AudioInteriorTests.
 //
-// The wire layout (pinned host-side at HS-15, byte-mirrored client-side
-// at CL-11, canonical here):
+// Wire layout:
 //
-//   • channel: 1 (ChannelId.audio — unreliable, WirePriority.audio).
+//   • channel: ChannelId.audio (unreliable, WirePriority.audio).
 //   • One 5 ms Opus packet = one data shard = one datagram payload,
-//     verbatim, zero interior framing. Under hard CBR (the dialect —
-//     DTX off, constant packet bytes; HS-14's encoder pins it) all
-//     four packets of a group are the same size, so the W1 balanced
-//     split's shards ARE the packets: shardByteCount = group/4 =
-//     packetBytes exactly, and the trailing-shard remainder case never
-//     arises. A mid-group size change (an Opus bitrate step) would
-//     shear shard boundaries off packet boundaries, so the framer
-//     closes the open group without parity and the new size opens a
-//     fresh group; only that group's loss protection is forfeit.
-//   • FEC group: 4 consecutive packets + 2 parity shards
-//     (resiliency §1.2: keep 4+2 unchanged; the future knob is the
-//     ratio, e.g. 4+4, which is why the counts live in config). The
-//     fec field carries FecField.reedSolomon(shardIndex, geometry) —
-//     the identical 8-byte interior video uses (overview §2: "Audio's
-//     4+2 RS expresses in the same field").
-//   • frame field = the FEC group id = the PACKET NUMBER of the
-//     group's first packet (groups sit at packet numbers 0, 4, 8, …).
-//     Vocabulary.swift says the frame field is "the audio-doc packet
-//     number for audio, and the FEC group id for both" — this layout
-//     is how both readings hold at once: a data shard's packet number
-//     is frame + shardIndex, and all six shards of a group agree on
-//     the group id the assembler keys recovery by.
-//   • timestamp: a data shard carries ITS packet's capture µs (the
-//     PipeWire graph clock, per the audio-continuity decision §4.3 —
-//     never wall clock); parity shards carry the group's FIRST
-//     packet's capture µs (they correspond to no single packet; a
-//     receiver reconstructing a lost packet n derives its stamp as
-//     groupFirstTs + (n − frame) × packetDuration, and the audio doc's
-//     "seq × packetDuration IS the sender media timeline" makes that
-//     honest under CBR).
-//   • seq: per-channel u16, allocated in emit order — data shards at
-//     their capture instants, the two parity shards immediately after
-//     the fourth data shard, so seqs are contiguous per group by
-//     construction.
-//   • Emission order is load-bearing: a data shard emits IMMEDIATELY
-//     on ingest — the 5 ms cadence is the receiver's clock and the
-//     path's always-on delay probe (resiliency §2), so FEC grouping
-//     must never delay a packet. Parity emits only when the group
-//     completes. A stream ending mid-group leaves parity unsent: data
-//     shards are self-sufficient (each IS one packet), so only the
-//     tail group's loss protection is forfeit.
-//
-// Sealing is the caller's (the host Session's) job — same
-// header-bytes-as-AAD discipline as every other datagram; this framer
-// emits (envelope, plaintext payload) pairs so the layout is pinnable
-// without crypto.
+//     verbatim. Under hard CBR all packets of a group are the same size,
+//     so the balanced split's shards ARE the packets. A mid-group size
+//     change would shear shard boundaries off packet boundaries, so the
+//     framer closes the open group without parity and opens a fresh one.
+//   • FEC group: 4 consecutive packets + 2 parity shards (counts are
+//     config); the fec field carries FecField.reedSolomon(shardIndex,
+//     geometry), the same 8-byte interior video uses.
+//   • frame field = FEC group id = packet number of the group's first
+//     packet: a data shard's packet number is frame + shardIndex, and all
+//     six shards agree on the group id recovery keys by.
+//   • timestamp: a data shard carries its packet's capture µs (PipeWire
+//     graph clock, never wall clock); parity shards carry the group's
+//     FIRST packet's stamp, so a recovered packet n is stamped
+//     groupFirstTs + (n − frame) × packetDuration.
+//   • seq: per-channel u16 in emit order; parity follows the last data
+//     shard immediately, so seqs are contiguous per group.
+//   • A data shard emits IMMEDIATELY on ingest (the 5 ms cadence is the
+//     receiver's clock and the path's delay probe); parity emits when the
+//     group completes. A stream ending mid-group leaves parity unsent.
 
 public struct AudioFramerConfig: Sendable {
     public var channel: ChannelId
     public var firstSeq: ChannelSeq
     public var firstPacketNumber: FrameNumber
-    /// The RS interleave: resiliency §1.2 pins 4 + 2; the ratio is the
-    /// future WAN knob, so the counts are config, not constants.
+    /// The RS interleave (default 4 + 2).
     public var dataShardsPerGroup: Int
     public var parityShardsPerGroup: Int
-    /// HS-12: when set, every audio datagram carries the connection-ID
-    /// TLV like every other session datagram (QUIC's every-packet rule).
+    /// When set, every audio datagram carries the connection-ID TLV.
     public var connectionId: ConnectionId?
 
     public init(
@@ -94,17 +58,14 @@ public struct AudioFramerConfig: Sendable {
         self.connectionId = connectionId
     }
 
-    /// The TLV block bytes every datagram of this config carries
-    /// (VideoChannelConfig's accounting, mirrored).
+    /// The TLV block bytes every datagram of this config carries.
     var tlvBlockByteCount: Int {
         connectionId == nil ? 0 : 1 + 2 + ConnectionId.byteCount
     }
 
     /// The largest Opus packet one datagram can carry under this
-    /// config's real per-datagram overhead — the AEAD tag reserved
-    /// unconditionally (the §4.2 geometry-never-depends-on-crypto
-    /// rule). A 5 ms packet at 128 kbps is ~80 B; this ceiling exists
-    /// for loud enforcement, not because it is ever near.
+    /// config's per-datagram overhead, AEAD tag reserved unconditionally
+    /// (geometry never depends on crypto).
     public var packetBudgetByteCount: Int {
         min(
             WireBudget.maxPlaintextShardByteCount,
@@ -213,12 +174,10 @@ public struct AudioFramer: Sendable {
     }
 
     /// Closes the open group without parity; `ingest` does this itself
-    /// when the packet size changes mid-group. Its data shards already
-    /// left and each is a whole packet, so only that group's loss
-    /// protection is forfeit; the next packet opens a fresh group at the
-    /// next packet number (receivers key groups by the frame field and
-    /// never assume group alignment). Returns false when no group was
-    /// open.
+    /// when the packet size changes mid-group. Only that group's loss
+    /// protection is forfeit; the next packet opens a fresh group
+    /// (receivers key groups by the frame field and never assume
+    /// alignment). Returns false when no group was open.
     @discardableResult
     public mutating func abandonOpenGroup() -> Bool {
         guard !groupPackets.isEmpty else { return false }
@@ -227,8 +186,7 @@ public struct AudioFramer: Sendable {
         return true
     }
 
-    /// The group is full: parity shards ride out right behind the
-    /// fourth data shard, stamped with the group's first capture µs.
+    /// Parity shards, stamped with the group's first capture µs.
     private mutating func completeGroup(
         geometry: FecGeometry
     ) throws -> [(envelope: Envelope, payload: [UInt8])] {
@@ -243,9 +201,7 @@ public struct AudioFramer: Sendable {
         for packet in groupPackets {
             group.append(contentsOf: packet)
         }
-        // FecEncoder returns k data + m parity; the data shards are the
-        // packets verbatim by the balanced-split/CBR alignment — only
-        // the parity suffix is new bytes.
+        // Only the parity suffix is new; the data shards are the packets.
         let shards = try FecEncoder.encode(group: group, geometry: geometry)
 
         var out: [(envelope: Envelope, payload: [UInt8])] = []

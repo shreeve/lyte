@@ -1,54 +1,27 @@
-// Clipboard image sync (P-1, clipboard v2 — the H3 F-6 sketch
-// inherited whole by the H4 plan's wave 2; plan retired to git
-// history): image blobs ride as BULK-CHANNEL CARGO — F-2's engines,
-// verbatim — marked by one small message so the two kinds of cargo
-// (file drops, clipboard images) never confuse each other.
+// Clipboard image sync: image blobs ride as BULK-CHANNEL CARGO through
+// the bulk engines, marked so file drops and clipboard images never
+// confuse each other.
 //
-// THE CARGO MARKER — ClipboardImageCargo (0x22), direction-neutral,
-// riding chan 8's ARQ ordered stream immediately BEFORE its transfer's
-// BulkOffer. The ordered stream is the whole trick: the marker can
-// never arrive after its offer, so routing is race-free by carriage,
-// not by timing. The marker carries the transfer's MIME (the v1 design
-// doc's promised "lazy/on-demand transfer with MIME negotiation"
-// arrives here as its eager v2 subset): v2 pins image/png; a foreign
-// mime draws abort(declined) — typed, counted, never a trap — and a
-// future format is a new mime string, zero new wire bytes.
+// ClipboardImageCargo (0x22), direction-neutral, rides chan 8's ARQ
+// ordered stream immediately BEFORE its transfer's BulkOffer, so routing
+// is race-free by carriage, not timing. The marker carries the MIME: only
+// image/png is accepted; a foreign mime draws abort(declined), and a
+// future format is a new mime string with no new wire bytes.
 //
-// CAPABILITY CARRIAGE — the W7 forward-compat spine, fourth verse:
-// key 12 (CapabilityKey.clipboardImages, bool) rides the declaration
-// through `Capabilities.unknownEntries` as one canonical `0C F5` map
-// entry and survives intersection only on mutual byte-equal
-// declaration. ZERO frozen bytes move. Images move only when keys 10
-// AND 12 both survived — the feature (clipboard) and the dialect
-// (image cargo). Key 11 is deliberately NOT in the gate: F-2 pinned
-// key 11's declaration as the STANDING FILE-DROP CONSENT, and the
-// Off / Text only / Text + images tier (clipboard design §6) must not
-// couple image sync to file consent — an images-tier end speaks the
-// chan-8 bulk vocabulary for clipboard cargo whenever key 12 agreed,
-// key 11 or no. Declaration follows the tier: a text-only HOST
-// truthfully never declares key 12 (the --clipboard/key-10
-// precedent — declaration follows the armed leaf).
+// Gated by keys 10 AND 12 (see CapabilityKey.clipboardImages); key 11
+// (file-drop consent) is deliberately not part of the gate.
 //
-// LANE DISCIPLINE — one transfer at a time per direction PER LANE
-// (file lane, clipboard lane), each lane single-transfer by
-// construction exactly as F-2 ruled; the marker's id-routing is the
-// "multiplexing is a v2 conversation the id-carrying vocabulary is
-// already shaped for" evolution the F-2 record named. A second cargo
-// while the clipboard lane is busy draws abort(busy). Receiver memory
-// stays bounded by construction: the file lane by its disk-backed
-// window, the clipboard lane by the 32 MiB ceiling.
+// One transfer at a time per direction PER LANE (file lane, clipboard
+// lane); a second cargo while the clipboard lane is busy draws
+// abort(busy). Receiver memory is bounded: the file lane by its
+// disk-backed window, the clipboard lane by the 32 MiB ceiling.
 //
-// SANS-IO, the house shape: the channel has no clocks and picks no
-// hash (the ends hash; digests and hashers arrive injected), randomness
-// only at id mint (injected generator), and the blob lives in memory (a
-// clipboard image is ceiling-bounded cargo, not a file — no disk, no
-// resume book; a torn session just drops the image and a re-copy
-// re-syncs).
-//
-// Hashing cost stays off the gates and off the finish line: a local
-// copy is hashed only after the digest-free gates (empty → lane busy →
-// ceiling) pass, and an incoming image feeds an incremental hasher one
-// chunk at a time, so no single step hashes a whole 32 MiB blob.
+// Sans-IO: no clocks, digests and hashers are injected, randomness only
+// at id mint, and the blob lives in memory (no disk, no resume; a torn
+// session drops the image and a re-copy re-syncs). A local copy is hashed
+// only after the digest-free gates (empty → lane busy → ceiling) pass,
+// and an incoming image feeds an incremental hasher chunk by chunk, so no
+// single step hashes a whole 32 MiB blob.
 
 import LyteCore
 
@@ -71,20 +44,18 @@ extension Sha256: ClipboardImageHasher {
     }
 }
 
-/// The clipboard-image layer's fixed numbers (wire v2 of the
-/// clipboard feature; wire MAJOR unchanged).
+/// The clipboard-image layer's fixed numbers.
 public enum ClipboardImageWire {
-    /// The one v2 cargo format. Lowercase canonical; comparison is
+    /// The one cargo format. Lowercase canonical; comparison is
     /// case-insensitive (mime types compare that way).
     public static let pngMime = "image/png"
-    /// Every mime this build can carry, lowercase. v2 pins PNG only;
-    /// formats append here (and at the leaves) with zero wire change.
+    /// Every mime this build can carry, lowercase. Formats append here
+    /// (and at the leaves) with zero wire change.
     public static let acceptedMimes = [pngMime]
-    /// The v2 image ceiling: 32 MiB — comfortable for 4K screenshot
-    /// PNGs, and the clipboard lane's receiver-memory bound (the blob
-    /// assembles in memory by design). Over-ceiling LOCAL copies are
-    /// suppressed and counted, never sent (the text-ceiling rule);
-    /// over-ceiling OFFERS draw abort(declined).
+    /// The image ceiling: 32 MiB, the clipboard lane's receiver-memory
+    /// bound (the blob assembles in memory). Over-ceiling LOCAL copies
+    /// are suppressed and counted, never sent; over-ceiling OFFERS draw
+    /// abort(declined).
     public static let maxImageByteCount = 33_554_432
     /// Chunk geometry for clipboard cargo: the bulk default (64 KiB).
     public static let chunkByteCount = UInt32(BulkWire.defaultChunkByteCount)
@@ -119,12 +90,10 @@ extension Capabilities {
         declaringFlag(CapabilityKey.clipboardImages)
     }
 
-    /// The full image gate: feature (10) ∧ dialect (12) — images
-    /// move only when BOTH survived intersection. Key 11 (the
-    /// standing file-drop consent, F-2 §6) is deliberately absent:
-    /// the consent tier must not couple image sync to file consent.
-    /// An end with this gate true runs chan-8 bulk machinery for
-    /// clipboard cargo regardless of key 11.
+    /// The full image gate: keys 10 ∧ 12 both survived intersection.
+    /// Key 11 (file-drop consent) is deliberately absent; an end with
+    /// this gate true runs chan-8 bulk machinery for clipboard cargo
+    /// regardless of key 11.
     public var clipboardImagesAgreed: Bool {
         clipboardText && clipboardImages
     }
@@ -220,31 +189,31 @@ public enum ClipboardImageCargoError: Error, Hashable, Sendable {
     case trailingBytes
     /// transferId 0 — always some layer's zero-fill bug.
     case zeroTransferId
-    /// A mime-less marker is unroutable — v2 requires the format.
+    /// A mime-less marker is unroutable.
     case emptyMime
     /// A mime over 255 UTF-8 bytes (construction-side; the u8 length
     /// fixes the wire bound).
     case mimeOverBudget(Int)
-    /// Mime bytes that are not valid UTF-8 (the CBOR text rule).
+    /// Mime bytes that are not valid UTF-8.
     case invalidUtf8
 }
 
 // MARK: - The channel (both ends embed one)
 
-/// Why a local image copy did not become cargo (routine weather,
-/// counted, never an error — the text-suppression rule).
+/// Why a local image copy did not become cargo (counted, never an
+/// error).
 public enum ClipboardImageSuppressReason: Hashable, Sendable {
     /// The OS reporting our own remote apply back — the sync book's
     /// boomerang stop.
     case loopEcho
     /// Identical to the last image we shared — the peer holds it.
     case duplicate
-    /// Past the 32 MiB v2 ceiling (byte count attached).
+    /// Past the 32 MiB ceiling (byte count attached).
     case overBudget(Int)
     /// A zero-byte read — some leaf's bug, kept loud in the counter.
     case emptyImage
-    /// The clipboard send lane already carries a transfer — v2 syncs
-    /// latest-wins clipboards, so the superseded copy just drops.
+    /// The clipboard send lane already carries a transfer; clipboards
+    /// sync latest-wins, so the superseded copy just drops.
     case sendBusy
 }
 
@@ -253,7 +222,7 @@ public enum ClipboardImageSuppressReason: Hashable, Sendable {
 public enum ClipboardImageRefuseReason: Hashable, Sendable {
     /// A mime this build cannot carry — abort(declined).
     case unsupportedMime(String)
-    /// The offer's byte count is past the v2 ceiling —
+    /// The offer's byte count is past the ceiling —
     /// abort(declined). Enforced against the OFFER, never trusted.
     case overBudget(UInt64)
     /// The clipboard receive lane already carries a transfer —
@@ -263,8 +232,8 @@ public enum ClipboardImageRefuseReason: Hashable, Sendable {
 
 /// Everything the channel surfaces to its embedding session core.
 /// `.send` is the one that moves bytes — chan 8's ordered stream;
-/// the rest is evidence. Payload bytes appear ONLY in `.applyImage`
-/// (the landing) — never in logs, per the CL-15 rule.
+/// the rest is evidence. Payload bytes appear ONLY in `.applyImage`,
+/// never in logs.
 public enum ClipboardImageEvent: Hashable, Sendable {
     /// Put these bytes on chan 8's ARQ ordered stream.
     case send([UInt8])
@@ -302,13 +271,13 @@ public struct ClipboardImageChannelCounters: Hashable, Sendable {
 }
 
 /// The clipboard-image lane, sans-IO — one per session core, both
-/// ends, driving F-2's engines with memory-backed cargo. The
+/// ends, driving the bulk engines with memory-backed cargo. The
 /// embedding core owes it: the negotiation gate (keys 10 ∧ 12)
 /// and the consent tier BEFORE calling in, hashing via the injected
 /// closures, and the OS clipboard IO on `.applyImage`. The channel
 /// owns: the marker handshake, the ceiling, mime policy, lane
-/// occupancy, and the sync-book interplay (via the caller's book —
-/// ONE book serves text and images, Clipboard.swift's rule).
+/// occupancy, and the sync-book interplay (via the caller's book,
+/// which serves text and images alike).
 public struct ClipboardImageChannel: Sendable {
     public private(set) var counters = ClipboardImageChannelCounters()
 

@@ -1,24 +1,17 @@
-// The clock beacon pair (W4a): the ONE beacon of master plan §4.6 /
-// overview conflict 10 — the clock-mapping message, host→client on CTRL at
-// 1 Hz (plus session start), client-echoed, doubling as slow session
-// liveness (teardown ≥30 s on CTRL death). It is NOT the fast blackout
-// detector; that is 350 ms of feedback-stream silence and lives with
-// resiliency. Both messages are ARQ-exempt fire-and-forget CTRL datagrams
-// (CtrlMessage.swift): a lost beacon is superseded by the next one.
+// The clock beacon pair: host→client on CTRL at 1 Hz (plus session start),
+// client-echoed, doubling as slow session liveness. It is NOT the fast
+// blackout detector. Both messages are ARQ-exempt fire-and-forget CTRL
+// datagrams: a lost beacon is superseded by the next one.
 //
-// The pair carries the classic four NTP timestamps (RFC 5905 §8 shape,
-// the RTCP SR role of RFC 3550 §6.4.1): t1 = host send (beacon), t2 =
-// client receive, t3 = client send (echo), t4 = host receive (measured
-// locally on echo arrival — never on the wire). From one beacon/echo pair:
+// The pair carries the four NTP timestamps (RFC 5905 §8): t1 = host send
+// (beacon), t2 = client receive, t3 = client send (echo), t4 = host
+// receive (measured locally, never on the wire). From one pair:
 //
 //   rtt    = (t4 − t1) − (t3 − t2)
 //   offset = ((t2 − t1) + (t3 − t4)) / 2      (client − host, µs)
 //
-// feeding CL-10's HostClockModel (min-filtered offset over a sliding
-// window + regression skew, timing doc §2). The beacon optionally carries
-// the host's view of the last echo it received — the same three numbers
-// mirrored host→client, so the client can compute the host-side estimate
-// symmetrically and cross-check its own.
+// The beacon optionally carries the host's view of the last echo it
+// received, so the client can compute the host-side estimate symmetrically.
 //
 // ClockBeacon, host→client, fixed 34 bytes, all multi-byte fields
 // little-endian:
@@ -34,8 +27,7 @@
 //   26     8    lastEchoHostReceive  its t4 (host µs, measured at arrival)
 //
 // When flags bit0 is clear the three lastEcho fields MUST be zero on the
-// wire; non-zero bytes there are rejected as malformed (the FecField
-// none-field rule — some other layer's fill bug, kept loud).
+// wire; non-zero bytes there are rejected as malformed.
 //
 // BeaconEcho, client→host, fixed 29 bytes:
 //
@@ -217,8 +209,8 @@ public struct BeaconEcho: Hashable, Sendable {
     /// One raw clock sample from this echo plus the locally measured t4:
     /// `offsetMicroseconds` is client − host (clientTime ≈ hostTime +
     /// offset), `rttMicroseconds` excludes the client's turnaround. Signed
-    /// wrap-safe arithmetic; one sample only — filtering (min-edge offset,
-    /// regression skew) is CL-10's HostClockModel, not this codec.
+    /// wrap-safe arithmetic; one sample only — filtering belongs to the
+    /// caller's clock model.
     public func clockSample(
         hostReceive: HostTimestamp
     ) -> (offsetMicroseconds: Int64, rttMicroseconds: Int64) {
@@ -237,8 +229,7 @@ public struct BeaconEcho: Hashable, Sendable {
     }
 }
 
-/// Everything the beacon codecs can refuse. Same doctrine as WireError:
-/// hostile bytes throw, never trap.
+/// Everything the beacon codecs can refuse; hostile bytes throw, never trap.
 public enum BeaconError: Error, Equatable, Sendable {
     /// Fewer bytes than the fixed message size.
     case truncatedMessage
@@ -247,7 +238,6 @@ public enum BeaconError: Error, Equatable, Sendable {
     case trailingBytes
     /// The type byte names a different message; carries what it found.
     case unexpectedType(UInt8)
-    /// flags bit0 clear but lastEcho bytes non-zero — some other layer's
-    /// fill bug, kept loud (the FecField none-field rule).
+    /// flags bit0 clear but lastEcho bytes non-zero.
     case nonZeroAbsentEchoFields
 }

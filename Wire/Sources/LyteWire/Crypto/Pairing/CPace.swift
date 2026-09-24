@@ -1,18 +1,11 @@
-// CPace, the balanced composable PAKE (draft-irtf-cfrg-cpace-21), cipher
-// suite CPACE-X25519-SHA512 — the W6 primitive layer beneath PairingPake.
-// One protocol, one suite: G_X25519 (single-coordinate Montgomery ladder,
-// DSI "CPace255") with SHA-512, the draft's recommended small-message
-// suite. X25519 itself stays swift-crypto's (the risk-register ruling);
-// the hand-written parts are the Elligator 2 map beside this file and
-// the string/derivation plumbing here, all pinned by the draft's
-// appendix-B vectors in Vectors/pairing-v1.json.
+// CPace, the balanced composable PAKE (draft-irtf-cfrg-cpace-21), suite
+// CPACE-X25519-SHA512 — the primitive layer beneath PairingPake. X25519 is
+// swift-crypto's; the Elligator 2 map beside this file and the plumbing
+// here are pinned by the draft's appendix-B vectors in
+// Vectors/pairing-v1.json.
 //
-// Initiator-responder setting only (transcript_ir): Lyte pairing always
-// has clear roles — the client initiates, the host responds — so the
-// symmetric o_cat ordering is deliberately not implemented.
-//
-// Like NoisePrimitives, this file imports Crypto (SHA-512, HMAC, X25519,
-// and the scalar-sampling CSPRNG) and is lint-confined to Crypto/.
+// Initiator-responder setting only (transcript_ir): the client initiates,
+// the host responds, so the symmetric o_cat ordering is not implemented.
 
 import Crypto
 
@@ -107,7 +100,7 @@ public enum CPace {
 
     /// G.sample_scalar() — 32 uniform CSPRNG bytes (X25519 clamps
     /// internally per RFC 7748). Tests and vectorgen inject fixed
-    /// scalars instead, the NoiseSession fixedEphemeral pattern.
+    /// scalars instead.
     public static func sampleScalar() -> [UInt8] {
         // swift-crypto's key generation is the platform CSPRNG already
         // trusted for Noise ephemerals.

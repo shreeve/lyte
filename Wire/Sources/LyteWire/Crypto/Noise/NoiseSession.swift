@@ -1,14 +1,8 @@
-// The session face of W5: the IK handshake with Lyte's first-payload
-// rule applied. There is no ALPN (Lyte-UDP decision §8.3), so the wire
-// major version rides inside the first handshake message's encrypted
-// payload — one version byte prefixing whatever application payload the
-// caller supplies — and a mismatch aborts the handshake loudly, before
-// any transport key exists. Message 2's payload echoes the responder's
-// version byte back, so both ends prove agreement inside the transcript.
-//
-// Driving the messages over a socket is host/client territory (HS-7 and
-// CL-1 plug their `TransportCrypto` seams into this); everything here is
-// sans-IO bytes-in/bytes-out.
+// The IK handshake with Lyte's first-payload rule applied. There is no
+// ALPN, so one wire-major version byte prefixes the first handshake
+// message's encrypted payload, and a mismatch aborts before any transport
+// key exists. Message 2's payload echoes the responder's version byte, so
+// both ends prove agreement inside the transcript. Sans-IO.
 
 public struct NoiseSession: Sendable {
     public private(set) var handshake: NoiseHandshake
@@ -38,9 +32,8 @@ public struct NoiseSession: Sendable {
 
     public var isComplete: Bool { handshake.isComplete }
 
-    /// The transcript hash — after completion, the handshake hash the W6
-    /// PAKE binds to (Lyte-UDP decision §8.2). Also available on the
-    /// `NoiseTransport` this session produces.
+    /// The transcript hash — after completion, the handshake hash the
+    /// pairing PAKE binds to. Also available on the `NoiseTransport`.
     public var handshakeHash: [UInt8] { handshake.handshakeHash }
 
     /// The peer's authenticated static key: known from init on the

@@ -1,10 +1,7 @@
-// The Noise suite's primitive surface: DH, AEAD, hash
-// and HMAC over swift-crypto's `Crypto` module on all platforms
-// (CryptoKit shim on Apple, vendored BoringSSL on Linux; never CryptoKit
-// directly, which is Apple-only). Everything in the Noise stack —
-// CipherState, SymmetricState, the IK handshake, the transport — calls
-// through this enum. `import Crypto` is confined to Crypto/, which
-// Common's SansIOArchitectureTests enforces.
+// The Noise suite's primitive surface: DH, AEAD, hash and HMAC over
+// swift-crypto's `Crypto` module (never CryptoKit directly, which is
+// Apple-only). The whole Noise stack calls through this enum; `import
+// Crypto` is confined to Crypto/ (SansIOArchitectureTests enforces it).
 
 import Crypto
 

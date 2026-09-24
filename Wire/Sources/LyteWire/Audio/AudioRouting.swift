@@ -1,66 +1,37 @@
-// Host audio routing (HS-18 → CL-13, promoted home by the second
-// codec-promotion slice — the bytes never changed): the wire shapes of
-// the "does the host's own speaker keep playing while the client
-// streams?" choice. hostAudible is the couch-copilot default (the
-// host captures its default sink's monitor; its speakers keep
-// playing); hostMuted is the remote-work posture (the audio leaf
-// creates a virtual "Lyte Audio" null sink, makes it the system
-// default, and captures ITS monitor — sound flows only to the wire).
-// The sink lifecycle is the host C leaf's; this file is the sans-IO
-// vocabulary and carriage.
+// Host audio routing: whether the host's own speakers keep playing while
+// the client streams. The sink lifecycle belongs to the host's audio
+// leaf; this file is the sans-IO vocabulary and carriage.
 //
-// CAPABILITY CARRIAGE — the W7 forward-compat spine, used as designed.
-// Wire v1's typed registry stops at key 8 and its rule 3 says "new
-// semantics ship as NEW KEYS gated by intersection": key 9
-// (CapabilityKey.hostAudioRouting, bool) rides the declaration through
-// `Capabilities.unknownEntries` — unknown keys are ignored+preserved
-// by every v1 end and survive intersection only on byte-equal
-// agreement, so the capability lights up exactly when BOTH ends
-// declare it and vanishes against a legacy peer. ZERO frozen bytes
-// move: capabilities-v1.json never regenerates, and the encoded
-// declaration differs from wireDefault's by exactly the appended
-// `09 F5` map entry (pinned by ControlCodecTests and both ends'
-// gates). The client's control strip gates its mute button on the
-// agreed set — absence is "not supported", never an error.
+// Gated by capability key 9 (hostAudioRouting, bool), carried through
+// `Capabilities.unknownEntries`: it is agreed only when BOTH ends declare
+// it, and absence means "not supported", never an error.
 //
-// AudioRoutingRequest (0x18), client→host, ARQ ordered stream (a
-// routing flip is session control: reliable, ordered, exactly-once —
-// the input-message carriage argument verbatim). Layout:
+// AudioRoutingRequest (0x18, client→host) and AudioRoutingStatus (0x19,
+// host→client) ride the ARQ ordered stream. Status reports the posture
+// the host ACTUALLY applied: once at capability agreement and after every
+// flip (a failed flip reports the old posture). Layout:
 //
 //   offset size field
-//   0      1    type   0x18
-//   1      1    mode   0x01 hostAudible / 0x02 hostMuted
+//   0      1    type   0x18 / 0x19
+//   1      1    mode   HostAudioRoutingMode raw value
 //
-// AudioRoutingStatus (0x19), host→client, same carriage: the posture
-// the host ACTUALLY applied (the control strip renders truth, not
-// hope). Sent once at capability agreement (the session's starting
-// posture) and after every applied flip; a failed flip reports the
-// OLD posture. Same layout, type 0x19.
-//
-// Unknown modes, trailing bytes, and truncation all reject — these
-// ride a reliable ordered stream between capability-negotiated peers,
-// so a foreign mode is a protocol break to surface (the InputEvent
-// rule). Never traps on hostile bytes.
+// Unknown modes, trailing bytes and truncation all throw; never traps on
+// hostile bytes.
 
 /// Where the host's own speakers stand while the session streams.
 public enum HostAudioRoutingMode: UInt8, Hashable, CaseIterable, Sendable {
-    /// The HS-14 posture: capture the default sink's monitor; the
-    /// host's speakers keep playing.
+    /// Capture the default sink's monitor; the host's speakers keep
+    /// playing.
     case hostAudible = 0x01
     /// The virtual-sink posture: "Lyte Audio" becomes the default
     /// sink, its monitor feeds the wire, the physical output is
     /// silent; the original default is restored at teardown (crash
     /// paths included).
     case hostMuted = 0x02
-    /// The postures-design mute-at-source (2026-08-02): the host
-    /// captures and encodes NOTHING — the whole audio track is zero
-    /// bytes on the wire; the host's own speakers keep playing.
-    /// Appended under the key-14 gate (audioStreamOff): a client
-    /// sends it only when BOTH ends declared key 14, so a legacy
-    /// decoder never meets a byte it must reject.
-    /// 0x04, NOT 0x03: the frozen vector `routing-mode-unknown` pins
-    /// 0x03 as unknownMode forever — a pinned-reject byte is a
-    /// tombstone, never a name (the vectors are law).
+    /// Mute at source: the host captures and encodes nothing and its
+    /// own speakers keep playing. Sent only when both ends declared key
+    /// 14 (audioStreamOff). 0x03 is never used: the frozen vector
+    /// `routing-mode-unknown` pins it as unknownMode.
     case streamOff = 0x04
 }
 

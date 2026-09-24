@@ -1,14 +1,8 @@
-// FecEncoder/FecDecoder: the per-frame RS block of resiliency §1.1, sans-IO.
-// Bytes in, shards out — deterministic (same group + geometry always yields
-// the same parity bytes, which is what makes the fec-v1.json matrices a
-// cross-platform contract), no clocks, no state. Shards protect payload
-// bytes only, never envelope bytes (core plan §2): Sunshine's
-// rebuilt-parity-header garbage-patch hack stays deleted.
-//
-// The C leaf is confined to NanorsBackend and only touched when recovery
-// math is genuinely needed: groups whose data shards all arrived — and
-// every m = 0 group — concatenate without a C call, so the common
-// no-loss frame and the tiny single-shard frame stay cheap.
+// FecEncoder/FecDecoder: the per-frame RS block, sans-IO and deterministic
+// (same group + geometry always yields the same parity bytes — the
+// fec-v1.json contract). Shards protect payload bytes only, never envelope
+// bytes. Groups whose data shards all arrived, and every m = 0 group,
+// concatenate without touching the C backend.
 
 public enum FecEncoder {
     /// Splits a group's payload into its k + m wire shards: data shards
@@ -54,8 +48,7 @@ public enum FecDecoder {
     /// exactly one slot per shard index (nil = lost), each present shard
     /// at its wire length. Returns the group's payload byte-exact, or
     /// throws `unrecoverableGroup` the moment erasures exceed parity —
-    /// honest failure, never garbage (resiliency §1.1 rule 2: the
-    /// geometry tells us immediately, no timer).
+    /// never garbage.
     public static func decode(
         shards: [[UInt8]?], geometry: FecGeometry
     ) throws -> [UInt8] {

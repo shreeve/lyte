@@ -1,6 +1,5 @@
-// The Lyte-UDP datagram envelope, exactly as the overview §2 pins it.
-// All multi-byte fields are little-endian — both ends are ours, no
-// network-order tax. 24 bytes fixed:
+// The Lyte-UDP datagram envelope. All multi-byte fields are little-endian.
+// 24 bytes fixed:
 //
 //   offset size field
 //   0      1    chan       channel number (ChannelId registry)
@@ -11,15 +10,12 @@
 //   8      8    timestamp  µs; host PipeWire monotonic domain on host-sent
 //                          datagrams, client monotonic on client-sent —
 //                          apply WireTimestamp<Domain> at the ends
-//   16     8    fec        FEC field; interior layout and codec in
-//                          FecField.swift (W1)
+//   16     8    fec        FEC field; layout and codec in FecField.swift
 //   24     …    [TLV block when flags bit0] then payload
 //
 // The header (fixed 24 bytes plus any TLV block) rides as AAD; the payload
-// is the AEAD ciphertext + authentication tag in a live session. Bare
-// shards exist only as frozen-vector/test equipment. Budgets are enforced
-// at encode time: 1112 B per
-// plaintext shard, 1128 B per wire payload, 1152 B per datagram.
+// is the AEAD ciphertext + tag in a live session (bare shards are test
+// equipment only). Budgets are enforced at encode time (see WireBudget).
 
 public struct Envelope: Hashable, Sendable {
     public var channel: ChannelId
@@ -63,8 +59,7 @@ public struct Envelope: Hashable, Sendable {
     // MARK: Encode
 
     /// Encodes header + wire payload (ciphertext + tag, or the bare shard in
-    /// insecure mode). Rejects payloads over 1128 B and datagrams over
-    /// 1152 B — exact enforcement is gate W-G1's requirement.
+    /// insecure mode). Rejects payloads over 1128 B and datagrams over 1152 B.
     public func encode(payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count <= WireBudget.maxWirePayloadByteCount else {
             throw WireError.payloadOverBudget(payload.count)
@@ -97,8 +92,7 @@ public struct Envelope: Hashable, Sendable {
     }
 
     /// Encodes a plaintext shard, additionally enforcing the 1112 B shard
-    /// budget so FEC geometry and gate results are identical with and
-    /// without crypto (master plan §4.2).
+    /// budget so FEC geometry is identical with and without crypto.
     public func encode(plaintextShard: ArraySlice<UInt8>) throws -> [UInt8] {
         guard plaintextShard.count <= WireBudget.maxPlaintextShardByteCount else {
             throw WireError.shardOverBudget(plaintextShard.count)

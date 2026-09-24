@@ -1,18 +1,13 @@
-// The session-lifecycle wire messages (W4b): the ACTIVE⇄IDLE mode
-// transition and the typed session teardown. Both ride CTRL's ARQ
-// ordered stream (group 0) — the first ARQ-carried CTRL types, which is
-// why they could not exist before W3. Reliable ordered carriage is
-// load-bearing: a reordered mode flip would leave the two ends
-// disagreeing about whether datagram video is flowing, and a teardown
-// must never overtake the messages that explain it.
+// The session-lifecycle wire messages: the ACTIVE⇄IDLE mode transition
+// and the typed session teardown. Both ride CTRL's ARQ ordered stream
+// (group 0): a reordered mode flip would leave the ends disagreeing about
+// whether datagram video is flowing, and a teardown must never overtake the
+// messages that explain it.
 //
-// Mode-transition ordering vs the converged frame (overview §2, the
-// ratchet-boundary ruling): the final converged frame rides a video-idle
-// ONE-SHOT group, and groups are mutually unordered — so the sender only
-// flips (and only sends mode=idle) after the one-shot is ACKNOWLEDGED
-// (ArqEvent.oneShotAcknowledged, the "final frame landed" signal). The
-// receiver therefore always holds the converged frame before it learns
-// the session went idle.
+// The final converged frame rides a video-idle one-shot group, unordered
+// against group 0, so the sender only sends mode=idle after that one-shot
+// is acknowledged (`ArqEvent.oneShotAcknowledged`). The receiver therefore
+// always holds the converged frame before it learns the session went idle.
 //
 // Mode transition (type 0x09), fixed 2 bytes:
 //
@@ -24,29 +19,23 @@
 //
 //   offset size field
 //   0      1    type    0x0A
-//   1      1    reason  0x01 taken-over-by (transport §4's multi-client
-//                       ruling), 0x02 shutting-down; others reject —
-//                       0x00 stays the loud zero-fill bug
+//   1      1    reason  0x01 taken-over-by, 0x02 shutting-down; others
+//                       reject (0x00 included)
 //
 // Both are exactly their fixed size: truncation and trailing bytes
-// reject, a foreign type byte rejects with what it found (the beacon
-// codecs' doctrine). FROZEN/RECOVERY never appear on the wire — they
-// are the path-loss overlay each end derives locally (overview §2);
-// only the two wire modes are signaled.
+// reject, a foreign type byte rejects with what it found.
 
-/// The two wire modes (overview §2): ACTIVE = unreliable datagram video
-/// is flowing; IDLE = sparse reliable frames only. Signaled on CTRL by
-/// the sender's SessionStateMachine; FROZEN/RECOVERY are local overlay
+/// The two wire modes: ACTIVE = unreliable datagram video is flowing;
+/// IDLE = sparse reliable frames only. FROZEN/RECOVERY are local overlay
 /// states, never wire values.
 public enum SessionWireMode: UInt8, Hashable, CaseIterable, Sendable {
     case active = 0x01
     case idle = 0x02
 }
 
-/// Why a session ended, as the wire carries it. `takenOver` is the
-/// transport pillar's multi-client ruling (`taken-over-by`);
-/// `shuttingDown` is any orderly local end. Liveness timeouts send
-/// nothing — the peer that would read the message is the one that died.
+/// Why a session ended, as the wire carries it. `takenOver`: another
+/// client took the session; `shuttingDown`: any orderly local end.
+/// Liveness timeouts send nothing — the reader is the peer that died.
 public enum SessionTeardownReason: UInt8, Hashable, CaseIterable, Sendable {
     case takenOver = 0x01
     case shuttingDown = 0x02

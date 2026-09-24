@@ -1,37 +1,23 @@
-// The CTRL message-type registry (W4a). Every CTRL (chan 0) payload starts
-// with one type byte — that byte, not the envelope, says what the message
-// is. The rule holds in both carriage modes: today's bare fire-and-forget
-// datagrams, and the ARQ stream framing that arrives with W3, where each
-// framed message body starts with the same type byte.
+// The CTRL message-type registry. Every CTRL (chan 0) payload starts with
+// one type byte that says what the message is, in both carriage modes:
+// bare fire-and-forget datagrams, and ARQ-delivered messages, whose body
+// starts with the same type byte.
 //
-// The beacon pair is ARQ-EXEMPT by design (master plan §4.6, overview
-// conflict 10): clock mapping wants fresh timestamps, not reliable old
-// ones, so beacon and beacon-echo ride CTRL as plain datagrams (fec = 0)
-// and a lost one is simply superseded by the next 1 Hz send.
+// ARQ-exempt types travel as plain sealed datagrams: beacons (clock
+// mapping wants fresh timestamps; a lost one is superseded by the next
+// 1 Hz send), path messages (they must travel on the exact probed tuple),
+// handshake and retry messages (the client's timer retries), and IDR
+// requests and repair refusals (superseded by the next emission).
 //
-// Types 0x03–0x06 and 0x10 were pinned end-side first (0x03/0x04 in
-// HS-12, 0x05/0x06 in HS-7, 0x10 in CL-3, all flagged for promotion)
-// and land here with the codec-unification slice — the numbers are
-// carried verbatim; both ends already speak them. All are ARQ-exempt
-// fire-and-forget: path messages must travel on the exact probed tuple,
-// handshake retries are the client's timer, and a lost IDR request is
-// superseded by the requester's next coalesced emission. Everything
-// else on CTRL (capabilities, input, mode transitions) waits for W3's
-// ArqEndpoint and registers its types then.
-//
-// Noise handshake carriage (the HS-7 pin, now canonical): each IK
-// message travels as one CTRL datagram whose payload is the type byte
-// followed by the raw Noise message — 0x05 = message 1 (client→host),
-// 0x06 = message 2 (host→client). Handshake payloads are NOT sealed (no
-// transport key exists yet; IK messages are self-protecting, and the
-// version byte rides inside per W5's first-payload rule). Everything on
-// CTRL after establishment is sealed with header-as-AAD; a bare
-// 0x05/0x06 arriving post-establishment is dropped, not interpreted.
+// Noise handshake carriage: each IK message is one CTRL datagram whose
+// payload is the type byte followed by the raw Noise message (0x05 =
+// message 1, 0x06 = message 2). Handshake payloads are NOT sealed (IK
+// messages are self-protecting); everything after establishment is sealed
+// with header-as-AAD, and a bare 0x05/0x06 post-establishment is dropped.
 
 public enum CtrlMessageType {
     /// Never assigned — a zero type byte is always some other layer's
-    /// zero-fill bug, and reserving it keeps that bug loud (the
-    /// WireExtension.ReservedType.invalid rule).
+    /// zero-fill bug, and reserving it keeps that bug loud.
     public static let invalid: UInt8 = 0x00
     /// Host→client clock-mapping beacon, 1 Hz plus session start
     /// (ClockBeacon). ARQ-exempt.
@@ -48,25 +34,24 @@ public enum CtrlMessageType {
     public static let noiseHandshake1: UInt8 = 0x05
     /// Host→client Noise IK message 2, bare (pre-transport).
     public static let noiseHandshake2: UInt8 = 0x06
-    /// ARQ data segment (W3, ArqFrames). A reliable-channel payload
-    /// starting with 0x07 or 0x08 is wholly ARQ — a sequence of frames,
-    /// not a single message; route it to `ArqEndpoint.ingest`. Messages
-    /// the ARQ delivers start with their own CTRL type byte.
+    /// ARQ data segment (ArqFrames). A reliable-channel payload starting
+    /// with 0x07 or 0x08 is wholly ARQ — a sequence of frames, not a single
+    /// message; route it to `ArqEndpoint.ingest`. Messages the ARQ delivers
+    /// start with their own CTRL type byte.
     public static let arqSegment: UInt8 = 0x07
-    /// ARQ ACK frame (W3): cumulative + bitmap receive state per
-    /// (chan, group). Itself ARQ-exempt — a lost ACK is superseded.
+    /// ARQ ACK frame: cumulative + bitmap receive state per (chan,
+    /// group). Itself ARQ-exempt — a lost ACK is superseded.
     public static let arqAck: UInt8 = 0x08
-    /// ACTIVE⇄IDLE mode transition (ModeTransition, W4b). The first
-    /// ARQ-carried type: rides CTRL's ordered stream — a reordered mode
-    /// flip would desynchronize the two ends' view of datagram video.
+    /// ACTIVE⇄IDLE mode transition (ModeTransition). Ordered stream — a
+    /// reordered flip would desynchronize the ends' view of datagram video.
     public static let modeTransition: UInt8 = 0x09
-    /// Typed session teardown (SessionTeardown, W4b): taken-over-by /
-    /// shutting-down. ARQ-carried, ordered behind everything it follows.
+    /// Typed session teardown (SessionTeardown): taken-over-by /
+    /// shutting-down. Ordered behind everything it follows.
     public static let sessionTeardown: UInt8 = 0x0A
-    /// Client→host CPace share Ya (PairingShareA, W6). The pairing
-    /// quartet 0x0B–0x0E rides the sealed ARQ ordered stream of the
-    /// trust-on-first-use Noise session it authenticates — PairingPake
-    /// binds the run to that session's handshake hash and statics.
+    /// Client→host CPace share Ya (PairingShareA). The pairing quartet
+    /// 0x0B–0x0E rides the sealed ordered stream of the trust-on-first-use
+    /// Noise session it authenticates — PairingPake binds the run to that
+    /// session's handshake hash and statics.
     public static let pairingShareA: UInt8 = 0x0B
     /// Host→client CPace share Yb ‖ confirmation tag Tb (PairingShareB).
     public static let pairingShareB: UInt8 = 0x0C
@@ -76,123 +61,89 @@ public enum CtrlMessageType {
     /// Either direction: typed pairing refusal (PairingReject) — loud
     /// wrong-PIN without an oracle.
     public static let pairingReject: UInt8 = 0x0E
-    /// Both directions: the capability declaration (W7,
-    /// CapabilityDeclaration — `type ‖ deterministic CBOR map`). The
-    /// first ARQ-carried message each way after establishment; the
-    /// session's agreed set is the intersection of the two.
+    /// Both directions: the capability declaration
+    /// (CapabilityDeclaration — `type ‖ deterministic CBOR map`), the first
+    /// ordered-stream message each way after establishment.
     public static let capabilityDeclaration: UInt8 = 0x0F
-    /// Client→host IDR request (IdrRequest). Sealed, ARQ-exempt; 0x10 is
-    /// CL-3's original pin, clear of the 0x07…0x0F range left for W3's
-    /// session machinery (0x07/0x08 taken by the ARQ frames, 0x09/0x0A
-    /// by the W4b lifecycle messages, 0x0B–0x0E by the W6 pairing
-    /// quartet, 0x0F by the W7 capability declaration).
+    /// Client→host IDR request (IdrRequest). Sealed, ARQ-exempt.
     public static let idrRequest: UInt8 = 0x10
-    /// Host→client session-parameter renegotiation proposal (W7,
-    /// CapabilityUpdate) — renegotiable keys only (v1:
-    /// maxDatagramBytes, the DPLPMTUD raise). ARQ-carried.
+    /// Host→client renegotiation proposal (CapabilityUpdate) —
+    /// renegotiable keys only. Ordered stream.
     public static let capabilityUpdate: UInt8 = 0x11
     /// Client→host answer to an update (CapabilityUpdateAck),
-    /// echoing the proposal it accepts or rejects. ARQ-carried.
+    /// echoing the proposal it accepts or rejects. Ordered stream.
     public static let capabilityUpdateAck: UInt8 = 0x12
     /// Host→client stateless retry challenge (RetryChallenge) — the
-    /// msg1-flood defense. Bare pre-transport like 0x05/0x06 (no
-    /// session exists to seal it), ARQ-exempt: a lost challenge is
-    /// answered by the client's msg1 retransmit drawing a fresh one.
+    /// msg1-flood defense. Bare pre-transport, ARQ-exempt: a lost challenge
+    /// is answered by the client's msg1 retransmit drawing a fresh one.
     public static let retryChallenge: UInt8 = 0x13
     /// Client→host msg1 resubmission with the cookie echoed
-    /// (RetryHandshake1). Bare pre-transport, ARQ-exempt — it IS the
-    /// handshake attempt.
+    /// (RetryHandshake1). Bare pre-transport, ARQ-exempt.
     public static let retryHandshake1: UInt8 = 0x14
-    /// Host→client reliable idle frame (IdleFrame, HS-11 → CL-8,
-    /// promoted by the second codec-promotion slice — the numbers are
-    /// carried verbatim; both ends already speak them). Rides a CTRL
-    /// one-shot ARQ group: the sender's ACTIVE→IDLE flip is gated on
-    /// this message's group being fully acknowledged.
+    /// Host→client reliable idle frame (IdleFrame) on a CTRL one-shot ARQ
+    /// group: the sender's ACTIVE→IDLE flip is gated on that group being
+    /// fully acknowledged.
     public static let idleFrame: UInt8 = 0x15
-    /// Client→host input event (InputEvent, HS-13 → CL-9, promoted).
-    /// ARQ ordered stream — a lost or reordered keystroke is
-    /// corruption, not weather.
+    /// Client→host input event (InputEvent). Ordered stream — a lost or
+    /// reordered keystroke is corruption, not weather.
     public static let inputEvent: UInt8 = 0x16
-    /// Host→client input echo tuples (InputEcho, HS-13 → CL-9,
-    /// promoted). ARQ ordered stream.
+    /// Host→client input echo tuples (InputEcho). Ordered stream.
     public static let inputEcho: UInt8 = 0x17
-    /// Client→host audio-routing flip request (AudioRoutingRequest,
-    /// HS-18 → CL-13, promoted). ARQ ordered stream, gated on
-    /// capability key 9 surviving intersection.
+    /// Client→host audio-routing flip request (AudioRoutingRequest).
+    /// Ordered stream, gated on capability key 9.
     public static let audioRoutingRequest: UInt8 = 0x18
-    /// Host→client applied audio-routing posture (AudioRoutingStatus,
-    /// HS-18 → CL-13, promoted). Same carriage and gate.
-    public static let audioRoutingStatus: UInt8 = 0x19
-    /// Client→host clipboard push (ClipboardSet, CL-15 — the first H3
-    /// feature, born in the registry rather than promoted). ARQ
-    /// ordered stream, gated on capability key 10 surviving
-    /// intersection.
-    public static let clipboardSet: UInt8 = 0x1A
-    /// Host→client clipboard-change report (ClipboardAnnounce, CL-15).
+    /// Host→client applied audio-routing posture (AudioRoutingStatus).
     /// Same carriage and gate.
+    public static let audioRoutingStatus: UInt8 = 0x19
+    /// Client→host clipboard push (ClipboardSet). Ordered stream, gated
+    /// on capability key 10.
+    public static let clipboardSet: UInt8 = 0x1A
+    /// Host→client clipboard-change report (ClipboardAnnounce). Same
+    /// carriage and gate.
     public static let clipboardAnnounce: UInt8 = 0x1B
-    /// Sender→receiver bulk-transfer offer (BulkOffer, W10 / F-2 —
-    /// the bulk channel's vocabulary, born in the registry like
-    /// CL-15's). The bulk sextet 0x1C–0x21 rides the ARQ ordered
-    /// stream of CHANNEL 8 (ChannelId.bulkTransfer), never CTRL —
-    /// the type space is shared across reliable channels (the W3
-    /// rule), the carriage is not. Gated on capability key 11
-    /// surviving intersection.
+    /// Sender→receiver bulk-transfer offer (BulkOffer). The bulk messages
+    /// 0x1C–0x21 ride the ordered stream of CHANNEL 8
+    /// (ChannelId.bulkTransfer), never CTRL — the type space is shared
+    /// across reliable channels, the carriage is not. Gated on capability
+    /// key 11.
     public static let bulkOffer: UInt8 = 0x1C
     /// Receiver→sender consent + possession + opening credit
-    /// (BulkAccept, W10). Chan 8 ordered stream.
+    /// (BulkAccept). Chan 8.
     public static let bulkAccept: UInt8 = 0x1D
-    /// Sender→receiver one chunk (BulkChunk, W10). Chan 8 ordered
-    /// stream — deliberately not CTRL, so a file can never
-    /// head-of-line-block a keystroke.
+    /// Sender→receiver one chunk (BulkChunk). Chan 8 — never CTRL, so a
+    /// file can never head-of-line-block a keystroke.
     public static let bulkChunk: UInt8 = 0x1E
-    /// Receiver→sender possession + credit heartbeat (BulkAck, W10).
-    /// Chan 8 ordered stream.
+    /// Receiver→sender possession + credit heartbeat (BulkAck). Chan 8.
     public static let bulkAck: UInt8 = 0x1F
     /// Receiver→sender success verdict after digest verification
-    /// (BulkComplete, W10). Chan 8 ordered stream.
+    /// (BulkComplete). Chan 8.
     public static let bulkComplete: UInt8 = 0x20
-    /// Either direction: typed transfer abort with reason
-    /// (BulkAbort, W10). Chan 8 ordered stream.
+    /// Either direction: typed transfer abort with reason (BulkAbort).
+    /// Chan 8.
     public static let bulkAbort: UInt8 = 0x21
     /// Either direction: clipboard-image cargo marker
-    /// (ClipboardImageCargo, P-1 — clipboard v2). Rides CHAN 8's ARQ
-    /// ordered stream immediately BEFORE its transfer's BulkOffer, so
-    /// the receiver always knows a transferId is clipboard cargo (and
-    /// its MIME) before the offer can reach the file machinery — the
-    /// ordered stream is the race-free carriage. Gated on capability
-    /// keys 10 AND 12 surviving intersection (the feature and the
-    /// dialect; key 11 — the file-drop consent — is deliberately not
-    /// in the gate).
+    /// (ClipboardImageCargo). Chan 8, immediately BEFORE its transfer's
+    /// BulkOffer, so the receiver knows a transferId is clipboard cargo
+    /// before the offer reaches the file machinery. Gated on keys 10 AND 12.
     public static let clipboardImageCargo: UInt8 = 0x22
-    /// Host→client repair refusal (RepairRefusal, HS-32): the HS-17
-    /// NACK responder's stale verdicts made explicit so the client
-    /// never blind-waits its full repair deadline on a repair the host
-    /// already declined. Sealed, ARQ-exempt fire-and-forget like 0x10 —
-    /// a lost refusal degrades to the client's own deadline expiry, by
-    /// design; nothing may require a refusal to arrive.
+    /// Host→client repair refusal (RepairRefusal): the NACK responder's
+    /// stale verdicts made explicit so the client never blind-waits its
+    /// repair deadline. Sealed, ARQ-exempt; a lost refusal degrades to the
+    /// client's own deadline expiry.
     public static let repairRefused: UInt8 = 0x23
-    /// Host→client cursor-shape announcement (CursorShape, E3 — the
-    /// direct eye's cursor-as-metadata obligation, born in the
-    /// registry like CL-15's pair). ARQ ordered stream — a reordered
-    /// shape swap leaves the client wearing a stale cursor — gated on
-    /// capability key 13 surviving intersection.
+    /// Host→client cursor-shape announcement (CursorShape). Ordered
+    /// stream — a reordered swap leaves a stale cursor — gated on key 13.
     public static let cursorShape: UInt8 = 0x24
 
-    /// Host→client audio track-state announcement (AudioTrackState,
-    /// the postures design's tripwire — silence with a signed IOU):
-    /// quiet = transmission gated while capture continues, repeated
-    /// as the ~5 s still-quiet check-in; active = transmitting. ARQ
-    /// ordered stream, gated on capability key 15 surviving
-    /// intersection.
+    /// Host→client audio track-state announcement (AudioTrackState):
+    /// quiet = transmission gated while capture continues, repeated as a
+    /// ~5 s check-in; active = transmitting. Ordered stream, gated on key 15.
     public static let audioTrackState: UInt8 = 0x25
 
-    /// Host→client video posture announcement (VideoPostureState, the
-    /// postures design's quiet/wake axis): quiet = the retained
-    /// keepalive backed off to the carried interval (a new 0x26 rides
-    /// every step); active = damage-driven with the 1 s keepalive.
-    /// ARQ ordered stream, gated on capability key 16 surviving
-    /// intersection.
+    /// Host→client video posture announcement (VideoPostureState): quiet
+    /// = the keepalive backed off to the carried interval (a new 0x26 rides
+    /// every step); active = damage-driven with the 1 s keepalive. Ordered
+    /// stream, gated on key 16.
     public static let videoPostureState: UInt8 = 0x26
 
     /// The type byte of a CTRL payload, nil when the payload is empty.

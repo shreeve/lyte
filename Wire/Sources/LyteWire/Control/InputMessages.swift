@@ -1,26 +1,12 @@
-// Input messages (HS-13 → CL-9, promoted home by the second
-// codec-promotion slice — the bytes never changed): the wire shapes of
-// the input-injection path. The client captures an event, stamps it,
-// sequences it, and sends it on the sealed reliable CTRL stream; the
-// host injects it into the desktop session and answers with echo tuples
-// so the client can close the per-keystroke input-to-photon loop
-// (master plan HS-13/CL-9 rows; overview: "input events
-// (client-timestamped, sequenced) ride CTRL; the host injects, echoes
-// (seq, rx ts, inject ts), and stamps lastInputSeq into the next
-// frame").
+// Input messages: the client captures an event, stamps it, sequences it
+// and sends it on the sealed ARQ ordered stream; the host injects it and
+// answers with echo tuples (seq, rx µs, inject µs), and stamps
+// lastInputSeq into the next frame, closing the input-to-photon loop.
 //
-// Carriage: BOTH types ride the ARQ ordered stream (group 0) — the
-// transport pillar pins CTRL as reliable/ordered and lists input on it,
-// and typing is the one traffic class where a lost or reordered event is
-// corruption, not weather. Latency lives in the priority order
-// (CTRL/input outranks everything, HS-6's strict pacer classes), not in
-// datagram fire-and-forget. Echo tuples carry TIMESTAMPS, not freshness:
-// a late echo still reports the true rx/inject instants, so reliable
-// carriage costs the accounting nothing.
-//
-// Type bytes 0x16/0x17 and the lastInputSeq TLV type 0x03 were pinned
-// host-side first, byte-mirrored client-side at CL-9, and land in the
-// registries here — the numbers carried verbatim.
+// Both types ride the ordered stream: a lost or reordered keystroke is
+// corruption, not weather. Latency comes from pacer priority (CTRL/input
+// outranks everything). Echo tuples carry timestamps, not freshness, so a
+// late echo still reports the true instants.
 //
 // InputEvent (0x16), client→host. Layout, multi-byte fields LE:
 //
@@ -33,7 +19,7 @@
 //                             the client owns mapping it)
 //   13     1    kind          see below
 //   14     …    body          kind-determined, exact length (trailing
-//                             bytes reject — loud, per the W2 rule)
+//                             bytes reject)
 //
 // Kinds and bodies (coordinates are f64 IEEE-754 bit patterns, LE):
 //
@@ -48,11 +34,9 @@
 //                               flags u8 (bit0 = finish; rest reserved,
 //                               must be 0)
 //
-// Evdev keycodes on purpose (plan risk table): the host session's XKB
-// map owns layout; the client sends position codes and never guesses
-// keysyms. Unknown kinds and nonzero reserved bits REJECT — input rides
-// a reliable ordered stream between capability-negotiated peers, so a
-// foreign kind is a protocol break to surface, not weather to skip.
+// Evdev keycodes on purpose: the host session's XKB map owns layout; the
+// client sends position codes and never guesses keysyms. Unknown kinds
+// and nonzero reserved bits reject as a protocol break.
 //
 // InputEcho (0x17), host→client. Layout:
 //
@@ -327,7 +311,7 @@ public enum LastInputSeqTlv {
     }
 
     /// Nil when absent (every pre-input frame); throws on a duplicate
-    /// or a malformed value, per the conn-id TLV's loud-decode rule.
+    /// or a malformed value.
     public static func decode(extensions: [WireExtension]) throws -> UInt32? {
         guard let value = try WireExtension.uniqueValue(
             ofType: WireExtension.ReservedType.lastInputSeq, in: extensions,

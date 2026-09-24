@@ -1,44 +1,32 @@
-// The bulk-transfer engines (W10 / F-2 — design record
-// docs/decisions/20260728-053300-lyte-bulk-channel.md §7): sans-IO state
-// machines for both roles. One engine instance = one transfer (v1
-// runs one at a time per direction; the ends' dispatcher answers a
-// second concurrent offer with abort(busy) and queues locally —
-// multiplexing is a v2 conversation the id-carrying vocabulary is
-// already shaped for).
+// The bulk-transfer engines: sans-IO state machines for both roles, one
+// instance per transfer (the ends run one at a time per direction and
+// answer a second concurrent offer with abort(busy)).
 //
-// Sans-IO, the deliberate shape: the engines have NO TIMERS —
-// retransmission and liveness belong to the ARQ sublayer and the
-// session layer, consent latency belongs to a human — and randomness
-// enters the bulk layer only at BulkTransferId.mint (injected
-// generator). Every disk read, disk write, and hash is an ACTION the
-// engine requests and a verdict the shell reports back; the ends
-// drive the engines with real IO later, the tests drive them in
-// virtual time now.
+// The engines have no timers — retransmission and liveness belong to ARQ
+// and the session, consent latency to a human. Every disk read, disk
+// write and hash is an ACTION the engine requests and a verdict the shell
+// reports back.
 //
-// Credit discipline (design §4): receiver-driven, cumulative,
-// chunk-denominated, session-scoped. The receiver grants
-// `consumed + window` and refreshes when the grant has advanced by at
-// least max(1, window/2) — plus always once more when possession
-// completes, so the sender always learns the end arrived. The sender
-// consumes credit at READ-REQUEST time and never holds more than
-// `maxReadAheadChunks` reads the receiver has not reported holding, so
-// its memory is bounded locally even against an over-generous grant.
-// Enforcement lives receiver-side where
-// the memory is: a chunk beyond granted credit is a violation — a
-// hostile sender can waste its own credit, never the receiver's
-// memory.
+// Credit is receiver-driven, cumulative, chunk-denominated and
+// session-scoped. The receiver grants `consumed + window` and refreshes
+// when the grant has advanced by at least max(1, window/2), plus once
+// more when possession completes. The sender consumes credit at
+// READ-REQUEST time and never holds more than `maxReadAheadChunks`
+// unconfirmed reads, so its memory is bounded even against an
+// over-generous grant. The receiver treats a chunk beyond granted credit
+// as a violation: a hostile sender can waste its own credit, never the
+// receiver's memory.
 //
-// Error doctrine: LOCAL API misuse throws (the shell called the
-// engine wrong — a bug to surface in tests); REMOTE misbehavior
-// yields a `.violated` action plus abort(protocolViolation) and a
-// terminal state — never a trap, never a throw.
+// Local API misuse throws (a shell bug); remote misbehavior yields
+// `.violated` plus abort(protocolViolation) and a terminal state — never
+// a trap, never a throw.
 
 // MARK: - Possession
 
 /// Chunk possession as the engines track it: a contiguous prefix plus
 /// out-of-prefix extras. With in-order ARQ carriage the extras stay
 /// empty in practice; they exist for holed resume states and
-/// under-claimed maps (design §5). Normalized by construction — no
+/// under-claimed maps. Normalized by construction — no
 /// extra ever equals or precedes the prefix boundary.
 public struct BulkPossession: Hashable, Sendable {
     public private(set) var contiguousCount: UInt64
@@ -94,7 +82,7 @@ public struct BulkPossession: Hashable, Sendable {
     }
 
     /// The wire encoding, under-claiming past the bitmap window
-    /// (always legal, design §5).
+    /// (always legal).
     public var map: BulkChunkMap {
         .describing(contiguousCount: contiguousCount, extras: extras)
     }
@@ -116,9 +104,8 @@ public struct BulkPossession: Hashable, Sendable {
 
 /// What a receiving end persists at teardown to make resume real: the
 /// transfer's identity quadruple (plus the name, for the consent UI)
-/// and its chunk possession. Wire re-derives everything else (design
-/// §5: credit, ARQ state, and verification state deliberately do NOT
-/// resume).
+/// and its chunk possession. Credit, ARQ state and verification state
+/// deliberately do NOT resume.
 public struct BulkResumeState: Hashable, Sendable {
     public var transferId: UInt64
     public var totalByteCount: UInt64
@@ -213,7 +200,7 @@ public enum BulkSendError: Error, Equatable, Sendable {
     case wrongChunkByteCount(index: UInt64, expected: Int, actual: Int)
 }
 
-/// The sending role (the client in v1): offers, consumes credit,
+/// The sending role: offers, consumes credit,
 /// turns shell reads into chunks, resumes from the receiver's map,
 /// and waits for the receiver's digest verdict.
 public struct BulkSendEngine: Sendable {
@@ -352,7 +339,6 @@ public struct BulkSendEngine: Sendable {
             )
         }
         outstandingReads.remove(index)
-        // The init cannot fail: id is non-zero, data is 1…chunk-size.
         guard let chunk = try? BulkChunk(
             transferId: offer.transferId, chunkIndex: index, data: data
         ) else {
@@ -482,7 +468,7 @@ public enum BulkReceiveError: Error, Equatable, Sendable {
     case notVerifying
 }
 
-/// The receiving role (the host in v1): answers offers under the
+/// The receiving role: answers offers under the
 /// end's consent verdict, issues credit as stores complete (the
 /// backpressure), books possession, matches resume offers against the
 /// persisted book, and renders the completion verdict digest-exact.
@@ -526,7 +512,7 @@ public struct BulkReceiveEngine: Sendable {
     /// Persisted unfinished transfers, by id — the resume book.
     private var resumeBook: [UInt64: BulkResumeState]
     /// Possession as of this session's start — the under-claim
-    /// duplicate tolerance boundary (design §5).
+    /// duplicate tolerance boundary.
     private var sessionStartPossession: BulkPossession = .empty
     /// Chunks stored or tolerated this session (credit consumption).
     private var consumedChunkCount: UInt64 = 0
@@ -601,8 +587,8 @@ public struct BulkReceiveEngine: Sendable {
 
     /// Consent granted. Emits the accept (possession + opening
     /// credit); a resume whose possession is already complete skips
-    /// straight to verification — the digest is cheap insurance
-    /// exactly when a teardown interrupted the finish (design §5).
+    /// straight to verification (the digest is cheap insurance when a
+    /// teardown interrupted the finish).
     public mutating func accept() throws -> [Action] {
         guard case .offered = state, let offer else {
             throw BulkReceiveError.noOfferPending
@@ -784,8 +770,8 @@ public struct BulkReceiveEngine: Sendable {
         }
         if possession.holds(chunk.chunkIndex)
             || pendingStores.contains(chunk.chunkIndex) {
-            // Held from the RESUME state = the under-claim tolerance
-            // (design §5): the sender could not know. Held from this
+            // Held from the RESUME state = the under-claim tolerance:
+            // the sender could not know. Held from this
             // session's own stores = a duplicate an honest exactly-
             // once sender cannot produce.
             guard sessionStartPossession.holds(chunk.chunkIndex),

@@ -1,56 +1,34 @@
-// ArqEndpoint (W3): the sans-IO reliable ordered-retransmit sublayer —
-// the "few-hundred-line sublayer, not a transport stack" the Lyte-UDP
-// decision priced in (§4). One endpoint instance owns one reliable
-// channel in both directions: it segments outbound messages, tracks and
-// retransmits until acknowledged, deduplicates and reorders inbound
-// segments, and delivers each message exactly once, in order, per group.
+// ArqEndpoint: the sans-IO reliable ordered-retransmit sublayer. One
+// endpoint owns one reliable channel in both directions: it segments
+// outbound messages, retransmits until acknowledged, deduplicates and
+// reorders inbound segments, and delivers each message exactly once, in
+// order, per group. Group 0 is the ordered stream (CTRL, feature
+// channels); each non-zero one-shot group (ascending ids) carries one
+// message and retransmits independently, so a lost one-shot never delays
+// the next.
 //
-// Consumer shapes (core plan §2):
-//   - group 0, the ordered stream: CTRL messages, feature channels —
-//     an unbounded in-order message sequence.
-//   - one-shot groups (non-zero id, ascending): exactly one message
-//     each, retransmitting independently — a fully-lost sparse idle
-//     frame never delays the next one (decision record §8.1).
+// Time is the injected `now`; `poll` returns datagram payloads for the
+// shell to wrap in envelopes (a fresh channel seq each — see
+// ArqFrames.swift) and seal. The clock domain parameter makes host- and
+// client-clock endpoints distinct types.
 //
-// API shape, exactly the plan's: `send(message:group:now:)`,
-// `ingest(payload:now:) -> [ArqEvent]`, `poll(now:) -> (datagrams,
-// nextTimerDeadline)`. Sans-IO is a rule, not a style: time is the
-// injected `now`, datagram payloads come out of `poll` for the shell to
-// wrap in envelopes (fresh channel seq each — see ArqFrames.swift on
-// why retransmits ride fresh datagrams) and seal; nothing here touches
-// sockets, threads, or clocks. The generic clock domain makes a
-// host-clock endpoint and a client-clock endpoint different types, so
-// a domain mix is a compile error (the WireTimestamp doctrine).
-//
-// Loss recovery is RFC 9002-shaped, per resiliency §1.3 — RTT-adaptive,
-// never fixed-interval:
+// Loss recovery is RFC 9002-shaped:
 //   - SRTT/RTTVAR from ACKs of segments sent exactly once (Karn), PTO =
 //     SRTT + max(4·RTTVAR, granularity), exponential backoff per group
-//     while a group makes no progress, reset on progress.
-//   - Fast retransmit at packet-threshold 3: a sent segment three
-//     serially past the group's highest-ever acked seq retransmits
-//     immediately — but only when an ACK ADVANCES that high mark, so a
-//     replayed ACK can never re-trigger it (the W-G4c forgery/replay
-//     bound: an attacker replaying captured ACKs buys at most the
-//     retransmits fresh information would have bought).
+//     while it makes no progress, reset on progress.
+//   - Fast retransmit at packet-threshold 3 fires only when an ACK
+//     ADVANCES the group's highest acked seq, so a replayed ACK buys no
+//     retransmits that fresh information would not have bought.
 //   - ACKs carry complete receive state (cumulative + bitmap), are sent
 //     on every arrival (duplicates included, so a lost ACK is repaired
 //     by the retransmit it failed to suppress), and are never
 //     themselves acknowledged.
 //
-// Send windows: a segment's seq is allocated when it first goes out, at
-// most `sendWindowSegments` are in flight per group, and none goes out
-// past `receiveWindowSegments` above the group's lowest unacknowledged
-// seq — so every ACK, retransmit, and window decision walks at most one
-// receive window, and a queue of any depth drains in linear time.
-// Queued messages are bounded by `ArqBounds.maxQueuedSegmentsPerGroup`
-// (`send` throws `.queueFull` past it).
-//
-// Delivery invariants (gate W-G4): per group, delivered messages are
-// exactly the sent messages, in order, each exactly once; groups never
-// block each other; when everything is acknowledged and delivered both
-// ways the endpoint goes quiescent — `poll` returns no datagrams and no
-// deadline, forever, until new work arrives.
+// Every ACK, retransmit and window decision walks at most one receive
+// window. Per group, delivered messages are exactly the sent messages, in
+// order, each once; groups never block each other; once everything is
+// acknowledged both ways, `poll` returns no datagrams and no deadline
+// until new work arrives.
 
 public struct ArqConfig: Hashable, Sendable {
     /// RTT assumed before the first sample; first PTO is twice this
@@ -151,10 +129,8 @@ public struct ArqConfig: Hashable, Sendable {
         normalizeDatagramBudget()
     }
 
-    /// Public fields stay mutable for the established configuration style.
-    /// Normalize again when an endpoint takes ownership so a caller that
-    /// changes the carrier ceiling after init cannot leave segment geometry
-    /// larger than the datagram it must ride.
+    /// Re-run when an endpoint takes ownership, so a carrier ceiling
+    /// changed after init cannot leave segments larger than the datagram.
     fileprivate mutating func normalizeDatagramBudget() {
         maxDatagramPayloadByteCount = min(
             max(
@@ -207,8 +183,7 @@ public enum ArqIgnoreReason: Hashable, Sendable {
 public enum ArqEvent: Hashable, Sendable {
     /// A whole message, exactly once, in order within its group.
     case message(group: ArqGroupId, bytes: [UInt8])
-    /// Sender side: a one-shot group is fully acknowledged — the
-    /// HS-11 "final frame landed, flip to IDLE" signal.
+    /// Sender side: a one-shot group is fully acknowledged.
     case oneShotAcknowledged(ArqGroupId)
     case ignored(ArqIgnoreReason)
 }
@@ -260,7 +235,6 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         var head = 0
         /// Lowest unacknowledged seq (== nextSeq when nothing is in flight).
         var base: UInt16
-        /// The next seq to allocate.
         var nextSeq: UInt16
         /// Live (sent, unacknowledged) segments in the ring.
         var inFlight = 0
@@ -293,7 +267,6 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
             queuedSegmentCount += segmentCount
         }
 
-        /// Cuts the next segment off the queue, allocating its seq.
         mutating func cutSegment(
             group: ArqGroupId, bodyCeiling: Int, now: Instant
         ) -> [UInt8] {
@@ -455,14 +428,12 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
     }
 
     /// True when nothing remains to send, retransmit, or acknowledge.
-    /// A quiescent endpoint polls to ([], nil) forever (the W-G4
-    /// termination property).
+    /// A quiescent endpoint polls to ([], nil) until new work arrives.
     public var isQuiescent: Bool {
         ackNeeded.isEmpty && sendGroups.values.allSatisfy(\.isDrained)
     }
 
-    /// Sent-but-unacknowledged plus queued segment count, all groups —
-    /// the boundedness handle for the adversarial gates.
+    /// Sent-but-unacknowledged plus queued segment count, all groups.
     public var outstandingSegmentCount: Int {
         sendGroups.values.reduce(0) { $0 + $1.outstandingSegmentCount }
     }
