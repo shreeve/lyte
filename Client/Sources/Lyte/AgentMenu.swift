@@ -39,12 +39,13 @@ final class AgentState {
     /// System Settings approval (nil once enabled). Shown by the agent
     /// menu; set on the first stream of a run.
     private(set) var helperHint: String?
-    /// Streams are active but awdl0 is UP and two re-engage attempts
-    /// didn't cure it. Drives the overlay's caps-alarm token; the
-    /// debounce is RadioHoldPolicy.
+    /// Streams are active but awdl0 stayed UP for three consecutive
+    /// checks, one re-engage notwithstanding. Drives the overlay's
+    /// caps-alarm token; the debounce is RadioHoldPolicy.
     private(set) var radioAlarm = false
     private var radioWatchdog: Task<Void, Never>?
     private var radioPolicy = RadioHoldPolicy()
+    private var activity = StreamActivity.live
 
     private var helperRegistration: HelperClient.RegistrationPosture {
         DiagnosticRunIdentity.isRequested ? .existingOnly : .ensure
@@ -52,6 +53,7 @@ final class AgentState {
 
     func streamBegan() {
         activeStreams += 1
+        activity.streamsChanged(to: activeStreams)
         // The AWDL hold rides the stream lifecycle: engage on the first
         // stream, release on the last (the radio's channel scans cause
         // 100–220 ms delay bursts with zero loss).
@@ -64,6 +66,7 @@ final class AgentState {
     }
     func streamEnded() {
         activeStreams = max(0, activeStreams - 1)
+        activity.streamsChanged(to: activeStreams)
         if activeStreams == 0 {
             HelperClient.shared.streamEnded()
             radioWatchdog?.cancel()
@@ -106,6 +109,45 @@ final class AgentState {
         case 0: "Lyte — idle"
         case 1: "Lyte — streaming"
         default: "Lyte — \(activeStreams) streams"
+        }
+    }
+}
+
+/// One latency-critical activity held exactly while any stream runs: App
+/// Nap would coalesce the feedback, ARQ and audio timers of an occluded
+/// window, and a watched stream must keep the display awake.
+struct StreamActivity {
+    var begin: () -> any NSObjectProtocol
+    var end: (any NSObjectProtocol) -> Void
+    private var token: (any NSObjectProtocol)?
+
+    init(
+        begin: @escaping () -> any NSObjectProtocol,
+        end: @escaping (any NSObjectProtocol) -> Void
+    ) {
+        self.begin = begin
+        self.end = end
+    }
+
+    static var live: StreamActivity {
+        StreamActivity(
+            begin: {
+                ProcessInfo.processInfo.beginActivity(
+                    options: [
+                        .userInitiated, .latencyCritical,
+                        .idleDisplaySleepDisabled,
+                    ],
+                    reason: "Lyte stream")
+            },
+            end: { ProcessInfo.processInfo.endActivity($0) })
+    }
+
+    mutating func streamsChanged(to count: Int) {
+        if count > 0, token == nil {
+            token = begin()
+        } else if count == 0, let held = token {
+            end(held)
+            token = nil
         }
     }
 }
