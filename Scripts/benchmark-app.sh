@@ -98,10 +98,19 @@ refuse_if_lyte_is_running
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
 if (( ! NO_BUILD )); then
-  "$ROOT/Scripts/make-app.sh" release
+  LYTE_APP_DIAGNOSTICS=1 "$ROOT/Scripts/make-app.sh" release
 fi
 [[ -x "$APP/Contents/MacOS/Lyte" ]] || {
-  echo "missing signed app: run Scripts/make-app.sh release" >&2
+  echo "missing signed app: run LYTE_APP_DIAGNOSTICS=1 Scripts/make-app.sh release" >&2
+  exit 1
+}
+# The app obeys the benchmark environment only when its signed Info.plist
+# enables the diagnostic entry points; any other bundle would never start.
+diagnostic_entry_points="$(plutil -extract LyteDiagnosticEntryPoints raw \
+  -o - "$APP/Contents/Info.plist" 2>/dev/null || true)"
+[[ "$diagnostic_entry_points" == true ]] || {
+  echo "benchmark refused: $APP is not a diagnostic build" >&2
+  echo "rebuild it with LYTE_APP_DIAGNOSTICS=1 Scripts/make-app.sh release" >&2
   exit 1
 }
 # Hold the app-artifact lock for the whole leg so no assembly swaps the
@@ -117,13 +126,13 @@ CLIENT_SOURCE_SHA256="$(lyte_source_fingerprint "$ROOT" $LYTE_CLIENT_SOURCE_PATH
 recorded_client_source="$APP/Contents/Resources/client-source.sha256"
 [[ -s "$recorded_client_source" ]] || {
   echo "benchmark refused: Lyte.app has no signed source provenance" >&2
-  echo "rebuild it with Scripts/make-app.sh release" >&2
+  echo "rebuild it with LYTE_APP_DIAGNOSTICS=1 Scripts/make-app.sh release" >&2
   exit 1
 }
 read -r bundled_client_source < "$recorded_client_source"
 [[ "$CLIENT_SOURCE_SHA256" == "$bundled_client_source" ]] || {
   echo "benchmark refused: Lyte.app was built from different client source" >&2
-  echo "rebuild it with Scripts/make-app.sh release" >&2
+  echo "rebuild it with LYTE_APP_DIAGNOSTICS=1 Scripts/make-app.sh release" >&2
   exit 1
 }
 read -r APP_BUILD_UTC < "$APP/Contents/Resources/build-utc.txt" || {

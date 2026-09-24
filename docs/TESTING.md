@@ -240,8 +240,10 @@ run, and read the safety rules in [OPERATIONS.md](OPERATIONS.md#safety)
 first.
 
 `Scripts/benchmark-app.sh [--no-build] [--seconds N] [--out DIR]
-static|motion|quality-static|handshake-only|all` builds and launches the
-real `Lyte.app` against the standing host, drives
+static|motion|quality-static|handshake-only|all` builds a diagnostic
+`Lyte.app` (`LYTE_APP_DIAGNOSTICS=1 Scripts/make-app.sh release`; with
+`--no-build` it refuses a bundle whose Info.plist lacks
+`LyteDiagnosticEntryPoints`), launches it against the standing host, drives
 `Scripts/motion-presenter.py` on pup's glass for motion legs, and judges the
 run with `Scripts/analyze-app-benchmark.py`. `all` runs each leg in its own
 process. It takes the app-artifact lock and refuses to run while the
@@ -249,7 +251,9 @@ owner's interactive app is open.
 
 `Scripts/benchmark-netem.sh moderate` shapes one host→client flow with
 `Scripts/netem/port-netem.sh` (20 ms delay, 10 ms jitter, 1 % loss) around
-one motion leg and judges the impairment SLOs. See
+one motion leg and judges the impairment SLOs (`analyze-app-benchmark.py
+--netem-profile`: presentation-gap p99, decoded fps, renderer, audio
+continuity). See
 [`Scripts/netem/README.md`](../Scripts/netem/README.md).
 
 | Variable | Used by | Meaning |

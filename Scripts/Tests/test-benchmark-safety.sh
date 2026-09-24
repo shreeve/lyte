@@ -3,7 +3,6 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 netem="$repo_root/Scripts/netem/port-netem.sh"
-benchmark="$repo_root/Scripts/benchmark-app.sh"
 benchmark_netem="$repo_root/Scripts/benchmark-netem.sh"
 fake_tc="$repo_root/Scripts/Tests/Fixtures/fake-tc.sh"
 test_root="$(mktemp -d)"
@@ -19,10 +18,14 @@ trap cleanup EXIT
 source "$repo_root/Scripts/lib/assert.sh"
 source "$repo_root/Scripts/lib/benchmark-process.sh"
 
-# benchmark-app.sh runs hermetically: codesign, ssh and rsync are fakes that
-# stop the run, the pup destination cannot resolve, and the artifact lock is
-# private, so a reordered preflight can never reach pup or the owner's lock.
-mkdir -p "$test_root/bin"
+# benchmark-app.sh runs hermetically from a private repository root (its
+# Scripts/ is this checkout's, its .build/Lyte.app is a fixture): codesign,
+# ssh and rsync are fakes that stop the run and the pup destination cannot
+# resolve, so a reordered preflight can never reach pup, the owner's app or
+# the owner's artifact lock.
+fake_root="$test_root/repo"
+mkdir -p "$fake_root" "$test_root/bin"
+ln -s "$repo_root/Scripts" "$fake_root/Scripts"
 for tool in codesign ssh rsync; do
     printf '#!/bin/sh\necho "fake %s reached" >&2\nexit 73\n' "$tool" \
         > "$test_root/bin/$tool"
@@ -39,51 +42,73 @@ esac
 exit 2
 EOF
 chmod +x "$fake_pgrep"
+# run_benchmark NAME ARG...: one --no-build run with output under NAME.
 run_benchmark() {
+    local name="$1"
+    shift
     env -u PUP -u LYTE_BENCHMARK_PUP \
         PATH="$test_root/bin:$PATH" \
         LYTE_PUP_HOST=fake-pup.invalid \
-        LYTE_APP_LOCK_FILE="$test_root/app-artifact.lock" \
         LYTE_PGREP="$fake_pgrep" \
-        "$benchmark" --no-build "$@"
+        "$fake_root/Scripts/benchmark-app.sh" --no-build \
+        --out "$test_root/$name-output" "$@" \
+        >"$test_root/$name.stdout" 2>"$test_root/$name.stderr"
+}
+# fixture_app DIAGNOSTICS: a bundle at the private root's .build/Lyte.app
+# whose Info.plist enables the diagnostic entry points when DIAGNOSTICS=1.
+fixture_app() {
+    local app="$fake_root/.build/Lyte.app" key=""
+    rm -rf "$app"
+    mkdir -p "$app/Contents/MacOS"
+    printf '#!/bin/sh\n' > "$app/Contents/MacOS/Lyte"
+    chmod +x "$app/Contents/MacOS/Lyte"
+    if [[ "$1" == 1 ]]; then
+        key='<key>LyteDiagnosticEntryPoints</key><true/>'
+    fi
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+        '<plist version="1.0"><dict>' "$key" '</dict></plist>' \
+        > "$app/Contents/Info.plist"
 }
 
 # The owner guard runs before output creation, builds, or any pup operation,
 # and an unreadable process table fails closed.
-blocked_out="$test_root/blocked-output"
-if LYTE_FAKE_PGREP_RESULT=match \
-    run_benchmark --out "$blocked_out" handshake-only \
-    >"$test_root/blocked.stdout" 2>"$test_root/blocked.stderr"
-then
+if LYTE_FAKE_PGREP_RESULT=match run_benchmark blocked handshake-only; then
     fail "benchmark ignored an active Lyte process"
 fi
-[[ ! -e "$blocked_out" ]] || fail "a refused benchmark created its output"
+[[ ! -e "$test_root/blocked-output" ]] \
+    || fail "a refused benchmark created its output"
 grep -Fq 'PID(s): 4242' "$test_root/blocked.stderr"
 
-error_out="$test_root/error-output"
-if LYTE_FAKE_PGREP_RESULT=error \
-    run_benchmark --out "$error_out" handshake-only \
-    >"$test_root/error.stdout" 2>"$test_root/error.stderr"
-then
+if LYTE_FAKE_PGREP_RESULT=error run_benchmark error handshake-only; then
     fail "benchmark trusted an unreadable process table"
 fi
-[[ ! -e "$error_out" ]] || fail "a refused benchmark created its output"
+[[ ! -e "$test_root/error-output" ]] \
+    || fail "a refused benchmark created its output"
 grep -Fq 'cannot inspect running Lyte processes' "$test_root/error.stderr"
 
-# An empty process table admits the run to its first external step.
-allowed_out="$test_root/allowed-output"
-if LYTE_FAKE_PGREP_RESULT=empty \
-    run_benchmark --out "$allowed_out" handshake-only \
-    >"$test_root/allowed.stdout" 2>"$test_root/allowed.stderr"
-then
-    fail "benchmark unexpectedly passed without a built app"
+# An empty process table admits the run; without an app it stops there.
+if LYTE_FAKE_PGREP_RESULT=empty run_benchmark missing handshake-only; then
+    fail "benchmark passed without a built app"
 fi
-[[ -d "$allowed_out" ]] || fail "an admitted benchmark created no output"
-if ! grep -Fq 'fake codesign reached' "$test_root/allowed.stderr" \
-    && ! grep -Fq 'missing signed app' "$test_root/allowed.stderr"
-then
-    fail "benchmark did not progress beyond an empty owner preflight"
+[[ -d "$test_root/missing-output" ]] \
+    || fail "an admitted benchmark created no output"
+grep -Fq 'missing signed app' "$test_root/missing.stderr"
+
+# A bundle without the diagnostic entry points would ignore the benchmark
+# environment: refused before signing checks, the lock or pup.
+fixture_app 0
+if LYTE_FAKE_PGREP_RESULT=empty run_benchmark plain handshake-only; then
+    fail "benchmark accepted a non-diagnostic app"
 fi
+grep -Fq 'is not a diagnostic build' "$test_root/plain.stderr"
+refute grep -Fq 'fake codesign reached' "$test_root/plain.stderr"
+
+# A diagnostic bundle proceeds to its signature check.
+fixture_app 1
+if LYTE_FAKE_PGREP_RESULT=empty run_benchmark diagnostic handshake-only; then
+    fail "benchmark passed a fake-signed app"
+fi
+grep -Fq 'fake codesign reached' "$test_root/diagnostic.stderr"
 
 export LYTE_TC="$fake_tc"
 export LYTE_FAKE_TC_LOG="$test_root/tc.log"
