@@ -844,7 +844,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// routed here with no second list; the shell keeps only the media
     /// words. Hostile bytes are counted, never fatal.
     private func dispatchReliable(_ event: ArqEvent) {
-        if Self.poisonsOrderedStream(event) {
+        if event == .ignored(.orderedStreamPoisoned) {
             return endPoisonedSession(lane: "CTRL")
         }
         guard case .message(_, let bytes) = event else { return }
@@ -951,7 +951,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// has its own capability gate; refused bytes drop loud, payload never
     /// logged.
     private func dispatchBulk(_ event: ArqEvent) {
-        if Self.poisonsOrderedStream(event) {
+        if event == .ignored(.orderedStreamPoisoned) {
             return endPoisonedSession(lane: "chan-8")
         }
         guard case .message(_, let bytes) = event else { return }
@@ -1037,19 +1037,6 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         )
         onEvent(.idleFrameReceived(
             frame: idle.frame.rawValue, outcome: outcome))
-    }
-
-    /// The segment that crosses the ceiling reports the over-budget
-    /// message; every later one reports the poisoned stream.
-    private static func poisonsOrderedStream(_ event: ArqEvent) -> Bool {
-        switch event {
-        case .ignored(.orderedStreamPoisoned):
-            return true
-        case .ignored(.messageOverBudget(let group)):
-            return group == .orderedStream
-        default:
-            return false
-        }
     }
 
     /// The host broke an ordered stream with a message over the shared

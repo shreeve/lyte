@@ -200,17 +200,17 @@ public enum ArqIgnoreReason: Hashable, Sendable {
     /// `maxMessageByteCount` reservation does not fit in
     /// maxOneShotReceiveByteCount; refused unacknowledged.
     case oneShotReceiveBudgetExhausted(ArqGroupId)
-    /// A message grew past maxMessageByteCount (a one-shot group counts
-    /// its assembled plus buffered bytes) and poisoned its group —
-    /// hostile-peer or config-skew territory. Nothing more of the group
-    /// is delivered or acknowledged: a one-shot group closes undelivered,
-    /// so later segments read as `segmentOnClosedGroup` and are re-ACKed
-    /// at the cumulative it reached, never past it.
+    /// A one-shot group's message (assembled plus buffered bytes) grew
+    /// past maxMessageByteCount and poisoned the group — hostile-peer or
+    /// config-skew territory. The group closes undelivered: later
+    /// segments read as `segmentOnClosedGroup` and are re-ACKed at the
+    /// cumulative it reached, never past it.
     case messageOverBudget(ArqGroupId)
-    /// A segment on the poisoned ordered stream. The stream lost a
-    /// message and can never deliver in order again, so this repeats for
-    /// the endpoint's life; the shell should end the session
-    /// (`isOrderedStreamPoisoned`).
+    /// A message past maxMessageByteCount poisoned the ordered stream.
+    /// Reported by the segment that crossed the ceiling and by every
+    /// later stream segment: the stream lost a message and can never
+    /// deliver in order again, so this repeats for the endpoint's life;
+    /// the shell should end the session (`isOrderedStreamPoisoned`).
     case orderedStreamPoisoned
 }
 
@@ -740,8 +740,10 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         return .accepted(closed: false)
     }
 
-    /// Drops everything a group holds, marks it poisoned and reports the
-    /// over-budget message.
+    /// Drops everything a group holds and marks it poisoned. A one-shot
+    /// group reports its over-budget message; the ordered stream reports
+    /// itself poisoned — the shell's teardown cue — from this first
+    /// crossing segment on, since nothing more need ever arrive on it.
     private static func poison(
         _ state: inout RecvGroup, group: ArqGroupId,
         events: inout [ArqEvent]
@@ -750,7 +752,8 @@ public struct ArqEndpoint<ClockDomain>: Sendable {
         state.assembling = []
         state.buffered = [:]
         state.bufferedByteCount = 0
-        events.append(.ignored(.messageOverBudget(group)))
+        events.append(.ignored(group.isOneShot
+            ? .messageOverBudget(group) : .orderedStreamPoisoned))
     }
 
     /// Closes an open one-shot receive group, delivered or given up:

@@ -191,7 +191,7 @@ final class ArqAdversarialTests: XCTestCase {
             )
             seq &+= 1
             for event in b.ingest(payload: segment.encode(), now: at(1)) {
-                if case .ignored(.messageOverBudget) = event {
+                if case .ignored(.orderedStreamPoisoned) = event {
                     poisoned = true
                 }
                 if case .message = event {
@@ -510,10 +510,10 @@ final class ArqAdversarialTests: XCTestCase {
     }
 
     /// A message over the ceiling on the ordered stream loses it for
-    /// good: the poisoning is reported once as messageOverBudget, then
-    /// every later stream segment names the poisoned stream, and the
-    /// endpoint says so for the shell to end the session. One-shot
-    /// groups keep working.
+    /// good: the crossing segment and every later stream segment name the
+    /// poisoned stream — a shell that tears down on that one reason ends
+    /// the session even when nothing follows the crossing — and the
+    /// endpoint says so. One-shot groups keep working.
     func testPoisonedOrderedStreamIsTypedAndPermanent() throws {
         let config = ArqConfig(
             maxSegmentBodyByteCount: 64, maxMessageByteCount: 100
@@ -530,7 +530,7 @@ final class ArqAdversarialTests: XCTestCase {
         XCTAssertFalse(receiver.isOrderedStreamPoisoned)
         XCTAssertEqual(
             receiver.ingest(payload: try stream(1), now: at(0)),
-            [.ignored(.messageOverBudget(.orderedStream))]
+            [.ignored(.orderedStreamPoisoned)]
         )
         XCTAssertTrue(receiver.isOrderedStreamPoisoned)
         for seq: UInt16 in 2...3 {
