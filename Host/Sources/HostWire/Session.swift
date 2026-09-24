@@ -1,62 +1,40 @@
-// Session: the host's session stub (HS-7) — the sans-IO core that
-// assembles the full send path into one live Lyte-UDP stream and feeds
-// J-G1. It owns, in one place:
+// Session: the host's sans-IO session core — one live Lyte-UDP stream
+// from handshake to teardown. It owns:
 //
-//   • the Noise IK handshake as RESPONDER (W5): consume the client's
-//     message 1, produce message 2, derive the NoiseTransport. The
-//     client knows the host's static out-of-band (pinned at pairing;
-//     printed by the executable for the J-G1 debug client). There is no
-//     hello beyond the handshake — IK's own payloads carry the version
-//     byte (W5's first-payload rule), and the session-start beacon is
-//     the host's first sealed word.
-//   • the seal discipline: every outbound datagram — video shards from
-//     VideoChannel, audio shards from AudioFramer (HS-15), beacons,
-//     path challenges — is sealed
-//     under the transport with the exact header bytes (fixed envelope +
-//     TLV block) as AAD, mirroring the client seam (CL-1/CL-3) so both
-//     directions speak identical crypto. A test-only passthrough keeps
-//     geometry and pacing independently provable without becoming an
-//     executable mode.
-//   • the 1 Hz clock beacon on CTRL (§4.6, W4a): beaconSeq from 0 at
-//     session start plus one beacon at establishment; t1 is the host
-//     graph-clock µs the caller injects. Client BeaconEchoes come back
-//     sealed; each yields one offset/RTT sample (NTP arithmetic in the
-//     codec) and the next beacon mirrors the last echo per W4a's layout.
-//   • HS-12 integration: the session mints its ConnectionId, every
-//     outbound datagram carries the TLV, inbound datagrams feed the
-//     PathValidator's demux trigger, challenges ride CTRL to the exact
-//     unvalidated tuple, and `takeFreshKeyframeRequest()` merges the
-//     validator's promotion IDR with client 0x10 IDR requests into one
-//     encoder-loop poll.
-//   • HS-6 integration: all traffic classes through one Pacer schedule
-//     (VideoChannel owns it; control enters via `enqueueControl`).
-//   • HS-8 integration: reliable CTRL rides an `ArqEndpoint` (W3).
-//     `sendReliable`/`sendReliableOneShot` queue messages; inbound
-//     payloads whose first byte is 0x07/0x08 route wholly to
-//     `ArqEndpoint.ingest` (the one-byte peek); delivered messages and
-//     one-shot acknowledgments surface as events. ARQ datagrams are
-//     sealed CTRL like everything else — conn-id TLV, header-as-AAD,
-//     the control pacer class. The endpoint receives the session's
-//     connection-id-tagged carrier ceiling and packs once at that real
-//     plaintext budget; the session only seals and schedules its output. The
-//     deliberately ARQ-EXEMPT registry traffic is untouched: beacons
-//     and echoes are time-sensitive samples (a late beacon is a lie),
-//     path messages must travel on the exact unvalidated tuple
-//     (HS-12), handshake datagrams predate the transport, and a lost
-//     IDR request is superseded by the requester's next coalesced
-//     emission. ARQ retransmit timers ride the session's wake
-//     machinery: `nextWake` folds the endpoint's PTO deadline in, and
-//     `advance` services it — on the Linux host that is the idle-floor
-//     tick, the between-frames service point.
+//   • the Noise IK handshake as RESPONDER: consume the client's message
+//     1, produce message 2, derive the NoiseTransport. The client knows
+//     the host's static out-of-band (pinned at pairing). IK's payloads
+//     carry the version byte; the session-start beacon is the host's
+//     first sealed word.
+//   • the seal discipline: every outbound datagram (video, audio,
+//     beacons, path challenges, ARQ) is sealed with the exact header
+//     bytes (fixed envelope + TLV block) as AAD, mirroring the client. A
+//     test-only passthrough isolates geometry and pacing; no executable
+//     can select it.
+//   • the 1 Hz clock beacon on CTRL: beaconSeq from 0 plus one beacon at
+//     establishment; t1 is the injected host graph-clock µs. Each sealed
+//     BeaconEcho yields one offset/RTT sample; the next beacon mirrors
+//     the last echo.
+//   • path validation: the session mints its ConnectionId (TLV on every
+//     outbound datagram), inbound datagrams feed the PathValidator,
+//     challenges ride CTRL to the exact unvalidated tuple, and
+//     `takeFreshKeyframeRequest()` merges promotion IDRs with client
+//     0x10 requests into one encoder-loop poll.
+//   • one Pacer schedule for every traffic class (VideoChannel owns it;
+//     control enters via `enqueueControl`).
+//   • reliable CTRL over an `ArqEndpoint`: payloads whose first byte is
+//     0x07/0x08 route wholly to `ingest`; deliveries and one-shot acks
+//     surface as events. The endpoint packs at the connection-id-tagged
+//     plaintext ceiling; the session only seals and schedules. Beacons,
+//     echoes, path messages, handshakes and IDR requests stay ARQ-exempt
+//     (time-sensitive, tuple-bound, pre-transport, or self-superseding).
+//     ARQ PTO deadlines fold into `nextWake` and `advance` services them.
 //
-// Sans-IO in the house style: no sockets, no threads, no clock. Entry
-// points take `now` (monotonic ns — the pacer/validator domain) and
-// `hostMicroseconds` (the PipeWire graph-clock µs — the envelope
-// timestamp and beacon-t1 domain); outputs leave through the injected
-// send sink as `VideoChannelDatagram`s in pacer order, and everything
-// the caller must react to comes back as `SessionEvent` values. The
-// Linux loop (lyte-host) is deliberately thin over this; the macOS gate
-// test drives the whole session in-process against a LyteWire initiator.
+// No sockets, threads or clock. Entry points take `now` (monotonic ns,
+// the pacer/validator domain) and `hostMicroseconds` (PipeWire graph-clock
+// µs, the envelope-timestamp and beacon-t1 domain). Datagrams leave
+// through the injected send sink in pacer order; everything the caller
+// must act on comes back as `SessionEvent` values.
 
 import HostCore
 import HostSession
@@ -76,104 +54,80 @@ public enum SessionCryptoMode: Sendable {
 
 public struct SessionConfig: Sendable {
     public var crypto: SessionCryptoMode
-    /// The negotiated session ceiling: the pacer's starting rate and
-    /// the HS-16 estimator's upper bound (the estimator moves the live
-    /// rate inside [floor, this]).
+    /// The negotiated session ceiling: the pacer's starting rate and the
+    /// estimator's upper bound (the live rate moves inside [floor, this]).
     public var rateBitsPerSecond: Int
     public var regime: FecRegime
     public var pacerQuantumNS: UInt64
-    /// §4.6: 1 Hz. A beacon also goes out at establishment.
+    /// Default 1 Hz; a beacon also goes out at establishment.
     public var beaconIntervalNS: UInt64
     public var path: PathValidatorConfig
-    /// The reliable-CTRL sublayer's knobs (HS-8). The session injects
-    /// its connection-id-tagged CTRL plaintext ceiling at init; the
-    /// endpoint couples segment geometry and datagram packing to it.
+    /// Reliable-CTRL knobs. The session injects its connection-id-tagged
+    /// CTRL plaintext ceiling at init; the endpoint packs to it.
     public var arq: ArqConfig
-    /// When set, a completing handshake whose authenticated client
-    /// static is not in this set is rejected. Nil accepts any static —
-    /// honest for the stub: pairing (W6 PIN-PAKE) is what mints this
-    /// set, and J-G1 runs statics-pinned-out-of-band in both directions.
+    /// When set, a completing handshake whose authenticated client static
+    /// is not in this set is rejected. Nil accepts any static.
     public var allowedClientStaticPublicKeys: [[UInt8]]?
-    /// The pre-handshake flood throttle (HS-9): message 1s beyond this
-    /// budget are dropped before any Noise state is allocated.
+    /// The pre-handshake flood throttle: message 1s beyond its budget are
+    /// dropped before any Noise state is allocated.
     public var handshakeGate: HandshakeGate.Config
-    /// What this host declares in the W7 capability exchange. The
-    /// declaration is the session's FIRST ARQ-carried message
-    /// post-establishment; the agreed set is the intersection with the
-    /// client's declaration.
+    /// What this host declares in the capability exchange — the session's
+    /// first ARQ-carried message. The agreed set is the intersection with
+    /// the client's declaration.
     public var capabilities: Capabilities
-    /// The W4b lifecycle machine's knobs: the 350 ms blackout detector,
-    /// the 30 s liveness clock, RECOVERY's clean-window count.
+    /// The lifecycle machine's knobs: the 350 ms blackout detector, the
+    /// 30 s liveness clock, RECOVERY's clean-window count.
     public var lifecycle: SessionMachineConfig
-    /// The HS-16 congestion estimator's knobs. Nil derives the default
-    /// config with `rateBitsPerSecond` as the ceiling — the negotiated
-    /// session rate IS the ceiling (no capability key carries bitrate
-    /// in v1) and the operational floor is 2 Mbps, enough to pay the
-    /// protected lanes plus a minimum lossy-FEC video flight.
+    /// Congestion estimator knobs. Nil derives the default config with
+    /// `rateBitsPerSecond` as the ceiling (no capability key carries
+    /// bitrate) and a 2 Mbps floor: enough for the protected lanes plus a
+    /// minimum lossy-FEC video flight.
     public var estimator: RateEstimatorConfig?
-    /// HS-17 → HS-32: the retransmit gate's freeze budget. A NACK is
-    /// honored iff SRTT + retransmit serialization still fit inside
-    /// what remains of the budget, measured from the frame's last
-    /// shard release. HS-17 pinned the budget at a constant 2 frame
-    /// intervals (33 ms) — which the squeeze review §2 proved DEAD ON
-    /// ARRIVAL by construction: the ask itself rides the client's
-    /// 25–50 ms feedback cadence, so nearly every honest ask arrived
-    /// already past the budget (twin-leg books: 82 asks, 1682 shards,
-    /// 0 frames repaired). The budget is now DERIVED:
+    /// The retransmit gate's freeze budget. A NACK is honored iff SRTT +
+    /// retransmit serialization still fit inside what remains of it,
+    /// measured from the frame's last shard release. Derived as
     ///
     ///   budget = repairBudgetCadenceMultiplier × observedCadence
     ///            + repairBudgetJitterAllowanceNS
     ///
     /// where observedCadence is an EWMA (α = 1/8) of feedback-report
-    /// inter-arrival CLAMPED to the wire-pinned 25–50 ms cadence
-    /// range (out-of-cadence NACK flushes and lost reports are not
-    /// the cadence), starting from the 50 ms documented worst case
-    /// before evidence exists. Derivation rationale: an ask detected
-    /// geometry-immediately waits at most one cadence for its report
-    /// plus one one-way trip — 1.5× the cadence covers both, and the
-    /// allowance covers both ends' scheduling jitter. At the client's
-    /// reference 40 ms cadence the derived budget is 75 ms, well
-    /// inside the client's 250 ms assembler horizon (the TRUE ceiling
-    /// a repair must beat before the group evicts), so "honor" still
-    /// promises a repair the glass can use. Non-nil here overrides
-    /// the derivation entirely (tests, ops).
+    /// inter-arrival clamped to the wire's 25–50 ms cadence, starting at
+    /// 50 ms. The ask itself rides that cadence: it waits at most one
+    /// cadence for its report plus one one-way trip, which 1.5× covers;
+    /// the allowance covers both ends' scheduling jitter. At a 40 ms
+    /// cadence the budget is 75 ms, inside the client's 250 ms assembler
+    /// horizon, so an honored repair is still usable. Non-nil overrides
+    /// the derivation (tests, ops).
     public var repairFreezeBudgetOverrideNS: UInt64?
-    /// HS-32: the derived budget's cadence multiplier (see above).
+    /// The derived budget's cadence multiplier.
     public var repairBudgetCadenceMultiplier: Double
-    /// HS-32: the derived budget's scheduling-jitter allowance.
+    /// The derived budget's scheduling-jitter allowance.
     public var repairBudgetJitterAllowanceNS: UInt64
-    /// HS-32: the opening-IDR exemption's bounds. While NO frame has
-    /// plausibly ever completed at the client (nothing on glass yet),
-    /// the LAST IDR stays repairable regardless of the freeze budget:
-    /// a black glass is the one case where a late repair beats a
-    /// re-minted IDR that starts even later. Bounded by honored asks
-    /// and repair bytes so the exemption can never amplify
-    /// congestion (the consult's caution); the client's own ask
-    /// discipline (once-ever per shard, ≤250 ms old) bounds it again
-    /// from the other end.
+    /// Bounds on the opening-IDR exemption: until a frame has plausibly
+    /// completed at the client, the last IDR stays repairable regardless
+    /// of the freeze budget (on black glass a late repair beats a later
+    /// IDR). Capped by honored asks and bytes so it cannot amplify
+    /// congestion.
     public var openingRepairMaxAttempts: Int
     public var openingRepairMaxBytes: Int
-    /// HS-17: the repair store's retention window (build plan's
-    /// "≥4 s rings") and byte cap, passed through to VideoChannel.
+    /// The repair store's retention window and byte cap, passed through
+    /// to VideoChannel.
     public var repairRetentionNS: UInt64
     public var repairStoreByteCap: Int
-    /// Hard fresh-video queue budgets. Admission checks these before
-    /// encode and a rate fall re-prices the existing queue against the
-    /// same budget. Clean defaults to 50 ms. Lossy/impaired mode may
-    /// spend more time on FEC/repair, but is clamped to 100 ms so it can
-    /// never turn a capacity cliff into a stale tail.
+    /// Hard fresh-video queue budgets, checked before encode; a rate fall
+    /// re-prices the existing queue against the same budget. Clean
+    /// defaults to 50 ms; impaired may spend more on FEC/repair but is
+    /// clamped to 100 ms so a capacity cliff never becomes a stale tail.
     public var cleanVideoQueueBudgetNS: UInt64
     public var impairedVideoQueueBudgetNS: UInt64
     /// A repair still queued after this interval is no longer useful to
     /// the bounded client assembler and expires before transmit.
     public var repairQueueUsefulnessNS: UInt64
-    /// How long a committed host IDR may suppress older-named client 0x10
-    /// retries as "already answered". Encode/ingest advances
-    /// `lastKeyframeNumber` before delivery; this window is storm control
-    /// for an in-flight offer, not delivery proof. Matches the client's
-    /// 500 ms `IdrRequester` retry so a wholly lost recovery IDR can
-    /// re-arm on the next episode tick instead of black-glassing a
-    /// static desktop forever.
+    /// How long a committed host IDR suppresses older-named client 0x10
+    /// retries as "already answered". Storm control for an in-flight
+    /// offer, not delivery proof: it matches the client's 500 ms
+    /// `IdrRequester` retry so a wholly lost recovery IDR re-arms on the
+    /// next episode tick.
     public var clientIdrOfferInFlightNS: UInt64
 
     public init(
@@ -239,18 +193,16 @@ public enum SessionEvent: Equatable, Sendable {
     /// The Noise handshake completed; the transport is live. The key is
     /// the client's authenticated static — the identity pairing checks.
     case handshakeCompleted(remoteStaticPublicKey: [UInt8])
-    /// HS-21: the host answered an un-cookied message 1 with a stateless
+    /// The host answered an un-cookied message 1 with a stateless
     /// RetryChallenge (0x13) because require-cookie mode is engaged. No
-    /// Noise state was allocated — this is the bounded flood cost.
+    /// Noise state was allocated.
     case handshakeChallenged
-    /// HS-21: require-cookie mode flipped. `true` = the msg1 arrival rate
-    /// crossed the enter threshold (flood detected — the host now demands
-    /// a cookie); `false` = pressure cleared past the exit threshold.
+    /// Require-cookie mode flipped: `true` = the msg1 rate crossed the
+    /// enter threshold; `false` = pressure cleared past the exit threshold.
     case handshakeCookieModeChanged(requireCookie: Bool)
     case beaconSent(beaconSeq: UInt32)
-    /// One echo consumed: one raw offset/RTT sample recorded (filtering
-    /// is CL-10's HostClockModel on the client; the host keeps the
-    /// min-RTT-gated estimate for logs and glass-to-glass math).
+    /// One echo consumed: one raw offset/RTT sample (the client filters;
+    /// the host keeps the min-RTT-gated estimate for logs).
     case beaconEchoAccepted(
         beaconSeq: UInt32,
         offsetMicroseconds: Int64,
@@ -259,13 +211,9 @@ public enum SessionEvent: Equatable, Sendable {
     /// A client 0x10 arrived; `takeFreshKeyframeRequest()` is now true.
     case idrRequested(IdrRequest)
     /// The ARQ delivered one reliable CTRL message — exactly once, in
-    /// order within its group (HS-8). The bytes start with the
-    /// message's own CTRL type byte; dispatch registers types as the
-    /// reliable consumers (capabilities at W7, mode transitions at
-    /// HS-11) land.
+    /// order within its group. The bytes start with its CTRL type byte.
     case reliableCtrl(group: ArqGroupId, message: [UInt8])
-    /// A one-shot group this session sent is fully acknowledged — the
-    /// HS-11 "final frame landed, flip to IDLE" signal, surfaced.
+    /// A one-shot group this session sent is fully acknowledged.
     case reliableOneShotAcknowledged(ArqGroupId)
     /// The ARQ endpoint ignored (part of) an ingested payload. Some
     /// reasons are routine protocol weather (a duplicate from a
@@ -277,8 +225,7 @@ public enum SessionEvent: Equatable, Sendable {
     /// budget breach) — loud, because control sends must never fail
     /// silently, but never fatal to the session.
     case sendFailed(String)
-    /// The W7 exchange settled: both declarations met, this is the
-    /// session's agreed set (the intersection).
+    /// The capability exchange settled; this is the agreed intersection.
     case capabilitiesAgreed(Capabilities)
     /// The peer's declaration produced an unworkable intersection (no
     /// common video codec / chroma mode) — the typed teardown follows
@@ -288,29 +235,26 @@ public enum SessionEvent: Equatable, Sendable {
     /// (0x12). On accept the operative datagram ceiling already moved;
     /// apply at the next IDR boundary.
     case capabilityUpdateAcknowledged(accepted: Bool)
-    /// A ModeTransition (0x09) left on the reliable stream — the
-    /// mediaSender's ACTIVE⇄IDLE flip, as the wire hears it.
+    /// A ModeTransition (0x09) left on the reliable stream (ACTIVE⇄IDLE).
     case modeTransitionSent(SessionWireMode)
     /// A typed SessionTeardown (0x0A) left on the reliable stream.
     case teardownSent(SessionTeardownReason)
-    /// The W4b machine changed state (wire modes and the local
+    /// The lifecycle machine changed state (wire modes and the local
     /// FROZEN/RECOVERY overlay both surface here).
     case lifecycleChanged(SessionState)
     /// The session reached `closed`: a teardown either way, or the
     /// 30 s liveness timeout (which sends nothing — the peer that
     /// would read the message is the one that died).
     case sessionClosed(SessionCloseReason)
-    /// A client input event (0x16) arrived on the reliable stream —
-    /// exactly once, in order (HS-13). The shell injects it into the
-    /// desktop session and reports back via `noteInputInjected`;
-    /// `receivedAtMicroseconds` is the host µs the carrying datagram
-    /// arrived at (the echo tuple's rx stamp). The machine's pre-arm
-    /// already ran: a keypress in IDLE is the WAKE, one during FROZEN
-    /// persists until RECOVERY's IDR consumes it (W4b).
+    /// A client input event (0x16), delivered exactly once, in order. The
+    /// shell injects it and reports back via `noteInputInjected`;
+    /// `receivedAtMicroseconds` is the carrying datagram's host-µs arrival
+    /// (the echo tuple's rx stamp). The machine's pre-arm already ran: a
+    /// keypress in IDLE is the WAKE; one during FROZEN persists until
+    /// RECOVERY's IDR consumes it.
     case inputReceived(InputEvent, receivedAtMicroseconds: UInt64)
-    /// The HS-16 estimator moved the pacer rate (feedback evidence, or
-    /// a machine-demanded IdrPacing policy). The pacer is already
-    /// re-capped when this surfaces; the shell logs it.
+    /// The estimator moved the pacer rate (feedback evidence or an
+    /// IdrPacing policy); the pacer is already re-capped.
     case rateChanged(bitsPerSecond: Int, reason: RateChangeReason)
     /// The fall-repricing purge fired: a genuine fall left queued
     /// video that would serialize past the backlog threshold at the
@@ -318,96 +262,78 @@ public enum SessionEvent: Equatable, Sendable {
     /// coalesced latch. `staleWireMs` is the wire time the purged
     /// bytes would have occupied at the new rate.
     case videoBacklogPurged(datagrams: Int, bytes: Int, staleWireMs: Int)
-    /// HS-17: a client NACK passed the retransmit gate — `shards`
-    /// repair datagrams are enqueued (fresh seqs, videoTail class).
+    /// A client NACK passed the retransmit gate — `shards` repair
+    /// datagrams are enqueued (fresh seqs, videoTail class).
     case repairEnqueued(frame: FrameNumber, shards: Int)
-    /// HS-17: a client NACK was judged per the staleness ruling and
-    /// refused. `.budgetExceeded`/`.unavailable` send an explicit refusal;
-    /// the client's coalesced recovery episode owns the IDR alternative;
-    /// `.olderThanIdr` refuses silently (a newer IDR already heals)
-    /// and `.alreadyRepaired` is the one-attempt rule holding.
+    /// A client NACK was refused. `.budgetExceeded`/`.unavailable` send an
+    /// explicit refusal (the client's recovery episode owns the IDR
+    /// alternative); `.olderThanIdr` refuses silently (a newer IDR already
+    /// heals); `.alreadyRepaired` is the one-attempt rule.
     case nackJudgedStale(frame: FrameNumber, reason: NackStaleReason)
-    /// HS-17: the estimator stepped the §5.2 FEC regime; the channel's
-    /// packetizing seam is already switched when this surfaces.
+    /// The estimator stepped the FEC regime; the channel's packetizing
+    /// seam is already switched.
     case fecRegimeChanged(FecRegime)
-    /// HS-18: a client 0x18 asked for a routing flip. Only surfaces
-    /// when the agreed capabilities carry hostAudioRouting (W7 rule 3);
-    /// the shell flips the audio leaf and reports back via
-    /// `noteAudioRoutingApplied`, which is what emits the 0x19 status.
+    /// A client 0x18 asked for a routing flip (only when hostAudioRouting
+    /// was agreed). The shell flips the audio leaf and reports back via
+    /// `noteAudioRoutingApplied`, which emits the 0x19 status.
     case audioRoutingRequested(HostAudioRoutingMode)
-    /// HS-18: an applied posture left as a 0x19 status on the reliable
-    /// stream (at capability agreement and after every applied flip).
+    /// An applied posture left as a 0x19 status (at capability agreement
+    /// and after every applied flip).
     case audioRoutingStatusSent(HostAudioRoutingMode)
-    /// Tripwire: a 0x25 track-state announcement left on the reliable
-    /// stream (gate close, still-quiet check-in, or wake).
+    /// A 0x25 track-state announcement left on the reliable stream (gate
+    /// close, still-quiet check-in, or wake).
     case audioTrackStateSent(AudioTrackState.State)
-    /// Video posture: a 0x26 announcement left on the reliable stream
+    /// A 0x26 video posture announcement left on the reliable stream
     /// (a backoff step, or the wake back to active).
     case videoPostureStateSent(VideoPostureState)
-    /// CL-15: a client 0x1A clipboard set arrived on the reliable
-    /// stream — exactly once, in order. Only surfaces when the agreed
-    /// capabilities carry clipboardText (the W7 rule-3 gate); the
-    /// sync book is already pre-armed against this apply's OS echo.
-    /// The shell applies it through the HostClipboardLeaf seam and
-    /// reports the leaf's own change signals via
-    /// `noteHostClipboardChanged` — the book eats the echo there.
+    /// A client 0x1A clipboard set, delivered exactly once, in order (only
+    /// when clipboardText was agreed). The sync book is already pre-armed
+    /// against this apply's OS echo; the shell applies it through the
+    /// clipboard leaf and reports changes via `noteHostClipboardChanged`.
     case clipboardSetReceived(text: String)
-    /// CL-15: a host clipboard change left as a 0x1B announce on the
-    /// reliable stream (byte count only — payloads are never logged).
+    /// A host clipboard change left as a 0x1B announce (byte count only —
+    /// payloads are never logged).
     case clipboardAnnounceSent(byteCount: Int)
-    /// CL-15: a leaf-reported clipboard change was judged and NOT
-    /// announced — the loop-prevention/dedupe/ceiling discipline
-    /// holding (design doc §5).
+    /// A leaf-reported clipboard change was judged and not announced.
     case clipboardAnnounceSuppressed(ClipboardSuppressReason)
-    /// E3: the hardware cursor plane's shape left as a 0x24 on the
-    /// reliable stream (pixel byte count only — pixels are never
-    /// logged; a hidden announce carries zero of them).
+    /// The cursor shape left as a 0x24 (pixel byte count only — pixels are
+    /// never logged; a hidden announce carries none).
     case cursorShapeSent(pixelByteCount: Int, hidden: Bool)
-    /// E3: an eye-reported cursor shape was judged and NOT sent —
-    /// the dedupe/ceiling discipline holding.
+    /// An eye-reported cursor shape was judged and not sent.
     case cursorShapeSuppressed(CursorSuppressReason)
-    /// F-3: one decoded bulk message off chan 8's ARQ ordered stream —
-    /// exactly once, in order. Only surfaces when the agreed
-    /// capabilities carry bulkTransfer (the W7 rule-3 gate, key 11);
-    /// the shell feeds it to the BulkReceiveShell, whose replies come
-    /// back through `sendBulk`.
+    /// One decoded bulk message off chan 8's ordered stream, exactly once
+    /// (only when bulkTransfer was agreed). The shell feeds it to the
+    /// BulkReceiveShell, whose replies come back through `sendBulk`.
     case bulkMessageReceived(BulkMessage)
-    /// P-1: a sha-verified clipboard IMAGE arrived over the bulk
-    /// channel — the shell applies it through the leaf's image seam.
-    /// Only surfaces when the image gate (keys 10 ∧ 12) survived
-    /// intersection; the sync book is already pre-armed against the
-    /// apply's OS echo. Payload bytes appear here and nowhere else —
-    /// never in logs (the CL-15 rule).
+    /// A sha-verified clipboard image arrived over the bulk channel (only
+    /// when keys 10 ∧ 12 were agreed); the sync book is already pre-armed
+    /// against the apply's OS echo. Payload bytes appear here and never in
+    /// logs.
     case clipboardImageReceived(data: [UInt8], mime: String)
-    /// P-1: a host image copy left as bulk-channel cargo (marker +
-    /// offer in flight; byte count only).
+    /// A host image copy left as bulk cargo (byte count only).
     case clipboardImageShareStarted(byteCount: Int)
-    /// P-1: the client verified the digest — the image landed.
+    /// The client verified the digest — the image landed.
     case clipboardImageShareCompleted(byteCount: Int)
-    /// P-1: an image share died; `byRemote` says whose abort it was
-    /// (a remote declined/busy is routine weather — best-effort
-    /// latest-wins).
+    /// An image share died; `byRemote` says whose abort it was (a remote
+    /// decline/busy is routine — best-effort, latest wins).
     case clipboardImageShareAborted(
         reason: BulkAbortReason, byRemote: Bool
     )
-    /// P-1: an admitted incoming image died before landing — nothing
-    /// was applied.
+    /// An admitted incoming image died before landing; nothing applied.
     case clipboardImageReceiveAborted(
         reason: BulkAbortReason, byRemote: Bool
     )
-    /// P-1: a leaf-reported image copy was judged and NOT shared —
-    /// the loop-prevention/dedupe/ceiling/lane discipline holding.
+    /// A leaf-reported image copy was judged and not shared.
     case clipboardImageSuppressed(ClipboardImageSuppressReason)
-    /// P-1: incoming image cargo was refused; the typed abort is
-    /// already queued on chan 8.
+    /// Incoming image cargo was refused; the typed abort is already queued.
     case clipboardImageRefused(ClipboardImageRefuseReason)
-    /// P-1: the peer broke the bulk state machine inside the
+    /// The peer broke the bulk state machine inside the
     /// clipboard lane (the abort is already queued).
     case clipboardImageViolation(BulkTransferViolation)
 }
 
-/// Why a leaf-reported host clipboard change did not become a 0x1B
-/// (CL-15's suppression axis). Counted and surfaced, never thrown.
+/// Why a leaf-reported host clipboard change did not become a 0x1B.
+/// Counted and surfaced, never thrown.
 public enum ClipboardSuppressReason: Equatable, Sendable {
     /// The OS reporting our own client-set apply back — the boomerang
     /// the sync book exists to stop.
@@ -419,7 +345,7 @@ public enum ClipboardSuppressReason: Equatable, Sendable {
     case overBudget
 }
 
-/// Why an eye-reported cursor shape was not sent (E3).
+/// Why an eye-reported cursor shape was not sent.
 public enum CursorSuppressReason: Equatable, Sendable {
     /// Identical to the last sent shape — the client already wears it.
     case duplicate
@@ -429,11 +355,10 @@ public enum CursorSuppressReason: Equatable, Sendable {
     case overBudget
 }
 
-/// Why a NACK did not produce a retransmit (HS-17's verdict axis).
+/// Why a NACK did not produce a retransmit.
 public enum NackStaleReason: Equatable, Sendable {
-    /// The frame is older than the last IDR — the decode chain past
-    /// that IDR no longer references it (§1.1 rule 3; the IDR itself
-    /// stays repairable per §5.2's burst-loss rationale).
+    /// The frame is older than the last IDR, whose decode chain no longer
+    /// references it (the IDR itself stays repairable).
     case olderThanIdr
     /// SRTT + retransmit serialization no longer fit the remaining
     /// freeze budget (or no RTT evidence exists to promise they do).
@@ -443,8 +368,7 @@ public enum NackStaleReason: Equatable, Sendable {
     case unavailable
     /// Every named shard already rode its one retransmit.
     case alreadyRepaired
-    /// FROZEN/closed: datagram sends (retransmits included) are
-    /// suppressed (resiliency §4's freeze protocol).
+    /// FROZEN/closed: datagram sends, retransmits included, are suppressed.
     case sendsSuppressed
 }
 
@@ -456,9 +380,9 @@ public enum RateChangeReason: Equatable, Sendable {
     case loss
     /// Clean windows + fresh delivery evidence: ≤10%/s toward ceiling.
     case evidence
-    /// A machine-demanded IDR pacing policy was applied (W4b).
+    /// A machine-demanded IDR pacing policy was applied.
     case idrPacing(IdrPacing)
-    /// NACK-evidenced loss FEC could not absorb (rung 3, HS-17).
+    /// NACK-evidenced loss FEC could not absorb (rung 3).
     case postFecLoss
 }
 
@@ -476,39 +400,35 @@ public enum SessionDropReason: Equatable, Sendable {
     case unhandledChannel(UInt8)
     case handshakeFailed(String)
     case duplicateConnectionIdTlv
-    /// A message 1 beyond the HandshakeGate budget: dropped unread,
-    /// before any Noise state was allocated (HS-9's flood posture).
+    /// A message 1 beyond the HandshakeGate budget, dropped unread before
+    /// any Noise state was allocated.
     case handshakeThrottled
-    /// A RetryHandshake1 (0x14) whose cookie did not verify — a spoofer
-    /// or a stale/replayed cookie, dropped before any Noise (HS-21).
+    /// A RetryHandshake1 (0x14) whose cookie did not verify (spoofed,
+    /// stale or replayed), dropped before any Noise.
     case handshakeCookieInvalid
     /// A verbatim repeat of the answered message 1 from a tuple other
     /// than the one it was answered on: message 2 goes only to the
     /// tuple that asked, so a replayer cannot aim it elsewhere.
     case handshakeRepeatOffPath
     /// A chan-3 payload FeedbackReport.decode refused. Still counted as
-    /// media-path evidence (an authenticated arrival is an arrival) but
-    /// the estimator never sees it — HS-16 runs on parsed reports only.
+    /// media-path evidence (an authenticated arrival) but never fed to the
+    /// estimator.
     case malformedFeedback
-    /// A 0x18 routing request without hostAudioRouting in the agreed
-    /// set — the peer is using a capability it never negotiated
-    /// (HS-18; the W7 rule-3 gate holding). Dropped loud, never fatal.
+    /// A 0x18 routing request without hostAudioRouting agreed — the peer
+    /// used a capability it never negotiated. Dropped loud, never fatal.
     case audioRoutingNotNegotiated
-    /// A 0x1A clipboard set without clipboardText in the agreed set
-    /// (CL-15; the same rule-3 gate). Dropped loud, never fatal.
+    /// A 0x1A clipboard set without clipboardText agreed. Dropped loud,
+    /// never fatal.
     case clipboardNotNegotiated
-    /// A chan-8 datagram without bulkTransfer in the agreed set (F-3;
-    /// the same rule-3 gate — the toggle-off host never declared key
-    /// 11, so any bulk traffic is a peer using a superpower it never
-    /// negotiated). Dropped loud, never fatal.
+    /// A chan-8 datagram without bulkTransfer (key 11) agreed. Dropped
+    /// loud, never fatal.
     case bulkNotNegotiated
     /// A chan-8 ARQ-delivered message that failed BulkMessage.decode
     /// (outside the 0x1C–0x21 sextet and the 0x22 marker, or hostile
     /// interior bytes).
     case malformedBulk
-    /// A 0x22 clipboard-image cargo marker without the image gate
-    /// (keys 10 ∧ 12) in the agreed set (P-1; the same rule-3 gate).
-    /// Dropped loud, never fatal.
+    /// A 0x22 clipboard-image cargo marker without the image gate (keys
+    /// 10 ∧ 12) agreed. Dropped loud, never fatal.
     case clipboardImagesNotNegotiated
 }
 
@@ -522,9 +442,9 @@ public enum SessionError: Error, Equatable, Sendable {
     case bulkNotNegotiated
 }
 
-/// Where the estimator's send ledger takes its timestamp. Sans-IO tests and
-/// callers with an immediate sink keep the historical pacer-release seam;
-/// the Linux UDP shell confirms only after the kernel accepts the datagram.
+/// Where the estimator's send ledger takes its timestamp: at pacer
+/// release (sans-IO tests, immediate sinks), or once the kernel accepts
+/// the datagram (the Linux UDP shell).
 public enum SessionSendAccounting: Equatable, Sendable {
     case pacerRelease
     case socketConfirmed
@@ -554,7 +474,7 @@ public struct SessionCounters: Equatable, Sendable {
     /// its in-flight offer window. Encode-time is not delivery proof; after
     /// the window a continuing episode may re-arm.
     public var idrRequestsSupersededByKeyframe = 0
-    /// Reliable CTRL messages the ARQ delivered (HS-8).
+    /// Reliable CTRL messages the ARQ delivered.
     public var arqMessages = 0
     /// Ingested ARQ bytes the endpoint refused or deduplicated.
     public var arqIgnored = 0
@@ -564,12 +484,10 @@ public struct SessionCounters: Equatable, Sendable {
     /// Chan 3 arrivals (parsed or not — any authenticated arrival is
     /// media-path evidence for the blackout detector).
     public var feedbackDatagrams = 0
-    /// Chan 3 payloads that decoded as FeedbackReports and fed the
-    /// HS-16 estimator.
+    /// Chan 3 payloads that decoded and fed the estimator.
     public var feedbackReportsParsed = 0
-    /// Chan 3 payloads that failed FeedbackReport.decode (counted,
-    /// dropped loud, never fatal — hostile bytes cannot starve the
-    /// detector, they just carry no estimator evidence).
+    /// Chan 3 payloads that failed FeedbackReport.decode (counted, never
+    /// fatal; they carry no estimator evidence).
     public var feedbackReportsMalformed = 0
     /// Estimator-driven pacer rate moves (both directions).
     public var rateChanges = 0
@@ -583,14 +501,12 @@ public struct SessionCounters: Equatable, Sendable {
     public var kernelPressureShedFrames = 0
     public var kernelPressureShedDatagrams = 0
     public var kernelPressureShedBytes = 0
-    /// Message 1s the HandshakeGate refused (HS-9's flood evidence).
+    /// Message 1s the HandshakeGate refused.
     public var handshakesThrottled = 0
-    /// RetryChallenges (0x13) the host minted under flood (HS-21) — the
-    /// bounded-cost answer: one HMAC + a reply smaller than the request,
-    /// no Noise, no per-client state.
+    /// RetryChallenges (0x13) minted under flood: one HMAC and a reply
+    /// smaller than the request, no Noise, no per-client state.
     public var handshakeChallengesMinted = 0
-    /// RetryHandshake1s (0x14) whose cookie verified — the extra-round-
-    /// trip admits that got in while require-cookie mode stood.
+    /// RetryHandshake1s (0x14) whose cookie verified.
     public var handshakeCookiesVerified = 0
     /// RetryHandshake1s whose cookie did NOT verify (spoof/replay).
     public var handshakeCookiesRejected = 0
@@ -604,18 +520,16 @@ public struct SessionCounters: Equatable, Sendable {
     /// Video frames the lifecycle machine refused to put on the wire
     /// (FROZEN's freezeDatagramSends, or a closed session).
     public var videoFramesSuppressed = 0
-    /// HS-25: encoded frames too large for one protected FEC group
-    /// (the GF(2⁸) 255-shard block) — dropped with the keyframe latch
-    /// armed instead of thrown; one oversized frame must never kill
-    /// the session.
+    /// Encoded frames too large for one FEC group (the GF(2⁸) 255-shard
+    /// block), dropped with the keyframe latch armed instead of thrown.
     public var videoFramesUnprotectable = 0
-    /// ModeTransitions emitted (HS-11's live evidence).
+    /// ModeTransitions emitted.
     public var modeTransitionsSent = 0
-    /// Client input events delivered off the reliable stream (HS-13).
+    /// Client input events delivered off the reliable stream.
     public var inputEventsReceived = 0
     /// (seq, rx, inject) tuples sent back in 0x17 echo messages.
     public var inputEchoTuplesSent = 0
-    /// 5 ms Opus packets accepted onto the wire (HS-15).
+    /// 5 ms Opus packets accepted onto the wire.
     public var audioPacketsIngested = 0
     /// Audio-channel datagrams sealed and enqueued: data shards +
     /// parity (6 per completed 4+2 group).
@@ -629,10 +543,9 @@ public struct SessionCounters: Equatable, Sendable {
     /// in place after sealing, avoiding a third header+payload array.
     public var audioSealedDatagramsAssembledInPlace = 0
     /// Audio packets refused because the session is closed. FROZEN and
-    /// IDLE deliberately never count here — audio is the path probe
-    /// and keeps flowing through both (W4b).
+    /// IDLE never count here: audio is the path probe and keeps flowing.
     public var audioPacketsSuppressed = 0
-    /// HS-17: NACK entries consumed from parsed feedback reports.
+    /// NACK entries consumed from parsed feedback reports.
     public var nackEntriesReceived = 0
     /// NACK entries that passed the gate and enqueued repairs.
     public var nacksHonored = 0
@@ -640,38 +553,35 @@ public struct SessionCounters: Equatable, Sendable {
     public var nacksJudgedStale = 0
     /// Repair datagrams enqueued (fresh seqs on videoTail).
     public var repairDatagramsEnqueued = 0
-    /// HS-32: explicit 0x23 repair refusals sent (stale-budget,
-    /// superseded, unknown-frame — the verdicts the client can act
-    /// on; FROZEN/closed and already-repaired stay silent by design).
+    /// Explicit 0x23 repair refusals sent (stale-budget, superseded,
+    /// unknown-frame); FROZEN/closed and already-repaired stay silent.
     public var repairRefusalsSent = 0
-    /// HS-32: NACKs honored under the opening-IDR exemption (nothing
-    /// on glass yet — the last IDR repairable regardless of budget).
+    /// NACKs honored under the opening-IDR exemption.
     public var openingExemptRepairsHonored = 0
     /// FEC regime steps applied to the packetizing seam.
     public var fecRegimeSteps = 0
-    /// HS-18: 0x18 routing requests delivered (past the rule-3 gate).
+    /// 0x18 routing requests delivered (past the capability gate).
     public var audioRoutingRequestsReceived = 0
-    /// HS-18: 0x19 posture statuses sent.
+    /// 0x19 posture statuses sent.
     public var audioRoutingStatusesSent = 0
-    /// CL-15: 0x1A clipboard sets delivered (past the rule-3 gate).
+    /// 0x1A clipboard sets delivered (past the capability gate).
     public var clipboardSetsReceived = 0
-    /// Tripwire: 0x25 track-state announcements sent.
+    /// 0x25 track-state announcements sent.
     public var audioTrackStatesSent = 0
-    /// Video posture: 0x26 announcements sent.
+    /// 0x26 video posture announcements sent.
     public var videoPostureStatesSent = 0
-    /// CL-15: 0x1B clipboard announces sent.
+    /// 0x1B clipboard announces sent.
     public var clipboardAnnouncesSent = 0
-    /// CL-15: leaf-reported changes the book/ceiling suppressed.
+    /// Leaf-reported changes the book/ceiling suppressed.
     public var clipboardAnnouncesSuppressed = 0
-    /// E3: 0x24 cursor shapes sent.
+    /// 0x24 cursor shapes sent.
     public var cursorShapesSent = 0
-    /// E3: eye-reported shapes the dedupe/ceiling suppressed.
+    /// Eye-reported shapes the dedupe/ceiling suppressed.
     public var cursorShapesSuppressed = 0
-    /// F-3: decoded bulk messages delivered off chan 8's ordered
-    /// stream (past the rule-3 gate).
+    /// Decoded bulk messages delivered off chan 8's ordered stream.
     public var bulkMessagesReceived = 0
-    /// F-3: sealed chan-8 datagrams carrying bulk ARQ frames, fresh
-    /// and retransmit alike.
+    /// Sealed chan-8 datagrams carrying bulk ARQ frames, fresh and
+    /// retransmit alike.
     public var bulkArqDatagramsSent = 0
 
     public init() {}
@@ -697,8 +607,8 @@ public final class Session {
     public let config: SessionConfig
     /// Minted at init; rides every outbound datagram as TLV 0x01.
     public let connectionId: ConnectionId
-    /// HS-12's decision machine; public for the loop's routing queries
-    /// (primary tuple, send allowances) and the tests' state checks.
+    /// The path decision machine; public for the loop's routing queries
+    /// and tests.
     public private(set) var validator: PathValidator
     public var phase: Phase {
         lifecycleLane.isEstablished ? .established : .awaitingHandshake
@@ -706,17 +616,16 @@ public final class Session {
     public var clock: SessionClockStats { beaconClock.stats }
     public private(set) var counters = SessionCounters()
 
-    /// The completed Noise handshake's transcript hash — the sid the
-    /// W6 pairing run binds to (decision §8.2). Nil before
-    /// establishment and in insecure mode (nothing to pair against).
+    /// The completed handshake's transcript hash — the sid pairing binds
+    /// to. Nil before establishment and in passthrough mode.
     public var handshakeHash: [UInt8]? { transport?.handshakeHash }
 
     private var channel: VideoChannel!
-    /// HS-15: the audio channel's framer — 5 ms Opus packets → 4+2 RS
-    /// groups → chan-1 envelopes. The session owns the seal and the
-    /// pacer enqueue; the framer owns the audio seq/packet numbering.
+    /// The audio framer: 5 ms Opus packets → 4+2 RS groups → chan-1
+    /// envelopes. The session owns seal and enqueue; the framer owns the
+    /// audio seq/packet numbering.
     private var audio: AudioFramer!
-    /// Nil until the handshake completes; always nil in insecure mode.
+    /// Nil until the handshake completes; always nil in passthrough mode.
     private var transport: NoiseTransport?
 
     /// Last frame admitted to packetization (nil before the first).
@@ -725,16 +634,12 @@ public final class Session {
         lastAdmittedVideoFrameNumber?.next ?? FrameNumber(rawValue: 0)
     }
 
-    /// The reliable CTRL sublayer (HS-8). Host clock domain: the
-    /// endpoint's instants derive from the loop's monotonic `now`
-    /// (µs = ns/1000) — the same CLOCK_MONOTONIC family the host-µs
-    /// beacon/envelope domain bottoms out in on Linux.
+    /// The reliable CTRL sublayer. Its instants are µs derived from the
+    /// loop's monotonic `now` (ns / 1000).
     private var ctrlArqLane: SessionArqLane
-    /// F-3: the bulk channel's OWN reliable sublayer (design record
-    /// 20260728-053300 §2 — chan 8 runs its own ArqEndpoint, never the
-    /// CTRL stream, so a file can never head-of-line-block a
-    /// keystroke). Nil when the standing consent toggle left key 11
-    /// undeclared: a toggle-off host owns no bulk machinery at all.
+    /// The bulk channel's own ARQ endpoint: chan 8 never shares the CTRL
+    /// stream, so a file cannot head-of-line-block a keystroke. Nil when
+    /// the consent toggle left key 11 undeclared.
     private var bulkArqLane: SessionArqLane?
 
     /// Message-1 admissions, consulted before any handshake allocation.
@@ -754,8 +659,7 @@ public final class Session {
     /// once the initiator is confirmed.
     public var answeredMessage1: [UInt8]? { answeredHandshake?.message1 }
     private var supersedingHandshake: SupersedingHandshake?
-    /// Whether the flood dial currently demands a retry cookie (HS-21) —
-    /// surfaced for the shell's live log.
+    /// Whether the flood dial currently demands a retry cookie.
     public var handshakeCookieMode: Bool { handshakeGate.cookieMode }
 
     private var beaconClock: SessionBeaconClock
@@ -768,32 +672,27 @@ public final class Session {
     /// offer; never treated as proof the client accepted an IRAP.
     private var lastKeyframeOfferedAtNS: UInt64?
 
-    // MARK: HS-11 lifecycle + W7 capabilities state
+    // MARK: Lifecycle + capabilities state
 
-    /// The W4b state machine, its projected timer, and FROZEN's local video
+    /// The lifecycle machine, its projected timer, and FROZEN's local video
     /// admission posture. External lifecycle effects stay in Session.
     private var lifecycleLane: SessionLifecycleLane
-    /// The W7 negotiation machine, host role.
+    /// The capability negotiation machine, host role.
     private var negotiator: CapabilityNegotiator
-    /// The HS-16 congestion estimator: send ledger + delivery-rate/
-    /// queuing-delay/loss evidence → the pacer's setRate seam, W4b's
-    /// RECOVERY window verdicts, and the IdrPacing numbers.
+    /// The congestion estimator: send ledger + delivery/queuing-delay/loss
+    /// evidence → the pacer rate, RECOVERY verdicts and IdrPacing numbers.
     private let estimator: RateEstimator
-    /// The `now` of the pump pass currently draining the pacer — the
-    /// send instant the estimator's ledger records (the sink closure
-    /// has no clock of its own; sans-IO means the caller's `now` is
-    /// the only truth).
+    /// The `now` of the pump pass draining the pacer — the send instant
+    /// the estimator's ledger records (the sink closure has no clock).
     private var pumpNowNS: UInt64
     private let sendAccounting: SessionSendAccounting
     private var socketPending = SessionSocketPendingBook()
 
-    // MARK: HS-13 input state
+    // MARK: Input state
 
-    /// The seq of the last input event the shell REPORTED injected —
-    /// stamped on every subsequent video frame's shards as TLV 0x03
-    /// (the overview's "stamps lastInputSeq into the next frame"),
-    /// which is what lets the client close per-keystroke
-    /// input-to-photon. Nil until the first injection; never cleared.
+    /// The seq of the last input event the shell reported injected,
+    /// stamped on every later video frame as TLV 0x03 so the client can
+    /// measure input-to-photon. Nil until the first injection.
     public var lastInputSeq: UInt32? { inputEchoBook.lastInjectedSequence }
     /// Echo stamp and pending-tuples owner. `Session` retains reliable
     /// transport, counters, and events.
@@ -808,84 +707,73 @@ public final class Session {
         lifecycleLane.closeReason
     }
     /// The agreed capability set; nil until the client's declaration
-    /// lands (the CL-7 client does not send one yet — nil is the
-    /// grandfathered pre-W7 posture, not an error).
+    /// lands (a client that sends none stays nil, which is not an error).
     public var agreedCapabilities: Capabilities? { negotiator.agreed }
-    /// HS-18: true when hostAudioRouting (key 9) survived the
-    /// intersection — both ends declared it byte-equal. Gates 0x18
-    /// consumption and 0x19 emission.
+    /// True when hostAudioRouting (key 9) survived the intersection.
+    /// Gates 0x18 consumption and 0x19 emission.
     public var agreedHostAudioRouting: Bool {
         negotiator.agreed?.hostAudioRouting == true
     }
-    /// The tripwire's gate: true when audioQuietPosture (key 15)
-    /// survived the intersection. The audio leg gates transmission
-    /// ONLY under this agreement — a legacy client keeps the
-    /// always-on contract, silence included.
+    /// True when audioQuietPosture (key 15) survived the intersection.
+    /// The audio leg gates transmission only under this agreement; a
+    /// legacy client keeps always-on audio, silence included.
     public var agreedAudioQuietPosture: Bool {
         negotiator.agreed?.audioQuietPosture == true
     }
-    /// The video ladder's gate: true when videoQuietPosture (key 16)
-    /// survived the intersection — the keepalive backs off only under
-    /// this agreement.
+    /// True when videoQuietPosture (key 16) survived the intersection;
+    /// the keepalive backs off only under this agreement.
     public var agreedVideoQuietPosture: Bool {
         negotiator.agreed?.videoQuietPosture == true
     }
-    /// CL-15: true when clipboardText (key 10) survived the
-    /// intersection. Gates 0x1A consumption and 0x1B emission.
+    /// True when clipboardText (key 10) survived the intersection. Gates
+    /// 0x1A consumption and 0x1B emission.
     public var agreedClipboardText: Bool {
         negotiator.agreed?.clipboardText == true
     }
-    /// F-3: true when bulkTransfer (key 11) survived the intersection.
-    /// Gates chan-8 ingest and `sendBulk` — declaration is dialect,
-    /// consent is the standing toggle that decided whether key 11 was
-    /// declared at all (design record 20260728-053300 §6).
+    /// True when bulkTransfer (key 11) survived the intersection. Gates
+    /// chan-8 ingest and `sendBulk`; consent is the standing toggle that
+    /// decided whether key 11 was declared.
     public var agreedBulkTransfer: Bool {
         negotiator.agreed?.bulkTransfer == true
     }
-    /// P-1: true when the image gate (keys 10 ∧ 12) survived the
+    /// True when the image gate (keys 10 ∧ 12) survived the
     /// intersection. Gates 0x22 consumption and image cargo emission.
     /// Key 11 is deliberately not consulted — the file-drop consent
     /// must not couple to the clipboard tier.
     public var agreedClipboardImages: Bool {
         negotiator.agreed?.clipboardImagesAgreed == true
     }
-    /// E3: true when cursorShape (key 13) survived the intersection.
-    /// Gates 0x24 emission — only the direct eye declares the key,
-    /// and only a shape-capable client answers it.
+    /// True when cursorShape (key 13) survived the intersection. Gates
+    /// 0x24 emission; only the direct eye declares the key.
     public var agreedCursorShape: Bool {
         negotiator.agreed?.cursorShape == true
     }
 
-    /// CL-15: the loop-prevention/dedupe books (design doc §5) — one
-    /// per session, shared by the 0x1A consume path (pre-arms echo
-    /// suppression) and `noteHostClipboardChanged` (judges the leaf's
-    /// change signals). P-1 keys images into the SAME book (0xFF ‖
-    /// sha256 — disjoint from any text's UTF-8 by construction), so
-    /// cross-modal moves stay honest.
+    /// The loop-prevention/dedupe book, shared by the 0x1A consume path
+    /// (pre-arms echo suppression) and `noteHostClipboardChanged`. Images
+    /// key into the same book (0xFF ‖ sha256, disjoint from any UTF-8
+    /// text), so cross-modal moves stay honest.
     private var clipboardBook = ClipboardSyncBook()
-    /// E3: the last 0x24 actually sent — the dedupe slot (nil until
-    /// the first send, so a fresh session always passes the eye's
-    /// standing shape through).
+    /// The last 0x24 sent — the dedupe slot (nil until the first send, so
+    /// a fresh session passes the eye's standing shape through).
     private var lastSentCursorShape: CursorShape?
 
-    /// P-1: the clipboard-image lane — F-2's engines driven with
-    /// memory-backed cargo, one per session. Inert unless the image
-    /// gate (keys 10 ∧ 12) agreed: every entry point checks first.
+    /// The clipboard-image lane (memory-backed bulk cargo). Inert unless
+    /// the image gate (keys 10 ∧ 12) agreed: every entry point checks.
     private var clipboardImageChannel = ClipboardImageChannel()
     /// Id mint for image cargo (sans-IO: the init's injected
     /// generator, boxed so the stored property stays concrete).
     private var imageRng: BoxedRng
 
-    /// P-1: the image lane's own books (share/apply/refuse verdicts).
+    /// The image lane's own books (share/apply/refuse verdicts).
     public var clipboardImageCounters: ClipboardImageChannelCounters {
         clipboardImageChannel.counters
     }
 
     /// - Parameters:
     ///   - clientTuple: the peer's 4-tuple at session start — the
-    ///     validator's initial (trusted) path. In Noise mode this is
-    ///     where message 1 arrived from; in insecure mode the fixed
-    ///     configured peer.
+    ///     validator's initial (trusted) path: where message 1 arrived
+    ///     from, or the fixed peer in passthrough mode.
     ///   - send: receives every outbound datagram in pacer order. The
     ///     loop maps `pacerClass` → TOS and `destination` (nil = the
     ///     primary path) → the socket call.
@@ -911,13 +799,10 @@ public final class Session {
         self.ctrlArqLane = SessionArqLane(
             channel: .ctrl, config: arqConfig
         )
-        // F-3/P-1: the bulk endpoint exists exactly when something
-        // declared chan-8 carriage — key 11 (the standing file-drop
-        // consent) or key 12 (the clipboard-image dialect; its cargo
-        // rides the same stream). A host declaring neither has no
-        // chan-8 machinery to confuse. Same clamped config as CTRL:
-        // the default 262,144 B message budget clears a max chunk
-        // message (17 B + 128 KiB) with 2× headroom.
+        // The bulk endpoint exists exactly when something declared chan-8
+        // carriage: key 11 (file-drop consent) or key 12 (clipboard
+        // images). Same clamped config as CTRL: the default 262,144 B
+        // message budget clears a max chunk message (17 B + 128 KiB) 2×.
         self.bulkArqLane = (config.capabilities.bulkTransfer
             || config.capabilities.clipboardImages)
             ? SessionArqLane(channel: .bulkTransfer, config: arqConfig)
@@ -976,11 +861,9 @@ public final class Session {
             seal: { [unowned self] plaintext, aad, envelope in
                 try self.sealPayload(plaintext, aad: aad, envelope: envelope)
             },
-            // The estimator's send ledger taps the sink: every datagram
-            // the pacer releases is recorded (channel, seq) →
-            // (instant, wire bytes) so the client's dispersion samples
-            // can be matched back to their trains (HS-16). The send
-            // instant is the pump pass's `now` — the sink has no clock.
+            // The estimator's send ledger taps the sink, recording (channel,
+            // seq) → (instant, wire bytes) so dispersion samples match their
+            // trains.
             send: { [unowned self] datagram in
                 switch self.sendAccounting {
                 case .pacerRelease:
@@ -1053,7 +936,7 @@ public final class Session {
             supersedingHandshake = nil
         }
 
-        // The HS-12 demux trigger: only an authenticated arrival may
+        // The demux trigger: only an authenticated arrival may
         // probe a new tuple. The conn-id TLV is readable by anyone who
         // saw one datagram, and the validator has one probe slot; the
         // AEAD, which does not depend on the source address, is what
@@ -1071,9 +954,8 @@ public final class Session {
 
         switch envelope.channel {
         case .ctrl:
-            // Any authenticated CTRL arrival is liveness/FROZEN-exit
-            // evidence, but deliberately NOT the 350 ms detector's
-            // (W4b: 1 Hz beacons cannot drive a 350 ms detector).
+            // Authenticated CTRL is liveness/FROZEN-exit evidence, but not
+            // the 350 ms detector's (1 Hz beacons cannot drive it).
             events += runLifecycle(
                 .ctrlEvidence, now: now, hostMicroseconds: hostMicroseconds
             )
@@ -1083,9 +965,8 @@ public final class Session {
             )
         case .feedback:
             counters.feedbackDatagrams += 1
-            // The media-path proof stream: feeds the blackout detector
-            // (any authenticated chan-3 arrival — a malformed interior
-            // is still an arrival on the media path).
+            // The media-path proof stream feeds the blackout detector; a
+            // malformed interior is still an arrival.
             events += runLifecycle(
                 .mediaPathEvidence, now: now, hostMicroseconds: hostMicroseconds
             )
@@ -1098,9 +979,8 @@ public final class Session {
             events += runLifecycle(
                 .ctrlEvidence, now: now, hostMicroseconds: hostMicroseconds
             )
-            // The W7 rule-3 gate (F-3/P-1): chan-8 traffic outside
-            // BOTH agreements (key 11 files, keys 10∧12 images) is a
-            // peer using a superpower it never negotiated — dropped
+            // Chan-8 traffic outside both agreements (key 11 files, keys
+            // 10∧12 images) uses a capability never negotiated: dropped
             // loud. Message-level routing separates the two lanes.
             guard agreedBulkTransfer || agreedClipboardImages,
                   bulkArqLane != nil else {
@@ -1188,13 +1068,12 @@ public final class Session {
             return [refuse(error)]
         }
         guard case .noise(let hostStatic) = config.crypto else {
-            counters.dropped += 1 // unreachable: insecure never waits
+            counters.dropped += 1 // unreachable: passthrough never waits
             return [.dropped(.notEstablished(envelope.channel.rawValue))]
         }
-        // Two admissible first words: a bare Noise message 1 (0x05)
-        // or a RetryHandshake1 (0x14) echoing a cookie the host
-        // minted under flood (HS-21/W8). Anything else is
-        // pre-establishment noise.
+        // Two admissible first words: a bare Noise message 1 (0x05) or a
+        // RetryHandshake1 (0x14) echoing a cookie the host minted under
+        // flood. Anything else is pre-establishment noise.
         let presentedCookie: ArraySlice<UInt8>?
         let message1: ArraySlice<UInt8>
         switch payload.first {
@@ -1310,14 +1189,12 @@ public final class Session {
         return .success(responder)
     }
 
-    /// A handshake initiation reaching an answered, unconfirmed session.
-    /// The client's retransmit timer resends message 1 verbatim, and a
-    /// client that already read our message 2 is keyed to it, so a
-    /// verbatim repeat gets the same message 2 again — on the path that
-    /// asked. Any other message 1 goes through the gate; if it
-    /// authenticates it supersedes this session (the shell replaces it),
-    /// so a replayed, abandoned, or lost-answer handshake holds the host
-    /// only until a real client dials.
+    /// A handshake initiation reaching an answered, unconfirmed session. A
+    /// verbatim repeat (the client's retransmit timer) gets the same
+    /// message 2 again, on the path that asked. Any other message 1 goes
+    /// through the gate and, if it authenticates, supersedes this session,
+    /// so a replayed or abandoned handshake holds the host only until a
+    /// real client dials.
     private func receiveInitiationWhileUnconfirmed(
         _ initiation: Initiation,
         from tuple: FourTuple,
@@ -1415,7 +1292,7 @@ public final class Session {
     /// One encoded frame into the sealed, paced, conn-id-tagged stream.
     /// The session owns frame numbering (from 0). Throws
     /// `SessionError.notEstablished` before the transport exists, and
-    /// whatever the packetize/seal path throws — loud, per W2.
+    /// whatever the packetize/seal path throws.
     @discardableResult
     public func ingestVideoFrame(
         _ annexB: [UInt8],
@@ -1479,23 +1356,18 @@ public final class Session {
         guard phase == .established else {
             throw SessionError.notEstablished
         }
-        // FROZEN's freezeDatagramSends (and the terminal state): the
-        // encoder may keep producing, the wire goes quiet. Suppressed
-        // frames are counted, never thrown — the loop must not die
-        // because the path did.
+        // FROZEN (and closed): the encoder may keep producing, the wire
+        // goes quiet. Suppressed frames are counted, never thrown.
         if lifecycleLane.videoSendsSuppressed {
             counters.videoFramesSuppressed += 1
             return nil
         }
-        // HS-25: a frame beyond what one FEC group can protect is
-        // UNSHIPPABLE (the 255-shard GF(2⁸) block; the fec field binds
-        // one group per frame number, so splitting is a wire-contract
-        // change, not an option here). The frame is dropped: counted,
-        // its frame number unconsumed (the client sees no numbering
-        // gap), and a fresh IDR armed through the same coalesced latch
-        // client 0x10s pull, because whatever referenced the dropped
-        // frame must be re-anchored. The shell bounds the encoder's HRD
-        // buffer by this ceiling (EncoderHrd), so the re-encode fits.
+        // A frame beyond one FEC group (the 255-shard GF(2⁸) block; the
+        // fec field binds one group per frame number) is unshippable. It
+        // is dropped with its frame number unconsumed (no numbering gap)
+        // and a fresh IDR armed through the coalesced latch to re-anchor
+        // whatever referenced it. The shell bounds the encoder's HRD
+        // buffer by this ceiling, so the re-encode fits.
         let ceiling = channel.maxProtectableFrameByteCount(
             hasLastInputSeq: lastInputSeq != nil
         )
@@ -1557,7 +1429,7 @@ public final class Session {
             now: now,
             isBorrowed: isBorrowed
         )
-        // HS-32: the opening exemption's glass proxy needs the first
+        // The opening exemption's glass proxy needs the first
         // IDR's group size — "received everything through this group"
         // is the evidence that something plausibly decoded.
         if prepared.isKeyframe {
@@ -1568,27 +1440,20 @@ public final class Session {
         return shards
     }
 
-    // MARK: Audio (HS-15)
+    // MARK: Audio
 
-    /// One 5 ms Opus packet onto the sealed, paced, conn-id-tagged
-    /// audio channel: the AudioFramer cuts it into chan-1 datagrams
-    /// (its own data shard now; the group's 2 parity shards behind the
-    /// 4th packet), each sealed with the exact header bytes as AAD —
-    /// the same discipline as every other datagram — and enqueued at
-    /// PacerClass.audio, structurally above every video class.
+    /// One 5 ms Opus packet onto the sealed, paced, conn-id-tagged audio
+    /// channel: the AudioFramer cuts it into chan-1 datagrams (its own
+    /// data shard now; the group's 2 parity shards behind the 4th
+    /// packet), each sealed with the header bytes as AAD and enqueued at
+    /// PacerClass.audio, above every video class.
     ///
-    /// Lifecycle ruling, deliberate and pinned by the gate tests:
-    /// audio flows in ACTIVE, IDLE, FROZEN, and RECOVERY — W4b's
-    /// FROZEN is "datagram VIDEO stops, audio continues as the path
-    /// probe", and the overview's idle silence is "audio and the
-    /// beacon keep flowing". The continuous 5 ms cadence is what lets
-    /// the client's blackout detector tighten to 350 ms (CL-8's
-    /// deviation note) and is the always-on queue-delay sensor
-    /// (resiliency §2), so FROZEN's video projection is ignored here.
-    /// Only `closed` suppresses (counted, never thrown — the audio
-    /// thread must not die because the session did). Throws
-    /// `SessionError.notEstablished` before the transport exists, and
-    /// what the framer/seal path throws — loud, per W2.
+    /// Audio flows in ACTIVE, IDLE, FROZEN and RECOVERY: it is the path
+    /// probe while video is frozen, its 5 ms cadence lets the client's
+    /// blackout detector run at 350 ms, and it is the always-on
+    /// queue-delay sensor. Only `closed` suppresses (counted, never
+    /// thrown). Throws `SessionError.notEstablished` before the transport
+    /// exists, and what the framer/seal path throws.
     @discardableResult
     public func ingestAudioPacket(
         _ packet: [UInt8],
@@ -1638,16 +1503,14 @@ public final class Session {
     }
 
     /// Audio datagrams still waiting in the shared pacer — the audio
-    /// thread's bounded "make sure it left" loop reads this (HS-15).
+    /// thread's bounded "make sure it left" loop reads this.
     public var queuedAudioDatagramCount: Int {
         channel.queuedCount(.audio)
     }
 
-    /// Video-class bytes (fresh + repair tail) still waiting in the
-    /// shared pacer or the shell's socket outbox. The kernel-pressure
-    /// governor turns them into wire time, which the capture leg's
-    /// pre-encode admission (VideoAdmissionGate) weighs against the
-    /// queue budget.
+    /// Video-class bytes (fresh + repair tail) still queued in the pacer
+    /// or the shell's socket outbox — what pre-encode admission weighs
+    /// against the queue budget.
     public var queuedVideoBytes: Int {
         channel.queuedBytes(.freshVideo) + channel.queuedBytes(.videoTail)
             + socketPending.videoByteCount
@@ -1670,19 +1533,15 @@ public final class Session {
             : config.cleanVideoQueueBudgetNS
     }
 
-    /// The encoder-loop poll (one per tick, before encoding): true when
-    /// a fresh IDR is owed — HS-12's path promotion, a client 0x10 IDR
-    /// request, or the lifecycle machine's demand (WAKE's
-    /// armNextDamageAsIdr, RECOVERY's forceIdr). Clears every source;
-    /// fires once per demand.
+    /// The encoder-loop poll: true when a fresh IDR is owed (path
+    /// promotion, client 0x10, or a lifecycle demand). Clears every
+    /// source; fires once per demand.
     public func takeFreshKeyframeRequest() -> Bool {
         !takeFreshKeyframeDemand().isEmpty
     }
 
-    /// The same poll with its causes attached — the estimator-ramp
-    /// hunt's IDR books need to NAME why each keyframe was minted, not
-    /// just that one was owed. Clears every source; a demand may carry
-    /// several causes (they coalesced into the one frame).
+    /// The same poll with its causes attached (a demand may carry several
+    /// coalesced causes). Clears every source.
     public func takeFreshKeyframeDemand() -> FreshKeyframeDemand {
         if validator.takeFreshKeyframeRequest() {
             freshKeyframes.arm(.pathPromotion)
@@ -1692,15 +1551,13 @@ public final class Session {
         return demand
     }
 
-    // MARK: Lifecycle inputs (HS-11)
+    // MARK: Lifecycle inputs
 
-    /// The shell's injection report (HS-13): the event with `seq` was
-    /// handed to the desktop session at `injectedAtMicroseconds` (host
-    /// µs, the beacon domain). Buffers one echo tuple — flushed as 0x17
-    /// messages (≤ 32 tuples each) on the next `advance` — and moves
-    /// the lastInputSeq stamp every later video frame carries.
-    /// Buffering only, no sends: safe to call while iterating the very
-    /// events that delivered the input.
+    /// The shell's injection report: the event with `seq` was handed to
+    /// the desktop session at `injectedAtMicroseconds` (host µs). Buffers
+    /// one echo tuple, flushed as 0x17 messages (≤ 32 tuples each) on the
+    /// next `advance`, and moves the lastInputSeq stamp. No sends: safe
+    /// to call while iterating the events that delivered the input.
     public func noteInputInjected(
         seq: UInt32,
         receivedAtMicroseconds: UInt64,
@@ -1738,13 +1595,10 @@ public final class Session {
         return events
     }
 
-    /// HS-18: the shell's report that the audio leaf is now RUNNING in
-    /// `mode` — at session start (once capabilities agree) and after
-    /// every applied 0x18 flip. Emits the 0x19 status the client's
-    /// control strip renders. Silently a no-op unless the agreed set
-    /// carries hostAudioRouting: a legacy client neither asked for the
-    /// key nor knows the byte, so the status would be noise (the same
-    /// absence-is-unsupported rule that hides the client's button).
+    /// The shell's report that the audio leaf now runs in `mode` (at
+    /// session start and after every applied 0x18 flip); emits the 0x19
+    /// status. A no-op unless hostAudioRouting was agreed: a legacy
+    /// client neither asked for the key nor knows the byte.
     public func noteAudioRoutingApplied(
         _ mode: HostAudioRoutingMode, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -1761,12 +1615,9 @@ public final class Session {
         }
     }
 
-    /// The tripwire's announcement: quiet when the gate closes and on
-    /// every ~5 s still-quiet check-in, active the instant it fires
-    /// (immediately before the pre-roll burst). Silently a no-op
-    /// unless key 15 survived intersection — the noteAudioRoutingApplied
-    /// rule: a legacy client neither asked for the key nor knows the
-    /// byte.
+    /// The tripwire's announcement: quiet when the gate closes and on each
+    /// ~5 s still-quiet check-in, active the instant it fires (before the
+    /// pre-roll burst). A no-op unless key 15 was agreed.
     public func noteAudioTrackState(
         _ state: AudioTrackState.State, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -1783,9 +1634,8 @@ public final class Session {
         }
     }
 
-    /// The video posture's announcement: one 0x26 per ladder step and
-    /// one on the wake back to active. Silently a no-op unless key 16
-    /// survived intersection (the noteAudioRoutingApplied rule).
+    /// The video posture's announcement: one 0x26 per ladder step and one
+    /// on the wake back to active. A no-op unless key 16 was agreed.
     public func noteVideoPostureState(
         _ state: VideoPostureState, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -1801,16 +1651,12 @@ public final class Session {
         }
     }
 
-    /// CL-15: the shell's report that the OS clipboard changed (the
-    /// HostClipboardLeaf's onLocalChange, both genuine host copies AND
-    /// the echoes of our own client-set applies — the book tells them
-    /// apart). Judges the agreement, the book, and the ceiling before
-    /// a 0x1B leaves. Silently a no-op unless the agreed set carries
-    /// clipboardText (the noteAudioRoutingApplied rule: a legacy
-    /// client neither asked for the key nor knows the byte) or when
-    /// the leaf reports an empty clipboard (v1 does not sync
-    /// clearing). Payloads never appear in events or logs — byte
-    /// counts only.
+    /// The shell's report that the OS clipboard changed — genuine host
+    /// copies and echoes of our own client-set applies alike; the book
+    /// tells them apart. Judges the agreement, the book and the ceiling
+    /// before a 0x1B leaves. A no-op unless clipboardText was agreed, or
+    /// for an empty clipboard (clearing is not synced). Payloads never
+    /// appear in events or logs.
     public func noteHostClipboardChanged(
         _ text: String, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -1829,8 +1675,7 @@ public final class Session {
         do {
             message = try ClipboardAnnounce(text: text).encode()
         } catch {
-            // Over the v1 ceiling: routine weather (a huge host copy),
-            // suppressed and counted, never an error.
+            // Over the ceiling (a huge host copy): suppressed and counted.
             counters.clipboardAnnouncesSuppressed += 1
             return [.clipboardAnnounceSuppressed(.overBudget)]
         }
@@ -1846,13 +1691,11 @@ public final class Session {
         }
     }
 
-    /// E3: the eye's report that the hardware cursor plane changed —
-    /// a content-cropped BGRA shape or the hidden state. Judges the
-    /// agreement, the dedupe slot, and the wire contract before a
-    /// 0x24 leaves. Silently a no-op unless the agreed set carries
-    /// cursorShape (the noteAudioRoutingApplied rule: a peer that did
-    /// not declare the key does not know the byte). Pixels never appear
-    /// in events or logs — counts only.
+    /// The eye's report that the hardware cursor plane changed (a
+    /// content-cropped BGRA shape or hidden). Judges the agreement, the
+    /// dedupe slot and the wire contract before a 0x24 leaves; a no-op
+    /// unless cursorShape was agreed. Pixels never appear in events or
+    /// logs.
     public func noteCursorShapeChanged(
         _ shape: CursorShape, now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -1865,9 +1708,8 @@ public final class Session {
         do {
             message = try shape.encode()
         } catch {
-            // An over-ceiling crop or hostile geometry from the eye:
-            // suppressed and counted — the client keeps wearing the
-            // previous shape, never an error.
+            // An over-ceiling crop or hostile geometry: suppressed and
+            // counted; the client keeps the previous shape.
             counters.cursorShapesSuppressed += 1
             return [.cursorShapeSuppressed(.overBudget)]
         }
@@ -1905,15 +1747,13 @@ public final class Session {
         return processImageEvents(refused, now: now)
     }
 
-    /// The shell's report that the OS clipboard now holds an image —
-    /// the leaf's PNG read (genuine host copies AND the echoes of our
-    /// own applies; the shared book tells them apart, keyed
-    /// 0xFF ‖ sha256). Judges the gate, the send lane, the 32 MiB
-    /// ceiling and then the book before cargo leaves on chan 8.
-    /// `sha256` is the image's digest, called only once the
-    /// digest-free gates pass. Silently a no-op unless the image gate
-    /// (keys 10 ∧ 12) survived intersection. Payloads never appear in
-    /// events or logs — byte counts only.
+    /// The shell's report that the OS clipboard now holds an image (host
+    /// copies and echoes of our own applies alike; the shared book, keyed
+    /// 0xFF ‖ sha256, tells them apart). Judges the gate, the send lane,
+    /// the 32 MiB ceiling and then the book before cargo leaves on chan
+    /// 8. `sha256` is called only once the digest-free gates pass. A
+    /// no-op unless keys 10 ∧ 12 were agreed. Payloads never appear in
+    /// events or logs.
     public func noteHostClipboardImageChanged(
         _ data: [UInt8], sha256: () -> [UInt8],
         now: UInt64, hostMicroseconds: UInt64
@@ -1956,15 +1796,13 @@ public final class Session {
         )
     }
 
-    // MARK: Reliable CTRL (HS-8)
+    // MARK: Reliable CTRL
 
-    /// Queues one message on the reliable ordered CTRL stream (ARQ
-    /// group 0): exactly-once, in-order delivery, RTT-adaptive
-    /// retransmit until acknowledged. The message must start with its
-    /// own CTRL type byte (the registry rule). Throws
-    /// `SessionError.notEstablished` before the transport exists —
-    /// reliable CTRL is sealed traffic — and `ArqSendError` for an
-    /// empty, over-budget, or backpressured (`queueFull`) message.
+    /// Queues one message on the reliable ordered CTRL stream (ARQ group
+    /// 0). The message must start with its own CTRL type byte. Throws
+    /// `SessionError.notEstablished` before the transport exists and
+    /// `ArqSendError` for an empty, over-budget, or backpressured
+    /// (`queueFull`) message.
     public func sendReliable(
         _ message: [UInt8], now: UInt64, hostMicroseconds: UInt64
     ) throws {
@@ -2001,26 +1839,19 @@ public final class Session {
         return group
     }
 
-    /// True when the reliable sublayers (CTRL and, when it exists, the
-    /// bulk channel's) have nothing left to send, retransmit, or
-    /// acknowledge (the W-G4 termination property, exposed for the
-    /// loop's idle accounting and the gate tests). The teardown drain
-    /// waits on both: a final bulk ack/abort deserves its retransmits
-    /// exactly like the teardown message itself.
+    /// True when the reliable sublayers (CTRL and, if present, bulk) have
+    /// nothing left to send, retransmit or acknowledge. The teardown drain
+    /// waits on both: a final bulk ack/abort deserves its retransmits too.
     public var arqIsQuiescent: Bool {
         ctrlArqLane.isQuiescent && (bulkArqLane?.isQuiescent ?? true)
     }
 
-    // MARK: The bulk channel (F-3)
+    // MARK: The bulk channel
 
-    /// Queues one bulk message (the 0x1C–0x21 sextet's bytes — the
-    /// shell's accept/ack/complete/abort answers) on chan 8's ARQ
-    /// ordered stream. Exactly-once, in-order, RTT-adaptive
-    /// retransmit, on the bulk channel's OWN endpoint — never CTRL.
-    /// Throws `SessionError.notEstablished` before the transport
-    /// exists and `SessionError.bulkNotNegotiated` unless key 11
-    /// survived intersection (the shell never legitimately speaks
-    /// before an offer arrived, and offers only arrive negotiated).
+    /// Queues one bulk message (the shell's accept/ack/complete/abort
+    /// answers) on chan 8's own ARQ ordered stream, never CTRL. Throws
+    /// `SessionError.notEstablished` before the transport exists and
+    /// `SessionError.bulkNotNegotiated` unless key 11 was agreed.
     public func sendBulk(
         _ message: [UInt8], now: UInt64, hostMicroseconds: UInt64
     ) throws {
@@ -2038,15 +1869,12 @@ public final class Session {
         )
     }
 
-    /// Queues on the CTRL or bulk ARQ endpoint. `ArqSendError.queueFull`
-    /// is backpressure from a peer that stopped acknowledging: the
-    /// message is not queued, the refusal is counted, and it propagates
-    /// to the call site, which is never fatal. Sites that keep state
-    /// retry on their next call (the input-echo book keeps its tuples,
-    /// the cursor dedupe slot and the clipboard book only advance on
-    /// success); one-off announcements (mode, posture, track state,
-    /// routing, bulk replies) surface as `.sendFailed` and are lost. A
-    /// peer that stays silent is ended by the liveness timeout, not here.
+    /// Queues on the CTRL or bulk ARQ endpoint. `queueFull` is
+    /// backpressure from a peer that stopped acknowledging: the message is
+    /// not queued, the refusal is counted, and it propagates (never
+    /// fatal). Stateful sites retry on their next call; one-off
+    /// announcements surface as `.sendFailed` and are lost. A silent peer
+    /// is ended by the liveness timeout, not here.
     private func enqueueReliable<T>(
         on channel: ChannelId, _ enqueue: () throws -> T
     ) throws -> T {
@@ -2062,11 +1890,9 @@ public final class Session {
         }
     }
 
-    /// Chan-8 ingest events → session events: delivered messages
-    /// decode through the frozen codecs; the 0x22 marker and
-    /// clipboard-claimed bulk messages feed the image lane (P-1),
-    /// everything else surfaces as `.bulkMessageReceived` for the
-    /// shell's BulkReceiveShell.
+    /// Chan-8 ingest events → session events: the 0x22 marker and
+    /// clipboard-claimed messages feed the image lane; everything else
+    /// surfaces as `.bulkMessageReceived`.
     private func absorbBulkArq(
         _ arqEvents: [ArqEvent], now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -2085,10 +1911,9 @@ public final class Session {
         return events
     }
 
-    /// One chan-8 ARQ-delivered message through the P-1 routing
-    /// question: marker → image lane; claimed id → image lane;
-    /// everything else → the file lane (which still demands its own
-    /// key-11 agreement — the two lanes' gates are independent).
+    /// One chan-8 ARQ-delivered message, routed: marker or claimed id →
+    /// image lane; everything else → the file lane (which still demands
+    /// key 11 — the lanes' gates are independent).
     private func consumeBulkStreamMessage(
         _ bytes: [UInt8], now: UInt64
     ) -> [SessionEvent] {
@@ -2098,9 +1923,7 @@ public final class Session {
                 counters.dropped += 1
                 return [.dropped(.malformedBulk)]
             }
-            // The W7 rule-3 gate, keys 10 ∧ 12 (P-1): image cargo
-            // outside the agreement is a peer using a superpower it
-            // never negotiated. Dropped loud, never fatal.
+            // Image cargo without keys 10 ∧ 12 agreed: dropped loud.
             guard agreedClipboardImages else {
                 counters.dropped += 1
                 return [.dropped(.clipboardImagesNotNegotiated)]
@@ -2206,11 +2029,9 @@ public final class Session {
     }
 
     /// Ingest events → session events, with the counters kept honest.
-    /// Lifecycle (0x09/0x0A) and capability (0x0F/0x11/0x12) messages
-    /// are consumed here — the session IS their registered consumer
-    /// (the HS-9 dispatch pattern, one layer down); everything else
-    /// (the pairing quartet, future types) surfaces as `.reliableCtrl`
-    /// for the shell.
+    /// Lifecycle (0x09/0x0A) and capability (0x0F/0x11/0x12) messages are
+    /// consumed here; everything else (the pairing quartet, future types)
+    /// surfaces as `.reliableCtrl` for the shell.
     private func absorbArq(
         _ arqEvents: [ArqEvent], now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -2277,10 +2098,8 @@ public final class Session {
                 return [.dropped(.malformedCtrl)]
             }
             counters.inputEventsReceived += 1
-            // Pre-arm BEFORE the shell injects: the wake/pre-arm
-            // semantics belong to the event's arrival, not to the
-            // injection call's success (W4b — a keypress during a
-            // blackout must persist even if injection is deferred).
+            // Pre-arm before the shell injects: a keypress during a
+            // blackout must persist even if injection is deferred.
             var events = runLifecycle(
                 .preArmInput, now: now, hostMicroseconds: hostMicroseconds
             )
@@ -2293,11 +2112,8 @@ public final class Session {
                 counters.dropped += 1
                 return [.dropped(.malformedCtrl)]
             }
-            // The W7 rule-3 gate: a capability is enabled only when
-            // BOTH ends declared it — the byte-equal key-9 entry
-            // surviving intersection IS that AND (HS-18). A request
-            // outside the agreement is a peer using a superpower it
-            // never negotiated: dropped loud, never fatal.
+            // A request without hostAudioRouting agreed by both ends uses
+            // a capability never negotiated: dropped loud, never fatal.
             guard agreedHostAudioRouting else {
                 counters.dropped += 1
                 return [.dropped(.audioRoutingNotNegotiated)]
@@ -2309,17 +2125,14 @@ public final class Session {
                 counters.dropped += 1
                 return [.dropped(.malformedCtrl)]
             }
-            // The W7 rule-3 gate, key 10 (CL-15): a set outside the
-            // agreement is a peer using a superpower it never
-            // negotiated — dropped loud, never fatal.
+            // A set without clipboardText agreed: dropped loud, never fatal.
             guard agreedClipboardText else {
                 counters.dropped += 1
                 return [.dropped(.clipboardNotNegotiated)]
             }
             counters.clipboardSetsReceived += 1
-            // Pre-arm the book BEFORE the shell applies: the leaf's
-            // change signal for this very apply must suppress, not
-            // boomerang (design doc §5's proof obligation).
+            // Pre-arm the book before the shell applies: the leaf's change
+            // signal for this very apply must suppress, not boomerang.
             clipboardBook.noteRemoteApplied(set.text)
             return [.clipboardSetReceived(text: set.text)]
         case CtrlMessageType.modeTransition, CtrlMessageType.capabilityUpdate,
@@ -2335,10 +2148,8 @@ public final class Session {
         case CtrlMessageType.bulkOffer, CtrlMessageType.bulkAccept,
              CtrlMessageType.bulkChunk, CtrlMessageType.bulkAck,
              CtrlMessageType.bulkComplete, CtrlMessageType.bulkAbort:
-            // The bulk sextet rides chan 8's ordered stream, never
-            // CTRL (the W10 carriage rule) — a chunk on the input
-            // stream is exactly the head-of-line blocking F-2 exists
-            // to prevent. Hostile or confused; dropped loud.
+            // The bulk sextet rides chan 8, never CTRL (a chunk here would
+            // head-of-line-block input). Hostile or confused; dropped loud.
             counters.dropped += 1
             return [.dropped(.unexpectedCtrlType(message.first!))]
         default:
@@ -2385,7 +2196,7 @@ public final class Session {
         }
     }
 
-    // MARK: The lifecycle machine's runner (HS-11)
+    // MARK: The lifecycle machine's runner
 
     /// Delegates one apply-then-poll pass, executes its external actions, and
     /// surfaces the lane's single state-change projection.
@@ -2443,10 +2254,9 @@ public final class Session {
                     freshKeyframes.arm(.machineRecovery)
                 }
                 // The machine names the policy; the estimator owns the
-                // numbers (HS-16): min(btlRate, lastGoodRate) for a
-                // WAKE, max(floor, 0.5 × stale estimate) for RECOVERY.
-                // Applied to the pacer immediately — the IDR this arms
-                // is the first thing that pace carries.
+                // numbers: min(btlRate, lastGoodRate) for a WAKE,
+                // max(floor, 0.5 × stale estimate) for RECOVERY. Applied
+                // now, so the IDR this arms is the first thing it paces.
                 let rate = estimator.applyIdrPacing(pacing, now: now)
                 channel.setRate(bitsPerSecond: rate, now: now)
                 counters.rateChanges += 1
@@ -2454,9 +2264,7 @@ public final class Session {
                     bitsPerSecond: rate, reason: .idrPacing(pacing)
                 ))
             case .freezeDatagramSends, .resumeDatagramSends:
-                // Consumed by SessionLifecycleLane into video admission before
-                // external effects execute. Kept exhaustive against Wire's
-                // action vocabulary; these never leave the lane.
+                // Consumed by the lane into video admission; never leave it.
                 break
             case .sessionClosed(let reason):
                 events.append(.sessionClosed(reason))
@@ -2465,7 +2273,7 @@ public final class Session {
         return events
     }
 
-    /// The W7 declaration: the session's first ARQ-carried message.
+    /// The capability declaration: the session's first ARQ-carried message.
     private func declareCapabilities(
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -2481,15 +2289,10 @@ public final class Session {
         }
     }
 
-    // MARK: The HS-16 estimator's diet
+    // MARK: The estimator's diet
 
-    /// The send-sink tap: one released datagram into the estimator's
-    /// ledger. PacerClass → envelope channel is a fixed mapping (the
-    /// TOS mapping's sibling): control datagrams ride chan 0, audio
-    /// chan 1, every video class chan 2 — the channels the client's
-    /// dispersion samples will name. Off-primary challenges are
-    /// excluded (they travel an unvalidated tuple; their arrivals
-    /// measure a different path).
+    /// Holds a released datagram until the kernel accepts it
+    /// (`.socketConfirmed` accounting).
     private func noteSocketPending(_ datagram: VideoChannelDatagram) {
         socketPending.note(
             datagram,
@@ -2529,6 +2332,9 @@ public final class Session {
         freshKeyframes.arm(.fallPurge)
     }
 
+    /// One released datagram into the estimator's ledger. Off-primary
+    /// challenges are excluded: they travel an unvalidated tuple, so
+    /// their arrivals measure a different path.
     private func noteSent(
         _ datagram: VideoChannelDatagram,
         now: UInt64,
@@ -2548,7 +2354,7 @@ public final class Session {
 
     /// One authenticated chan-3 payload: parse, feed the estimator,
     /// apply its rate (and any FEC-regime step) to the shared channel,
-    /// answer the NACK section through the HS-17 retransmit gate, and
+    /// answer the NACK section through the retransmit gate, and
     /// — while the machine is in RECOVERY — feed its window verdicts.
     private func ingestFeedback(
         _ plaintext: [UInt8], now: UInt64, hostMicroseconds: UInt64
@@ -2563,16 +2369,13 @@ public final class Session {
         }
         counters.feedbackReportsParsed += 1
         repairBudget.noteFeedback(report, now: now)
-        // The video-class backlog rides along (HS-22c): while the
-        // pacer holds a standing queue, delivery trains measure our
-        // own pacing — the estimator's self-reference gate needs to
-        // know when that is the case.
+        // The video backlog rides along: while the pacer holds a standing
+        // queue, delivery trains measure our own pacing.
         let verdict = estimator.ingest(
             report, now: now, inRecovery: lifecycleLane.isRecovering,
             pacerBacklogBytes: queuedVideoBytes,
-            // HS-28: NACKs against frames we have not finished sending
-            // are the client's completion presumption expiring
-            // mid-drain — self-inflicted, recused from path evidence.
+            // NACKs against frames still being sent are the client's
+            // completion presumption expiring mid-drain: recused.
             recusedNackFrames: channel.framesWithQueuedShards()
                 .union(socketPending.videoFrameNumbers)
         )
@@ -2588,14 +2391,11 @@ public final class Session {
             case .evidence, nil: reason = .evidence
             }
             events.append(.rateChanged(bitsPerSecond: rate, reason: reason))
-            // The fall-repricing purge: a genuine fall (never plain
-            // evidence decay) reprices bytes already admitted at the
-            // pre-fall rate. Backlog that would now serialize past the
-            // threshold is stale wire — video the glass renders late
-            // or never (80–895 ms measured before this existed). Drop
-            // it and re-anchor through the same coalesced latch every
-            // other mid-flight loss uses; the IDR supersedes whatever
-            // the dropped shards would have completed.
+            // The fall-repricing purge: a genuine fall (never evidence
+            // decay) reprices bytes admitted at the pre-fall rate. Backlog
+            // that would now serialize past the budget is stale wire —
+            // drop it and re-anchor through the coalesced keyframe latch;
+            // the IDR supersedes whatever the dropped shards completed.
             if reason != .evidence {
                 let backlog = queuedVideoBytes
                 let staleWireNS = UInt64(
@@ -2615,9 +2415,7 @@ public final class Session {
             }
         }
         if let regime = verdict.fecRegime {
-            // The estimator's rung-3 step verdict lands on the
-            // packetizing seam: the NEXT frame's geometry draws from
-            // the new §5.2 column.
+            // The next frame's geometry draws from the new regime.
             channel.setRegime(regime)
             counters.fecRegimeSteps += 1
             events.append(.fecRegimeChanged(regime))
@@ -2636,10 +2434,8 @@ public final class Session {
         return events
     }
 
-    /// HS-32: the freeze budget actually in force — the config
-    /// override when set, otherwise the derivation documented on
-    /// `repairFreezeBudgetOverrideNS` (multiplier × observed cadence
-    /// + jitter allowance; 50 ms worst-case cadence before evidence).
+    /// The freeze budget in force: the config override when set, else the
+    /// derivation documented on `repairFreezeBudgetOverrideNS`.
     public var repairFreezeBudgetNS: UInt64 {
         repairBudget.freezeBudgetNanoseconds(
             override: config.repairFreezeBudgetOverrideNS,
@@ -2649,31 +2445,22 @@ public final class Session {
         )
     }
 
-    /// The HS-17 NACK responder: resiliency §1.1 rules 3–4 over the
-    /// channel's repair store.
+    /// The NACK responder over the channel's repair store:
     ///
     ///   honor iff SRTT + retxSerialization < remainingFreezeBudget
-    ///         AND the frame is newer than the last IDR;
-    ///   one attempt per shard, no retransmission of retransmissions;
-    ///   otherwise send an explicit refusal; the client's one-outstanding
-    ///   recovery episode requests the IDR alternative. The client's
-    ///   deadline is the fallback when that fire-and-forget refusal is lost.
+    ///         AND the frame is not older than the last IDR;
+    ///   one attempt per shard, no retransmission of retransmissions.
     ///
-    /// HS-32 grew two things. (1) Refusals the client can act on are
-    /// EXPLICIT: budget-gone, older-than-IDR, and store-gone verdicts
-    /// each send one 0x23 RepairRefusal (sealed, ARQ-exempt,
-    /// fire-and-forget — a lost refusal degrades to the client's own
-    /// deadline), so the client stops blind-waiting 250 ms on repairs
-    /// that were never coming. Already-repaired stays silent (repairs
-    /// may be in flight; a refusal would double-heal into an IDR) and
-    /// FROZEN/closed stays silent (the path is dark). (2) The
-    /// opening-IDR exemption: while nothing has plausibly reached the
-    /// client's glass, an ask naming the LAST IDR is honored
-    /// regardless of the budget — bounded by attempts and bytes.
-    ///
-    /// FROZEN suppresses retransmits with the rest of datagram video
-    /// (§4's freeze protocol) — RECOVERY's forced IDR is the heal
-    /// there, so the latch is deliberately NOT armed.
+    /// Refusals the client can act on (budget gone, older than the IDR,
+    /// store gone) each send one sealed, ARQ-exempt 0x23 RepairRefusal so
+    /// the client stops waiting on repairs that are not coming; its
+    /// recovery episode requests the IDR, and its own deadline covers a
+    /// lost refusal. Already-repaired stays silent (repairs may be in
+    /// flight; a refusal would double-heal into an IDR), as does
+    /// FROZEN/closed (the path is dark; RECOVERY's forced IDR heals, so
+    /// the latch is not armed). While nothing has plausibly reached the
+    /// client's glass, an ask naming the last IDR is honored regardless
+    /// of the budget, bounded by attempts and bytes.
     private func respondToNack(
         _ nack: FeedbackReport.NackEntry,
         now: UInt64,
@@ -2714,12 +2501,9 @@ public final class Session {
         if lifecycleLane.videoSendsSuppressed {
             return stale(.sendsSuppressed)
         }
-        // "The frame is newer than the last IDR": a frame BEHIND the
-        // last IDR is a dead reference — the IDR re-anchored the chain
-        // past it. The IDR itself stays repairable (§5.2's rationale:
-        // burst loss ON an IDR is handled by retransmit or re-issue).
-        // No IDR arm on refusal: the newer IDR IS the heal, in flight
-        // or delivered (and if IT died, the client names it too).
+        // A frame behind the last IDR is a dead reference: the IDR
+        // re-anchored the chain past it. The IDR itself stays repairable.
+        // No IDR arm on refusal: the newer IDR is the heal.
         if let lastIdr = channel.lastKeyframeNumber, nack.frame < lastIdr {
             return stale(.olderThanIdr)
         }
@@ -2737,20 +2521,14 @@ public final class Session {
             frame: nack.frame, shardIndices: nack.missingShards
         )
         guard repairBytes > 0 else {
-            // Everything named already rode its one attempt. The
-            // repairs may still be in flight — arming an IDR here
-            // would double-heal; the client's own coalescing
-            // requester escalates if the frame stays incomplete
-            // (rule 4's client half).
+            // Everything named already rode its one attempt. The repairs
+            // may be in flight; arming an IDR would double-heal (the
+            // client's requester escalates if the frame stays incomplete).
             return stale(.alreadyRepaired)
         }
-        // HS-32: the opening-IDR exemption. While nothing has
-        // plausibly reached the client's glass, an ask naming the
-        // LAST IDR skips the budget gate entirely (SRTT may not even
-        // exist yet at session open — the first beacon echo is up to
-        // 1 s away): a black glass is the one case where a late
-        // repair beats a re-minted IDR that starts even later.
-        // Attempt/byte-bounded so it can never amplify congestion.
+        // The opening-IDR exemption skips the budget gate (SRTT may not
+        // exist yet: the first beacon echo is up to 1 s away). Bounded by
+        // attempts and bytes so it cannot amplify congestion.
         let openingExempt = repairBudget.openingExemptionAvailable(
             lastIdrMatches: channel.lastKeyframeNumber == nack.frame,
             repairBytes: repairBytes,
@@ -2758,17 +2536,13 @@ public final class Session {
             maxBytes: config.openingRepairMaxBytes
         )
         if !openingExempt {
-            // Rule 3's gate. The budget clock started when the frame's
-            // flight completed (the client cannot judge it
-            // FEC-impossible earlier); the NACK's propagation up is
-            // already inside the elapsed time. No RTT evidence means
-            // no honest promise the repair lands in budget — stale.
-            // The RTT term is SRTT capped at 2 × min-RTT: the
-            // beacon-echo SRTT double-counts both ends' receive-loop
-            // wake latency (measured 7–13 ms on a 0.3 ms loopback),
-            // which a repair datagram — straight onto the pacer, no
-            // beacon service point — never pays; genuine path queueing
-            // moves min-RTT with it and still governs.
+            // The budget clock started when the frame's flight completed;
+            // the NACK's trip up is inside the elapsed time. No RTT
+            // evidence means no honest promise — stale. The RTT term is
+            // SRTT capped at 2 × min-RTT: beacon-echo SRTT double-counts
+            // both ends' receive-loop wake latency, which a repair
+            // (straight onto the pacer) never pays; real path queueing
+            // moves min-RTT with it.
             let elapsedNS = now &- ingestedAt
             let budgetNS = repairFreezeBudgetNS
             guard elapsedNS < budgetNS,
@@ -2866,19 +2640,16 @@ public final class Session {
 
     // MARK: Timers and pumping
 
-    /// Clock advance with no datagram — the loop's timer wake. Emits due
-    /// beacons, services the ARQ's retransmit timers, runs the
-    /// lifecycle machine's timers (the 350 ms blackout detector, the
-    /// 30 s liveness clock), and runs the validator's expiries.
+    /// Clock advance with no datagram — the loop's timer wake: due
+    /// beacons, ARQ retransmits, lifecycle timers, validator expiries.
     public func advance(now: UInt64, hostMicroseconds: UInt64) -> [SessionEvent] {
         var events = process(
             validator.advance(now: now),
             now: now, hostMicroseconds: hostMicroseconds
         )
         guard phase == .established else { return events }
-        // Insecure mode reaches establishment without a handshake; the
-        // declaration leaves on the first wake (Noise mode declared at
-        // `completeHandshake`, so this is a no-op there).
+        // Passthrough mode establishes without a handshake, so the
+        // declaration leaves on the first wake (a no-op once declared).
         events += declareCapabilities(
             now: now, hostMicroseconds: hostMicroseconds
         )
@@ -2975,11 +2746,9 @@ public final class Session {
         datagrams.append(contentsOf: remaining)
     }
 
-    /// The earliest instant anything here has work: the pacer's wake,
-    /// the next beacon, the ARQ's retransmit deadline, or a validator
-    /// deadline. The loop sleeps until this (Pacer semantics). A shell
-    /// that pumps only latency classes (`pumpLatency`, a full socket)
-    /// passes `.audio`, so video that it will not release cannot make
+    /// The earliest instant anything here has work (pacer, beacon, ARQ,
+    /// lifecycle or validator deadline). A shell that pumps only latency
+    /// classes passes `.audio`, so video it will not release cannot make
     /// the wake "now".
     public func nextWake(
         now: UInt64, upThrough highestClass: PacerClass = .bulk
@@ -2999,15 +2768,14 @@ public final class Session {
 
     public var isIdle: Bool { channel.isIdle }
 
-    /// The HS-16 seam, passed through to the shared pacer. The
-    /// estimator now drives this from feedback evidence; the manual
-    /// entry point stays for shells and tests that want to force a
-    /// rate (the estimator's next verdict will move it again).
+    /// Passes a rate to the shared pacer. The estimator drives it from
+    /// feedback; shells and tests may force one (the estimator's next
+    /// verdict moves it again).
     public func setRate(bitsPerSecond: Int, now: UInt64) {
         channel.setRate(bitsPerSecond: bitsPerSecond, now: now)
     }
 
-    // MARK: HS-16 estimator surfaces
+    // MARK: Estimator surfaces
 
     /// The estimator's standing rate — what the pacer should be (and,
     /// short of a manual `setRate`, is) running at.
@@ -3032,7 +2800,7 @@ public final class Session {
         estimator.queuingDelayMicroseconds
     }
 
-    /// HS-28: the estimator's capacity belief — what it honestly
+    /// The estimator's capacity belief — what it honestly
     /// believes the path can carry (raised by any delivery above it,
     /// demoted only by evidence a censored sender cannot manufacture).
     public var capacityBeliefBitsPerSecond: Int? {
@@ -3047,24 +2815,22 @@ public final class Session {
         estimator.lastOveruseFall
     }
 
-    /// The HS-6 frame ceiling at the LIVE estimate: R×B/8 −
-    /// higherClassBytes(B), B = min(2/fps, 25 ms) — the single-frame
-    /// VBV cap the encoder should enforce (the "IdrPacing numbers"
-    /// deferred item, now derived from evidence instead of config).
+    /// The frame ceiling at the live estimate: R×B/8 − higherClassBytes(B),
+    /// B = min(2/fps, 25 ms) — the single-frame VBV cap the encoder
+    /// should enforce.
     public func frameByteCeiling(fps: Int) -> Int {
         estimator.frameByteCeiling(fps: fps)
     }
 
-    /// HS-25: the largest frame the CURRENT regime and TLV posture can
-    /// ship as one protected FEC group — the ingest guard's live bound
-    /// (logs and tests read it here).
+    /// The largest frame the current regime and TLV posture can ship as
+    /// one protected FEC group — the ingest guard's live bound.
     public var protectableFrameByteCeiling: Int {
         channel.maxProtectableFrameByteCount(
             hasLastInputSeq: lastInputSeq != nil
         )
     }
 
-    /// HS-25: that ceiling's session-static worst case (lossy regime,
+    /// That ceiling's session-static worst case (lossy regime,
     /// input stamp riding) — what the shell caps the encoder's opening
     /// VBV to, so no reachable posture can mint an unshippable frame.
     public var worstCaseProtectableFrameByteCeiling: Int {
@@ -3077,15 +2843,15 @@ public final class Session {
     public var pacerTelemetry: PacerTelemetry { channel.pacerTelemetry }
     public var videoCounters: VideoChannelCounters { channel.counters }
 
-    // MARK: HS-17 repair surfaces
+    // MARK: Repair surfaces
 
-    /// The §5.2 regime column the packetizing seam is drawing from.
+    /// The FEC regime the packetizing seam is drawing from.
     public var fecRegime: FecRegime { channel.regime }
 
     /// The retransmit gate's smoothed RTT; nil before beacon evidence.
     public var srttMicroseconds: Int64? { estimator.srttMicroseconds }
 
-    /// Bytes retained for repair (the ≥4 s ring's live size).
+    /// Bytes retained for repair (the retention ring's live size).
     public var repairStoreBytes: Int { channel.repairStoreBytes }
 
     public func takeFrameTransmitTelemetry() -> [VideoFrameTransmitTelemetry] {
@@ -3094,17 +2860,11 @@ public final class Session {
 
     // MARK: Handshake (responder)
 
-    /// The opaque bytes the retry cookie binds address ownership to
-    /// (HS-21): the client's source address ‖ port, the host's own
-    /// serialization. Only the host ever parses it (sans-IO: it is
-    /// opaque to the cookie crypto), and it stays inside RetryCookie's
-    /// 1…255-byte tuple bound — an "255.255.255.255:65535" is 21 bytes,
-    /// an IPv6 literal with a port comfortably under the ceiling.
     /// True when `datagram` is shaped like a client handshake initiation:
     /// a bare CTRL carriage whose payload is typed 0x05 (Noise message 1)
-    /// or 0x14 (the W8 cookie resubmission). A shape check for choosing
-    /// what a listening shell feeds a session — admission, cookies, and
-    /// Noise still judge the bytes.
+    /// or 0x14 (cookie resubmission). A shape check for choosing what a
+    /// listening shell feeds a session; admission, cookies and Noise
+    /// still judge the bytes.
     public static func looksLikeHandshakeInitiation(_ datagram: [UInt8]) -> Bool {
         guard let (envelope, payload) = try? Envelope.decode(datagram),
               envelope.channel == .ctrl
@@ -3113,6 +2873,9 @@ public final class Session {
             || payload.first == CtrlMessageType.retryHandshake1
     }
 
+    /// The opaque bytes the retry cookie binds address ownership to: the
+    /// client's address ‖ port, within RetryCookie's 1…255-byte tuple
+    /// bound ("255.255.255.255:65535" is 21 bytes).
     static func cookieTuple(_ tuple: FourTuple) -> [UInt8] {
         Array("\(tuple.remoteAddress):\(tuple.remotePort)".utf8)
     }
@@ -3158,19 +2921,18 @@ public final class Session {
         var events: [SessionEvent] = [.handshakeCompleted(
             remoteStaticPublicKey: responder.remoteStaticPublicKey ?? []
         )]
-        // "1 Hz plus session start" (§4.6): message 2 is already queued
-        // ahead of this beacon in the control FIFO, so the client can
-        // derive its transport before the first sealed datagram lands.
+        // Message 2 is already queued ahead of this session-start beacon
+        // in the control FIFO, so the client derives its transport before
+        // the first sealed datagram lands.
         let beacon = beaconClock.makeSessionStartBeacon(
             now: now, hostMicroseconds: hostMicroseconds
         )
         events += emitBeacon(
             beacon, now: now, hostMicroseconds: hostMicroseconds
         )
-        // The machine begins at establishment, in ACTIVE (W4b), and the
-        // capability declaration is the first ARQ-carried word (W7) —
-        // beacons are ARQ-exempt, so it is first on the reliable stream
-        // by construction.
+        // The machine begins at establishment in ACTIVE, and the
+        // capability declaration is the first word on the reliable stream
+        // (beacons are ARQ-exempt).
         events += declareCapabilities(
             now: now, hostMicroseconds: hostMicroseconds
         )
@@ -3192,11 +2954,9 @@ public final class Session {
         }
         switch type {
         case CtrlMessageType.arqSegment, CtrlMessageType.arqAck:
-            // The one-byte peek: a payload starting with either ARQ
-            // byte is wholly ARQ — a sequence of self-delimiting
-            // frames. Ingest, then poll immediately: the ACK the
-            // ingest owes (and any fast retransmit it triggered)
-            // leaves in this same service pass.
+            // A payload starting with either ARQ byte is wholly ARQ.
+            // Ingest, then poll at once so the owed ACK (and any fast
+            // retransmit) leaves in this same pass.
             var events = absorbArq(
                 ctrlArqLane.ingest(payload[...], now: now),
                 now: now, hostMicroseconds: hostMicroseconds
@@ -3228,14 +2988,11 @@ public final class Session {
                 return [.dropped(.malformedCtrl)]
             }
             counters.idrRequests += 1
-            // The requester retries one recovery episode every 500 ms until
-            // its renderer accepts an IRAP. Encode-time
-            // `lastKeyframeNumber` is an offer, not delivery proof: suppress
-            // older-named retries only while that offer is still inside the
-            // in-flight window. A wholly lost recovery IDR on a static
-            // desktop keeps naming the pre-IDR damage forever; after the
-            // window the episode must be able to re-arm. Damage at/after
-            // the offered anchor remains eligible immediately.
+            // The requester retries every 500 ms until its renderer
+            // accepts an IRAP. An encoded IDR is an offer, not delivery
+            // proof: older-named retries are suppressed only inside the
+            // in-flight window, so a wholly lost recovery IDR can re-arm.
+            // Damage at/after the offered anchor re-arms immediately.
             if let lastIdr = channel.lastKeyframeNumber,
                request.frame < lastIdr,
                let offeredAt = lastKeyframeOfferedAtNS,
@@ -3258,8 +3015,8 @@ public final class Session {
             echo: echo, hostMicroseconds: hostMicroseconds
         )
         counters.beaconEchoes += 1
-        // RTT evidence into the estimator (telemetry + the future
-        // HS-17 retransmit gate; the rate law runs on dispersion).
+        // RTT evidence into the estimator (telemetry and the retransmit
+        // gate; the rate law runs on dispersion).
         estimator.noteRtt(microseconds: sample.rttMicroseconds)
         return [.beaconEchoAccepted(
             beaconSeq: echo.beaconSeq,
@@ -3401,9 +3158,8 @@ public final class Session {
 }
 
 /// A concrete `RandomNumberGenerator` boxing the init's injected
-/// generator — a stored `some` isn't expressible, and P-1's image-id
-/// mint (session-lifetime) shouldn't force Session generic. The
-/// sans-IO injection seam survives intact.
+/// generator (a stored `some` is not expressible), so the image-id mint
+/// does not force Session generic.
 struct BoxedRng: RandomNumberGenerator {
     var base: any RandomNumberGenerator
     mutating func next() -> UInt64 { base.next() }
