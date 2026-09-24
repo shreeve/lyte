@@ -7,9 +7,10 @@ the wire contract is in [PROTOCOL.md](PROTOCOL.md).
 
 ## Packages
 
-Six SwiftPM packages (tools version 6.0). Each one builds and tests on its
-own; siblings are referenced by relative path, so a checkout must keep them
-side by side.
+Six SwiftPM packages (tools version 6.0), each with its own manifest and
+suites. Siblings are referenced by relative path, so a checkout keeps them
+side by side; Common's suite holds the repository lints, which read every
+package's sources.
 
 | Package | Directory | Role |
 |---|---|---|
@@ -60,14 +61,14 @@ Client never depends on Host and Host never depends on Client. Only
 | `HostSession` | sans-IO | Responder policy: `HandshakeGate` (rate limit, retry cookies), lifecycle lane, path validation |
 | `HostWire` | sans-IO | `Session` (Noise responder, sealing, ARQ lanes, beacons), `VideoChannel` (packetize, FEC, repair store), `RateEstimator`, `SocketOutbox`, `VideoAdmissionGate`, encoder VBV/HRD policy, pairing responder, client keystore |
 | `HostWireTestKit` | test kit | `HostSessionHarness`: a shipping `Session` in virtual time for the gate tests |
-| `HostIO` | adapter | `HostPaths` (XDG layout, legacy identity adoption), `SecretFile`, `BulkFileStore` |
+| `HostIO` | adapter | `HostPaths` (XDG layout, legacy identity adoption), `SecretFile`, `HostLog` (in-process log rotation), `BulkFileStore` |
 | `HostAudio` | policy | 5 ms hard-CBR Opus over `COpus` |
 | `HostEye` | Linux | Direct Eye: DRM scanout import, GPU pixel fingerprint, NV12/AYUV EGL blit, VAAPI encoder seat, cursor plane |
-| `CDRM` `CGBM` `CEGL` `CVA` `CPipeWire` `CDBus` `CNvEnc` `CCuda` | Linux module maps | System libraries; `CNvEnc` vendors `nvEncodeAPI.h` |
+| `CDRM` `CGBM` `CEGL` `CVA` `CPipeWire` `CDBus` | Linux module maps | System libraries |
 | `CPipeWireAudio` `CNetIO` `CInputUinput` | Linux C leaves | Default-sink monitor capture; UDP sockets (`sendmmsg`/`recvmmsg`, TOS, timestamps); uinput devices |
-| `lyte-host` | Linux exe | The host composition root (`HostApplication`) |
+| `lyte-host` | Linux exe | The host composition root (`HostApplication`): `SessionWire` (the session's socket, lock and threads), `DirectEyeLeg`, audio, input, clipboard, Avahi |
 | `lyte-control-peer` | exe (macOS + Linux) | DRM-free `HostWire.Session` peer for the browser proof |
-| `lyte-eye`, `lyte-nvenc` | Linux exe | Direct Eye probe; banked NVENC probe |
+| `lyte-eye` | Linux exe | Standalone Direct Eye probe |
 | `lyte-netio-check`, `lyte-pace-check`, `lyte-audio-check`, `lyte-uinput-check` | Linux exe | On-host verification harnesses |
 
 **Client**
@@ -105,7 +106,7 @@ KMS scanout ─► HostEye.EyePipeline ─► VAAPI HEVC (HostCore pens)
    60 Hz beat: import, GPU fingerprint, blit, encode (DirectEyeLeg)
         │ access unit
         ▼
-HostWire.Session.sendFrame ─► VideoChannel: packetize + RS-FEC ─► Pacer (seq + seal on release)
+SessionWire.sendFrame ─► packetize + RS-FEC (off the lock) ─► Pacer (seq + seal on release)
         ▲                                                        │
 PipeWire monitor ─► HostAudio Opus 5 ms ─► AudioFramer (RS 4+2) ─┤
                                                                  ▼
@@ -114,20 +115,28 @@ CNetIO recvmmsg ─► Session.receive: unseal, ARQ, feedback ─► RateEstimat
                    input ─► uinput, clipboard ─► Mutter RD, files ─► HostIO
 ```
 
-Capture is change-driven: unchanged pixels encode nothing; a still screen is
-kept warm by re-encoding the retained frame about once a second (longer under
-an announced quiet video posture). Rate changes are encoder directives
-applied on the next frame without a reset or IDR. The encoder's HRD buffer is
-bounded so a frame at the rate ceiling fits one FEC group, and pre-encode
-admission skips a changed frame while queued video already holds its latency
-budget.
+Capture is change-driven by pixels: on each 60 Hz beat the eye
+fingerprints the scanout on the GPU, and unchanged pixels encode nothing, so
+the frame rate runs from 0 fps (blank) to 60 fps (video). The scanned-out
+buffer's identity only decides when to re-import, because a compositor may
+redraw one buffer for minutes. A still screen is kept warm by re-encoding
+the retained frame about once a second (less often under an announced quiet
+video posture), and a demanded IDR on a still screen re-encodes that frame.
+Rate changes are encoder directives applied on the next frame without a
+reset or IDR. The encoder's HRD buffer is bounded so a frame at the rate
+ceiling fits one FEC group, and pre-encode admission skips a changed frame
+while queued video already holds its latency budget. Chroma is fixed when a
+session's encoder opens; a 4:4:4 agreement that arrives later takes effect
+at the next reconnect.
 
 Without `--seconds` or `--pair`, `lyte-host --wire-listen` is a service: it
 serves sessions in turn in one process. The listening socket, Avahi
 advertisement, uinput devices, clipboard leaf and the EGL/DRM context stay
 up; each client gets a fresh `SessionWire`, `AudioWire` and encoder stream
-(first frame an IDR). A failed session or a display mode change exits the
-process and systemd restarts it (`HostServiceLoop`).
+(first frame an IDR), and the process ID stays the same across sessions. A
+failed session or a display mode change exits the process and systemd
+restarts it (`HostServiceLoop`). `--seconds N` or `--pair` serves one
+session.
 
 ### Client (macOS)
 
@@ -163,10 +172,10 @@ browser path proves today.
 
 | Where | Owner | Notes |
 |---|---|---|
-| Host `SessionWire` | one `NSLock` over `Session` and the outbox | Pacer insertion, release (chan-2 seq and seal) and flush keep one order |
+| Host `SessionWire` | one priority-inheriting mutex (`PriorityInheritingLock`) over `Session` and the outbox | Pacer insertion, release (chan-2 seq and seal) and flush keep one order; a preempted default-priority holder runs at the waiting sender's priority |
 | Host capture | `DirectEyeLeg` capture thread | Calls `sendFrame`; reads one leg snapshot per poll |
 | Host audio | 5 ms audio thread (SCHED_RR when granted) | Publishes into a mailbox; never waits on the session lock |
-| Host sender | SCHED_RR sender thread | `ppoll` on its eventfd, the sockets and the next session timer |
+| Host sender | SCHED_RR sender thread | `ppoll` on its eventfd, the sockets and the next session timer; reads only the sockets that polled readable |
 | Host janitor | 10 ms service thread | Clipboard, bulk files, audio routing, pairing outcomes |
 | Client receive | `UdpReceiveEndpoint` thread | Decode, unseal and demux inline |
 | Client core | `LyteUdpSessionCore` lock | ARQ, control decisions and books; callbacks run outside it, except that state and mode edges are delivered in decision order under a separate edge lock |
@@ -182,7 +191,7 @@ browser path proves today.
 | Wire bytes, registries, limits | `LyteWire` + [`Wire/Vectors/`](../Wire/Vectors/README.md) |
 | Playout timing (the Conductor) | `LyteCore/VideoBeatConductor.swift`; decision record [Conductor](decisions/20260803-050422-metronome-playout-design.md) |
 | Congestion control | `HostWire/RateEstimator.swift` (host decides; client reports on chan 3) |
-| Send priority and pacing | `LyteWire/ChannelId.swift` (`WirePriority`), `HostCore/Pacer.swift` |
+| Send priority and pacing | `HostCore/Pacer.swift` (`PacerClass`) |
 | Capture damage truth | `HostEye/EyePipeline.swift` (pixel fingerprint); record [pixel observation](decisions/20260805-084033-direct-eye-pixel-observation.md) |
 | Color | BT.709 limited range: `HostEye/EyeGL.swift` blit, VUI in `HostCore/HevcParameterSets.swift` |
 | Host session loop | `HostCore/HostServiceLoop.swift`, `lyte-host/HostApplication.swift` |
@@ -199,8 +208,9 @@ browser path proves today.
   Annex-B walk, packetize into ≤ 1112 B shards and RS parity off the lock,
   pacer insertion under it; each pacer release takes the next chan-2 seq
   and seals, one quantum at a time, then `sendmmsg`.
-- **Host per datagram in:** `recvmmsg`, open (AEAD with the header as AAD),
-  ARQ or feedback ingest, all under the session lock.
+- **Host per datagram in:** `recvmmsg` on each socket that polled
+  readable, open (AEAD with the header as AAD), ARQ or feedback ingest, all
+  under the session lock.
 - **Client per datagram:** kernel stamp, envelope decode and unseal outside
   the demux lock, assembler insert under the pipeline lock.
 - **Client per frame:** sample build on `sampleQueue`, Conductor schedule on
