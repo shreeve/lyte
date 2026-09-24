@@ -61,8 +61,17 @@ verify_frozen_vectors() {
         exit 1
     fi
 
-    echo "==> frozen-vector contract"
-    git diff --exit-code "$base" -- Wire/Vectors/
+    # Vectors are append-only: a committed vector file may never be modified,
+    # deleted, renamed, or retyped. New vector files and README prose are fine.
+    echo "==> frozen-vector contract (append-only)"
+    local changed
+    changed="$(git diff --name-only --diff-filter=MDRT "$base" -- Wire/Vectors/ \
+        | grep -v '^Wire/Vectors/README\.md$' || true)"
+    if [[ -n "$changed" ]]; then
+        echo "macOS gate FAILED: committed vectors changed:" >&2
+        echo "$changed" >&2
+        exit 1
+    fi
 }
 
 verify_frozen_vectors
