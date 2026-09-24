@@ -224,9 +224,8 @@ func runNativeCapture(
     let duration = SystemMonotonicClock.nowSeconds - t0
     print(String(
         format: """
-            RESULT capture: %d frames in %.1fs = %.2f fps, \
-            %d bytes (%.1f KB/frame), %d IDRs, missed_grabs=%d \
-            [NATIVE]
+            RESULT capture: %d frames in %.1fs = %.2f fps, %d bytes (%.1f \
+            KB/frame), %d IDRs, missed_grabs=%d [NATIVE]
             """,
         frames, duration, Double(frames) / duration, bytes,
         frames > 0 ? Double(bytes) / Double(frames) / 1024 : 0,

@@ -235,15 +235,13 @@ public final class BulkFileStore: BulkReceiveStore {
     /// Exposed for tests that pre-seed staging bytes and audit strays.
     public func stagingPath(_ transferId: UInt64) -> String {
         directoryPath + """
-            /\(Self.stagingPrefix)\
-            \(Hex.string(transferId, width: 16)).part
+            /\(Self.stagingPrefix)\(Hex.string(transferId, width: 16)).part
             """
     }
 
     public func resumePath(_ transferId: UInt64) -> String {
         directoryPath + """
-            /\(Self.stagingPrefix)\
-            \(Hex.string(transferId, width: 16)).resume
+            /\(Self.stagingPrefix)\(Hex.string(transferId, width: 16)).resume
             """
     }
 

@@ -655,10 +655,8 @@ final class SessionWire {
         stopRequested: () -> Bool = { false },
         idle: () -> Void = {}
     ) throws -> ClientAwaitOutcome {
-        print("""
-            noise: host static public key \
-            \(Hex.string(hostStatic.publicKey))
-            """)
+        print(
+            "noise: host static public key \(Hex.string(hostStatic.publicKey))")
         print("""
             noise: awaiting client handshake on port \
             \(lyte_netio_local_port(listenNetio)) …
@@ -1204,8 +1202,7 @@ final class SessionWire {
                         """)
                 case .insufficientDiskSpace(let needed, let free):
                     print("""
-                        files: offer refused — needs \(needed) B, \
-                        \(free) B free
+                        files: offer refused — needs \(needed) B, \(free) B free
                         """)
                 case .fileCompleted(let name, let path, let bytes):
                     print("""
@@ -1644,8 +1641,7 @@ final class SessionWire {
         switch event {
         case .handshakeCompleted(let remote):
             emit("""
-                noise: handshake complete — client static \
-                \(Hex.string(remote))
+                noise: handshake complete — client static \(Hex.string(remote))
                 """)
             // The media sockets connect before message 2 is flushed; on
             // failure sends leave addressed through the listening socket.
@@ -1698,9 +1694,8 @@ final class SessionWire {
                 return
             }
             emit("""
-                ctrl-arq: message group \(group.rawValue) \
-                (\(message.count) B, type \
-                \(Hex.string(message.first ?? 0, prefix: true)))
+                ctrl-arq: message group \(group.rawValue) (\(message.count) B, \
+                type \(Hex.string(message.first ?? 0, prefix: true)))
                 """)
         case .reliableOneShotAcknowledged(let group):
             emit("ctrl-arq: one-shot group \(group.rawValue) acknowledged")
@@ -1708,9 +1703,8 @@ final class SessionWire {
             emit("ctrl-arq: ignored \(reason)")
         case .idrRequested(let request):
             emit("""
-                ctrl: IDR request seq \(request.requestSeq) \
-                (frame \(request.frame.rawValue), \
-                coalesced \(request.coalescedCount))
+                ctrl: IDR request seq \(request.requestSeq) (frame \
+                \(request.frame.rawValue), coalesced \(request.coalescedCount))
                 """)
         case .path(let pathEvent):
             emit("path: \(pathEvent)")
@@ -1876,10 +1870,8 @@ final class SessionWire {
                 retransmitted (fresh seqs, videoTail)
                 """)
         case .nackJudgedStale(let frame, let reason):
-            emit("""
-                repair: NACK frame \(frame.rawValue) judged stale \
-                (\(reason))
-                """)
+            emit(
+                "repair: NACK frame \(frame.rawValue) judged stale (\(reason))")
         case .fecRegimeChanged(let regime):
             emit("""
                 fec: regime → \(regime.rawValue) \
@@ -1903,17 +1895,15 @@ final class SessionWire {
             // apply runs off-lock in service(). Never logs the payload.
             if clipboardApplyHandler != nil {
                 emit("""
-                    clipboard: 0x1A set received \
-                    (\(text.utf8.count) B) — applying to the host \
-                    clipboard
+                    clipboard: 0x1A set received (\(text.utf8.count) B) — \
+                    applying to the host clipboard
                     """)
                 pendingClipboardApplies.append(text)
             } else {
                 // Defensive: a leafless shell never declares key 10.
                 emit("""
-                    clipboard: 0x1A set received \
-                    (\(text.utf8.count) B) — no clipboard leaf, \
-                    ignored
+                    clipboard: 0x1A set received (\(text.utf8.count) B) — no \
+                    clipboard leaf, ignored
                     """)
             }
         case .clipboardAnnounceSent(let byteCount):
@@ -1953,8 +1943,7 @@ final class SessionWire {
             }
         case .clipboardImageShareStarted(let byteCount):
             emit("""
-                clipboard: image share started (\(byteCount) B \
-                as chan-8 cargo)
+                clipboard: image share started (\(byteCount) B as chan-8 cargo)
                 """)
         case .clipboardImageShareCompleted(let byteCount):
             emit("""

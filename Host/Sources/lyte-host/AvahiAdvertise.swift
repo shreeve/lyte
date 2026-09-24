@@ -57,10 +57,8 @@ final class AvahiAdvertiser {
         if !interfaceName.isEmpty {
             let index = if_nametoindex(interfaceName)
             guard index != 0 else {
-                throw HostError("""
-                    --advertise-interface \(interfaceName): \
-                    no such interface
-                    """)
+                throw HostError(
+                    "--advertise-interface \(interfaceName): no such interface")
             }
             ifIndex = Int32(index)
         }

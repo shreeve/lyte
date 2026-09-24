@@ -25,8 +25,7 @@ public struct EyeVaapiError: Error, CustomStringConvertible {
     public var description: String
     init(_ what: String, _ status: VAStatus) {
         description = """
-            \(what): VAStatus \(status) \
-            (\(String(cString: vaErrorStr(status))))
+            \(what): VAStatus \(status) (\(String(cString: vaErrorStr(status))))
             """
     }
     init(_ what: String) { description = what }
@@ -243,10 +242,9 @@ public final class EyeVaapiEncoder {
             ? "vbr \(bitrateBitsPerSecond / 1_000_000) Mbps cap"
             : "cqp \(qp)"
         print("""
-            vaapi-native: \(String(cString: vaQueryVendorString(display))) \
-            — \(entrypoint == VAEntrypointEncSliceLP ? "LP" : "std")\
-             entrypoint, GPB, \(rc)\
-            \(chroma444 ? ", Rext Main444 (AYUV)" : "")
+            vaapi-native: \(String(cString: vaQueryVendorString(display))) — \
+            \(entrypoint == VAEntrypointEncSliceLP ? "LP" : "std") entrypoint, \
+            GPB, \(rc)\(chroma444 ? ", Rext Main444 (AYUV)" : "")
             """)
     }
 

@@ -266,9 +266,8 @@ let p50 = Double(sorted[sorted.count / 2]) / 1e6
 let p99 = Double(sorted[min(sorted.count - 1,
                             sorted.count * 99 / 100)]) / 1e6
 print("""
-    nvenc-probe: \(frameCount) frames \(width)x\(height) → \
-    \(out.count) B (\(outPath)); encode p50 \
-    \(String(format: "%.2f", p50)) ms / p99 \
+    nvenc-probe: \(frameCount) frames \(width)x\(height) → \(out.count) B \
+    (\(outPath)); encode p50 \(String(format: "%.2f", p50)) ms / p99 \
     \(String(format: "%.2f", p99)) ms
     """)
 print("""
@@ -283,9 +282,8 @@ guard idrFrames == [0] else {
 }
 guard reconfigured else { fail("reconfigure never ran") }
 print("""
-    nvenc-probe: PASS — one demanded IDR, mid-stream rate move \
-    with zero reset and zero IDR. The vendor patch's job, done \
-    by the front door.
+    nvenc-probe: PASS — one demanded IDR, mid-stream rate move with zero reset \
+    and zero IDR. The vendor patch's job, done by the front door.
     """)
 
 #endif

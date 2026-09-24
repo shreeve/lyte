@@ -156,10 +156,8 @@ final class DirectEyeLeg {
         }
         func described() -> String {
             """
-                cursor=\(Self.ms(cursorUs)) \
-                grab=\(Self.ms(grabUs)) \
-                fingerprint=\(Self.ms(fingerprintUs)) \
-                blit=\(Self.ms(blitUs)) \
+                cursor=\(Self.ms(cursorUs)) grab=\(Self.ms(grabUs)) \
+                fingerprint=\(Self.ms(fingerprintUs)) blit=\(Self.ms(blitUs)) \
                 encode=\(Self.ms(encodeUs)) deliver=\(Self.ms(deliverUs))
                 """
         }
@@ -273,10 +271,9 @@ final class DirectEyeLeg {
             ? "vbr \(config.bitrateBitsPerSecond / 1_000_000) Mbps cap"
             : "cqp \(config.qp)"
         print("""
-            direct: eye open — \(width)x\(height) on \
-            \(config.device), native VAAPI \(rc), \
-            \(chroma == .yuv444 ? "Rext 4:4:4 (AYUV)" : "4:2:0")\
-             (rate directives apply live)
+            direct: eye open — \(width)x\(height) on \(config.device), native \
+            VAAPI \(rc), \(chroma == .yuv444 ? "Rext 4:4:4 (AYUV)" : "4:2:0") \
+            (rate directives apply live)
             """)
 
         // The cursor plane travels as metadata (0x24), never as video;
@@ -413,9 +410,8 @@ final class DirectEyeLeg {
                     samplingCadence.reset()
                     screen.resetIdentityObservation()
                     print("""
-                        direct: Best tier agreed — encoder \
-                        reopened as Rext 4:4:4 (AYUV, one-pass \
-                        blit)
+                        direct: Best tier agreed — encoder reopened as Rext \
+                        4:4:4 (AYUV, one-pass blit)
                         """)
                 } catch {
                     lastError = "direct: 4:4:4 reopen: \(error)"
@@ -433,10 +429,9 @@ final class DirectEyeLeg {
                 directivesApplied += 1
                 if directivesApplied == 1 {
                     print("""
-                        direct: rate directive \
-                        (\(directive.kind.rawValue)) applied — \
-                        \(directive.maxBitsPerSecond / 1_000_000)\
-                         Mbps cap
+                        direct: rate directive (\(directive.kind.rawValue)) \
+                        applied — \(directive.maxBitsPerSecond / 1_000_000) \
+                        Mbps cap
                         """)
                 }
             }
@@ -462,9 +457,8 @@ final class DirectEyeLeg {
                 observationSkipEvents += 1
                 if observationSkipEvents <= 40 {
                     print("""
-                        direct: observation beat skipped \
-                        \(skippedBeats) beat(s) \
-                        prev[\(lastStages.described())] ms
+                        direct: observation beat skipped \(skippedBeats) \
+                        beat(s) prev[\(lastStages.described())] ms
                         """)
                 }
             }
@@ -579,8 +573,7 @@ final class DirectEyeLeg {
             beats_skipped=\(skippedObservationBeats), \
             pixel_changes=\(changedObservations), \
             stage_max[\(maxStages.described())] ms, \
-            service_max=\(StageClocks.ms(serviceMaxUs)) ms \
-            (janitor thread)
+            service_max=\(StageClocks.ms(serviceMaxUs)) ms (janitor thread)
             """)
     }
 
@@ -620,10 +613,8 @@ final class DirectEyeLeg {
                 print("""
                     direct: cursor derive #\(cursorShapesSeen): \
                     \(frame.width)x\(frame.height) \
-                    crop(\(frame.cropX),\(frame.cropY)) \
-                    plane(\(planeDesc)) \
-                    pointer(\(pointerDesc)) \
-                    → hotspot(\(hot.x),\(hot.y))
+                    crop(\(frame.cropX),\(frame.cropY)) plane(\(planeDesc)) \
+                    pointer(\(pointerDesc)) → hotspot(\(hot.x),\(hot.y))
                     """)
             }
             lastCursorFrame = frame
@@ -673,9 +664,8 @@ final class DirectEyeLeg {
         guard hot.x != sent.x || hot.y != sent.y else { return }
         cursorHotspotCorrections += 1
         print("""
-            direct: cursor hotspot corrected \
-            (\(sent.x),\(sent.y)) → (\(hot.x),\(hot.y)) at rest — \
-            plane(\(plane.x),\(plane.y)) \
+            direct: cursor hotspot corrected (\(sent.x),\(sent.y)) → \
+            (\(hot.x),\(hot.y)) at rest — plane(\(plane.x),\(plane.y)) \
             pointer(\(Int(pointer.x)),\(Int(pointer.y)))
             """)
         sentHotspot = (hot.x, hot.y)

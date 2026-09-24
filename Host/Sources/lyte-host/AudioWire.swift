@@ -107,9 +107,8 @@ final class AudioWire: @unchecked Sendable {
                 // Refuse the posture rather than run un-restorable.
                 // No frees here — deinit owns them.
                 throw HostError("""
-                    cannot persist the original default \
-                    sink for crash restore (\(error)) — refusing \
-                    hostMuted
+                    cannot persist the original default sink for crash restore \
+                    (\(error)) — refusing hostMuted
                     """)
             }
             print("""
@@ -181,15 +180,13 @@ final class AudioWire: @unchecked Sendable {
         if rc == 0 {
             unlink(ledger.path)
             print("""
-                audio: swept a dirty previous run — default sink \
-                restored to \
+                audio: swept a dirty previous run — default sink restored to \
                 \(record == unsetSentinel ? "(unset)" : record)
                 """)
         } else {
             print("""
-                audio: leftover-routing sweep FAILED \
-                (\(errString(err))) — state file kept; restore by \
-                hand with wpctl set-default
+                audio: leftover-routing sweep FAILED (\(errString(err))) — \
+                state file kept; restore by hand with wpctl set-default
                 """)
         }
     }

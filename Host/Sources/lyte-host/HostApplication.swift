@@ -111,9 +111,8 @@ struct Options {
                 // A no-op kept for scripts; any other encoder fails.
                 guard i < args.count, args[i] == "native" else {
                     throw HostError("""
-                        --encoder libav was demolished \
-                        after first-light — the native VAAPI seat \
-                        is the direct eye's only encoder \
+                        --encoder libav was demolished after first-light — the \
+                        native VAAPI seat is the direct eye's only encoder \
                         (--encoder native is an accepted no-op)
                         """)
                 }
@@ -161,9 +160,8 @@ struct Options {
                 else {
                     throw HostError(
                         """
-                            --input must be auto, uinput, or off \
-                            (mutter was retired in E2 — uinput is \
-                            primary)
+                            --input must be auto, uinput, or off (mutter was \
+                            retired in E2 — uinput is primary)
                             """)
                 }
                 opts.input = choice
@@ -218,10 +216,8 @@ struct Options {
             case "--audio-bitrate-kbps":
                 i += 1
                 guard i < args.count, let v = Int32(args[i]), v > 0 else {
-                    throw HostError("""
-                        --audio-bitrate-kbps needs a \
-                        positive number
-                        """)
+                    throw HostError(
+                        "--audio-bitrate-kbps needs a positive number")
                 }
                 opts.audioBitrate = v * 1_000
             case "--help", "-h":
@@ -364,8 +360,7 @@ func handlePairingEvent(_ event: PairingResponderService.Event) {
             let paths = try HostPaths.current()
             var store = try PairedClients.load(paths: paths)
             if store.pin(key, note: """
-                paired \
-                \(ISO8601DateFormatter().string(from: Date()))
+                paired \(ISO8601DateFormatter().string(from: Date()))
                 """) {
                 try PairedClients.save(store, paths: paths)
                 print("""
@@ -373,10 +368,8 @@ func handlePairingEvent(_ event: PairingResponderService.Event) {
                     \(try PairedClients.path(paths: paths))
                     """)
             } else {
-                print("""
-                    pairing: PAIRED — client static \(hex) was \
-                    already pinned
-                    """)
+                print(
+                    "pairing: PAIRED — client static \(hex) was already pinned")
             }
         } catch {
             // Only persistence failed: loud, not fatal to the session.
@@ -462,9 +455,8 @@ final class SessionHost {
             let store = try PairedClients.load(paths: paths)
             guard !store.entries.isEmpty else {
                 throw HostError("""
-                    --require-paired with an empty \
-                    keystore would lock every client out — run \
-                    --pair once first
+                    --require-paired with an empty keystore would lock every \
+                    client out — run --pair once first
                     """)
             }
             allowed = store.publicKeys
@@ -483,9 +475,8 @@ final class SessionHost {
                 hostStaticPublicKey: keys.publicKey
             )
             print("""
-                pairing: PIN \(pin) — enter it on the client \
-                (3 wrong guesses burn it; rerun --pair for a \
-                fresh one)
+                pairing: PIN \(pin) — enter it on the client (3 wrong guesses \
+                burn it; rerun --pair for a fresh one)
                 """)
         } else {
             pairingService = nil
@@ -509,8 +500,7 @@ final class SessionHost {
                 let tier = opts.clipboardImages
                     ? """
                         text + images (PNG, \
-                        \(ClipboardImageWire.maxImageByteCount) B \
-                        image ceiling)
+                        \(ClipboardImageWire.maxImageByteCount) B image ceiling)
                         """
                     : "text only"
                 print("""
@@ -601,9 +591,8 @@ final class SessionHost {
                 cookieExitThreshold: opts.cookieExit
             )
             print("""
-                handshake: W8 retry-cookie dial ARMED \
-                (require-cookie engages at \(opts.cookieEnter) msg1/s, \
-                clears at \(opts.cookieExit)/s)
+                handshake: W8 retry-cookie dial ARMED (require-cookie engages \
+                at \(opts.cookieEnter) msg1/s, clears at \(opts.cookieExit)/s)
                 """)
         }
         self.gateConfig = gateConfig
@@ -623,10 +612,8 @@ final class SessionHost {
                     interfaceName: opts.advertiseInterface
                 )
             } catch {
-                print("""
-                    discovery: off (\(error)) — \
-                    manual host:port still works
-                    """)
+                print(
+                    "discovery: off (\(error)) — manual host:port still works")
             }
         }
         advertiser = published
@@ -821,19 +808,15 @@ static func serveSession(
         throw error
     }
     if awaitOutcome == .terminationRequested {
-        print("""
-            session: termination requested before handshake — \
-            clean stop
-            """)
+        print("session: termination requested before handshake — clean stop")
         w.shutdown(reason: .shuttingDown, lingerSeconds: 0)
         return ServedSession(
             end: .terminatedBeforeHandshake,
             leg: .init(frames: 0, firstPacketStartsStream: false))
     }
     print("""
-        session: up — pacer \(opts.wireRateMbps) Mbps, per-packet \
-        TOS (video 0xA0 / ctrl+audio+repairs 0xC0), 1 Hz beacon \
-        on CTRL
+        session: up — pacer \(opts.wireRateMbps) Mbps, per-packet TOS (video \
+        0xA0 / ctrl+audio+repairs 0xC0), 1 Hz beacon on CTRL
         """)
 
     // The estimator's ceiling reaches the encoder as rate directives.
@@ -914,9 +897,8 @@ static func serveSession(
                 // speakers keep playing.
                 if mode == .streamOff {
                     print("""
-                        audio-routing: stream OFF — the wire \
-                        carries no audio track (host speakers \
-                        unaffected)
+                        audio-routing: stream OFF — the wire carries no audio \
+                        track (host speakers unaffected)
                         """)
                     return true
                 }
@@ -929,9 +911,8 @@ static func serveSession(
                     return true
                 } catch {
                     print("""
-                        audio-routing: rebuild in \(mode) failed \
-                        (\(error)) — trying to come back \
-                        \(opts.hostAudio)
+                        audio-routing: rebuild in \(mode) failed (\(error)) — \
+                        trying to come back \(opts.hostAudio)
                         """)
                     if let back = try? AudioWire(
                         wire: w, bitrate: opts.audioBitrate,
@@ -1008,10 +989,9 @@ static func printLegSummary(
     if leg.frames > 0 {
         print("""
 
-        done: \(leg.frames) frames encoded (direct eye), \
-        \(leg.keyframes) IDR, \(leg.bytes) bytes, \
-        missed_grabs \(leg.missedGrabs), \
-        rate directives applied \(leg.directivesApplied)
+        done: \(leg.frames) frames encoded (direct eye), \(leg.keyframes) IDR, \
+        \(leg.bytes) bytes, missed_grabs \(leg.missedGrabs), rate directives \
+        applied \(leg.directivesApplied)
         """)
         print("first packet NALs: \(AnnexBCheck.summary(of: leg.firstPacket))")
         if startsStream {
@@ -1037,9 +1017,8 @@ static func printSessionBooks(
         let avg = d.averageBitsPerSecond
             .map { " avg \($0 / 1_000) kbps," } ?? ""
         vbvFinal = """
-             — final\(avg) max \(d.maxBitsPerSecond / 1_000) \
-            kbps, vbv \(d.vbvBits / 8) B \
-            (ceiling \(d.frameByteCeiling) B)
+             — final\(avg) max \(d.maxBitsPerSecond / 1_000) kbps, vbv \
+            \(d.vbvBits / 8) B (ceiling \(d.frameByteCeiling) B)
             """
     }
     var bulkShellStats = ""

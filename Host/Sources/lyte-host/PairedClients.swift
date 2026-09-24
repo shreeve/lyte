@@ -30,9 +30,8 @@ enum PairedClients {
             return try ClientKeystore.parse(text)
         } catch let ClientKeystore.ParseError.malformedLine(line, contents) {
             throw HostError("""
-                paired-clients store at \(path) line \
-                \(line) is malformed (\"\(contents)\") — refusing to \
-                guess; fix or move it aside
+                paired-clients store at \(path) line \(line) is malformed \
+                (\"\(contents)\") — refusing to guess; fix or move it aside
                 """)
         }
     }
