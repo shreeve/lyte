@@ -114,7 +114,8 @@ fakes:
 In order:
 
 1. **Frozen vectors.** Fails when any file under `Wire/Vectors/` other than
-   `README.md` is modified, deleted, renamed or retyped relative to
+   a `README.md` (at any depth) is modified, deleted, renamed or retyped
+   relative to
    `LYTE_GATE_BASE_SHA` (default: merge base with `origin/main`). New files
    are allowed. `LYTE_ALLOW_VECTOR_CHANGES=1` overrides, deliberately.
 2. **Package tests** for Common, Wire, Host, Client, SystemTests and
