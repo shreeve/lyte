@@ -62,7 +62,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LyteIOTests",
-            dependencies: ["LyteIO", "LyteTestKit"]
+            dependencies: ["LyteIO"]
         ),
         .testTarget(
             name: "LyteTestKitTests",

@@ -124,6 +124,44 @@ public enum SwiftSourceScanner {
         return false
     }
 
+    /// The types `tokens` declares — `struct`, `class`, `enum`,
+    /// `protocol`, `actor` or `typealias` followed by a whole identifier —
+    /// with the brace depth each sits at (0 = top level). `class func`,
+    /// `class var` and `import struct M.T` are not declarations.
+    public static func typeDeclarations(
+        in tokens: [String]
+    ) -> [(name: String, depth: Int)] {
+        let kinds: Set<String> = [
+            "struct", "class", "enum", "protocol", "actor", "typealias",
+        ]
+        let notNames: Set<String> = [
+            "func", "var", "let", "subscript", "init", "deinit", "override",
+            "final", "static", "public", "private", "fileprivate",
+            "internal", "open", "package",
+        ]
+        var declarations: [(name: String, depth: Int)] = []
+        var depth = 0
+        for index in tokens.indices {
+            switch tokens[index] {
+            case "{": depth += 1
+            case "}": depth = max(depth - 1, 0)
+            case let kind where kinds.contains(kind):
+                guard index + 1 < tokens.endIndex,
+                      index == tokens.startIndex
+                          || tokens[index - 1] != "import"
+                else { continue }
+                let name = tokens[index + 1]
+                guard let first = name.first, first.isLetter || first == "_",
+                      !notNames.contains(name)
+                else { continue }
+                declarations.append((name, depth))
+            default:
+                break
+            }
+        }
+        return declarations
+    }
+
     public static func importedModules(in source: String) -> [String] {
         let importKinds: Set<String> = [
             "class", "enum", "func", "let", "macro", "protocol", "struct",

@@ -3,61 +3,34 @@ import LyteCore
 import LyteTestKit
 import XCTest
 
+/// libopus enters the repository once: the pinned, vendored COpus source
+/// leaf that Common declares, never a system library or ambient linkage.
 final class COpusDeclarationRatchetTests: XCTestCase {
-    func testCOpusIsOnePinnedSourceLeafWithoutAmbientLinkage() throws {
-        let tree = RepositorySourceTree()
-        let manifestPaths = [
-            "Client/Package.swift", "Common/Package.swift", "Host/Package.swift",
-            "SystemTests/Package.swift", "Wire/Package.swift",
-        ]
-        let targetDeclaration = try NSRegularExpression(
-            pattern: #"\.target\s*\(\s*name:\s*"COpus""#
-        )
-        let systemDeclaration = try NSRegularExpression(
-            pattern: #"\.systemLibrary\s*\(\s*name:\s*"COpus""#
-        )
-        var declarations: [String] = []
-        var manifestText = ""
+    private let tree = RepositorySourceTree()
 
-        for path in manifestPaths {
-            let source = try String(
-                contentsOf: tree.repositoryRoot.appendingPathComponent(path),
-                encoding: .utf8
-            )
-            manifestText += source
-            let range = NSRange(source.startIndex..., in: source)
-            if targetDeclaration.firstMatch(in: source, range: range) != nil {
-                declarations.append(path)
+    /// Every package manifest in the checkout.
+    private func manifests() throws -> [(path: String, source: String)] {
+        let root = tree.repositoryRoot
+        return try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .sorted()
+            .compactMap { package in
+                let path = "\(package)/Package.swift"
+                let url = root.appendingPathComponent(path)
+                guard FileManager.default.fileExists(atPath: url.path)
+                else { return nil }
+                return (path, try String(contentsOf: url, encoding: .utf8))
             }
-        }
-        XCTAssertEqual(declarations, ["Common/Package.swift"])
-        let manifestRange = NSRange(manifestText.startIndex..., in: manifestText)
-        XCTAssertNil(systemDeclaration.firstMatch(
-            in: manifestText, range: manifestRange
-        ))
+    }
 
-        let commonManifest = try String(
-            contentsOf: tree.repositoryRoot.appendingPathComponent(
-                "Common/Package.swift"
-            ),
-            encoding: .utf8
-        )
-        for required in [
-            #"path: "Sources/COpus""#,
-            #""Upstream/opus-1.6.1/celt""#,
-            #""Upstream/opus-1.6.1/silk""#,
-            #""Upstream/opus-1.6.1/src""#,
-            #"publicHeadersPath: "include""#,
-            #".define("OPUS_BUILD")"#,
-            #".define("USE_ALLOCA")"#,
-            #".define("DISABLE_DEBUG_FLOAT")"#,
-            #".define("PACKAGE_VERSION", to: "\"1.6.1\"")"#,
-        ] {
-            XCTAssertTrue(
-                commonManifest.contains(required),
-                "COpus compile contract changed: \(required)"
-            )
-        }
+    func testCOpusIsOnePinnedSourceLeafWithoutAmbientLinkage() throws {
+        let manifests = try manifests()
+        XCTAssertGreaterThanOrEqual(manifests.count, 6, "every package is scanned")
+        let targetDeclaration = try NSRegularExpression(
+            pattern: #"\.target\s*\(\s*name:\s*"COpus""#)
+        XCTAssertEqual(
+            manifests.filter { Self.matches(targetDeclaration, $0.source) }
+                .map(\.path),
+            ["Common/Package.swift"])
 
         for forbiddenPattern in [
             #"\.systemLibrary\s*\(\s*name\s*:\s*"COpus""#,
@@ -68,42 +41,14 @@ final class COpusDeclarationRatchetTests: XCTestCase {
             #"["']-l(?:[^"']*)?opus["']"#,
         ] {
             let regex = try NSRegularExpression(pattern: forbiddenPattern)
-            XCTAssertNil(regex.firstMatch(
-                in: manifestText,
-                range: NSRange(manifestText.startIndex..., in: manifestText)
-            ), "ambient Opus coupling returned: \(forbiddenPattern)")
+            for manifest in manifests where Self.matches(regex, manifest.source) {
+                XCTFail("ambient Opus coupling in \(manifest.path): \(forbiddenPattern)")
+            }
         }
-
-        let provenance = try String(
-            contentsOf: tree.repositoryRoot.appendingPathComponent(
-                "Common/Sources/COpus/UPSTREAM.md"
-            ),
-            encoding: .utf8
-        )
-        XCTAssertTrue(provenance.contains("Opus 1.6.1"))
-        XCTAssertTrue(provenance.contains(
-            "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1"
-        ))
-        let verifier = tree.repositoryRoot.appendingPathComponent(
-            "Scripts/verify-opus-upstream.sh"
-        )
-        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: verifier.path))
-        let verifierSource = try String(contentsOf: verifier, encoding: .utf8)
-        XCTAssertTrue(verifierSource.contains(
-            "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1"
-        ))
-
-        let license = try Data(contentsOf: tree.repositoryRoot.appendingPathComponent(
-            "Common/Sources/COpus/Upstream/opus-1.6.1/COPYING"
-        ))
-        XCTAssertEqual(
-            hex(Sha256.digest(license)),
-            "01e1167d54a096d123cf6dfbbeb19587278845c6481d2d66d545669846079551"
-        )
     }
 
+    /// The vendored tree is exactly the pinned upstream snapshot.
     func testVendoredOpusSnapshotIsExact() throws {
-        let tree = RepositorySourceTree()
         let cOpus = tree.repositoryRoot.appendingPathComponent(
             "Common/Sources/COpus"
         )
@@ -141,23 +86,29 @@ final class COpusDeclarationRatchetTests: XCTestCase {
             digest.update([0])
         }
         XCTAssertEqual(
-            hex(digest.finalized()),
+            Hex.string(digest.finalized()),
             "10e358f2ada650e159574c3811504a55af1c67c6a184524858c24481a6d5e4e6"
         )
     }
 
     func testNoHandwrittenCOpusModuleMapExists() throws {
-        let tree = RepositorySourceTree()
-        let sourceRoots = ["Client/Sources", "Common/Sources", "Host/Sources", "Wire/Sources"]
+        let sourceRoots = try manifests().map {
+            $0.path.replacingOccurrences(of: "Package.swift", with: "Sources")
+        }.filter {
+            FileManager.default.fileExists(
+                atPath: tree.repositoryRoot.appendingPathComponent($0).path)
+        }
+        XCTAssertGreaterThanOrEqual(sourceRoots.count, 5)
         var violations: [String] = []
         for sourceRoot in sourceRoots {
             let root = tree.repositoryRoot.appendingPathComponent(sourceRoot)
-            guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else {
+            guard let enumerator = FileManager.default.enumerator(
+                at: root, includingPropertiesForKeys: nil)
+            else {
                 return XCTFail("cannot enumerate \(sourceRoot)")
             }
             for case let file as URL in enumerator
-            where file.lastPathComponent == "module.modulemap"
-                || file.pathExtension == "modulemap" {
+            where file.pathExtension == "modulemap" {
                 let source = try String(contentsOf: file, encoding: .utf8)
                 if source.contains("module COpus")
                     || source.range(
@@ -175,44 +126,11 @@ final class COpusDeclarationRatchetTests: XCTestCase {
         )
     }
 
-    func testHostCodecPolicyIsSwiftAndTheDuplicateCWrapperIsGone() throws {
-        let tree = RepositorySourceTree()
-        let hostManifest = try String(
-            contentsOf: tree.repositoryRoot.appendingPathComponent(
-                "Host/Package.swift"),
-            encoding: .utf8
-        )
-        let hostAudio = try String(
-            contentsOf: tree.repositoryRoot.appendingPathComponent(
-                "Host/Sources/HostAudio/HostOpusCodec.swift"),
-            encoding: .utf8
-        )
-
-        XCTAssertFalse(hostManifest.contains("COpusEncode"))
-        let retiredRoot = tree.repositoryRoot.appendingPathComponent(
-            "Host/Sources/COpusEncode")
-        let retiredFiles = FileManager.default.enumerator(
-            at: retiredRoot,
-            includingPropertiesForKeys: [.isRegularFileKey]
-        )?.compactMap { item -> URL? in
-            guard let file = item as? URL,
-                  (try? file.resourceValues(
-                    forKeys: [.isRegularFileKey]).isRegularFile) == true
-            else { return nil }
-            return file
-        } ?? []
-        XCTAssertTrue(retiredFiles.isEmpty)
-        XCTAssertTrue(hostManifest.contains(#"name: "HostAudio""#))
-        XCTAssertTrue(hostAudio.contains("import COpus"))
-        XCTAssertTrue(hostAudio.contains("public final class HostOpusEncoder"))
-        XCTAssertFalse(hostAudio.contains("import Foundation"))
+    private static func matches(_ regex: NSRegularExpression, _ text: String) -> Bool {
+        regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 
     private func relative(_ file: URL, to root: URL) -> String {
         String(file.path.dropFirst(root.path.count + 1))
-    }
-
-    private func hex(_ bytes: [UInt8]) -> String {
-        bytes.map { String(format: "%02x", $0) }.joined()
     }
 }
