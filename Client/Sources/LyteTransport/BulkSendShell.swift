@@ -303,27 +303,29 @@ public final class BulkSendShell: @unchecked Sendable {
         reader.read(offset: offset, byteCount: byteCount) {
             [weak self] result in
             guard let self else { return }
-            switch result {
-            case .success(let data):
-                self.lock.lock()
-                let actions = (try? self.engine.supplyChunk(
-                    index: index, data: data)) ?? []
+            // A chunk the engine refuses (the file changed size since the
+            // offer) is a read failure too: the transfer cannot continue.
+            self.lock.lock()
+            let error: any Error
+            do {
+                let actions = try self.engine.supplyChunk(
+                    index: index, data: result.get())
                 self.lock.unlock()
-                self.perform(actions)
-            case .failure(let error):
-                // The wire has no read-failure reason: cancel, keeping
-                // the local why.
-                self.lock.lock()
-                let terminal = self.engine.isTerminal
-                let actions = terminal ? [] : self.engine.cancel()
-                self.lock.unlock()
-                if !terminal {
-                    // The why precedes the abort, so the coordinator
-                    // reports one failure, not a cancel.
-                    self.onEvent(.readFailed(String(describing: error)))
-                }
-                self.perform(actions)
+                return self.perform(actions)
+            } catch let failure {
+                error = failure
             }
+            // The wire has no read-failure reason: cancel, keeping the
+            // local why.
+            let terminal = self.engine.isTerminal
+            let actions = terminal ? [] : self.engine.cancel()
+            self.lock.unlock()
+            if !terminal {
+                // The why precedes the abort, so the coordinator reports
+                // one failure, not a cancel.
+                self.onEvent(.readFailed(String(describing: error)))
+            }
+            self.perform(actions)
         }
     }
 
