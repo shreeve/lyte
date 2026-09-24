@@ -342,6 +342,8 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     public let config: LyteUdpSessionCoreConfig
 
     private let now: @Sendable () -> ClientTimestamp
+    /// The clipboard-image digest (LyteCore's SHA-256 unless injected).
+    private let sha256: @Sendable ([UInt8]) -> [UInt8]
     private let onEvent: @Sendable (LyteUdpSessionEvent) -> Void
     private let onVideoRecoveryDemand:
         @Sendable (VideoRecoveryCause, FrameNumber) -> Void
@@ -412,6 +414,9 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             ClientTimestamp(
                 microseconds: SystemMonotonicClock.nowMicroseconds)
         },
+        sha256: @escaping @Sendable ([UInt8]) -> [UInt8] = {
+            Sha256.digest($0)
+        },
         onVideoRecoveryDemand: @escaping @Sendable (
             VideoRecoveryCause, FrameNumber
         ) -> Void = { _, _ in },
@@ -425,6 +430,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         self.config = config
         self.clockModel = clockModel
         self.now = now
+        self.sha256 = sha256
         self.onEvent = onEvent
         self.onVideoRecoveryDemand = onVideoRecoveryDemand
         self.onVideoRecoveryTrace = onVideoRecoveryTrace
@@ -874,13 +880,26 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     /// book → the lane → the 32 MiB ceiling) and shared as 0x22 cargo
     /// on chan 8 when it survives. Never throws — the poller has
     /// nobody to catch for it.
+    ///
+    /// Three phases: the digest-free gates under the lock, the digest
+    /// outside it (tens of MiB must not stall datagram dispatch), then
+    /// the full judgment under the lock again. A refused image is never
+    /// hashed.
     @discardableResult
     public func shareLocalClipboardImage(
         _ data: [UInt8], now: ClientTimestamp
     ) -> ClipboardShareOutcome {
         lock.lock()
+        let refusal = controlSession.prejudgeLocalClipboardImage(
+            byteCount: data.count)
+        lock.unlock()
+        if let refusal {
+            return executeClipboardDecision(refusal, now: now)
+        }
+        let digest = sha256(data)
+        lock.lock()
         let decision = controlSession.shareLocalClipboardImage(
-            data, sha256: Sha256.digest(data), rng: &imageRng
+            data, sha256: digest, rng: &imageRng
         )
         lock.unlock()
         return executeClipboardDecision(decision, now: now)
@@ -1509,7 +1528,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         lock.lock()
         if controlSession.clipboardClaimsBulk(message) {
             let decision = controlSession.receiveClipboardBulk(
-                message, sha256: Sha256.digest)
+                message, sha256: sha256)
             lock.unlock()
             executeClipboardDecision(decision, now: now)
             return

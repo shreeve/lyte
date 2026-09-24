@@ -338,7 +338,10 @@ final class ClipboardImageClientGateTests: XCTestCase {
 
         init(
             host: ImageHostStandIn,
-            coreConfig: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig()
+            coreConfig: LyteUdpSessionCoreConfig = LyteUdpSessionCoreConfig(),
+            sha256: @escaping @Sendable ([UInt8]) -> [UInt8] = {
+                Sha256.digest($0)
+            }
         ) throws {
             self.host = host
             let crypto = try NoiseTransportCrypto(
@@ -360,6 +363,7 @@ final class ClipboardImageClientGateTests: XCTestCase {
                 sender: sender,
                 config: coreConfig,
                 now: { ClientTimestamp(microseconds: clock.value) },
+                sha256: sha256,
                 videoSink: HeadlessVideoSink(),
                 onEvent: { [weak self] event in
                     self?.events.append(event)
@@ -670,6 +674,86 @@ final class ClipboardImageClientGateTests: XCTestCase {
         print("P-1 client gate (rule 3): share refused pre-wire against "
             + "a text-only host; hostile 0x22 dropped loud; file offer "
             + "on an images-only chan 8 dropped loud; ceilings weather")
+    }
+
+    // MARK: Leg 4b — hashing cost stays off refused images and the lock
+
+    /// Records every digest the core asks for and, while hashing, probes
+    /// whether another thread can take the core lock.
+    private final class HashProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls = 0
+        private var probesThatWaited = 0
+        weak var core: LyteUdpSessionCore?
+
+        var callCount: Int { lock.withLock { calls } }
+        var lockedDuringHash: Int { lock.withLock { probesThatWaited } }
+
+        func digest(_ data: [UInt8]) -> [UInt8] {
+            lock.withLock { calls += 1 }
+            let done = DispatchSemaphore(value: 0)
+            let core = self.core
+            DispatchQueue.global().async {
+                _ = core?.clipboardImageSharingEnabled
+                done.signal()
+            }
+            if done.wait(timeout: .now() + 2) == .timedOut {
+                lock.withLock { probesThatWaited += 1 }
+            }
+            return Sha256.digest(data)
+        }
+    }
+
+    func testRefusedImagesAreNeverHashedAndHashingLeavesTheCoreLockFree()
+        throws
+    {
+        let host = ImageHostStandIn(localCapabilities: imagesTier)
+        var config = LyteUdpSessionCoreConfig()
+        config.shareClipboard = true
+        config.shareClipboardImages = true
+        let probe = HashProbe()
+        let harness = try Harness(
+            host: host, coreConfig: config,
+            sha256: { probe.digest($0) })
+        probe.core = harness.core
+        var t: UInt64 = 1_000
+        harness.clock.value = t
+        try harness.core.open(now: ClientTimestamp(microseconds: t))
+        try harness.settle(t: &t)
+        let now = ClientTimestamp(microseconds: t)
+
+        let oneOver = [UInt8](
+            repeating: 0x5A,
+            count: ClipboardImageWire.maxImageByteCount + 1)
+        XCTAssertEqual(
+            harness.core.shareLocalClipboardImage(oneOver, now: now),
+            .overBudget(oneOver.count))
+        harness.core.setClipboardImageSharing(false)
+        XCTAssertEqual(
+            harness.core.shareLocalClipboardImage(
+                makePayload(count: 3_000, seed: 0x31), now: now),
+            .sharingDisabled)
+        XCTAssertEqual(probe.callCount, 0,
+                       "a refused image must never be hashed")
+        XCTAssertEqual(
+            harness.core.clipboardImageCounters.sharesSuppressed, 1,
+            "the pre-digest ceiling refusal still counts as suppressed")
+
+        harness.core.setClipboardImageSharing(true)
+        XCTAssertEqual(
+            harness.core.shareLocalClipboardImage(
+                makePayload(count: 3_000, seed: 0x32), now: now),
+            .shared)
+        XCTAssertEqual(probe.callCount, 1)
+        XCTAssertEqual(probe.lockedDuringHash, 0,
+                       "the digest must run outside the core lock")
+        XCTAssertEqual(
+            harness.core.shareLocalClipboardImage(oneOver, now: now),
+            .suppressedBusy,
+            "an over-ceiling copy mid-transfer keeps the busy verdict")
+        XCTAssertEqual(probe.callCount, 1)
+        try harness.settle(t: &t)
+        XCTAssertEqual(host.applied.count, 1)
     }
 
     // MARK: Leg 5 — the per-host images-rung default's plumbing
