@@ -16,6 +16,9 @@ import LyteWire
 ///   no lone Super tap (GNOME's Activities toggle) leaks out.
 /// - Local shortcuts stay local; auto-repeats never cross (the wire has
 ///   no repeat value — a down without its up wedges a key).
+/// - A key or click's own modifier flags are the truth about ⌘: menu
+///   tracking and title-bar drags can swallow a ⌘ release, and a stale
+///   ⌘ must neither ride the next key out as Super nor stay down.
 struct InputForwardingPolicy {
     struct Verdict: Equatable {
         /// Wire events to send, in order.
@@ -47,7 +50,7 @@ struct InputForwardingPolicy {
         if commandHeld, isLocalShortcut { return .passThrough }
         if isRepeat { return .swallow }
         guard let code else { return .passThrough }
-        var sends = flushPendingCommand()
+        var sends = resyncCommand(held: commandHeld)
         sends.append(.keyKeycode(keycode: code, pressed: true))
         heldKeys.insert(code)
         return Verdict(sends: sends, consumed: true)
@@ -69,7 +72,9 @@ struct InputForwardingPolicy {
     mutating func modifier(_ code: UInt32, pressed: Bool) -> Verdict {
         if pressed {
             if Self.commandKeycodes.contains(code) {
-                pendingCommandKeys.insert(code)
+                // Already forwarded (its release went missing): keep it
+                // held so this press's release reaches the host.
+                if !heldKeys.contains(code) { pendingCommandKeys.insert(code) }
                 return .swallow
             }
             heldKeys.insert(code)
@@ -89,12 +94,12 @@ struct InputForwardingPolicy {
     /// A mouse button edge. `onVideo` is the hit test: true when the
     /// point belongs to the video surface rather than an overlay.
     mutating func button(
-        _ code: UInt32?, pressed: Bool, onVideo: Bool
+        _ code: UInt32?, pressed: Bool, onVideo: Bool, commandHeld: Bool
     ) -> Verdict {
         guard let code else { return .passThrough }
         if pressed {
             guard onVideo else { return .passThrough }
-            var sends = flushPendingCommand()
+            var sends = resyncCommand(held: commandHeld)
             sends.append(.pointerButton(button: code, pressed: true))
             heldButtons.insert(code)
             return Verdict(sends: sends, consumed: true)
@@ -122,10 +127,18 @@ struct InputForwardingPolicy {
         return sends
     }
 
-    private mutating func flushPendingCommand() -> [InputEvent.Body] {
-        let flushed = pendingCommandKeys.sorted()
+    /// The ⌘ edges to send ahead of a forwarded press: with ⌘ down, the
+    /// held-back ⌘ joins the chord; with ⌘ up, a held-back ⌘ is dropped
+    /// and a forwarded one is released.
+    private mutating func resyncCommand(held: Bool) -> [InputEvent.Body] {
+        let pending = pendingCommandKeys.sorted()
         pendingCommandKeys.removeAll()
-        heldKeys.formUnion(flushed)
-        return flushed.map { .keyKeycode(keycode: $0, pressed: true) }
+        if held {
+            heldKeys.formUnion(pending)
+            return pending.map { .keyKeycode(keycode: $0, pressed: true) }
+        }
+        let stale = heldKeys.intersection(Self.commandKeycodes).sorted()
+        heldKeys.subtract(stale)
+        return stale.map { .keyKeycode(keycode: $0, pressed: false) }
     }
 }
