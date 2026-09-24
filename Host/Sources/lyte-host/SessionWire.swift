@@ -286,6 +286,9 @@ final class SessionWire {
     private(set) var receiveTransientErrors = 0
     /// ICMP refusals that arrived while the session was live, ignored.
     private(set) var refusalsWhileLive = 0
+    /// ICMP refusals for a tuple other than the primary (a path probe's
+    /// challenge), ignored: they say nothing about the client's path.
+    private(set) var offPrimaryRefusals = 0
     private var currentVideoSocketOutqBytes = 0
     private var currentLatencySocketOutqBytes = 0
     /// When the send queues were last sampled. While the outbox is empty
@@ -1497,19 +1500,29 @@ final class SessionWire {
     /// the session only when authenticated silence already says the
     /// client is gone: FROZEN, 350 ms without the feedback a live client
     /// sends every 40 ms. On a live session it is counted loss, and the
-    /// liveness clock and the client's typed 0x0A decide.
-    static func refusalEndsSession(lifecycle: SessionState?) -> Bool {
-        lifecycle == .frozen
+    /// liveness clock and the client's typed 0x0A decide. A refusal for
+    /// any other tuple (a path probe's challenge to where a roaming
+    /// client might be) never ends the session: a FROZEN session is
+    /// exactly the one probing for its client's new path.
+    static func refusalEndsSession(
+        lifecycle: SessionState?, onPrimaryPath: Bool
+    ) -> Bool {
+        onPrimaryPath && lifecycle == .frozen
     }
 
     /// Requires `lock`. One refusal: the session ends cleanly (no
     /// teardown is sent) or it is counted as a transient loss. Returns
     /// whether the session ended.
-    private func noteRefused() -> Bool {
+    private func noteRefused(onPrimaryPath: Bool) -> Bool {
         guard !peerGone else { return true }
-        guard Self.refusalEndsSession(lifecycle: session?.lifecycleState)
+        guard Self.refusalEndsSession(
+            lifecycle: session?.lifecycleState, onPrimaryPath: onPrimaryPath)
         else {
-            refusalsWhileLive += 1
+            if onPrimaryPath {
+                refusalsWhileLive += 1
+            } else {
+                offPrimaryRefusals += 1
+            }
             return false
         }
         peerGone = true
@@ -1702,7 +1715,10 @@ final class SessionWire {
                                   &recvError, recvError.count)
         }
         if got == LYTE_NETIO_REFUSED {
-            _ = noteRefused()
+            // Once the media sockets carry the primary, the listening
+            // socket sends only to other tuples.
+            _ = noteRefused(
+                onPrimaryPath: socket != listenNetio || videoNetio == nil)
             return
         }
         if got == LYTE_NETIO_TRANSIENT {
@@ -2209,11 +2225,16 @@ final class SessionWire {
         lane == .latency ? latencyNetio : videoNetio
     }
 
-    private func writeResult(_ rc: Int32) -> SocketWriteResult {
+    /// `onPrimaryPath`: whether a refusal this socket reports can be
+    /// about the client's primary tuple (see `refusalEndsSession`).
+    private func writeResult(
+        _ rc: Int32, onPrimaryPath: Bool
+    ) -> SocketWriteResult {
         switch rc {
         case 0: .wouldBlock
         case LYTE_NETIO_NO_BUFFER: .noBuffer
-        case LYTE_NETIO_REFUSED: noteRefused() ? .peerGone : .transient
+        case LYTE_NETIO_REFUSED:
+            noteRefused(onPrimaryPath: onPrimaryPath) ? .peerGone : .transient
         case LYTE_NETIO_TRANSIENT: .transient
         case let accepted where accepted > 0: .accepted(Int(accepted))
         default: .failed(String(cBuffer: sendError))
@@ -2234,7 +2255,10 @@ final class SessionWire {
                 destination.remoteAddress, destination.remotePort,
                 &sendError, sendError.count)
         }
-        return writeResult(rc)
+        // The unconnected listening socket reports refusals for any tuple
+        // it sent to; once the media sockets carry the primary, those are
+        // other tuples'.
+        return writeResult(rc, onPrimaryPath: videoNetio == nil)
     }
 
     /// One lane's batch staged into `scratch`, each datagram with its
@@ -2265,6 +2289,6 @@ final class SessionWire {
                 socket, buf.baseAddress, Int32(buf.count), nil,
                 &sendError, sendError.count)
         }
-        return writeResult(rc)
+        return writeResult(rc, onPrimaryPath: true)
     }
 }

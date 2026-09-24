@@ -8,10 +8,23 @@ import XCTest
 /// what the session's own authenticated silence already says.
 final class RefusalLoopbackTests: XCTestCase {
     func testARefusalEndsOnlyASessionWhosePathIsAlreadySilent() {
-        XCTAssertTrue(SessionWire.refusalEndsSession(lifecycle: .frozen))
+        XCTAssertTrue(SessionWire.refusalEndsSession(
+            lifecycle: .frozen, onPrimaryPath: true))
         for live: SessionState? in [.active, .idle, .recovery, .closed, nil] {
-            XCTAssertFalse(SessionWire.refusalEndsSession(lifecycle: live),
+            XCTAssertFalse(SessionWire.refusalEndsSession(
+                lifecycle: live, onPrimaryPath: true),
                 "\(String(describing: live))")
+        }
+    }
+
+    /// A FROZEN session is the one probing for a roaming client's new
+    /// path; a refusal of its challenge to a candidate tuple says nothing
+    /// about the client and never ends it.
+    func testARefusalOffThePrimaryPathNeverEndsTheSession() {
+        for state: SessionState? in [.frozen, .active, .recovery, nil] {
+            XCTAssertFalse(SessionWire.refusalEndsSession(
+                lifecycle: state, onPrimaryPath: false),
+                "\(String(describing: state))")
         }
     }
 
