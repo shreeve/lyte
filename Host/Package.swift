@@ -1,21 +1,18 @@
 // swift-tools-version:6.0
-import Foundation
 import PackageDescription
 
-// HostCore (pure Swift role policy), HostSession (pure session policy),
-// HostAudio (Swift codec policy), HostWire (the wiring layer that marries
-// those mechanisms to LyteWire codecs — HS-5), and their tests build
-// everywhere, including macOS. The
-// capture/encode leaves exist only on Linux: they bind PipeWire, D-Bus,
-// DRM/GBM/EGL/VAAPI, uinput, and UDP through narrow C or
-// system-library targets.
+// The pure targets (HostCore, HostSession, HostAudio, HostWire, HostIO)
+// and their tests build everywhere, macOS included. The capture, encode
+// and IO leaves exist only on Linux: they bind PipeWire, D-Bus,
+// DRM/GBM/EGL/VAAPI, uinput and UDP through narrow C or system-library
+// targets.
 
 var products: [Product] = [
     .library(name: "HostCore", targets: ["HostCore"]),
     .library(name: "HostSession", targets: ["HostSession"]),
     .library(name: "HostAudio", targets: ["HostAudio"]),
     .library(name: "HostWire", targets: ["HostWire"]),
-    // DRM-free HostWire UDP peer for browser B-3 (macOS + Linux).
+    // A DRM-free HostWire peer over UDP, the browser proof's host.
     .executable(name: "lyte-control-peer", targets: ["lyte-control-peer"]),
 ]
 
@@ -59,9 +56,8 @@ var targets: [Target] = [
         name: "HostAudioTests",
         dependencies: ["HostAudio"]
     ),
-    // HS-5: encoded Annex-B frames → packetizer + FEC → paced datagram
-    // blobs, plus the `lyte sniff` header formatter. Cross-platform on
-    // purpose: the macOS integration test is this slice's gate.
+    // Sans-IO session execution: encoded frames → packetizer + FEC →
+    // sealed, paced datagrams, plus the sniff header formatter.
     .target(
         name: "HostWire",
         dependencies: [
@@ -111,8 +107,8 @@ var targets: [Target] = [
             .product(name: "LyteTestKit", package: "Common"),
         ]
     ),
-    // Browser B-3…B-6: real HostWire Noise/pair/caps (+ optional corpus /
-    // Opus tone) over UDP without Direct Eye.
+    // Real HostWire Noise, pairing and capabilities (optionally a video
+    // corpus and an Opus tone) over UDP, with no Direct Eye.
     .executableTarget(
         name: "lyte-control-peer",
         dependencies: [
@@ -155,18 +151,15 @@ targets += [
         ],
         linkerSettings: [.linkedLibrary("pipewire-0.3")]
     ),
-    // The direct eye (docs/history/20260801-105800-direct-eye-plan.md, E0): libdrm
-    // imported straight into Swift — a module map, no .c files. The
-    // KMS identity/capture organ is Swift-first; CNetIO-style shims
-    // appear only if a macro wall does.
+    // libdrm imported straight into Swift: a module map, no C sources.
     .systemLibrary(
         name: "CDRM",
         pkgConfig: "libdrm",
         providers: [.apt(["libdrm-dev"])]
     ),
-    // Direct-eye E0: GBM (headless GPU device), EGL+GL (the 3D engine
-    // that reads CCS-compressed scanout the media engine's VPP cannot),
-    // and libva (surface export to dmabuf) — all module maps, no .c.
+    // GBM (the headless GPU device), EGL+GL (the 3D engine that reads
+    // CCS-compressed scanout) and libva (encode, surface export): module
+    // maps, no C sources.
     .systemLibrary(
         name: "CGBM",
         pkgConfig: "gbm",
@@ -182,15 +175,12 @@ targets += [
         pkgConfig: "libva",
         providers: [.apt(["libva-dev"])]
     ),
-    // The eye's organs as a LIBRARY (E1): the identity/ticket DRM layer,
-    // whole-screen GPU observation, EGL/GL import+blit, and VAAPI pens —
-    // shared by the standalone lyte-eye and the host's direct backend.
+    // The Direct Eye as a library: the DRM ticket layer, GPU pixel
+    // observation, EGL import and blit, and the VAAPI seat that feeds
+    // HostCore's pens to the driver.
     .target(
         name: "HostEye",
         dependencies: [
-            // libav-free since the E6b demolition: the native encoder
-            // feeds HostCore's pens (HevcParameterSets,
-            // HevcSliceHeader) straight to the driver via libva.
             "CDRM", "CGBM", "CEGL", "CVA",
             "HostCore",
             .product(name: "LyteIO", package: "Common"),
@@ -199,8 +189,8 @@ targets += [
     // Pure HostEye bookkeeping (GEM-handle and cursor-plane transitions)
     // — unit tests that never open a device.
     .testTarget(name: "HostEyeTests", dependencies: ["HostEye"]),
-    // E0: the standalone eye — doorbell mode (milestone 1, unprivileged)
-    // and capture mode (milestone 2: full loop → Annex-B file).
+    // The standalone eye: doorbell mode (framebuffer flips, unprivileged)
+    // and capture mode (the full loop into an Annex-B file).
     .executableTarget(
         name: "lyte-eye",
         dependencies: [
@@ -212,26 +202,23 @@ targets += [
             .linkedLibrary("va-drm"),
         ]
     ),
-    // C leaf: nonblocking UDP with sendmmsg/recvmmsg, per-packet TOS cmsgs,
-    // and SO_TIMESTAMPING TX stamps (CMSG macros are unreachable from Swift;
-    // plain Linux syscalls, no system library).
+    // C leaf: nonblocking UDP with sendmmsg/recvmmsg, per-packet TOS and
+    // TX timestamps (CMSG macros are unreachable from Swift).
     .target(name: "CNetIO"),
     .testTarget(name: "CNetIOTests", dependencies: ["CNetIO"]),
-    // C leaf (E2: the PRIMARY input injector): virtual evdev devices
-    // over /dev/uinput — keyboard, relative mouse, absolute tablet.
-    // The ioctl surface; policy stays in Swift. Compositor-agnostic
-    // by construction (the Mutter RemoteDesktop injector is retired).
+    // C leaf, the only input injector: virtual evdev devices over
+    // /dev/uinput (keyboard, relative mouse, absolute tablet). Policy
+    // stays in Swift.
     .target(name: "CInputUinput"),
-    // E2 verification harness: creates the three devices, reads them
-    // back from their evdev nodes, and asserts routing, absolute
-    // scaling/clamping, and v120 scroll accumulation byte-exact.
-    // Exits nonzero on mismatch. Needs sudo (evdev read side only).
+    // Harness: creates the three devices, reads them back from their
+    // evdev nodes, and checks routing, absolute scaling and v120 scroll
+    // byte-exact. Needs sudo for the evdev read side.
     .executableTarget(
         name: "lyte-uinput-check",
         dependencies: ["CInputUinput"]
     ),
-    // HS-4 verification harness: loopback batch send with per-packet DSCP,
-    // received-TOS readback, TX-timestamp drain. Exits nonzero on mismatch.
+    // Harness: loopback batch send with per-packet DSCP, received-TOS
+    // readback and the TX-timestamp drain.
     .executableTarget(
         name: "lyte-netio-check",
         dependencies: [
@@ -240,10 +227,8 @@ targets += [
             .product(name: "LyteIO", package: "Common"),
         ]
     ),
-    // HS-6 verification harness: the pure Pacer schedule driving CNetIO
-    // sendmmsg batches on loopback with per-class TOS; TX timestamps
-    // measure batch spacing, IDR drain, and audio wait. Exits nonzero if
-    // a gate bound is violated.
+    // Harness: the Pacer schedule driving CNetIO batches on loopback; TX
+    // timestamps bound batch spacing, IDR drain and audio wait.
     .executableTarget(
         name: "lyte-pace-check",
         dependencies: [
@@ -252,10 +237,9 @@ targets += [
             .product(name: "LyteIO", package: "Common"),
         ]
     ),
-    // HS-14 verification harness: default-sink monitor → 5 ms Opus packets
-    // → decode-back WAV; prints cadence/size/timestamp stats and exits
-    // nonzero if the gate (200 pkt/s, monotonic graph-clock ts, clean loop
-    // decode) is violated.
+    // Harness: default-sink monitor → 5 ms Opus packets → decode-back
+    // WAV; checks 200 packets/s, monotonic graph-clock stamps and a clean
+    // decode.
     .executableTarget(
         name: "lyte-audio-check",
         dependencies: [
@@ -274,14 +258,10 @@ targets += [
             "HostWire",
             "HostIO",
             "CDBus",
-            // HS-15: the audio leg — monitor capture + Opus encode
-            // feeding the session's audio channel.
             "CPipeWireAudio",
             "HostAudio",
             "CNetIO",
             "CInputUinput",
-            // E5: the direct eye is THE capture organ — the portal
-            // and mutter ScreenCast backends are demolished.
             "HostEye",
             .product(name: "LyteCore", package: "Common"),
             .product(name: "LyteIO", package: "Common"),
@@ -311,8 +291,6 @@ targets += [
 #endif
 
 let dependencies: [Package.Dependency] = [
-    // First cross-package integration on the host side (HS-5): the
-    // sans-IO protocol core every end codes against.
     .package(path: "../Wire"),
     .package(path: "../Common"),
 ]
