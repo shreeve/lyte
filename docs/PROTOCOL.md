@@ -212,7 +212,7 @@ after the handshake unless noted).
 | 0x13 | RetryChallenge | host → client | bare, unsealed | `retry-v1.json` |
 | 0x14 | RetryHandshake1 | client → host | bare, unsealed | `retry-v1.json` |
 | 0x15 | IdleFrame | host → client | ARQ one-shot group | `control-v1.json` |
-| 0x16 | InputEvent | client → host | ARQ | `control-v1.json` |
+| 0x16 | InputEvent | client → host | ARQ | `control-v1.json`, `input-coordinates-v1.json` |
 | 0x17 | InputEcho | host → client | ARQ | `control-v1.json` |
 | 0x18 | AudioRoutingRequest | client → host | ARQ, key 9 | `control-v1.json` |
 | 0x19 | AudioRoutingStatus | host → client | ARQ, key 9 | `control-v1.json` |
@@ -297,6 +297,11 @@ and is pinned by hand-built bytes in `AudioInteriorTests`.
 | Clipboard text | 0x1A / 0x1B | CTRL | 10 | [clipboard](decisions/20260722-231500-lyte-clipboard.md) |
 | File transfer | 0x1C–0x21 | 8 | 11 | [bulk channel](decisions/20260728-053300-lyte-bulk-channel.md) |
 | Clipboard images | 0x22 + a bulk transfer | 8 | 10 ∧ 12 | [clipboard](decisions/20260722-231500-lyte-clipboard.md) |
+
+InputEvent pointer coordinates and scroll deltas are f64 and must be
+finite: a NaN or ±Inf coordinate rejects the event
+(`input-coordinates-v1.json`). Finite values of any magnitude decode;
+bounding them to the screen is the host injector's job.
 
 Bulk transfers are chunked, resumable across sessions and credit-driven;
 the sender reads at most 128 unconfirmed chunks ahead, and the receive

@@ -1,0 +1,92 @@
+{
+  "format" : "lyte-wire-input-coordinate-vectors",
+  "formatVersion" : 1,
+  "vectors" : [
+    {
+      "bodyKind" : "pointerMotionAbsolute",
+      "clientMicrosHex" : "0x40",
+      "codec" : "inputEvent",
+      "description" : "pointerMotionAbsolute (−f64 max, +f64 max): the largest finite magnitudes are in the domain; bounding them to the screen is the injector's job.",
+      "kind" : "roundtrip",
+      "messageHex" : "1603000000400000000000000002ffffffffffffefffffffffffffffef7f",
+      "name" : "coordinates-absolute-extremes",
+      "seq" : 3,
+      "xBitsHex" : "0xffefffffffffffff",
+      "yBitsHex" : "0x7fefffffffffffff"
+    },
+    {
+      "bodyKind" : "pointerMotionRelative",
+      "clientMicrosHex" : "0x40",
+      "codec" : "inputEvent",
+      "description" : "pointerMotionRelative (−0.0, the least subnormal): the sign bit and subnormal patterns survive byte-exactly.",
+      "kind" : "roundtrip",
+      "messageHex" : "160300000040000000000000000300000000000000800100000000000000",
+      "name" : "coordinates-relative-signed-zero-subnormal",
+      "seq" : 3,
+      "xBitsHex" : "0x8000000000000000",
+      "yBitsHex" : "0x1"
+    },
+    {
+      "bodyKind" : "pointerAxis",
+      "clientMicrosHex" : "0x40",
+      "codec" : "inputEvent",
+      "description" : "pointerAxis (1e300, −1e300) with finish: finite but absurd deltas decode; policy bounds them, not the codec.",
+      "finish" : true,
+      "kind" : "roundtrip",
+      "messageHex" : "16030000004000000000000000059c7500883ce4377e9c7500883ce437fe01",
+      "name" : "coordinates-axis-huge",
+      "seq" : 3,
+      "xBitsHex" : "0x7e37e43c8800759c",
+      "yBitsHex" : "0xfe37e43c8800759c"
+    },
+    {
+      "codec" : "inputEvent",
+      "description" : "Absolute x = quiet NaN 0x7ff8000000000000 rejects.",
+      "error" : "nonFiniteCoordinate",
+      "kind" : "decodeReject",
+      "messageHex" : "1604000000410000000000000002000000000000f87f0000000000002440",
+      "name" : "coordinates-absolute-x-nan"
+    },
+    {
+      "codec" : "inputEvent",
+      "description" : "Absolute y = +Inf rejects although x is finite.",
+      "error" : "nonFiniteCoordinate",
+      "kind" : "decodeReject",
+      "messageHex" : "16040000004100000000000000020000000000002440000000000000f07f",
+      "name" : "coordinates-absolute-y-infinity"
+    },
+    {
+      "codec" : "inputEvent",
+      "description" : "Relative dx = −Inf rejects.",
+      "error" : "nonFiniteCoordinate",
+      "kind" : "decodeReject",
+      "messageHex" : "1604000000410000000000000003000000000000f0ff0000000000000000",
+      "name" : "coordinates-relative-dx-negative-infinity"
+    },
+    {
+      "codec" : "inputEvent",
+      "description" : "Relative dy = signaling NaN 0x7ff0000000000001 rejects — every NaN payload is outside the domain, not only the canonical one.",
+      "error" : "nonFiniteCoordinate",
+      "kind" : "decodeReject",
+      "messageHex" : "16040000004100000000000000030000000000000000010000000000f07f",
+      "name" : "coordinates-relative-dy-signaling-nan"
+    },
+    {
+      "codec" : "inputEvent",
+      "description" : "Axis dx = negative NaN 0xfff8000000000000 rejects.",
+      "error" : "nonFiniteCoordinate",
+      "kind" : "decodeReject",
+      "messageHex" : "1604000000410000000000000005000000000000f8ff000000000000000000",
+      "name" : "coordinates-axis-dx-negative-nan"
+    },
+    {
+      "codec" : "inputEvent",
+      "description" : "Axis dy = +Inf with finish set rejects.",
+      "error" : "nonFiniteCoordinate",
+      "kind" : "decodeReject",
+      "messageHex" : "16040000004100000000000000050000000000000000000000000000f07f01",
+      "name" : "coordinates-axis-dy-infinity"
+    }
+  ],
+  "wireVersion" : 1
+}

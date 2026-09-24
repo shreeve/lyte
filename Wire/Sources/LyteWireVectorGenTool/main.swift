@@ -38,6 +38,7 @@ let builders: KeyValuePairs<String, (String) throws -> any FrozenVectorFile> = [
     "cursor": { _ in try makeCursorVectorFile() },
     "repair-refusal": { _ in try makeRepairRefusalVectorFile() },
     "postures": { _ in try makePostureVectorFile() },
+    "input-coordinates": { _ in try makeInputCoordinateVectorFile() },
 ]
 
 let arguments = CommandLine.arguments

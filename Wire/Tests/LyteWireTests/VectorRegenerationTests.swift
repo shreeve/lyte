@@ -57,6 +57,7 @@ final class VectorRegenerationTests: XCTestCase {
     func testCursor() throws { try assertRegenerates(makeCursorVectorFile) }
     func testRepairRefusal() throws { try assertRegenerates(makeRepairRefusalVectorFile) }
     func testPostures() throws { try assertRegenerates(makePostureVectorFile) }
+    func testInputCoordinates() throws { try assertRegenerates(makeInputCoordinateVectorFile) }
 
     func testVideo() throws {
         try assertRegenerates {

@@ -230,6 +230,14 @@ file; never rewrite a committed replay.
   every AudioTrackStateError and VideoPostureStateError case. A new
   file rather than an append to control-v1.json, so no frozen file
   moves. Anchored by hand-computed bytes in `PostureVectorFileTests`.
+- `input-coordinates-v1.json` — the coordinate domain of InputEvent
+  0x16: the f64 coordinates of pointerMotionAbsolute, pointerMotionRelative
+  and pointerAxis must be finite. Roundtrips pin the finite extremes
+  (±f64 max, −0.0, the least subnormal, ±1e300); rejects pin quiet,
+  negative and signaling NaN and ±Inf in each kind and each coordinate
+  slot, all as `nonFiniteCoordinate`. Vectors reuse the control file's
+  shape (`codec = inputEvent`). `InputCoordinateVectorFileTests`
+  asserts both sides of the edge are pinned for every f64 kind.
 
 Every file above is rebuilt from its builder by `VectorRegenerationTests`
 (see Authoring above).
