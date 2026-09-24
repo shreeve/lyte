@@ -101,19 +101,63 @@ public struct HostPaths: Equatable, Sendable {
 }
 
 /// How the host persists key material and trust state. The bytes go to a
-/// temporary file created 0600 with O_EXCL (never readable by anyone
-/// else, not even for an instant, and never a file someone else planted),
-/// are fsync'ed, then renamed over the target and the directory fsync'ed.
-/// A crash leaves the old file or the new one, never a torn one.
+/// uniquely named temporary file (mkstemp: created 0600 with O_EXCL, never
+/// readable by anyone else, not even for an instant, and never a file
+/// someone else planted), are fsync'ed, then renamed over the target (or,
+/// for `create`, linked into place only if nothing is there) and the
+/// directory fsync'ed. A crash leaves the old file or the new one, never a
+/// torn one; the temporary it may leave behind is swept by the next write
+/// of that file once it is `staleTemporarySeconds` old.
 public enum SecretFile {
+    /// A temporary this old is a crashed writer's, not a live one's.
+    public static let staleTemporarySeconds = 60
+
     public static func write(_ bytes: [UInt8], to path: String) throws {
-        let directory = parent(of: path)
-        try makeDirectories(directory)
-        let temporary = "\(directory)/.\(basename(of: path)).\(getpid()).tmp"
-        let fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
-        guard fd >= 0 else {
-            throw HostPathError.write("cannot create \(temporary): \(errnoText())")
+        let temporary = try writeTemporary(bytes, for: path)
+        guard rename(temporary, path) == 0 else {
+            let text = errnoText()
+            unlink(temporary)
+            throw HostPathError.write("cannot rename into \(path): \(text)")
         }
+        syncDirectory(of: path)
+    }
+
+    /// Writes `bytes` to `path` only if nothing is there, atomically: two
+    /// processes creating the same file concurrently cannot both win, and
+    /// neither overwrites the other. Returns false (writing nothing) when
+    /// the file already exists — the caller reads the winner's.
+    public static func create(_ bytes: [UInt8], at path: String) throws -> Bool {
+        let temporary = try writeTemporary(bytes, for: path)
+        defer { unlink(temporary) }
+        guard link(temporary, path) == 0 else {
+            if errno == EEXIST { return false }
+            throw HostPathError.write("cannot create \(path): \(errnoText())")
+        }
+        syncDirectory(of: path)
+        return true
+    }
+
+    /// The bytes, fsync'ed, in a fresh `.<name>.tmp.XXXXXX` beside `path`.
+    private static func writeTemporary(
+        _ bytes: [UInt8], for path: String
+    ) throws -> String {
+        let directory = parent(of: path)
+        let name = basename(of: path)
+        try makeDirectories(directory)
+        sweepStaleTemporaries(in: directory, for: name)
+        var template = Array("\(directory)/.\(name).tmp.XXXXXX".utf8CString)
+        let fd = template.withUnsafeMutableBufferPointer {
+            mkstemp($0.baseAddress!)
+        }
+        guard fd >= 0 else {
+            throw HostPathError.write(
+                "cannot create a temporary for \(path): \(errnoText())")
+        }
+        _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
+        let temporary = String(decoding: template.dropLast().map {
+            UInt8(bitPattern: $0)
+        }, as: UTF8.self)
+        _ = fchmod(fd, 0o600)
         var written = 0
         let failure: String? = bytes.withUnsafeBytes { raw in
             while written < raw.count {
@@ -131,12 +175,42 @@ public enum SecretFile {
             unlink(temporary)
             throw HostPathError.write("cannot write \(temporary): \(failure)")
         }
-        guard rename(temporary, path) == 0 else {
-            let text = errnoText()
-            unlink(temporary)
-            throw HostPathError.write("cannot rename into \(path): \(text)")
+        return temporary
+    }
+
+    /// Removes a crashed writer's temporaries of `name` — this scheme's
+    /// `.<name>.tmp.*` and the older `.<name>.<pid>.tmp` — once they are
+    /// `staleTemporarySeconds` old; a live writer's are younger.
+    static func sweepStaleTemporaries(
+        in directory: String, for name: String,
+        olderThanSeconds: Int = staleTemporarySeconds
+    ) {
+        guard let dir = opendir(directory) else { return }
+        defer { closedir(dir) }
+        let prefix = ".\(name)."
+        let now = time(nil)
+        while let entry = readdir(dir) {
+            let entryName = withUnsafeBytes(of: entry.pointee.d_name) { raw in
+                String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+            }
+            guard entryName.hasPrefix(prefix) else { continue }
+            let rest = entryName.dropFirst(prefix.count)
+            let ours = rest.hasPrefix("tmp.")
+                || (rest.hasSuffix(".tmp")
+                    && rest.dropLast(4).allSatisfy(\.isNumber))
+            guard ours else { continue }
+            let candidate = directory + "/" + entryName
+            var info = stat()
+            guard lstat(candidate, &info) == 0,
+                  (info.st_mode & S_IFMT) == S_IFREG,
+                  Int(now) - Int(info.st_mtimeSpec.tv_sec) >= olderThanSeconds
+            else { continue }
+            unlink(candidate)
         }
-        let directoryFd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+    }
+
+    private static func syncDirectory(of path: String) {
+        let directoryFd = open(parent(of: path), O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         if directoryFd >= 0 {
             _ = fsync(directoryFd)
             close(directoryFd)
@@ -215,5 +289,15 @@ public enum SecretFile {
 
     private static func errnoText() -> String {
         String(cString: strerror(errno))
+    }
+}
+
+private extension stat {
+    var st_mtimeSpec: timespec {
+        #if canImport(Darwin)
+        st_mtimespec
+        #else
+        st_mtim
+        #endif
     }
 }

@@ -14,23 +14,36 @@ enum HostStaticKey {
     /// private key, mode 0600, beside paired_clients; the public key
     /// derives and is never stored. Loud on a corrupt file: a wrong-sized
     /// key is someone else's write, never something to regenerate over
-    /// silently.
+    /// silently. The mint is create-if-absent: when two starters race
+    /// (the service and a hand-run `--pair` or `advertise`), one key
+    /// lands and both run with it.
     static func loadOrCreate(paths: HostPaths) throws -> NoiseKeyPair {
         let path = try HostIdentityFile.path(fileName, paths: paths)
-        if let bytes = try SecretFile.read(path) {
-            guard bytes.count == 32 else {
-                throw HostError("""
-                    host static key at \(path) is \(bytes.count) bytes, \
-                    expected 32 — refusing to overwrite; move it aside to \
-                    re-key
-                    """)
-            }
-            return try NoiseKeyPair(privateKey: bytes)
+        if let pair = try load(path) {
+            return pair
         }
         let pair = NoiseKeyPair.generate()
-        try SecretFile.write(pair.privateKey, to: path)
-        print("noise: generated host static key → \(path)")
-        return pair
+        if try SecretFile.create(pair.privateKey, at: path) {
+            print("noise: generated host static key → \(path)")
+            return pair
+        }
+        guard let winner = try load(path) else {
+            throw HostError("host static key at \(path) vanished while minting")
+        }
+        print("noise: another starter minted the host static key first — using it")
+        return winner
+    }
+
+    private static func load(_ path: String) throws -> NoiseKeyPair? {
+        guard let bytes = try SecretFile.read(path) else { return nil }
+        guard bytes.count == 32 else {
+            throw HostError("""
+                host static key at \(path) is \(bytes.count) bytes, \
+                expected 32 — refusing to overwrite; move it aside to \
+                re-key
+                """)
+        }
+        return try NoiseKeyPair(privateKey: bytes)
     }
 
     static func loadOrCreate() throws -> NoiseKeyPair {
