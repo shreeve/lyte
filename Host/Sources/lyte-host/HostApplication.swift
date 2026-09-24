@@ -14,6 +14,7 @@ import CNetIO
 import Foundation
 import HostCore
 import HostEye
+import HostIO
 import HostSession
 import HostWire
 import LyteCore

@@ -1,8 +1,7 @@
-// BulkFileStore (F-3): the one production BulkReceiveStore — plain
-// POSIX file IO on the destination directory. Direct syscalls rather
-// than Foundation (HostWire keeps Wire's no-Foundation spirit, and
-// open/pwrite/fsync/rename need no macros — the disk is an OS leaf
-// Swift reaches directly, the CNetIO rationale without the C target).
+// BulkFileStore: the one production BulkReceiveStore — plain POSIX file
+// IO on the destination directory, in HostIO so HostWire stays IO-free.
+// Direct syscalls rather than Foundation: open/pwrite/fsync/rename need
+// no macros, so the disk is an OS leaf Swift reaches directly.
 //
 // Layout inside the drop directory, all of it dotted (invisible):
 //   .lyte-bulk-<16-hex transferId>.part    the staging file — chunks
@@ -21,6 +20,7 @@ import Darwin
 #else
 import Glibc
 #endif
+import HostWire
 import LyteCore
 import LyteWire
 
@@ -302,5 +302,19 @@ public final class BulkFileStore: BulkReceiveStore {
             out.append(contentsOf: buffer[0..<count])
         }
         return out
+    }
+}
+
+extension BulkReceiveShell {
+    /// The production shape: a POSIX store on `directoryPath`, created if
+    /// missing. Throws when the directory cannot exist.
+    public convenience init(
+        directoryPath: String,
+        config: BulkTransferConfig = BulkTransferConfig()
+    ) throws {
+        self.init(
+            store: try BulkFileStore(directoryPath: directoryPath),
+            config: config
+        )
     }
 }

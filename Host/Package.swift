@@ -64,10 +64,21 @@ var targets: [Target] = [
             .product(name: "LyteWire", package: "Wire"),
         ]
     ),
+    // The host's cross-platform OS adapters over HostWire's seams (the
+    // file-drop store); keeps HostWire itself IO-free.
+    .target(
+        name: "HostIO",
+        dependencies: [
+            "HostWire",
+            .product(name: "LyteCore", package: "Common"),
+            .product(name: "LyteWire", package: "Wire"),
+        ]
+    ),
     .testTarget(
         name: "HostWireTests",
         dependencies: [
             "HostWire",
+            "HostIO",
             "HostSession",
             "HostCore",
             .product(name: "LyteCore", package: "Common"),
@@ -254,6 +265,7 @@ targets += [
             "HostCore",
             "HostSession",
             "HostWire",
+            "HostIO",
             "CDBus",
             // HS-15: the audio leg — monitor capture + Opus encode
             // feeding the session's audio channel.

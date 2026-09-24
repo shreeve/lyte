@@ -651,6 +651,7 @@ final class SessionWire {
             ),
             clientTuple: clientTuple,
             now: SystemMonotonicClock.nowNanoseconds,
+            rng: SystemRandomNumberGenerator(),
             sendAccounting: .socketConfirmed
         ) { [weak self] datagram in
             self?.outbox.enqueue(

@@ -37,7 +37,7 @@
 import LyteWire
 
 /// What the shell needs from the disk. One production conformance
-/// (`BulkFileStore`, POSIX); tests wrap it to inject failures.
+/// (HostIO's `BulkFileStore`, POSIX); tests wrap it to inject failures.
 public protocol BulkReceiveStore: AnyObject {
     /// Absolute destination directory (for events and logs).
     var directoryPath: String { get }
@@ -137,18 +137,6 @@ public final class BulkReceiveShell {
         self.book = store.loadResumeStates()
         self.counters.resumeStatesLoaded = book.count
         self.engine = BulkReceiveEngine(config: config, resumeBook: book)
-    }
-
-    /// The production shape: a POSIX store on `directoryPath`,
-    /// created if missing. Throws when the directory cannot exist.
-    public convenience init(
-        directoryPath: String,
-        config: BulkTransferConfig = BulkTransferConfig()
-    ) throws {
-        self.init(
-            store: try BulkFileStore(directoryPath: directoryPath),
-            config: config
-        )
     }
 
     public var state: BulkReceiveEngine.State { engine.state }

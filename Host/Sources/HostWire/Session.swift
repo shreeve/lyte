@@ -848,7 +848,7 @@ public final class Session {
         config: SessionConfig,
         clientTuple: FourTuple,
         now: UInt64,
-        rng: some RandomNumberGenerator = SystemRandomNumberGenerator(),
+        rng: some RandomNumberGenerator,
         sendAccounting: SessionSendAccounting = .pacerRelease,
         send: @escaping (VideoChannelDatagram) -> Void
     ) {

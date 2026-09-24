@@ -609,7 +609,8 @@ final class ControlPeer {
                             lifecycle: lifecycle
                         ),
                         clientTuple: tuple,
-                        now: now
+                        now: now,
+                        rng: SystemRandomNumberGenerator()
                     ) { [weak self] datagram in
                         self?.outbox.append(datagram)
                     }

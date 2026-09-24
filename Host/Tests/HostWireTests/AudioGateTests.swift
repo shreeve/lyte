@@ -741,7 +741,8 @@ final class AudioGateTests: XCTestCase {
                 rateBitsPerSecond: Self.rateBPS
             ),
             clientTuple: Self.tupleA,
-            now: 0
+            now: 0,
+            rng: SplitMix64(seed: 0xA0D1)
         ) { _ in }
         XCTAssertThrowsError(try session.ingestAudioPacket(
             opusPacket(0), captureTimestampMicroseconds: 0, now: 0
