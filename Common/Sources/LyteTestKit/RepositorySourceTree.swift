@@ -185,11 +185,24 @@ public struct RepositorySourceTree {
     }
 
     public func relativePath(for file: URL) -> String {
-        let rootPath = repositoryRoot.standardizedFileURL.path + "/"
-        let filePath = file.standardizedFileURL.path
-        guard filePath.hasPrefix(rootPath) else {
-            return filePath
+        Self.relativePath(of: file, below: repositoryRoot)
+    }
+
+    /// `file`'s path below `root`, or its standardized absolute path when
+    /// it lies elsewhere. Both sides are compared standardized, then with
+    /// symlinks resolved, so a tree reached through a symlink (`/tmp`
+    /// against the enumerator's `/private/tmp`, or a linked checkout)
+    /// still relativizes.
+    public static func relativePath(of file: URL, below root: URL) -> String {
+        let spellings = [
+            (file.standardizedFileURL.path, root.standardizedFileURL.path),
+            (file.resolvingSymlinksInPath().path,
+             root.resolvingSymlinksInPath().path),
+        ]
+        for (filePath, rootPath) in spellings
+        where filePath.hasPrefix(rootPath + "/") {
+            return String(filePath.dropFirst(rootPath.count + 1))
         }
-        return String(filePath.dropFirst(rootPath.count))
+        return file.standardizedFileURL.path
     }
 }
