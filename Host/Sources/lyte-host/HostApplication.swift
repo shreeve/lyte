@@ -312,7 +312,7 @@ struct Options {
                                     and print a 6-digit PIN, run the CPace
                                     PAKE over the sealed reliable CTRL
                                     stream, and pin the paired client's
-                                    static to ~/.config/lyte-host/
+                                    static to ~/.config/lyte/
                                     paired_clients (3 wrong guesses burn
                                     the PIN; rerun --pair for a fresh one)
                   --require-paired  only clients already in paired_clients
@@ -400,15 +400,16 @@ func handlePairingEvent(_ event: PairingResponderService.Event) {
     case .paired(let key):
         let hex = Hex.string(key)
         do {
-            var store = try PairedClients.load()
+            let paths = try HostPaths.current()
+            var store = try PairedClients.load(paths: paths)
             if store.pin(key, note: """
                 paired \
                 \(ISO8601DateFormatter().string(from: Date()))
                 """) {
-                try PairedClients.save(store)
+                try PairedClients.save(store, paths: paths)
                 print("""
                     pairing: PAIRED — client static \(hex) pinned → \
-                    \(PairedClients.path.path)
+                    \(try PairedClients.path(paths: paths))
                     """)
             } else {
                 print("""
@@ -500,10 +501,11 @@ final class SessionHost {
 
         // HS-9 setup happens before the socket exists so a bad keystore
         // fails the run instead of a live session.
-        let keys = try HostStaticKey.loadOrCreate()
+        let paths = try HostPaths.current()
+        let keys = try HostStaticKey.loadOrCreate(paths: paths)
         hostStatic = keys
         if opts.requirePaired {
-            let store = try PairedClients.load()
+            let store = try PairedClients.load(paths: paths)
             guard !store.entries.isEmpty else {
                 throw HostError("""
                     --require-paired with an empty \
@@ -514,7 +516,7 @@ final class SessionHost {
             allowed = store.publicKeys
             print("""
                 pairing: enforcing \(store.entries.count) paired \
-                client static(s) from \(PairedClients.path.path)
+                client static(s) from \(try PairedClients.path(paths: paths))
                 """)
         } else {
             allowed = nil

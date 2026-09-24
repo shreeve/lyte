@@ -295,6 +295,8 @@ targets += [
         dependencies: [
             "lyte-host",
             "CNetIO",
+            "HostIO",
+            "HostWire",
             .product(name: "LyteWire", package: "Wire"),
         ]
     ),

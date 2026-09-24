@@ -8,7 +8,7 @@
 // announce loop prove sealed CTRL features without Direct Eye / DRM /
 // Wayland clipboard. Safe beside a standing lyte-host on 41151. Chrome
 // reaches this peer through lyte-wt-sidecar --udp-peer. Does not touch
-// ~/.config/lyte-host identity.
+// the host identity files.
 //
 // `--sessions N` serves N sessions in turn (0 = until killed), each with
 // a fresh HostWire Session and pairing responder under the one PIN, so a

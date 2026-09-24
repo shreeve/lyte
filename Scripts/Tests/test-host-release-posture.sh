@@ -10,10 +10,12 @@ files=(
     AGENTS.md
     Host/INSTALL.md
     Host/README.md
+    Host/Scripts/deploy-host.sh
     Host/Scripts/install-host.sh
     Host/Scripts/setup-host.sh
     Host/Scripts/verify-host-image.sh
-    Host/Systemd/lyte-host.conf
+    Host/Systemd/host.conf
+    Host/Systemd/lyte-host.service
     Scripts/benchmark-app.sh
 )
 
@@ -29,11 +31,25 @@ for file in "${files[@]}"; do
     }
 done
 
-grep -Fq '/usr/local/bin/lyte-host' Host/Systemd/lyte-host.service
+# The unit runs the deployed version link from the seat user's home and logs
+# into its XDG state directory; no checkout, /etc/lyte or /tmp path survives.
+grep -Fq 'exec @HOME@/.local/bin/lyte-host $$LYTE_HOST_ARGS' Host/Systemd/lyte-host.service
+grep -Fq 'EnvironmentFile=@CONFIG_HOME@/lyte/host.conf' Host/Systemd/lyte-host.service
+grep -Fq 'log=@STATE_HOME@/lyte/host.log' Host/Systemd/lyte-host.service
 if grep -rnE 'LYTE_HOST_BIN|\.build/(debug|release)/lyte-host|/home/CHANGE_ME' \
     Host/Systemd Host/Scripts/install-host.sh
 then
     echo "host release posture FAILED: installed service regained a checkout path" >&2
+    exit 1
+fi
+if grep -vhE '^#' Host/Systemd/* | grep -nE '/etc/lyte|/tmp/|/usr/local/bin'; then
+    echo "host release posture FAILED: the service regained a pre-XDG path" >&2
+    exit 1
+fi
+if grep -rn 'portal_token' Host/Sources Host/Scripts Host/Systemd \
+    Scripts/CI/test-all-pup.sh Scripts/benchmark-app.sh
+then
+    echo "host release posture FAILED: the retired portal token returned" >&2
     exit 1
 fi
 grep -Fq 'swift build --package-path Host -c release' Host/INSTALL.md

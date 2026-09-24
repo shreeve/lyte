@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# Build a rootless, integrity-manifested Linux host filesystem image from an
-# already-built release binary. This script never escalates, installs, starts,
-# stops, or contacts a service; install-host.sh consumes this exact image.
+# Build a rootless, integrity-manifested Linux host image from an already-built
+# release binary. This script never escalates, installs, starts, stops, or
+# contacts a service; install-host.sh consumes this exact image:
+#
+#   bin/lyte-host               deployed by deploy-host.sh as a version
+#   etc/host.conf               seeds ~/.config/lyte/host.conf once
+#   systemd/lyte-host.service   the unit template install-host.sh renders
+#   doc/                        LICENSE, THIRD-PARTY.md, third-party notices,
+#                               MANIFEST.sha256 (every other file's digest)
 set -euo pipefail
 
 usage() {
@@ -45,7 +51,7 @@ required_files=(
     "$crypto_root/NOTICE.txt"
     "$asn1_root/LICENSE.txt"
     "$asn1_root/NOTICE.txt"
-    "$host_root/Systemd/lyte-host.conf"
+    "$host_root/Systemd/host.conf"
     "$host_root/Systemd/lyte-host.service"
 )
 for file in "${required_files[@]}"; do
@@ -69,11 +75,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-binary_dir="$destination/usr/local/bin"
-document_dir="$destination/usr/local/share/doc/lyte"
+binary_dir="$destination/bin"
+document_dir="$destination/doc"
 notice_dir="$document_dir/third-party"
-config_dir="$destination/etc/lyte"
-unit_dir="$destination/lib/systemd/system"
+config_dir="$destination/etc"
+unit_dir="$destination/systemd"
 install -d -m 0755 \
     "$binary_dir" "$document_dir" "$notice_dir" "$config_dir" "$unit_dir"
 
@@ -96,13 +102,12 @@ install -m 0644 "$asn1_root/LICENSE.txt" \
 install -m 0644 "$asn1_root/NOTICE.txt" \
     "$notice_dir/SwiftASN1-NOTICE.txt"
 
-install -m 0644 "$host_root/Systemd/lyte-host.conf" \
-    "$config_dir/lyte-host.conf"
+install -m 0644 "$host_root/Systemd/host.conf" "$config_dir/host.conf"
 install -m 0644 "$host_root/Systemd/lyte-host.service" \
     "$unit_dir/lyte-host.service"
 
 if grep -En 'LYTE_HOST_BIN|\.build/|/home/CHANGE_ME' \
-    "$config_dir/lyte-host.conf" "$unit_dir/lyte-host.service"
+    "$config_dir/host.conf" "$unit_dir/lyte-host.service"
 then
     echo "host image FAILED: checkout-coupled service path survived" >&2
     exit 1
@@ -111,7 +116,7 @@ fi
 manifest="$document_dir/MANIFEST.sha256"
 (
     cd "$destination"
-    find . -type f ! -path './usr/local/share/doc/lyte/MANIFEST.sha256' \
+    find . -type f ! -path './doc/MANIFEST.sha256' \
         -print | LC_ALL=C sort | while IFS= read -r path; do
         if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "$path"

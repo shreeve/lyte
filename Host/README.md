@@ -76,16 +76,17 @@ it as the seat user:
 Host/Scripts/setup-host.sh
 ```
 
-1. **CAP_SYS_ADMIN on the binary** — the direct eye reads the KMS
-   scanout, which needs the DRM ticket. After EVERY rebuild:
-   `sudo -n setcap cap_sys_admin+ep .build/release/lyte-host` (and
-   `lyte-eye` when used). A capless binary fails loudly at startup —
-   never silently. The script checks with `getcap` and prints the
-   exact command. (The portal era's
-   `MUTTER_DEBUG_PAINT=disable-direct-scanout` login-env flag is
-   OBSOLETE — the direct eye reads the scanout itself, so direct
-   scanout is now a feature, not a starvation bug; the script offers
-   to remove a leftover `90-lyte-screencast.conf`.)
+1. **CAP_SYS_ADMIN** — the direct eye reads the KMS scanout, which
+   needs the DRM ticket. `lyte-host.service` grants it ambiently, so
+   the deployed binary needs nothing; only a hand-run binary (a probe,
+   `lyte-eye`, a test port) needs
+   `sudo -n setcap cap_sys_admin+ep BINARY`, re-armed after every
+   rebuild. A capless binary fails loudly at startup — never silently.
+   The script reports whether the unit and a deployed binary exist.
+   (The portal era's `MUTTER_DEBUG_PAINT=disable-direct-scanout`
+   login-env flag is obsolete — the direct eye reads the scanout
+   itself; the script offers to remove a leftover
+   `90-lyte-screencast.conf`.)
 
 2. **Seat access to `/dev/uinput`** for the `CInputUinput` input
    backend — the udev rule at
@@ -117,26 +118,31 @@ rsync -a --delete --exclude .build Wire/ pup:src/Wire/
 rsync -a --delete --exclude .build Common/ pup:src/Common/
 rsync -a --delete --exclude .build Host/ pup:src/lyte-host/
 ssh pup 'cd ~/src/lyte-host && \
-  LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build -c release'
-ssh pup 'cd ~/src/lyte-host && sudo -n setcap cap_sys_admin+ep .build/release/lyte-host'
+  LD_LIBRARY_PATH=$HOME/.local/lib/swift-compat swift build -c release && \
+  Scripts/deploy-host.sh --restart'
 ```
 
-No media-library env exists anymore: E5 demolished the vendored FFmpeg and
-Opus is built from Common's pinned source leaf. A release build succeeding
-(with `ldd` showing zero libav and zero libopus) is itself a gate. Debug builds
-remain for tests and harness development, never for the standing service.
-After a release build, `Host/Scripts/stage-host-image.sh DESTINATION` creates
-the rootless Linux package image: one stable `/usr/local/bin/lyte-host` path,
-the service/configuration templates, Lyte and dependency notices, and a
-SHA-256 manifest. `Scripts/Tests/test-host-package-image.sh DESTINATION`
-verifies the complete image contract. Staging is inert and does not deploy or
-restart the host. `Host/Scripts/install-host.sh [IMAGE]` consumes only a
-verified image (or stages the current release build when no image is supplied),
-refreshes product-owned files, preserves operator configuration, and leaves
-start/restart explicit. See `INSTALL.md` for the complete lifecycle.
-Rate moves apply with zero reset and zero IDR by
-construction — our own pens never emit a reset. The setcap line is the
-DRM ticket for the direct eye; re-arm it after every rebuild.
+No media-library env exists anymore: Opus is built from Common's pinned source
+leaf. A release build succeeding (with `ldd` showing zero libav and zero
+libopus) is itself a gate. Debug builds remain for tests and harness
+development, never for the standing service.
+
+The standing service (see `INSTALL.md`) runs `~/.local/bin/lyte-host`, a link
+that `Host/Scripts/deploy-host.sh` flips atomically to an immutable
+`~/.local/share/lyte/versions/<sha256-12>/` copy of the release build
+(`--status`, `--rollback`). Its knobs live in `~/.config/lyte/host.conf`, its
+identity in `~/.config/lyte/`, its log in `~/.local/state/lyte/host.log`; the
+unit grants CAP_SYS_ADMIN ambiently, so a deploy needs no setcap. Only a
+hand-run binary needs `sudo setcap cap_sys_admin+ep BINARY` — the direct eye's
+DRM ticket — and a rebuild drops it.
+
+`Host/Scripts/stage-host-image.sh DESTINATION` creates the rootless package
+image (binary, conf seed, unit template, notices, SHA-256 manifest);
+`Scripts/Tests/test-host-package-image.sh DESTINATION` verifies it, and
+`Host/Scripts/install-host.sh [IMAGE]` installs it (or stages the current
+release build when no image is supplied), preserving operator configuration and
+leaving start/restart explicit. Rate moves apply with zero reset and zero IDR
+by construction — our own pens never emit a reset.
 
 The `LD_LIBRARY_PATH` shim points Swift 6.1.2's build tools at the system
 `libxml2.so.16` (Ubuntu 26.04 does not ship `libxml2.so.2`):
