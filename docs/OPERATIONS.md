@@ -56,7 +56,7 @@ to absolute paths; the installer writes the resolved paths into the unit).
 | Deploy bookkeeping | `~/.local/share/lyte/previous` |
 | Legal payload | `~/.local/share/lyte/doc/` |
 | Audio crash ledger | `~/.local/state/lyte/audio_default_sink.prev` |
-| Log | `~/.local/state/lyte/host.log` (0600); over 64 MiB it moves to `host.log.1` at the next start |
+| Log | `~/.local/state/lyte/host.log` (0600); over 64 MiB it moves to `host.log.1` at the next start, and the running host moves its own output the same way at every session boundary and once a minute |
 | Unit | `/etc/systemd/system/lyte-host.service` (system unit with `User=`, ambient `CAP_SYS_ADMIN`, `Restart=always`) |
 
 `lyte-host --wire-listen` without `--seconds` is a service: it serves

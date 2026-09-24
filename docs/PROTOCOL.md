@@ -105,8 +105,18 @@ sealed traffic, both ways; each side's first ARQ message is 0x0F
   flood it switches to cookie mode: a stateless 24-byte HMAC cookie binds
   the client tuple, a timestamp (30 s lifetime) and message 1 verbatim.
   A verified cookie is admitted once; replays are dropped.
+- Message 1 carries no freshness, so a replayed one authenticates again.
+  The host therefore commits to a client only when it proves key
+  possession: its first authenticated transport datagram. Until then a
+  verbatim repeat of the answered message 1 gets the same message 2 again
+  (on the tuple that sent it), and a newer message 1 that authenticates
+  replaces the unconfirmed handshake. The listening host also drops any
+  message 1 it already answered earlier in the process, so a captured one
+  replays at most once per host run and cannot hold the host against a
+  real client's next dial.
 - Handshake carriage (0x05, 0x06, 0x13, 0x14) is bare: it is not sealed and
-  not ARQ-carried. A bare 0x05/0x06 after establishment is dropped.
+  not ARQ-carried. A bare 0x05/0x06 after the client is confirmed is
+  dropped.
 
 Pinned by `noise-v1.json` (external IK vectors plus Lyte's transport
 extension) and `retry-v1.json`.
