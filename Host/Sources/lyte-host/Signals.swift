@@ -1,7 +1,8 @@
 // Termination signals: SIGINT/SIGTERM exit through the same door as a
 // completed run, so the audio-routing restore and the typed 0x0A teardown
 // both happen. The handler only raises a flag; the handshake wait and the
-// capture loop poll it. kill -9 is AudioWire.sweepLeftoverRouting's job.
+// capture loop poll it. A second signal while that teardown hangs exits at
+// once. kill -9 is AudioWire.sweepLeftoverRouting's job.
 //
 // Outside main.swift on purpose: top-level code gives its globals special
 // isolation, and the flag must be a plain (async-signal-writable) global.
@@ -13,11 +14,19 @@ import Foundation
 /// polling readers, no ordering requirement beyond eventually.
 nonisolated(unsafe) var lyteTerminationRequested: Int32 = 0
 
-/// Arms SIGINT/SIGTERM → the graceful-exit flag.
+/// Arms SIGINT/SIGTERM → the graceful-exit flag; a second one → _exit.
 func lyteInstallTerminationHandlers() {
     let handler: @convention(c) (Int32) -> Void = { _ in
+        if lyteTerminationRequested != 0 { _exit(130) }
         lyteTerminationRequested = 1
     }
     signal(SIGINT, handler)
     signal(SIGTERM, handler)
+}
+
+/// A reader that goes away (a hand-run host piped through tee or ssh)
+/// makes the next write fail with EPIPE instead of killing the process.
+/// libdbus sets the same disposition, but only when a connection exists.
+func lyteIgnoreBrokenPipes() {
+    signal(SIGPIPE, SIG_IGN)
 }
