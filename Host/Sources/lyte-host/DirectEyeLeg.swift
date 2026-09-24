@@ -46,6 +46,15 @@ final class DirectEyeLeg {
     /// is static are served by re-encoding the last surface — armed
     /// here, counted for the books.
     private var staticIdrWanted = false
+    /// Why the owed IDR is owed (the IDR books' cause tags), attached to
+    /// the keyframe that finally leaves.
+    private var pendingCauses: [String] = []
+    /// Frames the session refused (prepare or send errors). Counted and
+    /// printed, never leg-fatal: the session's own end (peer gone, the
+    /// liveness timeout, a failed drain) stops the leg.
+    private(set) var deliveryFailures = 0
+    private var lastDeliveryFailureWallSeconds = 0.0
+    static let refusedIdrRetrySeconds = 1.0 / 60
     private var lastEncodedCaptureUs: UInt64 = 0
     private(set) var staticIdrsServed = 0
     /// E5 audit item 3: the quiet-desktop heartbeat cadence. One
@@ -195,7 +204,6 @@ final class DirectEyeLeg {
         var changedObservations: UInt64 = 0
         var skippedObservationBeats: UInt64 = 0
         var observationSkipEvents: UInt64 = 0
-        var pendingCauses: [String] = []
         let t0 = SystemMonotonicClock.nowSeconds
         // The stillness clock: last pixel change or client input.
         var lastActivityWallSeconds = t0
@@ -247,16 +255,20 @@ final class DirectEyeLeg {
         func serveRetainedFrameIfNeeded(
             _ snapshot: SessionWire.LegSnapshot?
         ) throws -> Bool {
-            if staticIdrWanted {
+            // A refused IDR is retried no sooner than one beat later.
+            if staticIdrWanted,
+               SystemMonotonicClock.nowSeconds - lastDeliveryFailureWallSeconds
+                   >= Self.refusedIdrRetrySeconds {
+                staticIdrWanted = false
                 let served: Void? = try pipeline.encodeRetained(forceIDR: true) {
                     bytes, keyframe in
-                    let causes = keyframe ? pendingCauses : []
-                    if keyframe { pendingCauses.removeAll() }
-                    deliver(bytes, keyframe: keyframe, causes: causes,
-                            captureUs: lastEncodedCaptureUs)
+                    deliverTakingCauses(
+                        bytes, keyframe: keyframe,
+                        captureUs: lastEncodedCaptureUs)
                 }
-                if served != nil {
-                    staticIdrWanted = false
+                if served == nil {
+                    staticIdrWanted = true // nothing retained yet
+                } else {
                     staticIdrsServed += 1
                     lastDeliveryWallSeconds = SystemMonotonicClock.nowSeconds
                     print("direct: static-screen IDR served "
@@ -286,8 +298,8 @@ final class DirectEyeLeg {
                    >= keepaliveInterval {
                 let served: Void? = try pipeline.encodeRetained(forceIDR: false) {
                     bytes, keyframe in
-                    deliver(bytes, keyframe: keyframe, causes: [],
-                            captureUs: lastEncodedCaptureUs)
+                    _ = deliver(bytes, keyframe: keyframe, causes: [],
+                                captureUs: lastEncodedCaptureUs)
                 }
                 if served != nil {
                     keepalivesSent += 1
@@ -460,10 +472,8 @@ final class DirectEyeLeg {
                     bytes, keyframe in
                     deliverStart = SystemMonotonicClock.nowMicroseconds
                     lastEncodedCaptureUs = captureUs
-                    let causes = keyframe ? pendingCauses : []
-                    if keyframe { pendingCauses.removeAll() }
-                    deliver(bytes, keyframe: keyframe, causes: causes,
-                            captureUs: captureUs)
+                    deliverTakingCauses(
+                        bytes, keyframe: keyframe, captureUs: captureUs)
                 }
                 lastStages.blitUs = pipeline.lastBlitMicroseconds
                 lastStages.encodeUs = pipeline.lastEncodeMicroseconds
@@ -489,6 +499,7 @@ final class DirectEyeLeg {
             + "pixel_changes=\(changedObservations), "
             + "observation_beats_skipped=\(skippedObservationBeats), "
             + "posture_announcements=\(postureAnnouncements), "
+            + "delivery_failures=\(deliveryFailures), "
             + "cursor_shapes=\(cursorShapesSeen), "
             + "hotspot_corrections=\(cursorHotspotCorrections)")
         serviceLock.lock()
@@ -610,12 +621,27 @@ final class DirectEyeLeg {
             pixels: frame.pixels))
     }
 
+    /// Delivers one access unit with the owed IDR causes attached when it
+    /// is a keyframe. A keyframe the session refused leaves the IDR owed —
+    /// causes included — so the next poll serves it again.
+    private func deliverTakingCauses(
+        _ packet: UnsafeRawBufferPointer, keyframe: Bool, captureUs: UInt64
+    ) {
+        let causes = keyframe ? pendingCauses : []
+        if keyframe { pendingCauses.removeAll() }
+        if !deliver(packet, keyframe: keyframe, causes: causes,
+                    captureUs: captureUs), keyframe {
+            pendingCauses = causes + pendingCauses
+            staticIdrWanted = true
+        }
+    }
+
     /// One encoded access unit, borrowed from the encoder's coded buffer
-    /// for the duration of the call.
+    /// for the duration of the call. False when the session refused it.
     private func deliver(_ packet: UnsafeRawBufferPointer, keyframe: Bool,
-                         causes: [String], captureUs: UInt64) {
+                         causes: [String], captureUs: UInt64) -> Bool {
         guard let base = packet.baseAddress?.assumingMemoryBound(
-            to: UInt8.self) else { return }
+            to: UInt8.self) else { return false }
         if firstPacket.isEmpty {
             firstPacket = Array(packet)
         }
@@ -630,14 +656,20 @@ final class DirectEyeLeg {
                         ? (causes.isEmpty ? ["spontaneous"] : causes)
                         : [])
             } catch {
-                lastError = "direct: session send failed: \(error)"
-                return
+                deliveryFailures += 1
+                lastDeliveryFailureWallSeconds = SystemMonotonicClock.nowSeconds
+                if deliveryFailures <= 3 {
+                    print("direct: session refused frame "
+                        + "(\(keyframe ? "IDR" : "P")): \(error)")
+                }
+                return false
             }
         } else if let file {
             fwrite(base, 1, packet.count, file)
         }
         bytes += packet.count
         if keyframe { keyframes += 1 }
+        return true
     }
 }
 
