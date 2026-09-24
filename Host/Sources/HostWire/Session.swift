@@ -253,6 +253,11 @@ public enum SessionEvent: Equatable, Sendable {
     /// keypress in IDLE is the WAKE; one during FROZEN persists until
     /// RECOVERY's IDR consumes it.
     case inputReceived(InputEvent, receivedAtMicroseconds: UInt64)
+    /// `Session.inputSilenceReleaseNS` passed with no authenticated
+    /// arrival: the shell releases the held keys a compositor would
+    /// autorepeat (`HeldInputBook.Scope.autorepeatingKeys`). Once per
+    /// silence; the next arrival re-arms it.
+    case inputSilenceElapsed
     /// The estimator moved the pacer rate (feedback evidence or an
     /// IdrPacing policy); the pacer is already re-capped.
     case rateChanged(bitsPerSecond: Int, reason: RateChangeReason)
@@ -666,6 +671,15 @@ public final class Session {
     /// Every verbatim resend restarts the span, so a client whose early
     /// message 2s were lost is still answered on its last retransmit.
     public static let unconfirmedAnswerLifetimeNS: UInt64 = 12_000_000_000
+    /// How long the client may go without an authenticated arrival before
+    /// the keys it holds that a compositor autorepeats are released: long
+    /// enough to ride out a Wi-Fi scan, an AWDL channel hop or a roam
+    /// (each far past the 350 ms FROZEN detector), short enough to bound a
+    /// runaway autorepeat when the path is gone.
+    public static let inputSilenceReleaseNS: UInt64 = 2_000_000_000
+    /// The latest authenticated arrival; nil before the first.
+    private var lastAuthenticatedArrivalNS: UInt64?
+    private var inputSilenceReported = false
     /// True once an answered handshake has gone unconfirmed for
     /// `unconfirmedAnswerLifetimeNS` since message 2 last left: no client
     /// is behind it (a replay, a spoofed source, an abandoned dial).
@@ -954,6 +968,8 @@ public final class Session {
             lastAnswerNS = nil
             supersedingHandshake = nil
         }
+        lastAuthenticatedArrivalNS = now
+        inputSilenceReported = false
 
         // The demux trigger: only an authenticated arrival may
         // probe a new tuple. The conn-id TLV is readable by anyone who
@@ -2693,6 +2709,14 @@ public final class Session {
         return events
     }
 
+    /// When the current silence earns `.inputSilenceElapsed`; nil once it
+    /// has, or before any arrival.
+    private var inputSilenceDeadline: UInt64? {
+        guard !inputSilenceReported, let lastAuthenticatedArrivalNS
+        else { return nil }
+        return lastAuthenticatedArrivalNS &+ Self.inputSilenceReleaseNS
+    }
+
     private func serviceConfirmedTimers(
         now: UInt64, hostMicroseconds: UInt64
     ) -> [SessionEvent] {
@@ -2709,6 +2733,10 @@ public final class Session {
             )
         }
         events += flushInputEchoes(now: now, hostMicroseconds: hostMicroseconds)
+        if let due = inputSilenceDeadline, now >= due {
+            inputSilenceReported = true
+            events.append(.inputSilenceElapsed)
+        }
         if let due = ctrlArqLane.nextDeadlineNanoseconds, now >= due {
             events += serviceArqLane(
                 .control, now: now, hostMicroseconds: hostMicroseconds
@@ -2803,6 +2831,7 @@ public final class Session {
         }
         if isPeerConfirmed {
             fold(beaconClock.nextDeadlineNanoseconds)
+            fold(inputSilenceDeadline)
             fold(ctrlArqLane.nextDeadlineNanoseconds)
             fold(bulkArqLane?.nextDeadlineNanoseconds)
         }

@@ -1915,7 +1915,6 @@ final class SessionWire {
                     lifecycle: FROZEN — 350 ms of media-path silence; \
                     datagram video suspended, CTRL stays alive
                     """)
-                releaseHeldInput("the client's path went dark")
             case .recovery:
                 emit("""
                     lifecycle: RECOVERY — evidence returned; fresh IDR \
@@ -1928,9 +1927,14 @@ final class SessionWire {
             }
         case .sessionClosed(let reason):
             emit("session: CLOSED (\(reason))")
-            releaseHeldInput("the session closed")
+            releaseHeldInput(.everything, "the session closed")
         case .inputReceived(let event, let rxMicros):
             injectInput(event, receivedAtMicroseconds: rxMicros)
+        case .inputSilenceElapsed:
+            releaseHeldInput(.autorepeatingKeys, """
+                \(Session.inputSilenceReleaseNS / 1_000_000_000) s without \
+                word from the client
+                """)
         case .videoBacklogPurged(let datagrams, let bytes, let staleWireMs):
             outbox.purgeVideo(ledger: session)
             emit("""
@@ -2147,11 +2151,12 @@ final class SessionWire {
 
     /// Requires `lock`. A client whose path is dark cannot send the
     /// release of a key it holds, and the compositor autorepeats a held
-    /// key until it sees one, so nothing stays pressed past FROZEN or
-    /// the session's close. A key the user really is still holding is
-    /// released too, which is the safe direction.
-    private func releaseHeldInput(_ why: String) {
-        guard let released = inputInjector?.releaseHeld(), released > 0
+    /// key until it sees one: a long silence releases the keys that
+    /// repeat, and the session's close releases everything. Modifiers
+    /// and pointer buttons ride out any silence the session survives, so
+    /// a held Shift or a drag outlasts a Wi-Fi hitch.
+    private func releaseHeldInput(_ scope: HeldInputBook.Scope, _ why: String) {
+        guard let released = inputInjector?.releaseHeld(scope), released > 0
         else { return }
         emit("input: released \(released) held key(s) — \(why)")
     }
