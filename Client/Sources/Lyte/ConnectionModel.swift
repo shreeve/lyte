@@ -365,7 +365,7 @@ final class ConnectionModel {
         prepareBulkCoordinator(hostKey: host.publicKeyHash ?? host.address)
         if let pkh = host.publicKeyHash {
             startRoamingMachinery(
-                publicKeyHash: pkh, address: host.address, port: host.port)
+                publicKeyHash: pkh, address: dialAddress, port: dialPort)
         }
         phase = .streaming
         services.streamBegan()

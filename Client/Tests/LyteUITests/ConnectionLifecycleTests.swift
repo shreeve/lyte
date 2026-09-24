@@ -79,6 +79,27 @@ final class ConnectionLifecycleTests: XCTestCase {
         }
     }
 
+    func testRoamingStartsFromTheAddressTheConnectReached() async throws {
+        let harness = LifecycleHarness()
+        // The host restarted and re-registered elsewhere: the first dial
+        // draws silence, the re-browse finds it at its new address.
+        harness.startPlan = [
+            .fail(TransportCryptoError.handshakeFailed("no response from host")),
+            .succeed, .hold,
+        ]
+        harness.browseResult = [DiscoveredLyteHost(
+            name: "pup", address: "10.9.9.10", port: 41_999, wireVersion: nil,
+            publicKeyHash: harness.host.publicKeyHash)]
+        let model = ConnectionModel(services: harness.services)
+        await model.connectLyte(harness.host)
+        XCTAssertEqual(model.hostAddress, "10.9.9.10")
+
+        model.reconnectNow()
+        XCTAssertEqual(model.roamingStatus,
+                       .reconnecting(address: "10.9.9.10", discovered: false),
+                       "the probe dial must target where the host was reached")
+    }
+
     // MARK: - Roaming fencing
 
     func testCurrentRoamingDialIsAdopted() async throws {
@@ -193,12 +214,14 @@ final class LifecycleHarness: @unchecked Sendable {
     enum StartStep {
         case succeed
         case hold
+        case fail(any Error)
     }
 
     let host: DiscoveredLyteHost
     let silence = TransportCryptoError.handshakeFailed("refused (harness)")
     var startPlan: [StartStep] = []
     var holdFirstIdentity = false
+    var browseResult: [DiscoveredLyteHost] = []
 
     private let lock = NSLock()
     private let clientIdentity = NoiseKeyPair.generate()
@@ -275,7 +298,7 @@ final class LifecycleHarness: @unchecked Sendable {
                 return clientIdentity
             },
             cachedIdentity: { [self] in clientIdentity },
-            browse: { _ in [] },
+            browse: { [self] _ in locked { browseResult } },
             startSession: { [self] session in
                 let (index, step) = locked { () -> (Int, StartStep) in
                     _started.append(session)
@@ -286,6 +309,8 @@ final class LifecycleHarness: @unchecked Sendable {
                 switch step {
                 case .succeed:
                     return
+                case .fail(let error):
+                    throw error
                 case .hold:
                     try await withCheckedThrowingContinuation { continuation in
                         let early = locked { () -> Result<Void, Error>? in
