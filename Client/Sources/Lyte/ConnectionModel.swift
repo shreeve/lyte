@@ -303,8 +303,7 @@ final class ConnectionModel {
                     hostPort: dialPort,
                     hostStaticPublicKey: hostStatic,
                     staticKeys: identity,
-                    attempts: round == 1 ? 5 : 3,
-                    attemptTimeoutMilliseconds: round == 1 ? 2_000 : 700)
+                    retry: round == 1 ? .firstDial : .redial)
             } catch {
                 phase = .failed(.ordinary("host key: \(error)"))
                 return
@@ -617,6 +616,10 @@ final class ConnectionModel {
             break
         case .closed(let reason):
             switch Self.closeVerdict(reason) {
+            case .ignore where lyteSession?.core?.orderedStreamPoisoned == true:
+                // The core ended a session whose host broke its control
+                // stream; a fresh session is the only way back.
+                beginRoamingAfterLoss(reason)
             case .ignore:
                 break
             case .end(let message):

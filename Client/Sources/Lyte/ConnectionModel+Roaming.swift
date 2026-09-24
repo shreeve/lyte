@@ -146,8 +146,7 @@ extension ConnectionModel {
                 hostPort: port,
                 hostStaticPublicKey: hostStatic,
                 staticKeys: identity,
-                attempts: 3,
-                attemptTimeoutMilliseconds: 700)
+                retry: .redial)
         else {
             roamingInput { policy, now in policy.dialFailed(now: now) }
             return

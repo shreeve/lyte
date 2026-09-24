@@ -1,4 +1,5 @@
 import SwiftUI
+import LyteTransport
 import LyteUI
 
 /// The Lyte app: each window is one connection; a new window opens in the
@@ -8,6 +9,9 @@ struct LyteApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
+        // The witnesses write only where a diagnostic bundle says to.
+        PipelineWitness.configure(environment: DiagnosticEnvironment.current)
+        HandshakeWitness.configure(environment: DiagnosticEnvironment.current)
         if !DiagnosticEnvironment.isEnabled,
            ProcessInfo.processInfo.environment.keys.contains(where: {
                $0 == "LYTE_AUTOCONNECT" || $0.hasPrefix("LYTE_BENCHMARK_")
