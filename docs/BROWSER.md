@@ -43,8 +43,11 @@ Behavior the proof exercises today:
   plays it in real time (the smoke renders offline). The WASM audio queue
   keeps the newest 20 packets (100 ms).
 - Input: DOM keyboard (`KeyboardEvent.code` → evdev), pointer, buttons and
-  wheel go out as sealed `InputEvent`s; held keys and buttons are released
-  on blur. The peer echoes input but injects nothing.
+  wheel go out as sealed `InputEvent`s. Ctrl, Alt and Shift are forwarded;
+  Meta stays local. A release of anything the host holds always crosses,
+  chorded buttons are reconciled from `PointerEvent.buttons`, and held keys
+  and buttons are released on blur. The peer echoes input but injects
+  nothing.
 - Clipboard text round-trips through capability key 10; the peer's
   clipboard is in memory, not an OS clipboard.
 

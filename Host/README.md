@@ -81,9 +81,8 @@ ffmpeg -v error -i /tmp/lyte-eye.hevc -f null -   # decodes without errors
 Other flags: `--pair` (PIN pairing, one session), `--require-paired`
 (admit only paired clients), `--input auto|uinput|off`,
 `--clipboard=images`, `--advertise-interface IFACE`. `lyte-host --help`
-lists them all. `--backend direct`, `--encoder native` and `--ratchet` are
-accepted no-ops kept for old conf lines. The host self-checks that its
-first encoded packet starts with VPS/SPS/PPS and an IDR.
+lists them all. The host self-checks that its first encoded packet starts
+with VPS/SPS/PPS and an IDR.
 
 ## Capture
 

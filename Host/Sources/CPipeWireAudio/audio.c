@@ -211,11 +211,11 @@ static const struct pw_registry_events registry_events = {
     .global = on_registry_global,
 };
 
-/* Create the null sink, save the original default, switch the default
-   to us. Called from _new before the capture stream exists, so the
-   only loop-quitting handlers live on the core. */
-static int setup_virtual_sink(struct lyte_pw_audio *a,
-                              char *err, size_t errlen)
+/* Open the registry and run one trip: the globals arrive and the handler
+   binds the "default" metadata (a->metadata stays NULL when the session
+   manager publishes none). Returns -1 with `err` filled on failure. */
+static int bind_default_metadata(struct lyte_pw_audio *a,
+                                 char *err, size_t errlen)
 {
     a->registry = pw_core_get_registry(a->core, PW_VERSION_REGISTRY, 0);
     if (!a->registry) {
@@ -224,13 +224,25 @@ static int setup_virtual_sink(struct lyte_pw_audio *a,
     }
     pw_registry_add_listener(a->registry, &a->registry_listener,
                              &registry_events, a);
+    if (roundtrip(a) < 0) {
+        set_err(err, errlen, "%s", a->error);
+        return -1;
+    }
+    return 0;
+}
 
-    /* Trip 1: registry globals arrive; the handler binds the "default"
-       metadata. Trip 2: the freshly bound metadata replays its
-       properties — the original default is captured there. */
+/* Create the null sink, save the original default, switch the default
+   to us. Called from _new before the capture stream exists, so the
+   only loop-quitting handlers live on the core. */
+static int setup_virtual_sink(struct lyte_pw_audio *a,
+                              char *err, size_t errlen)
+{
+    /* Trip 1 binds the "default" metadata. Trip 2: the freshly bound
+       metadata replays its properties — the original default is
+       captured there. */
     a->capture_defaults = 1;
-    if (roundtrip(a) < 0)
-        goto core_error;
+    if (bind_default_metadata(a, err, errlen) < 0)
+        return -1;
     if (!a->metadata) {
         set_err(err, errlen, "no \"default\" metadata object — is "
                 "wireplumber running? hostMuted needs the session "
@@ -409,8 +421,9 @@ static void on_timeout(void *data, uint64_t expirations)
     pw_main_loop_quit(a->loop);
 }
 
-lyte_pw_audio *lyte_pw_audio_new(lyte_pw_audio_cb cb, void *user,
-                                 int mute_host, char *err, size_t errlen)
+/* A connected core with the roundtrip listener attached, nothing else.
+   Returns NULL with `err` filled (and everything released) on failure. */
+static struct lyte_pw_audio *connect_core(char *err, size_t errlen)
 {
     pw_init(NULL, NULL);
 
@@ -419,10 +432,7 @@ lyte_pw_audio *lyte_pw_audio_new(lyte_pw_audio_cb cb, void *user,
         set_err(err, errlen, "out of memory");
         return NULL;
     }
-    a->cb = cb;
-    a->user = user;
     a->exit_reason = 1;
-    a->mute_host = mute_host ? 1 : 0;
 
     a->loop = pw_main_loop_new(NULL);
     if (!a->loop) {
@@ -442,6 +452,22 @@ lyte_pw_audio *lyte_pw_audio_new(lyte_pw_audio_cb cb, void *user,
         goto fail;
     }
     pw_core_add_listener(a->core, &a->core_listener, &core_events, a);
+    return a;
+
+fail:
+    lyte_pw_audio_free(a);
+    return NULL;
+}
+
+lyte_pw_audio *lyte_pw_audio_new(lyte_pw_audio_cb cb, void *user,
+                                 int mute_host, char *err, size_t errlen)
+{
+    struct lyte_pw_audio *a = connect_core(err, errlen);
+    if (!a)
+        return NULL;
+    a->cb = cb;
+    a->user = user;
+    a->mute_host = mute_host ? 1 : 0;
 
     /* hostMuted: the sink comes up and takes the default BEFORE the
        capture stream exists, so the stream's target is already real
@@ -613,159 +639,38 @@ void lyte_pw_audio_free(lyte_pw_audio *a)
 
 /* --- the next-start sweep (a SIGKILLed previous run) --- */
 
-struct lyte_sweep {
-    struct pw_main_loop *loop;
-    struct pw_core *core;
-    struct spa_hook core_listener;
-    struct pw_registry *registry;
-    struct spa_hook registry_listener;
-    struct pw_metadata *metadata;
-    struct spa_hook metadata_listener;
-    int sync_seq;
-    int sync_pending;
-    int failed;
-    char error[256];
-};
-
-static void sweep_core_done(void *data, uint32_t id, int seq)
-{
-    struct lyte_sweep *s = data;
-    if (id == PW_ID_CORE && s->sync_pending && seq == s->sync_seq) {
-        s->sync_pending = 0;
-        pw_main_loop_quit(s->loop);
-    }
-}
-
-static void sweep_core_error(void *data, uint32_t id, int seq, int res,
-                             const char *message)
-{
-    struct lyte_sweep *s = data;
-    (void)seq;
-    if (id == PW_ID_CORE) {
-        snprintf(s->error, sizeof(s->error), "pipewire core error %d: %s",
-                 res, message ? message : "(unspecified)");
-        s->failed = 1;
-        pw_main_loop_quit(s->loop);
-    }
-}
-
-static const struct pw_core_events sweep_core_events = {
-    PW_VERSION_CORE_EVENTS,
-    .done = sweep_core_done,
-    .error = sweep_core_error,
-};
-
-static int sweep_roundtrip(struct lyte_sweep *s)
-{
-    s->sync_pending = 1;
-    s->sync_seq = pw_core_sync(s->core, PW_ID_CORE, 0);
-    pw_main_loop_run(s->loop);
-    return s->failed ? -1 : 0;
-}
-
-/* The sweep needs no property events — it only writes. */
-static const struct pw_metadata_events sweep_metadata_events = {
-    PW_VERSION_METADATA_EVENTS,
-};
-
-static void sweep_registry_global(void *data, uint32_t id,
-                                  uint32_t permissions, const char *type,
-                                  uint32_t version,
-                                  const struct spa_dict *props)
-{
-    struct lyte_sweep *s = data;
-    (void)permissions;
-    (void)version;
-    if (s->metadata || !props ||
-        strcmp(type, PW_TYPE_INTERFACE_Metadata) != 0)
-        return;
-    const char *name = spa_dict_lookup(props, PW_KEY_METADATA_NAME);
-    if (name && strcmp(name, "default") == 0) {
-        s->metadata = pw_registry_bind(s->registry, id, type,
-                                       PW_VERSION_METADATA, 0);
-        if (s->metadata)
-            pw_metadata_add_listener(s->metadata, &s->metadata_listener,
-                                     &sweep_metadata_events, s);
-    }
-}
-
-static const struct pw_registry_events sweep_registry_events = {
-    PW_VERSION_REGISTRY_EVENTS,
-    .global = sweep_registry_global,
-};
-
+/* A bare connection (mute_host 0, so free() never restores) that only
+   writes the key back — through the same core handlers and the same
+   timeout-guarded roundtrip as the capture leaf. */
 int lyte_pw_audio_restore_default(const char *saved_json,
                                   char *err, size_t errlen)
 {
-    pw_init(NULL, NULL);
-
-    struct lyte_sweep s;
-    memset(&s, 0, sizeof(s));
-    struct pw_context *context = NULL;
+    struct lyte_pw_audio *a = connect_core(err, errlen);
+    if (!a)
+        return -1;
     int rc = -1;
 
-    s.loop = pw_main_loop_new(NULL);
-    if (!s.loop) {
-        set_err(err, errlen, "pw_main_loop_new failed");
+    if (bind_default_metadata(a, err, errlen) < 0)
         goto out;
-    }
-    context = pw_context_new(pw_main_loop_get_loop(s.loop), NULL, 0);
-    if (!context) {
-        set_err(err, errlen, "pw_context_new failed");
-        goto out;
-    }
-    s.core = pw_context_connect(context, NULL, 0);
-    if (!s.core) {
-        set_err(err, errlen, "pw_context_connect failed");
-        goto out;
-    }
-    pw_core_add_listener(s.core, &s.core_listener, &sweep_core_events, &s);
-    s.registry = pw_core_get_registry(s.core, PW_VERSION_REGISTRY, 0);
-    if (!s.registry) {
-        set_err(err, errlen, "pw_core_get_registry failed");
-        goto out;
-    }
-    pw_registry_add_listener(s.registry, &s.registry_listener,
-                             &sweep_registry_events, &s);
-
-    if (sweep_roundtrip(&s) < 0) {
-        set_err(err, errlen, "%s", s.error);
-        goto out;
-    }
-    if (!s.metadata) {
+    if (!a->metadata) {
         set_err(err, errlen, "no \"default\" metadata object — is "
                 "wireplumber running?");
         goto out;
     }
 
     if (saved_json)
-        pw_metadata_set_property(s.metadata, PW_ID_CORE, DEFAULT_SINK_KEY,
+        pw_metadata_set_property(a->metadata, PW_ID_CORE, DEFAULT_SINK_KEY,
                                  "Spa:String:JSON", saved_json);
     else
-        pw_metadata_set_property(s.metadata, PW_ID_CORE, DEFAULT_SINK_KEY,
+        pw_metadata_set_property(a->metadata, PW_ID_CORE, DEFAULT_SINK_KEY,
                                  NULL, NULL);
-    if (sweep_roundtrip(&s) < 0) {
-        set_err(err, errlen, "%s", s.error);
+    if (roundtrip(a) < 0) {
+        set_err(err, errlen, "%s", a->error);
         goto out;
     }
     rc = 0;
 
 out:
-    if (s.metadata) {
-        spa_hook_remove(&s.metadata_listener);
-        pw_proxy_destroy((struct pw_proxy *)s.metadata);
-    }
-    if (s.registry) {
-        spa_hook_remove(&s.registry_listener);
-        pw_proxy_destroy((struct pw_proxy *)s.registry);
-    }
-    if (s.core) {
-        spa_hook_remove(&s.core_listener);
-        pw_core_disconnect(s.core);
-    }
-    if (context)
-        pw_context_destroy(context);
-    if (s.loop)
-        pw_main_loop_destroy(s.loop);
+    lyte_pw_audio_free(a);
     return rc;
 }

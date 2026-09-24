@@ -7,6 +7,7 @@
 
 import Foundation
 import HostWire
+import LyteIO
 import LyteWire
 
 #if os(Linux)
@@ -46,7 +47,7 @@ final class UinputInjector: InputInjector {
     init() throws {
         var err = [CChar](repeating: 0, count: 256)
         guard let handle = lyte_uinput_open(&err, err.count) else {
-            throw HostError("uinput open failed: \(errString(err))")
+            throw HostError("uinput open failed: \(String(cBuffer: err))")
         }
         self.handle = handle
         // Freshly created evdev devices need a moment before
@@ -86,7 +87,7 @@ final class UinputInjector: InputInjector {
                 &err, err.count)
         }
         guard rc == 0 else {
-            throw HostError("uinput inject failed: \(errString(err))")
+            throw HostError("uinput inject failed: \(String(cBuffer: err))")
         }
     }
 
@@ -94,7 +95,7 @@ final class UinputInjector: InputInjector {
         var err = [CChar](repeating: 0, count: 256)
         if lyte_uinput_set_extent(handle, width, height,
                                   &err, err.count) != 0 {
-            print("input: uinput extent refused: \(errString(err))")
+            print("input: uinput extent refused: \(String(cBuffer: err))")
         }
     }
 

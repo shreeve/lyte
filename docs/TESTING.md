@@ -55,6 +55,7 @@ Iterate with `--filter <TestClass>`. Environment knobs read by the suites:
 |---|---|
 | `LYTE_ARQ_TRIALS` | Seeded ARQ simulation trials (default 2,000; `25000` or more for the long form) |
 | `LYTE_ARQ_SEED` | Replay one ARQ simulation seed |
+| `LYTE_BULK_SEED` | Run the lossy bulk-transfer test on this one seed instead of its three defaults |
 | `LYTE_HARDWARE_TESTS=1` | Run tests that use real machine hardware (today: the audio route-change test, which plays through the real output device); skipped otherwise |
 
 ### Test equipment
@@ -75,10 +76,10 @@ fakes:
 |---|---|
 | Common | `LyteCoreTests` (with the single-owner ratchets), `LyteIOTests`, `LyteTestKitTests` (the sans-IO lint), `COpusTests` |
 | Wire | `LyteWireTests` — codecs, vector files, `VectorRegenerationTests`, ARQ/FEC/Noise/pairing simulations |
-| Host | `HostCoreTests`, `HostSessionTests`, `HostWireTests` (session gates), `HostAudioTests`, `HostLayoutTests`; Linux only: `HostEyeTests`, `CNetIOTests`, `LyteHostIntegrationTests` |
+| Host | `HostCoreTests`, `HostSessionTests`, `HostWireTests` (session gates), `HostAudioTests`, `HostLayoutTests`; Linux only: `HostEyeTests`, `CNetIOTests`, `CPipeWireAudioTests` (against a silent PipeWire socket in a temp runtime dir, never the desktop's server), `LyteHostIntegrationTests` |
 | Client | `LyteTransportTests`, `LyteClientSessionTests`, `LyteClientCoreTests`, `LyteCorpusTests` (slow corpus legs), `LyteAppTests` (app lifecycle under injected services), `LyteHelperTests` |
 | SystemTests | `LyteClientHostTests` — real client and host composed in one process |
-| Browser | `LyteClientBrowserCoreTests` — the browser core against an in-process `HostWire.Session` |
+| Browser | `LyteClientBrowserCoreTests` — the browser core against an in-process `HostWire.Session`; page input rules in `Browser/Tests/Page/page.test.mjs` (Node, not SwiftPM) |
 
 ### Repository lints (run inside the Common suite)
 
@@ -110,15 +111,17 @@ In order:
    `Browser/Scripts/build.sh`, then `Wire/Scripts/wasm-test.sh` when
    `wasmtime` is present. Otherwise the gate prints `SKIPPED` and
    continues.
-4. **Script tests:** `test-benchmark-safety.sh`,
+4. **Browser page tests:** `node --test Browser/Tests/Page/page.test.mjs`
+   (`SKIPPED` without Node).
+5. **Script tests:** `test-benchmark-safety.sh`,
    `test-host-release-posture.sh`, `test-host-package-image.sh --self-test`,
    `test-host-installer.sh --self-test` (which also runs
    `test-host-deploy.sh`), `test-sign-dev.sh`.
-5. **Python:** `test_analyze_app_benchmark.py`, `test_motion_preflight.py`,
+6. **Python:** `test_analyze_app_benchmark.py`, `test_motion_preflight.py`,
    then `test-app-identity.sh`.
-6. **Signed debug CLI:** `Scripts/build-cli.sh debug`,
+7. **Signed debug CLI:** `Scripts/build-cli.sh debug`,
    `codesign --verify --strict`, `test-hermetic-linkage.sh`.
-7. **Signed release app** into a temporary `.build/.lyte-ci-app.*`
+8. **Signed release app** into a temporary `.build/.lyte-ci-app.*`
    destination, assembled twice (the bundle version must increase), then
    `test-app-packaging.sh`, `codesign --verify --strict` on the app, the
    app binary and `lyte-helperd`, and `test-hermetic-linkage.sh`. The

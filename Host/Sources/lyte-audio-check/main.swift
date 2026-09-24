@@ -26,12 +26,6 @@ struct CheckError: Error, CustomStringConvertible {
     init(_ description: String) { self.description = description }
 }
 
-/// Decodes a NUL-terminated C error buffer.
-func errString(_ buf: [CChar]) -> String {
-    let bytes = buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
-    return String(decoding: bytes, as: UTF8.self)
-}
-
 let packetFrames = HostOpus.framesPerPacket // 240 samples/ch = 5 ms
 let channels = HostOpus.channels
 let sampleRate = HostOpus.sampleRate
@@ -190,7 +184,7 @@ func run() throws {
     var err = [CChar](repeating: 0, count: 256)
     guard let capture = lyte_pw_audio_new(audioTrampoline, user, 0,
                                           &err, err.count) else {
-        throw CheckError("pipewire audio setup failed: \(errString(err))")
+        throw CheckError("pipewire audio setup failed: \(String(cBuffer: err))")
     }
     defer { lyte_pw_audio_free(capture) }
     sink.capture = capture
@@ -203,7 +197,7 @@ func run() throws {
 
     let rc = lyte_pw_audio_run(capture, seconds, &err, err.count)
     guard rc >= 0 else {
-        throw CheckError("capture failed: \(errString(err))")
+        throw CheckError("capture failed: \(String(cBuffer: err))")
     }
     if let ne = sink.negotiationError { throw CheckError(ne) }
     if let ce = sink.callbackError { throw CheckError(ce) }

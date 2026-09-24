@@ -5,44 +5,38 @@ live state: [HANDOFF.md](HANDOFF.md).
 
 ## Security and pairing
 
-- **Enforce pairing (owner ruling: before 1.0).** The standing conf does
-  not pass `--require-paired`, so any client that knows the host's public
-  key gets a full session, and `--pair` admits the connecting client to a
-  full session before it pairs. Wanted: require-paired by default, and a
-  pairing arm inside the running service (a signal or control socket that
-  mints a PIN) instead of stop, hand-run, restart.
-- **Pre-1.0 hardening: run a root-owned binary (or file caps on a
-  root-owned copy) instead of a user-writable path under ambient
-  CAP_SYS_ADMIN.** The unit execs the seat user's `~/.local/bin/lyte-host`
-  symlink with ambient `CAP_SYS_ADMIN` and `Restart=always`, so seat-user
-  code can plant a binary, kill the host and get it re-executed with the
-  capability (user → root). Accepted for now
-  ([OPERATIONS.md](docs/OPERATIONS.md#safety)). Wanted: `deploy-host.sh`
-  installs versions root-owned (e.g. `/usr/local/lib/lyte/versions/`) and
-  the unit execs a root-owned link, or ambient caps are dropped for
-  `setcap` on a root-owned copy; `host.conf` must not choose the
-  executable.
-- **Noise send counter.** The transport's send side keeps a u16 seq API, so
-  a forward jump of more than half the space cannot be told from a
-  backwards seal. A real fix moves seq allocation into the transport and
-  widens the send counter to u64.
+- **Enforce pairing (owner: before 1.0).** The standing conf does not pass
+  `--require-paired`, so any client that knows the host's public key gets a
+  full session, and `--pair` admits the connecting client before it pairs.
+  Wanted: require-paired by default, and a pairing arm inside the running
+  service (a signal or control socket that mints a PIN) instead of stop,
+  hand-run, restart.
+- **Run a root-owned binary instead of a user-writable path under ambient
+  `CAP_SYS_ADMIN` (before 1.0).** The unit execs the seat user's
+  `~/.local/bin/lyte-host` with ambient `CAP_SYS_ADMIN` and
+  `Restart=always`, so seat-user code can plant a binary and have it
+  re-executed with the capability ([OPERATIONS](docs/OPERATIONS.md#safety)).
+  Wanted: `deploy-host.sh` installs root-owned versions and the unit execs
+  a root-owned link (or `setcap` on a root-owned copy); `host.conf` never
+  chooses the executable.
+- **Noise message-1 freshness (wire-v2 decision).** A captured message 1
+  replayed in a later host run can open one unconfirmed handshake per run —
+  a delay for a dialing client, not a lockout. A timestamp in the message-1
+  payload retires it.
+- **Noise u64 send counter.** The send side keeps a u16 seq API, so a
+  forward jump of more than half the space cannot be told from a backwards
+  seal. Move seq allocation into the transport and widen the counter.
 
 ## Host
 
 - **Wayland clipboard leaf (blocked on GNOME).** The host clipboard still
-  needs the Mutter RemoteDesktop session bus (`MutterClipboardLeaf`). On
-  pup (GNOME 50.1) there is no `wlr-data-control`/`ext-data-control`,
-  `wl-copy`/`wl-paste` hang, and the portal Clipboard cannot start
-  headless. Unlock conditions:
+  needs the Mutter RemoteDesktop session bus (`MutterClipboardLeaf`); pup's
+  GNOME 50.1 offers no data-control protocol and the portal Clipboard
+  cannot start headless. Unlock conditions:
   [record](docs/decisions/20260807-015743-wayland-clipboard-gnome-blocker.md).
-- **VAAPI `MaxFrameSize`.** The encoder's HRD buffer is bounded by the
-  protectable ceiling; `VAEncMiscParameterTypeMaxFrameSize` was not added
-  because it can trigger multi-pass encodes and is unproven on iHD. Tune
-  live.
-- **Host clipboard hashing.** The host still hashes whole clipboard images
-  (`HostWire/Session.swift`). Adopt Wire's incremental
-  `ingest(_:book:hasher:)` and lazy `shareLocalImage(_:sha256:)` as the
-  client did, then delete Wire's eager and whole-blob overloads.
+- **VAAPI `MaxFrameSize`.** The HRD buffer is bounded by the protectable
+  ceiling; `VAEncMiscParameterTypeMaxFrameSize` can trigger multi-pass
+  encodes and is unproven on iHD. Tune live.
 - **One session lock.** `SessionWire` guards `Session` and the outbox with
   one lock. Direction: a single-owner sender thread that alone touches
   `Session`, with capture, audio and shell work posted through mailboxes.
@@ -52,23 +46,13 @@ live state: [HANDOFF.md](HANDOFF.md).
 
 ## Client
 
-- **Finish moving pure policy into `LyteClientCore`.** `AudioJitterBuffer`,
-  `SeqGapTracker`, `ChromaTier` and `HevcSpsChroma` stay in `LyteTransport`
-  because `LyteClientCore` may import nothing; allow `LyteCore` and
-  `LyteWire` there (in `SansIOArchitectureTests` and the manifest), then
-  move them with their tests.
-- **Refused bulk sends.** `ConnectionModel` drops a refused chan-8 send with
-  `try?`; surface it as a transfer notice.
-- **Test seams.** Make `UdpReceiveEndpoint`'s 100 ms `SO_RCVTIMEO` an init
-  parameter and inject the clock into `CoalescedMainActorHop`, so their
-  tests stop sleeping in real time.
+- **Native IDR that trips a flush.** `VideoRendererHandoff.accept()` fails
+  the episode and requests recovery before offering the IDR that tripped
+  the flush, which may send one extra recovery request. The browser
+  playout already answers the flush with that IDR.
 
 ## Wire
 
-- Move every codec onto `WireReader` with one reader error; only the
-  vectors guard which error wins, so migrate codec by codec.
-- Convert `AudioFramer` and `AudioDepacketizer` to structs (source-breaking
-  for `let` holders in Host, Client and Browser).
 - Give `SessionStateMachine`'s `.finalFrameAcknowledged` a group id so a
   stale acknowledgement cannot flip the session to IDLE.
 - Add a capability-spine vector for key 14 (`audioStreamOff`), in a new

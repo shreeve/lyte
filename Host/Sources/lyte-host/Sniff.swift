@@ -67,7 +67,7 @@ func sniffMain(_ args: [String]) -> Never {
     var err = [CChar](repeating: 0, count: 256)
     guard let rx = lyte_netio_new("0.0.0.0", port, &err, err.count) else {
         FileHandle.standardError.write(Data(
-            "lyte-host sniff: bind 0.0.0.0:\(port) failed: \(errString(err))\n"
+            "lyte-host sniff: bind 0.0.0.0:\(port) failed: \(String(cBuffer: err))\n"
                 .utf8))
         exit(1)
     }
@@ -95,7 +95,7 @@ func sniffMain(_ args: [String]) -> Never {
                                         &err, err.count)
         if got < 0 {
             FileHandle.standardError.write(Data(
-                "lyte-host sniff: recv failed: \(errString(err))\n".utf8))
+                "lyte-host sniff: recv failed: \(String(cBuffer: err))\n".utf8))
             exit(1)
         }
         if got == 0 {

@@ -112,7 +112,7 @@ func parseArgs(_ argv: [String]) throws -> Options {
         case "--help", "-h":
             print(
                 """
-                lyte-control-peer — DRM-free HostWire peer (browser B-3…B-6)
+                lyte-control-peer — DRM-free HostWire peer for the browser proof
 
                   --listen P          UDP port (default 41234; never 41151)
                   --bind HOST         bind address (default 127.0.0.1)
@@ -125,8 +125,8 @@ func parseArgs(_ argv: [String]) throws -> Options {
                                       30 s; with more, the peer waits.
                   --meta-out PATH     write JSON (port, host static, pin)
                   --emit-corpus DIR   after ready, seal/pace video-corpus-v1
-                                      frames 000–009 + Opus tone (B-5/B-6;
-                                      no DRM). Declares clipboardText;
+                                      frames 000–009 + Opus tone (no
+                                      DRM). Declares clipboardText;
                                       echoes input; in-memory clipboard ack.
 
                 Safe beside standing lyte-host on 41151 — no Direct Eye / DRM.
@@ -725,7 +725,7 @@ final class ControlPeer {
         let shape = corpusFrames == nil
             ? "hostwire-control-only-udp"
             : "hostwire-control-plus-corpus-video-audio"
-        print("lyte-control-peer — DRM-free HostWire peer (B-3…B-6)")
+        print("lyte-control-peer — DRM-free HostWire peer for the browser proof")
         print("listen: \(sock.localHost):\(sock.localPort)")
         print("noise: host static public key \(Hex.string(hostStatic.publicKey))")
         print("pairing: PIN \(pin) — enter it in the browser client")

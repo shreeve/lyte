@@ -11,6 +11,7 @@ import HostIO
 import HostSession
 import HostWire
 import LyteCore
+import LyteIO
 import LyteWire
 
 @main
@@ -25,8 +26,6 @@ struct Options {
     var seconds = 5.0
     var secondsGiven = false
     var fps: Int32 = 60
-    /// Accepted and ignored so existing scripts keep working.
-    var ratchet = false
     /// Run a session to this peer instead of writing the file.
     var wireOut: (host: String, port: UInt16)?
     /// Bind here and await a connecting client.
@@ -93,31 +92,6 @@ struct Options {
                 }
                 opts.seconds = v
                 opts.secondsGiven = true
-            case "--backend":
-                i += 1
-                // A no-op kept for scripts; any other backend fails.
-                guard i < args.count, args[i] == "direct" else {
-                    let asked = i < args.count ? args[i] : "(missing)"
-                    throw HostError("""
-                        --backend \(asked): the portal and \
-                        mutter ScreenCast backends were demolished \
-                        after first-light — the direct eye is the \
-                        only backend (--backend direct is an \
-                        accepted no-op)
-                        """)
-                }
-            case "--encoder":
-                i += 1
-                // A no-op kept for scripts; any other encoder fails.
-                guard i < args.count, args[i] == "native" else {
-                    throw HostError("""
-                        --encoder libav was demolished after first-light — the \
-                        native VAAPI seat is the direct eye's only encoder \
-                        (--encoder native is an accepted no-op)
-                        """)
-                }
-            case "--ratchet":
-                opts.ratchet = true
             case "--wire-out":
                 i += 1
                 guard i < args.count else {
@@ -158,11 +132,7 @@ struct Options {
                 guard i < args.count,
                       let choice = InputBackendChoice(rawValue: args[i])
                 else {
-                    throw HostError(
-                        """
-                            --input must be auto, uinput, or off (mutter was \
-                            retired in E2 — uinput is primary)
-                            """)
+                    throw HostError("--input must be auto, uinput, or off")
                 }
                 opts.input = choice
             case "--no-audio":
@@ -235,17 +205,6 @@ struct Options {
                                     clock, keeping the eye, listening
                                     socket, advertisement and input
                                     devices up between them
-                  --backend direct  accepted no-op: the direct eye is the
-                                    only backend (portal and mutter were
-                                    demolished after first-light)
-                  --encoder native  accepted no-op: the native VAAPI
-                                    seat is the direct eye's only
-                                    encoder (the libav seat was
-                                    demolished after first-light)
-                  --ratchet         accepted-and-ignored: the portal-era
-                                    ratchet prototype died in the E5
-                                    demolition (direct-leg quality
-                                    refinement is the filed follow-up)
                   --wire-out H:P    session mode: Noise IK handshake with
                                     the client at HOST:PORT, then sealed
                                     Lyte-UDP shards (packetizer + FEC +
@@ -256,10 +215,9 @@ struct Options {
                                     (advertises _lyte._udp via Avahi)
                   --wire-rate-mbps  session ceiling: pacer rate + the
                                     estimator's negotiated cap
-                                    (default 50 — the owner-ruled LAN
-                                    ceiling; in session mode the
-                                    encoder recipe pairs to it unless
-                                    --bitrate-mbps splits them)
+                                    (default 50, the LAN ceiling; in
+                                    session mode the encoder recipe
+                                    pairs to it)
                   --no-advertise    skip the Avahi _lyte._udp advertisement
                   --advertise-interface NAME
                                     advertise on ONE interface (e.g. the
@@ -277,11 +235,11 @@ struct Options {
                                     may complete the Noise handshake
                                     (reconnects are plain 1-RTT IK)
                   --input MODE      injection backend for client input
-                                    events (E2): auto/uinput (kernel
+                                    events: auto/uinput (kernel
                                     uinput, compositor-agnostic;
                                     needs the setup-host.sh udev
                                     rule), or off
-                  --no-audio        skip the HS-15 audio leg (default in
+                  --no-audio        skip the audio leg (default in
                                     session mode: default-sink monitor →
                                     5 ms Opus → RS 4+2 → chan 1 at
                                     DSCP 48, continuous from
@@ -297,8 +255,8 @@ struct Options {
                                     up, so a plain run truthfully
                                     negotiates no clipboard
                   --clipboard=images
-                                    the consent tier's third rung
-                                    (P-1): text AND images (PNG, both
+                                    the consent tier's third rung:
+                                    text AND images (PNG, both
                                     ways, 32 MiB ceiling) as chan-8
                                     cargo. Key 12 declared only when
                                     the leaf comes up with images
@@ -307,7 +265,7 @@ struct Options {
                                     never couples to the clipboard)
                   --accept-files[=DIR]
                                     the standing per-host file-drop
-                                    consent (F-3, client→host only in
+                                    consent (client→host only in
                                     v1): incoming bulk transfers land
                                     in DIR (default ~/Downloads,
                                     created if missing) via staging +
@@ -321,8 +279,7 @@ struct Options {
                   --no-vbv-reconfigure
                                     debug: never reconfigure the
                                     encoder's rate control from the
-                                    estimator's ceiling (HS-22's
-                                    isolation lever — the opening
+                                    estimator's ceiling (the opening
                                     posture rides the whole run)
                   --host-audio MODE audible (default) keeps the host's
                                     speakers playing (default-sink
@@ -335,7 +292,7 @@ struct Options {
                                     next start)
 
                 subcommands: lyte-host sniff --port PORT  (header dissector)
-                             lyte-host advertise …        (HS-10 discovery)
+                             lyte-host advertise …        (mDNS discovery)
                 """)
                 exit(0)
             default:
@@ -398,12 +355,6 @@ func handlePairingEvent(_ event: PairingResponderService.Event) {
     case .malformed:
         print("pairing: malformed pairing bytes dropped")
     }
-}
-
-/// Decodes a NUL-terminated C error buffer.
-func errString(_ buf: [CChar]) -> String {
-    let bytes = buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
-    return String(decoding: bytes, as: UTF8.self)
 }
 
 // MARK: - Main
@@ -591,7 +542,7 @@ final class SessionHost {
                 cookieExitThreshold: opts.cookieExit
             )
             print("""
-                handshake: W8 retry-cookie dial ARMED (require-cookie engages \
+                handshake: retry-cookie dial ARMED (require-cookie engages \
                 at \(opts.cookieEnter) msg1/s, clears at \(opts.cookieExit)/s)
                 """)
         }
@@ -699,13 +650,6 @@ static func run(arguments: [String]) throws {
         encoder: native VAAPI seat — rate directives ride the \
         next frame's RC buffer (no libavcodec in the video path)
         """)
-    if opts.ratchet {
-        print("""
-            note: --ratchet accepted-and-ignored — the portal-era \
-            ratchet prototype died in the E5 demolition (direct-leg \
-            quality refinement is the filed follow-up)
-            """)
-    }
 
     // The scanout opens first: its geometry scales the injector's
     // absolute moves. It and the eye's GL context live for the run.

@@ -15,12 +15,6 @@ struct CheckError: Error, CustomStringConvertible {
     init(_ description: String) { self.description = description }
 }
 
-/// Decodes a NUL-terminated C error buffer.
-func errString(_ buf: [CChar]) -> String {
-    let bytes = buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
-    return String(decoding: bytes, as: UTF8.self)
-}
-
 func realtimeNowNS() -> UInt64 {
     var ts = timespec()
     clock_gettime(CLOCK_REALTIME, &ts)
@@ -50,20 +44,20 @@ func run() throws {
     }
 
     guard let rx = lyte_netio_new("127.0.0.1", rxPort, &err, err.count) else {
-        throw CheckError("receiver open failed: \(errString(err))")
+        throw CheckError("receiver open failed: \(String(cBuffer: err))")
     }
     defer { lyte_netio_free(rx) }
     let port = lyte_netio_local_port(rx)
 
     guard let tx = lyte_netio_new("127.0.0.1", 0, &err, err.count) else {
-        throw CheckError("sender open failed: \(errString(err))")
+        throw CheckError("sender open failed: \(String(cBuffer: err))")
     }
     defer { lyte_netio_free(tx) }
     guard lyte_netio_set_peer(tx, "127.0.0.1", port, &err, err.count) == 0 else {
-        throw CheckError("sender connect failed: \(errString(err))")
+        throw CheckError("sender connect failed: \(String(cBuffer: err))")
     }
     guard lyte_netio_enable_tx_timestamps(tx, &err, err.count) == 0 else {
-        throw CheckError("SO_TIMESTAMPING arm failed: \(errString(err))")
+        throw CheckError("SO_TIMESTAMPING arm failed: \(String(cBuffer: err))")
     }
 
     let tosCycle: [UInt8] = [0xB8, WireTos.video, WireTos.protected]
@@ -98,7 +92,7 @@ func run() throws {
                                      &err, err.count)
     guard sent == count else {
         throw CheckError(sent < 0
-            ? "send failed: \(errString(err))"
+            ? "send failed: \(String(cBuffer: err))"
             : "short send: \(sent)/\(count)")
     }
     print("sent \(sent) in one sendmmsg batch (first pkt_id \(firstId))")
@@ -122,7 +116,7 @@ func run() throws {
                                         Int32(count - received),
                                         &err, err.count)
         guard got >= 0 else {
-            throw CheckError("recv failed: \(errString(err))")
+            throw CheckError("recv failed: \(String(cBuffer: err))")
         }
         if got > 0 {
             received += Int(got)
@@ -149,7 +143,7 @@ func run() throws {
         let got = lyte_netio_poll_txstamps(tx, &stampBuf, Int32(count),
                                            &err, err.count)
         guard got >= 0 else {
-            throw CheckError("txstamp poll failed: \(errString(err))")
+            throw CheckError("txstamp poll failed: \(String(cBuffer: err))")
         }
         for s in stampBuf.prefix(Int(got)) {
             stamps[s.pkt_id] = s.ts_ns

@@ -64,9 +64,6 @@ sessions in turn in one process, and its PID stays the same across
 sessions. A failed session or a display mode change exits the process and
 systemd restarts it. `--seconds N` or `--pair` serves one session.
 
-`--backend direct`, `--encoder native` and `--ratchet` are accepted no-ops
-kept for old conf lines.
-
 ## Deploy and roll back
 
 Run as the seat user in the host tree on pup (`~/src/lyte-host`), after a

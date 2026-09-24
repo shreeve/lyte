@@ -86,7 +86,9 @@ void lyte_pw_audio_free(lyte_pw_audio *a);
    default.configured.audio.sink to `saved_json` — or clears the
    property when `saved_json` is NULL — and disconnects. The dead
    run's sink itself never survives (connection-owned); only the
-   metadata can be stranded. Returns 0 on success, -1 with err. */
+   metadata can be stranded. Every server roundtrip is bounded, so a
+   wedged server fails the sweep instead of hanging the caller.
+   Returns 0 on success, -1 with err. */
 int lyte_pw_audio_restore_default(const char *saved_json,
                                   char *err, size_t errlen);
 
