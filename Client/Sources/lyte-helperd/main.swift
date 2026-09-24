@@ -40,19 +40,16 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
     }
 }
 
-let listener = NSXPCListener(machServiceName: LyteHelper.machServiceName)
+let requirement: String
 do {
-    let requirement = try HelperClientRequirement.forCurrentProcess()
-    if CommandLine.arguments.contains("--print-client-requirement") {
-        print(requirement)
-        exit(0)
-    }
-    // Foundation asks XPC to reject a foreign peer before the delegate sees
-    // it. The exported root operations are never reachable without this DR.
-    listener.setConnectionCodeSigningRequirement(requirement)
+    requirement = try HelperClientRequirement.forCurrentProcess()
 } catch {
     NSLog("lyte-helperd: client requirement unavailable — refusing to start: \(error)")
     exit(EX_CONFIG)
+}
+if CommandLine.arguments.contains("--print-client-requirement") {
+    print(requirement)
+    exit(0)
 }
 
 // launchd stop, SMAppService re-registration and shutdown all arrive as
@@ -67,7 +64,7 @@ termination.resume()
 
 NSLog("lyte-helperd: starting (v\(LyteHelper.version))")
 AwdlHoldController.shared.reconcileAfterUncleanExit()
+let listener = NSXPCListener(machServiceName: LyteHelper.machServiceName)
 let delegate = ListenerDelegate()
-listener.delegate = delegate
-listener.resume()
+HelperListener.activate(listener, requiring: requirement, delegate: delegate)
 RunLoop.main.run()

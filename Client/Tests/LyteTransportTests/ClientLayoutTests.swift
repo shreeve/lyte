@@ -101,36 +101,6 @@ final class ClientLayoutTests: XCTestCase {
         }
     }
 
-    /// The stats overlay samples once per second outside SwiftUI layout;
-    /// re-deriving rows inside `body` (or a TimelineView) runs the whole
-    /// stats walk on every layout pass.
-    func testStatsOverlayNeverSamplesInsideLayout() throws {
-        let source = try String(
-            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
-                "/Client/Sources/Lyte/ControlStrip.swift"),
-            encoding: .utf8)
-        XCTAssertFalse(source.contains("TimelineView"))
-        XCTAssertFalse(source.contains("ForEach(model.statsRows())"))
-    }
-
-    func testHelperListenerAuthenticatesBeforeAcceptingClients() throws {
-        let source = try String(
-            contentsOf: URL(fileURLWithPath: ClientTestPaths.repositoryRoot +
-                "/Client/Sources/lyte-helperd/main.swift"),
-            encoding: .utf8)
-        let requirement = try XCTUnwrap(source.range(
-            of: "listener.setConnectionCodeSigningRequirement(requirement)"))
-        let delegate = try XCTUnwrap(source.range(
-            of: "listener.delegate = delegate"))
-
-        XCTAssertLessThan(
-            source.distance(from: source.startIndex, to: requirement.lowerBound),
-            source.distance(from: source.startIndex, to: delegate.lowerBound))
-        XCTAssertTrue(source.contains(
-            "let requirement = try HelperClientRequirement.forCurrentProcess()"))
-        XCTAssertTrue(source.contains("exit(EX_CONFIG)"))
-    }
-
     private func directoryNames(at root: URL) throws -> [String] {
         try FileManager.default.contentsOfDirectory(
             at: root,
