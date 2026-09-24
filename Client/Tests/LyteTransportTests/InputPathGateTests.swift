@@ -54,7 +54,7 @@ final class InputPathGateTests: XCTestCase {
             seq: 7, clientMicroseconds: 0x11_2233_4455,
             body: .keyKeycode(keycode: 30, pressed: true)
         )
-        XCTAssertEqual(key.encode(), [
+        XCTAssertEqual(try key.encode(), [
             0x16,                                   // type
             7, 0, 0, 0,                             // seq u32 LE
             0x55, 0x44, 0x33, 0x22, 0x11, 0, 0, 0,  // clientMicros u64 LE
@@ -76,7 +76,7 @@ final class InputPathGateTests: XCTestCase {
                 expected.append(UInt8(truncatingIfNeeded: bits >> shift))
             }
         }
-        XCTAssertEqual(move.encode(), expected)
+        XCTAssertEqual(try move.encode(), expected)
         XCTAssertEqual(try InputEvent.decode(move.encode()), move)
 
         // The remaining kinds round-trip.
@@ -109,7 +109,7 @@ final class InputPathGateTests: XCTestCase {
     }
 
     func testHostileInputBytesRejectAndNeverTrap() throws {
-        let good = InputEvent(
+        let good = try InputEvent(
             seq: 1, clientMicroseconds: 2,
             body: .keyKeycode(keycode: 30, pressed: true)
         ).encode()
@@ -134,7 +134,7 @@ final class InputPathGateTests: XCTestCase {
         badFlag[18] = 2
         XCTAssertThrowsError(try InputEvent.decode(badFlag))
         // Reserved axis-flag bits.
-        var axis = InputEvent(
+        var axis = try InputEvent(
             seq: 1, clientMicroseconds: 2,
             body: .pointerAxis(dx: 1, dy: 2, finish: false)
         ).encode()

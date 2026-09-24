@@ -219,7 +219,7 @@ func checkInputEventVector(
         let event = InputEvent(
             seq: seq, clientMicroseconds: micros, body: body
         )
-        XCTAssertEqual(event.encode(), message, vector.name)
+        XCTAssertEqual(try event.encode(), message, vector.name)
         XCTAssertEqual(try InputEvent.decode(message), event, vector.name)
         // f64 equality forgives −0.0; the re-encode pins every bit.
         XCTAssertEqual(try InputEvent.decode(message).encode(), message,
