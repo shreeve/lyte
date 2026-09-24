@@ -67,7 +67,7 @@ final class HostileTimestampGateTests: XCTestCase {
             try echo(seq: 0, t1: 999_999, t2: 40_000, t3: 40_500, at: 2_000),
             [.beaconEchoAccepted(
                 beaconSeq: 0,
-                offsetMicroseconds: (40_000 + 40_500 - 2_000) / 2,
+                offsetMicroseconds: Int64(40_000 + 40_500 - 2_000) / 2,
                 rttMicroseconds: 1_500)])
         XCTAssertEqual(host.session.srttMicroseconds, 1_500)
     }

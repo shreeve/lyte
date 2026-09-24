@@ -531,7 +531,7 @@ final class BulkReceiveGateTests: XCTestCase {
         func promoteStaging(toName name: String) throws {
             if racesToLose > 0 {
                 racesToLose -= 1
-                FileManager.default.createFile(
+                _ = FileManager.default.createFile(
                     atPath: inner.directoryPath + "/" + name,
                     contents: Data("racer".utf8))
             }
