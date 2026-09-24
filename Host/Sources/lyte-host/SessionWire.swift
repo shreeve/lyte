@@ -268,12 +268,6 @@ final class SessionWire {
     private var cursorAnnounceOwed = false
 
     private(set) var framesSent = 0
-    /// Stage books for the fps-ceiling hunt (Q-1's red row): the last
-    /// sendFrame's packetize+FEC+seal time and its pacer-drain time,
-    /// split so the Sink's 5 s stage window can say where the frame
-    /// period went. Written and read on the video loop thread only.
-    private(set) var lastFrameIngestNanos: UInt64 = 0
-    private(set) var lastFrameDrainNanos: UInt64 = 0
     /// Most recent successfully admitted frame, for the synchronous
     /// encoder callback to attach QP/IDR-cause fields to its flight.
     private var lastFrameForTelemetry: FrameNumber?
@@ -826,49 +820,6 @@ final class SessionWire {
         return directive
     }
 
-    /// HS-11: a FRESH damage frame arrived from capture (never the
-    /// idle-floor repeats). In IDLE this is the WAKE — mode=active on
-    /// the reliable stream, the damage frame owed as an IDR; in ACTIVE
-    /// it aborts a pending idle flip.
-    func noteDamage() {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return }
-        for event in session.noteDamage(
-            now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            log(event)
-        }
-    }
-
-    /// HS-11: the ratchet converged (the all-skip stop). The final
-    /// converged frame rides a reliable one-shot; its acknowledgment
-    /// flips the wire mode to IDLE and datagram video stops. HS-22:
-    /// the session holds the handoff until damage has been quiet for
-    /// its idle-flip holdoff (3 s) — a desktop metronome (1 Hz clock,
-    /// blinking cursor) stays ACTIVE on small P-frames instead of
-    /// paying a full-frame WAKE IDR every beat — so the one-shot may
-    /// leave on a later service pass, not necessarily this one.
-    func noteRatchetConverged(finalFrame: [UInt8], captureMicros: UInt64) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let session, session.phase == .established else { return }
-        for event in session.noteRatchetConverged(
-            finalFrame: finalFrame,
-            captureTimestampMicroseconds: captureMicros,
-            now: SystemMonotonicClock.nowNanoseconds, hostMicroseconds: SystemMonotonicClock.nowMicroseconds
-        ) {
-            log(event)
-        }
-        // The one-shot leaves now, not at the next tick.
-        do {
-            try serviceOnce()
-            try flushOutbox()
-        } catch {
-            lastSendError = String(describing: error)
-        }
-    }
-
     /// HS-11: the orderly close — SessionTeardown 0x0A on the reliable
     /// stream, then a bounded linger so the segment can be delivered and
     /// acknowledged before the process exits (the graceful-exit half of
@@ -928,7 +879,6 @@ final class SessionWire {
         data: UnsafePointer<UInt8>, size: Int, isKeyframe: Bool,
         captureMicros: UInt64
     ) throws {
-        let ingestStart = SystemMonotonicClock.nowNanoseconds
         let frame = UnsafeBufferPointer(start: data, count: size)
         borrowedFrameBytesIngested &+= UInt64(size)
 
@@ -1013,18 +963,7 @@ final class SessionWire {
             videoCommitLockHoldMaxNS, SystemMonotonicClock.nowNanoseconds - commitHoldStart
         )
         lock.unlock()
-        lastFrameIngestNanos = SystemMonotonicClock.nowNanoseconds - ingestStart
-        lastFrameDrainNanos = 0 // the capture thread no longer waits
         signalDrain()
-    }
-
-    /// Debug/evidence drain for the synthetic motion leg. The underlying
-    /// telemetry is populated by the unchanged production admission and
-    /// sender paths.
-    func takeFrameTransmitTelemetry() -> [VideoFrameTransmitTelemetry] {
-        lock.lock()
-        defer { lock.unlock() }
-        return session.takeFrameTransmitTelemetry()
     }
 
     func annotateLastVideoFrame(

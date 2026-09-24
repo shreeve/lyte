@@ -470,15 +470,6 @@ public final class EyeVaapiEncoder {
         return try assembly.withUnsafeBytes { try body($0, idr) }
     }
 
-    /// Owned-bytes convenience over the lending `encode`.
-    public func encode(
-        surface: VASurfaceID, forceIDR: Bool
-    ) throws -> (data: [UInt8], keyframe: Bool) {
-        try encode(surface: surface, forceIDR: forceIDR) {
-            (Array($0), $1)
-        }
-    }
-
     // MARK: Buffer builders (vaapi_encode_h265.c's fills, mirrored)
 
     private func makeBuffer<T>(
