@@ -215,12 +215,11 @@ final class VideoPacketizerTests: XCTestCase {
 
     // MARK: Shard budget
 
-    /// The host's session carrier reserves envelope TLV headroom, so its
-    /// frames fill shards to less than 1112 B. This is a transcription of
-    /// that packetizer (Host VideoChannel.prepareFrame) — the reference
-    /// the budget-parameterized Wire path must match shard for shard
-    /// before the host drops its copy.
-    private func hostReference(
+    /// A session carrier that reserves envelope TLV headroom fills
+    /// shards to less than 1112 B. This independent transcription of the
+    /// budgeted packetizer is the oracle the Wire path must match shard
+    /// for shard.
+    private func budgetedReference(
         _ frame: [UInt8], isKeyframe: Bool, regime: FecRegime, budget: Int
     ) throws -> [VideoShardPayload] {
         let classification = AnnexBCheck.classifyFrame(frame)
@@ -246,7 +245,7 @@ final class VideoPacketizerTests: XCTestCase {
             }
     }
 
-    func testBudgetedShardsMatchTheHostPacketizer() throws {
+    func testBudgetedShardsMatchAnIndependentReference() throws {
         let budgets = [
             WireBudget.maxPlaintextShardByteCount,
             WireBudget.maxConnectionIdTaggedPlaintextByteCount,
@@ -263,7 +262,7 @@ final class VideoPacketizerTests: XCTestCase {
                             : pFrame(totalByteCount: size)
                         let label = "budget \(budget) size \(size) \(regime)"
                         let reference = Result {
-                            try hostReference(
+                            try budgetedReference(
                                 frame, isKeyframe: keyframe,
                                 regime: regime, budget: budget
                             )
