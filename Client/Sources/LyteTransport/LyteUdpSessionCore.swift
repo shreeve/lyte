@@ -876,25 +876,15 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
 
     // MARK: Reliable dispatch
 
-    /// Dispatches ARQ deliveries by CTRL type; hostile bytes are counted,
-    /// never fatal.
+    /// Dispatches ARQ deliveries: the control session is offered every
+    /// word first and claims the ones it owns, so a word added to it is
+    /// routed here with no second list; the shell keeps only the media
+    /// words. Hostile bytes are counted, never fatal.
     private func dispatchReliable(_ event: ArqEvent) {
         guard case .message(_, let bytes) = event else { return }
         let now = now()
+        if receiveControlWord(bytes, now: now) { return }
         switch bytes.first {
-        case CtrlMessageType.modeTransition,
-             CtrlMessageType.sessionTeardown,
-             CtrlMessageType.capabilityDeclaration,
-             CtrlMessageType.capabilityUpdate,
-             CtrlMessageType.audioRoutingRequest,
-             CtrlMessageType.audioRoutingStatus,
-             CtrlMessageType.clipboardSet,
-             CtrlMessageType.clipboardAnnounce,
-             CtrlMessageType.cursorShape,
-             CtrlMessageType.audioTrackState,
-             CtrlMessageType.videoPostureState:
-            receiveControlWord(bytes, now: now)
-
         case CtrlMessageType.idleFrame:
             receiveIdleFrame(bytes)
 
@@ -920,10 +910,11 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
     }
 
     /// The control session judges; the shell counts, sends, surfaces
-    /// events and executes lifecycle actions.
+    /// events and executes lifecycle actions. False when no control organ
+    /// claims the word.
     private func receiveControlWord(
         _ bytes: [UInt8], now: ClientTimestamp
-    ) {
+    ) -> Bool {
         lock.lock()
         let decision: ClientControlSessionDecision?
         do {
@@ -932,7 +923,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             lock.unlock()
             onEvent(.protocolNote(
                 "control response encoding refused: \(error)"))
-            return
+            return true
         }
         for counter in decision?.counters ?? [] {
             counters.bump(counter)
@@ -944,7 +935,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
             lifecycleTicket = issueLifecycleTicketLocked()
         }
         lock.unlock()
-        guard let decision else { return }
+        guard let decision else { return false }
 
         if case .audioRouting(.status(let mode, startup: _)) = decision.event {
             onEvent(.hostAudioRoutingStatus(mode))
@@ -963,7 +954,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
                     onEvent(.protocolNote(
                         "control response send refused: \(error)"))
                 }
-                return
+                return true
             }
         }
 
@@ -990,6 +981,7 @@ public final class LyteUdpSessionCore: @unchecked Sendable {
         if let lifecycle = decision.lifecycle {
             executeLifecycle(lifecycle, ticket: lifecycleTicket, now: now)
         }
+        return true
     }
 
     /// Chan 8 carries two lanes: 0x22 markers and bulk messages the image
