@@ -17,6 +17,7 @@ import LyteWire
 public struct ClientHandshakeInitiator: Sendable {
     /// Message-1 retransmit schedule: `attempts` transmissions, each given
     /// `intervalMicroseconds` for an answer before the next (or failure).
+    /// Every shell dials on one of these schedules; the default is 5 × 1 s.
     public struct Retry: Sendable, Equatable {
         public var attempts: Int
         public var intervalMicroseconds: UInt64
@@ -25,6 +26,15 @@ public struct ClientHandshakeInitiator: Sendable {
             self.attempts = max(1, attempts)
             self.intervalMicroseconds = max(1, intervalMicroseconds)
         }
+
+        /// A connect's first dial: 5 × 2 s, so a host still waking (or a
+        /// radio still associating) has 10 s to answer.
+        public static let firstDial = Retry(
+            attempts: 5, intervalMicroseconds: 2_000_000)
+        /// Every later dial — a connect's next round, a roaming probe:
+        /// 3 × 700 ms, so a dead target frees the ladder in about 2 s.
+        public static let redial = Retry(
+            attempts: 3, intervalMicroseconds: 700_000)
     }
 
     public struct Counters: Sendable, Equatable {

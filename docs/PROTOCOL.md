@@ -100,10 +100,12 @@ sealed traffic, both ways; each side's first ARQ message is 0x0F
 - Suite `Noise_IK_25519_ChaChaPoly_SHA256`. The client knows the host's
   static key from pairing. The first handshake payload byte each way is
   the wire major version (1); a mismatch aborts before any transport key.
-- The client sends one message 1 and retransmits the same bytes (5
-  transmissions, 1 s apart, `ClientHandshakeInitiator.Retry`), so a late
-  answer to any copy completes the transcript. Answering a retry challenge
-  spends no attempt.
+- The client sends one message 1 and retransmits the same bytes on a
+  schedule `ClientHandshakeInitiator.Retry` owns — by default 5
+  transmissions 1 s apart; a connect's first dial allows 5 × 2 s
+  (`.firstDial`), its later rounds and roaming probes 3 × 700 ms
+  (`.redial`) — so a late answer to any copy completes the transcript.
+  Answering a retry challenge spends no attempt.
 - The host rate-limits message 1 (`HostSession.HandshakeGate`). Under a
   flood it switches to cookie mode: a stateless 24-byte HMAC cookie binds
   the client tuple, a timestamp (30 s lifetime) and message 1 verbatim.
