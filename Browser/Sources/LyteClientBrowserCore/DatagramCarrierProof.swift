@@ -4,16 +4,16 @@ import LyteWire
 /// WASM-side checks for B-2 opaque carrier echoes. The browser JavaScript
 /// owns WebTransport; this verifies that bytes which crossed the sidecar
 /// are still the Lyte envelopes / sealed ciphertext the page claimed to send.
-enum DatagramCarrierProof {
-    static let wireBudgetBytes = WireBudget.maxDatagramByteCount
+public enum DatagramCarrierProof {
+    public static let wireBudgetBytes = WireBudget.maxDatagramByteCount
 
     /// Published Noise IK message-1 ciphertext from the frozen snow vector —
     /// sealed bytes the sidecar must treat as opaque.
-    static var noiseMsg1CiphertextHex: String {
+    public static var noiseMsg1CiphertextHex: String {
         FrozenNoiseContract.msg1CiphertextHex
     }
 
-    static func verifyEcho(kind: String, sentHex: String, recvHex: String) -> ContractResult {
+    public static func verifyEcho(kind: String, sentHex: String, recvHex: String) -> ContractResult {
         let name: String
         switch kind {
         case "envelope":
