@@ -78,6 +78,11 @@ func elevateCurrentThread(_ label: String, rtPriority: Int32) {
 /// the gap is heard by the next one.
 final class HostListener {
     let netio: OpaquePointer
+    /// Message 1s any session of this process answered: a replay, or a
+    /// stale retransmit still queued here after its session ended, is
+    /// dropped before a session reads it. Touched only by `awaitClient`,
+    /// under the waiting wire's lock — one session waits at a time.
+    var answeredHandshakes = AnsweredHandshakeMemory()
 
     init(port: UInt16) throws {
         var err = [CChar](repeating: 0, count: 256)
@@ -124,6 +129,8 @@ final class SessionWire {
         return FileHandle(forWritingAtPath: path)
     }()
     private var awaitPrimaryDatagrams = 0
+    /// Unconfirmed handshakes a newer authenticated message 1 replaced.
+    private(set) var handshakesSuperseded = 0
     private var session: Session!
     /// HS-15: serializes Session/outbox access between the video
     /// capture loop thread and the audio capture loop thread (see the
@@ -753,18 +760,23 @@ final class SessionWire {
         }
     }
 
-    /// Noise mode: block until a client completes message 1 (the session
-    /// establishes inside `receive`), for up to `timeoutSeconds` (nil = as
-    /// long as it takes, the listening service's posture). Prints the
-    /// static public key the client must hold. Call before capture opens
-    /// so no video is encoded for nobody.
+    /// Noise mode: block until a client completes the handshake AND
+    /// proves it holds the session keys (its first authenticated
+    /// datagram), for up to `timeoutSeconds` (nil = as long as it takes,
+    /// the listening service's posture). Prints the static public key the
+    /// client must hold. Call before capture opens so no video is encoded
+    /// for nobody.
     ///
-    /// Until a handshake completes the host is bound to no client: only
-    /// plausible handshake initiations reach the session, from any tuple
-    /// (a wire-out host accepts only its peer), and the one that
-    /// authenticates names the client's path — the media sockets connect
-    /// there. A spoofed, unpaired, or abandoned message 1 cannot lock out
-    /// the next client.
+    /// Until then the host is bound to no client: only plausible
+    /// handshake initiations reach a session, from any tuple (a wire-out
+    /// host accepts only its peer), and the one that authenticates is
+    /// answered on its own path. Answering commits nothing — Noise IK
+    /// message 1 carries no freshness, so a replayed one authenticates
+    /// too. A message 1 some session of this process already answered is
+    /// dropped unread; a newer one that authenticates while the answered
+    /// session is unconfirmed replaces it; an unconfirmed session whose
+    /// lifecycle closes is discarded. A replayed, spoofed, abandoned or
+    /// unanswered message 1 therefore cannot lock out the next client.
     func awaitClient(
         hostStatic: NoiseKeyPair,
         timeoutSeconds: Double?,
@@ -790,70 +802,50 @@ final class SessionWire {
             if stopRequested() {
                 return .terminationRequested
             }
-            var established = false
             lock.lock()
             do {
-                let handle: ([UInt8], FourTuple) -> Void = { [weak self]
-                    datagram, tuple in
-                    guard let self else { return }
-                    guard self.session?.phase != .established else {
-                        self.receiveEstablished(datagram, from: tuple)
-                        return
-                    }
-                    self.awaitPrimaryDatagrams += 1
-                    // Shape check, not trust: the gate still authenticates.
-                    // A relaunched host also hears the previous session's
-                    // sealed feedback from the client's old port; only an
-                    // initiation is worth a session's attention.
-                    let plausible = Session.looksLikeHandshakeInitiation(datagram)
-                        && self.admitsPeer(tuple)
-                    let payloadType: UInt8? = (try? Envelope.decode(
-                        datagram[...]))?.1.first
-                    self.traceHandshake("primaryDatagram", fields: [
-                        "ordinal": String(self.awaitPrimaryDatagrams),
-                        "bytes": String(datagram.count),
-                        "remoteAddress": tuple.remoteAddress,
-                        "remotePort": String(tuple.remotePort),
-                        "shapeAccepted": String(plausible),
-                        "payloadType": payloadType.map(String.init) ?? "",
-                    ])
-                    guard plausible else { return }
-                    if self.session == nil {
-                        self.makeSession(
-                            crypto: .noise(hostStatic: hostStatic),
-                            clientTuple: tuple
-                        )
-                    }
-                    for event in self.session.receive(
-                        datagram, from: tuple,
+                try receiveFromAll { [weak self] datagram, tuple in
+                    self?.awaitDatagram(datagram, from: tuple, hostStatic: hostStatic)
+                }
+                if let session, session.phase == .established {
+                    // The answered session's own timers (ARQ retransmit
+                    // of its declaration, beacons, liveness) run here
+                    // until it is confirmed; the sender thread takes
+                    // over after.
+                    for event in session.advance(
                         now: SystemMonotonicClock.nowNanoseconds,
                         hostMicroseconds: SystemMonotonicClock.nowMicroseconds
                     ) {
-                        self.execute(event)
-                        if case .handshakeCompleted = event { established = true }
+                        execute(event)
+                    }
+                    if session.lifecycleState == .closed {
+                        emit("""
+                            noise: answered handshake never confirmed \
+                            — discarded, awaiting a client
+                            """)
+                        discardUnconfirmedSession()
                     }
                 }
-                try receiveFromAll(handle)
                 // A pre-establishment pump is what lets HS-21's 0x13
                 // RetryChallenge (enqueued into the pacer by
-                // Session.receive under flood) actually leave the box:
-                // msg 2 escapes later via the streaming service loop's
-                // pump, but a challenge answers a flood that never
-                // establishes, so awaitClient must drain the pacer here.
+                // Session.receive under flood) actually leave the box —
+                // a challenge answers a flood that never establishes —
+                // and it carries message 2 and the session's opening
+                // words until the client confirms.
                 if let session {
                     pumpForSocketState(session)
                 }
-                try flushOutbox() // challenges, message 2, session-start beacon
+                try flushOutbox()
             } catch {
                 lock.unlock()
                 flushLogLines()
                 throw error
             }
-            let done = established && session?.phase == .established
+            let done = session?.isPeerConfirmed == true
             lock.unlock()
             flushLogLines()
             if done {
-                // The sender thread owns the established session's pacing
+                // The sender thread owns the confirmed session's pacing
                 // from here.
                 signalDrain()
                 return .established
@@ -868,6 +860,93 @@ final class SessionWire {
             — is lyte-cli wire-view pointed at this host and holding \
             the printed static key?
             """)
+    }
+
+    /// Requires `lock`. One datagram while awaiting a confirmed client.
+    private func awaitDatagram(
+        _ datagram: [UInt8], from tuple: FourTuple, hostStatic: NoiseKeyPair
+    ) {
+        let message1 = Session.handshakeMessage1(in: datagram)
+        guard message1 != nil || session?.phase == .established else {
+            // Nothing is answered yet, so only an initiation is worth a
+            // session's attention: a relaunched host also hears the
+            // previous session's sealed feedback from the client's old
+            // port.
+            traceAwaitDatagram(datagram, from: tuple, accepted: false)
+            return
+        }
+        if let message1 {
+            // Shape check, not trust: the gate still authenticates.
+            let plausible = admitsPeer(tuple)
+                && (message1 == session?.answeredMessage1
+                    || !listener.answeredHandshakes.contains(message1: message1))
+            traceAwaitDatagram(datagram, from: tuple, accepted: plausible)
+            guard plausible else { return }
+        }
+        if session == nil {
+            makeSession(crypto: .noise(hostStatic: hostStatic), clientTuple: tuple)
+        }
+        let wasConfirmed = session.isPeerConfirmed
+        for event in session.receive(
+            datagram, from: tuple,
+            now: SystemMonotonicClock.nowNanoseconds,
+            hostMicroseconds: SystemMonotonicClock.nowMicroseconds
+        ) {
+            execute(event)
+        }
+        if let superseding = session.takeSupersedingHandshake() {
+            handshakesSuperseded += 1
+            emit("""
+                noise: a newer handshake from \
+                \(superseding.clientTuple.remoteAddress):\
+                \(superseding.clientTuple.remotePort) replaces the \
+                unconfirmed one
+                """)
+            discardUnconfirmedSession()
+            makeSession(
+                crypto: .noise(hostStatic: hostStatic),
+                clientTuple: superseding.clientTuple)
+            for event in session.completeSupersedingHandshake(
+                superseding,
+                now: SystemMonotonicClock.nowNanoseconds,
+                hostMicroseconds: SystemMonotonicClock.nowMicroseconds
+            ) {
+                execute(event)
+            }
+        }
+        if let answered = session.answeredMessage1 {
+            listener.answeredHandshakes.record(message1: answered)
+        }
+        if !wasConfirmed, session.isPeerConfirmed {
+            emit("noise: client confirmed — it holds the session keys")
+        }
+    }
+
+    private func traceAwaitDatagram(
+        _ datagram: [UInt8], from tuple: FourTuple, accepted: Bool
+    ) {
+        awaitPrimaryDatagrams += 1
+        guard handshakeWitness != nil else { return }
+        let payloadType: UInt8? = (try? Envelope.decode(datagram[...]))?.1.first
+        traceHandshake("primaryDatagram", fields: [
+            "ordinal": String(awaitPrimaryDatagrams),
+            "bytes": String(datagram.count),
+            "remoteAddress": tuple.remoteAddress,
+            "remotePort": String(tuple.remotePort),
+            "shapeAccepted": String(accepted),
+            "payloadType": payloadType.map(String.init) ?? "",
+        ])
+    }
+
+    /// Requires `lock`. Drops an answered-but-unconfirmed session and
+    /// everything it queued; the media sockets stay open and are
+    /// re-pointed when the next handshake completes.
+    private func discardUnconfirmedSession() {
+        outbox.dropAll()
+        blockedLane = nil
+        noBufferBackoff = false
+        peerGone = false
+        session = nil
     }
 
     /// The session port (the kernel's pick when bound to port 0).
@@ -948,7 +1027,9 @@ final class SessionWire {
         stopDrain()
         runPendingPairingEvents()
         lock.lock()
-        guard let session, session.phase == .established,
+        // An unconfirmed session's peer may be a replay's phantom: it
+        // is owed no teardown.
+        guard let session, session.isPeerConfirmed,
               session.lifecycleState != .closed, !peerGone else {
             lock.unlock()
             return
@@ -1624,7 +1705,7 @@ final class SessionWire {
     /// the 5 ms ± 2 ms bound; the pacer's class order is the other half).
     private func drainPass() throws -> DrainWait {
         lock.lock()
-        guard let session, session.phase == .established, !peerGone else {
+        guard let session, session.isPeerConfirmed, !peerGone else {
             lock.unlock()
             flushLogLines()
             return DrainWait()
