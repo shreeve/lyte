@@ -2145,7 +2145,10 @@ final class SessionWire {
             try injector.inject(event)
         } catch {
             inputInjectFailures += 1
-            emit("input: inject seq \(event.seq) failed: \(error)")
+            // A client can cause one per event.
+            emitLimited(
+                "input: inject failed",
+                "input: inject seq \(event.seq) failed: \(error)")
             return
         }
         let injectMicros = SystemMonotonicClock.nowMicroseconds
