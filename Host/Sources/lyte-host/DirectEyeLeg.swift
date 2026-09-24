@@ -592,9 +592,8 @@ final class DirectEyeLeg {
             wire.noteCursorShape(.hidden)
         case .shape(let frame):
             cursorShapesSeen += 1
-            let pointer = wire.lastAbsolutePointerInjection().map {
-                CursorHotspot.Point(
-                    x: Int($0.x.rounded()), y: Int($0.y.rounded()))
+            let pointer = wire.lastAbsolutePointerInjection().flatMap {
+                InputCoordinate.pixel(x: $0.x, y: $0.y)
             }
             let plane = frame.planeCrtc.map {
                 CursorHotspot.Point(x: $0.x, y: $0.y)
@@ -641,10 +640,11 @@ final class DirectEyeLeg {
     ) {
         guard hotspotRecheckArmed, let frame = lastCursorFrame,
               let sent = sentHotspot,
-              let pointer = wire.lastAbsolutePointerInjection()
+              let injected = wire.lastAbsolutePointerInjection(),
+              let pointer = InputCoordinate.pixel(x: injected.x, y: injected.y)
         else { return }
         let nowMicros = UInt64(SystemMonotonicClock.nowSeconds * 1_000_000)
-        guard nowMicros &- pointer.atMicros > 150_000 else { return }
+        guard nowMicros &- injected.atMicros > 150_000 else { return }
         guard let plane = watcher.planeCrtcPosition(),
               CursorHotspot.canRecheck(
                   planeCrtc: .init(x: plane.x, y: plane.y))
@@ -654,9 +654,7 @@ final class DirectEyeLeg {
             return
         }
         let hot = CursorHotspot.derive(
-            pointer: .init(
-                x: Int(pointer.x.rounded()),
-                y: Int(pointer.y.rounded())),
+            pointer: pointer,
             planeCrtc: .init(x: plane.x, y: plane.y),
             crop: .init(x: frame.cropX, y: frame.cropY),
             width: frame.width, height: frame.height)
@@ -666,7 +664,7 @@ final class DirectEyeLeg {
         print("""
             direct: cursor hotspot corrected (\(sent.x),\(sent.y)) → \
             (\(hot.x),\(hot.y)) at rest — plane(\(plane.x),\(plane.y)) \
-            pointer(\(Int(pointer.x)),\(Int(pointer.y)))
+            pointer(\(pointer.x),\(pointer.y))
             """)
         sentHotspot = (hot.x, hot.y)
         wire.noteCursorShape(CursorShape(

@@ -6,6 +6,7 @@
 // event.
 
 import Foundation
+import HostCore
 import HostWire
 import LyteIO
 import LyteWire
@@ -34,7 +35,7 @@ final class UinputInjector: InputInjector {
     let name = "uinput"
 
     private let handle: OpaquePointer
-    private static let pixelsPerDetent = 15.0
+    static let pixelsPerDetent = 15.0
     /// Every key/button currently held down, by evdev code. A kernel
     /// device never releases latched keys itself, so releaseHeld() at
     /// every session end and stop() release everything still held.
@@ -62,32 +63,58 @@ final class UinputInjector: InputInjector {
     }
 
     func inject(_ event: InputEvent) throws {
+        guard let call = Self.leafCall(for: event.body) else {
+            throw HostError(
+                "uinput inject refused: non-finite pointer coordinates")
+        }
         var err = [CChar](repeating: 0, count: 256)
         let rc: Int32
-        switch event.body {
-        case .keyKeycode(let code, let pressed),
-             .pointerButton(let code, let pressed):
+        switch call {
+        case .key(let code, let pressed):
             rc = lyte_uinput_key(
                 handle, code, pressed ? 1 : 0, &err, err.count)
             if rc == 0 {
                 if pressed { heldCodes.insert(code) }
                 else { heldCodes.remove(code) }
             }
-        case .pointerMotionAbsolute(let x, let y):
+        case .moveAbsolute(let x, let y):
             rc = lyte_uinput_move_abs(handle, x, y, &err, err.count)
-        case .pointerMotionRelative(let dx, let dy):
-            rc = lyte_uinput_move_rel(
-                handle, Int32(dx.rounded()), Int32(dy.rounded()),
-                &err, err.count)
-        case .pointerAxis(let dx, let dy, _):
-            rc = lyte_uinput_scroll(
-                handle,
-                Int32((dx / Self.pixelsPerDetent * 120).rounded()),
-                Int32((dy / Self.pixelsPerDetent * 120).rounded()),
-                &err, err.count)
+        case .moveRelative(let dx, let dy):
+            rc = lyte_uinput_move_rel(handle, dx, dy, &err, err.count)
+        case .scroll(let v120X, let v120Y):
+            rc = lyte_uinput_scroll(handle, v120X, v120Y, &err, err.count)
         }
         guard rc == 0 else {
             throw HostError("uinput inject failed: \(String(cBuffer: err))")
+        }
+    }
+
+    /// One leaf call per wire event: every client f64 is finite by the
+    /// time it leaves here, and every integer is saturated. Nil refuses
+    /// the event (a non-finite coordinate).
+    static func leafCall(for body: InputEvent.Body) -> UinputCall? {
+        switch body {
+        case .keyKeycode(let code, let pressed),
+             .pointerButton(let code, let pressed):
+            return .key(code, pressed: pressed)
+        case .pointerMotionAbsolute(let x, let y):
+            guard x.isFinite, y.isFinite else { return nil }
+            return .moveAbsolute(x, y)
+        case .pointerMotionRelative(let dx, let dy):
+            guard let x = InputCoordinate.saturated(
+                      dx, limit: InputCoordinate.relativeLimit),
+                  let y = InputCoordinate.saturated(
+                      dy, limit: InputCoordinate.relativeLimit)
+            else { return nil }
+            return .moveRelative(x, y)
+        case .pointerAxis(let dx, let dy, _):
+            let v120PerPixel = 120 / pixelsPerDetent
+            guard let x = InputCoordinate.saturated(
+                      dx * v120PerPixel, limit: InputCoordinate.scrollLimit),
+                  let y = InputCoordinate.saturated(
+                      dy * v120PerPixel, limit: InputCoordinate.scrollLimit)
+            else { return nil }
+            return .scroll(x, y)
         }
     }
 
@@ -135,6 +162,45 @@ func makeInputInjector(_ choice: InputBackendChoice) -> InputInjector? {
     }
 }
 #endif
+
+/// What one wire event asks of the uinput leaf, in the leaf's units.
+enum UinputCall: Equatable {
+    case key(UInt32, pressed: Bool)
+    /// Monitor pixels; the leaf scales and clamps against the extent.
+    case moveAbsolute(Double, Double)
+    case moveRelative(Int32, Int32)
+    /// v120 units (120 = one detent).
+    case scroll(Int32, Int32)
+}
+
+/// Client pointer and axis values are untrusted f64s: the codec decodes
+/// any bit pattern. Every integer conversion of one goes through
+/// `saturated`, so no client value reaches a trapping conversion or an
+/// undefined C cast.
+enum InputCoordinate {
+    /// Relative motion per event, pixels.
+    static let relativeLimit: Int32 = 32_767
+    /// Scroll per event, v120 units: 256 detents.
+    static let scrollLimit: Int32 = 120 * 256
+    /// A screen position, pixels — beyond any monitor.
+    static let pixelLimit: Int32 = 32_767
+
+    /// `value` rounded to the nearest integer and clamped to ±`limit`;
+    /// nil when it is NaN or infinite.
+    static func saturated(_ value: Double, limit: Int32) -> Int32? {
+        guard value.isFinite else { return nil }
+        let bound = Double(limit)
+        return Int32(min(max(value.rounded(), -bound), bound))
+    }
+
+    /// A pointer position in whole pixels, for the cursor-hotspot
+    /// derivation; nil for a non-finite coordinate.
+    static func pixel(x: Double, y: Double) -> CursorHotspot.Point? {
+        guard let px = saturated(x, limit: pixelLimit),
+              let py = saturated(y, limit: pixelLimit) else { return nil }
+        return CursorHotspot.Point(x: Int(px), y: Int(py))
+    }
+}
 
 enum InputBackendChoice: String {
     case auto

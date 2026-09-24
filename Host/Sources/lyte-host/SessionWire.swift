@@ -219,7 +219,8 @@ final class SessionWire {
     private var lastPointerMotionInjectedAt: UInt64 = 0
     /// The last absolute pointer injected (monitor device pixels): the
     /// cursor watcher's hotspot anchor (hotspot = injected position −
-    /// cursor plane CRTC position; i915 exposes no HOTSPOT_X/Y).
+    /// cursor plane CRTC position; i915 exposes no HOTSPOT_X/Y). Only a
+    /// position the injector accepted lands here, so it is finite.
     private var lastAbsolutePointer: (x: Double, y: Double)?
     /// Re-offered at agreement so a mid-run client wears the current
     /// cursor, not a default.
