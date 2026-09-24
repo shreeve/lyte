@@ -1,4 +1,4 @@
-// EyeCapture: milestone 2's conductor — a stable 60 Hz beat observes the
+// EyeCapture: the capture loop — a stable 60 Hz beat observes the
 // whole scanout through a compact GPU fingerprint. Changed pixels are blitted
 // into an exported VAAPI surface, the native VAAPI pens emit Annex-B, and the
 // bytes hit the file. An idle desktop is observed but not encoded; motion is
@@ -57,7 +57,7 @@ func runCapture(_ rawArgs: [String]) -> Never {
         chroma444: chroma444)
 }
 
-// MARK: - E6b: the native leg — same eye, libva spoken directly
+// MARK: - Native VAAPI leg
 
 /// The capture witness: the production EyePipeline (GETFB2 import,
 /// fingerprint, blit, native VAAPI encode) on the 60 Hz screen beat,
@@ -131,8 +131,7 @@ func runNativeCapture(
     var framesThisSecond = 0
 
     // The live-rate probe: halve the envelope at the midpoint, no
-    // reset, no IDR — the gate that retires the vendor patch's job
-    // on the VAAPI side too.
+    // reset, no IDR.
     var rateMoved = false
 
     while true {

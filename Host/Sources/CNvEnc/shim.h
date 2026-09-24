@@ -1,17 +1,13 @@
-// CNvEnc: the NVENC SDK surface for the E6a native encoder
-// (direct-eye plan E6a — the SDK writes its own headers and
-// NvEncReconfigureEncoder kills the no-reset patch at the root).
+// CNvEnc: the NVENC SDK surface for the native NVENC encoder.
 //
-// nvEncodeAPI.h is VENDORED next to this shim (FFmpeg's
-// nv-codec-headers n12.2.72.0, MIT-licensed by NVIDIA for exactly
-// this use; driver 595.84 on pup speaks API ≥ 12.2). The runtime
-// library is the driver's own libnvidia-encode.so.1 — linked, not
-// dlopen'd: a missing driver fails loudly at spawn, never silently
-// mid-session.
+// nvEncodeAPI.h is vendored next to this shim (FFmpeg's nv-codec-headers
+// n12.2.72.0, MIT-licensed by NVIDIA; needs driver API ≥ 12.2). The
+// driver's libnvidia-encode.so.1 is linked, not dlopen'd: a missing
+// driver fails loudly at spawn, never mid-session.
 //
 // The *_VER macros compose NVENCAPI_STRUCT_VERSION() expressions the
-// Swift importer cannot see — re-exported here as plain constants
-// (only the ones the E6a code touches; extend as the wrapper grows).
+// Swift importer cannot see, so the ones in use are re-exported here as
+// plain constants.
 
 #ifndef LYTE_CNVENC_SHIM_H
 #define LYTE_CNVENC_SHIM_H

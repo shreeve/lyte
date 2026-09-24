@@ -463,7 +463,6 @@ int lyte_set_dumpable(void) {
     return prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
 }
 
-/* Moved here from the demolished CHevcEncode leaf (E5): prints must
- * land live through an ssh pipe on every binary. */
+/* Prints must land live through an ssh pipe on every binary. */
 void lyte_stdout_linebuf(void) { setvbuf(stdout, NULL, _IOLBF, 0); }
 

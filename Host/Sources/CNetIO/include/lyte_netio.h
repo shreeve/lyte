@@ -20,9 +20,8 @@ typedef struct lyte_netio lyte_netio;
 
 /* Distinct return for ECONNREFUSED on a connect()ed socket (send or
    receive): a previous send drew ICMP port-unreachable — the peer's
-   socket is CLOSED, not merely quiet. This is session-ending evidence
-   (the client exited), not an I/O failure; the caller closes cleanly
-   instead of dying on "recvmmsg failed" (HS-11's graceful-exit rule). */
+   socket is closed (the client exited). The caller ends the session
+   cleanly; it is not an I/O failure. */
 #define LYTE_NETIO_PEER_GONE (-2)
 /* Local UDP send-buffer exhaustion (ENOBUFS), retryable like EAGAIN but
    distinct for telemetry. */
@@ -51,10 +50,8 @@ typedef struct {
 
 /* One receive slot. Caller supplies `data`/`cap`; the receive call fills
    `len`, `tos` (the TOS byte the datagram arrived with, IP_RECVTOS), and
-   the datagram's source address (HS-7: the session learns the client's
-   4-tuple from message 1's arrival, and HS-12's demux trigger attributes
-   every datagram to its source tuple — recvmmsg reports msg_name even on
-   a connected socket). */
+   the datagram's source address (reported even on a connected socket, so
+   every datagram is attributed to its source tuple). */
 typedef struct {
     uint8_t *data;
     size_t cap;
@@ -113,14 +110,12 @@ int lyte_netio_send_batch(lyte_netio *n, const lyte_netio_pkt *pkts, int count,
                           uint32_t *first_pkt_id, char *err, size_t errlen);
 
 /* Sends ONE datagram to an explicit address, bypassing the connect()ed
-   peer — the HS-12 path-validation leaf: a challenge must travel on the
-   exact unvalidated 4-tuple being probed while media stays on the
-   primary. Linux permits per-datagram addresses on a connected UDP
-   socket (sendmsg with msg_name overrides the peer for that datagram).
-   Carries the same per-packet IP_TOS cmsg as send_batch and counts
-   against the TX-timestamp pkt_id stream. Returns 1 on success, 0 if
-   the socket would block, a negative LYTE_NETIO_* code, or -1 with `err`
-   filled. */
+   peer: a path-validation challenge travels on the exact 4-tuple being
+   probed while media stays on the primary (Linux lets msg_name override
+   the peer on a connected UDP socket). Carries the same per-packet IP_TOS
+   cmsg as send_batch and counts against the TX-timestamp pkt_id stream.
+   Returns 1 on success, 0 if the socket would block, a negative
+   LYTE_NETIO_* code, or -1 with `err` filled. */
 int lyte_netio_send_to(lyte_netio *n, const lyte_netio_pkt *pkt,
                        const char *ip, uint16_t port,
                        char *err, size_t errlen);
@@ -158,15 +153,12 @@ int lyte_netio_wait(const int *fds, const short *events, short *revents,
                     int count, int64_t timeout_ns);
 
 /* Re-arm dumpability after file-capability startup (prctl is variadic
- * and unreachable from Swift). A cap-tagged binary starts non-dumpable,
- * which kills coredumps; note /proc/self/exe stays ptrace-guarded
- * regardless (capability-subset rule) — the benchmark rig reads its
- * provenance witness via sudo instead.
- * Owner-machine threat model only; E4's packaging revisits this. */
+ * and unreachable from Swift): a cap-tagged binary starts non-dumpable,
+ * which kills coredumps. /proc/self/exe stays ptrace-guarded regardless.
+ * Owner-machine threat model only. */
 int lyte_set_dumpable(void);
 
-/* Line-buffer stdout (moved from the demolished CHevcEncode leaf,
- * E5): prints must land live through an ssh pipe. */
+/* Line-buffer stdout: prints must land live through an ssh pipe. */
 void lyte_stdout_linebuf(void);
 
 #ifdef __cplusplus

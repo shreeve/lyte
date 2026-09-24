@@ -18,7 +18,7 @@
 #define LYTE_AUDIO_CHANNELS 2
 #define LYTE_AUDIO_QUANTUM  240
 
-/* The virtual sink's identity (HS-18 hostMuted). node.name is the
+/* The hostMuted virtual sink's identity. node.name is the
    metadata handle ({"name":...}) and the capture target; the
    description is what mixers display. */
 #define LYTE_SINK_NAME "lyte-audio-sink"
@@ -48,7 +48,7 @@ struct lyte_pw_audio {
 
     /* 0 = quit requested, 1 = timeout, -1 = error. Atomic: quit()
        stores from the session thread while the loop thread writes
-       error/timeout verdicts (A-24). */
+       error/timeout verdicts. */
     _Atomic int exit_reason;
     char error[256];
 
@@ -114,10 +114,10 @@ static const struct pw_core_events core_events = {
     .error = on_core_error,
 };
 
-/* A wedged server must not hang setup or restore (A-19: exit used to
-   block forever with the desktop's default sink still pointed at
-   "Lyte Audio"). Generous for a local-socket sync; the next-start
-   sweep backstops an abandoned restore. */
+/* A wedged server must not hang setup or restore (exit would block with
+   the desktop's default sink still pointed at "Lyte Audio"). Generous for
+   a local-socket sync; the next-start sweep backstops an abandoned
+   restore. */
 #define ROUNDTRIP_TIMEOUT_SEC 2
 
 static void on_roundtrip_timeout(void *data, uint64_t expirations)
@@ -451,24 +451,16 @@ lyte_pw_audio *lyte_pw_audio_new(lyte_pw_audio_cb cb, void *user,
     if (a->mute_host && setup_virtual_sink(a, err, errlen) < 0)
         goto fail;
 
-    /* stream.capture.sink is the canonical monitor trick: a capture
-       stream carrying it links to a sink's monitor ports. hostAudible
-       leaves the target to the session manager = the DEFAULT sink
-       (following default-sink switches — HS-14); hostMuted pins
-       target.object to OUR sink so the capture ignores any default
-       churn (the default IS our sink, but the pin makes the routing
-       explicit rather than emergent).
+    /* stream.capture.sink links a capture stream to a sink's monitor
+       ports. hostAudible leaves the target to the session manager (the
+       default sink, following switches); hostMuted pins target.object to
+       our sink so routing is explicit, not emergent.
 
-       node.force-quantum (HS-15): node.latency is a REQUEST the graph may
-       round up when other streams drive it (measured live: with video
-       capture sharing the graph, buffers arrived at ~256 samples/5.33 ms,
-       beating against the 240-sample slicer into a 5.3/2.7 ms wall-clock
-       emission pattern that violates the 5 ms ± 2 ms inter-send bound at
-       the NIC before the pacer ever sees a packet). Forcing the quantum
-       to 240 makes the graph actually run 5 ms cycles while this stream
-       lives — reverting when it closes — so packets become AVAILABLE at
-       the cadence the wire must carry them. Identical in BOTH routing
-       modes: the 5 ms pipeline is one pipeline (HS-18's cadence rule). */
+       node.latency is only a request the graph may round up when other
+       streams drive it (e.g. ~256-sample cycles beating against the
+       240-sample slicer into 5.3/2.7 ms emission, breaking the
+       5 ms ± 2 ms inter-send bound). node.force-quantum makes the graph
+       run 5 ms cycles while this stream lives, in both routing modes. */
     struct pw_properties *props = pw_properties_new(
         PW_KEY_MEDIA_TYPE, "Audio",
         PW_KEY_MEDIA_CATEGORY, "Capture",
@@ -539,7 +531,7 @@ void lyte_pw_audio_quit(lyte_pw_audio *a)
 {
     /* Cross-thread stop request. An error verdict already recorded by
        the loop thread must survive the quit — the run-error line is
-       the operator's only witness (A-24). */
+       the operator's only witness. */
     int cur = atomic_load(&a->exit_reason);
     while (cur != -1 &&
            !atomic_compare_exchange_weak(&a->exit_reason, &cur, 0)) {

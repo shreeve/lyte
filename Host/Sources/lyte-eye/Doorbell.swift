@@ -1,6 +1,4 @@
-// Doorbell mode (E0 milestone 1) — output format frozen for
-// line-comparability with the fbid-poll.c feasibility probe (retired
-// to git history with Host/Probes/kms-eye/).
+// Doorbell mode — FB_ID change detection; output format frozen.
 
 #if os(Linux)
 
@@ -10,7 +8,7 @@ import Foundation
 import Glibc
 import HostEye
 
-// MARK: - Doorbell mode (milestone 1, output format frozen)
+// MARK: - Doorbell mode
 
 struct Watch {
     var planeId: UInt32

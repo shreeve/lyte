@@ -1,4 +1,4 @@
-// lyte-control-peer — DRM-free HostWire UDP peer for browser B-3…B-6.
+// lyte-control-peer — DRM-free HostWire UDP peer for the browser client.
 //
 // Speaks the real host Noise / pairing / capabilities / teardown path via
 // HostWire.Session over plain UDP. Optional `--emit-corpus` replays the
@@ -50,10 +50,10 @@ struct Options {
     var emitCorpusDir: String?
 }
 
-/// Emit pacing is slower than the 60 Hz score so the browser WT reader is
-/// not starved by FEC bursts. Capture stamps follow wall time at emit
-/// (not a synthetic 60 Hz ladder) so Conductor path delay stays honest.
-// ~3 Conductor beats between frames — headroom for Chrome+WASM FEC drain.
+/// ~3 Conductor beats between frames: slower than 60 Hz so the browser's
+/// WebTransport reader and WASM FEC drain are not starved by bursts.
+/// Capture stamps follow wall time at emit so Conductor path delay stays
+/// honest.
 let corpusEmitIntervalNS: UInt64 = 50_001_000
 /// 5 ms Opus cadence (AudioWire.packetDuration).
 let tonePacketIntervalNS: UInt64 = 5_000_000
