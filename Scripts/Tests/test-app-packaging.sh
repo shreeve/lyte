@@ -49,6 +49,8 @@ assert_hash SwiftASN1-LICENSE.txt \
     8c6db340475136df3c1201d458fa5755698eace76e510471ecc9d857d6083dac
 assert_hash SwiftASN1-NOTICE.txt \
     11dd3b3b783e6ec26098dd38ebc962986ea109b85447e28e62867b83bd0f8c5b
+assert_hash Sparkle-LICENSE.txt \
+    389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe
 
 # The bundle carries the committed icon (Finder and the Dock read it before
 # the app ever runs), under the name its Info.plist gives.

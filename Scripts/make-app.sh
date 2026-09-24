@@ -184,6 +184,8 @@ cp .build/checkouts/swift-asn1/LICENSE.txt \
   "$STAGED_APP/Contents/Resources/SwiftASN1-LICENSE.txt"
 cp .build/checkouts/swift-asn1/NOTICE.txt \
   "$STAGED_APP/Contents/Resources/SwiftASN1-NOTICE.txt"
+cp .build/checkouts/Sparkle/LICENSE \
+  "$STAGED_APP/Contents/Resources/Sparkle-LICENSE.txt"
 
 Scripts/normalize-macos-rpaths.sh \
   "$STAGED_APP/Contents/MacOS/Lyte" \

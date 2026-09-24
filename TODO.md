@@ -141,6 +141,16 @@ live state: [HANDOFF.md](HANDOFF.md).
 - **Media keys.** The browser forwards media volume keys and the native
   client drops them; pick one behavior for both shells.
 
+- **Sparkle under the self-signed fallback (untested).** `Lyte.app` now
+  embeds `Sparkle.framework`, re-signed with the app's identity. Under the
+  hardened runtime, library validation accepts a framework only from the
+  app's own team, and the contributor fallback identity "Lyte Dev"
+  (`Scripts/setup-dev-signing.sh`) has none, so such a build may refuse to
+  load the framework at launch. Only the Apple Development and Developer
+  ID paths have been built and verified. Check on a Mac with only the
+  fallback; if it fails, sign fallback builds with
+  `com.apple.security.cs.disable-library-validation` (development only).
+
 ## Wire
 
 - Add a capability-spine vector for key 14 (`audioStreamOff`), in a new

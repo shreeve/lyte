@@ -13,9 +13,10 @@ relicenses them.
 | Swift Crypto | Wire cryptography | Apache 2.0; revision pinned in `Wire/Package.resolved` |
 | Swift ASN.1 | Transitive Swift Crypto dependency | Apache 2.0; revision pinned in `Wire/Package.resolved` |
 | Swift Argument Parser | `lyte-cli` argument parsing | Apache 2.0; revision pinned in `Client/Package.resolved` |
+| Sparkle 2.10.0 | In-app updates, embedded in `Lyte.app` as `Contents/Frameworks/Sparkle.framework` ([RELEASING.md](RELEASING.md)) | MIT (with the notices of the code it includes); pinned exactly in `Client/Package.swift` |
 
-The development app bundle carries verbatim license and notice files for
-Opus, nanors, Swift Crypto and Swift ASN.1 in `Contents/Resources/`. The
+The app bundle carries verbatim license and notice files for Opus, nanors,
+Swift Crypto, Swift ASN.1 and Sparkle in `Contents/Resources/`. The
 staged Linux host image carries the applicable notices under
 `doc/third-party/`, installed to `~/.local/share/lyte/doc/`. Both packaging
 gates pin the exact file set and verify every byte. A raw local development
