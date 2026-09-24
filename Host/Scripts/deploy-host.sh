@@ -213,7 +213,17 @@ deploy() {
         [[ "$(sha256_file "$staging/lyte-host")" == "$sha" ]] \
             || fail "copied binary does not match $source/lyte-host"
         chmod 0755 "$staging"
-        mv "$staging" "$versions/$id"
+        # -T: a version that appeared meanwhile (a concurrent deploy of
+        # the same binary) fails the rename instead of receiving the
+        # staging directory inside it.
+        if mv --version >/dev/null 2>&1; then
+            mv -T "$staging" "$versions/$id" \
+                || fail "version $id appeared during this deploy"
+        else
+            [[ ! -e "$versions/$id" ]] \
+                || fail "version $id appeared during this deploy"
+            mv "$staging" "$versions/$id"
+        fi
         trap - EXIT
         echo "deployed version $id from $source"
     fi
