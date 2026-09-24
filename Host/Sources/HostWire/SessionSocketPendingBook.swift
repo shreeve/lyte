@@ -7,8 +7,9 @@ extension PacerClass {
         switch self {
         case .control: .ctrl
         case .audio: .audio
+        case .telemetry: .feedback
         case .bulk: .bulkTransfer
-        case .freshVideo, .videoTail, .refinement, .telemetry: .videoActive
+        case .freshVideo, .videoTail, .refinement: .videoActive
         }
     }
 

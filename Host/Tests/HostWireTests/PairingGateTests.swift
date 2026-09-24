@@ -599,6 +599,50 @@ final class PairingGateTests: XCTestCase {
         XCTAssertEqual(fourth?.replies, [])
     }
 
+    /// Three share Bs out, none confirmed: the last run can still pair,
+    /// so the PIN stands, until that run is abandoned. Then nothing can
+    /// ever pair with it, and it burns at once rather than at some later
+    /// client's share A.
+    private func serviceWithTheBudgetSpent() -> (
+        PairingResponderService, clientStatic: [UInt8], hostStatic: [UInt8]
+    ) {
+        let hostStatic = NoiseKeyPair.generate().publicKey
+        let clientStatic = NoiseKeyPair.generate().publicKey
+        let service = PairingResponderService(
+            pin: Self.pin, hostStaticPublicKey: hostStatic,
+            config: PairingResponderService.Config(minAttemptIntervalNS: 0))
+        let hash = [UInt8](repeating: 0x33, count: 32)
+        service.sessionEstablished(
+            clientStaticPublicKey: clientStatic, noiseHandshakeHash: hash)
+        for attempt in 1...3 {
+            let output = service.handleReliableCtrl(
+                validShareA(
+                    clientStatic: clientStatic, hostStatic: hostStatic,
+                    hash: hash),
+                now: 0)
+            XCTAssertEqual(output?.events,
+                           [.attemptOpened(attempt: attempt, of: 3)])
+        }
+        XCTAssertFalse(service.isBurned, "the last run can still confirm")
+        return (service, clientStatic, hostStatic)
+    }
+
+    func testTheLastGuessAbandonedWithItsSessionBurnsThePin() {
+        let (service, _, _) = serviceWithTheBudgetSpent()
+        XCTAssertEqual(service.sessionEnded().events, [.pinBurned])
+        XCTAssertTrue(service.isBurned)
+        XCTAssertEqual(service.sessionEnded().events, [],
+                       "the burn announces exactly once")
+    }
+
+    func testTheLastGuessAbandonedByARehandshakeBurnsThePin() {
+        let (service, clientStatic, _) = serviceWithTheBudgetSpent()
+        service.sessionEstablished(
+            clientStaticPublicKey: clientStatic,
+            noiseHandshakeHash: [UInt8](repeating: 0x44, count: 32))
+        XCTAssertTrue(service.isBurned)
+    }
+
     private func validShareA(
         clientStatic: [UInt8], hostStatic: [UInt8], hash: [UInt8]
     ) -> [UInt8] {
